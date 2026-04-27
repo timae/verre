@@ -171,8 +171,11 @@ body[data-theme="light"]{
 .ai-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin:0 0 16px;}
 .invite-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
 .ai-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
-.ai-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+.ai-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:10px;}
 .ai-status{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-top:10px;}
+.ai-status.ok{color:var(--accent2);}
+.ai-status.err{color:#C46A6A;}
+.ai-status.busy{color:var(--accent);}
 .ai-links{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}
 .ai-link{font-size:10px;color:var(--accent2);text-decoration:none;line-height:1.6;}
 .ai-link:hover,.ai-link:focus{color:var(--accent);text-decoration:underline;}
@@ -734,6 +737,7 @@ body[data-theme="light"]::before{opacity:0.35;}
       <input class="fi" id="aiKey" type="password" placeholder="sk-..." autocapitalize="off" autocomplete="off" spellcheck="false">
       <div class="ai-actions">
         <button class="btn-s" onclick="saveAiKey()">save key</button>
+        <button class="btn-s" onclick="validateAiKey()">validate</button>
         <button class="btn-s" onclick="clearAiKey()">remove key</button>
       </div>
       <div class="ai-links">
@@ -850,12 +854,17 @@ function defaultPhotoStatus(hasPhoto=false){
     ? 'photo attached. no API key set, so this image is used for the list and export only.'
     : 'attach a bottle photo. without an API key, it is saved for the list and export only.';
 }
+function setAiStatus(message,kind=''){
+  const status=document.getElementById('aiStatus');
+  if(!status) return;
+  status.textContent=message;
+  status.className=`ai-status${kind ? ' '+kind : ''}`;
+}
 function syncAiKeyUi(){
   const provider=aiProvider();
   const cfg=providerConfig();
   const sel=document.getElementById('aiProvider');
   const input=document.getElementById('aiKey');
-  const status=document.getElementById('aiStatus');
   const docsLink=document.getElementById('aiDocsLink');
   const consoleLink=document.getElementById('aiConsoleLink');
   if(sel) sel.value=provider;
@@ -865,9 +874,11 @@ function syncAiKeyUi(){
   }
   if(docsLink) docsLink.href=cfg.docsUrl;
   if(consoleLink) consoleLink.href=cfg.consoleUrl;
-  if(status) status.textContent=hasProviderKey(provider)
-    ? `${cfg.label} key stored on this device. Label scan is enabled here.`
-    : `No ${cfg.label} key stored. Label scan is disabled on this device.`;
+  setAiStatus(
+    hasProviderKey(provider)
+      ? `${cfg.label} key stored on this device. Label scan is enabled here.`
+      : `No ${cfg.label} key stored. Label scan is disabled on this device.`
+  );
 }
 function changeAiProvider(){
   localStorage.setItem(AI_PROVIDER_STORE,document.getElementById('aiProvider').value);
@@ -887,6 +898,23 @@ function clearAiKey(){
   syncAiKeyUi();
   setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
   toast(providerConfig().label+' key removed');
+}
+async function validateAiKey(){
+  const provider=aiProvider();
+  const apiKey=(document.getElementById('aiKey').value.trim() || providerKey(provider).trim());
+  if(!apiKey){
+    setAiStatus(`Enter a ${providerConfig().label} key first.`,'err');
+    return;
+  }
+  setAiStatus(`Validating ${providerConfig().label} key…`,'busy');
+  try{
+    if(provider==='claude') await validateClaudeKey(apiKey);
+    else await validateOpenAiKey(apiKey);
+    setAiStatus(`${providerConfig().label} key is valid from this browser.`,'ok');
+    toast(providerConfig().label+' key validated');
+  }catch(err){
+    setAiStatus(err.message || `Could not validate ${providerConfig().label} key.`,'err');
+  }
 }
 
 // ── API helpers ───────────────────────────────
@@ -1268,6 +1296,22 @@ async function scanWithOpenAi(dataUrl,apiKey){
   const raw=payload?.output_parsed || payload?.output_text;
   return normalizeScanResult(typeof raw==='object' ? raw : extractJsonText(raw));
 }
+async function validateOpenAiKey(apiKey){
+  const res=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':`Bearer ${apiKey}`,
+    },
+    body:JSON.stringify({
+      model:'gpt-4.1-mini',
+      input:'Reply with OK.'
+    })
+  });
+  const payload=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(payload?.error?.message || payload?.error || 'OpenAI validation failed');
+  return payload;
+}
 async function scanWithClaude(dataUrl,apiKey){
   const {mediaType,base64}=dataUrlParts(dataUrl);
   const res=await fetch('https://api.anthropic.com/v1/messages',{
@@ -1293,6 +1337,24 @@ async function scanWithClaude(dataUrl,apiKey){
   if(!res.ok) throw new Error(payload?.error?.message || payload?.error?.type || 'Claude scan failed');
   const text=(payload?.content || []).filter(part=>part?.type==='text').map(part=>part.text).join('\n').trim();
   return normalizeScanResult(extractJsonText(text));
+}
+async function validateClaudeKey(apiKey){
+  const res=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'x-api-key':apiKey,
+      'anthropic-version':'2023-06-01',
+    },
+    body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',
+      max_tokens:4,
+      messages:[{role:'user',content:'Reply with OK.'}]
+    })
+  });
+  const payload=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(payload?.error?.message || payload?.error?.type || 'Claude validation failed');
+  return payload;
 }
 async function handleBottlePhoto(event){
   const file=event.target.files?.[0];
