@@ -1,20 +1,36 @@
 # Verre — Wine Tasting OS
 
-Shared wine tasting sessions with radar flavour profiles, per-person ratings, and PDF export. Runs on Deploio with Redis KVS.
+Mobile-first shared wine tasting sessions with a live bottle list, per-person radar ratings, bottle photos, and print-ready export. Runs on Deploio with Redis KVS.
+
+## What it does
+
+- Create or join a tasting with a 4-character session code
+- Keep one shared bottle lineup across the whole table
+- Rate privately on each phone with stars, flavour radar, and notes
+- Compare participants or overlay profiles per bottle
+- Attach bottle photos for the session list, detail view, and export
+- Edit wines after creation and reorder the lineup during the tasting
+- Share a join link or QR code for fast session entry
+- Auto-expire inactive sessions after 48 hours
+
+Optional label scan:
+- Bottle photos always work without AI
+- Label reading is optional and user-provided
+- On this branch, a participant can store their own `OpenAI` or `Claude` API key locally on their device and use it to prefill bottle fields
+- Keys are not stored in Redis or sent through the Verre backend on this branch
 
 ## Architecture
 
 ```
 Browser ──→ Express (Node 20) ──→ Redis (Deploio KVS)
               ↕
-        static HTML
+     single-page frontend
 ```
 
-- **Shared wine list** — host creates a session, guests join with a 4-char code
-- **Private ratings** — each person rates independently on their own device
-- **Compare** — view any participant's ratings, or overlay everyone's profiles per wine
-- **PDF export** — print stylesheet renders a clean A4 tasting report
-- Sessions auto-expire after 48 hours
+The app is intentionally simple:
+- one Node/Express server
+- one single-page frontend in `public/index.html`
+- one Redis/KVS namespace per tasting session
 
 ## Deploy to Deploio
 
@@ -72,6 +88,8 @@ node server.js
 # → http://localhost:8080
 ```
 
+Open `http://localhost:8080`, create a session, and join from a second device if you want to test the shared flow.
+
 ## API
 
 | Method | Path | Description |
@@ -81,7 +99,9 @@ node server.js
 | GET | /api/session/:code | Session info + participants |
 | GET | /api/session/:code/wines | Wine list |
 | POST | /api/session/:code/wines | Add wine |
-| DELETE | /api/session/:code/wines/:id | Delete wine |
+| PATCH | /api/session/:code/wines/:wineId | Edit wine metadata or bottle photo |
+| POST | /api/session/:code/wines/reorder | Reorder wines (body: `{orderedIds}`) |
+| DELETE | /api/session/:code/wines/:wineId | Delete wine |
 | POST | /api/session/:code/rate | Submit rating (body: `{userName, wineId, score, flavors, notes}`) |
 | GET | /api/session/:code/ratings | All ratings (all users) |
 | GET | /api/session/:code/ratings/:user | One user's ratings |
