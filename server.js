@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Redis ────────────────────────────────────
@@ -39,6 +39,33 @@ async function touch(code) {
   // refresh TTL on all keys for this session
   const keys = await redis.keys(`s:${code}:*`);
   for (const key of keys) await redis.expire(key, TTL);
+}
+
+function sanitizeImageDataUrl(value) {
+  if (!value || typeof value !== 'string') return '';
+  if (!value.startsWith('data:image/')) return '';
+  // Keep payloads bounded since images live in Redis with the wine record.
+  if (value.length > 1_500_000) return '';
+  return value;
+}
+
+function buildWinePayload(body, existing = {}) {
+  const name = String(body.name || '').trim();
+  const type = String(body.type || '').trim();
+  if (!name) return { error: 'name required' };
+  if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) {
+    return { error: 'valid type required' };
+  }
+  return {
+    name,
+    producer: String(body.producer || '').trim(),
+    vintage: String(body.vintage || '').trim().slice(0, 4),
+    grape: String(body.grape || '').trim(),
+    type,
+    image: body.image === undefined
+      ? (existing.image || '')
+      : sanitizeImageDataUrl(body.image),
+  };
 }
 
 // ── API routes ───────────────────────────────
@@ -108,18 +135,59 @@ app.post('/api/session/:code/wines', async (req, res) => {
   if (!raw) return res.status(404).json({ error: 'not found' });
 
   const wines = JSON.parse(raw);
+  const next = buildWinePayload(req.body);
+  if (next.error) return res.status(400).json({ error: next.error });
+
   const wine = {
     id: Date.now().toString(),
-    name: req.body.name,
-    producer: req.body.producer || '',
-    vintage: req.body.vintage || '',
-    grape: req.body.grape || '',
-    type: req.body.type,
+    ...next,
   };
   wines.push(wine);
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
   await touch(c);
   res.json(wine);
+});
+
+// PATCH /api/session/:code/wines/:wineId — update an existing wine
+app.patch('/api/session/:code/wines/:wineId', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const raw = await redis.get(k.wines(c));
+  if (!raw) return res.status(404).json({ error: 'not found' });
+
+  const wines = JSON.parse(raw);
+  const idx = wines.findIndex(w => w.id === req.params.wineId);
+  if (idx === -1) return res.status(404).json({ error: 'wine not found' });
+
+  const next = buildWinePayload(req.body, wines[idx]);
+  if (next.error) return res.status(400).json({ error: next.error });
+
+  wines[idx] = { ...wines[idx], ...next };
+  await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
+  await touch(c);
+  res.json(wines[idx]);
+});
+
+// POST /api/session/:code/wines/reorder — reorder the session wines
+app.post('/api/session/:code/wines/reorder', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const raw = await redis.get(k.wines(c));
+  if (!raw) return res.status(404).json({ error: 'not found' });
+
+  const wines = JSON.parse(raw);
+  const orderedIds = Array.isArray(req.body.orderedIds) ? req.body.orderedIds.map(String) : [];
+  if (orderedIds.length !== wines.length) {
+    return res.status(400).json({ error: 'orderedIds length mismatch' });
+  }
+
+  const byId = new Map(wines.map(w => [w.id, w]));
+  if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
+    return res.status(400).json({ error: 'orderedIds must include each wine exactly once' });
+  }
+
+  const reordered = orderedIds.map(id => byId.get(id));
+  await redis.set(k.wines(c), JSON.stringify(reordered), { EX: TTL });
+  await touch(c);
+  res.json(reordered);
 });
 
 // DELETE /api/session/:code/wines/:wineId — delete a wine
@@ -136,6 +204,7 @@ app.delete('/api/session/:code/wines/:wineId', async (req, res) => {
   const ratingKeys = await redis.keys(`s:${c}:r:*:${req.params.wineId}`);
   for (const rk of ratingKeys) await redis.del(rk);
 
+  await touch(c);
   res.json({ ok: true });
 });
 
