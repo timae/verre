@@ -472,7 +472,7 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
     <div class="panel">
       <div class="panel-hdr"><div class="panel-hdr-dot"></div>flavour profile</div>
       <div class="radar-wrap">
-        <svg id="mainRadar" viewBox="0 0 240 240" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+        <svg id="mainRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
       <div class="sl-grid" id="slGrid"></div>
     </div>
@@ -744,7 +744,7 @@ function ppts(n,r,cx,cy){
 }
 function drawRadar(id,flavors,type,sz,over){
   const svg=document.getElementById(id);if(!svg)return;
-  const cx=sz/2,cy=sz/2,R=sz/2-34,n=FL.length;let h='';
+  const cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
   for(let l=1;l<=5;l++){
     const rr=(R/5)*l;
     h+=`<polygon points="${ppts(n,rr,cx,cy)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
@@ -752,7 +752,7 @@ function drawRadar(id,flavors,type,sz,over){
   FL.forEach((f,i)=>{
     const a=(Math.PI*2*i/n)-Math.PI/2;
     h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;
-    const lx=cx+(R+18)*Math.cos(a),ly=cy+(R+18)*Math.sin(a);
+    const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);
     const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';
     h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${sz<230?'7':'7.5'}" fill="rgba(106,102,88,0.9)" font-family="JetBrains Mono,monospace" letter-spacing="0.05em">${f.l.toUpperCase()}</text>`;
   });
@@ -817,7 +817,7 @@ function rCompare(){
         <div class="cmp-score">${r.score}</div>
       </div>
       <div class="cmp-body">
-        <svg id="cr_${w.id}" viewBox="0 0 200 200" width="200" height="200" xmlns="http://www.w3.org/2000/svg"></svg>
+        <svg id="cr_${w.id}" viewBox="-20 -20 240 240" width="200" height="200" xmlns="http://www.w3.org/2000/svg"></svg>
         ${r.notes?`<div class="cmp-note">${r.notes}</div>`:''}
       </div>
     </div>`;
@@ -826,7 +826,7 @@ function rCompare(){
     h+=`<div class="label">overlay</div>
     <div class="overlay-panel">
       <div style="display:flex;justify-content:center">
-        <svg id="overlayR" viewBox="0 0 240 240" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+        <svg id="overlayR" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
       </div>
       <div class="legend" id="leg"></div>
     </div>`;
@@ -839,12 +839,12 @@ function rCompare(){
 function drawOverlay(wines){
   const svg=document.getElementById('overlayR'),leg=document.getElementById('leg');
   if(!svg)return;
-  const sz=240,cx=sz/2,cy=sz/2,R=sz/2-34,n=FL.length;let h='';
+  const sz=240,cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
   for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
   FL.forEach((f,i)=>{
     const a=(Math.PI*2*i/n)-Math.PI/2;
     h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;
-    const lx=cx+(R+18)*Math.cos(a),ly=cy+(R+18)*Math.sin(a);
+    const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);
     const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';
     h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="rgba(106,102,88,0.8)" font-family="JetBrains Mono,monospace" letter-spacing="0.05em">${f.l.toUpperCase()}</text>`;
   });
