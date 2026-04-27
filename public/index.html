@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>VERRE — Wine Tasting OS</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root {
   --bg:#0E0E0C;--bg2:#141410;--bg3:#1A1A16;--bg4:#202019;
@@ -103,6 +104,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;bac
 .lobby-shell{width:min(100%,1040px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,420px);gap:18px;align-items:start;min-height:100%;}
 .lobby-card{border:1px solid rgba(255,255,255,0.06);border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015));padding:22px;box-shadow:0 18px 50px rgba(0,0,0,0.26);}
 .lobby-form{background:rgba(12,12,10,0.78);backdrop-filter:blur(16px);}
+.lobby-primary{order:2;}
+.lobby-secondary{order:1;}
 .lobby-badge{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid rgba(143,184,122,0.2);background:rgba(143,184,122,0.08);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--accent2);}
 .lobby-title{font-family:var(--serif);font-style:italic;font-size:clamp(44px,10vw,82px);line-height:0.88;color:#F3E9D3;margin-top:14px;max-width:8ch;}
 .lobby-copy{font-size:13px;color:#A8A18F;line-height:1.8;max-width:48ch;margin-top:16px;}
@@ -146,6 +149,16 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;bac
 .fi{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:3px;padding:12px 13px;font-family:var(--mono);font-size:13px;color:var(--fg);outline:none;transition:border-color .15s;}
 .fi::placeholder{color:var(--fg-faint);}.fi:focus{border-color:var(--accent2);}
 .row2{display:flex;gap:8px;}.row2 .field{flex:1;}
+.invite-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin:14px 0 16px;}
+.invite-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
+.invite-url{display:block;width:100%;padding:12px 13px;border:1px solid var(--border2);border-radius:12px;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:11px;line-height:1.5;word-break:break-all;text-decoration:none;}
+.invite-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+.btn-s{padding:12px 10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-dim);cursor:pointer;}
+.btn-s:active{border-color:var(--accent);color:var(--accent);}
+.qr-wrap{display:flex;justify-content:center;align-items:center;min-height:180px;margin-top:14px;padding:12px;border:1px dashed rgba(255,255,255,0.08);border-radius:16px;background:rgba(8,8,7,0.24);}
+.qr-wrap img{display:block;max-width:100%;height:auto;padding:10px;background:#fff;border-radius:12px;}
+.qr-wrap table{background:#fff;padding:10px;border-radius:12px;}
+.qr-empty{font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--fg-faint);text-align:center;line-height:1.8;}
 
 /* CHIPS */
 .chips{display:flex;gap:6px;flex-wrap:wrap;}
@@ -231,10 +244,17 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
 
 @media (max-width:780px){
   .lobby-shell{grid-template-columns:1fr;}
+  .lobby-primary{order:1;}
+  .lobby-secondary{order:2;}
+  .lobby-card{padding:18px;}
+  .lobby-title{font-size:34px;max-width:none;}
+  .lobby-copy{font-size:12px;line-height:1.6;}
+  .feature-list{margin-top:16px;}
   .hero-grid{grid-template-columns:1fr;}
   .feature-list{grid-template-columns:1fr;}
   .subhead{display:block;}
   .subhead-copy{margin-top:6px;}
+  .invite-actions{grid-template-columns:1fr;}
 }
 
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
@@ -289,7 +309,30 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
   <!-- LOBBY (no session yet) -->
   <div class="screen active" id="scr-lobby">
     <div class="lobby-shell">
-      <div class="lobby-card">
+      <div class="lobby-card lobby-form lobby-primary">
+        <div class="hero-kicker">Start or join</div>
+        <div class="subhead" style="margin:0 0 18px;">
+          <div class="subhead-title">Open the table</div>
+          <div class="subhead-copy">Use a first name or alias. Enter a code if someone already started the session.</div>
+        </div>
+
+        <div class="field">
+          <div class="fl">your name</div>
+          <input class="fi" id="lobbyName" type="text" placeholder="firstname or alias">
+        </div>
+
+        <button class="btn-p" onclick="createSession()" style="margin-bottom:8px;">→ create new tasting</button>
+
+        <div class="lobby-divider">or join an existing room</div>
+
+        <div class="field">
+          <div class="fl">session code</div>
+          <input class="fi" id="lobbyCode" type="text" placeholder="e.g. A3F7" maxlength="4" style="text-transform:uppercase;text-align:center;font-size:18px;letter-spacing:0.3em;">
+        </div>
+        <button class="btn-g" onclick="joinSession()">→ join session</button>
+      </div>
+
+      <div class="lobby-card lobby-secondary">
         <div class="lobby-badge">Live tasting room</div>
         <div class="lobby-title">Taste together, compare honestly.</div>
         <div class="lobby-copy">Run a shared bottle list, keep every palate private, and turn the session into a clean tasting report when the table is done.</div>
@@ -315,29 +358,6 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
             <div class="feature-copy">Generate an A4 tasting sheet for the cellar, the club, or the next buying round.</div>
           </div>
         </div>
-      </div>
-
-      <div class="lobby-card lobby-form">
-        <div class="hero-kicker">Start or join</div>
-        <div class="subhead" style="margin:0 0 18px;">
-          <div class="subhead-title">Open the table</div>
-          <div class="subhead-copy">Use a first name or alias. The session code is four characters and shareable.</div>
-        </div>
-
-        <div class="field">
-          <div class="fl">your name</div>
-          <input class="fi" id="lobbyName" type="text" placeholder="firstname or alias">
-        </div>
-
-        <button class="btn-p" onclick="createSession()" style="margin-bottom:8px;">→ create new tasting</button>
-
-        <div class="lobby-divider">or join an existing room</div>
-
-        <div class="field">
-          <div class="fl">session code</div>
-          <input class="fi" id="lobbyCode" type="text" placeholder="e.g. A3F7" maxlength="4" style="text-transform:uppercase;text-align:center;font-size:18px;letter-spacing:0.3em;">
-        </div>
-        <button class="btn-g" onclick="joinSession()">→ join session</button>
       </div>
     </div>
   </div>
@@ -435,6 +455,16 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
     <div class="sheet-title">Session <span class="sheet-title-tag" id="sessCodeTag"></span></div>
     <div class="field"><div class="fl">your name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
     <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:16px;line-height:1.6;"></div>
+    <div class="invite-box">
+      <div class="fl">invite link</div>
+      <div class="invite-copy">Share the link or let people scan the QR code to land directly on this session code.</div>
+      <a class="invite-url" id="inviteUrl" href="#" target="_blank" rel="noopener"></a>
+      <div class="invite-actions">
+        <button class="btn-s" onclick="copyInviteLink()">copy link</button>
+        <button class="btn-s" id="shareInviteBtn" onclick="shareInvite()">share</button>
+      </div>
+      <div class="qr-wrap" id="qrWrap"><div class="qr-empty">qr loading</div></div>
+    </div>
     <button class="btn-p" onclick="updateName()">→ update name</button>
     <button class="btn-g" onclick="leaveSession()">leave session</button>
     <button class="btn-g" onclick="closeSess()">close</button>
@@ -472,6 +502,11 @@ function persist(){
   sessionStorage.setItem('vr_user',S.user);
   sessionStorage.setItem('vr_code',S.code);
 }
+function inviteUrl(){
+  const url=new URL(window.location.href);
+  url.searchParams.set('join',S.code);
+  return url.toString();
+}
 
 // ── API helpers ───────────────────────────────
 const api = (path,opts={}) => fetch('/api'+path,{
@@ -503,11 +538,15 @@ async function joinSession(){
 }
 
 function enterSession(){
+  const url=new URL(window.location.href);
+  url.searchParams.set('join',S.code);
+  window.history.replaceState({},'',url);
   document.getElementById('scr-lobby').style.display='none';
   document.getElementById('mainNav').style.display='flex';
   document.getElementById('codePill').style.display='flex';
   document.getElementById('codeText').textContent=S.code;
   updateWho();
+  syncInviteUI();
   tab('wines');
   // start polling
   pollInterval=setInterval(refresh,5000);
@@ -520,6 +559,9 @@ function leaveSession(){
   document.getElementById('mainNav').style.display='none';
   document.getElementById('codePill').style.display='none';
   closeSess();
+  const url=new URL(window.location.href);
+  url.searchParams.delete('join');
+  window.history.replaceState({},'',url);
   // show lobby
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   document.getElementById('scr-lobby').style.display='block';
@@ -553,6 +595,7 @@ async function openSess(){
   if(!S.code) return;
   document.getElementById('sN').value=S.user;
   document.getElementById('sessCodeTag').textContent=S.code;
+  syncInviteUI();
   try{
     const info=await api(`/session/${S.code}`);
     document.getElementById('sessParticipants').innerHTML=
@@ -571,6 +614,59 @@ function updateWho(){document.getElementById('whoName').textContent=S.user||'ano
 function copyCode(){
   navigator.clipboard?.writeText(S.code);
   toast('code copied: '+S.code);
+}
+function syncInviteUI(){
+  if(!S.code) return;
+  const url=inviteUrl();
+  const inviteEl=document.getElementById('inviteUrl');
+  inviteEl.textContent=url;
+  inviteEl.href=url;
+  document.getElementById('shareInviteBtn').style.display=navigator.share?'block':'none';
+  renderInviteQr(url);
+}
+function renderInviteQr(url){
+  const wrap=document.getElementById('qrWrap');
+  wrap.innerHTML='';
+  if(typeof QRCode==='undefined'){
+    wrap.innerHTML='<div class="qr-empty">qr unavailable</div>';
+    return;
+  }
+  new QRCode(wrap,{
+    text:url,
+    width:156,
+    height:156,
+    colorDark:'#111111',
+    colorLight:'#FFFFFF',
+    correctLevel:QRCode.CorrectLevel.M
+  });
+}
+async function copyInviteLink(){
+  if(!S.code) return;
+  if(!navigator.clipboard?.writeText){toast('could not copy link');return;}
+  try{
+    await navigator.clipboard.writeText(inviteUrl());
+    toast('invite link copied');
+  }catch(e){toast('could not copy link');}
+}
+async function shareInvite(){
+  if(!S.code) return;
+  if(!navigator.share){toast('share not available here');return;}
+  try{
+    await navigator.share({
+      title:'Join my Verre tasting',
+      text:`Join my Verre tasting session with code ${S.code}.`,
+      url:inviteUrl(),
+    });
+  }catch(e){}
+}
+function applyJoinCodeFromUrl(){
+  const code=new URL(window.location.href).searchParams.get('join');
+  if(!code) return;
+  const clean=code.trim().toUpperCase().slice(0,4);
+  if(clean){
+    document.getElementById('lobbyCode').value=clean;
+    toast('invite loaded');
+  }
 }
 
 // ── TABS ──────────────────────────────────────
@@ -937,6 +1033,7 @@ let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout
 ['addModal','sessModal'].forEach(id=>{document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)document.getElementById(id).classList.remove('open');});});
 
 // ── INIT ──────────────────────────────────────
+applyJoinCodeFromUrl();
 if(S.code && S.user){
   // rejoin existing session
   document.getElementById('lobbyName').value=S.user;
