@@ -313,6 +313,39 @@ app.delete('/api/session/:code/wines/:wineId', async (req, res) => {
   res.json({ ok: true });
 });
 
+// POST /api/session/:code/wines/:wineId/bookmark — save wine to account
+app.post('/api/session/:code/wines/:wineId/bookmark', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'authentication required' });
+  const c = req.params.code.toUpperCase();
+  const { wineId } = req.params;
+  const wines = JSON.parse(await redis.get(k.wines(c)) || '[]');
+  const wine = wines.find(w => w.id === wineId);
+  if (!wine) return res.status(404).json({ error: 'wine not found' });
+  try {
+    const meta = JSON.parse(await redis.get(k.meta(c)) || '{}');
+    await pgUpsertSession(c, meta);
+    await pgUpsertWine(c, wine);
+    await pool.query(
+      `INSERT INTO bookmarks (user_id, wine_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+      [req.user.userId, wineId]
+    );
+    res.json({ ok: true, bookmarked: true });
+  } catch (err) {
+    console.error('bookmark error:', err);
+    res.status(500).json({ error: 'failed to bookmark wine' });
+  }
+});
+
+// DELETE /api/session/:code/wines/:wineId/bookmark — remove bookmark
+app.delete('/api/session/:code/wines/:wineId/bookmark', async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: 'authentication required' });
+  await pool.query(
+    `DELETE FROM bookmarks WHERE user_id = $1 AND wine_id = $2`,
+    [req.user.userId, req.params.wineId]
+  );
+  res.json({ ok: true, bookmarked: false });
+});
+
 // POST /api/session/:code/rate — submit a rating
 app.post('/api/session/:code/rate', async (req, res) => {
   const c = req.params.code.toUpperCase();

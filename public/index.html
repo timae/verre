@@ -699,6 +699,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" type="button" onclick="openSess()">share a glass</button>
       </div>
       <button class="btn-p" onclick="saveRating()">→ commit rating</button>
+      <button class="btn-g" id="bookmarkBtn" onclick="toggleBookmark()" style="display:none"></button>
       <button class="btn-g" onclick="goBack()">cancel</button>
       <button class="btn-g" onclick="resetRating()">⌫ reset my rating</button>
       <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
@@ -833,6 +834,7 @@ let S={
   cmpUser: '__me',  // compare view: show my ratings or a specific user
   authToken: localStorage.getItem('vr_token')||'',
   authUser: null,   // {id, name, email, role, pro}
+  bookmarks: new Set(), // wine IDs bookmarked by this user
 };
 let cScore=0, cFl={};
 let theme=localStorage.getItem('vr_theme') || 'dark';
@@ -1590,6 +1592,7 @@ function openDetail(id,from){
     hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.image}" alt="${w.name}"></div>`);
   }
   buildStars();buildSliders();drawRadar('mainRadar',cFl,w.type,240);
+  updateBookmarkBtn();
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   const scr=document.getElementById('scr-detail');
   scr.style.display='block';scr.classList.remove('in');void scr.offsetWidth;scr.classList.add('in');
@@ -1907,7 +1910,7 @@ async function authLogin(){
     S.authToken=body.token;S.authUser=body.user;
     localStorage.setItem('vr_token',body.token);
     toast('welcome back, '+body.user.name);
-    updateAuthUI();
+    updateAuthUI();loadBookmarks();
     if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
   }catch(err){console.error('authLogin:',err);toast('login failed — check console');}
 }
@@ -1924,7 +1927,7 @@ async function authRegister(){
     S.authToken=body.token;S.authUser=body.user;
     localStorage.setItem('vr_token',body.token);
     toast('account created — welcome, '+body.user.name);
-    updateAuthUI();
+    updateAuthUI();loadBookmarks();
     if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
   }catch(err){console.error('authRegister:',err);toast('registration failed — check console');}
 }
@@ -1941,7 +1944,36 @@ async function initAuth(){
     if(!res.ok){S.authToken='';localStorage.removeItem('vr_token');return;}
     S.authUser=await res.json();
     updateAuthUI();
+    loadBookmarks();
   }catch{S.authToken='';localStorage.removeItem('vr_token');}
+}
+
+// ── BOOKMARKS ─────────────────────────────────
+function updateBookmarkBtn(){
+  const btn=document.getElementById('bookmarkBtn');
+  if(!btn)return;
+  if(!S.authUser){btn.style.display='none';return;}
+  const saved=S.bookmarks.has(S.curId);
+  btn.style.display='';
+  btn.textContent=saved?'★ saved':'☆ save wine';
+}
+async function loadBookmarks(){
+  if(!S.authUser)return;
+  try{
+    const entries=await api('/me/bookmarks');
+    S.bookmarks=new Set(entries.map(e=>e.wine_id));
+  }catch{}
+}
+async function toggleBookmark(){
+  if(!S.authUser){toast('sign in to save wines');return;}
+  const saved=S.bookmarks.has(S.curId);
+  const method=saved?'DELETE':'POST';
+  try{
+    await api(`/session/${S.code}/wines/${S.curId}/bookmark`,{method});
+    if(saved){S.bookmarks.delete(S.curId);toast('removed from saved wines');}
+    else{S.bookmarks.add(S.curId);toast('wine saved to your account');}
+    updateBookmarkBtn();
+  }catch{toast('could not save wine');}
 }
 
 // ── RESET RATING ──────────────────────────────

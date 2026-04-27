@@ -48,4 +48,25 @@ router.get('/ratings', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/me/bookmarks — all saved wines
+router.get('/bookmarks', requireAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT b.saved_at, w.id AS wine_id, w.name, w.producer, w.vintage,
+              w.style, w.category, w.image_url, w.purchase_url,
+              s.code AS session_code
+       FROM bookmarks b
+       JOIN wines w ON w.id = b.wine_id
+       JOIN sessions s ON s.id = w.session_id
+       WHERE b.user_id = $1
+       ORDER BY b.saved_at DESC`,
+      [req.user.userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('me/bookmarks error:', err);
+    res.status(500).json({ error: 'failed to fetch bookmarks' });
+  }
+});
+
 module.exports = router;

@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS ratings (
   UNIQUE (wine_id, rater_name)
 );
 
+CREATE TABLE IF NOT EXISTS bookmarks (
+  id       SERIAL PRIMARY KEY,
+  user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  wine_id  VARCHAR(20) NOT NULL REFERENCES wines(id) ON DELETE CASCADE,
+  saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, wine_id)
+);
+
 CREATE TABLE IF NOT EXISTS hall_of_fame (
   id           SERIAL PRIMARY KEY,
   wine_name    VARCHAR(255) NOT NULL,
