@@ -1,0 +1,13 @@
+{
+  "name": "verre",
+  "version": "2.2.0",
+  "description": "Wine tasting OS — shared sessions, radar profiles, PDF export",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "redis": "^4.7.0"
+  }
+}
