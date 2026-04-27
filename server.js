@@ -1,11 +1,19 @@
 const express = require('express');
+const multer = require('multer');
 const { createClient } = require('redis');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs/promises');
+const os = require('os');
+const { spawn } = require('child_process');
 
 const app = express();
 app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+});
 
 // ── Redis ────────────────────────────────────
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -39,6 +47,113 @@ async function touch(code) {
   // refresh TTL on all keys for this session
   const keys = await redis.keys(`s:${code}:*`);
   for (const key of keys) await redis.expire(key, TTL);
+}
+
+function normalizeWineText(raw) {
+  return String(raw || '')
+    .replace(/[|]/g, 'I')
+    .replace(/[{}[\]()<>]/g, ' ')
+    .replace(/[•·]/g, ' ')
+    .replace(/[_~`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function scoreWineLine(line) {
+  const clean = normalizeWineText(line);
+  if (!clean) return -1;
+  const letters = (clean.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+  const digits = (clean.match(/\d/g) || []).length;
+  const junk = (clean.match(/[^A-Za-zÀ-ÿ0-9 '&.-]/g) || []).length;
+  const lengthScore = Math.max(0, 22 - Math.abs(clean.length - 18));
+  return letters * 2 - digits * 2 - junk * 4 + lengthScore;
+}
+
+function parseWineText(rawLines) {
+  const lines = rawLines
+    .map(line => normalizeWineText(line))
+    .filter(Boolean);
+  const text = lines.join(' ');
+  const yearMatch = text.match(/\b(19|20)\d{2}\b/);
+  const upper = text.toUpperCase();
+  const skip = /^(WINE|VIN|PRODUCE OF|PRODUCT OF|CONTAINS|ALC|VOL|750ML|75CL|ESTATE BOTTLED)$/i;
+  const filtered = lines
+    .filter(line => line.length > 2 && line.length < 50 && !skip.test(line))
+    .filter(line => {
+      const letters = (line.match(/[A-Za-zÀ-ÿ]/g) || []).length;
+      const junk = (line.match(/[^A-Za-zÀ-ÿ0-9 '&.-]/g) || []).length;
+      return letters >= 2 && junk <= Math.max(2, Math.floor(line.length * 0.12));
+    });
+
+  const titleLines = filtered
+    .filter(line => !/^\d+$/.test(line) && !/\b(19|20)\d{2}\b/.test(line))
+    .sort((a, b) => scoreWineLine(b) - scoreWineLine(a))
+    .slice(0, 3)
+    .sort((a, b) => lines.indexOf(a) - lines.indexOf(b));
+
+  const name = titleLines.length
+    ? titleLines.join(' ').replace(/\s{2,}/g, ' ').trim()
+    : (filtered[0] || '');
+  const producer = filtered.find(line =>
+    line !== name && !name.includes(line) && !/\b(19|20)\d{2}\b/.test(line) && line.length > 4
+  ) || '';
+
+  const grapeKeywords = ['PINOT NOIR', 'CHARDONNAY', 'RIESLING', 'MERLOT', 'CABERNET', 'SYRAH', 'SHIRAZ', 'SAUVIGNON', 'MALBEC', 'TEMPRANILLO', 'CHENIN', 'GAMAY', 'NEBBIOLO', 'SANGIOVESE', 'PET-NAT', 'PET NAT', 'CUVEE', 'BRUT', 'ROSE'];
+  const grape = grapeKeywords.find(k => upper.includes(k)) || '';
+
+  let type = 'unknown';
+  if (/\bROSE\b|\bROSÉ\b/.test(upper)) type = 'rose';
+  else if (/\bBRUT\b|\bCHAMPAGNE\b|\bSPARKLING\b|\bCREMANT\b|\bCAVA\b|\bPROSECCO\b|\bPET NAT\b|\bPET-NAT\b/.test(upper)) type = 'spark';
+  else if (/\bBLANC\b|\bBIANCO\b|\bWHITE\b|\bCHARDONNAY\b|\bRIESLING\b|\bSAUVIGNON BLANC\b|\bCHENIN\b/.test(upper)) type = 'white';
+  else if (/\bRED\b|\bROUGE\b|\bROSSO\b|\bPINOT NOIR\b|\bMERLOT\b|\bCABERNET\b|\bMALBEC\b|\bSYRAH\b|\bSHIRAZ\b|\bTEMPRANILLO\b|\bSANGIOVESE\b|\bNEBBIOLO\b/.test(upper)) type = 'red';
+
+  return {
+    name,
+    producer,
+    vintage: yearMatch ? yearMatch[0] : '',
+    grape,
+    type,
+    notes: filtered.slice(0, 6).join(' • '),
+  };
+}
+
+async function runPaddleOcr(file) {
+  const ext = file.mimetype === 'image/png' ? '.png' : '.jpg';
+  const tmpPath = path.join(os.tmpdir(), `verre-ocr-${Date.now()}${ext}`);
+  await fs.writeFile(tmpPath, file.buffer);
+
+  try {
+    const payload = await new Promise((resolve, reject) => {
+      const child = spawn('python3', [path.join(__dirname, 'ocr_extract.py'), tmpPath], {
+        cwd: __dirname,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', code => {
+        if (code !== 0) {
+          reject(new Error(stderr || `ocr process exited with ${code}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+
+    const rawLines = (payload.lines || []).map(item => item.text).filter(Boolean);
+    return {
+      ...parseWineText(rawLines),
+      lines: rawLines,
+    };
+  } finally {
+    await fs.unlink(tmpPath).catch(() => {});
+  }
 }
 
 function sanitizeImageDataUrl(value) {
@@ -129,6 +244,23 @@ app.post('/api/session/:code/wines', async (req, res) => {
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
   await touch(c);
   res.json(wine);
+});
+
+// POST /api/session/:code/wines/extract-label — extract bottle info via local PaddleOCR
+app.post('/api/session/:code/wines/extract-label', upload.single('image'), async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const meta = await redis.get(k.meta(c));
+  if (!meta) return res.status(404).json({ error: 'not found' });
+  if (!req.file) return res.status(400).json({ error: 'image required' });
+
+  try {
+    const extracted = await runPaddleOcr(req.file);
+    await touch(c);
+    res.json(extracted);
+  } catch (err) {
+    console.error('label extraction failed:', err);
+    res.status(502).json({ error: 'label extraction failed' });
+  }
 });
 
 // DELETE /api/session/:code/wines/:wineId — delete a wine

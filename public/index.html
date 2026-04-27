@@ -6,7 +6,6 @@
 <title>VERRE — Wine Tasting OS</title>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 :root {
   --bg:#0E0E0C;--bg2:#141410;--bg3:#1A1A16;--bg4:#202019;
@@ -533,7 +532,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" type="button" onclick="pickBottlePhoto()">choose photo</button>
         <button class="btn-s" type="button" onclick="scanBottleLabel()">read label</button>
       </div>
-      <div class="photo-status" id="photoStatus">manual entry and local label scan both work here.</div>
+      <div class="photo-status" id="photoStatus">manual entry and PaddleOCR label scan both work here.</div>
       <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="handleBottlePhoto(event)">
     </div>
     <div class="field"><div class="fl">name *</div><input class="fi" id="aN" type="text" placeholder="Château de Whatever, 2019"></div>
@@ -898,57 +897,25 @@ async function handleBottlePhoto(event){
   empty.style.display='none';
   setPhotoStatus('photo attached. you can add manually or scan the label from this image.');
 }
-function normalizeWineText(raw){
-  return raw
-    .replace(/[|]/g,'I')
-    .replace(/\s+/g,' ')
-    .trim();
-}
-function parseWineText(raw){
-  const text=normalizeWineText(raw);
-  const lines=raw.split('\n').map(l=>normalizeWineText(l)).filter(Boolean);
-  const yearMatch=text.match(/\b(19|20)\d{2}\b/);
-  const upper=text.toUpperCase();
-  const skip=/^(WINE|VIN|PRODUCE OF|PRODUCT OF|CONTAINS|ALC|VOL|750ML|75CL|ESTATE BOTTLED)$/i;
-  const candidates=lines.filter(line=>line.length>2 && line.length<50 && !skip.test(line));
-  const name=candidates[0] || '';
-  const producer=candidates.find(line=>line!==name && !/\b(19|20)\d{2}\b/.test(line)) || '';
-  const grapeKeywords=['PINOT NOIR','CHARDONNAY','RIESLING','MERLOT','CABERNET','SYRAH','SHIRAZ','SAUVIGNON','MALBEC','TEMPRANILLO','CHENIN','GAMAY','NEBBIOLO','SANGIOVESE','PET-NAT','PET NAT','CUVEE','BRUT','ROSE'];
-  const grape=grapeKeywords.find(k=>upper.includes(k)) || '';
-  let type='unknown';
-  if (/\bROSE\b|\bROSÉ\b/.test(upper)) type='rose';
-  else if (/\bBRUT\b|\bCHAMPAGNE\b|\bSPARKLING\b|\bCREMANT\b|\bCAVA\b|\bPROSECCO\b|\bPET NAT\b|\bPET-NAT\b/.test(upper)) type='spark';
-  else if (/\bBLANC\b|\bBIANCO\b|\bWHITE\b|\bCHARDONNAY\b|\bRIESLING\b|\bSAUVIGNON BLANC\b|\bCHENIN\b/.test(upper)) type='white';
-  else if (/\bRED\b|\bROUGE\b|\bROSSO\b|\bPINOT NOIR\b|\bMERLOT\b|\bCABERNET\b|\bMALBEC\b|\bSYRAH\b|\bSHIRAZ\b|\bTEMPRANILLO\b|\bSANGIOVESE\b|\bNEBBIOLO\b/.test(upper)) type='red';
-  return {
-    name,
-    producer,
-    vintage: yearMatch ? yearMatch[0] : '',
-    grape,
-    type,
-    notes: lines.slice(0,6).join(' • ')
-  };
-}
 async function scanBottleLabel(){
   if(!addPhotoFile){
     pickBottlePhoto();
     setPhotoStatus('choose a bottle photo first, then tap read label again.');
     return;
   }
-  if(!window.Tesseract){
-    setPhotoStatus('local OCR is unavailable in this browser.','err');
-    return;
-  }
-  setPhotoStatus('reading label locally…','busy');
+  const form=new FormData();
+  form.append('image',addPhotoFile);
+  setPhotoStatus('reading label with PaddleOCR…','busy');
   try{
-    const { data } = await Tesseract.recognize(addPhotoDataUrl,'eng');
-    const parsed=parseWineText(data.text || '');
+    const res=await fetch(`/api/session/${S.code}/wines/extract-label`,{method:'POST',body:form});
+    const parsed=await res.json();
+    if(!res.ok) throw new Error(parsed.error || 'label extraction failed');
     if(parsed.name) document.getElementById('aN').value=parsed.name;
     if(parsed.producer) document.getElementById('aP').value=parsed.producer;
     if(parsed.vintage) document.getElementById('aV').value=parsed.vintage;
     if(parsed.grape) document.getElementById('aG').value=parsed.grape;
     if(parsed.type && parsed.type!=='unknown') sel(parsed.type);
-    setPhotoStatus(parsed.notes ? `scanned text: ${parsed.notes}` : 'scan complete. check the fields before saving.');
+    setPhotoStatus(parsed.notes ? `scan complete: ${parsed.notes}` : 'scan complete. check the fields before saving.');
   }catch(err){
     setPhotoStatus(err.message || 'could not read label','err');
   }
