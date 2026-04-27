@@ -740,12 +740,39 @@ body[data-theme="light"]::before{opacity:0.35;}
 
   <!-- COMPARE -->
   <div class="screen" id="scr-compare"><div class="screen-shell"><div id="cmpInner"></div></div></div>
+
+  <!-- SAVED WINES -->
+  <div class="screen" id="scr-saved">
+    <div class="screen-shell">
+      <div class="subhead">
+        <div class="subhead-title">Saved wines</div>
+        <div class="subhead-copy">Wines you've bookmarked across all sessions</div>
+      </div>
+      <div id="savedList"></div>
+    </div>
+  </div>
+
+  <!-- PREVIOUS SESSIONS -->
+  <div class="screen" id="scr-history">
+    <div class="screen-shell">
+      <div class="subhead">
+        <div class="subhead-title">My sessions</div>
+        <div class="subhead-copy">Your tasting history</div>
+      </div>
+      <div id="historyList"></div>
+    </div>
+  </div>
 </div>
 
 <nav class="nav" id="mainNav" style="display:none">
+  <!-- session nav -->
   <div class="nav-item active" id="nav-wines" onclick="tab('wines')"><span class="ni">🍷</span><span>Wines</span></div>
   <div class="nav-item" id="nav-rate" onclick="tab('rate')"><span class="ni">⭐</span><span>Rate</span></div>
   <div class="nav-item" id="nav-compare" onclick="tab('compare')"><span class="ni">◈</span><span>Compare</span></div>
+  <!-- dashboard nav (logged in, no session) -->
+  <div class="nav-item" id="nav-new" style="display:none" onclick="showLobby()"><span class="ni">＋</span><span>New tasting</span></div>
+  <div class="nav-item" id="nav-saved" style="display:none" onclick="tab('saved')"><span class="ni">★</span><span>Saved</span></div>
+  <div class="nav-item" id="nav-history" style="display:none" onclick="tab('history')"><span class="ni">◷</span><span>History</span></div>
 </nav>
 
 <!-- ADD WINE MODAL -->
@@ -1070,19 +1097,35 @@ async function joinSession(){
   }catch(e){toast('session not found');}
 }
 
+function showSessionNav(){
+  ['nav-wines','nav-rate','nav-compare'].forEach(id=>document.getElementById(id).style.display='');
+  ['nav-new','nav-saved','nav-history'].forEach(id=>document.getElementById(id).style.display='none');
+  document.getElementById('mainNav').style.display='flex';
+}
+function showDashboardNav(){
+  ['nav-wines','nav-rate','nav-compare'].forEach(id=>document.getElementById(id).style.display='none');
+  ['nav-new','nav-saved','nav-history'].forEach(id=>document.getElementById(id).style.display='');
+  document.getElementById('mainNav').style.display='flex';
+}
+function showLobby(){
+  document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
+  document.getElementById('scr-lobby').style.display='block';
+  if(S.authUser) showDashboardNav();
+  else document.getElementById('mainNav').style.display='none';
+}
+
 function enterSession(){
   const url=new URL(window.location.href);
   url.searchParams.set('join',S.code);
   window.history.replaceState({},'',url);
   document.getElementById('scr-lobby').style.display='none';
-  document.getElementById('mainNav').style.display='flex';
+  showSessionNav();
   document.getElementById('codePill').style.display='flex';
   document.getElementById('shareBtn').style.display='flex';
   document.getElementById('codeText').textContent=S.code;
   updateWho();
   syncInviteUI();
   tab('wines');
-  // start polling
   pollInterval=setInterval(refresh,5000);
   refresh();
 }
@@ -1090,16 +1133,16 @@ function enterSession(){
 function leaveSession(){
   S.code='';persist();
   clearInterval(pollInterval);
-  document.getElementById('mainNav').style.display='none';
   document.getElementById('codePill').style.display='none';
   document.getElementById('shareBtn').style.display='none';
   closeSess();
   const url=new URL(window.location.href);
   url.searchParams.delete('join');
   window.history.replaceState({},'',url);
-  // show lobby
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   document.getElementById('scr-lobby').style.display='block';
+  if(S.authUser) showDashboardNav();
+  else document.getElementById('mainNav').style.display='none';
 }
 
 // ── REFRESH / POLL ────────────────────────────
@@ -1284,11 +1327,75 @@ function tab(t){
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const scr=document.getElementById('scr-'+t);
+  if(!scr) return;
   scr.style.display='block';scr.classList.remove('in');void scr.offsetWidth;scr.classList.add('in');
-  document.getElementById('nav-'+t).classList.add('active');
+  const navEl=document.getElementById('nav-'+t);
+  if(navEl) navEl.classList.add('active');
   if(t==='wines') rWines();
   if(t==='rate') rRate();
   if(t==='compare') rCompare();
+  if(t==='saved') rSaved();
+  if(t==='history') rHistory();
+}
+
+async function rSaved(){
+  const el=document.getElementById('savedList');
+  if(!el) return;
+  if(!S.authUser){el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;padding:24px 0;">Sign in to see your saved wines.</div>';return;}
+  el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">loading…</div>';
+  try{
+    const items=await api('/me/bookmarks');
+    if(!items.length){el.innerHTML='<div style="color:var(--fg-dim);font-size:13px);padding:12px 0;">No saved wines yet — tap ☆ on any wine detail screen to save a bottle.</div>';return;}
+    el.innerHTML=`<div class="wine-stack">${items.map(b=>{
+      const meta=[LBL[b.style]||b.style,b.producer,b.vintage].filter(Boolean).join(' · ');
+      const imgHtml=b.image_url?`<img style="width:38px;height:38px;object-fit:cover;border-radius:8px;flex-shrink:0;" src="${b.image_url}" alt="">`:
+        `<div style="width:38px;height:38px;border-radius:8px;background:var(--bg3);flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:18px;">${ICO[b.style]||'🍷'}</div>`;
+      return `<div class="wine-card" style="border-radius:14px;">
+        ${imgHtml}
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:700;font-size:13px;">${b.name}</div>
+          ${meta?`<div style="font-size:11px;color:var(--fg-dim);margin-top:2px;">${meta}</div>`:''}
+          <div style="font-size:10px;color:var(--fg-faint);margin-top:2px;">session ${b.session_code}</div>
+        </div>
+      </div>`;
+    }).join('')}</div>`;
+  }catch{el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">Could not load saved wines.</div>';}
+}
+
+async function rHistory(){
+  const el=document.getElementById('historyList');
+  if(!el) return;
+  if(!S.authUser){el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;padding:24px 0;">Sign in to see your tasting history.</div>';return;}
+  el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">loading…</div>';
+  try{
+    const [sessions, ratings]=await Promise.all([api('/me/sessions'),api('/me/ratings')]);
+    if(!sessions.length){el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;padding:12px 0;">No history yet — your sessions will appear here once you rate wines while signed in.</div>';return;}
+    const ratingsBySession={};
+    ratings.forEach(r=>{if(!ratingsBySession[r.session_code])ratingsBySession[r.session_code]=[];ratingsBySession[r.session_code].push(r);});
+    el.innerHTML=sessions.map(s=>{
+      const date=new Date(s.created_at).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
+      const hoursAgo=(Date.now()-new Date(s.created_at).getTime())/(1000*60*60);
+      const canRejoin=hoursAgo<47;
+      const wines=(ratingsBySession[s.code]||[]);
+      const wineList=wines.slice(0,5).map(r=>
+        `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--bg3);">
+          <div style="font-size:12px;font-weight:600;">${r.wine_name}${r.producer?` <span style="font-weight:400;color:var(--fg-dim);">· ${r.producer}</span>`:''}</div>
+          <div style="font-size:12px;color:var(--accent);font-weight:700;flex-shrink:0;">${r.score}★</div>
+        </div>`
+      ).join('');
+      return `<div class="panel" style="margin-bottom:10px;border-radius:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <div>
+            <div style="font-weight:700;font-size:14px;">Session ${s.code}</div>
+            <div style="font-size:11px;color:var(--fg-dim);margin-top:2px;">${date} · hosted by ${s.host_name} · ${wines.length} wine${wines.length!==1?'s':''} rated</div>
+          </div>
+          ${canRejoin?`<button class="btn-s" onclick="lobbyRejoinSession('${s.code}')">→ rejoin</button>`:''}
+        </div>
+        ${wineList}
+        ${wines.length>5?`<div style="font-size:10px;color:var(--fg-dim);margin-top:6px;">+${wines.length-5} more</div>`:''}
+      </div>`;
+    }).join('');
+  }catch(err){console.error(err);el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">Could not load history.</div>';}
 }
 
 // ── helpers ───────────────────────────────────
@@ -2023,9 +2130,12 @@ function updateAuthUI(){
       document.getElementById('lobbyUserEmail').textContent=S.authUser.email;
     }
     loadLobbyUserData();
+    // show dashboard nav if not in a session
+    if(!S.code) showDashboardNav();
   } else {
     if(authSection) authSection.style.display='';
     if(userSection) userSection.style.display='none';
+    if(!S.code) document.getElementById('mainNav').style.display='none';
   }
   updateWho();
 }
@@ -2096,13 +2206,12 @@ async function loadLobbyBookmarks(){
 }
 
 function lobbyRejoinSession(code){
+  // ensure we're on lobby screen
+  showLobby();
   const nameInput=document.getElementById('lobbyName');
-  const codeInput=document.getElementById('lobbyCode');
   if(!nameInput.value && S.authUser) nameInput.value=S.authUser.name;
-  codeInput.value=code;
-  // scroll to session card and trigger join
-  document.getElementById('lobbyCode').scrollIntoView({behavior:'smooth',block:'center'});
-  setTimeout(()=>joinSession(),300);
+  document.getElementById('lobbyCode').value=code;
+  setTimeout(()=>joinSession(),150);
 }
 function switchAuthTab(tab){
   document.getElementById('authFormLogin').style.display=tab==='login'?'':'none';
