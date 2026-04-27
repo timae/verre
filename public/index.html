@@ -582,6 +582,7 @@ body[data-theme="light"]::before{opacity:0.35;}
           <input class="fi" id="lobbyCode" type="text" placeholder="e.g. A3F7" maxlength="4" style="text-transform:uppercase;text-align:center;font-size:18px;letter-spacing:0.3em;">
         </div>
         <button class="btn-g" onclick="joinSession()">→ join session</button>
+        <button class="btn-g" onclick="openHof()" style="margin-top:24px;">★ hall of fame</button>
       </div>
 
       <div class="lobby-card lobby-secondary">
@@ -666,6 +667,7 @@ body[data-theme="light"]::before{opacity:0.35;}
       </div>
       <button class="btn-p" onclick="saveRating()">→ commit rating</button>
       <button class="btn-g" onclick="goBack()">cancel</button>
+      <button class="btn-g" onclick="resetRating()">⌫ reset my rating</button>
       <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
     </div>
   </div>
@@ -759,6 +761,16 @@ body[data-theme="light"]::before{opacity:0.35;}
     <button class="btn-p" onclick="updateName()">→ update name</button>
     <button class="btn-g" onclick="leaveSession()">leave session</button>
     <button class="btn-g" onclick="closeSess()">close</button>
+  </div>
+</div>
+
+<!-- HALL OF FAME MODAL -->
+<div class="overlay" id="hofModal">
+  <div class="sheet">
+    <div class="sheet-bar"></div>
+    <div class="sheet-title">Hall of Fame <span class="sheet-title-tag">★ 5 stars</span></div>
+    <div id="hofList" style="margin-bottom:16px;"></div>
+    <button class="btn-g" onclick="closeHof()">close</button>
   </div>
 </div>
 
@@ -1820,9 +1832,59 @@ function exportPDF(){rCompare();toast('opening print dialog…');setTimeout(()=>
 // ── TOAST ─────────────────────────────────────
 let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout(_tt);el.textContent=m;el.classList.add('show');_tt=setTimeout(()=>el.classList.remove('show'),2000);}
 
+// ── RESET RATING ──────────────────────────────
+async function resetRating(){
+  if(!S.curId||!S.user)return;
+  const w=S.wines.find(x=>x.id===S.curId);
+  if(!confirm('Reset your rating for "'+w.name+'"?'))return;
+  try{
+    await api(`/session/${S.code}/rate/${S.curId}`,{method:'DELETE',body:{userName:S.user}});
+    toast('rating reset');await refresh();goBack();
+  }catch(e){toast('error resetting rating');}
+}
+
+// ── HALL OF FAME ───────────────────────────────
+async function openHof(){
+  document.getElementById('hofModal').classList.add('open');
+  const list=document.getElementById('hofList');
+  list.textContent='loading…';
+  try{
+    const entries=await api('/hof');
+    if(!entries.length){list.innerHTML='<div style="color:var(--fg-dim);font-size:13px;text-align:center;padding:24px 0;">No 5-star wines yet. The first perfect score will land here.</div>';return;}
+    list.innerHTML=entries.map(e=>{
+      const date=new Date(e.at).toLocaleDateString(undefined,{year:'numeric',month:'short',day:'numeric'});
+      const sub=[LBL[e.type]||e.type,e.producer,e.vintage,e.grape].filter(Boolean).join(' · ');
+      return `<div style="padding:12px 0;border-bottom:1px solid var(--bg3);">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:18px;">${ICO[e.type]||'🍷'}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:700;font-size:14px;line-height:1.3;">${e.wineName}</div>
+            <div style="font-size:11px;color:var(--fg-dim);margin-top:2px;">${sub}</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div style="font-size:22px;font-weight:800;line-height:1;">★ 5</div>
+            <div style="font-size:10px;color:var(--fg-dim);">${e.rater}</div>
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--fg-dim);margin-top:4px;">${date}</div>
+      </div>`;
+    }).join('');
+  }catch(err){list.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">Could not load Hall of Fame.</div>';}
+}
+function closeHof(){document.getElementById('hofModal').classList.remove('open');}
+
 // ── BACKDROP ──────────────────────────────────
 document.getElementById('addModal').addEventListener('click',e=>{if(e.target.id==='addModal')closeAdd();});
 document.getElementById('sessModal').addEventListener('click',e=>{if(e.target.id==='sessModal')closeSess();});
+document.getElementById('hofModal').addEventListener('click',e=>{if(e.target.id==='hofModal')closeHof();});
+
+// ── ESC KEY ───────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape')return;
+  if(document.getElementById('addModal').classList.contains('open')){closeAdd();return;}
+  if(document.getElementById('sessModal').classList.contains('open')){closeSess();return;}
+  if(document.getElementById('hofModal').classList.contains('open')){closeHof();return;}
+});
 
 // ── INIT ──────────────────────────────────────
 applyTheme(theme);

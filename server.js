@@ -214,12 +214,31 @@ app.post('/api/session/:code/rate', async (req, res) => {
   const { userName, wineId, score, flavors, notes } = req.body;
   if (!userName || !wineId) return res.status(400).json({ error: 'userName and wineId required' });
 
+  const ratingScore = score || 0;
   await redis.set(k.rating(c, userName, wineId), JSON.stringify({
-    score: score || 0,
+    score: ratingScore,
     flavors: flavors || {},
     notes: notes || '',
     at: Date.now(),
   }), { EX: TTL });
+
+  if (ratingScore === 5) {
+    const wines = JSON.parse(await redis.get(k.wines(c)) || '[]');
+    const wine = wines.find(w => w.id === wineId);
+    if (wine) {
+      await addToHof({
+        wineName: wine.name,
+        producer: wine.producer || '',
+        vintage: wine.vintage || '',
+        type: wine.type,
+        grape: wine.grape || '',
+        score: 5,
+        rater: userName,
+        sessionCode: c,
+        at: Date.now(),
+      });
+    }
+  }
 
   await touch(c);
   res.json({ ok: true });
@@ -257,6 +276,37 @@ app.get('/api/session/:code/ratings/:userName', async (req, res) => {
   }
 
   res.json(result);
+});
+
+// DELETE /api/session/:code/rate/:wineId — delete one user's rating for a wine
+app.delete('/api/session/:code/rate/:wineId', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const { userName } = req.body;
+  if (!userName) return res.status(400).json({ error: 'userName required' });
+  await redis.del(k.rating(c, userName, req.params.wineId));
+  await touch(c);
+  res.json({ ok: true });
+});
+
+// ── Hall of Fame ──────────────────────────────
+const HOF_KEY = 'hof';
+const HOF_MAX = 100;
+
+async function addToHof(entry) {
+  const raw = await redis.get(HOF_KEY);
+  const hof = raw ? JSON.parse(raw) : [];
+  // replace existing entry for same rater+wine combo (identified by name+rater)
+  const idx = hof.findIndex(e => e.wineName === entry.wineName && e.rater === entry.rater);
+  if (idx !== -1) hof.splice(idx, 1);
+  hof.unshift(entry);
+  if (hof.length > HOF_MAX) hof.length = HOF_MAX;
+  await redis.set(HOF_KEY, JSON.stringify(hof));
+}
+
+// GET /api/hof — get the Hall of Fame
+app.get('/api/hof', async (req, res) => {
+  const raw = await redis.get(HOF_KEY);
+  res.json(raw ? JSON.parse(raw) : []);
 });
 
 // ── Start ────────────────────────────────────
