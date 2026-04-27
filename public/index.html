@@ -1901,15 +1901,15 @@ async function authLogin(){
   if(!email||!password){toast('enter email and password');return;}
   try{
     const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
-    if(!res.ok){const e=await res.json();toast(e.error||'login failed');return;}
-    const {token,user}=await res.json();
-    S.authToken=token;S.authUser=user;
-    localStorage.setItem('vr_token',token);
-    toast('welcome back, '+user.name);
+    let body;
+    try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'login failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    toast('welcome back, '+body.user.name);
     updateAuthUI();
-    // pre-fill lobby name if empty
-    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=user.name;
-  }catch{toast('login failed');}
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
+  }catch(err){console.error('authLogin:',err);toast('login failed — check console');}
 }
 async function authRegister(){
   const name=document.getElementById('aRegName').value.trim();
@@ -1918,14 +1918,15 @@ async function authRegister(){
   if(!name||!email||!password){toast('fill in all fields');return;}
   try{
     const res=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
-    if(!res.ok){const e=await res.json();toast(e.error||'registration failed');return;}
-    const {token,user}=await res.json();
-    S.authToken=token;S.authUser=user;
-    localStorage.setItem('vr_token',token);
-    toast('account created — welcome, '+user.name);
+    let body;
+    try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'registration failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    toast('account created — welcome, '+body.user.name);
     updateAuthUI();
-    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=user.name;
-  }catch{toast('registration failed');}
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
+  }catch(err){console.error('authRegister:',err);toast('registration failed — check console');}
 }
 function authLogout(){
   S.authToken='';S.authUser=null;
