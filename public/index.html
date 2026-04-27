@@ -171,6 +171,9 @@ body[data-theme="light"]{
 .ai-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
 .ai-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
 .ai-status{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-top:10px;}
+.ai-links{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px;}
+.ai-link{font-size:10px;color:var(--accent2);text-decoration:none;line-height:1.6;}
+.ai-link:hover,.ai-link:focus{color:var(--accent);text-decoration:underline;}
 .session-note{font-size:10px;color:var(--fg-dim);line-height:1.7;margin:-4px 0 14px;}
 .session-note strong{color:var(--fg);font-weight:700;}
 .photo-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin-bottom:14px;}
@@ -334,6 +337,7 @@ body[data-theme="light"] .stat-label{color:#746554;}
 body[data-theme="light"] .lobby-badge,
 body[data-theme="light"] .code-pill,
 body[data-theme="light"] .share-btn{color:#4F7753;}
+body[data-theme="light"] .ai-link{color:#4F7753;}
 body[data-theme="light"] .nav-item.active,
 body[data-theme="light"] .user-tab.active{color:#8D5417;}
 body[data-theme="light"] .toast{background:#FFFDF9;}
@@ -730,6 +734,10 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" onclick="saveAiKey()">save key</button>
         <button class="btn-s" onclick="clearAiKey()">remove key</button>
       </div>
+      <div class="ai-links">
+        <a class="ai-link" id="aiDocsLink" href="#" target="_blank" rel="noopener">How to create a key</a>
+        <a class="ai-link" id="aiConsoleLink" href="#" target="_blank" rel="noopener">Open provider console</a>
+      </div>
       <div class="ai-status" id="aiStatus"></div>
     </div>
     <div class="invite-box">
@@ -779,8 +787,20 @@ let addPhotoFile=null, addPhotoDataUrl='';
 let editingWineId=null;
 const AI_PROVIDER_STORE='vr_ai_provider';
 const AI_PROVIDERS={
-  openai:{label:'OpenAI',placeholder:'sk-...',keyStore:'vr_ai_key_openai'},
-  claude:{label:'Claude',placeholder:'sk-ant-...',keyStore:'vr_ai_key_claude'},
+  openai:{
+    label:'OpenAI',
+    placeholder:'sk-...',
+    keyStore:'vr_ai_key_openai',
+    docsUrl:'https://platform.openai.com/docs/quickstart/overview/getting-started',
+    consoleUrl:'https://platform.openai.com/api-keys'
+  },
+  claude:{
+    label:'Claude',
+    placeholder:'sk-ant-...',
+    keyStore:'vr_ai_key_claude',
+    docsUrl:'https://docs.anthropic.com/en/api/getting-started',
+    consoleUrl:'https://console.anthropic.com/settings/keys'
+  },
 };
 
 function persist(){
@@ -834,11 +854,15 @@ function syncAiKeyUi(){
   const sel=document.getElementById('aiProvider');
   const input=document.getElementById('aiKey');
   const status=document.getElementById('aiStatus');
+  const docsLink=document.getElementById('aiDocsLink');
+  const consoleLink=document.getElementById('aiConsoleLink');
   if(sel) sel.value=provider;
   if(input){
     input.value=providerKey(provider);
     input.placeholder=cfg.placeholder;
   }
+  if(docsLink) docsLink.href=cfg.docsUrl;
+  if(consoleLink) consoleLink.href=cfg.consoleUrl;
   if(status) status.textContent=hasProviderKey(provider)
     ? `${cfg.label} key stored on this device. Label scan is enabled here.`
     : `No ${cfg.label} key stored. Label scan is disabled on this device.`;
