@@ -1,5 +1,4 @@
 const express = require('express');
-const multer = require('multer');
 const { createClient } = require('redis');
 const path = require('path');
 const crypto = require('crypto');
@@ -7,15 +6,9 @@ const crypto = require('crypto');
 const app = express();
 app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
-});
 
 // ── Redis ────────────────────────────────────
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const OPENAI_VISION_MODEL = process.env.OPENAI_VISION_MODEL || 'gpt-4.1-mini';
 const redis = createClient({
   url: REDIS_URL,
   socket: {
@@ -54,80 +47,6 @@ function sanitizeImageDataUrl(value) {
   // Keep payloads bounded since images live in Redis with the wine record.
   if (value.length > 1_500_000) return '';
   return value;
-}
-
-async function extractWineFromImage(file) {
-  const dataUrl = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
-  const schema = {
-    type: 'object',
-    additionalProperties: false,
-    required: ['name', 'producer', 'vintage', 'grape', 'type', 'confidence', 'notes'],
-    properties: {
-      name: { type: 'string' },
-      producer: { type: 'string' },
-      vintage: { type: 'string' },
-      grape: { type: 'string' },
-      type: {
-        type: 'string',
-        enum: ['red', 'white', 'spark', 'rose', 'nonalc', 'unknown'],
-      },
-      confidence: { type: 'number' },
-      notes: { type: 'string' },
-    },
-  };
-
-  const response = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_VISION_MODEL,
-      input: [
-        {
-          role: 'system',
-          content: [
-            {
-              type: 'input_text',
-              text: 'You extract wine label data from bottle photos. Return best-effort structured fields. Leave uncertain text blank. Use type=unknown when type cannot be inferred safely.',
-            },
-          ],
-        },
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: 'Extract bottle information from this photo for a wine tasting app. We need: name, producer, vintage, grape/style, and bottle type.',
-            },
-            {
-              type: 'input_image',
-              image_url: dataUrl,
-            },
-          ],
-        },
-      ],
-      text: {
-        format: {
-          type: 'json_schema',
-          strict: true,
-          name: 'wine_label_extraction',
-          schema,
-        },
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`vision request failed: ${response.status} ${detail}`);
-  }
-
-  const payload = await response.json();
-  const output = payload.output_text ? JSON.parse(payload.output_text) : null;
-  if (!output) throw new Error('vision response was empty');
-  return output;
 }
 
 // ── API routes ───────────────────────────────
@@ -210,24 +129,6 @@ app.post('/api/session/:code/wines', async (req, res) => {
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
   await touch(c);
   res.json(wine);
-});
-
-// POST /api/session/:code/wines/extract-label — extract bottle info from a photo
-app.post('/api/session/:code/wines/extract-label', upload.single('image'), async (req, res) => {
-  const c = req.params.code.toUpperCase();
-  const meta = await redis.get(k.meta(c));
-  if (!meta) return res.status(404).json({ error: 'not found' });
-  if (!OPENAI_API_KEY) return res.status(501).json({ error: 'OPENAI_API_KEY not configured' });
-  if (!req.file) return res.status(400).json({ error: 'image required' });
-
-  try {
-    const extracted = await extractWineFromImage(req.file);
-    await touch(c);
-    res.json(extracted);
-  } catch (err) {
-    console.error('label extraction failed:', err);
-    res.status(502).json({ error: 'label extraction failed' });
-  }
 });
 
 // DELETE /api/session/:code/wines/:wineId — delete a wine
