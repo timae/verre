@@ -121,23 +121,33 @@ body[data-theme="light"]{
 .mini-stars{display:flex;gap:1px;}
 .ms{font-size:9px;color:var(--fg-faint);}.ms.on{color:var(--accent);}
 
-.lobby-shell{width:min(100%,1040px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:start;min-height:100%;}
-.lobby-features{grid-column:1/-1;}
+.lobby-shell{width:min(100%,1040px);margin:0 auto;display:grid;grid-template-columns:minmax(280px,420px) minmax(0,1fr);gap:18px;align-items:start;min-height:100%;}
 .lobby-card{border:1px solid rgba(255,255,255,0.06);border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015));padding:22px;box-shadow:0 18px 50px rgba(0,0,0,0.26);}
 .lobby-form{background:rgba(12,12,10,0.78);backdrop-filter:blur(16px);}
-.lobby-account{background:linear-gradient(160deg,rgba(200,150,60,0.07),rgba(143,184,122,0.05));border-color:rgba(200,150,60,0.14);}
-.lobby-primary{order:1;}
-.lobby-perks{margin-top:18px;border-top:1px solid var(--border);padding-top:14px;display:flex;flex-direction:column;gap:7px;}
-.lobby-perk{font-size:11px;color:var(--fg-dim);display:flex;align-items:center;gap:8px;line-height:1.4;}
-.perk-ico{font-size:14px;flex-shrink:0;width:20px;text-align:center;}
+.lobby-account{display:flex;flex-direction:column;gap:0;}
+.lobby-account-guest{display:flex;flex-direction:column;}
+.acct-headline{font-family:var(--serif);font-size:clamp(28px,5vw,42px);font-weight:800;line-height:1;color:#F3E9D3;margin-bottom:8px;}
+.acct-sub{font-size:12px;color:var(--fg-dim);line-height:1.7;margin-bottom:20px;max-width:36ch;}
+.acct-perks{display:flex;flex-direction:column;gap:8px;margin-bottom:22px;}
+.acct-perk{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--fg-dim);}
+.acct-perk-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);flex-shrink:0;}
+.acct-btns{display:flex;gap:8px;}
+.acct-btns .btn-p{flex:1;margin:0;}
+.acct-btns .btn-g{flex:1;margin:0;}
 .lobby-session-card{padding:10px 12px;border:1px solid var(--border);border-radius:12px;cursor:pointer;transition:border-color .15s,background .15s;margin-bottom:6px;}
 .lobby-session-card:hover{border-color:var(--accent);background:rgba(200,150,60,0.06);}
 .lobby-session-card:last-child{margin-bottom:0;}
 .lobby-session-top{display:flex;align-items:center;justify-content:space-between;gap:8px;}
 .lobby-session-name{font-size:12px;font-weight:700;color:var(--fg);}
 .lobby-session-meta{font-size:10px;color:var(--fg-dim);margin-top:3px;}
-.lobby-session-rejoin{font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);opacity:0;transition:opacity .15s;}
+.lobby-session-rejoin{font-size:9px;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);opacity:0;transition:opacity .15s;white-space:nowrap;}
 .lobby-session-card:hover .lobby-session-rejoin{opacity:1;}
+.acct-section-hdr{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin:16px 0 8px;display:flex;align-items:center;gap:6px;}
+.acct-section-hdr::before{content:'//';color:var(--accent2);}
+.acct-bookmark-card{padding:8px 10px;border:1px solid var(--border);border-radius:10px;margin-bottom:5px;font-size:11px;}
+.acct-bookmark-card:last-child{margin-bottom:0;}
+.acct-bookmark-name{font-weight:700;color:var(--fg);}
+.acct-bookmark-meta{font-size:10px;color:var(--fg-dim);margin-top:2px;}
 .lobby-badge{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid rgba(143,184,122,0.2);background:rgba(143,184,122,0.08);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--accent2);}
 .lobby-title{font-family:var(--serif);font-size:clamp(40px,9vw,72px);font-weight:800;line-height:0.9;color:#F3E9D3;margin-top:14px;max-width:9ch;}
 .lobby-copy{font-size:13px;color:#A8A18F;line-height:1.8;max-width:48ch;margin-top:16px;}
@@ -315,8 +325,10 @@ body[data-theme="light"] .chip{
   border-color:rgba(86,66,42,0.18);
 }
 body[data-theme="light"] .lobby-form{background:linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,239,229,0.92));}
-body[data-theme="light"] .lobby-account{background:linear-gradient(160deg,rgba(180,120,40,0.06),rgba(100,150,90,0.04));border-color:rgba(160,100,20,0.18);}
 body[data-theme="light"] .lobby-session-card{background:rgba(255,255,255,0.6);}
+body[data-theme="light"] .acct-headline{color:#231D17;}
+body[data-theme="light"] .acct-perk-dot{background:var(--accent);}
+body[data-theme="light"] .acct-bookmark-card{background:rgba(255,255,255,0.6);}
 body[data-theme="light"] .code-pill,
 body[data-theme="light"] .who-btn,
 body[data-theme="light"] .share-btn,
@@ -372,11 +384,9 @@ body[data-theme="light"]::before{opacity:0.35;}
 
 @media (max-width:780px){
   .lobby-shell{grid-template-columns:1fr;}
-  .lobby-primary{order:1;}
-  .lobby-features{order:3;}
   .lobby-card{padding:18px;}
-  .lobby-title{font-size:34px;max-width:none;}
-  .lobby-copy{font-size:12px;line-height:1.6;}
+  .acct-headline{font-size:28px;}
+  .acct-btns{flex-direction:column;}
   .feature-list{margin-top:16px;}
   .hero-grid{grid-template-columns:1fr;}
   .feature-list{grid-template-columns:1fr;}
@@ -611,7 +621,7 @@ body[data-theme="light"]::before{opacity:0.35;}
     <div class="lobby-shell">
 
       <!-- SESSION CARD -->
-      <div class="lobby-card lobby-form lobby-primary">
+      <div class="lobby-card lobby-form">
         <div class="hero-kicker">Start or join</div>
         <div class="subhead" style="margin:0 0 18px;">
           <div class="subhead-title">Open the table</div>
@@ -635,39 +645,24 @@ body[data-theme="light"]::before{opacity:0.35;}
       <div class="lobby-card lobby-account" id="lobbyAccountCard">
 
         <!-- LOGGED OUT -->
-        <div id="lobbyAuthSection">
-          <div class="hero-kicker">Your account</div>
-          <div class="subhead" style="margin:0 0 16px;">
-            <div class="subhead-title">Save your palate.</div>
-            <div class="subhead-copy">Sign in to keep your tasting history, bookmark wines, and track your flavour profile over time.</div>
+        <div id="lobbyAuthSection" class="lobby-account-guest">
+          <div class="acct-headline">Your palate,<br>remembered.</div>
+          <div class="acct-sub">Taste anonymously or create a free account to save your history, bookmark wines, and build your flavour profile over time.</div>
+          <div class="acct-perks">
+            <div class="acct-perk"><div class="acct-perk-dot"></div>Save and revisit any tasting session</div>
+            <div class="acct-perk"><div class="acct-perk-dot"></div>Bookmark wines across sessions</div>
+            <div class="acct-perk"><div class="acct-perk-dot"></div>Hall of Fame entries credited to your name</div>
+            <div class="acct-perk"><div class="acct-perk-dot"></div>Flavour radar profile over time</div>
           </div>
-          <div class="auth-tabs">
-            <div class="auth-tab active" id="atab-login" onclick="switchAuthTab(‘login’)">Sign in</div>
-            <div class="auth-tab" id="atab-register" onclick="switchAuthTab(‘register’)">Create account</div>
-          </div>
-          <div id="authFormLogin">
-            <div class="field"><div class="fl">email</div><input class="fi" id="aEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
-            <div class="field"><div class="fl">password</div><input class="fi" id="aPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-            <button class="btn-p" onclick="authLogin()" style="margin-top:8px;">→ sign in</button>
-          </div>
-          <div id="authFormRegister" style="display:none;">
-            <div class="field"><div class="fl">name</div><input class="fi" id="aRegName" type="text" placeholder="firstname or alias"></div>
-            <div class="field"><div class="fl">email</div><input class="fi" id="aRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
-            <div class="field"><div class="fl">password</div><input class="fi" id="aRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
-            <button class="btn-p" onclick="authRegister()" style="margin-top:8px;">→ create account</button>
-          </div>
-          <div class="lobby-perks">
-            <div class="lobby-perk"><span class="perk-ico">🔖</span>Save wines across sessions</div>
-            <div class="lobby-perk"><span class="perk-ico">📋</span>Full tasting history</div>
-            <div class="lobby-perk"><span class="perk-ico">★</span>Hall of Fame entries credited to you</div>
-            <div class="lobby-perk"><span class="perk-ico">📊</span>Flavour profile over time</div>
+          <div class="acct-btns">
+            <button class="btn-p" onclick="openAuthModal(‘login’)">→ sign in</button>
+            <button class="btn-g" onclick="openAuthModal(‘register’)">create account</button>
           </div>
         </div>
 
         <!-- LOGGED IN -->
         <div id="lobbyUserSection" style="display:none">
-          <div class="hero-kicker">Your account</div>
-          <div class="sess-account-row" style="margin-bottom:16px;">
+          <div class="sess-account-row">
             <div class="who-dot dot-account" style="width:9px;height:9px;flex-shrink:0;"></div>
             <div style="flex:1;min-width:0;">
               <div style="font-weight:700;font-size:14px;" id="lobbyUserName"></div>
@@ -675,38 +670,13 @@ body[data-theme="light"]::before{opacity:0.35;}
             </div>
             <button class="btn-s" onclick="authLogout()">sign out</button>
           </div>
-          <div class="fl" style="margin-bottom:8px;">Recent tastings</div>
+          <div class="acct-section-hdr">Recent tastings</div>
           <div id="lobbyRecentSessions"><div style="font-size:12px;color:var(--fg-dim);">loading…</div></div>
+          <div class="acct-section-hdr" style="margin-top:14px;">Saved wines</div>
+          <div id="lobbyBookmarks"><div style="font-size:12px;color:var(--fg-dim);">loading…</div></div>
         </div>
 
       </div>
-
-      <!-- FEATURE STRIP -->
-      <div class="lobby-features">
-        <div class="feature-list">
-          <div class="feature-item">
-            <div class="feature-eyebrow">Shared</div>
-            <div class="feature-title">One session code</div>
-            <div class="feature-copy">Hosts create once. Everyone joins from their own phone without account setup.</div>
-          </div>
-          <div class="feature-item">
-            <div class="feature-eyebrow">Private</div>
-            <div class="feature-title">Independent ratings</div>
-            <div class="feature-copy">Scores and flavour wheels stay personal until you choose to compare.</div>
-          </div>
-          <div class="feature-item">
-            <div class="feature-eyebrow">Visual</div>
-            <div class="feature-title">Radar profiles</div>
-            <div class="feature-copy">See each bottle’s structure at a glance instead of reading through scattered notes.</div>
-          </div>
-          <div class="feature-item">
-            <div class="feature-eyebrow">Export</div>
-            <div class="feature-title">Print-ready recap</div>
-            <div class="feature-copy">Generate an A4 tasting sheet for the cellar, the club, or the next buying round.</div>
-          </div>
-        </div>
-      </div>
-
     </div>
   </div>
 
@@ -2060,6 +2030,13 @@ function updateAuthUI(){
   updateWho();
 }
 
+function openAuthModal(tab='login'){
+  // Open the session modal on the account section
+  openSess();
+  // Switch to the right tab
+  setTimeout(()=>sessSwitchAuthTab(tab),50);
+}
+
 async function loadLobbyUserData(){
   if(!S.authUser) return;
   // Load recent sessions with wines rated
@@ -2067,7 +2044,10 @@ async function loadLobbyUserData(){
   if(!container) return;
   try{
     const sessions=await api('/me/sessions');
-    if(!sessions.length){
+    // load bookmarks in parallel
+  loadLobbyBookmarks();
+
+  if(!sessions.length){
       container.innerHTML='<div style="font-size:12px;color:var(--fg-dim);padding:8px 0;">No tasting history yet — start or join a session to begin.</div>';
       return;
     }
@@ -2097,6 +2077,22 @@ async function loadLobbyUserData(){
   }catch{
     container.innerHTML='<div style="font-size:12px;color:var(--fg-dim);">Could not load history.</div>';
   }
+}
+
+async function loadLobbyBookmarks(){
+  const el=document.getElementById('lobbyBookmarks');
+  if(!el||!S.authUser) return;
+  try{
+    const items=await api('/me/bookmarks');
+    if(!items.length){el.innerHTML='<div style="font-size:12px;color:var(--fg-dim);">No saved wines yet — tap ☆ on any wine detail to save it.</div>';return;}
+    el.innerHTML=items.slice(0,5).map(b=>{
+      const meta=[b.style,b.producer,b.vintage].filter(Boolean).join(' · ');
+      return `<div class="acct-bookmark-card">
+        <div class="acct-bookmark-name">${b.name}</div>
+        ${meta?`<div class="acct-bookmark-meta">${meta}</div>`:''}
+      </div>`;
+    }).join('')+(items.length>5?`<div style="font-size:10px;color:var(--fg-dim);margin-top:6px;">+${items.length-5} more</div>`:'');
+  }catch{el.innerHTML='<div style="font-size:12px;color:var(--fg-dim);">Could not load saved wines.</div>';}
 }
 
 function lobbyRejoinSession(code){
@@ -2167,12 +2163,12 @@ async function initAuth(){
 
 // ── BOOKMARKS ─────────────────────────────────
 function promptSignIn(){
-  // scroll the account card into view if on lobby, else open modal
+  const lobby=document.getElementById('scr-lobby');
   const card=document.getElementById('lobbyAccountCard');
-  if(card && document.getElementById('scr-lobby').style.display!=='none'){
-    card.scrollIntoView({behavior:'smooth',block:'start'});
+  if(card && lobby && lobby.style.display!=='none'){
+    card.scrollIntoView({behavior:'smooth',block:'nearest'});
     card.style.outline='2px solid var(--accent)';
-    setTimeout(()=>card.style.outline='',1200);
+    setTimeout(()=>card.style.outline='',1000);
   } else {
     openSess();
   }
