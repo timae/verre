@@ -535,6 +535,15 @@ body[data-theme="light"]::before{opacity:0.35;}
   }
 }
 
+/* CSS-ONLY AUTH TABS */
+.lam-wrap input[type="radio"]{display:none;}
+.lam-wrap .lam-login-form{display:none;}
+.lam-wrap .lam-register-form{display:none;}
+#lam-login:checked ~ .lam-login-form{display:block;}
+#lam-register:checked ~ .lam-register-form{display:block;}
+#lam-login:checked ~ .auth-tabs label[for="lam-login"]{background:var(--bg2);color:var(--fg);}
+#lam-register:checked ~ .auth-tabs label[for="lam-register"]{background:var(--bg2);color:var(--fg);}
+
 /* LOCKED FEATURES */
 .locked-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;}
 .locked-item{border:1px solid var(--border);border-radius:12px;padding:12px 12px 10px;cursor:pointer;opacity:0.55;transition:opacity .15s,border-color .15s;position:relative;overflow:hidden;}
@@ -650,20 +659,25 @@ body[data-theme="light"]::before{opacity:0.35;}
         <div id="lobbyAuthSection" class="lobby-account-guest">
           <div class="acct-headline">Your palate,<br>remembered.</div>
           <div class="acct-sub">Create a free account to save your history, bookmark wines, and build your flavour profile over time.</div>
-          <div id="lobbyFormLogin">
-            <div class="fl" style="margin-bottom:10px;font-size:11px;letter-spacing:0.1em;">Sign in</div>
-            <div class="field"><div class="fl">email</div><input class="fi" id="laEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
-            <div class="field"><div class="fl">password</div><input class="fi" id="laPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-            <button class="btn-p" type="button" onclick="lobbyLogin()" style="margin-top:8px;">→ sign in</button>
-            <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--fg-dim);">No account? <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="lobbyShowForm(‘register’)">Create one free</span></div>
-          </div>
-          <div id="lobbyFormRegister" style="display:none;">
-            <div class="fl" style="margin-bottom:10px;font-size:11px;letter-spacing:0.1em;">Create account</div>
-            <div class="field"><div class="fl">name</div><input class="fi" id="laName" type="text" placeholder="firstname or alias"></div>
-            <div class="field"><div class="fl">email</div><input class="fi" id="laRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
-            <div class="field"><div class="fl">password</div><input class="fi" id="laRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
-            <button class="btn-p" type="button" onclick="lobbyRegister()" style="margin-top:8px;">→ create account</button>
-            <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--fg-dim);">Already have an account? <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="lobbyShowForm(‘login’)">Sign in</span></div>
+          <!-- CSS-only tab switching — zero JS required -->
+          <div class="lam-wrap">
+            <input type="radio" name="lam" id="lam-login" checked>
+            <input type="radio" name="lam" id="lam-register">
+            <div class="auth-tabs" style="margin-bottom:14px;">
+              <label class="auth-tab" for="lam-login">Sign in</label>
+              <label class="auth-tab" for="lam-register">Create account</label>
+            </div>
+            <div class="lam-login-form">
+              <div class="field"><div class="fl">email</div><input class="fi" id="laEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+              <div class="field"><div class="fl">password</div><input class="fi" id="laPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+              <button class="btn-p" type="button" onclick="lobbyLogin()" style="margin-top:8px;">→ sign in</button>
+            </div>
+            <div class="lam-register-form">
+              <div class="field"><div class="fl">name</div><input class="fi" id="laName" type="text" placeholder="firstname or alias"></div>
+              <div class="field"><div class="fl">email</div><input class="fi" id="laRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+              <div class="field"><div class="fl">password</div><input class="fi" id="laRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
+              <button class="btn-p" type="button" onclick="lobbyRegister()" style="margin-top:8px;">→ create account</button>
+            </div>
           </div>
           <div class="acct-perks" style="margin-top:16px;">
             <div class="acct-perk"><div class="acct-perk-dot"></div>Save and revisit any tasting session</div>
