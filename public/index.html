@@ -52,8 +52,10 @@ body[data-theme="light"]{
 .code-pill:active{background:rgba(143,184,122,0.2);}
 .who-btn{font-family:var(--mono);font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);border:1px solid var(--border);background:var(--bg2);padding:5px 10px;border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:border-color .15s,color .15s;}
 .who-btn:active{border-color:var(--accent);color:var(--accent);}
-.who-online{width:5px;height:5px;border-radius:50%;background:var(--accent2);animation:blink 2s infinite;}
-@keyframes blink{0%,100%{opacity:1;}50%{opacity:0.3;}}
+.who-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;transition:background .2s,box-shadow .2s;}
+.who-dot.dot-account{background:var(--accent2);box-shadow:0 0 0 2px rgba(143,184,122,0.25);}
+.who-dot.dot-session{background:var(--accent);box-shadow:0 0 0 2px rgba(200,150,60,0.2);}
+.who-dot.dot-anon{background:var(--fg-faint);}
 .who-name{max-width:80px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;}
 
 /* CONTENT */
@@ -507,6 +509,14 @@ body[data-theme="light"]::before{opacity:0.35;}
   }
 }
 
+/* SESSION MODAL SECTIONS */
+.sess-section{border-top:1px solid var(--border);padding:14px 0 2px;}
+.sess-section:first-of-type{border-top:none;padding-top:0;}
+.sess-section-hdr{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+.sess-section-hdr::before{content:'//';color:var(--accent2);}
+.sess-account-row{display:flex;align-items:center;gap:10px;padding:10px 12px;background:rgba(143,184,122,0.07);border:1px solid rgba(143,184,122,0.18);border-radius:10px;}
+.sess-guest-note{font-size:11px;color:var(--fg-dim);line-height:1.6;}
+
 /* AUTH */
 .auth-toggle{font-size:11px;color:var(--fg-dim);text-align:center;cursor:pointer;margin-top:18px;padding-top:14px;border-top:1px solid var(--border);transition:color .15s;}
 .auth-toggle:hover{color:var(--fg);}
@@ -558,13 +568,12 @@ body[data-theme="light"]::before{opacity:0.35;}
   <div class="hdr-logo">Verre <span class="logo-tag">v2.2</span></div>
   <div class="hdr-right">
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle color theme">◐</button>
-    <div class="auth-pill" id="authPill" style="display:none" onclick="toggleAuthBox()"></div>
     <button class="share-btn" id="shareBtn" style="display:none" onclick="quickShareInvite()">↗ Share a Glass</button>
     <div class="code-pill" id="codePill" style="display:none" onclick="copyCode()">
       <span id="codeText"></span>
     </div>
-    <div class="who-btn" onclick="openSess()">
-      <div class="who-online"></div>
+    <div class="who-btn" id="whoBtn" onclick="openSess()">
+      <div class="who-dot" id="whoDot"></div>
       <div class="who-name" id="whoName">anon</div>
     </div>
   </div>
@@ -757,14 +766,66 @@ body[data-theme="light"]::before{opacity:0.35;}
 <div class="overlay" id="sessModal">
   <div class="sheet">
     <div class="sheet-bar"></div>
-    <div class="sheet-title">Session <span class="sheet-title-tag" id="sessCodeTag"></span></div>
-    <div class="field"><div class="fl">your name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
-    <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:16px;line-height:1.6;"></div>
-    <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
-    <div class="ai-box">
-      <div class="fl">label scan provider</div>
-      <div class="ai-copy">Optional. Keys stay on this device only, and scans go directly from this browser to the chosen provider. If no key is stored, bottle photos are still saved for the overview and export, but nothing is scanned.</div>
-      <div class="field">
+    <div class="sheet-title">You</div>
+
+    <!-- ACCOUNT SECTION -->
+    <div class="sess-section">
+      <div class="sess-section-hdr">Account</div>
+      <div id="sessAccountLoggedIn" style="display:none">
+        <div class="sess-account-row">
+          <div class="who-dot dot-account" style="width:8px;height:8px;flex-shrink:0"></div>
+          <div>
+            <div style="font-weight:700;font-size:13px;" id="sessAccountName"></div>
+            <div style="font-size:11px;color:var(--fg-dim);" id="sessAccountEmail"></div>
+          </div>
+        </div>
+        <button class="btn-g" onclick="authLogout();closeSess();" style="margin-top:10px;">sign out</button>
+      </div>
+      <div id="sessAccountGuest">
+        <div class="sess-guest-note">You're tasting as a guest. Sign in to save your wines, ratings, and history across sessions.</div>
+        <div class="auth-tabs" style="margin-top:10px;">
+          <div class="auth-tab active" id="statab-login" onclick="sessSwitchAuthTab('login')">Sign in</div>
+          <div class="auth-tab" id="statab-register" onclick="sessSwitchAuthTab('register')">Create account</div>
+        </div>
+        <div id="sessAuthLogin">
+          <div class="field"><div class="fl">email</div><input class="fi" id="saEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+          <div class="field"><div class="fl">password</div><input class="fi" id="saPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+          <button class="btn-p" onclick="sessAuthLogin()" style="margin-top:8px;">→ sign in</button>
+        </div>
+        <div id="sessAuthRegister" style="display:none">
+          <div class="field"><div class="fl">name</div><input class="fi" id="saRegName" type="text" placeholder="firstname or alias"></div>
+          <div class="field"><div class="fl">email</div><input class="fi" id="saRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+          <div class="field"><div class="fl">password</div><input class="fi" id="saRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
+          <button class="btn-p" onclick="sessAuthRegister()" style="margin-top:8px;">→ create account</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SESSION SECTION -->
+    <div class="sess-section" id="sessSectionSession" style="display:none">
+      <div class="sess-section-hdr">Session <span class="sheet-title-tag" id="sessCodeTag"></span></div>
+      <div class="field"><div class="fl">your display name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
+      <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:8px;line-height:1.6;"></div>
+      <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
+      <div class="invite-box" style="margin-top:12px;">
+        <div class="fl">invite link</div>
+        <div class="invite-copy">Share the link or let people scan the QR code to land directly on this session code.</div>
+        <a class="invite-url" id="inviteUrl" href="#" target="_blank" rel="noopener"></a>
+        <div class="invite-actions">
+          <button class="btn-s" onclick="copyInviteLink()">copy link</button>
+          <button class="btn-s" id="shareInviteBtn" onclick="shareInvite()">share</button>
+        </div>
+        <div class="qr-wrap" id="qrWrap"><div class="qr-empty">qr loading</div></div>
+      </div>
+      <button class="btn-p" onclick="updateName()" style="margin-top:12px;">→ update display name</button>
+      <button class="btn-g" onclick="leaveSession()">leave session</button>
+    </div>
+
+    <!-- AI / LABEL SCAN -->
+    <div class="sess-section" id="sessSectionAI" style="display:none">
+      <div class="sess-section-hdr">Label scan</div>
+      <div class="ai-copy">Optional. Keys stay on this device only, and scans go directly from this browser to the chosen provider.</div>
+      <div class="field" style="margin-top:8px;">
         <select class="fi" id="aiProvider" onchange="changeAiProvider()">
           <option value="openai">OpenAI</option>
           <option value="claude">Claude</option>
@@ -782,19 +843,8 @@ body[data-theme="light"]::before{opacity:0.35;}
       </div>
       <div class="ai-status" id="aiStatus"></div>
     </div>
-    <div class="invite-box">
-      <div class="fl">invite link</div>
-      <div class="invite-copy">Share the link or let people scan the QR code to land directly on this session code.</div>
-      <a class="invite-url" id="inviteUrl" href="#" target="_blank" rel="noopener"></a>
-      <div class="invite-actions">
-        <button class="btn-s" onclick="copyInviteLink()">copy link</button>
-        <button class="btn-s" id="shareInviteBtn" onclick="shareInvite()">share</button>
-      </div>
-      <div class="qr-wrap" id="qrWrap"><div class="qr-empty">qr loading</div></div>
-    </div>
-    <button class="btn-p" onclick="updateName()">→ update name</button>
-    <button class="btn-g" onclick="leaveSession()">leave session</button>
-    <button class="btn-g" onclick="closeSess()">close</button>
+
+    <button class="btn-g" onclick="closeSess()" style="margin-top:4px;">close</button>
   </div>
 </div>
 
@@ -1054,25 +1104,91 @@ async function refresh(){
 
 // ── SESSION INFO ──────────────────────────────
 async function openSess(){
-  if(!S.code) return;
-  document.getElementById('sN').value=S.user;
-  document.getElementById('sessCodeTag').textContent=S.code;
-  syncInviteUI();
-  syncAiKeyUi();
-  try{
-    const info=await api(`/session/${S.code}`);
-    document.getElementById('sessParticipants').innerHTML=
-      `<span style="color:var(--fg-faint)">// participants:</span><br>`+
-      (info.users||[]).map(u=>`→ ${u}${u===info.host?' <span style="color:var(--accent)">(host)</span>':''}`).join('<br>');
-  }catch(e){}
+  // account section
+  const loggedIn=!!S.authUser;
+  document.getElementById('sessAccountLoggedIn').style.display=loggedIn?'':'none';
+  document.getElementById('sessAccountGuest').style.display=loggedIn?'none':'';
+  if(loggedIn){
+    document.getElementById('sessAccountName').textContent=S.authUser.name;
+    document.getElementById('sessAccountEmail').textContent=S.authUser.email;
+  }
+  // session section — only shown when in a session
+  const inSession=!!S.code;
+  document.getElementById('sessSectionSession').style.display=inSession?'':'none';
+  document.getElementById('sessSectionAI').style.display=inSession?'':'none';
+  if(inSession){
+    document.getElementById('sN').value=S.user;
+    document.getElementById('sessCodeTag').textContent=S.code;
+    syncInviteUI();
+    syncAiKeyUi();
+    try{
+      const info=await api(`/session/${S.code}`);
+      document.getElementById('sessParticipants').innerHTML=
+        `<span style="color:var(--fg-faint)">// participants:</span><br>`+
+        (info.users||[]).map(u=>`→ ${u}${u===info.host?' <span style="color:var(--accent)">(host)</span>':''}`).join('<br>');
+    }catch(e){}
+  }
   document.getElementById('sessModal').classList.add('open');
 }
 function closeSess(){document.getElementById('sessModal').classList.remove('open');}
+function sessSwitchAuthTab(tab){
+  document.getElementById('sessAuthLogin').style.display=tab==='login'?'':'none';
+  document.getElementById('sessAuthRegister').style.display=tab==='register'?'':'none';
+  document.getElementById('statab-login').className='auth-tab'+(tab==='login'?' active':'');
+  document.getElementById('statab-register').className='auth-tab'+(tab==='register'?' active':'');
+}
+async function sessAuthLogin(){
+  const email=document.getElementById('saEmail').value.trim();
+  const password=document.getElementById('saPass').value;
+  if(!email||!password){toast('enter email and password');return;}
+  try{
+    const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    let body;try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'login failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    if(!S.user)S.user=body.user.name;
+    toast('welcome back, '+body.user.name);
+    updateWho();loadBookmarks();
+    // refresh modal sections
+    openSess();
+  }catch(err){console.error('sessAuthLogin:',err);toast('login failed — check console');}
+}
+async function sessAuthRegister(){
+  const name=document.getElementById('saRegName').value.trim();
+  const email=document.getElementById('saRegEmail').value.trim();
+  const password=document.getElementById('saRegPass').value;
+  if(!name||!email||!password){toast('fill in all fields');return;}
+  try{
+    const res=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
+    let body;try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'registration failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    if(!S.user)S.user=body.user.name;
+    toast('account created — welcome, '+body.user.name);
+    updateWho();loadBookmarks();
+    openSess();
+  }catch(err){console.error('sessAuthRegister:',err);toast('registration failed — check console');}
+}
 function updateName(){
   const n=document.getElementById('sN').value.trim();if(!n)return;
   S.user=n;persist();updateWho();closeSess();toast('name updated');
 }
-function updateWho(){document.getElementById('whoName').textContent=S.user||'anon';}
+function updateWho(){
+  const dot=document.getElementById('whoDot');
+  const name=document.getElementById('whoName');
+  if(S.authUser){
+    dot.className='who-dot dot-account';
+    name.textContent=S.authUser.name;
+  } else if(S.user){
+    dot.className='who-dot dot-session';
+    name.textContent=S.user;
+  } else {
+    dot.className='who-dot dot-anon';
+    name.textContent='anon';
+  }
+}
 
 function copyCode(){
   navigator.clipboard?.writeText(S.code);
@@ -1874,19 +1990,14 @@ let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout
 
 // ── AUTH ──────────────────────────────────────
 function updateAuthUI(){
-  const pill=document.getElementById('authPill');
   const toggle=document.getElementById('authToggle');
   if(S.authUser){
-    pill.innerHTML=`<div class="auth-dot"></div>${S.authUser.name}`;
-    pill.style.display='flex';
-    pill.onclick=authLogout;
-    pill.title='click to sign out';
     if(toggle) toggle.style.display='none';
     document.getElementById('authBox').classList.remove('open');
   } else {
-    pill.style.display='none';
     if(toggle) toggle.style.display='block';
   }
+  updateWho();
 }
 function toggleAuthBox(){
   const box=document.getElementById('authBox');
