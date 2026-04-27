@@ -13,6 +13,10 @@ RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
 # Copy app code
 COPY server.js ./
 COPY public/ ./public/
+COPY db/ ./db/
+COPY lib/ ./lib/
+COPY middleware/ ./middleware/
+COPY routes/ ./routes/
 
 EXPOSE 8080
 
