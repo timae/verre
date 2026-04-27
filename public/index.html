@@ -509,6 +509,18 @@ body[data-theme="light"]::before{opacity:0.35;}
   }
 }
 
+/* LOCKED FEATURES */
+.locked-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px;}
+.locked-item{border:1px solid var(--border);border-radius:12px;padding:12px 12px 10px;cursor:pointer;opacity:0.55;transition:opacity .15s,border-color .15s;position:relative;overflow:hidden;}
+.locked-item:hover{opacity:0.8;border-color:var(--accent);}
+.locked-item:active{opacity:1;}
+.locked-ico{font-size:18px;line-height:1;margin-bottom:6px;}
+.locked-title{font-size:12px;font-weight:700;color:var(--fg);line-height:1.2;}
+.locked-copy{font-size:10px;color:var(--fg-dim);margin-top:3px;line-height:1.4;}
+.locked-badge{position:absolute;top:7px;right:7px;font-size:8px;letter-spacing:0.08em;text-transform:uppercase;background:rgba(200,150,60,0.15);color:var(--accent);border:1px solid rgba(200,150,60,0.25);padding:1px 5px;border-radius:3px;}
+.locked-section-hdr{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin-top:20px;margin-bottom:2px;display:flex;align-items:center;gap:6px;}
+.locked-section-hdr::before{content:'//';color:var(--accent);}
+
 /* SESSION MODAL SECTIONS */
 .sess-section{border-top:1px solid var(--border);padding:14px 0 2px;}
 .sess-section:first-of-type{border-top:none;padding-top:0;}
@@ -653,6 +665,36 @@ body[data-theme="light"]::before{opacity:0.35;}
             <div class="feature-copy">Generate an A4 tasting sheet for the cellar, the club, or the next buying round.</div>
           </div>
         </div>
+
+        <div id="lockedFeatures">
+          <div class="locked-section-hdr">Unlock with a free account</div>
+          <div class="locked-grid">
+            <div class="locked-item" onclick="promptSignIn()">
+              <div class="locked-badge">account</div>
+              <div class="locked-ico">🔖</div>
+              <div class="locked-title">Save wines</div>
+              <div class="locked-copy">Bookmark bottles across any session</div>
+            </div>
+            <div class="locked-item" onclick="promptSignIn()">
+              <div class="locked-badge">account</div>
+              <div class="locked-ico">📋</div>
+              <div class="locked-title">Tasting history</div>
+              <div class="locked-copy">Every session and rating, forever</div>
+            </div>
+            <div class="locked-item" onclick="promptSignIn()">
+              <div class="locked-badge">account</div>
+              <div class="locked-ico">★</div>
+              <div class="locked-title">Hall of Fame</div>
+              <div class="locked-copy">Your 5-star wines credited to you</div>
+            </div>
+            <div class="locked-item" onclick="promptSignIn()">
+              <div class="locked-badge">account</div>
+              <div class="locked-ico">📊</div>
+              <div class="locked-title">Palate profile</div>
+              <div class="locked-copy">See your flavour trends over time</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -708,7 +750,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" type="button" onclick="openSess()">share a glass</button>
       </div>
       <button class="btn-p" onclick="saveRating()">→ commit rating</button>
-      <button class="btn-g" id="bookmarkBtn" onclick="toggleBookmark()" style="display:none"></button>
+      <button class="btn-g" id="bookmarkBtn" onclick="toggleBookmark()"></button>
       <button class="btn-g" onclick="goBack()">cancel</button>
       <button class="btn-g" onclick="resetRating()">⌫ reset my rating</button>
       <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
@@ -1991,11 +2033,14 @@ let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout
 // ── AUTH ──────────────────────────────────────
 function updateAuthUI(){
   const toggle=document.getElementById('authToggle');
+  const locked=document.getElementById('lockedFeatures');
   if(S.authUser){
     if(toggle) toggle.style.display='none';
+    if(locked) locked.style.display='none';
     document.getElementById('authBox').classList.remove('open');
   } else {
     if(toggle) toggle.style.display='block';
+    if(locked) locked.style.display='';
   }
   updateWho();
 }
@@ -2060,12 +2105,26 @@ async function initAuth(){
 }
 
 // ── BOOKMARKS ─────────────────────────────────
+function promptSignIn(){
+  openSess();
+  // ensure account section is visible and guest form is shown
+  setTimeout(()=>{
+    const guest=document.getElementById('sessAccountGuest');
+    if(guest) guest.scrollIntoView({behavior:'smooth',block:'start'});
+  },120);
+}
 function updateBookmarkBtn(){
   const btn=document.getElementById('bookmarkBtn');
   if(!btn)return;
-  if(!S.authUser){btn.style.display='none';return;}
+  if(!S.authUser){
+    btn.textContent='☆ save wine';
+    btn.style.opacity='0.45';
+    btn.title='sign in to save wines';
+    return;
+  }
+  btn.style.opacity='';
+  btn.title='';
   const saved=S.bookmarks.has(S.curId);
-  btn.style.display='';
   btn.textContent=saved?'★ saved':'☆ save wine';
 }
 async function loadBookmarks(){
@@ -2076,7 +2135,7 @@ async function loadBookmarks(){
   }catch{}
 }
 async function toggleBookmark(){
-  if(!S.authUser){toast('sign in to save wines');return;}
+  if(!S.authUser){promptSignIn();return;}
   const saved=S.bookmarks.has(S.curId);
   const method=saved?'DELETE':'POST';
   try{
