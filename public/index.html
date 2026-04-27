@@ -362,6 +362,142 @@ body[data-theme="light"]::before{opacity:0.35;}
   .photo-actions{grid-template-columns:1fr;}
 }
 
+@media (min-width:1040px){
+  .hdr{padding:0 26px;}
+  .hdr-logo{font-size:24px;}
+  .who-name{max-width:120px;}
+  .content{margin-left:214px;}
+  .screen{padding:24px 26px 42px;}
+  .screen-shell{width:min(100%,1260px);}
+  .nav{
+    position:fixed;
+    left:22px;
+    top:74px;
+    bottom:22px;
+    width:168px;
+    height:auto;
+    flex-direction:column;
+    gap:10px;
+    padding:14px;
+    border:1px solid rgba(255,255,255,0.05);
+    border-radius:24px;
+    background:var(--chrome-bg);
+    box-shadow:0 18px 44px rgba(0,0,0,0.24);
+  }
+  .nav-item{
+    flex:none;
+    min-height:74px;
+    align-items:flex-start;
+    justify-content:center;
+    gap:6px;
+    padding:14px 16px;
+    font-size:10px;
+  }
+  .nav-item .ni{font-size:18px;}
+  .nav-item.active::after{
+    top:14px;
+    bottom:14px;
+    left:0;
+    right:auto;
+    width:2px;
+    height:auto;
+  }
+  .lobby-shell{
+    width:min(100%,1260px);
+    grid-template-columns:minmax(0,1.25fr) minmax(360px,420px);
+    gap:22px;
+  }
+  .lobby-card{padding:28px;}
+  .lobby-secondary{
+    min-height:calc(100vh - 148px);
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+  }
+  .lobby-title{max-width:10ch;}
+  .feature-list{grid-template-columns:repeat(2,minmax(0,1fr));}
+  #scr-wines .screen-shell,
+  #scr-rate .screen-shell{
+    display:grid;
+    grid-template-columns:minmax(320px,360px) minmax(0,1fr);
+    gap:20px;
+    align-items:start;
+  }
+  #scr-wines #winesHero,
+  #scr-rate #rateHero{
+    position:sticky;
+    top:24px;
+    margin-bottom:0;
+  }
+  #scr-wines .subhead,
+  #scr-wines #wineStack,
+  #scr-wines .add-row,
+  #scr-rate .subhead,
+  #scr-rate #rateStack{
+    grid-column:2;
+  }
+  #scr-wines .add-row{
+    margin-top:14px;
+  }
+  #scr-detail .screen-shell{
+    width:min(100%,1180px);
+    display:grid;
+    grid-template-columns:minmax(0,1.05fr) 360px;
+    gap:18px;
+    align-items:start;
+  }
+  #scr-detail .detail-media,
+  #scr-detail .detail-hdr{
+    grid-column:1 / -1;
+  }
+  #scr-detail .panel-profile{
+    grid-column:1;
+    margin-bottom:0;
+  }
+  #scr-detail .panel-score,
+  #scr-detail .panel-notes,
+  #scr-detail .detail-actions,
+  #scr-detail .btn-p,
+  #scr-detail .btn-g,
+  #scr-detail .btn-del{
+    grid-column:2;
+  }
+  #scr-detail .panel-score{
+    margin-bottom:0;
+  }
+  #scr-detail .panel-notes{
+    margin-bottom:0;
+  }
+  #scr-detail .detail-actions{
+    margin:0;
+  }
+  #scr-detail .btn-p{margin-top:0;}
+  #scr-detail .btn-del{margin-top:6px;}
+  #scr-compare .screen-shell{
+    width:min(100%,1180px);
+  }
+  .overlay{
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+  }
+  .sheet{
+    width:min(760px,calc(100vw - 48px));
+    max-height:min(88vh,920px);
+    border:1px solid var(--border2);
+    border-radius:26px;
+    padding:24px 24px 26px;
+  }
+  .sheet-bar{display:none;}
+  .toast{
+    left:calc(214px + 50%);
+    transform:translateX(-50%) translateY(6px);
+  }
+  .toast.show{
+    transform:translateX(-50%) translateY(0);
+  }
+}
+
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 
 /* PRINT */
@@ -504,15 +640,15 @@ body[data-theme="light"]::before{opacity:0.35;}
           <div class="detail-sub" id="dSub"></div>
         </div>
       </div>
-      <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>overall score</div><div class="star-row" id="starRow"></div></div>
-      <div class="panel">
+      <div class="panel panel-score"><div class="panel-hdr"><div class="panel-hdr-dot"></div>overall score</div><div class="star-row" id="starRow"></div></div>
+      <div class="panel panel-profile">
         <div class="panel-hdr"><div class="panel-hdr-dot"></div>flavour profile</div>
         <div style="display:flex;justify-content:center;padding:4px 0 12px;">
           <svg id="mainRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
         <div class="sl-grid" id="slGrid"></div>
       </div>
-      <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
+      <div class="panel panel-notes"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
       <div class="detail-actions">
         <button class="btn-s" type="button" onclick="editCurrentWine()">edit wine</button>
         <button class="btn-s" type="button" onclick="moveWine(-1)">move earlier</button>
