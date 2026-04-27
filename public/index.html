@@ -72,6 +72,8 @@ body[data-theme="light"]{
 .nav-item .ni{font-size:16px;line-height:1;}
 .nav-item.active{color:var(--accent);border-color:rgba(200,150,60,0.28);background:rgba(200,150,60,0.08);box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);}
 .nav-item.active::after{content:'';position:absolute;top:0;left:22%;right:22%;height:1px;background:var(--accent);}
+.nav-leave{border-color:transparent!important;background:transparent!important;color:var(--fg-faint)!important;}
+.nav-leave:hover,.nav-leave:active{color:var(--fg-dim)!important;}
 
 /* UTILITY */
 .label{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin-bottom:10px;margin-top:2px;display:flex;align-items:center;gap:8px;}
@@ -769,6 +771,7 @@ body[data-theme="light"]::before{opacity:0.35;}
   <div class="nav-item active" id="nav-wines" onclick="tab('wines')"><span class="ni">🍷</span><span>Wines</span></div>
   <div class="nav-item" id="nav-rate" onclick="tab('rate')"><span class="ni">⭐</span><span>Rate</span></div>
   <div class="nav-item" id="nav-compare" onclick="tab('compare')"><span class="ni">◈</span><span>Compare</span></div>
+  <div class="nav-item nav-leave" id="nav-leave" onclick="leaveSession()"><span class="ni">←</span><span>Leave</span></div>
   <!-- dashboard nav (logged in, no session) -->
   <div class="nav-item" id="nav-new" style="display:none" onclick="showLobby()"><span class="ni">＋</span><span>New tasting</span></div>
   <div class="nav-item" id="nav-saved" style="display:none" onclick="tab('saved')"><span class="ni">★</span><span>Saved</span></div>
@@ -1098,12 +1101,12 @@ async function joinSession(){
 }
 
 function showSessionNav(){
-  ['nav-wines','nav-rate','nav-compare'].forEach(id=>document.getElementById(id).style.display='');
+  ['nav-wines','nav-rate','nav-compare','nav-leave'].forEach(id=>document.getElementById(id).style.display='');
   ['nav-new','nav-saved','nav-history'].forEach(id=>document.getElementById(id).style.display='none');
   document.getElementById('mainNav').style.display='flex';
 }
 function showDashboardNav(){
-  ['nav-wines','nav-rate','nav-compare'].forEach(id=>document.getElementById(id).style.display='none');
+  ['nav-wines','nav-rate','nav-compare','nav-leave'].forEach(id=>document.getElementById(id).style.display='none');
   ['nav-new','nav-saved','nav-history'].forEach(id=>document.getElementById(id).style.display='');
   document.getElementById('mainNav').style.display='flex';
 }
