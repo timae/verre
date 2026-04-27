@@ -107,6 +107,7 @@ body[data-theme="light"]{
 .wine-card:only-child{border-radius:4px;}
 .wc-num{font-size:10px;color:var(--fg-faint);width:20px;flex-shrink:0;text-align:right;font-weight:700;}
 .wc-icon{font-size:18px;flex-shrink:0;width:26px;text-align:center;}
+.wc-thumb{width:34px;height:46px;border-radius:10px;object-fit:cover;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);background:var(--bg3);}
 .wc-body{flex:1;min-width:0;}
 .wc-name{font-family:var(--serif);font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;color:var(--fg);}
 .wc-meta{font-size:10px;color:var(--fg-dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
@@ -166,6 +167,18 @@ body[data-theme="light"]{
 .row2{display:flex;gap:8px;}.row2 .field{flex:1;}
 .invite-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin:14px 0 16px;}
 .invite-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
+.session-note{font-size:10px;color:var(--fg-dim);line-height:1.7;margin:-4px 0 14px;}
+.session-note strong{color:var(--fg);font-weight:700;}
+.photo-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin-bottom:14px;}
+.photo-preview{width:100%;aspect-ratio:4/3;border-radius:14px;object-fit:cover;background:var(--bg3);border:1px dashed rgba(255,255,255,0.08);display:none;}
+.photo-preview.show{display:block;}
+.photo-empty{border:1px dashed rgba(255,255,255,0.08);border-radius:14px;padding:22px 16px;text-align:center;font-size:10px;letter-spacing:0.08em;text-transform:uppercase;color:var(--fg-faint);line-height:1.8;}
+.photo-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+.photo-status{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-top:10px;min-height:18px;}
+.photo-status.busy{color:var(--accent2);}
+.photo-status.err{color:#C46A6A;}
+.detail-media{margin-bottom:10px;border-radius:18px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);}
+.detail-photo{display:block;width:100%;max-height:260px;object-fit:cover;}
 .invite-url{display:block;width:100%;padding:12px 13px;border:1px solid var(--border2);border-radius:12px;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:11px;line-height:1.5;word-break:break-all;text-decoration:none;}
 .invite-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
 .btn-s{padding:12px 10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-dim);cursor:pointer;}
@@ -336,6 +349,7 @@ body[data-theme="light"]::before{opacity:0.35;}
   .subhead{display:block;}
   .subhead-copy{margin-top:6px;}
   .invite-actions{grid-template-columns:1fr;}
+  .photo-actions{grid-template-columns:1fr;}
 }
 
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
@@ -510,6 +524,17 @@ body[data-theme="light"]::before{opacity:0.35;}
   <div class="sheet">
     <div class="sheet-bar"></div>
     <div class="sheet-title">Add wine <span class="sheet-title-tag">shared</span></div>
+    <div class="photo-box">
+      <div class="fl">bottle photo</div>
+      <img class="photo-preview" id="photoPreview" alt="Bottle preview">
+      <div class="photo-empty" id="photoEmpty">attach a bottle photo or scan a label</div>
+      <div class="photo-actions">
+        <button class="btn-s" type="button" onclick="pickBottlePhoto()">choose photo</button>
+        <button class="btn-s" type="button" onclick="scanBottleLabel()">read label</button>
+      </div>
+      <div class="photo-status" id="photoStatus">manual entry and photo-assisted entry both work here.</div>
+      <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="handleBottlePhoto(event)">
+    </div>
     <div class="field"><div class="fl">name *</div><input class="fi" id="aN" type="text" placeholder="Château de Whatever, 2019"></div>
     <div class="row2">
       <div class="field"><div class="fl">producer</div><input class="fi" id="aP" placeholder="Domaine…"></div>
@@ -538,6 +563,7 @@ body[data-theme="light"]::before{opacity:0.35;}
     <div class="sheet-title">Session <span class="sheet-title-tag" id="sessCodeTag"></span></div>
     <div class="field"><div class="fl">your name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
     <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:16px;line-height:1.6;"></div>
+    <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
     <div class="invite-box">
       <div class="fl">invite link</div>
       <div class="invite-copy">Share the link or let people scan the QR code to land directly on this session code.</div>
@@ -581,6 +607,7 @@ let S={
 };
 let cScore=0, cFl={};
 let theme=localStorage.getItem('vr_theme') || 'dark';
+let addPhotoFile=null, addPhotoDataUrl='';
 
 function persist(){
   sessionStorage.setItem('vr_user',S.user);
@@ -808,6 +835,91 @@ function sectionHero(kicker,title,copy,cards){
     </div>
   </div>`;
 }
+function wineMediaHtml(w){
+  return w.image ? `<img class="wc-thumb" src="${w.image}" alt="${w.name}">` : `<div class="wc-icon">${ICO[w.type]}</div>`;
+}
+function compareMediaHtml(w){
+  return w.image ? `<img class="wc-thumb" src="${w.image}" alt="${w.name}">` : `<div class="cmp-icon">${ICO[w.type]}</div>`;
+}
+function setPhotoStatus(message,kind=''){
+  const el=document.getElementById('photoStatus');
+  el.textContent=message;
+  el.className=`photo-status${kind ? ' '+kind : ''}`;
+}
+function resetBottlePhoto(){
+  addPhotoFile=null;
+  addPhotoDataUrl='';
+  const preview=document.getElementById('photoPreview');
+  const empty=document.getElementById('photoEmpty');
+  const input=document.getElementById('photoInput');
+  if(preview){preview.classList.remove('show');preview.removeAttribute('src');}
+  if(empty) empty.style.display='block';
+  if(input) input.value='';
+  setPhotoStatus('manual entry and photo-assisted entry both work here.');
+}
+function pickBottlePhoto(){
+  document.getElementById('photoInput').click();
+}
+async function fileToDataUrl(file){
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(reader.error || new Error('file read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+async function resizeBottleImage(file){
+  const src=await fileToDataUrl(file);
+  const img=await new Promise((resolve,reject)=>{
+    const el=new Image();
+    el.onload=()=>resolve(el);
+    el.onerror=()=>reject(new Error('image load failed'));
+    el.src=src;
+  });
+  const maxSide=1200;
+  const scale=Math.min(1,maxSide/Math.max(img.width,img.height));
+  const canvas=document.createElement('canvas');
+  canvas.width=Math.max(1,Math.round(img.width*scale));
+  canvas.height=Math.max(1,Math.round(img.height*scale));
+  const ctx=canvas.getContext('2d');
+  ctx.drawImage(img,0,0,canvas.width,canvas.height);
+  return canvas.toDataURL('image/jpeg',0.82);
+}
+async function handleBottlePhoto(event){
+  const file=event.target.files?.[0];
+  if(!file) return;
+  addPhotoFile=file;
+  addPhotoDataUrl=await resizeBottleImage(file);
+  const preview=document.getElementById('photoPreview');
+  const empty=document.getElementById('photoEmpty');
+  preview.src=addPhotoDataUrl;
+  preview.classList.add('show');
+  empty.style.display='none';
+  setPhotoStatus('photo attached. you can add manually or read the label from this image.');
+}
+async function scanBottleLabel(){
+  if(!addPhotoFile){
+    pickBottlePhoto();
+    setPhotoStatus('choose a bottle photo first, then tap read label again.');
+    return;
+  }
+  const form=new FormData();
+  form.append('image',addPhotoFile);
+  setPhotoStatus('reading label…','busy');
+  try{
+    const res=await fetch(`/api/session/${S.code}/wines/extract-label`,{method:'POST',body:form});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error || 'label extraction failed');
+    if(data.name) document.getElementById('aN').value=data.name;
+    if(data.producer) document.getElementById('aP').value=data.producer;
+    if(data.vintage) document.getElementById('aV').value=data.vintage;
+    if(data.grape) document.getElementById('aG').value=data.grape;
+    if(data.type && data.type!=='unknown') sel(data.type);
+    setPhotoStatus(data.notes || 'label read complete. check the fields before saving.');
+  }catch(err){
+    setPhotoStatus(err.message || 'could not read label','err');
+  }
+}
 
 // ── WINES LIST ────────────────────────────────
 function rWines(){
@@ -834,7 +946,7 @@ function rWines(){
     const sc=mr[w.id]?.score||0;
     return `<div class="wine-card tc-${w.type}" onclick="openDetail('${w.id}','wines')">
       <div class="wc-num">${String(i+1).padStart(2,'0')}</div>
-      <div class="wc-icon">${ICO[w.type]}</div>
+      ${wineMediaHtml(w)}
       <div class="wc-body">
         <div class="wc-name">${w.name}</div>
         <div class="wc-meta">${[LBL[w.type],w.producer,w.vintage,w.grape].filter(Boolean).join(' · ')}</div>
@@ -868,7 +980,7 @@ function rRate(){
     const sc=mr[w.id]?.score||0;
     return `<div class="wine-card tc-${w.type}" onclick="openDetail('${w.id}','rate')">
       <div class="wc-num">${String(i+1).padStart(2,'0')}</div>
-      <div class="wc-icon">${ICO[w.type]}</div>
+      ${wineMediaHtml(w)}
       <div class="wc-body"><div class="wc-name">${w.name}</div><div class="wc-meta">${LBL[w.type]}${w.vintage?' · '+w.vintage:''}</div></div>
       <div class="wc-right">
         <div style="font-size:18px;color:${sc?'var(--accent2)':'var(--fg-faint)'}">${sc?'✓':'○'}</div>
@@ -882,6 +994,7 @@ function rRate(){
 function openAdd(){
   ['aN','aP','aV','aG'].forEach(i=>document.getElementById(i).value='');
   S.selType='';document.querySelectorAll('.chip').forEach(c=>c.removeAttribute('data-sel'));
+  resetBottlePhoto();
   document.getElementById('addModal').classList.add('open');
   setTimeout(()=>document.getElementById('aN').focus(),320);
 }
@@ -895,7 +1008,7 @@ async function addWine(){
     await api(`/session/${S.code}/wines`,{method:'POST',body:{
       name:nm,producer:document.getElementById('aP').value.trim(),
       vintage:document.getElementById('aV').value.trim(),
-      grape:document.getElementById('aG').value.trim(),type:S.selType,
+      grape:document.getElementById('aG').value.trim(),type:S.selType,image:addPhotoDataUrl,
     }});
     closeAdd();await refresh();toast(nm+' added');
   }catch(e){toast('error adding wine');}
@@ -912,6 +1025,12 @@ function openDetail(id,from){
   cFl=FL.reduce((o,f)=>({...o,[f.k]:0}),{});
   if(ex.flavors)Object.assign(cFl,ex.flavors);
   document.getElementById('noteTa').value=ex.notes||'';
+  const existingMedia=document.getElementById('detailMedia');
+  if(existingMedia) existingMedia.remove();
+  if(w.image){
+    const hdr=document.querySelector('#scr-detail .screen-shell');
+    hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.image}" alt="${w.name}"></div>`);
+  }
   buildStars();buildSliders();drawRadar('mainRadar',cFl,w.type,240);
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   const scr=document.getElementById('scr-detail');
@@ -1074,7 +1193,7 @@ function rCompare(){
   rated.forEach(w=>{
     const r=ratings[w.id];
     h+=`<div class="cmp-card"><div class="cmp-card-hdr">
-      <div class="cmp-icon">${ICO[w.type]}</div>
+      ${compareMediaHtml(w)}
       <div class="cmp-info"><div class="cmp-name">${w.name}</div><div class="cmp-sub">${[LBL[w.type],w.producer,w.vintage].filter(Boolean).join(' · ')}</div>
         <div class="mini-stars" style="margin-top:4px">${starsHtml(r.score)}</div></div>
       <div class="cmp-score">${r.score}</div></div>
@@ -1107,7 +1226,7 @@ function renderAllOverlay(){
     if(!usersWithRating.length)return;
     const avgScore=Math.round(usersWithRating.reduce((s,u)=>s+S.allRatings[u][w.id].score,0)/usersWithRating.length*10)/10;
     h+=`<div class="cmp-card">
-      <div class="cmp-card-hdr"><div class="cmp-icon">${ICO[w.type]}</div>
+      <div class="cmp-card-hdr">${compareMediaHtml(w)}
         <div class="cmp-info"><div class="cmp-name">${w.name}</div>
         <div class="cmp-sub">${usersWithRating.length} rating${usersWithRating.length>1?'s':''} · avg ${avgScore}</div></div>
         <div class="cmp-score">${avgScore}</div></div>
