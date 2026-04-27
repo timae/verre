@@ -30,8 +30,8 @@ body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;bac
 body[data-theme="light"]{
   --bg:#F6F0E6;--bg2:#FBF7F0;--bg3:#EFE6D8;--bg4:#E5D8C4;
   --border:#D9CBB9;--border2:#C8B8A2;
-  --fg:#2A241D;--fg-dim:#7B6D5E;--fg-faint:#B8AA98;
-  --accent:#A56A27;--accent2:#5D8761;
+  --fg:#231D17;--fg-dim:#605244;--fg-faint:#8A7B6B;
+  --accent:#9A5F1D;--accent2:#4B7750;
   --bg-grad1:rgba(196,143,74,0.14);--bg-grad2:rgba(112,157,187,0.12);--bg-grad3:#FBF7F0;--bg-grad4:#F1E7D9;
   --ambient-grad:rgba(93,135,97,0.08);--chrome-bg:rgba(251,247,240,0.84);--nav-bg:rgba(247,241,233,0.9);
   color-scheme:light;
@@ -44,6 +44,8 @@ body[data-theme="light"]{
 .hdr-right{display:flex;align-items:center;gap:8px;}
 .theme-btn{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border:1px solid var(--border);border-radius:10px;background:var(--bg2);color:var(--fg-dim);cursor:pointer;font-size:15px;line-height:1;}
 .theme-btn:active{border-color:var(--accent);color:var(--accent);}
+.share-btn{height:34px;display:flex;align-items:center;justify-content:center;gap:6px;padding:0 11px;border:1px solid rgba(143,184,122,0.28);border-radius:10px;background:rgba(143,184,122,0.1);color:var(--accent2);cursor:pointer;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:none;white-space:nowrap;}
+.share-btn:active{border-color:var(--accent);color:var(--accent);}
 .code-pill{font-family:var(--mono);font-size:10px;letter-spacing:0.1em;color:var(--accent2);border:1px solid rgba(143,184,122,0.3);background:rgba(143,184,122,0.08);padding:4px 10px;border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:6px;}
 .code-pill:active{background:rgba(143,184,122,0.2);}
 .who-btn{font-family:var(--mono);font-size:10px;letter-spacing:0.06em;color:var(--fg-dim);border:1px solid var(--border);background:var(--bg2);padding:5px 10px;border-radius:3px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:border-color .15s,color .15s;}
@@ -267,12 +269,13 @@ body[data-theme="light"] .btn-s,
 body[data-theme="light"] .export-btn,
 body[data-theme="light"] .user-tab,
 body[data-theme="light"] .chip{
-  background:linear-gradient(180deg,rgba(255,255,255,0.75),rgba(255,255,255,0.48));
-  border-color:rgba(86,66,42,0.14);
+  background:linear-gradient(180deg,rgba(255,255,255,0.92),rgba(248,241,231,0.82));
+  border-color:rgba(86,66,42,0.18);
 }
-body[data-theme="light"] .lobby-form{background:linear-gradient(180deg,rgba(255,255,255,0.92),rgba(249,243,234,0.84));}
+body[data-theme="light"] .lobby-form{background:linear-gradient(180deg,rgba(255,255,255,0.98),rgba(247,239,229,0.92));}
 body[data-theme="light"] .code-pill,
 body[data-theme="light"] .who-btn,
+body[data-theme="light"] .share-btn,
 body[data-theme="light"] .theme-btn,
 body[data-theme="light"] .back,
 body[data-theme="light"] .fi,
@@ -280,6 +283,40 @@ body[data-theme="light"] .notes-ta,
 body[data-theme="light"] .invite-url{background:rgba(255,255,255,0.88);}
 body[data-theme="light"] .qr-wrap{background:rgba(255,255,255,0.55);border-color:rgba(86,66,42,0.12);}
 body[data-theme="light"] .btn-p{color:#FFF8EF;}
+body[data-theme="light"] .hero-title,
+body[data-theme="light"] .subhead-title,
+body[data-theme="light"] .lobby-title,
+body[data-theme="light"] .feature-title,
+body[data-theme="light"] .sheet-title{color:#2B2219;}
+body[data-theme="light"] .hero-copy,
+body[data-theme="light"] .lobby-copy,
+body[data-theme="light"] .feature-copy,
+body[data-theme="light"] .stat-sub,
+body[data-theme="light"] .subhead-copy,
+body[data-theme="light"] .cmp-sub,
+body[data-theme="light"] .detail-sub,
+body[data-theme="light"] .wc-meta,
+body[data-theme="light"] .invite-copy,
+body[data-theme="light"] .leg-item,
+body[data-theme="light"] .empty-sub{color:#6A5B4B;}
+body[data-theme="light"] .empty-msg,
+body[data-theme="light"] .wc-name,
+body[data-theme="light"] .detail-name,
+body[data-theme="light"] .cmp-name,
+body[data-theme="light"] .dt-name,
+body[data-theme="light"] .stat-value{color:#231D17;}
+body[data-theme="light"] .label,
+body[data-theme="light"] .fl,
+body[data-theme="light"] .panel-hdr,
+body[data-theme="light"] .stat-label{color:#746554;}
+body[data-theme="light"] .lobby-badge,
+body[data-theme="light"] .code-pill,
+body[data-theme="light"] .share-btn{color:#4F7753;}
+body[data-theme="light"] .nav-item.active,
+body[data-theme="light"] .user-tab.active{color:#8D5417;}
+body[data-theme="light"] .toast{background:#FFFDF9;}
+body[data-theme="light"] .dt-row:nth-child(even){background:rgba(119,91,59,0.035);}
+body[data-theme="light"] .cmp-note{color:#594B3E;border-color:rgba(86,66,42,0.18);}
 body[data-theme="light"]::before{opacity:0.35;}
 
 /* LOADING */
@@ -340,6 +377,7 @@ body[data-theme="light"]::before{opacity:0.35;}
   <div class="hdr-logo">Verre <span class="logo-tag">v2.2</span></div>
   <div class="hdr-right">
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle color theme">◐</button>
+    <button class="share-btn" id="shareBtn" style="display:none" onclick="quickShareInvite()">↗ Share a Glass</button>
     <div class="code-pill" id="codePill" style="display:none" onclick="copyCode()">
       <span id="codeText"></span>
     </div>
@@ -603,6 +641,7 @@ function enterSession(){
   document.getElementById('scr-lobby').style.display='none';
   document.getElementById('mainNav').style.display='flex';
   document.getElementById('codePill').style.display='flex';
+  document.getElementById('shareBtn').style.display='flex';
   document.getElementById('codeText').textContent=S.code;
   updateWho();
   syncInviteUI();
@@ -617,6 +656,7 @@ function leaveSession(){
   clearInterval(pollInterval);
   document.getElementById('mainNav').style.display='none';
   document.getElementById('codePill').style.display='none';
+  document.getElementById('shareBtn').style.display='none';
   closeSess();
   const url=new URL(window.location.href);
   url.searchParams.delete('join');
@@ -717,6 +757,14 @@ async function shareInvite(){
       url:inviteUrl(),
     });
   }catch(e){}
+}
+async function quickShareInvite(){
+  if(!S.code) return;
+  if(navigator.share){
+    await shareInvite();
+    return;
+  }
+  await copyInviteLink();
 }
 function applyJoinCodeFromUrl(){
   const code=new URL(window.location.href).searchParams.get('join');
@@ -932,16 +980,19 @@ function smoothPath(points,tension=0.9){
   }
   return d+' Z';
 }
+function isLightTheme(){ return theme==='light'; }
+function radarGridStroke(){ return isLightTheme() ? 'rgba(86,66,42,0.12)' : 'rgba(255,255,255,0.04)'; }
+function radarLabelFill(){ return isLightTheme() ? 'rgba(96,82,68,0.92)' : 'rgba(106,102,88,0.9)'; }
 function drawRadar(id,flavors,type,sz,over){
   const svg=document.getElementById(id);if(!svg)return;
   const cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
-  for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
+  for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="${radarGridStroke()}" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
   FL.forEach((f,i)=>{
     const a=(Math.PI*2*i/n)-Math.PI/2;
-    h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;
+    h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="${radarGridStroke()}" stroke-width="1"/>`;
     const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);
     const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';
-    h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${sz<230?'7':'7.5'}" fill="rgba(106,102,88,0.9)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;
+    h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${sz<230?'7':'7.5'}" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;
   });
   const points=flavorPoints(flavors,cx,cy,R,n);
   const dp=smoothPath(points);
@@ -1075,13 +1126,13 @@ function drawAllOverlays(){
     const leg=document.getElementById('alleg_'+w.id);
     if(!svg)return;
     const sz=240,cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
-    for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
+    for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="${radarGridStroke()}" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
     FL.forEach((f,i)=>{
       const a=(Math.PI*2*i/n)-Math.PI/2;
-      h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;
+      h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="${radarGridStroke()}" stroke-width="1"/>`;
       const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);
       const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';
-      h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="rgba(106,102,88,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;
+      h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;
     });
     let legH='';
     users.forEach((u,idx)=>{
@@ -1099,8 +1150,8 @@ function drawOverlay(wines,ratings){
   const svg=document.getElementById('overlayR'),leg=document.getElementById('leg');
   if(!svg)return;
   const sz=240,cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
-  for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
-  FL.forEach((f,i)=>{const a=(Math.PI*2*i/n)-Math.PI/2;h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>`;const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="rgba(106,102,88,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;});
+  for(let l=1;l<=5;l++) h+=`<polygon points="${ppts(n,(R/5)*l,cx,cy)}" fill="none" stroke="${radarGridStroke()}" stroke-width="1" stroke-dasharray="${l===5?'none':'2,3'}"/>`;
+  FL.forEach((f,i)=>{const a=(Math.PI*2*i/n)-Math.PI/2;h+=`<line x1="${cx}" y1="${cy}" x2="${cx+R*Math.cos(a)}" y2="${cy+R*Math.sin(a)}" stroke="${radarGridStroke()}" stroke-width="1"/>`;const lx=cx+(R+24)*Math.cos(a),ly=cy+(R+24)*Math.sin(a);const anch=Math.cos(a)>0.15?'start':Math.cos(a)<-0.15?'end':'middle';h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.08em">${f.l.toUpperCase()}</text>`;});
   let legH='';
   wines.forEach((w,i)=>{
     const col=CCOL[i%CCOL.length],r=ratings[w.id];
