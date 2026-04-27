@@ -193,6 +193,26 @@ app.get('/api/session/:code/wines', async (req, res) => {
   res.json(JSON.parse(raw));
 });
 
+// POST /api/session/:code/visit — record that a logged-in user joined this session
+app.post('/api/session/:code/visit', async (req, res) => {
+  if (!req.user) return res.json({ ok: true }); // no-op for anonymous
+  const c = req.params.code.toUpperCase();
+  const meta = await redis.get(k.meta(c));
+  if (!meta) return res.status(404).json({ error: 'session not found' });
+  try {
+    await pgUpsertSession(c, JSON.parse(meta));
+    await pool.query(
+      `INSERT INTO session_members (user_id, session_code) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [req.user.userId, c]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('visit error:', err.message);
+    res.json({ ok: true }); // non-fatal
+  }
+});
+
 // POST /api/session/:code/wines — add a wine
 app.post('/api/session/:code/wines', async (req, res) => {
   const c = req.params.code.toUpperCase();

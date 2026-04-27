@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS ratings (
   UNIQUE (wine_id, rater_name)
 );
 
+CREATE TABLE IF NOT EXISTS session_members (
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_code CHAR(4) NOT NULL,
+  joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (user_id, session_code)
+);
+
 CREATE TABLE IF NOT EXISTS bookmarks (
   id       SERIAL PRIMARY KEY,
   user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

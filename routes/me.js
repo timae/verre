@@ -4,18 +4,20 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// GET /api/me/sessions — past sessions the user has rated in
+// GET /api/me/sessions — all sessions the user has visited
 router.get('/sessions', requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT s.id, s.code, s.host_name, s.created_at, s.archived_at,
-              COUNT(DISTINCT r.wine_id) AS wines_rated,
-              ROUND(AVG(r.score), 1)   AS avg_score
-       FROM sessions s
-       JOIN ratings r ON r.wine_id IN (SELECT id FROM wines WHERE session_id = s.id)
-       WHERE r.user_id = $1
-       GROUP BY s.id
-       ORDER BY s.created_at DESC
+      `SELECT s.id, s.code, s.host_name, s.created_at, sm.joined_at,
+              COUNT(DISTINCT r.id) AS wines_rated,
+              ROUND(AVG(r.score), 1) AS avg_score
+       FROM session_members sm
+       JOIN sessions s ON s.code = sm.session_code
+       LEFT JOIN wines w ON w.session_id = s.id
+       LEFT JOIN ratings r ON r.wine_id = w.id AND r.user_id = $1
+       WHERE sm.user_id = $1
+       GROUP BY s.id, s.code, s.host_name, s.created_at, sm.joined_at
+       ORDER BY sm.joined_at DESC
        LIMIT 50`,
       [req.user.userId]
     );
