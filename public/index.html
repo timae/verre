@@ -650,20 +650,20 @@ body[data-theme="light"]::before{opacity:0.35;}
         <div id="lobbyAuthSection" class="lobby-account-guest">
           <div class="acct-headline">Your palate,<br>remembered.</div>
           <div class="acct-sub">Create a free account to save your history, bookmark wines, and build your flavour profile over time.</div>
-          <div class="auth-tabs" style="margin-bottom:14px;">
-            <button class="auth-tab active" id="latab-login" type="button" onclick="lobbyAuthTab(‘login’)">Sign in</button>
-            <button class="auth-tab" id="latab-register" type="button" onclick="lobbyAuthTab(‘register’)">Create account</button>
-          </div>
           <div id="lobbyFormLogin">
+            <div class="fl" style="margin-bottom:10px;font-size:11px;letter-spacing:0.1em;">Sign in</div>
             <div class="field"><div class="fl">email</div><input class="fi" id="laEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
             <div class="field"><div class="fl">password</div><input class="fi" id="laPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-            <button class="btn-p" onclick="lobbyLogin()" style="margin-top:8px;">→ sign in</button>
+            <button class="btn-p" type="button" onclick="lobbyLogin()" style="margin-top:8px;">→ sign in</button>
+            <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--fg-dim);">No account? <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="lobbyShowForm(‘register’)">Create one free</span></div>
           </div>
           <div id="lobbyFormRegister" style="display:none;">
+            <div class="fl" style="margin-bottom:10px;font-size:11px;letter-spacing:0.1em;">Create account</div>
             <div class="field"><div class="fl">name</div><input class="fi" id="laName" type="text" placeholder="firstname or alias"></div>
             <div class="field"><div class="fl">email</div><input class="fi" id="laRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
             <div class="field"><div class="fl">password</div><input class="fi" id="laRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
-            <button class="btn-p" onclick="lobbyRegister()" style="margin-top:8px;">→ create account</button>
+            <button class="btn-p" type="button" onclick="lobbyRegister()" style="margin-top:8px;">→ create account</button>
+            <div style="text-align:center;margin-top:12px;font-size:11px;color:var(--fg-dim);">Already have an account? <span style="color:var(--accent);cursor:pointer;text-decoration:underline;" onclick="lobbyShowForm(‘login’)">Sign in</span></div>
           </div>
           <div class="acct-perks" style="margin-top:16px;">
             <div class="acct-perk"><div class="acct-perk-dot"></div>Save and revisit any tasting session</div>
@@ -2226,11 +2226,9 @@ function openAuthModal(tab='login'){
   openSess();
   setTimeout(()=>sessSwitchAuthTab(tab),50);
 }
-function lobbyAuthTab(tab){
-  document.getElementById('lobbyFormLogin').style.display=tab==='login'?'':'none';
-  document.getElementById('lobbyFormRegister').style.display=tab==='register'?'':'none';
-  document.getElementById('latab-login').className='auth-tab'+(tab==='login'?' active':'');
-  document.getElementById('latab-register').className='auth-tab'+(tab==='register'?' active':'');
+function lobbyShowForm(which){
+  document.getElementById('lobbyFormLogin').style.display=which==='login'?'block':'none';
+  document.getElementById('lobbyFormRegister').style.display=which==='register'?'block':'none';
 }
 async function lobbyLogin(){
   const email=document.getElementById('laEmail').value.trim();
