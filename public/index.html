@@ -507,6 +507,18 @@ body[data-theme="light"]::before{opacity:0.35;}
   }
 }
 
+/* AUTH */
+.auth-toggle{font-size:11px;color:var(--fg-dim);text-align:center;cursor:pointer;margin-top:18px;padding-top:14px;border-top:1px solid var(--border);transition:color .15s;}
+.auth-toggle:hover{color:var(--fg);}
+.auth-box{display:none;margin-top:14px;}
+.auth-box.open{display:block;}
+.auth-tabs{display:flex;gap:1px;margin-bottom:14px;background:var(--bg3);border-radius:8px;padding:3px;}
+.auth-tab{flex:1;text-align:center;padding:7px;font-size:11px;font-weight:700;letter-spacing:0.05em;border-radius:6px;cursor:pointer;color:var(--fg-dim);transition:background .15s,color .15s;}
+.auth-tab.active{background:var(--bg2);color:var(--fg);}
+.auth-pill{height:34px;display:flex;align-items:center;gap:6px;padding:0 11px;border:1px solid rgba(200,150,60,0.3);border-radius:10px;background:rgba(200,150,60,0.08);color:var(--accent);cursor:pointer;font-size:10px;font-weight:700;letter-spacing:0.04em;}
+.auth-pill:active{background:rgba(200,150,60,0.18);}
+.auth-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);}
+
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 
 /* PRINT */
@@ -546,6 +558,7 @@ body[data-theme="light"]::before{opacity:0.35;}
   <div class="hdr-logo">Verre <span class="logo-tag">v2.2</span></div>
   <div class="hdr-right">
     <button class="theme-btn" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle color theme">◐</button>
+    <div class="auth-pill" id="authPill" style="display:none" onclick="toggleAuthBox()"></div>
     <button class="share-btn" id="shareBtn" style="display:none" onclick="quickShareInvite()">↗ Share a Glass</button>
     <div class="code-pill" id="codePill" style="display:none" onclick="copyCode()">
       <span id="codeText"></span>
@@ -583,6 +596,26 @@ body[data-theme="light"]::before{opacity:0.35;}
         </div>
         <button class="btn-g" onclick="joinSession()">→ join session</button>
         <button class="btn-g" onclick="openHof()" style="margin-top:24px;">★ hall of fame</button>
+
+        <!-- AUTH SECTION -->
+        <div class="auth-toggle" id="authToggle" onclick="toggleAuthBox()">sign in · save your tasting history</div>
+        <div class="auth-box" id="authBox">
+          <div class="auth-tabs">
+            <div class="auth-tab active" id="atab-login" onclick="switchAuthTab('login')">Sign in</div>
+            <div class="auth-tab" id="atab-register" onclick="switchAuthTab('register')">Create account</div>
+          </div>
+          <div id="authFormLogin">
+            <div class="field"><div class="fl">email</div><input class="fi" id="aEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+            <div class="field"><div class="fl">password</div><input class="fi" id="aPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+            <button class="btn-p" onclick="authLogin()" style="margin-top:8px;">→ sign in</button>
+          </div>
+          <div id="authFormRegister" style="display:none;">
+            <div class="field"><div class="fl">name</div><input class="fi" id="aRegName" type="text" placeholder="firstname or alias"></div>
+            <div class="field"><div class="fl">email</div><input class="fi" id="aRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+            <div class="field"><div class="fl">password</div><input class="fi" id="aRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
+            <button class="btn-p" onclick="authRegister()" style="margin-top:8px;">→ create account</button>
+          </div>
+        </div>
       </div>
 
       <div class="lobby-card lobby-secondary">
@@ -798,6 +831,8 @@ let S={
   allRatings: {},   // {userName: {wineId: {...}}}
   selType:'', curId:null, fromTab:'rate',
   cmpUser: '__me',  // compare view: show my ratings or a specific user
+  authToken: localStorage.getItem('vr_token')||'',
+  authUser: null,   // {id, name, email, role, pro}
 };
 let cScore=0, cFl={};
 let theme=localStorage.getItem('vr_theme') || 'dark';
@@ -930,10 +965,12 @@ async function validateAiKey(){
 }
 
 // ── API helpers ───────────────────────────────
-const api = (path,opts={}) => fetch('/api'+path,{
-  headers:{'Content-Type':'application/json'},...opts,
-  body:opts.body?JSON.stringify(opts.body):undefined,
-}).then(r=>{if(!r.ok)throw r;return r.json();});
+const api = (path,opts={}) => {
+  const headers={'Content-Type':'application/json',...(opts.headers||{})};
+  if(S.authToken) headers['Authorization']='Bearer '+S.authToken;
+  return fetch('/api'+path,{...opts,headers,body:opts.body?JSON.stringify(opts.body):undefined})
+    .then(r=>{if(!r.ok)throw r;return r.json();});
+};
 
 // ── LOBBY ─────────────────────────────────────
 async function createSession(){
@@ -1832,6 +1869,80 @@ function exportPDF(){rCompare();toast('opening print dialog…');setTimeout(()=>
 // ── TOAST ─────────────────────────────────────
 let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout(_tt);el.textContent=m;el.classList.add('show');_tt=setTimeout(()=>el.classList.remove('show'),2000);}
 
+// ── AUTH ──────────────────────────────────────
+function updateAuthUI(){
+  const pill=document.getElementById('authPill');
+  const toggle=document.getElementById('authToggle');
+  if(S.authUser){
+    pill.innerHTML=`<div class="auth-dot"></div>${S.authUser.name}`;
+    pill.style.display='flex';
+    pill.onclick=authLogout;
+    pill.title='click to sign out';
+    if(toggle) toggle.style.display='none';
+    document.getElementById('authBox').classList.remove('open');
+  } else {
+    pill.style.display='none';
+    if(toggle) toggle.style.display='block';
+  }
+}
+function toggleAuthBox(){
+  const box=document.getElementById('authBox');
+  box.classList.toggle('open');
+}
+function switchAuthTab(tab){
+  document.getElementById('authFormLogin').style.display=tab==='login'?'':'none';
+  document.getElementById('authFormRegister').style.display=tab==='register'?'':'none';
+  document.getElementById('atab-login').className='auth-tab'+(tab==='login'?' active':'');
+  document.getElementById('atab-register').className='auth-tab'+(tab==='register'?' active':'');
+}
+async function authLogin(){
+  const email=document.getElementById('aEmail').value.trim();
+  const password=document.getElementById('aPass').value;
+  if(!email||!password){toast('enter email and password');return;}
+  try{
+    const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    if(!res.ok){const e=await res.json();toast(e.error||'login failed');return;}
+    const {token,user}=await res.json();
+    S.authToken=token;S.authUser=user;
+    localStorage.setItem('vr_token',token);
+    toast('welcome back, '+user.name);
+    updateAuthUI();
+    // pre-fill lobby name if empty
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=user.name;
+  }catch{toast('login failed');}
+}
+async function authRegister(){
+  const name=document.getElementById('aRegName').value.trim();
+  const email=document.getElementById('aRegEmail').value.trim();
+  const password=document.getElementById('aRegPass').value;
+  if(!name||!email||!password){toast('fill in all fields');return;}
+  try{
+    const res=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
+    if(!res.ok){const e=await res.json();toast(e.error||'registration failed');return;}
+    const {token,user}=await res.json();
+    S.authToken=token;S.authUser=user;
+    localStorage.setItem('vr_token',token);
+    toast('account created — welcome, '+user.name);
+    updateAuthUI();
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=user.name;
+  }catch{toast('registration failed');}
+}
+function authLogout(){
+  S.authToken='';S.authUser=null;
+  localStorage.removeItem('vr_token');
+  updateAuthUI();
+  toast('signed out');
+}
+async function initAuth(){
+  if(!S.authToken)return;
+  try{
+    const res=await fetch('/api/auth/me',{headers:{'Authorization':'Bearer '+S.authToken}});
+    if(!res.ok){S.authToken='';localStorage.removeItem('vr_token');return;}
+    S.authUser=await res.json();
+    updateAuthUI();
+  }catch{S.authToken='';localStorage.removeItem('vr_token');}
+}
+
 // ── RESET RATING ──────────────────────────────
 async function resetRating(){
   if(!S.curId||!S.user)return;
@@ -1888,6 +1999,7 @@ document.addEventListener('keydown',e=>{
 
 // ── INIT ──────────────────────────────────────
 applyTheme(theme);
+initAuth();
 applyJoinCodeFromUrl();
 if(S.code && S.user){
   // rejoin existing session
