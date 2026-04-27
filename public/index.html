@@ -548,7 +548,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" type="button" onclick="pickBottlePhoto()">choose photo</button>
         <button class="btn-s" type="button" onclick="scanBottleLabel()">read label</button>
       </div>
-      <div class="photo-status" id="photoStatus">attach a bottle photo. with your OpenAI key, the label can prefill the form.</div>
+      <div class="photo-status" id="photoStatus">attach a bottle photo. with your saved provider key, the label can prefill the form.</div>
       <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="handleBottlePhoto(event)">
     </div>
     <div class="field"><div class="fl">name *</div><input class="fi" id="aN" type="text" placeholder="Château de Whatever, 2019"></div>
@@ -581,12 +581,18 @@ body[data-theme="light"]::before{opacity:0.35;}
     <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:16px;line-height:1.6;"></div>
     <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
     <div class="ai-box">
-      <div class="fl">OpenAI API key</div>
-      <div class="ai-copy">Optional. Stored only on this device. If present, “read label” uses your key. If empty, bottle photos are still saved for the overview and export, but nothing is scanned.</div>
-      <input class="fi" id="openaiKey" type="password" placeholder="sk-..." autocapitalize="off" autocomplete="off" spellcheck="false">
+      <div class="fl">label scan provider</div>
+      <div class="ai-copy">Optional. Keys stay on this device only, and scans go directly from this browser to the chosen provider. If no key is stored, bottle photos are still saved for the overview and export, but nothing is scanned.</div>
+      <div class="field">
+        <select class="fi" id="aiProvider" onchange="changeAiProvider()">
+          <option value="openai">OpenAI</option>
+          <option value="claude">Claude</option>
+        </select>
+      </div>
+      <input class="fi" id="aiKey" type="password" placeholder="sk-..." autocapitalize="off" autocomplete="off" spellcheck="false">
       <div class="ai-actions">
-        <button class="btn-s" onclick="saveOpenAiKey()">save key</button>
-        <button class="btn-s" onclick="clearOpenAiKey()">remove key</button>
+        <button class="btn-s" onclick="saveAiKey()">save key</button>
+        <button class="btn-s" onclick="clearAiKey()">remove key</button>
       </div>
       <div class="ai-status" id="aiStatus"></div>
     </div>
@@ -635,7 +641,11 @@ let cScore=0, cFl={};
 let theme=localStorage.getItem('vr_theme') || 'dark';
 let addPhotoFile=null, addPhotoDataUrl='';
 let editingWineId=null;
-const OPENAI_KEY_STORE='vr_openai_key';
+const AI_PROVIDER_STORE='vr_ai_provider';
+const AI_PROVIDERS={
+  openai:{label:'OpenAI',placeholder:'sk-...',keyStore:'vr_ai_key_openai'},
+  claude:{label:'Claude',placeholder:'sk-ant-...',keyStore:'vr_ai_key_claude'},
+};
 
 function persist(){
   sessionStorage.setItem('vr_user',S.user);
@@ -659,43 +669,62 @@ function inviteUrl(){
   url.searchParams.set('join',S.code);
   return url.toString();
 }
-function openAiKey(){
-  return localStorage.getItem(OPENAI_KEY_STORE) || '';
+function aiProvider(){
+  const saved=localStorage.getItem(AI_PROVIDER_STORE) || 'openai';
+  return AI_PROVIDERS[saved] ? saved : 'openai';
 }
-function hasOpenAiKey(){
-  return !!openAiKey().trim();
+function providerConfig(){ return AI_PROVIDERS[aiProvider()]; }
+function providerKey(provider=aiProvider()){
+  const cfg=AI_PROVIDERS[provider];
+  return cfg ? (localStorage.getItem(cfg.keyStore) || '') : '';
+}
+function hasProviderKey(provider=aiProvider()){
+  return !!providerKey(provider).trim();
 }
 function defaultPhotoStatus(hasPhoto=false){
-  if(hasOpenAiKey()){
+  const label=providerConfig().label;
+  if(hasProviderKey()){
     return hasPhoto
-      ? 'photo attached. read label can prefill the form using your OpenAI key.'
-      : 'attach a bottle photo. with your OpenAI key, the label can prefill the form.';
+      ? `photo attached. read label can prefill the form using your ${label} key.`
+      : `attach a bottle photo. with your ${label} key, the label can prefill the form.`;
   }
   return hasPhoto
     ? 'photo attached. no API key set, so this image is used for the list and export only.'
     : 'attach a bottle photo. without an API key, it is saved for the list and export only.';
 }
 function syncAiKeyUi(){
-  const input=document.getElementById('openaiKey');
+  const provider=aiProvider();
+  const cfg=providerConfig();
+  const sel=document.getElementById('aiProvider');
+  const input=document.getElementById('aiKey');
   const status=document.getElementById('aiStatus');
-  if(input) input.value=openAiKey();
-  if(status) status.textContent=hasOpenAiKey()
-    ? 'Stored on this device. Label scan is enabled here.'
-    : 'No key stored. Label scan is disabled on this device.';
+  if(sel) sel.value=provider;
+  if(input){
+    input.value=providerKey(provider);
+    input.placeholder=cfg.placeholder;
+  }
+  if(status) status.textContent=hasProviderKey(provider)
+    ? `${cfg.label} key stored on this device. Label scan is enabled here.`
+    : `No ${cfg.label} key stored. Label scan is disabled on this device.`;
 }
-function saveOpenAiKey(){
-  const value=document.getElementById('openaiKey').value.trim();
+function changeAiProvider(){
+  localStorage.setItem(AI_PROVIDER_STORE,document.getElementById('aiProvider').value);
+  syncAiKeyUi();
+  setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
+}
+function saveAiKey(){
+  const value=document.getElementById('aiKey').value.trim();
   if(!value){toast('enter an API key or remove it');return;}
-  localStorage.setItem(OPENAI_KEY_STORE,value);
+  localStorage.setItem(providerConfig().keyStore,value);
   syncAiKeyUi();
   setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
-  toast('OpenAI key saved on this device');
+  toast(providerConfig().label+' key saved on this device');
 }
-function clearOpenAiKey(){
-  localStorage.removeItem(OPENAI_KEY_STORE);
+function clearAiKey(){
+  localStorage.removeItem(providerConfig().keyStore);
   syncAiKeyUi();
   setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
-  toast('OpenAI key removed');
+  toast(providerConfig().label+' key removed');
 }
 
 // ── API helpers ───────────────────────────────
@@ -957,6 +986,152 @@ async function resizeBottleImage(file){
   ctx.drawImage(img,0,0,canvas.width,canvas.height);
   return canvas.toDataURL('image/jpeg',0.82);
 }
+function normalizeWineText(raw){
+  return String(raw || '')
+    .replace(/[|]/g,'I')
+    .replace(/[{}[\]()<>]/g,' ')
+    .replace(/[•·]/g,' ')
+    .replace(/[_~`]/g,' ')
+    .replace(/\s+/g,' ')
+    .trim();
+}
+function scoreWineLine(line){
+  const clean=normalizeWineText(line);
+  if(!clean) return -1;
+  const letters=(clean.match(/[A-Za-zÀ-ÿ]/g)||[]).length;
+  const digits=(clean.match(/\d/g)||[]).length;
+  const junk=(clean.match(/[^A-Za-zÀ-ÿ0-9 '&.-]/g)||[]).length;
+  const lengthScore=Math.max(0,22-Math.abs(clean.length-18));
+  return letters*2-digits*2-junk*4+lengthScore;
+}
+function parseWineText(rawLines){
+  const lines=(rawLines||[]).map(line=>normalizeWineText(line)).filter(Boolean);
+  const text=lines.join(' ');
+  const yearMatch=text.match(/\b(19|20)\d{2}\b/);
+  const upper=text.toUpperCase();
+  const skip=/^(WINE|VIN|PRODUCE OF|PRODUCT OF|CONTAINS|ALC|VOL|750ML|75CL|ESTATE BOTTLED)$/i;
+  const filtered=lines
+    .filter(line=>line.length>2 && line.length<50 && !skip.test(line))
+    .filter(line=>{
+      const letters=(line.match(/[A-Za-zÀ-ÿ]/g)||[]).length;
+      const junk=(line.match(/[^A-Za-zÀ-ÿ0-9 '&.-]/g)||[]).length;
+      return letters>=2 && junk<=Math.max(2,Math.floor(line.length*0.12));
+    });
+  const titleLines=filtered
+    .filter(line=>!/^\d+$/.test(line) && !/\b(19|20)\d{2}\b/.test(line))
+    .sort((a,b)=>scoreWineLine(b)-scoreWineLine(a))
+    .slice(0,3)
+    .sort((a,b)=>lines.indexOf(a)-lines.indexOf(b));
+  const name=titleLines.length ? titleLines.join(' ').replace(/\s{2,}/g,' ').trim() : (filtered[0]||'');
+  const producer=filtered.find(line=>line!==name && !name.includes(line) && !/\b(19|20)\d{2}\b/.test(line) && line.length>4) || '';
+  const grapeKeywords=['PINOT NOIR','CHARDONNAY','RIESLING','MERLOT','CABERNET','SYRAH','SHIRAZ','SAUVIGNON','MALBEC','TEMPRANILLO','CHENIN','GAMAY','NEBBIOLO','SANGIOVESE','PET-NAT','PET NAT','CUVEE','BRUT','ROSE'];
+  const grape=grapeKeywords.find(k=>upper.includes(k)) || '';
+  let type='unknown';
+  if(/\bROSE\b|\bROSÉ\b/.test(upper)) type='rose';
+  else if(/\bBRUT\b|\bCHAMPAGNE\b|\bSPARKLING\b|\bCREMANT\b|\bCAVA\b|\bPROSECCO\b|\bPET NAT\b|\bPET-NAT\b/.test(upper)) type='spark';
+  else if(/\bBLANC\b|\bBIANCO\b|\bWHITE\b|\bCHARDONNAY\b|\bRIESLING\b|\bSAUVIGNON BLANC\b|\bCHENIN\b/.test(upper)) type='white';
+  else if(/\bRED\b|\bROUGE\b|\bROSSO\b|\bPINOT NOIR\b|\bMERLOT\b|\bCABERNET\b|\bMALBEC\b|\bSYRAH\b|\bSHIRAZ\b|\bTEMPRANILLO\b|\bSANGIOVESE\b|\bNEBBIOLO\b/.test(upper)) type='red';
+  return {
+    name,
+    producer,
+    vintage:yearMatch ? yearMatch[0] : '',
+    grape,
+    type,
+    notes:filtered.slice(0,6).join(' • '),
+    lines,
+  };
+}
+function extractJsonText(value){
+  const text=String(value || '').trim();
+  if(!text) throw new Error('empty provider response');
+  const start=text.indexOf('{');
+  const end=text.lastIndexOf('}');
+  if(start===-1 || end===-1 || end<start) throw new Error('provider did not return JSON');
+  return JSON.parse(text.slice(start,end+1));
+}
+function normalizeScanResult(parsed){
+  const rawLines=Array.isArray(parsed?.lines) ? parsed.lines.map(line=>String(line || '')).filter(Boolean) : [];
+  return {
+    ...parseWineText(rawLines),
+    ...parsed,
+    lines:rawLines,
+  };
+}
+function dataUrlParts(dataUrl){
+  const match=String(dataUrl || '').match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if(!match) throw new Error('unsupported image data');
+  return {mediaType:match[1],base64:match[2]};
+}
+async function scanWithOpenAi(dataUrl,apiKey){
+  const res=await fetch('https://api.openai.com/v1/responses',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'Authorization':`Bearer ${apiKey}`,
+    },
+    body:JSON.stringify({
+      model:'gpt-4.1-mini',
+      input:[{
+        role:'user',
+        content:[
+          {type:'input_text',text:'Read this wine bottle label and extract visible bottle information. Return JSON only. If a field is unclear, use an empty string. Use type only from: red, white, spark, rose, nonalc, unknown. Put short visible fragments into lines and a brief summary into notes.'},
+          {type:'input_image',image_url:dataUrl,detail:'high'}
+        ]
+      }],
+      text:{
+        format:{
+          type:'json_schema',
+          name:'wine_label',
+          strict:true,
+          schema:{
+            type:'object',
+            additionalProperties:false,
+            properties:{
+              name:{type:'string'},
+              producer:{type:'string'},
+              vintage:{type:'string'},
+              grape:{type:'string'},
+              type:{type:'string',enum:['red','white','spark','rose','nonalc','unknown']},
+              notes:{type:'string'},
+              lines:{type:'array',items:{type:'string'}}
+            },
+            required:['name','producer','vintage','grape','type','notes','lines']
+          }
+        }
+      }
+    })
+  });
+  const payload=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(payload?.error?.message || payload?.error || 'OpenAI scan failed');
+  const raw=payload?.output_parsed || payload?.output_text;
+  return normalizeScanResult(typeof raw==='object' ? raw : extractJsonText(raw));
+}
+async function scanWithClaude(dataUrl,apiKey){
+  const {mediaType,base64}=dataUrlParts(dataUrl);
+  const res=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'x-api-key':apiKey,
+      'anthropic-version':'2023-06-01',
+    },
+    body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',
+      max_tokens:600,
+      messages:[{
+        role:'user',
+        content:[
+          {type:'image',source:{type:'base64',media_type:mediaType,data:base64}},
+          {type:'text',text:'Read this wine bottle label and extract visible bottle information. Return JSON only with keys name, producer, vintage, grape, type, notes, lines. If a field is unclear, use an empty string. Use type only from red, white, spark, rose, nonalc, unknown. lines must be an array of short visible text fragments.'}
+        ]
+      }]
+    })
+  });
+  const payload=await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(payload?.error?.message || payload?.error?.type || 'Claude scan failed');
+  const text=(payload?.content || []).filter(part=>part?.type==='text').map(part=>part.text).join('\n').trim();
+  return normalizeScanResult(extractJsonText(text));
+}
 async function handleBottlePhoto(event){
   const file=event.target.files?.[0];
   if(!file) return;
@@ -975,21 +1150,18 @@ async function scanBottleLabel(){
     setPhotoStatus('choose a bottle photo first, then tap read label again.');
     return;
   }
-  const apiKey=openAiKey().trim();
+  const provider=aiProvider();
+  const apiKey=providerKey(provider).trim();
   if(!apiKey){
-    setPhotoStatus('no OpenAI key set. this photo will still be saved for the list and export.','err');
+    setPhotoStatus(`no ${providerConfig().label} key set. this photo will still be saved for the list and export.`,'err');
     openSess();
     return;
   }
-  setPhotoStatus('reading label…','busy');
+  setPhotoStatus(`reading label with ${providerConfig().label}…`,'busy');
   try{
-    const res=await fetch(`/api/session/${S.code}/wines/extract-label`,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({image:addPhotoDataUrl,apiKey})
-    });
-    const parsed=await res.json();
-    if(!res.ok) throw new Error(parsed.error || 'label extraction failed');
+    const parsed=provider==='claude'
+      ? await scanWithClaude(addPhotoDataUrl,apiKey)
+      : await scanWithOpenAi(addPhotoDataUrl,apiKey);
     if(parsed.name) document.getElementById('aN').value=parsed.name;
     if(parsed.producer) document.getElementById('aP').value=parsed.producer;
     if(parsed.vintage) document.getElementById('aV').value=parsed.vintage;
@@ -1096,7 +1268,7 @@ function openEditWine(id){
     preview.src=wine.image;
     preview.classList.add('show');
     empty.style.display='none';
-    setPhotoStatus(hasOpenAiKey()?'existing bottle photo attached. replace it or scan it with your OpenAI key.':'existing bottle photo attached. replace it or keep it for the list and export.');
+    setPhotoStatus(hasProviderKey()?`existing bottle photo attached. replace it or scan it with your ${providerConfig().label} key.`:'existing bottle photo attached. replace it or keep it for the list and export.');
   }
   document.getElementById('addModal').classList.add('open');
   setTimeout(()=>document.getElementById('aN').focus(),320);
