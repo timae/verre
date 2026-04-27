@@ -1,22 +1,19 @@
 # ── Verre — Wine Tasting OS ───────────────────
-# Deploio requires the app to listen on $PORT (default 8080).
-# We use nginx:alpine's built-in envsubst template support.
+# Node.js backend + static frontend
+# Deploio provides $PORT (default 8080) and $REDIS_URL via env vars
 
-FROM nginx:alpine
+FROM node:20-alpine
 
-# Install envsubst (gettext)
-RUN apk add --no-cache gettext
+WORKDIR /app
 
-# Remove default nginx content
-RUN rm -rf /usr/share/nginx/html/*
+# Install deps first (layer cache)
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
 
-# Copy app
-COPY index.html /usr/share/nginx/html/index.html
-
-# nginx:alpine auto-processes files in /etc/nginx/templates/
-# replacing env vars (like $PORT) before starting
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+# Copy app code
+COPY server.js ./
+COPY public/ ./public/
 
 EXPOSE 8080
 
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["node", "server.js"]
