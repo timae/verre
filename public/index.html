@@ -1220,7 +1220,7 @@ async function sessAuthLogin(){
     localStorage.setItem('vr_token',body.token);
     if(!S.user)S.user=body.user.name;
     toast('welcome back, '+body.user.name);
-    updateWho();loadBookmarks();
+    updateWho();loadBookmarks();recordSessionVisit();
     // refresh modal sections
     openSess();
   }catch(err){console.error('sessAuthLogin:',err);toast('login failed — check console');}
@@ -1238,7 +1238,7 @@ async function sessAuthRegister(){
     localStorage.setItem('vr_token',body.token);
     if(!S.user)S.user=body.user.name;
     toast('account created — welcome, '+body.user.name);
-    updateWho();loadBookmarks();
+    updateWho();loadBookmarks();recordSessionVisit();
     openSess();
   }catch(err){console.error('sessAuthRegister:',err);toast('registration failed — check console');}
 }
@@ -2243,7 +2243,7 @@ async function authLogin(){
     S.authToken=body.token;S.authUser=body.user;
     localStorage.setItem('vr_token',body.token);
     toast('welcome back, '+body.user.name);
-    updateAuthUI();loadBookmarks();
+    updateAuthUI();loadBookmarks();recordSessionVisit();
     if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
   }catch(err){console.error('authLogin:',err);toast('login failed — check console');}
 }
@@ -2260,7 +2260,7 @@ async function authRegister(){
     S.authToken=body.token;S.authUser=body.user;
     localStorage.setItem('vr_token',body.token);
     toast('account created — welcome, '+body.user.name);
-    updateAuthUI();loadBookmarks();
+    updateAuthUI();loadBookmarks();recordSessionVisit();
     if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
   }catch(err){console.error('authRegister:',err);toast('registration failed — check console');}
 }
@@ -2308,6 +2308,11 @@ function updateBookmarkBtn(){
   const saved=S.bookmarks.has(S.curId);
   btn.textContent=saved?'★ saved':'☆ save wine';
 }
+function recordSessionVisit(){
+  if(S.authUser && S.code)
+    api(`/session/${S.code}/visit`,{method:'POST'}).catch(()=>{});
+}
+
 async function loadBookmarks(){
   if(!S.authUser)return;
   try{
