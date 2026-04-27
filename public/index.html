@@ -649,16 +649,26 @@ body[data-theme="light"]::before{opacity:0.35;}
         <!-- LOGGED OUT -->
         <div id="lobbyAuthSection" class="lobby-account-guest">
           <div class="acct-headline">Your palate,<br>remembered.</div>
-          <div class="acct-sub">Taste anonymously or create a free account to save your history, bookmark wines, and build your flavour profile over time.</div>
-          <div class="acct-perks">
+          <div class="acct-sub">Create a free account to save your history, bookmark wines, and build your flavour profile over time.</div>
+          <div class="auth-tabs" style="margin-bottom:14px;">
+            <div class="auth-tab active" id="latab-login" onclick="lobbyAuthTab(‘login’)">Sign in</div>
+            <div class="auth-tab" id="latab-register" onclick="lobbyAuthTab(‘register’)">Create account</div>
+          </div>
+          <div id="lobbyFormLogin">
+            <div class="field"><div class="fl">email</div><input class="fi" id="laEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+            <div class="field"><div class="fl">password</div><input class="fi" id="laPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+            <button class="btn-p" onclick="lobbyLogin()" style="margin-top:8px;">→ sign in</button>
+          </div>
+          <div id="lobbyFormRegister" style="display:none;">
+            <div class="field"><div class="fl">name</div><input class="fi" id="laName" type="text" placeholder="firstname or alias"></div>
+            <div class="field"><div class="fl">email</div><input class="fi" id="laRegEmail" type="email" placeholder="you@example.com" autocomplete="email"></div>
+            <div class="field"><div class="fl">password</div><input class="fi" id="laRegPass" type="password" placeholder="min 8 characters" autocomplete="new-password"></div>
+            <button class="btn-p" onclick="lobbyRegister()" style="margin-top:8px;">→ create account</button>
+          </div>
+          <div class="acct-perks" style="margin-top:16px;">
             <div class="acct-perk"><div class="acct-perk-dot"></div>Save and revisit any tasting session</div>
             <div class="acct-perk"><div class="acct-perk-dot"></div>Bookmark wines across sessions</div>
             <div class="acct-perk"><div class="acct-perk-dot"></div>Hall of Fame entries credited to your name</div>
-            <div class="acct-perk"><div class="acct-perk-dot"></div>Flavour radar profile over time</div>
-          </div>
-          <div class="acct-btns">
-            <button class="btn-p" onclick="openAuthModal(‘login’)">→ sign in</button>
-            <button class="btn-g" onclick="openAuthModal(‘register’)">create account</button>
           </div>
         </div>
 
@@ -2153,10 +2163,45 @@ function updateAuthUI(){
 }
 
 function openAuthModal(tab='login'){
-  // Open the session modal on the account section
   openSess();
-  // Switch to the right tab
   setTimeout(()=>sessSwitchAuthTab(tab),50);
+}
+function lobbyAuthTab(tab){
+  document.getElementById('lobbyFormLogin').style.display=tab==='login'?'':'none';
+  document.getElementById('lobbyFormRegister').style.display=tab==='register'?'':'none';
+  document.getElementById('latab-login').className='auth-tab'+(tab==='login'?' active':'');
+  document.getElementById('latab-register').className='auth-tab'+(tab==='register'?' active':'');
+}
+async function lobbyLogin(){
+  const email=document.getElementById('laEmail').value.trim();
+  const password=document.getElementById('laPass').value;
+  if(!email||!password){toast('enter email and password');return;}
+  try{
+    const res=await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password})});
+    let body;try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'login failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
+    toast('welcome back, '+body.user.name);
+    updateAuthUI();loadBookmarks();recordSessionVisit();
+  }catch(err){console.error('lobbyLogin:',err);toast('login failed — check console');}
+}
+async function lobbyRegister(){
+  const name=document.getElementById('laName').value.trim();
+  const email=document.getElementById('laRegEmail').value.trim();
+  const password=document.getElementById('laRegPass').value;
+  if(!name||!email||!password){toast('fill in all fields');return;}
+  try{
+    const res=await fetch('/api/auth/register',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,email,password})});
+    let body;try{body=await res.json();}catch{body={};}
+    if(!res.ok){toast(body.error||'registration failed ('+res.status+')');return;}
+    S.authToken=body.token;S.authUser=body.user;
+    localStorage.setItem('vr_token',body.token);
+    if(!document.getElementById('lobbyName').value)document.getElementById('lobbyName').value=body.user.name;
+    toast('account created — welcome, '+body.user.name);
+    updateAuthUI();loadBookmarks();recordSessionVisit();
+  }catch(err){console.error('lobbyRegister:',err);toast('registration failed — check console');}
 }
 
 async function loadLobbyUserData(){
