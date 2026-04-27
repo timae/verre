@@ -166,7 +166,11 @@ body[data-theme="light"]{
 .fi::placeholder{color:var(--fg-faint);}.fi:focus{border-color:var(--accent2);}
 .row2{display:flex;gap:8px;}.row2 .field{flex:1;}
 .invite-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin:14px 0 16px;}
+.ai-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin:0 0 16px;}
 .invite-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
+.ai-copy{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-bottom:12px;}
+.ai-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
+.ai-status{font-size:10px;color:var(--fg-dim);line-height:1.7;margin-top:10px;}
 .session-note{font-size:10px;color:var(--fg-dim);line-height:1.7;margin:-4px 0 14px;}
 .session-note strong{color:var(--fg);font-weight:700;}
 .photo-box{border:1px solid rgba(255,255,255,0.06);border-radius:18px;background:rgba(255,255,255,0.02);padding:16px;margin-bottom:14px;}
@@ -179,6 +183,8 @@ body[data-theme="light"]{
 .photo-status.err{color:#C46A6A;}
 .detail-media{margin-bottom:10px;border-radius:18px;overflow:hidden;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);}
 .detail-photo{display:block;width:100%;max-height:260px;object-fit:cover;}
+.detail-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 14px;}
+.detail-actions .btn-s{width:100%;}
 .invite-url{display:block;width:100%;padding:12px 13px;border:1px solid var(--border2);border-radius:12px;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:11px;line-height:1.5;word-break:break-all;text-decoration:none;}
 .invite-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:10px;}
 .btn-s{padding:12px 10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:12px;font-family:var(--mono);font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-dim);cursor:pointer;}
@@ -276,6 +282,7 @@ body[data-theme="light"] .lobby-card,
 body[data-theme="light"] .stat-card,
 body[data-theme="light"] .feature-item,
 body[data-theme="light"] .invite-box,
+body[data-theme="light"] .ai-box,
 body[data-theme="light"] .sheet,
 body[data-theme="light"] .nav-item,
 body[data-theme="light"] .btn-s,
@@ -305,6 +312,8 @@ body[data-theme="light"] .hero-copy,
 body[data-theme="light"] .lobby-copy,
 body[data-theme="light"] .feature-copy,
 body[data-theme="light"] .stat-sub,
+body[data-theme="light"] .ai-copy,
+body[data-theme="light"] .ai-status,
 body[data-theme="light"] .subhead-copy,
 body[data-theme="light"] .cmp-sub,
 body[data-theme="light"] .detail-sub,
@@ -349,6 +358,7 @@ body[data-theme="light"]::before{opacity:0.35;}
   .subhead{display:block;}
   .subhead-copy{margin-top:6px;}
   .invite-actions{grid-template-columns:1fr;}
+  .ai-actions{grid-template-columns:1fr;}
   .photo-actions{grid-template-columns:1fr;}
 }
 
@@ -503,6 +513,12 @@ body[data-theme="light"]::before{opacity:0.35;}
         <div class="sl-grid" id="slGrid"></div>
       </div>
       <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
+      <div class="detail-actions">
+        <button class="btn-s" type="button" onclick="editCurrentWine()">edit wine</button>
+        <button class="btn-s" type="button" onclick="moveWine(-1)">move earlier</button>
+        <button class="btn-s" type="button" onclick="moveWine(1)">move later</button>
+        <button class="btn-s" type="button" onclick="openSess()">share a glass</button>
+      </div>
       <button class="btn-p" onclick="saveRating()">→ commit rating</button>
       <button class="btn-g" onclick="goBack()">cancel</button>
       <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
@@ -523,7 +539,7 @@ body[data-theme="light"]::before{opacity:0.35;}
 <div class="overlay" id="addModal">
   <div class="sheet">
     <div class="sheet-bar"></div>
-    <div class="sheet-title">Add wine <span class="sheet-title-tag">shared</span></div>
+    <div class="sheet-title"><span id="addModalTitle">Add wine</span> <span class="sheet-title-tag">shared</span></div>
     <div class="photo-box">
       <div class="fl">bottle photo</div>
       <img class="photo-preview" id="photoPreview" alt="Bottle preview">
@@ -532,7 +548,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <button class="btn-s" type="button" onclick="pickBottlePhoto()">choose photo</button>
         <button class="btn-s" type="button" onclick="scanBottleLabel()">read label</button>
       </div>
-      <div class="photo-status" id="photoStatus">manual entry and PaddleOCR label scan both work here.</div>
+      <div class="photo-status" id="photoStatus">attach a bottle photo. with your OpenAI key, the label can prefill the form.</div>
       <input id="photoInput" type="file" accept="image/*" capture="environment" style="display:none" onchange="handleBottlePhoto(event)">
     </div>
     <div class="field"><div class="fl">name *</div><input class="fi" id="aN" type="text" placeholder="Château de Whatever, 2019"></div>
@@ -551,7 +567,7 @@ body[data-theme="light"]::before{opacity:0.35;}
       </div>
     </div>
     <div class="field"><div class="fl">grape / style</div><input class="fi" id="aG" placeholder="Pinot Noir, Pét-Nat…"></div>
-    <button class="btn-p" onclick="addWine()">→ add to session</button>
+    <button class="btn-p" id="addSaveBtn" onclick="saveWine()">→ add to session</button>
     <button class="btn-g" onclick="closeAdd()">cancel</button>
   </div>
 </div>
@@ -564,6 +580,16 @@ body[data-theme="light"]::before{opacity:0.35;}
     <div class="field"><div class="fl">your name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
     <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:16px;line-height:1.6;"></div>
     <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
+    <div class="ai-box">
+      <div class="fl">OpenAI API key</div>
+      <div class="ai-copy">Optional. Stored only on this device. If present, “read label” uses your key. If empty, bottle photos are still saved for the overview and export, but nothing is scanned.</div>
+      <input class="fi" id="openaiKey" type="password" placeholder="sk-..." autocapitalize="off" autocomplete="off" spellcheck="false">
+      <div class="ai-actions">
+        <button class="btn-s" onclick="saveOpenAiKey()">save key</button>
+        <button class="btn-s" onclick="clearOpenAiKey()">remove key</button>
+      </div>
+      <div class="ai-status" id="aiStatus"></div>
+    </div>
     <div class="invite-box">
       <div class="fl">invite link</div>
       <div class="invite-copy">Share the link or let people scan the QR code to land directly on this session code.</div>
@@ -608,6 +634,8 @@ let S={
 let cScore=0, cFl={};
 let theme=localStorage.getItem('vr_theme') || 'dark';
 let addPhotoFile=null, addPhotoDataUrl='';
+let editingWineId=null;
+const OPENAI_KEY_STORE='vr_openai_key';
 
 function persist(){
   sessionStorage.setItem('vr_user',S.user);
@@ -630,6 +658,44 @@ function inviteUrl(){
   const url=new URL(window.location.href);
   url.searchParams.set('join',S.code);
   return url.toString();
+}
+function openAiKey(){
+  return localStorage.getItem(OPENAI_KEY_STORE) || '';
+}
+function hasOpenAiKey(){
+  return !!openAiKey().trim();
+}
+function defaultPhotoStatus(hasPhoto=false){
+  if(hasOpenAiKey()){
+    return hasPhoto
+      ? 'photo attached. read label can prefill the form using your OpenAI key.'
+      : 'attach a bottle photo. with your OpenAI key, the label can prefill the form.';
+  }
+  return hasPhoto
+    ? 'photo attached. no API key set, so this image is used for the list and export only.'
+    : 'attach a bottle photo. without an API key, it is saved for the list and export only.';
+}
+function syncAiKeyUi(){
+  const input=document.getElementById('openaiKey');
+  const status=document.getElementById('aiStatus');
+  if(input) input.value=openAiKey();
+  if(status) status.textContent=hasOpenAiKey()
+    ? 'Stored on this device. Label scan is enabled here.'
+    : 'No key stored. Label scan is disabled on this device.';
+}
+function saveOpenAiKey(){
+  const value=document.getElementById('openaiKey').value.trim();
+  if(!value){toast('enter an API key or remove it');return;}
+  localStorage.setItem(OPENAI_KEY_STORE,value);
+  syncAiKeyUi();
+  setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
+  toast('OpenAI key saved on this device');
+}
+function clearOpenAiKey(){
+  localStorage.removeItem(OPENAI_KEY_STORE);
+  syncAiKeyUi();
+  setPhotoStatus(defaultPhotoStatus(!!addPhotoDataUrl));
+  toast('OpenAI key removed');
 }
 
 // ── API helpers ───────────────────────────────
@@ -722,6 +788,7 @@ async function openSess(){
   document.getElementById('sN').value=S.user;
   document.getElementById('sessCodeTag').textContent=S.code;
   syncInviteUI();
+  syncAiKeyUi();
   try{
     const info=await api(`/session/${S.code}`);
     document.getElementById('sessParticipants').innerHTML=
@@ -855,7 +922,12 @@ function resetBottlePhoto(){
   if(preview){preview.classList.remove('show');preview.removeAttribute('src');}
   if(empty) empty.style.display='block';
   if(input) input.value='';
-  setPhotoStatus('manual entry and local label scan both work here.');
+  setPhotoStatus(defaultPhotoStatus(false));
+}
+function setAddMode(editing){
+  editingWineId=editing?.id || null;
+  document.getElementById('addModalTitle').textContent=editingWineId?'Edit wine':'Add wine';
+  document.getElementById('addSaveBtn').textContent=editingWineId?'→ save changes':'→ add to session';
 }
 function pickBottlePhoto(){
   document.getElementById('photoInput').click();
@@ -895,19 +967,27 @@ async function handleBottlePhoto(event){
   preview.src=addPhotoDataUrl;
   preview.classList.add('show');
   empty.style.display='none';
-  setPhotoStatus('photo attached. you can add manually or scan the label from this image.');
+  setPhotoStatus(defaultPhotoStatus(true));
 }
 async function scanBottleLabel(){
-  if(!addPhotoFile){
+  if(!addPhotoDataUrl){
     pickBottlePhoto();
     setPhotoStatus('choose a bottle photo first, then tap read label again.');
     return;
   }
-  const form=new FormData();
-  form.append('image',addPhotoFile);
-  setPhotoStatus('reading label with PaddleOCR…','busy');
+  const apiKey=openAiKey().trim();
+  if(!apiKey){
+    setPhotoStatus('no OpenAI key set. this photo will still be saved for the list and export.','err');
+    openSess();
+    return;
+  }
+  setPhotoStatus('reading label…','busy');
   try{
-    const res=await fetch(`/api/session/${S.code}/wines/extract-label`,{method:'POST',body:form});
+    const res=await fetch(`/api/session/${S.code}/wines/extract-label`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({image:addPhotoDataUrl,apiKey})
+    });
     const parsed=await res.json();
     if(!res.ok) throw new Error(parsed.error || 'label extraction failed');
     if(parsed.name) document.getElementById('aN').value=parsed.name;
@@ -992,26 +1072,59 @@ function rRate(){
 
 // ── ADD WINE ──────────────────────────────────
 function openAdd(){
+  setAddMode(null);
   ['aN','aP','aV','aG'].forEach(i=>document.getElementById(i).value='');
   S.selType='';document.querySelectorAll('.chip').forEach(c=>c.removeAttribute('data-sel'));
   resetBottlePhoto();
   document.getElementById('addModal').classList.add('open');
   setTimeout(()=>document.getElementById('aN').focus(),320);
 }
-function closeAdd(){document.getElementById('addModal').classList.remove('open');}
+function openEditWine(id){
+  const wine=S.wines.find(x=>x.id===id);
+  if(!wine){toast('wine not found');return;}
+  setAddMode(wine);
+  document.getElementById('aN').value=wine.name||'';
+  document.getElementById('aP').value=wine.producer||'';
+  document.getElementById('aV').value=wine.vintage||'';
+  document.getElementById('aG').value=wine.grape||'';
+  sel(wine.type||'');
+  resetBottlePhoto();
+  if(wine.image){
+    addPhotoDataUrl=wine.image;
+    const preview=document.getElementById('photoPreview');
+    const empty=document.getElementById('photoEmpty');
+    preview.src=wine.image;
+    preview.classList.add('show');
+    empty.style.display='none';
+    setPhotoStatus(hasOpenAiKey()?'existing bottle photo attached. replace it or scan it with your OpenAI key.':'existing bottle photo attached. replace it or keep it for the list and export.');
+  }
+  document.getElementById('addModal').classList.add('open');
+  setTimeout(()=>document.getElementById('aN').focus(),320);
+}
+function closeAdd(){
+  setAddMode(null);
+  document.getElementById('addModal').classList.remove('open');
+}
 function sel(t){S.selType=t;document.querySelectorAll('.chip').forEach(c=>{c.removeAttribute('data-sel');if(c.dataset.type===t)c.setAttribute('data-sel',t);});}
-async function addWine(){
+async function saveWine(){
   const nm=document.getElementById('aN').value.trim();
   if(!nm){toast('name required');return;}
   if(!S.selType){toast('select a type');return;}
+  const body={
+    name:nm,producer:document.getElementById('aP').value.trim(),
+    vintage:document.getElementById('aV').value.trim(),
+    grape:document.getElementById('aG').value.trim(),type:S.selType,image:addPhotoDataUrl,
+  };
   try{
-    await api(`/session/${S.code}/wines`,{method:'POST',body:{
-      name:nm,producer:document.getElementById('aP').value.trim(),
-      vintage:document.getElementById('aV').value.trim(),
-      grape:document.getElementById('aG').value.trim(),type:S.selType,image:addPhotoDataUrl,
-    }});
+    if(editingWineId){
+      await api(`/session/${S.code}/wines/${editingWineId}`,{method:'PATCH',body});
+      closeAdd();await refresh();toast(nm+' updated');
+      if(S.curId===editingWineId) openDetail(editingWineId,S.fromTab);
+      return;
+    }
+    await api(`/session/${S.code}/wines`,{method:'POST',body});
     closeAdd();await refresh();toast(nm+' added');
-  }catch(e){toast('error adding wine');}
+  }catch(e){toast(editingWineId?'error updating wine':'error adding wine');}
 }
 
 // ── DETAIL ────────────────────────────────────
@@ -1038,6 +1151,10 @@ function openDetail(id,from){
   window.scrollTo(0,0);
 }
 function goBack(){tab(S.fromTab);}
+function editCurrentWine(){
+  if(!S.curId)return;
+  openEditWine(S.curId);
+}
 function buildStars(){document.getElementById('starRow').innerHTML=[1,2,3,4,5].map(i=>`<span class="star ${i<=cScore?'lit':''}" onclick="setStar(${i})">★</span>`).join('');}
 function setStar(n){cScore=n;buildStars();}
 function buildSliders(){
@@ -1071,6 +1188,27 @@ async function deleteWine(){
     await api(`/session/${S.code}/wines/${S.curId}`,{method:'DELETE'});
     toast('deleted');await refresh();tab(S.fromTab);
   }catch(e){toast('error deleting');}
+}
+async function moveWine(delta){
+  const idx=S.wines.findIndex(w=>w.id===S.curId);
+  if(idx===-1)return;
+  const nextIdx=idx+delta;
+  if(nextIdx<0||nextIdx>=S.wines.length){
+    toast(delta<0?'already first':'already last');
+    return;
+  }
+  const ordered=[...S.wines];
+  const [wine]=ordered.splice(idx,1);
+  ordered.splice(nextIdx,0,wine);
+  try{
+    await api(`/session/${S.code}/wines/reorder`,{
+      method:'POST',
+      body:{orderedIds:ordered.map(w=>w.id)}
+    });
+    await refresh();
+    openDetail(S.curId,S.fromTab);
+    toast(delta<0?'moved earlier':'moved later');
+  }catch(e){toast('error reordering wine');}
 }
 
 // ── RADAR ─────────────────────────────────────
@@ -1287,7 +1425,8 @@ function exportPDF(){rCompare();toast('opening print dialog…');setTimeout(()=>
 let _tt;function toast(m){const el=document.getElementById('toast');clearTimeout(_tt);el.textContent=m;el.classList.add('show');_tt=setTimeout(()=>el.classList.remove('show'),2000);}
 
 // ── BACKDROP ──────────────────────────────────
-['addModal','sessModal'].forEach(id=>{document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)document.getElementById(id).classList.remove('open');});});
+document.getElementById('addModal').addEventListener('click',e=>{if(e.target.id==='addModal')closeAdd();});
+document.getElementById('sessModal').addEventListener('click',e=>{if(e.target.id==='sessModal')closeSess();});
 
 // ── INIT ──────────────────────────────────────
 applyTheme(theme);

@@ -1,19 +1,11 @@
 const express = require('express');
-const multer = require('multer');
 const { createClient } = require('redis');
 const path = require('path');
 const crypto = require('crypto');
-const fs = require('fs/promises');
-const os = require('os');
-const { spawn } = require('child_process');
 
 const app = express();
 app.use(express.json({ limit: '3mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 8 * 1024 * 1024 },
-});
 
 // ── Redis ────────────────────────────────────
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -117,51 +109,127 @@ function parseWineText(rawLines) {
   };
 }
 
-async function runPaddleOcr(file) {
-  const ext = file.mimetype === 'image/png' ? '.png' : '.jpg';
-  const tmpPath = path.join(os.tmpdir(), `verre-ocr-${Date.now()}${ext}`);
-  await fs.writeFile(tmpPath, file.buffer);
-
-  try {
-    const payload = await new Promise((resolve, reject) => {
-      const child = spawn('python3', [path.join(__dirname, 'ocr_extract.py'), tmpPath], {
-        cwd: __dirname,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.on('data', chunk => { stdout += chunk.toString(); });
-      child.stderr.on('data', chunk => { stderr += chunk.toString(); });
-      child.on('error', reject);
-      child.on('close', code => {
-        if (code !== 0) {
-          reject(new Error(stderr || `ocr process exited with ${code}`));
-          return;
-        }
-        try {
-          resolve(JSON.parse(stdout));
-        } catch (err) {
-          reject(err);
-        }
-      });
-    });
-
-    const rawLines = (payload.lines || []).map(item => item.text).filter(Boolean);
-    return {
-      ...parseWineText(rawLines),
-      lines: rawLines,
-    };
-  } finally {
-    await fs.unlink(tmpPath).catch(() => {});
-  }
-}
-
 function sanitizeImageDataUrl(value) {
   if (!value || typeof value !== 'string') return '';
   if (!value.startsWith('data:image/')) return '';
   // Keep payloads bounded since images live in Redis with the wine record.
   if (value.length > 1_500_000) return '';
   return value;
+}
+
+function extractResponseJson(payload) {
+  if (payload?.output_parsed && typeof payload.output_parsed === 'object') return payload.output_parsed;
+  const chunks = [];
+  if (typeof payload?.output_text === 'string' && payload.output_text.trim()) chunks.push(payload.output_text.trim());
+  for (const item of payload?.output || []) {
+    if (item?.type !== 'message' || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (typeof part?.text === 'string' && part.text.trim()) chunks.push(part.text.trim());
+    }
+  }
+  for (const chunk of chunks) {
+    try {
+      return JSON.parse(chunk);
+    } catch (_) {}
+  }
+  throw new Error('could not parse model output');
+}
+
+async function runOpenAiWineScan({ apiKey, image }) {
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: [
+                'Read this wine bottle label and extract the visible bottle information.',
+                'Return JSON only.',
+                'If a field is unclear, use an empty string.',
+                'Use type only from: red, white, spark, rose, nonalc, unknown.',
+                'Put short visible fragments into lines and a brief summary into notes.',
+              ].join(' '),
+            },
+            {
+              type: 'input_image',
+              image_url: image,
+              detail: 'high',
+            },
+          ],
+        },
+      ],
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'wine_label',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              name: { type: 'string' },
+              producer: { type: 'string' },
+              vintage: { type: 'string' },
+              grape: { type: 'string' },
+              type: {
+                type: 'string',
+                enum: ['red', 'white', 'spark', 'rose', 'nonalc', 'unknown'],
+              },
+              notes: { type: 'string' },
+              lines: {
+                type: 'array',
+                items: { type: 'string' },
+              },
+            },
+            required: ['name', 'producer', 'vintage', 'grape', 'type', 'notes', 'lines'],
+          },
+        },
+      },
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const message = payload?.error?.message || payload?.error || 'OpenAI request failed';
+    const err = new Error(String(message));
+    err.status = response.status;
+    throw err;
+  }
+
+  const parsed = extractResponseJson(payload);
+  const rawLines = Array.isArray(parsed.lines) ? parsed.lines.map(line => String(line || '')).filter(Boolean) : [];
+  return {
+    ...parseWineText(rawLines),
+    ...parsed,
+    lines: rawLines,
+  };
+}
+
+function buildWinePayload(body, existing = {}) {
+  const name = String(body.name || '').trim();
+  const type = String(body.type || '').trim();
+  if (!name) return { error: 'name required' };
+  if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) {
+    return { error: 'valid type required' };
+  }
+  return {
+    name,
+    producer: String(body.producer || '').trim(),
+    vintage: String(body.vintage || '').trim().slice(0, 4),
+    grape: String(body.grape || '').trim(),
+    type,
+    image: body.image === undefined
+      ? (existing.image || '')
+      : sanitizeImageDataUrl(body.image),
+  };
 }
 
 // ── API routes ───────────────────────────────
@@ -231,14 +299,12 @@ app.post('/api/session/:code/wines', async (req, res) => {
   if (!raw) return res.status(404).json({ error: 'not found' });
 
   const wines = JSON.parse(raw);
+  const next = buildWinePayload(req.body);
+  if (next.error) return res.status(400).json({ error: next.error });
+
   const wine = {
     id: Date.now().toString(),
-    name: req.body.name,
-    producer: req.body.producer || '',
-    vintage: req.body.vintage || '',
-    grape: req.body.grape || '',
-    type: req.body.type,
-    image: sanitizeImageDataUrl(req.body.image),
+    ...next,
   };
   wines.push(wine);
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
@@ -246,20 +312,66 @@ app.post('/api/session/:code/wines', async (req, res) => {
   res.json(wine);
 });
 
-// POST /api/session/:code/wines/extract-label — extract bottle info via local PaddleOCR
-app.post('/api/session/:code/wines/extract-label', upload.single('image'), async (req, res) => {
+// PATCH /api/session/:code/wines/:wineId — update an existing wine
+app.patch('/api/session/:code/wines/:wineId', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const raw = await redis.get(k.wines(c));
+  if (!raw) return res.status(404).json({ error: 'not found' });
+
+  const wines = JSON.parse(raw);
+  const idx = wines.findIndex(w => w.id === req.params.wineId);
+  if (idx === -1) return res.status(404).json({ error: 'wine not found' });
+
+  const next = buildWinePayload(req.body, wines[idx]);
+  if (next.error) return res.status(400).json({ error: next.error });
+
+  wines[idx] = { ...wines[idx], ...next };
+  await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL });
+  await touch(c);
+  res.json(wines[idx]);
+});
+
+// POST /api/session/:code/wines/reorder — reorder the session wines
+app.post('/api/session/:code/wines/reorder', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const raw = await redis.get(k.wines(c));
+  if (!raw) return res.status(404).json({ error: 'not found' });
+
+  const wines = JSON.parse(raw);
+  const orderedIds = Array.isArray(req.body.orderedIds) ? req.body.orderedIds.map(String) : [];
+  if (orderedIds.length !== wines.length) {
+    return res.status(400).json({ error: 'orderedIds length mismatch' });
+  }
+
+  const byId = new Map(wines.map(w => [w.id, w]));
+  if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
+    return res.status(400).json({ error: 'orderedIds must include each wine exactly once' });
+  }
+
+  const reordered = orderedIds.map(id => byId.get(id));
+  await redis.set(k.wines(c), JSON.stringify(reordered), { EX: TTL });
+  await touch(c);
+  res.json(reordered);
+});
+
+// POST /api/session/:code/wines/extract-label — extract bottle info via OpenAI using the caller's API key
+app.post('/api/session/:code/wines/extract-label', async (req, res) => {
   const c = req.params.code.toUpperCase();
   const meta = await redis.get(k.meta(c));
   if (!meta) return res.status(404).json({ error: 'not found' });
-  if (!req.file) return res.status(400).json({ error: 'image required' });
+  const image = sanitizeImageDataUrl(req.body.image);
+  const apiKey = String(req.body.apiKey || '').trim();
+  if (!image) return res.status(400).json({ error: 'image required' });
+  if (!apiKey) return res.status(400).json({ error: 'api key required' });
 
   try {
-    const extracted = await runPaddleOcr(req.file);
+    const extracted = await runOpenAiWineScan({ apiKey, image });
     await touch(c);
     res.json(extracted);
   } catch (err) {
     console.error('label extraction failed:', err);
-    res.status(502).json({ error: 'label extraction failed' });
+    const status = err?.status === 401 ? 401 : err?.status === 429 ? 429 : 502;
+    res.status(status).json({ error: String(err?.message || 'label extraction failed') });
   }
 });
 
@@ -277,6 +389,7 @@ app.delete('/api/session/:code/wines/:wineId', async (req, res) => {
   const ratingKeys = await redis.keys(`s:${c}:r:*:${req.params.wineId}`);
   for (const rk of ratingKeys) await redis.del(rk);
 
+  await touch(c);
   res.json({ ok: true });
 });
 
