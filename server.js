@@ -9,7 +9,13 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // ── Redis ────────────────────────────────────
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
-const redis = createClient({ url: REDIS_URL });
+const redis = createClient({
+  url: REDIS_URL,
+  socket: {
+    tls: REDIS_URL.startsWith('rediss://'),
+    rejectUnauthorized: false,
+  },
+});
 redis.on('error', err => console.error('redis err:', err));
 
 // ── Helpers ──────────────────────────────────
