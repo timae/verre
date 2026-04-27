@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,700;1,300;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;1,9..144,300;1,9..144,400&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:#0E0E0C;--bg2:#141410;--bg3:#1A1A16;
+  --bg:#0E0E0C;--bg2:#141410;--bg3:#1A1A16;--bg4:#202019;
   --border:#2A2A24;--border2:#383830;
   --fg:#D4CFBE;--fg-dim:#6A6658;--fg-faint:#3A3A32;
   --accent:#C8963C;--accent2:#8FB87A;
@@ -17,11 +17,16 @@
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;}
 html,body{height:100%;overflow:hidden;}
-body{font-family:var(--mono);background:var(--bg);color:var(--fg);display:flex;flex-direction:column;font-size:13px;line-height:1.5;}
+body{font-family:var(--mono);background:
+  radial-gradient(circle at top left,rgba(200,150,60,0.12),transparent 28%),
+  radial-gradient(circle at top right,rgba(122,175,200,0.1),transparent 24%),
+  linear-gradient(180deg,#12120F 0%,#0B0B09 100%);
+color:var(--fg);display:flex;flex-direction:column;font-size:13px;line-height:1.5;}
 body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.03) 2px,rgba(0,0,0,0.03) 4px);}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:-1;background:radial-gradient(circle at 50% 120%,rgba(143,184,122,0.14),transparent 35%);}
 
 /* HEADER */
-.hdr{height:var(--hdr-h);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--border);background:var(--bg);position:relative;z-index:10;}
+.hdr{height:var(--hdr-h);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid rgba(255,255,255,0.04);background:rgba(14,14,12,0.82);backdrop-filter:blur(18px);position:relative;z-index:10;}
 .hdr-logo{font-family:var(--serif);font-style:italic;font-size:22px;color:var(--accent);display:flex;align-items:baseline;gap:6px;}
 .logo-tag{font-family:var(--mono);font-style:normal;font-size:9px;color:var(--fg-dim);letter-spacing:0.1em;border:1px solid var(--border2);padding:1px 5px;border-radius:2px;margin-left:4px;}
 .hdr-right{display:flex;align-items:center;gap:8px;}
@@ -35,21 +40,35 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;
 
 /* CONTENT */
 .content{flex:1;overflow:hidden;position:relative;}
-.screen{position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 14px 20px;display:none;}
+.screen{position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:18px 14px 28px;display:none;}
 .screen.active{display:block;}
 .screen.in{animation:scrin .22s ease both;}
 @keyframes scrin{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+.screen-shell{width:min(100%,980px);margin:0 auto;}
 
 /* NAV */
-.nav{height:var(--nav-h);flex-shrink:0;display:flex;border-top:1px solid var(--border);background:var(--bg);position:relative;z-index:10;padding-bottom:env(safe-area-inset-bottom,0px);}
-.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-dim);transition:color .15s;position:relative;padding-bottom:2px;}
+.nav{height:calc(var(--nav-h) + 10px);flex-shrink:0;display:flex;gap:10px;border-top:1px solid rgba(255,255,255,0.04);background:rgba(10,10,9,0.88);backdrop-filter:blur(18px);position:relative;z-index:10;padding:8px 14px calc(env(safe-area-inset-bottom,0px) + 8px);}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;font-family:var(--mono);font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--fg-dim);transition:color .15s,border-color .15s,background .15s;position:relative;padding:10px 8px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,0.02);}
 .nav-item .ni{font-size:16px;line-height:1;}
-.nav-item.active{color:var(--accent);}
-.nav-item.active::after{content:'';position:absolute;top:0;left:25%;right:25%;height:1px;background:var(--accent);}
+.nav-item.active{color:var(--accent);border-color:rgba(200,150,60,0.28);background:rgba(200,150,60,0.08);box-shadow:inset 0 1px 0 rgba(255,255,255,0.03);}
+.nav-item.active::after{content:'';position:absolute;top:0;left:22%;right:22%;height:1px;background:var(--accent);}
 
 /* UTILITY */
 .label{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin-bottom:10px;margin-top:2px;display:flex;align-items:center;gap:8px;}
 .label::before{content:'//';color:var(--accent2);margin-right:2px;}
+.section-hero{padding:18px;border:1px solid rgba(255,255,255,0.05);border-radius:22px;background:linear-gradient(135deg,rgba(255,255,255,0.03),rgba(255,255,255,0.01)),linear-gradient(180deg,rgba(200,150,60,0.05),rgba(0,0,0,0));box-shadow:0 12px 40px rgba(0,0,0,0.22);margin-bottom:14px;position:relative;overflow:hidden;}
+.section-hero::after{content:'';position:absolute;right:-30px;top:-40px;width:150px;height:150px;border-radius:50%;background:radial-gradient(circle,rgba(200,150,60,0.16),transparent 68%);pointer-events:none;}
+.hero-kicker{font-size:10px;letter-spacing:0.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:10px;}
+.hero-title{font-family:var(--serif);font-style:italic;font-size:clamp(28px,6vw,44px);line-height:0.95;color:#F1E4C8;max-width:10ch;}
+.hero-copy{max-width:44ch;font-size:12px;color:#A39C89;margin-top:12px;line-height:1.7;}
+.hero-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:18px;}
+.stat-card{border:1px solid rgba(255,255,255,0.06);border-radius:16px;background:rgba(12,12,10,0.56);padding:12px 14px;min-height:84px;}
+.stat-label{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);}
+.stat-value{font-family:var(--serif);font-style:italic;font-size:28px;line-height:1;color:var(--fg);margin-top:8px;}
+.stat-sub{font-size:10px;color:#8B8575;margin-top:6px;}
+.subhead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:18px 0 12px;}
+.subhead-title{font-family:var(--serif);font-style:italic;font-size:24px;color:#F0E3C6;}
+.subhead-copy{font-size:11px;color:var(--fg-dim);max-width:42ch;line-height:1.6;}
 .tag{display:inline-block;font-size:9px;letter-spacing:0.08em;text-transform:uppercase;padding:2px 6px;border-radius:2px;font-weight:500;}
 .tag-red{background:rgba(184,64,64,0.15);color:#D07070;border:1px solid rgba(184,64,64,0.25);}
 .tag-white{background:rgba(200,168,75,0.12);color:#D0A848;border:1px solid rgba(200,168,75,0.2);}
@@ -59,14 +78,14 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;
 
 /* WINE CARDS */
 .wine-stack{display:flex;flex-direction:column;gap:1px;}
-.wine-card{background:var(--bg2);border:1px solid var(--border);padding:12px 14px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:background .12s;position:relative;overflow:hidden;}
+.wine-card{background:linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.05);padding:14px 15px;cursor:pointer;display:flex;align-items:center;gap:12px;transition:background .12s,border-color .12s,transform .12s;position:relative;overflow:hidden;backdrop-filter:blur(8px);}
 .wine-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;opacity:0;transition:opacity .15s;}
 .wine-card.tc-red::before{background:var(--red-w);}
 .wine-card.tc-white::before{background:var(--white-w);}
 .wine-card.tc-spark::before{background:var(--spark);}
 .wine-card.tc-rose::before{background:var(--rose-w);}
 .wine-card.tc-nonalc::before{background:var(--nonalc);}
-.wine-card:active{background:var(--bg3);}.wine-card:active::before{opacity:1;}
+.wine-card:active{background:var(--bg3);transform:scale(0.995);}.wine-card:active::before{opacity:1;}
 .wine-card:first-child{border-radius:4px 4px 0 0;}
 .wine-card:last-child{border-radius:0 0 4px 4px;}
 .wine-card:only-child{border-radius:4px;}
@@ -80,6 +99,19 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;
 .wc-score-faint{font-size:11px;color:var(--fg-faint);}
 .mini-stars{display:flex;gap:1px;}
 .ms{font-size:9px;color:var(--fg-faint);}.ms.on{color:var(--accent);}
+
+.lobby-shell{width:min(100%,1040px);margin:0 auto;display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,420px);gap:18px;align-items:start;min-height:100%;}
+.lobby-card{border:1px solid rgba(255,255,255,0.06);border-radius:24px;background:linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.015));padding:22px;box-shadow:0 18px 50px rgba(0,0,0,0.26);}
+.lobby-form{background:rgba(12,12,10,0.78);backdrop-filter:blur(16px);}
+.lobby-badge{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;border:1px solid rgba(143,184,122,0.2);background:rgba(143,184,122,0.08);font-size:9px;letter-spacing:0.16em;text-transform:uppercase;color:var(--accent2);}
+.lobby-title{font-family:var(--serif);font-style:italic;font-size:clamp(44px,10vw,82px);line-height:0.88;color:#F3E9D3;margin-top:14px;max-width:8ch;}
+.lobby-copy{font-size:13px;color:#A8A18F;line-height:1.8;max-width:48ch;margin-top:16px;}
+.feature-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:24px;}
+.feature-item{border:1px solid rgba(255,255,255,0.05);border-radius:18px;padding:14px;background:rgba(8,8,7,0.34);}
+.feature-eyebrow{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--accent2);margin-bottom:7px;}
+.feature-title{font-family:var(--serif);font-style:italic;font-size:18px;color:#EEE1C4;}
+.feature-copy{font-size:11px;color:#8E8778;line-height:1.7;margin-top:6px;}
+.lobby-divider{font-size:10px;color:var(--fg-dim);letter-spacing:0.18em;margin:18px 0 14px;text-transform:uppercase;text-align:center;}
 
 /* BUTTONS */
 .add-row{margin-top:8px;border:1px dashed var(--border2);padding:14px;border-radius:3px;display:flex;align-items:center;justify-content:center;gap:8px;color:var(--fg-dim);font-size:11px;letter-spacing:0.05em;cursor:pointer;background:transparent;width:100%;font-family:var(--mono);transition:border-color .15s,color .15s;}
@@ -133,7 +165,7 @@ body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9997;
 .detail-sub{font-size:10px;color:var(--fg-dim);margin-top:3px;}
 
 /* PANELS */
-.panel{border:1px solid var(--border);background:var(--bg2);border-radius:3px;padding:14px;margin-bottom:8px;}
+.panel{border:1px solid rgba(255,255,255,0.05);background:linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.01));border-radius:18px;padding:16px;margin-bottom:10px;backdrop-filter:blur(10px);}
 .panel-hdr{font-size:9px;letter-spacing:0.14em;text-transform:uppercase;color:var(--fg-dim);margin-bottom:12px;display:flex;align-items:center;gap:6px;}
 .panel-hdr-dot{width:4px;height:4px;background:var(--accent2);border-radius:50%;}
 
@@ -157,21 +189,21 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
 .notes-ta::placeholder{color:var(--fg-faint);}.notes-ta:focus{border-color:var(--accent2);}
 
 /* COMPARE */
-.cmp-card{border:1px solid var(--border);background:var(--bg2);border-radius:3px;margin-bottom:8px;overflow:hidden;}
-.cmp-card-hdr{padding:12px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border);}
+.cmp-card{border:1px solid rgba(255,255,255,0.05);background:linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.01));border-radius:18px;margin-bottom:10px;overflow:hidden;backdrop-filter:blur(10px);}
+.cmp-card-hdr{padding:14px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,0.05);}
 .cmp-icon{font-size:18px;flex-shrink:0;}.cmp-info{flex:1;min-width:0;}
 .cmp-name{font-family:var(--serif);font-style:italic;font-size:17px;font-weight:300;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .cmp-sub{font-size:10px;color:var(--fg-dim);margin-top:2px;}
 .cmp-score{font-size:26px;font-weight:700;color:var(--accent);font-family:var(--mono);line-height:1;flex-shrink:0;}
 .cmp-body{padding:14px;display:flex;flex-direction:column;align-items:center;}
 .cmp-note{margin-top:10px;width:100%;font-size:11px;color:var(--fg-dim);font-style:italic;line-height:1.5;border-left:2px solid var(--border2);padding-left:10px;}
-.overlay-panel{border:1px solid var(--border);background:var(--bg2);border-radius:3px;padding:14px;margin-bottom:8px;}
+.overlay-panel{border:1px solid rgba(255,255,255,0.05);background:linear-gradient(180deg,rgba(255,255,255,0.025),rgba(255,255,255,0.01));border-radius:18px;padding:16px;margin-bottom:10px;backdrop-filter:blur(10px);}
 .legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;}
 .leg-item{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--fg-dim);}
 .leg-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
 
 /* DATA TABLE */
-.data-table{border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-bottom:8px;}
+.data-table{border:1px solid rgba(255,255,255,0.05);border-radius:18px;overflow:hidden;margin-bottom:10px;background:rgba(255,255,255,0.015);}
 .dt-row{display:flex;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);font-size:11px;gap:10px;}
 .dt-row:last-child{border-bottom:none;}.dt-row:nth-child(even){background:rgba(255,255,255,0.01);}
 .dt-rank{font-size:10px;font-weight:700;color:var(--fg-faint);width:16px;flex-shrink:0;}
@@ -180,12 +212,12 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
 .dt-bar-wrap{width:60px;flex-shrink:0;}.dt-bar{height:3px;background:var(--accent);border-radius:1px;}
 
 /* EXPORT BUTTON */
-.export-btn{width:100%;padding:13px;margin-bottom:12px;background:transparent;border:1px solid var(--border2);border-radius:3px;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--fg-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
+.export-btn{width:100%;padding:13px;margin-bottom:12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:14px;font-family:var(--mono);font-size:10px;letter-spacing:0.12em;text-transform:uppercase;color:var(--fg-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;}
 .export-btn:active{border-color:var(--accent);color:var(--accent);}
 
 /* USER TOGGLE (compare) */
-.user-tabs{display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap;}
-.user-tab{font-family:var(--mono);font-size:9px;letter-spacing:0.08em;padding:6px 12px;border-radius:3px;border:1px solid var(--border);background:var(--bg);color:var(--fg-dim);cursor:pointer;transition:all .15s;text-transform:uppercase;}
+.user-tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap;}
+.user-tab{font-family:var(--mono);font-size:9px;letter-spacing:0.08em;padding:8px 13px;border-radius:999px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:var(--fg-dim);cursor:pointer;transition:all .15s;text-transform:uppercase;}
 .user-tab.active{border-color:var(--accent);color:var(--accent);background:rgba(200,150,60,0.08);}
 .user-tab.all{border-color:var(--accent2);color:var(--accent2);background:rgba(143,184,122,0.08);}
 
@@ -196,6 +228,14 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
 /* LOADING */
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--fg-faint);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
+
+@media (max-width:780px){
+  .lobby-shell{grid-template-columns:1fr;}
+  .hero-grid{grid-template-columns:1fr;}
+  .feature-list{grid-template-columns:1fr;}
+  .subhead{display:block;}
+  .subhead-copy{margin-top:6px;}
+}
 
 ::-webkit-scrollbar{width:3px;}::-webkit-scrollbar-track{background:transparent;}::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px;}
 
@@ -208,7 +248,9 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
   .screen{position:static;overflow:visible;display:none;padding:0;}
   #scr-compare{display:block!important;}
   body{background:#fff!important;color:#1A1A14!important;}
-  body::before{display:none;}
+  body::before,body::after{display:none;}
+  .screen-shell,.lobby-shell{width:100%!important;display:block!important;}
+  .section-hero,.lobby-card,.stat-card,.panel{box-shadow:none!important;background:#fff!important;}
   #scr-compare::before{content:'VERRE — Tasting Report';display:block;font-family:var(--serif);font-style:italic;font-size:28px;color:#C8963C;margin-bottom:4px;}
   #scr-compare::after{content:attr(data-print-meta);display:block;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:#888;margin-bottom:20px;border-bottom:1px solid #ddd;padding-bottom:10px;}
   .cmp-card,.data-table,.overlay-panel{background:#fff!important;border-color:#ccc!important;break-inside:avoid;margin-bottom:12px;}
@@ -246,65 +288,112 @@ input[type=range]:active::-webkit-slider-thumb{transform:scale(1.3);}
 <div class="content">
   <!-- LOBBY (no session yet) -->
   <div class="screen active" id="scr-lobby">
-    <div style="padding:40px 10px;text-align:center;">
-      <div style="font-family:var(--serif);font-style:italic;font-size:28px;color:var(--accent);margin-bottom:6px;">Verre</div>
-      <div style="font-size:10px;color:var(--fg-dim);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:40px;">shared wine tasting</div>
-
-      <div class="field">
-        <div class="fl">your name</div>
-        <input class="fi" id="lobbyName" type="text" placeholder="firstname or alias">
+    <div class="lobby-shell">
+      <div class="lobby-card">
+        <div class="lobby-badge">Live tasting room</div>
+        <div class="lobby-title">Taste together, compare honestly.</div>
+        <div class="lobby-copy">Run a shared bottle list, keep every palate private, and turn the session into a clean tasting report when the table is done.</div>
+        <div class="feature-list">
+          <div class="feature-item">
+            <div class="feature-eyebrow">Shared</div>
+            <div class="feature-title">One session code</div>
+            <div class="feature-copy">Hosts create once. Everyone joins from their own phone without account setup.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-eyebrow">Private</div>
+            <div class="feature-title">Independent ratings</div>
+            <div class="feature-copy">Scores, aroma notes, and flavour wheels stay personal until you compare them.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-eyebrow">Visual</div>
+            <div class="feature-title">Radar profiles</div>
+            <div class="feature-copy">See each bottle’s structure at a glance instead of reading through scattered notes.</div>
+          </div>
+          <div class="feature-item">
+            <div class="feature-eyebrow">Export</div>
+            <div class="feature-title">Print-ready recap</div>
+            <div class="feature-copy">Generate an A4 tasting sheet for the cellar, the club, or the next buying round.</div>
+          </div>
+        </div>
       </div>
 
-      <button class="btn-p" onclick="createSession()" style="margin-bottom:24px;">→ create new tasting</button>
+      <div class="lobby-card lobby-form">
+        <div class="hero-kicker">Start or join</div>
+        <div class="subhead" style="margin:0 0 18px;">
+          <div class="subhead-title">Open the table</div>
+          <div class="subhead-copy">Use a first name or alias. The session code is four characters and shareable.</div>
+        </div>
 
-      <div style="font-size:10px;color:var(--fg-dim);letter-spacing:0.1em;margin-bottom:16px;">— or join an existing one —</div>
+        <div class="field">
+          <div class="fl">your name</div>
+          <input class="fi" id="lobbyName" type="text" placeholder="firstname or alias">
+        </div>
 
-      <div class="field">
-        <div class="fl">session code</div>
-        <input class="fi" id="lobbyCode" type="text" placeholder="e.g. A3F7" maxlength="4" style="text-transform:uppercase;text-align:center;font-size:18px;letter-spacing:0.3em;">
+        <button class="btn-p" onclick="createSession()" style="margin-bottom:8px;">→ create new tasting</button>
+
+        <div class="lobby-divider">or join an existing room</div>
+
+        <div class="field">
+          <div class="fl">session code</div>
+          <input class="fi" id="lobbyCode" type="text" placeholder="e.g. A3F7" maxlength="4" style="text-transform:uppercase;text-align:center;font-size:18px;letter-spacing:0.3em;">
+        </div>
+        <button class="btn-g" onclick="joinSession()">→ join session</button>
       </div>
-      <button class="btn-g" onclick="joinSession()">→ join session</button>
     </div>
   </div>
 
   <!-- WINES -->
   <div class="screen" id="scr-wines">
-    <div class="label" id="winesLbl">wine list</div>
-    <div class="wine-stack" id="wineStack"></div>
-    <button class="add-row" onclick="openAdd()">+ add wine to session</button>
+    <div class="screen-shell">
+      <div id="winesHero"></div>
+      <div class="subhead">
+        <div class="subhead-title">Wine list</div>
+        <div class="subhead-copy" id="winesLbl">shared bottles for this session</div>
+      </div>
+      <div class="wine-stack" id="wineStack"></div>
+      <button class="add-row" onclick="openAdd()">+ add wine to session</button>
+    </div>
   </div>
 
   <!-- RATE -->
   <div class="screen" id="scr-rate">
-    <div class="label">select to rate</div>
-    <div class="wine-stack" id="rateStack"></div>
+    <div class="screen-shell">
+      <div id="rateHero"></div>
+      <div class="subhead">
+        <div class="subhead-title">Rate bottles</div>
+        <div class="subhead-copy" id="rateLbl">select a bottle to score and map its profile</div>
+      </div>
+      <div class="wine-stack" id="rateStack"></div>
+    </div>
   </div>
 
   <!-- DETAIL -->
   <div class="screen" id="scr-detail">
-    <div class="detail-hdr">
-      <div class="back" onclick="goBack()">← back</div>
-      <div style="flex:1;min-width:0">
-        <div class="detail-name" id="dName"></div>
-        <div class="detail-sub" id="dSub"></div>
+    <div class="screen-shell">
+      <div class="detail-hdr">
+        <div class="back" onclick="goBack()">← back</div>
+        <div style="flex:1;min-width:0">
+          <div class="detail-name" id="dName"></div>
+          <div class="detail-sub" id="dSub"></div>
+        </div>
       </div>
-    </div>
-    <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>overall score</div><div class="star-row" id="starRow"></div></div>
-    <div class="panel">
-      <div class="panel-hdr"><div class="panel-hdr-dot"></div>flavour profile</div>
-      <div style="display:flex;justify-content:center;padding:4px 0 12px;">
-        <svg id="mainRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>overall score</div><div class="star-row" id="starRow"></div></div>
+      <div class="panel">
+        <div class="panel-hdr"><div class="panel-hdr-dot"></div>flavour profile</div>
+        <div style="display:flex;justify-content:center;padding:4px 0 12px;">
+          <svg id="mainRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+        <div class="sl-grid" id="slGrid"></div>
       </div>
-      <div class="sl-grid" id="slGrid"></div>
+      <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
+      <button class="btn-p" onclick="saveRating()">→ commit rating</button>
+      <button class="btn-g" onclick="goBack()">cancel</button>
+      <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
     </div>
-    <div class="panel"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
-    <button class="btn-p" onclick="saveRating()">→ commit rating</button>
-    <button class="btn-g" onclick="goBack()">cancel</button>
-    <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
   </div>
 
   <!-- COMPARE -->
-  <div class="screen" id="scr-compare"><div id="cmpInner"></div></div>
+  <div class="screen" id="scr-compare"><div class="screen-shell"><div id="cmpInner"></div></div></div>
 </div>
 
 <nav class="nav" id="mainNav" style="display:none">
@@ -499,14 +588,42 @@ function tab(t){
 // ── helpers ───────────────────────────────────
 function myRatings(){ return S.allRatings[S.user]||{}; }
 function starsHtml(sc){ return [1,2,3,4,5].map(j=>`<span class="ms ${j<=sc?'on':''}">★</span>`).join(''); }
+function sessionStats(){
+  const users=Object.keys(S.allRatings);
+  const my=myRatings();
+  const ratedByMe=S.wines.filter(w=>my[w.id]?.score).length;
+  const totalRatings=users.reduce((sum,u)=>sum+Object.values(S.allRatings[u]||{}).filter(r=>r?.score).length,0);
+  return {users,ratedByMe,totalRatings};
+}
+function sectionHero(kicker,title,copy,cards){
+  return `<div class="section-hero">
+    <div class="hero-kicker">${kicker}</div>
+    <div class="hero-title">${title}</div>
+    <div class="hero-copy">${copy}</div>
+    <div class="hero-grid">
+      ${cards.map(c=>`<div class="stat-card"><div class="stat-label">${c.label}</div><div class="stat-value">${c.value}</div><div class="stat-sub">${c.sub}</div></div>`).join('')}
+    </div>
+  </div>`;
+}
 
 // ── WINES LIST ────────────────────────────────
 function rWines(){
   const el=document.getElementById('wineStack');
   const mr=myRatings();
   const rated=S.wines.filter(w=>mr[w.id]?.score).length;
+  const {users,totalRatings}=sessionStats();
+  document.getElementById('winesHero').innerHTML=sectionHero(
+    'Session inventory',
+    'Build the bottle line-up.',
+    'Everyone works from the same list, so order and naming stay consistent across the table.',
+    [
+      {label:'Bottles',value:S.wines.length||'0',sub:S.wines.length?'currently in session':'add the first pour'},
+      {label:'Your ratings',value:rated+'/'+S.wines.length,sub:S.wines.length?'progress through the flight':'waiting for entries'},
+      {label:'Participants',value:users.length||1,sub:totalRatings+' ratings captured'}
+    ]
+  );
   document.getElementById('winesLbl').textContent=
-    S.wines.length?S.wines.length+' bottle'+(S.wines.length!==1?'s':'')+' · '+rated+' rated':'wine list';
+    S.wines.length?S.wines.length+' bottle'+(S.wines.length!==1?'s':'')+' · '+rated+' rated':'shared bottles for this session';
   if(!S.wines.length){
     el.innerHTML=`<div class="empty"><div class="empty-glyph">[ ]</div><div class="empty-msg">No wines in session yet.</div><div class="empty-sub">add your first bottle below</div></div>`;return;
   }
@@ -530,6 +647,18 @@ function rWines(){
 // ── RATE LIST ─────────────────────────────────
 function rRate(){
   const el=document.getElementById('rateStack');
+  const {users,totalRatings,ratedByMe}=sessionStats();
+  document.getElementById('rateHero').innerHTML=sectionHero(
+    'Personal scoring',
+    'Rate bottle by bottle.',
+    'Capture a quick verdict first, then shape the flavour profile and notes while the glass is still fresh.',
+    [
+      {label:'Completed',value:ratedByMe+'/'+S.wines.length,sub:S.wines.length?'bottles scored by you':'no bottles loaded'},
+      {label:'Peers',value:users.length||1,sub:'active in this session'},
+      {label:'Total notes',value:totalRatings,sub:'all scores across the room'}
+    ]
+  );
+  document.getElementById('rateLbl').textContent=S.wines.length?'select a bottle to score and map its profile':'waiting for bottles to be added';
   if(!S.wines.length){el.innerHTML=`<div class="empty"><div class="empty-glyph">[*]</div><div class="empty-msg">Nothing to rate yet.</div></div>`;return;}
   const mr=myRatings();
   el.innerHTML=S.wines.map((w,i)=>{
@@ -647,19 +776,33 @@ function drawRadar(id,flavors,type,sz,over){
 function rCompare(){
   const el=document.getElementById('cmpInner');
   const users=Object.keys(S.allRatings);
+  const {ratedByMe,totalRatings}=sessionStats();
   const viewUser=S.cmpUser==='__me'?S.user:S.cmpUser;
   const ratings=S.allRatings[viewUser]||{};
   const rated=S.wines.filter(w=>ratings[w.id]?.score).sort((a,b)=>(ratings[b.id]?.score||0)-(ratings[a.id]?.score||0));
+  const overlayRated=S.wines.filter(w=>users.some(u=>S.allRatings[u]?.[w.id]?.score));
+  const comparedCount=S.cmpUser==='__all'?overlayRated.length:rated.length;
 
-  if(!S.wines.length){el.innerHTML=`<div class="empty"><div class="empty-glyph">[◈]</div><div class="empty-msg">No wines yet.</div></div>`;return;}
+  let h=sectionHero(
+    'Comparison',
+    S.cmpUser==='__all'?'Read the whole room.':'See how the tasting landed.',
+    S.cmpUser==='__all'?'Overlay every participant per bottle to find consensus and disagreement fast.':'Switch between tasters or export a clean report once the session is complete.',
+    [
+      {label:'Your ratings',value:ratedByMe+'/'+S.wines.length,sub:'personal progress'},
+      {label:'Compared set',value:comparedCount||0,sub:S.cmpUser==='__all'?'bottles with visible overlays':'scored by current taster'},
+      {label:'Session total',value:totalRatings,sub:(users.length||1)+' participants'}
+    ]
+  );
+
+  if(!S.wines.length){el.innerHTML=h+`<div class="empty"><div class="empty-glyph">[◈]</div><div class="empty-msg">No wines yet.</div></div>`;return;}
 
   // set print meta
   const now=new Date().toLocaleDateString('en-GB',{year:'numeric',month:'long',day:'numeric'});
   document.getElementById('scr-compare').setAttribute('data-print-meta',
-    `taster: ${viewUser} · ${rated.length} rated · session: ${S.code} · ${now}`);
+    `taster: ${S.cmpUser==='__all'?'all participants':viewUser} · ${comparedCount} rated · session: ${S.code} · ${now}`);
 
   // user tabs
-  let h=`<div class="user-tabs">`;
+  h+=`<div class="user-tabs">`;
   h+=`<div class="user-tab ${S.cmpUser==='__me'?'active':''}" onclick="switchCmpUser('__me')">My ratings</div>`;
   users.filter(u=>u!==S.user).forEach(u=>{
     h+=`<div class="user-tab ${S.cmpUser===u?'active':''}" onclick="switchCmpUser('${u}')">${u}</div>`;
