@@ -1,14 +1,7 @@
-import { auth } from '@/auth'
-import { NextResponse } from 'next/server'
+import NextAuth from 'next-auth'
+import { authConfig } from '@/auth.config'
 
-export default auth((req) => {
-  const isLoggedIn = !!req.auth
-  const isMe = req.nextUrl.pathname.startsWith('/me')
-
-  if (isMe && !isLoggedIn) {
-    return NextResponse.redirect(new URL('/login', req.nextUrl))
-  }
-})
+export default NextAuth(authConfig).auth
 
 export const config = {
   matcher: ['/me/:path*'],

@@ -3,9 +3,10 @@ import Credentials from 'next-auth/providers/credentials'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { authConfig } from '@/auth.config'
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  trustHost: true,
+  ...authConfig,
   providers: [
     Credentials({
       credentials: {
@@ -48,9 +49,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       }
       return session
     },
-  },
-  pages: {
-    signIn: '/login',
   },
   session: { strategy: 'jwt' },
 })
