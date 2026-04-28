@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -49,16 +50,19 @@ export function LobbyClient({ user }: { user: User }) {
           Verre
           <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--fg-dim)',letterSpacing:'0.1em',border:'1px solid var(--border2)',padding:'1px 5px',borderRadius:2,marginLeft:4}}>v3</span>
         </div>
-        {user ? (
-          <button onClick={() => signOut()} style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.06em',fontFamily:'var(--mono)',background:'none',border:'none',cursor:'pointer'}}>
-            {user.name} · sign out
-          </button>
-        ) : (
-          <Link href="/login" style={{fontSize:10,color:'var(--accent)',letterSpacing:'0.06em',fontFamily:'var(--mono)'}}>Sign in</Link>
-        )}
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <ThemeToggle />
+          {user ? (
+            <button onClick={() => signOut()} style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.06em',fontFamily:'var(--mono)',background:'none',border:'none',cursor:'pointer'}}>
+              {user.name} · sign out
+            </button>
+          ) : (
+            <Link href="/login" style={{fontSize:10,color:'var(--accent)',letterSpacing:'0.06em',fontFamily:'var(--mono)'}}>Sign in</Link>
+          )}
+        </div>
       </header>
 
-      <div className="max-w-[1040px] mx-auto" style={{display:'grid',gridTemplateColumns:'minmax(280px,420px) minmax(0,1fr)',gap:18,alignItems:'start'}}>
+      <div className="max-w-[1040px] mx-auto" style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:18,alignItems:'start'}} data-lobby-grid>
         {/* Session card */}
         <div className="lobby-card lobby-form">
           <div className="hero-kicker">Start or join</div>

@@ -20,9 +20,12 @@ export default function ComparePage() {
 
   return (
     <div className="p-4 max-w-screen-md mx-auto">
-      <div className="mb-4">
-        <p className="text-xs text-fg-dim uppercase tracking-widest mb-1">// Compare</p>
-        <h2 className="text-2xl font-bold text-fg">Tasting comparison</h2>
+      <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,marginBottom:16}}>
+        <div>
+          <p style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:4}}>// Compare</p>
+          <h2 style={{fontSize:24,fontWeight:700,color:'#F0E3C6'}}>Tasting comparison</h2>
+        </div>
+        <button className="btn-s" onClick={() => window.print()}>export PDF</button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -19,6 +19,32 @@ export function AddWineModal({ code, userName, onClose, onSaved }: Props) {
   const [type, setType] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [photoDataUrl, setPhotoDataUrl] = useState('')
+
+  useEffect(() => {
+    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', fn)
+    return () => document.removeEventListener('keydown', fn)
+  }, [onClose])
+
+  async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = ev => {
+      // Resize to max 1200px via canvas
+      const img = new Image()
+      img.onload = () => {
+        const max = 1200
+        const scale = Math.min(1, max / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width * scale; canvas.height = img.height * scale
+        canvas.getContext('2d')?.drawImage(img, 0, 0, canvas.width, canvas.height)
+        setPhotoDataUrl(canvas.toDataURL('image/jpeg', 0.82))
+      }
+      img.src = ev.target?.result as string
+    }
+    reader.readAsDataURL(file)
+  }
 
   async function save() {
     if (!name.trim()) { setError('Name required'); return }
@@ -27,7 +53,7 @@ export function AddWineModal({ code, userName, onClose, onSaved }: Props) {
     const res = await fetch(`/api/session/${code}/wines`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, producer, vintage, grape, type, userName }),
+      body: JSON.stringify({ name, producer, vintage, grape, type, userName, ...(photoDataUrl ? { image: photoDataUrl } : {}) }),
     })
     setSaving(false)
     if (!res.ok) { setError('Could not save wine'); return }
@@ -43,6 +69,22 @@ export function AddWineModal({ code, userName, onClose, onSaved }: Props) {
         <div className="sheet-bar" />
         <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
           Add wine <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
+        </div>
+
+        {/* Photo */}
+        <div style={{marginBottom:14,border:'1px solid var(--border)',borderRadius:12,padding:12,background:'var(--bg3)'}}>
+          {photoDataUrl ? (
+            <div style={{position:'relative'}}>
+              <img src={photoDataUrl} alt="bottle" style={{width:'100%',maxHeight:140,objectFit:'contain',borderRadius:8}} />
+              <button className="btn-s" style={{position:'absolute',top:6,right:6}} onClick={() => setPhotoDataUrl('')}>remove</button>
+            </div>
+          ) : (
+            <label style={{display:'flex',flexDirection:'column',alignItems:'center',gap:8,cursor:'pointer',padding:'12px 0'}}>
+              <span style={{fontSize:24}}>📷</span>
+              <span style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase'}}>attach bottle photo</span>
+              <input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={handlePhoto} />
+            </label>
+          )}
         </div>
 
         <div className="field">

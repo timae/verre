@@ -1,6 +1,7 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
+import { ThemeToggle } from '@/components/ThemeToggle'
 
 export default async function MeLayout({ children }: { children: React.ReactNode }) {
   const session = await auth()
@@ -10,9 +11,12 @@ export default async function MeLayout({ children }: { children: React.ReactNode
     <div className="min-h-screen bg-[var(--bg)]">
       <header className="px-4 h-[var(--hdr-h)] flex items-center justify-between border-b border-border/20 bg-bg/80 backdrop-blur-lg sticky top-0 z-10">
         <Link href="/" className="text-accent font-extrabold tracking-widest text-lg uppercase">Verre</Link>
-        <div className="flex items-center gap-1">
-          <div className="w-2 h-2 rounded-full bg-accent2" />
-          <span className="text-xs text-fg-dim">{session.user.name}</span>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <ThemeToggle />
+          <div style={{display:'flex',alignItems:'center',gap:6,fontSize:10,color:'var(--fg-dim)',fontFamily:'var(--mono)'}}>
+            <div style={{width:6,height:6,borderRadius:'50%',background:'var(--accent2)'}} />
+            {session.user.name}
+          </div>
         </div>
       </header>
 

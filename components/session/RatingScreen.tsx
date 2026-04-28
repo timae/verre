@@ -10,7 +10,7 @@ const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾',
 
 export function RatingScreen({ params }: Props) {
   const { wineId } = use(params)
-  const { wines, myRatings, code, displayName, refresh, isHost } = useSession()
+  const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds } = useSession()
   const router = useRouter()
 
   const wine = wines.find(w => w.id === wineId)
@@ -27,6 +27,7 @@ export function RatingScreen({ params }: Props) {
   })
   const [notes, setNotes] = useState(existing?.notes || '')
   const [saving, setSaving] = useState(false)
+  const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
 
   useEffect(() => {
     if (existing) {
@@ -56,6 +57,27 @@ export function RatingScreen({ params }: Props) {
       body: JSON.stringify({ userName: displayName }),
     })
     refresh(); router.back()
+  }
+
+  async function toggleBookmark() {
+    const method = bookmarked ? 'DELETE' : 'POST'
+    await fetch(`/api/session/${code}/wines/${wineId}/bookmark`, {
+      method, headers: { 'Content-Type': 'application/json' },
+    })
+    setBookmarked(!bookmarked)
+  }
+
+  async function moveWine(delta: number) {
+    const idx = wines.findIndex(w => w.id === wineId)
+    if (idx === -1) return
+    const ordered = [...wines]
+    const [w] = ordered.splice(idx, 1)
+    ordered.splice(idx + delta, 0, w)
+    await fetch(`/api/session/${code}/wines/reorder`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
+    })
+    refresh()
   }
 
   async function deleteWine() {
@@ -131,7 +153,23 @@ export function RatingScreen({ params }: Props) {
         />
       </div>
 
+      {/* Host actions */}
+      {isHost && (
+        <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
+          {['edit wine','move earlier','move later'].map((label, i) => (
+            <button key={label} className="btn-s" style={{flex:1}} onClick={
+              i === 0 ? () => {} /* TODO: open edit modal */
+              : i === 1 ? () => moveWine(-1)
+              : () => moveWine(1)
+            }>{label}</button>
+          ))}
+        </div>
+      )}
+
       <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>
+      <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
+        {bookmarked ? '★ saved' : '☆ save wine'}
+      </button>
       <button className="btn-g" onClick={() => router.back()}>cancel</button>
       {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}
       {isHost && <button className="btn-del" onClick={deleteWine}>⌫ delete this wine</button>}

@@ -14,6 +14,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const session = await auth()
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
+      <head>
+        {/* Prevent theme flash */}
+        <script dangerouslySetInnerHTML={{__html:`(function(){var t=localStorage.getItem('vr_theme');if(t)document.documentElement.setAttribute('data-theme',t)})()`}} />
+      </head>
       <body>
         <SessionProvider session={session}>
           <QueryProvider>

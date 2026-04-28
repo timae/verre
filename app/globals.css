@@ -92,6 +92,10 @@
 }
 .lobby-form{background:rgba(12,12,10,0.78);backdrop-filter:blur(16px);}
 
+@media (min-width: 640px) {
+  [data-lobby-grid] { grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); }
+}
+
 .lobby-divider {
   font-size:10px;color:var(--fg-dim);letter-spacing:0.18em;
   margin:18px 0 14px;text-transform:uppercase;text-align:center;
@@ -190,6 +194,13 @@ body {
 .wine-spark  { --wine-c: rgba(122,175,200,1); }
 .wine-rose   { --wine-c: rgba(200,104,128,1); }
 .wine-nonalc { --wine-c: rgba(106,170,130,1); }
+
+/* Print */
+@media print {
+  @page { size: A4; margin: 18mm 16mm; }
+  nav, header, .btn-s, .btn-p, .btn-g, .btn-del { display: none !important; }
+  html, body { height: auto; overflow: visible; background: #fff !important; color: #1A1A14 !important; }
+}
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 3px; }
