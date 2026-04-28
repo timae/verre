@@ -956,6 +956,7 @@ body[data-theme="light"]::before{opacity:0.35;}
 
 <script>
 // ── CONSTANTS ─────────────────────────────────
+// Generic FL used for profile aggregation and legacy ratings
 const FL=[
   {k:'floral',l:'Floral',c:'#E8809A'},{k:'citrus',l:'Citrus',c:'#E8C040'},
   {k:'stone',l:'Stone',c:'#E89040'},{k:'tropical',l:'Tropical',c:'#58C870'},
@@ -963,6 +964,77 @@ const FL=[
   {k:'body',l:'Body',c:'#9870C0'},{k:'tannin',l:'Tannins',c:'#886048'},
   {k:'acid',l:'Acidity',c:'#60A8E0'},{k:'sweet',l:'Sweet',c:'#E880B8'},
 ];
+
+// Type-specific flavor dimensions
+const FL_RED=[
+  {k:'dark_fruit', l:'Dark Fruit',  c:'#9C27B0'},
+  {k:'red_fruit',  l:'Red Fruit',   c:'#C0392B'},
+  {k:'earth',      l:'Earth',       c:'#795548'},
+  {k:'spice',      l:'Spice',       c:'#E67E22'},
+  {k:'oak',        l:'Oak',         c:'#C08858'},
+  {k:'tannin',     l:'Tannins',     c:'#886048'},
+  {k:'body',       l:'Body',        c:'#9870C0'},
+  {k:'acid',       l:'Acidity',     c:'#60A8E0'},
+  {k:'herbal',     l:'Herbal',      c:'#58B070'},
+  {k:'floral',     l:'Floral',      c:'#E8809A'},
+];
+const FL_WHITE=[
+  {k:'citrus',     l:'Citrus',      c:'#E8C040'},
+  {k:'stone',      l:'Stone Fruit', c:'#E89040'},
+  {k:'tropical',   l:'Tropical',    c:'#58C870'},
+  {k:'floral',     l:'Floral',      c:'#E8809A'},
+  {k:'herbal',     l:'Herbal',      c:'#58B070'},
+  {k:'mineral',    l:'Mineral',     c:'#90A4AE'},
+  {k:'oak',        l:'Oak',         c:'#C08858'},
+  {k:'body',       l:'Body',        c:'#9870C0'},
+  {k:'acid',       l:'Acidity',     c:'#60A8E0'},
+  {k:'sweet',      l:'Sweet',       c:'#E880B8'},
+];
+const FL_SPARK=[
+  {k:'floral_herb', l:'Floral/Herb', c:'#8BC34A'},
+  {k:'citrus',      l:'Citrus',      c:'#CDDC39'},
+  {k:'tree_fruit',  l:'Tree Fruit',  c:'#FFC107'},
+  {k:'red_fruit',   l:'Red Fruit',   c:'#E53935'},
+  {k:'dried_fruit', l:'Dried Fruit', c:'#8D6E63'},
+  {k:'earth',       l:'Earth',       c:'#9E9E9E'},
+  {k:'creamy',      l:'Creamy',      c:'#D7CCC8'},
+  {k:'oak',         l:'Oak',         c:'#C08858'},
+  {k:'nutty',       l:'Nutty/Toast', c:'#D4A017'},
+  {k:'acid',        l:'Acidity',     c:'#60A8E0'},
+];
+const FL_ROSE=[
+  {k:'red_fruit',  l:'Red Fruit',   c:'#C0392B'},
+  {k:'citrus',     l:'Citrus',      c:'#E8C040'},
+  {k:'floral',     l:'Floral',      c:'#E8809A'},
+  {k:'stone',      l:'Stone Fruit', c:'#E89040'},
+  {k:'herbal',     l:'Herbal',      c:'#58B070'},
+  {k:'mineral',    l:'Mineral',     c:'#90A4AE'},
+  {k:'body',       l:'Body',        c:'#9870C0'},
+  {k:'acid',       l:'Acidity',     c:'#60A8E0'},
+  {k:'sweet',      l:'Sweet',       c:'#E880B8'},
+  {k:'tropical',   l:'Tropical',    c:'#58C870'},
+];
+
+function getFL(type){
+  if(type==='red')   return FL_RED;
+  if(type==='white') return FL_WHITE;
+  if(type==='spark') return FL_SPARK;
+  if(type==='rose')  return FL_ROSE;
+  return FL_WHITE; // nonalc default
+}
+
+// Detect which FL was used for a stored rating by checking its keys
+function detectFL(flavors){
+  if(!flavors||typeof flavors!=='object') return FL;
+  const keys=Object.keys(flavors);
+  if(keys.includes('dark_fruit')) return FL_RED;
+  if(keys.includes('floral_herb')||keys.includes('tree_fruit')) return FL_SPARK;
+  if(keys.includes('mineral')&&keys.includes('stone')&&!keys.includes('dark_fruit')) {
+    if(keys.includes('red_fruit')) return FL_ROSE;
+    return FL_WHITE;
+  }
+  return FL; // legacy generic
+}
 const ICO={red:'🍷',white:'🥂',spark:'🍾',rose:'🌸',nonalc:'🌿'};
 const LBL={red:'Red',white:'White',spark:'Sparkling',rose:'Rosé',nonalc:'Non-Alc'};
 const TCOL={red:'rgba(184,64,64,',white:'rgba(200,168,75,',spark:'rgba(122,175,200,',rose:'rgba(200,104,128,',nonalc:'rgba(106,170,130,'};
@@ -1953,16 +2025,18 @@ function openDetail(id,from){
   document.getElementById('dSub').textContent=[LBL[w.type],w.producer,w.vintage,w.grape].filter(Boolean).join(' · ');
   const mr=myRatings();const ex=mr[id]||{};
   cScore=ex.score||0;
-  cFl=FL.reduce((o,f)=>({...o,[f.k]:0}),{});
+  // use existing flavor keys if already rated, otherwise start fresh with type-specific FL
+  const activeFL = ex.flavors && Object.keys(ex.flavors).length ? detectFL(ex.flavors) : getFL(w.type);
+  cFl=activeFL.reduce((o,f)=>({...o,[f.k]:0}),{});
   if(ex.flavors)Object.assign(cFl,ex.flavors);
   document.getElementById('noteTa').value=ex.notes||'';
   const existingMedia=document.getElementById('detailMedia');
   if(existingMedia) existingMedia.remove();
-  if(w.image){
+  if(w.image||w.imageUrl){
     const hdr=document.querySelector('#scr-detail .screen-shell');
-    hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.image}" alt="${w.name}"></div>`);
+    hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.imageUrl||w.image}" alt="${w.name}"></div>`);
   }
-  buildStars();buildSliders();drawPolarChart('mainRadar',cFl,240);
+  buildStars();buildSliders(activeFL);drawPolarChart('mainRadar',cFl,240,activeFL);
   updateBookmarkBtn();
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   const scr=document.getElementById('scr-detail');
@@ -1976,8 +2050,10 @@ function editCurrentWine(){
 }
 function buildStars(){document.getElementById('starRow').innerHTML=[1,2,3,4,5].map(i=>`<span class="star ${i<=cScore?'lit':''}" onclick="setStar(${i})">★</span>`).join('');}
 function setStar(n){cScore=n;buildStars();}
-function buildSliders(){
-  document.getElementById('slGrid').innerHTML=FL.map(f=>{
+let _activeFL=FL; // track which FL is active for current detail screen
+function buildSliders(fl){
+  _activeFL=fl||FL;
+  document.getElementById('slGrid').innerHTML=_activeFL.map(f=>{
     const v=cFl[f.k]||0;
     return `<div class="sl-row"><div class="sl-lbl">${f.l}</div><div class="sl-wrap">
       <input type="range" min="0" max="5" step="1" value="${v}" style="background:linear-gradient(to right,${f.c} ${v*20}%,var(--bg3) ${v*20}%)" oninput="slIn('${f.k}',this,'${f.c}')">
@@ -1988,8 +2064,7 @@ function slIn(k,el,c){
   cFl[k]=parseInt(el.value);
   document.getElementById('sv-'+k).textContent=el.value;
   el.style.background=`linear-gradient(to right,${c} ${el.value*20}%,var(--bg3) ${el.value*20}%)`;
-  const w=S.wines.find(x=>x.id===S.curId);
-  drawPolarChart('mainRadar',cFl,240);
+  drawPolarChart('mainRadar',cFl,240,_activeFL);
 }
 async function saveRating(){
   try{
@@ -2068,9 +2143,10 @@ function arcSeg(cx,cy,r1,r2,a1d,a2d,fill,opacity){
   const x4=cx+r1*Math.cos(a2),y4=cy+r1*Math.sin(a2);
   return `<path d="M${x1},${y1}L${x2},${y2}A${r2},${r2},0,${lg},1,${x3},${y3}L${x4},${y4}A${r1},${r1},0,${lg},0,${x1},${y1}Z" fill="${fill}" opacity="${opacity}"/>`;
 }
-function drawPolarChart(id,flavors,sz){
+function drawPolarChart(id,flavors,sz,fl){
   const svg=document.getElementById(id);if(!svg)return;
-  const cx=sz/2,cy=sz/2,n=FL.length;
+  fl=fl||detectFL(flavors)||FL;
+  const cx=sz/2,cy=sz/2,n=fl.length;
   const iR=sz*0.10,oR=sz*0.37,lR=sz*0.44;
   const gap=3,seg=360/n-gap;
   // expand viewBox dynamically so labels never clip
@@ -2081,7 +2157,7 @@ function drawPolarChart(id,flavors,sz){
     const r=iR+(oR-iR)*ring/5;
     h+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${radarGridStroke()}" stroke-width="0.6" stroke-dasharray="1.5,2.5"/>`;
   }
-  FL.forEach((f,i)=>{
+  fl.forEach((f,i)=>{
     const val=Math.max(0,Math.min(5,flavors[f.k]||0));
     const a1=(360/n*i)-90+gap/2,a2=a1+seg;
     const mid=(a1+a2)/2,mRad=mid*Math.PI/180;
@@ -2202,7 +2278,7 @@ function rCompare(){
   }
 
   el.innerHTML=h;
-  rated.forEach(w=>drawPolarChart('cr_'+w.id,ratings[w.id].flavors,200));
+  rated.forEach(w=>drawPolarChart('cr_'+w.id,ratings[w.id].flavors,200,detectFL(ratings[w.id].flavors)||getFL(w.type)));
   if(rated.length>=2) drawOverlay(rated,ratings);
 }
 
