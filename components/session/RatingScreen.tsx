@@ -3,6 +3,7 @@ import { use, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from './SessionShell'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL } from '@/lib/flavours'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
@@ -28,6 +29,7 @@ export function RatingScreen({ params }: Props) {
   const [notes, setNotes] = useState(existing?.notes || '')
   const [saving, setSaving] = useState(false)
   const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
+  const [showEdit, setShowEdit] = useState(false)
 
   useEffect(() => {
     if (existing) {
@@ -156,13 +158,9 @@ export function RatingScreen({ params }: Props) {
       {/* Host actions */}
       {isHost && (
         <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
-          {['edit wine','move earlier','move later'].map((label, i) => (
-            <button key={label} className="btn-s" style={{flex:1}} onClick={
-              i === 0 ? () => {} /* TODO: open edit modal */
-              : i === 1 ? () => moveWine(-1)
-              : () => moveWine(1)
-            }>{label}</button>
-          ))}
+          <button className="btn-s" style={{flex:1}} onClick={() => setShowEdit(true)}>edit wine</button>
+          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(-1)}>move earlier</button>
+          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(1)}>move later</button>
         </div>
       )}
 
@@ -173,6 +171,14 @@ export function RatingScreen({ params }: Props) {
       <button className="btn-g" onClick={() => router.back()}>cancel</button>
       {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}
       {isHost && <button className="btn-del" onClick={deleteWine}>⌫ delete this wine</button>}
+
+      {showEdit && wine && (
+        <AddWineModal
+          code={code} userName={displayName} editWine={wine}
+          onClose={() => setShowEdit(false)}
+          onSaved={() => { setShowEdit(false); refresh() }}
+        />
+      )}
     </div>
   )
 }
