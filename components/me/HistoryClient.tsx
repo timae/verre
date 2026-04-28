@@ -9,6 +9,7 @@ type Session = {
 
 export function HistoryClient() {
   const router = useRouter()
+  const { data: authSession } = useQuery({ queryKey: ['auth-me'], queryFn: () => fetch('/api/auth/session').then(r=>r.json()), staleTime: 60_000 })
   const { data: sessions = [], isLoading } = useQuery<Session[]>({
     queryKey: ['me-sessions'],
     queryFn: () => fetch('/api/me/sessions').then(r => r.json()),
@@ -55,7 +56,11 @@ export function HistoryClient() {
                 </div>
                 {active && (
                   <button
-                    onClick={() => router.push(`/session/${s.code}`)}
+                    onClick={() => {
+                    const name = authSession?.user?.name || ''
+                    const q = name ? `?name=${encodeURIComponent(name)}` : ''
+                    router.push(`/session/${s.code}${q}`)
+                  }}
                     className="text-xs text-accent border border-accent/30 px-3 py-1.5 rounded-lg flex-shrink-0"
                   >
                     → rejoin

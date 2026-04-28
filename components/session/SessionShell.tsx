@@ -6,6 +6,7 @@ import Link from 'next/link'
 import type { WineMeta, RatingMeta } from '@/lib/session'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { SessionModal } from './SessionModal'
+import { useSession as useAuthSession } from 'next-auth/react'
 
 type SessionCtx = {
   code: string; displayName: string; isHost: boolean
@@ -28,7 +29,9 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const router = useRouter()
   const pathname = usePathname()
 
-  const [displayName] = useState(() => searchParams.get('name') || '')
+  const { data: authSession } = useAuthSession()
+  const nameFromUrl = searchParams.get('name') || ''
+  const displayName = nameFromUrl || authSession?.user?.name || ''
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showModal, setShowModal] = useState(false)
 
