@@ -746,7 +746,7 @@ body[data-theme="light"]::before{opacity:0.35;}
       <div class="panel panel-profile">
         <div class="panel-hdr"><div class="panel-hdr-dot"></div>flavour profile</div>
         <div style="display:flex;justify-content:center;padding:4px 0 12px;">
-          <svg id="mainRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+          <svg id="mainRadar" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
         <div class="sl-grid" id="slGrid"></div>
       </div>
@@ -1583,7 +1583,7 @@ async function rProfile(){
           </div>
         </div>
         <div style="display:flex;justify-content:center;padding:4px 0 12px;">
-          <svg id="profileRadar" viewBox="-20 -20 280 280" width="240" height="240" xmlns="http://www.w3.org/2000/svg"></svg>
+          <svg id="profileRadar" xmlns="http://www.w3.org/2000/svg"></svg>
         </div>
         ${topFlavors.length?`
         <div style="font-size:9px;letter-spacing:0.12em;text-transform:uppercase;color:var(--fg-dim);margin-bottom:8px;">Your top flavours</div>
@@ -1591,7 +1591,7 @@ async function rProfile(){
           ${topFlavors.map(f=>`<div style="padding:5px 10px;border-radius:999px;border:1px solid ${f.c}44;background:${f.c}18;font-size:11px;font-weight:700;color:${f.c};">${f.l} <span style="opacity:0.7;">${flavors[f.k].toFixed(1)}</span></div>`).join('')}
         </div>`:''}
       </div>`;
-    drawPolarChart('profileRadar',flavors,240);
+    drawPolarChart('profileRadar',flavors,300,fl);
   }catch(err){console.error(err);el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">Could not load profile.</div>';}
 }
 
@@ -2036,7 +2036,7 @@ function openDetail(id,from){
     const hdr=document.querySelector('#scr-detail .screen-shell');
     hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.imageUrl||w.image}" alt="${w.name}"></div>`);
   }
-  buildStars();buildSliders(activeFL);drawPolarChart('mainRadar',cFl,240,activeFL);
+  buildStars();buildSliders(activeFL);drawPolarChart('mainRadar',cFl,300,activeFL);
   updateBookmarkBtn();
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   const scr=document.getElementById('scr-detail');
@@ -2064,7 +2064,7 @@ function slIn(k,el,c){
   cFl[k]=parseInt(el.value);
   document.getElementById('sv-'+k).textContent=el.value;
   el.style.background=`linear-gradient(to right,${c} ${el.value*20}%,var(--bg3) ${el.value*20}%)`;
-  drawPolarChart('mainRadar',cFl,240,_activeFL);
+  drawPolarChart('mainRadar',cFl,300,_activeFL);
 }
 async function saveRating(){
   try{
@@ -2149,9 +2149,10 @@ function drawPolarChart(id,flavors,sz,fl){
   const cx=sz/2,cy=sz/2,n=fl.length;
   const iR=sz*0.10,oR=sz*0.37,lR=sz*0.44;
   const gap=3,seg=360/n-gap;
-  // expand viewBox dynamically so labels never clip
-  const vpad=Math.round(lR+24);
+  // vpad = just enough space beyond the coordinate boundary for label text
+  const vpad=48;
   svg.setAttribute('viewBox',`${-vpad} ${-vpad} ${sz+vpad*2} ${sz+vpad*2}`);
+  svg.setAttribute('width',sz);svg.setAttribute('height',sz);
   let h='';
   for(let ring=1;ring<=5;ring++){
     const r=iR+(oR-iR)*ring/5;
