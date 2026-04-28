@@ -642,6 +642,7 @@ body[data-theme="light"]::before{opacity:0.35;}
           <div class="fl">your name</div>
           <input class="fi" id="lobbyName" type="text" placeholder="firstname or alias">
         </div>
+        <div class="field"><div class="fl">session name <span style="color:var(--fg-faint)">(optional)</span></div><input class="fi" id="lobbySessionName" type="text" placeholder="e.g. Friday Bordeaux tasting" maxlength="80"></div>
         <button class="btn-p" onclick="createSession()" style="margin-bottom:8px;">→ create new tasting</button>
         <div class="lobby-divider">or join an existing room</div>
         <div class="field">
@@ -715,7 +716,7 @@ body[data-theme="light"]::before{opacity:0.35;}
         <div class="subhead-copy" id="winesLbl">shared bottles for this session</div>
       </div>
       <div class="wine-stack" id="wineStack"></div>
-      <button class="add-row" onclick="openAdd()">+ add wine to session</button>
+      <button class="add-row host-only" onclick="openAdd()">+ add wine to session</button>
     </div>
   </div>
 
@@ -751,16 +752,16 @@ body[data-theme="light"]::before{opacity:0.35;}
       </div>
       <div class="panel panel-notes"><div class="panel-hdr"><div class="panel-hdr-dot"></div>tasting notes</div><textarea class="notes-ta" id="noteTa" placeholder="aroma, palate, finish…"></textarea></div>
       <div class="detail-actions">
-        <button class="btn-s" type="button" onclick="editCurrentWine()">edit wine</button>
-        <button class="btn-s" type="button" onclick="moveWine(-1)">move earlier</button>
-        <button class="btn-s" type="button" onclick="moveWine(1)">move later</button>
+        <button class="btn-s host-only" type="button" onclick="editCurrentWine()">edit wine</button>
+        <button class="btn-s host-only" type="button" onclick="moveWine(-1)">move earlier</button>
+        <button class="btn-s host-only" type="button" onclick="moveWine(1)">move later</button>
         <button class="btn-s" type="button" onclick="openSess()">share a glass</button>
       </div>
       <button class="btn-p" onclick="saveRating()">→ commit rating</button>
       <button class="btn-g" id="bookmarkBtn" onclick="toggleBookmark()"></button>
       <button class="btn-g" onclick="goBack()">cancel</button>
       <button class="btn-g" onclick="resetRating()">⌫ reset my rating</button>
-      <button class="btn-del" onclick="deleteWine()">⌫ delete this wine</button>
+      <button class="btn-del host-only" onclick="deleteWine()">⌫ delete this wine</button>
     </div>
   </div>
 
@@ -893,6 +894,10 @@ body[data-theme="light"]::before{opacity:0.35;}
     <!-- SESSION SECTION -->
     <div class="sess-section" id="sessSectionSession" style="display:none">
       <div class="sess-section-hdr">Session <span class="sheet-title-tag" id="sessCodeTag"></span></div>
+      <div id="sessHostRename" style="display:none;">
+        <div class="field"><div class="fl">session name</div><input class="fi" id="sessNameInput" type="text" placeholder="e.g. Friday Bordeaux tasting" maxlength="80"></div>
+        <button class="btn-s" onclick="renameSession()" style="margin-bottom:12px;">save name</button>
+      </div>
       <div class="field"><div class="fl">your display name</div><input class="fi" id="sN" type="text" placeholder="change your display name"></div>
       <div id="sessParticipants" style="font-size:11px;color:var(--fg-dim);margin-bottom:8px;line-height:1.6;"></div>
       <div class="session-note"><strong>Heads up:</strong> sessions auto-expire after 48 hours of inactivity.</div>
@@ -971,6 +976,8 @@ let S={
   allRatings: {},   // {userName: {wineId: {...}}}
   selType:'', curId:null, fromTab:'rate',
   cmpUser: '__me',  // compare view: show my ratings or a specific user
+  sessionName: '',  // human-readable session alias
+  isHost: false,    // whether current user is the session host
   authToken: localStorage.getItem('vr_token')||'',
   authUser: null,   // {id, name, email, role, pro}
   bookmarks: new Set(), // wine IDs bookmarked by this user
@@ -1116,10 +1123,11 @@ const api = (path,opts={}) => {
 // ── LOBBY ─────────────────────────────────────
 async function createSession(){
   const name=document.getElementById('lobbyName').value.trim();
+  const sessionName=document.getElementById('lobbySessionName').value.trim();
   if(!name){toast('enter your name');return;}
   try{
-    const{code}=await api('/session',{method:'POST',body:{hostName:name}});
-    S.user=name;S.code=code;persist();
+    const{code}=await api('/session',{method:'POST',body:{hostName:name,sessionName}});
+    S.user=name;S.code=code;S.isHost=true;S.sessionName=sessionName;persist();
     enterSession();
   }catch(e){toast('error creating session');}
 }
@@ -1130,8 +1138,8 @@ async function joinSession(){
   if(!name){toast('enter your name');return;}
   if(!code||code.length<4){toast('enter a 4-char code');return;}
   try{
-    await api('/session/join',{method:'POST',body:{code,userName:name}});
-    S.user=name;S.code=code;persist();
+    const info=await api('/session/join',{method:'POST',body:{code,userName:name}});
+    S.user=name;S.code=code;S.isHost=(name===info.host);S.sessionName=info.name||'';persist();
     enterSession();
   }catch(e){toast('session not found');}
 }
@@ -1161,8 +1169,9 @@ function enterSession(){
   showSessionNav();
   document.getElementById('codePill').style.display='flex';
   document.getElementById('shareBtn').style.display='flex';
-  document.getElementById('codeText').textContent=S.code;
+  updateCodePill();
   updateWho();
+  updateHostUI();
   syncInviteUI();
   tab('wines');
   pollInterval=setInterval(refresh,5000);
@@ -1171,8 +1180,26 @@ function enterSession(){
   if(S.authUser) api(`/session/${S.code}/visit`,{method:'POST'}).catch(()=>{});
 }
 
+async function renameSession(){
+  const name=document.getElementById('sessNameInput').value.trim();
+  try{
+    await api(`/session/${S.code}/name`,{method:'PATCH',body:{name,userName:S.user}});
+    S.sessionName=name;updateCodePill();toast(name?`renamed to "${name}"`:'name cleared');
+  }catch{toast('could not rename session');}
+}
+
+function updateHostUI(){
+  // show/hide host-only elements based on S.isHost
+  document.querySelectorAll('.host-only').forEach(el=>el.style.display=S.isHost?'':'none');
+}
+
+function updateCodePill(){
+  const el=document.getElementById('codeText');
+  el.textContent=S.sessionName?`${S.sessionName} · ${S.code}`:S.code;
+}
+
 function leaveSession(){
-  S.code='';persist();
+  S.code='';S.isHost=false;S.sessionName='';persist();
   clearInterval(pollInterval);
   document.getElementById('codePill').style.display='none';
   document.getElementById('shareBtn').style.display='none';
@@ -1225,7 +1252,9 @@ async function openSess(){
   document.getElementById('sessSectionAI').style.display=inSession?'':'none';
   if(inSession){
     document.getElementById('sN').value=S.user;
-    document.getElementById('sessCodeTag').textContent=S.code;
+    document.getElementById('sessCodeTag').textContent=S.sessionName?`${S.code} · ${S.sessionName}`:S.code;
+    const renameBox=document.getElementById('sessHostRename');
+    if(renameBox){renameBox.style.display=S.isHost?'':'none';if(S.isHost)document.getElementById('sessNameInput').value=S.sessionName||'';};
     syncInviteUI();
     syncAiKeyUi();
     try{
@@ -1433,10 +1462,10 @@ async function rHistory(){
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:10px;">
           <div>
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-              <span style="font-weight:700;font-size:14px;">Session ${s.code}</span>
+              <span style="font-weight:700;font-size:14px;">${s.name||('Session '+s.code)}</span>
               ${statusBadge}
             </div>
-            <div style="font-size:11px;color:var(--fg-dim);">${date} · ${s.host_name} · ${wines.length||'no'} wine${wines.length!==1?'s':''} rated</div>
+            <div style="font-size:11px;color:var(--fg-dim);">${s.name?s.code+' · ':''} ${date} · ${s.host_name} · ${wines.length||'no'} wine${wines.length!==1?'s':''} rated</div>
           </div>
           ${canRejoin?`<button class="btn-s" style="flex-shrink:0;" onclick="lobbyRejoinSession('${s.code}')">→ rejoin</button>`:''}
         </div>
@@ -2307,7 +2336,7 @@ async function loadLobbyUserData(){
       const wines=(ratingsMap[s.code]||[]).slice(0,3).map(r=>`<span style="font-size:10px;color:var(--fg-dim);">${r.wine_name} <span style="color:var(--accent);">${r.score}★</span></span>`).join(' · ');
       return `<div class="lobby-session-card" onclick="${canRejoin?`lobbyRejoinSession('${s.code}')`:'void 0'}">
         <div class="lobby-session-top">
-          <div class="lobby-session-name">Session ${s.code} <span style="font-size:10px;font-weight:400;color:var(--fg-dim);">· ${date}</span></div>
+          <div class="lobby-session-name">${s.name||('Session '+s.code)} <span style="font-size:10px;font-weight:400;color:var(--fg-dim);">· ${date}</span></div>
           ${canRejoin?'<div class="lobby-session-rejoin">→ rejoin</div>':''}
         </div>
         ${wines?`<div class="lobby-session-meta" style="margin-top:4px;">${wines}</div>`:''}

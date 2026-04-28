@@ -8,7 +8,7 @@ const router = express.Router();
 router.get('/sessions', requireAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT s.id, s.code, s.host_name, s.created_at, sm.joined_at,
+      `SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
               COUNT(DISTINCT r.id) AS wines_rated,
               ROUND(AVG(r.score), 1) AS avg_score
        FROM session_members sm

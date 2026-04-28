@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   code         CHAR(4)      NOT NULL UNIQUE,
   host_user_id INTEGER      REFERENCES users(id),
   host_name    VARCHAR(64)  NOT NULL,
+  name         VARCHAR(255),
   blind        BOOLEAN      NOT NULL DEFAULT FALSE,
   created_at   TIMESTAMPTZ  NOT NULL,
   archived_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()

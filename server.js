@@ -74,11 +74,17 @@ function buildWinePayload(body, existing = {}) {
 // ── Postgres archival helpers ─────────────────
 async function pgUpsertSession(code, meta) {
   await pool.query(
-    `INSERT INTO sessions (code, host_name, created_at)
-     VALUES ($1, $2, to_timestamp($3 / 1000.0))
-     ON CONFLICT (code) DO NOTHING`,
-    [code, meta.host, meta.createdAt]
+    `INSERT INTO sessions (code, host_name, name, created_at)
+     VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))
+     ON CONFLICT (code) DO UPDATE SET name = COALESCE(EXCLUDED.name, sessions.name)`,
+    [code, meta.host, meta.name || null, meta.createdAt]
   );
+}
+
+function isHost(meta, req) {
+  if (req.user && meta.hostUserId) return req.user.userId === meta.hostUserId;
+  const userName = req.body?.userName || req.query?.userName;
+  return userName === meta.host;
 }
 
 async function pgUpsertWine(sessionCode, wine) {
@@ -127,7 +133,7 @@ app.use('/api/me', meRoutes);
 
 // POST /api/session — create a new session
 app.post('/api/session', async (req, res) => {
-  const { hostName } = req.body;
+  const { hostName, sessionName } = req.body;
   if (!hostName) return res.status(400).json({ error: 'hostName required' });
 
   let code;
@@ -137,7 +143,12 @@ app.post('/api/session', async (req, res) => {
     if (!exists) break;
   }
 
-  const meta = { host: hostName, createdAt: Date.now() };
+  const meta = {
+    host: hostName,
+    name: sessionName ? String(sessionName).trim().slice(0, 80) : '',
+    createdAt: Date.now(),
+    hostUserId: req.user?.userId || null,
+  };
   await redis.set(k.meta(code), JSON.stringify(meta), { EX: TTL });
   await redis.set(k.wines(code), '[]', { EX: TTL });
   await redis.sAdd(k.users(code), hostName);
@@ -147,10 +158,10 @@ app.post('/api/session', async (req, res) => {
   if (req.user) {
     try {
       await pool.query(
-        `INSERT INTO sessions (code, host_user_id, host_name, created_at)
-         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))
+        `INSERT INTO sessions (code, host_user_id, host_name, name, created_at)
+         VALUES ($1, $2, $3, $4, to_timestamp($5 / 1000.0))
          ON CONFLICT (code) DO NOTHING`,
-        [code, req.user.userId, hostName, meta.createdAt]
+        [code, req.user.userId, hostName, meta.name || null, meta.createdAt]
       );
     } catch (err) {
       console.error('pg session create error:', err.message);
@@ -193,6 +204,22 @@ app.get('/api/session/:code/wines', async (req, res) => {
   res.json(JSON.parse(raw));
 });
 
+// PATCH /api/session/:code/name — rename session (host only)
+app.patch('/api/session/:code/name', async (req, res) => {
+  const c = req.params.code.toUpperCase();
+  const raw = await redis.get(k.meta(c));
+  if (!raw) return res.status(404).json({ error: 'session not found' });
+  const meta = JSON.parse(raw);
+  if (!isHost(meta, req)) return res.status(403).json({ error: 'only the host can rename this session' });
+  const name = String(req.body.name || '').trim().slice(0, 80);
+  meta.name = name;
+  await redis.set(k.meta(c), JSON.stringify(meta), { EX: TTL });
+  await touch(c);
+  // update postgres too
+  try { await pool.query(`UPDATE sessions SET name=$1 WHERE code=$2`, [name || null, c]); } catch {}
+  res.json({ ok: true, name });
+});
+
 // POST /api/session/:code/visit — record that a logged-in user joined this session
 app.post('/api/session/:code/visit', async (req, res) => {
   if (!req.user) return res.json({ ok: true }); // no-op for anonymous
@@ -218,6 +245,8 @@ app.post('/api/session/:code/wines', async (req, res) => {
   const c = req.params.code.toUpperCase();
   const raw = await redis.get(k.wines(c));
   if (!raw) return res.status(404).json({ error: 'not found' });
+  const meta = JSON.parse(await redis.get(k.meta(c)) || '{}');
+  if (!isHost(meta, req)) return res.status(403).json({ error: 'only the host can add wines' });
 
   const wines = JSON.parse(raw);
   const next = buildWinePayload(req.body);
@@ -261,6 +290,8 @@ app.patch('/api/session/:code/wines/:wineId', async (req, res) => {
   const c = req.params.code.toUpperCase();
   const raw = await redis.get(k.wines(c));
   if (!raw) return res.status(404).json({ error: 'not found' });
+  const meta = JSON.parse(await redis.get(k.meta(c)) || '{}');
+  if (!isHost(meta, req)) return res.status(403).json({ error: 'only the host can edit wines' });
 
   const wines = JSON.parse(raw);
   const idx = wines.findIndex(w => w.id === req.params.wineId);
@@ -295,6 +326,8 @@ app.post('/api/session/:code/wines/reorder', async (req, res) => {
   const c = req.params.code.toUpperCase();
   const raw = await redis.get(k.wines(c));
   if (!raw) return res.status(404).json({ error: 'not found' });
+  const meta = JSON.parse(await redis.get(k.meta(c)) || '{}');
+  if (!isHost(meta, req)) return res.status(403).json({ error: 'only the host can reorder wines' });
 
   const wines = JSON.parse(raw);
   const orderedIds = Array.isArray(req.body.orderedIds) ? req.body.orderedIds.map(String) : [];
@@ -318,6 +351,8 @@ app.delete('/api/session/:code/wines/:wineId', async (req, res) => {
   const c = req.params.code.toUpperCase();
   const raw = await redis.get(k.wines(c));
   if (!raw) return res.status(404).json({ error: 'not found' });
+  const meta = JSON.parse(await redis.get(k.meta(c)) || '{}');
+  if (!isHost(meta, req)) return res.status(403).json({ error: 'only the host can delete wines' });
 
   let wines = JSON.parse(raw);
   wines = wines.filter(w => w.id !== req.params.wineId);
