@@ -1519,7 +1519,7 @@ async function rProfile(){
           ${topFlavors.map(f=>`<div style="padding:5px 10px;border-radius:999px;border:1px solid ${f.c}44;background:${f.c}18;font-size:11px;font-weight:700;color:${f.c};">${f.l} <span style="opacity:0.7;">${flavors[f.k].toFixed(1)}</span></div>`).join('')}
         </div>`:''}
       </div>`;
-    drawRadar('profileRadar', flavors, 'red', 240);
+    drawPolarChart('profileRadar',flavors,240);
   }catch(err){console.error(err);el.innerHTML='<div style="color:var(--fg-dim);font-size:13px;">Could not load profile.</div>';}
 }
 
@@ -1962,7 +1962,7 @@ function openDetail(id,from){
     const hdr=document.querySelector('#scr-detail .screen-shell');
     hdr.insertAdjacentHTML('afterbegin',`<div class="detail-media" id="detailMedia"><img class="detail-photo" src="${w.image}" alt="${w.name}"></div>`);
   }
-  buildStars();buildSliders();drawRadar('mainRadar',cFl,w.type,240);
+  buildStars();buildSliders();drawPolarChart('mainRadar',cFl,240);
   updateBookmarkBtn();
   document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
   const scr=document.getElementById('scr-detail');
@@ -1989,7 +1989,7 @@ function slIn(k,el,c){
   document.getElementById('sv-'+k).textContent=el.value;
   el.style.background=`linear-gradient(to right,${c} ${el.value*20}%,var(--bg3) ${el.value*20}%)`;
   const w=S.wines.find(x=>x.id===S.curId);
-  drawRadar('mainRadar',cFl,w?.type||'red',240);
+  drawPolarChart('mainRadar',cFl,240);
 }
 async function saveRating(){
   try{
@@ -2059,6 +2059,42 @@ function smoothPath(points,tension=0.9){
 function isLightTheme(){ return theme==='light'; }
 function radarGridStroke(){ return isLightTheme() ? 'rgba(86,66,42,0.12)' : 'rgba(255,255,255,0.04)'; }
 function radarLabelFill(){ return isLightTheme() ? 'rgba(96,82,68,0.92)' : 'rgba(106,102,88,0.9)'; }
+// ── POLAR CHART (Wine Folly style) ────────────
+function arcSeg(cx,cy,r1,r2,a1d,a2d,fill,opacity){
+  const a1=a1d*Math.PI/180,a2=a2d*Math.PI/180,lg=(a2d-a1d)>180?1:0;
+  const x1=cx+r1*Math.cos(a1),y1=cy+r1*Math.sin(a1);
+  const x2=cx+r2*Math.cos(a1),y2=cy+r2*Math.sin(a1);
+  const x3=cx+r2*Math.cos(a2),y3=cy+r2*Math.sin(a2);
+  const x4=cx+r1*Math.cos(a2),y4=cy+r1*Math.sin(a2);
+  return `<path d="M${x1},${y1}L${x2},${y2}A${r2},${r2},0,${lg},1,${x3},${y3}L${x4},${y4}A${r1},${r1},0,${lg},0,${x1},${y1}Z" fill="${fill}" opacity="${opacity}"/>`;
+}
+function drawPolarChart(id,flavors,sz){
+  const svg=document.getElementById(id);if(!svg)return;
+  const cx=sz/2,cy=sz/2,n=FL.length;
+  const iR=sz*0.10,oR=sz*0.38,lR=sz*0.455;
+  const gap=3,seg=360/n-gap;
+  let h='';
+  // faint scale rings
+  for(let ring=1;ring<=5;ring++){
+    const r=iR+(oR-iR)*ring/5;
+    h+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${radarGridStroke()}" stroke-width="0.6" stroke-dasharray="1.5,2.5"/>`;
+  }
+  FL.forEach((f,i)=>{
+    const val=Math.max(0,Math.min(5,flavors[f.k]||0));
+    const a1=(360/n*i)-90+gap/2,a2=a1+seg;
+    const mid=(a1+a2)/2,mRad=mid*Math.PI/180;
+    // background (full, very faint)
+    h+=arcSeg(cx,cy,iR,oR,a1,a2,f.c,0.13);
+    // value fill
+    if(val>0){const vr=iR+(oR-iR)*val/5;h+=arcSeg(cx,cy,iR,vr,a1,a2,f.c,0.85);}
+    // label
+    const lx=cx+lR*Math.cos(mRad),ly=cy+lR*Math.sin(mRad);
+    const anch=Math.cos(mRad)>0.2?'start':Math.cos(mRad)<-0.2?'end':'middle';
+    h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.07em">${f.l.toUpperCase()}</text>`;
+  });
+  svg.innerHTML=h;
+}
+
 function drawRadar(id,flavors,type,sz,over){
   const svg=document.getElementById(id);if(!svg)return;
   const cx=sz/2,cy=sz/2,R=sz/2-44,n=FL.length;let h='';
@@ -2167,7 +2203,7 @@ function rCompare(){
   }
 
   el.innerHTML=h;
-  rated.forEach(w=>drawRadar('cr_'+w.id,ratings[w.id].flavors,w.type,200));
+  rated.forEach(w=>drawPolarChart('cr_'+w.id,ratings[w.id].flavors,200));
   if(rated.length>=2) drawOverlay(rated,ratings);
 }
 
