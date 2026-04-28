@@ -2071,10 +2071,12 @@ function arcSeg(cx,cy,r1,r2,a1d,a2d,fill,opacity){
 function drawPolarChart(id,flavors,sz){
   const svg=document.getElementById(id);if(!svg)return;
   const cx=sz/2,cy=sz/2,n=FL.length;
-  const iR=sz*0.10,oR=sz*0.38,lR=sz*0.455;
+  const iR=sz*0.10,oR=sz*0.37,lR=sz*0.44;
   const gap=3,seg=360/n-gap;
+  // expand viewBox dynamically so labels never clip
+  const vpad=Math.round(lR+24);
+  svg.setAttribute('viewBox',`${-vpad} ${-vpad} ${sz+vpad*2} ${sz+vpad*2}`);
   let h='';
-  // faint scale rings
   for(let ring=1;ring<=5;ring++){
     const r=iR+(oR-iR)*ring/5;
     h+=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${radarGridStroke()}" stroke-width="0.6" stroke-dasharray="1.5,2.5"/>`;
@@ -2083,14 +2085,11 @@ function drawPolarChart(id,flavors,sz){
     const val=Math.max(0,Math.min(5,flavors[f.k]||0));
     const a1=(360/n*i)-90+gap/2,a2=a1+seg;
     const mid=(a1+a2)/2,mRad=mid*Math.PI/180;
-    // background (full, very faint)
     h+=arcSeg(cx,cy,iR,oR,a1,a2,f.c,0.13);
-    // value fill
     if(val>0){const vr=iR+(oR-iR)*val/5;h+=arcSeg(cx,cy,iR,vr,a1,a2,f.c,0.85);}
-    // label
     const lx=cx+lR*Math.cos(mRad),ly=cy+lR*Math.sin(mRad);
     const anch=Math.cos(mRad)>0.2?'start':Math.cos(mRad)<-0.2?'end':'middle';
-    h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.07em">${f.l.toUpperCase()}</text>`;
+    h+=`<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7.5" fill="${radarLabelFill()}" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`;
   });
   svg.innerHTML=h;
 }
