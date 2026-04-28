@@ -67,6 +67,27 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   UNIQUE (user_id, wine_id)
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS xp INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS badges (
+  id          VARCHAR(60)  PRIMARY KEY,
+  name        VARCHAR(100) NOT NULL,
+  description VARCHAR(255) NOT NULL,
+  icon        VARCHAR(10)  NOT NULL,
+  category    VARCHAR(30)  NOT NULL,
+  rarity      VARCHAR(20)  NOT NULL DEFAULT 'common',
+  xp_reward   INTEGER      NOT NULL DEFAULT 50
+);
+
+CREATE TABLE IF NOT EXISTS user_badges (
+  id         SERIAL       PRIMARY KEY,
+  user_id    INTEGER      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  badge_id   VARCHAR(60)  NOT NULL REFERENCES badges(id),
+  earned_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  seen       BOOLEAN      NOT NULL DEFAULT FALSE,
+  UNIQUE (user_id, badge_id)
+);
+
 CREATE TABLE IF NOT EXISTS hall_of_fame (
   id           SERIAL PRIMARY KEY,
   wine_name    VARCHAR(255) NOT NULL,

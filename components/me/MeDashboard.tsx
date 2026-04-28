@@ -142,7 +142,7 @@ export function MeDashboard({ user }: { user: User }) {
 
           {/* Quick links */}
           <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            {[{href:'/me/history',l:'◷ history'},{href:'/me/profile',l:'◉ profile'},{href:'/hof',l:'★ hall of fame'}].map(({href,l}) => (
+            {[{href:'/me/history',l:'◷ history'},{href:'/me/profile',l:'◉ profile'},{href:'/me/badges',l:'🏅 badges'},{href:'/hof',l:'★ hall of fame'}].map(({href,l}) => (
               <Link key={href} href={href} className="btn-s" style={{textDecoration:'none',display:'inline-block'}}>{l}</Link>
             ))}
           </div>

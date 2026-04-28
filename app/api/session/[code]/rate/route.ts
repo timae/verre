@@ -59,5 +59,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   }
 
   await touch(c)
+
+  // Trigger badge check asynchronously for logged-in users
+  if (session?.user) {
+    const hasNote = (notes || '').length > 5
+    const action = ratingScore === 5
+      ? (hasNote ? 'rate_5star_note' : 'rate_5star')
+      : (hasNote ? 'rate_with_note' : 'rate')
+    const baseUrl = req.nextUrl.origin
+    fetch(`${baseUrl}/api/me/badges`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': req.headers.get('Authorization') || '' },
+      body: JSON.stringify({ action }),
+    }).catch(() => {})
+  }
+
   return NextResponse.json({ ok: true })
 }

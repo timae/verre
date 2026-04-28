@@ -27,9 +27,11 @@ export default async function MeLayout({ children }: { children: React.ReactNode
             { href: '/me/history', label: '◷ History' },
             { href: '/me/saved', label: '★ Saved wines' },
             { href: '/me/profile', label: '◉ Profile' },
+            { href: '/me/badges', label: '🏅 Badges' },
           ].map(({ href, label }) => (
             <Link key={href} href={href}
-              className="px-3 py-2 rounded-lg text-sm text-fg-dim hover:text-fg hover:bg-bg3 transition-colors">
+              style={{display:'block',padding:'6px 12px',borderRadius:8,fontSize:12,color:'var(--fg-dim)',textDecoration:'none',fontFamily:'var(--mono)'}}
+              className="hover:text-fg hover:bg-bg3 transition-colors">
               {label}
             </Link>
           ))}
