@@ -88,7 +88,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
         {/* Header */}
         <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
-          <span style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)'}}>Verre</span>
+          <Link href="/me" style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <ThemeToggle />
             <button

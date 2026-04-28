@@ -10,7 +10,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
   return (
     <div className="min-h-screen bg-[var(--bg)]">
       <header className="px-4 h-[var(--hdr-h)] flex items-center justify-between border-b border-border/20 bg-bg/80 backdrop-blur-lg sticky top-0 z-10">
-        <Link href="/" className="text-accent font-extrabold tracking-widest text-lg uppercase">Verre</Link>
+        <Link href="/me" style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <ThemeToggle />
           <div style={{display:'flex',alignItems:'center',gap:6,fontSize:10,color:'var(--fg-dim)',fontFamily:'var(--mono)'}}>

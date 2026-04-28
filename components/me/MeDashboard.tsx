@@ -57,7 +57,7 @@ export function MeDashboard({ user }: { user: User }) {
   const recentBooks = bookmarks.slice(0, 4)
 
   return (
-    <div style={{padding:'14px 14px 40px',maxWidth:980,margin:'0 auto'}}>
+    <div style={{padding:'14px 14px 40px',maxWidth:980,margin:'0 auto',minHeight:'calc(100vh - var(--hdr-h))'}}>
       {/* Greeting */}
       <div style={{marginBottom:24}}>
         <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:6}}>your dashboard</p>

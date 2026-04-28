@@ -196,6 +196,42 @@ body {
 .wine-rose   { --wine-c: rgba(200,104,128,1); }
 .wine-nonalc { --wine-c: rgba(106,170,130,1); }
 
+/* Light mode overrides */
+[data-theme="light"] .lobby-form {
+  background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(247,239,229,0.92));
+}
+[data-theme="light"] .lobby-card {
+  border-color: rgba(0,0,0,0.08);
+  background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.4));
+}
+[data-theme="light"] .wine-card {
+  background: linear-gradient(180deg, rgba(255,255,255,0.7), rgba(255,255,255,0.5));
+  border-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .panel {
+  background: linear-gradient(180deg, rgba(255,255,255,0.7), rgba(255,255,255,0.5));
+  border-color: rgba(0,0,0,0.06);
+}
+[data-theme="light"] .fi {
+  background: #fff;
+  border-color: var(--border2);
+}
+[data-theme="light"] .chip {
+  background: rgba(0,0,0,0.04);
+}
+.app-bg {
+  background: radial-gradient(circle at top left,var(--bg-grad1,rgba(200,150,60,0.12)),transparent 28%),
+              radial-gradient(circle at top right,var(--bg-grad2,rgba(122,175,200,0.1)),transparent 24%),
+              linear-gradient(180deg,var(--bg-grad3,#12120F) 0%,var(--bg-grad4,#0B0B09) 100%);
+  min-height: 100vh;
+}
+[data-theme="light"] {
+  --bg-grad1: rgba(196,143,74,0.14);
+  --bg-grad2: rgba(112,157,187,0.12);
+  --bg-grad3: #FBF7F0;
+  --bg-grad4: #F1E7D9;
+}
+
 /* Print */
 @media print {
   @page { size: A4; margin: 18mm 16mm; }

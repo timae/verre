@@ -8,6 +8,7 @@ interface Props { onClose: () => void; onLeave: () => void }
 export function SessionModal({ onClose, onLeave }: Props) {
   const { code, displayName, isHost, sessionMeta, refresh } = useSession()
   const [participants, setParticipants] = useState<string[]>([])
+  const [coHosts, setCoHosts] = useState<string[]>([])
   const [newName, setNewName] = useState(sessionMeta?.name || '')
   const [displayNameInput, setDisplayNameInput] = useState(displayName)
   const [copied, setCopied] = useState(false)
@@ -16,7 +17,7 @@ export function SessionModal({ onClose, onLeave }: Props) {
   useEffect(() => {
     fetch(`/api/session/${code}`)
       .then(r => r.json())
-      .then(d => setParticipants(d.users || []))
+      .then(d => { setParticipants(d.users || []); setCoHosts(d.coHosts || []) })
       .catch(() => {})
   }, [code])
 
@@ -29,6 +30,18 @@ export function SessionModal({ onClose, onLeave }: Props) {
   async function copyInvite() {
     await navigator.clipboard.writeText(inviteUrl).catch(() => {})
     setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+
+  async function toggleCoHost(targetUser: string) {
+    const isCoHost = coHosts.includes(targetUser)
+    const res = await fetch(`/api/session/${code}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: displayName, targetUser, action: isCoHost ? 'remove-cohost' : 'add-cohost' }),
+    })
+    if (res.ok) {
+      const { meta } = await res.json()
+      setCoHosts(meta.coHosts || [])
+    }
   }
 
   async function renameSession() {
@@ -61,14 +74,25 @@ export function SessionModal({ onClose, onLeave }: Props) {
         {participants.length > 0 && (
           <div style={{marginBottom:16}}>
             <div className="fl">// participants</div>
-            <div style={{fontSize:11,color:'var(--fg-dim)',lineHeight:1.7}}>
-              {participants.map(u => (
-                <div key={u} style={{display:'flex',alignItems:'center',gap:6}}>
-                  <span style={{color:'var(--accent2)'}}>→</span>
-                  {u}
-                  {u === sessionMeta?.host && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase'}}>(host)</span>}
-                </div>
-              ))}
+            <div style={{display:'flex',flexDirection:'column',gap:4}}>
+              {participants.map(u => {
+                const isThisHost = u === sessionMeta?.host
+                const isCoHost = coHosts.includes(u)
+                const isMe = u === displayName
+                return (
+                  <div key={u} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
+                    <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
+                    <span style={{flex:1,fontSize:12}}>{u}</span>
+                    {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
+                    {isCoHost && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
+                    {isHost && !isThisHost && !isMe && (
+                      <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(u)}>
+                        {isCoHost ? 'remove role' : 'make co-host'}
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

@@ -44,7 +44,7 @@ export function LobbyClient({ user }: { user: User }) {
   }
 
   return (
-    <div className="min-h-screen p-4 md:p-8" style={{background:'radial-gradient(circle at top left,rgba(200,150,60,0.12),transparent 28%),radial-gradient(circle at top right,rgba(122,175,200,0.1),transparent 24%),linear-gradient(180deg,#12120F 0%,#0B0B09 100%)'}}>
+    <div className="app-bg" style={{padding:'16px 16px 40px'}}>
       <header className="flex items-center justify-between mb-6 max-w-[1040px] mx-auto">
         <div style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',display:'flex',alignItems:'baseline',gap:6}}>
           Verre

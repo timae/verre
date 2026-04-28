@@ -42,9 +42,14 @@ export async function getWines(code: string): Promise<WineMeta[]> {
   return raw ? JSON.parse(raw) : []
 }
 
-export function isHost(meta: SessionMeta, userId?: string, userName?: string): boolean {
-  if (userId && meta.hostUserId) return String(meta.hostUserId) === userId
-  if (userName) return userName === meta.host
+export function isHost(meta: SessionMeta & { coHosts?: string[] }, userId?: string, userName?: string): boolean {
+  if (userId && meta.hostUserId) {
+    if (String(meta.hostUserId) === userId) return true
+  }
+  if (userName) {
+    if (userName === meta.host) return true
+    if (meta.coHosts?.includes(userName)) return true
+  }
   return false
 }
 
