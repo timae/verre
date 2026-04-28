@@ -76,12 +76,12 @@ router.get('/profile', requireAuth, async (req, res) => {
   try {
     const fl = ['floral','citrus','stone','tropical','herbal','oak','body','tannin','acid','sweet'];
     const weightedAvg = fl.map(f =>
-      `ROUND(SUM((flavors->>'${f}')::float * score) / NULLIF(SUM(CASE WHEN (flavors->>'${f}')::float > 0 THEN score ELSE 0 END), 0), 2) AS ${f}`
+      `ROUND((SUM((flavors->>'${f}')::numeric * score) / NULLIF(SUM(CASE WHEN (flavors->>'${f}')::numeric > 0 THEN score ELSE 0 END), 0))::numeric, 2) AS ${f}`
     ).join(', ');
     const { rows } = await pool.query(
       `SELECT ${weightedAvg},
-              COUNT(*)                    AS total_rated,
-              ROUND(AVG(score)::numeric, 1) AS avg_score,
+              COUNT(*)                          AS total_rated,
+              ROUND(AVG(score)::numeric, 1)     AS avg_score,
               COUNT(CASE WHEN score = 5 THEN 1 END) AS five_star
        FROM ratings
        WHERE user_id = $1 AND score > 0`,
