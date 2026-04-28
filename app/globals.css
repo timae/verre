@@ -94,6 +94,7 @@
 
 @media (min-width: 640px) {
   [data-lobby-grid] { grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); }
+  [data-dash-grid] { grid-template-columns: minmax(280px, 420px) minmax(0, 1fr); }
 }
 
 .lobby-divider {

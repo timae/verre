@@ -133,6 +133,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
             <span style={{fontSize:14,lineHeight:1}}>👤</span>
             <span>You</span>
           </button>
+          <button onClick={() => router.push('/me')} className="nav-item" style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}>
+            <span style={{fontSize:16,lineHeight:1}}>←</span>
+            <span>Leave</span>
+          </button>
         </nav>
       </div>
     </Ctx.Provider>
