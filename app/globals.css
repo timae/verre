@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+/* ── Dark theme (default) ─────────────────── */
+:root {
+  --bg: #0E0E0C; --bg2: #141410; --bg3: #1A1A16; --bg4: #202019;
+  --border: #2A2A24; --border2: #383830;
+  --fg: #D4CFBE; --fg-dim: #6A6658; --fg-faint: #3A3A32;
+  --accent: #C8963C; --accent2: #8FB87A;
+  --nav-h: 56px; --hdr-h: 52px;
+}
+
+/* ── Light theme ──────────────────────────── */
+[data-theme="light"] {
+  --bg: #F6F0E6; --bg2: #FBF7F0; --bg3: #EFE6D8; --bg4: #E5D8C4;
+  --border: #D9CBB9; --border2: #C8B8A2;
+  --fg: #231D17; --fg-dim: #605244; --fg-faint: #8A7B6B;
+  --accent: #9A5F1D; --accent2: #4B7750;
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+html, body { height: 100%; font-family: 'Manrope', sans-serif; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Wine type colour tokens */
+.wine-red    { --wine-c: rgba(184,64,64,1); }
+.wine-white  { --wine-c: rgba(200,168,75,1); }
+.wine-spark  { --wine-c: rgba(122,175,200,1); }
+.wine-rose   { --wine-c: rgba(200,104,128,1); }
+.wine-nonalc { --wine-c: rgba(106,170,130,1); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }

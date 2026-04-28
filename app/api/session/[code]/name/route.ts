@@ -1,0 +1,25 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@/auth'
+import { redis, k, touch } from '@/lib/redis'
+import { getSessionMeta, isHost } from '@/lib/session'
+import { prisma } from '@/lib/prisma'
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  const { code } = await params
+  const c = code.toUpperCase()
+  const session = await auth()
+  const body = await req.json()
+
+  const meta = await getSessionMeta(c)
+  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!isHost(meta, session?.user?.id, body.userName)) {
+    return NextResponse.json({ error: 'only the host can rename this session' }, { status: 403 })
+  }
+
+  const name = String(body.name || '').trim().slice(0, 80)
+  meta.name = name
+  await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
+  await touch(c)
+  try { await prisma.session.update({ where: { code: c }, data: { name: name || null } }) } catch {}
+  return NextResponse.json({ ok: true, name })
+}
