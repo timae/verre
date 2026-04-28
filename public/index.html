@@ -1979,14 +1979,17 @@ function openEditWine(id){
   document.getElementById('aG').value=wine.grape||'';
   sel(wine.type||'');
   resetBottlePhoto();
-  if(wine.image){
-    addPhotoDataUrl=wine.image;
+  const existingPhoto=wine.imageUrl||wine.image||'';
+  if(existingPhoto){
+    // if it's an S3 URL keep addPhotoDataUrl empty so we don't re-upload;
+    // just show the preview. Server keeps existing image when body.image is undefined.
     const preview=document.getElementById('photoPreview');
     const empty=document.getElementById('photoEmpty');
-    preview.src=wine.image;
+    preview.src=existingPhoto;
     preview.classList.add('show');
     empty.style.display='none';
-    setPhotoStatus(hasProviderKey()?`existing bottle photo attached. replace it or scan it with your ${providerConfig().label} key.`:'existing bottle photo attached. replace it or keep it for the list and export.');
+    setPhotoStatus(hasProviderKey()?`existing bottle photo attached. replace it or scan it with your ${providerConfig().label} key.`:'existing bottle photo attached. replace it or keep it.');
+    if(wine.image) addPhotoDataUrl=wine.image; // only set if base64 (re-uploadable)
   }
   document.getElementById('addModal').classList.add('open');
   setTimeout(()=>document.getElementById('aN').focus(),320);
@@ -2003,18 +2006,22 @@ async function saveWine(){
   const body={
     name:nm,producer:document.getElementById('aP').value.trim(),
     vintage:document.getElementById('aV').value.trim(),
-    grape:document.getElementById('aG').value.trim(),type:S.selType,image:addPhotoDataUrl,
+    grape:document.getElementById('aG').value.trim(),type:S.selType,
+    userName:S.user, // needed for host verification
   };
+  // only include image if user actually picked one — undefined means keep existing
+  if(addPhotoDataUrl) body.image=addPhotoDataUrl;
   try{
     if(editingWineId){
-      await api(`/session/${S.code}/wines/${editingWineId}`,{method:'PATCH',body});
+      const wineId=editingWineId;
+      await api(`/session/${S.code}/wines/${wineId}`,{method:'PATCH',body});
       closeAdd();await refresh();toast(nm+' updated');
-      if(S.curId===editingWineId) openDetail(editingWineId,S.fromTab);
+      if(S.curId===wineId) openDetail(wineId,S.fromTab);
       return;
     }
     await api(`/session/${S.code}/wines`,{method:'POST',body});
     closeAdd();await refresh();toast(nm+' added');
-  }catch(e){toast(editingWineId?'error updating wine':'error adding wine');}
+  }catch(e){toast(editingWineId?'error updating wine (host only)':'error adding wine');}
 }
 
 // ── DETAIL ────────────────────────────────────
@@ -2079,7 +2086,7 @@ async function deleteWine(){
   const w=S.wines.find(x=>x.id===S.curId);if(!w)return;
   if(!confirm('Delete "'+w.name+'"? This removes it for everyone.'))return;
   try{
-    await api(`/session/${S.code}/wines/${S.curId}`,{method:'DELETE'});
+    await api(`/session/${S.code}/wines/${S.curId}`,{method:'DELETE',body:{userName:S.user}});
     toast('deleted');await refresh();tab(S.fromTab);
   }catch(e){toast('error deleting');}
 }
@@ -2097,7 +2104,7 @@ async function moveWine(delta){
   try{
     await api(`/session/${S.code}/wines/reorder`,{
       method:'POST',
-      body:{orderedIds:ordered.map(w=>w.id)}
+      body:{orderedIds:ordered.map(w=>w.id),userName:S.user}
     });
     await refresh();
     openDetail(S.curId,S.fromTab);

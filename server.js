@@ -82,9 +82,13 @@ async function pgUpsertSession(code, meta) {
 }
 
 function isHost(meta, req) {
-  if (req.user && meta.hostUserId) return req.user.userId === meta.hostUserId;
-  const userName = req.body?.userName || req.query?.userName;
-  return userName === meta.host;
+  // authenticated: match by userId if stored, else fall through to name
+  if (req.user) {
+    if (meta.hostUserId) return req.user.userId === meta.hostUserId;
+    // old session without hostUserId — allow authenticated user if name matches
+  }
+  const userName = req.body?.userName || req.query?.userName || req.body?.hostName;
+  return !!userName && userName === meta.host;
 }
 
 async function pgUpsertWine(sessionCode, wine) {
