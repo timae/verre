@@ -2,13 +2,16 @@ import { RegisterForm } from '@/components/auth/RegisterForm'
 
 export default function RegisterPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-[var(--bg)]">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-extrabold tracking-widest uppercase text-accent">Verre</h1>
-          <p className="text-fg-dim text-xs mt-1">Create your account</p>
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16,background:'var(--bg)'}}>
+      <div style={{width:'100%',maxWidth:360}}>
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:22,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)'}}>Verre</div>
+          <div style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.14em',textTransform:'uppercase',marginTop:4}}>Create your account</div>
         </div>
-        <RegisterForm />
+        <div className="lobby-card lobby-form" style={{padding:22}}>
+          <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Free, always</div>
+          <RegisterForm />
+        </div>
       </div>
     </div>
   )

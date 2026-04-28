@@ -9,12 +9,7 @@ const TYPES = [
   { k: 'nonalc', l: 'Non-alc', ico: '🌿' },
 ]
 
-interface Props {
-  code: string
-  userName: string
-  onClose: () => void
-  onSaved: () => void
-}
+interface Props { code: string; userName: string; onClose: () => void; onSaved: () => void }
 
 export function AddWineModal({ code, userName, onClose, onSaved }: Props) {
   const [name, setName] = useState('')
@@ -40,66 +35,52 @@ export function AddWineModal({ code, userName, onClose, onSaved }: Props) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div className="w-full max-w-lg bg-bg2 border border-border2 rounded-card p-5 space-y-4">
-        <h3 className="font-bold text-lg">Add wine</h3>
-
-        <div>
-          <label className="text-xs text-fg-dim uppercase tracking-widest mb-1 block">Name *</label>
-          <input value={name} onChange={e => setName(e.target.value)}
-            className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-accent"
-            placeholder="Château de Whatever, 2019" />
+    <div
+      style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)',padding:0}}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{width:'100%',maxWidth:600,background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
+        <div className="sheet-bar" />
+        <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
+          Add wine <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-fg-dim uppercase tracking-widest mb-1 block">Producer</label>
-            <input value={producer} onChange={e => setProducer(e.target.value)}
-              className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-accent"
-              placeholder="Domaine…" />
+        <div className="field">
+          <div className="fl">name *</div>
+          <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="Château de Whatever, 2019" />
+        </div>
+
+        <div style={{display:'flex',gap:8}}>
+          <div className="field" style={{flex:1}}>
+            <div className="fl">producer</div>
+            <input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" />
           </div>
-          <div>
-            <label className="text-xs text-fg-dim uppercase tracking-widest mb-1 block">Vintage</label>
-            <input value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4}
-              className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-accent"
-              placeholder="20XX" />
+          <div className="field" style={{maxWidth:88}}>
+            <div className="fl">vintage</div>
+            <input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" />
           </div>
         </div>
 
-        <div>
-          <label className="text-xs text-fg-dim uppercase tracking-widest mb-1 block">Type *</label>
-          <div className="flex gap-2 flex-wrap">
+        <div className="field">
+          <div className="fl">type *</div>
+          <div className="chips">
             {TYPES.map(t => (
-              <button
-                key={t.k} onClick={() => setType(t.k)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors
-                  ${type === t.k ? 'border-accent bg-accent/15 text-accent' : 'border-border text-fg-dim hover:border-border2'}`}
-              >
-                {t.ico} {t.l}
-              </button>
+              <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => setType(t.k)}>
+                <span>{t.ico}</span>{t.l}
+              </div>
             ))}
           </div>
         </div>
 
-        <div>
-          <label className="text-xs text-fg-dim uppercase tracking-widest mb-1 block">Grape / Style</label>
-          <input value={grape} onChange={e => setGrape(e.target.value)}
-            className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-accent"
-            placeholder="Pinot Noir, Pét-Nat…" />
+        <div className="field">
+          <div className="fl">grape / style</div>
+          <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
         </div>
 
-        {error && <p className="text-red-400 text-xs">{error}</p>}
+        {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
 
-        <div className="flex gap-2 pt-1">
-          <button onClick={save} disabled={saving}
-            className="flex-1 bg-accent text-bg font-bold py-2.5 rounded-lg text-sm disabled:opacity-50">
-            {saving ? 'Saving…' : '→ Add to session'}
-          </button>
-          <button onClick={onClose}
-            className="flex-1 bg-bg3 border border-border text-fg-dim font-bold py-2.5 rounded-lg text-sm">
-            Cancel
-          </button>
-        </div>
+        <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ add to session'}</button>
+        <button className="btn-g" onClick={onClose}>cancel</button>
       </div>
     </div>
   )

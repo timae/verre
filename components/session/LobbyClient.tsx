@@ -43,81 +43,66 @@ export function LobbyClient({ user }: { user: User }) {
   }
 
   return (
-    <div className="min-h-screen bg-[var(--bg)] p-4 md:p-8">
-      <header className="flex items-center justify-between mb-8 max-w-4xl mx-auto">
-        <div className="text-accent font-extrabold tracking-widest text-xl uppercase">
-          Verre <span className="text-xs border border-border2 px-1.5 py-0.5 rounded text-fg-dim font-normal ml-1">v3</span>
+    <div className="min-h-screen p-4 md:p-8" style={{background:'radial-gradient(circle at top left,rgba(200,150,60,0.12),transparent 28%),radial-gradient(circle at top right,rgba(122,175,200,0.1),transparent 24%),linear-gradient(180deg,#12120F 0%,#0B0B09 100%)'}}>
+      <header className="flex items-center justify-between mb-6 max-w-[1040px] mx-auto">
+        <div style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',display:'flex',alignItems:'baseline',gap:6}}>
+          Verre
+          <span style={{fontFamily:'var(--mono)',fontSize:9,color:'var(--fg-dim)',letterSpacing:'0.1em',border:'1px solid var(--border2)',padding:'1px 5px',borderRadius:2,marginLeft:4}}>v3</span>
         </div>
         {user ? (
-          <button onClick={() => signOut()} className="text-xs text-fg-dim hover:text-fg">
+          <button onClick={() => signOut()} style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.06em',fontFamily:'var(--mono)',background:'none',border:'none',cursor:'pointer'}}>
             {user.name} · sign out
           </button>
         ) : (
-          <Link href="/login" className="text-xs text-accent hover:underline">Sign in</Link>
+          <Link href="/login" style={{fontSize:10,color:'var(--accent)',letterSpacing:'0.06em',fontFamily:'var(--mono)'}}>Sign in</Link>
         )}
       </header>
 
-      <div className="max-w-4xl mx-auto grid md:grid-cols-2 gap-4 items-start">
+      <div className="max-w-[1040px] mx-auto" style={{display:'grid',gridTemplateColumns:'minmax(280px,420px) minmax(0,1fr)',gap:18,alignItems:'start'}}>
         {/* Session card */}
-        <div className="bg-bg2/80 border border-border rounded-card p-6 backdrop-blur-sm">
-          <p className="text-xs text-accent2 uppercase tracking-widest mb-1">Start or join</p>
-          <h2 className="text-2xl font-bold text-fg mb-6">Open the table</h2>
-
-          <label className="block text-xs text-fg-dim uppercase tracking-widest mb-1">Your name</label>
-          <input
-            value={displayName} onChange={e => setDisplayName(e.target.value)}
-            className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-fg text-sm mb-1 focus:outline-none focus:border-accent"
-            placeholder="firstname or alias"
-          />
-
-          <label className="block text-xs text-fg-dim uppercase tracking-widest mb-1 mt-3">
-            Session name <span className="normal-case opacity-60">(optional)</span>
-          </label>
-          <input
-            value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80}
-            className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-fg text-sm mb-4 focus:outline-none focus:border-accent"
-            placeholder="e.g. Friday Bordeaux tasting"
-          />
-
-          <button
-            onClick={createSession} disabled={loading}
-            className="w-full bg-accent text-bg font-bold py-2.5 rounded-lg text-sm mb-3 disabled:opacity-50"
-          >
-            → Create new tasting
-          </button>
-
-          <div className="flex items-center gap-3 my-3">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-xs text-fg-dim uppercase tracking-widest">or join</span>
-            <div className="flex-1 h-px bg-border" />
+        <div className="lobby-card lobby-form">
+          <div className="hero-kicker">Start or join</div>
+          <div className="subhead" style={{margin:'0 0 18px'}}>
+            <div className="subhead-title" style={{fontSize:24}}>Open the table</div>
           </div>
 
-          <input
-            value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())}
-            maxLength={4} placeholder="A3F7"
-            className="w-full bg-bg3 border border-border rounded-lg px-3 py-2.5 text-fg text-lg text-center tracking-widest mb-3 focus:outline-none focus:border-accent"
-          />
-          <button
-            onClick={joinSession} disabled={loading}
-            className="w-full bg-bg3 border border-border text-fg font-bold py-2.5 rounded-lg text-sm disabled:opacity-50"
-          >
-            → Join session
+          <div className="field">
+            <div className="fl">your name</div>
+            <input className="fi" value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="firstname or alias" />
+          </div>
+
+          <div className="field">
+            <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
+            <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+          </div>
+
+          <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
+            {loading ? 'creating…' : '→ create new tasting'}
           </button>
 
-          {error && <p className="text-red-400 text-xs mt-2">{error}</p>}
+          <div className="lobby-divider">or join an existing room</div>
 
-          <Link href="/hof" className="block text-center text-xs text-fg-dim mt-4 hover:text-accent">
-            ★ Hall of Fame
-          </Link>
+          <div className="field">
+            <div className="fl">session code</div>
+            <input
+              className="fi"
+              value={joinCode}
+              onChange={e => setJoinCode(e.target.value.toUpperCase())}
+              maxLength={4}
+              placeholder="e.g. A3F7"
+              style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}}
+            />
+          </div>
+          <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
+
+          {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+
+          <button className="btn-g" onClick={() => router.push('/hof')} style={{marginTop:20}}>★ hall of fame</button>
         </div>
 
         {/* Account card */}
-        <div className="bg-bg2/80 border border-border rounded-card p-6 backdrop-blur-sm">
-          {user ? (
-            <AccountDashboard user={user} />
-          ) : (
-            <AccountPromo />
-          )}
+        <div className="lobby-card" id="lobbyAccountCard">
+          {user ? <AccountDashboard user={user} /> : <AccountPromo />}
         </div>
       </div>
     </div>
@@ -127,38 +112,23 @@ export function LobbyClient({ user }: { user: User }) {
 function AccountPromo() {
   return (
     <>
-      <h2 className="text-3xl font-extrabold text-fg leading-none mb-2">
+      <div style={{fontFamily:'var(--mono)',fontSize:'clamp(28px,5vw,42px)',fontWeight:800,lineHeight:1,color:'#F3E9D3',marginBottom:8}}>
         Your palate,<br />remembered.
-      </h2>
-      <p className="text-xs text-fg-dim leading-relaxed mb-6">
-        Create a free account to save your history, bookmark wines, and build your flavour profile over time.
+      </div>
+      <p style={{fontSize:12,color:'var(--fg-dim)',lineHeight:1.8,maxWidth:'36ch',marginBottom:20}}>
+        Taste anonymously or create a free account to save your history, bookmark wines, and build your flavour profile over time.
       </p>
-      <div className="space-y-2 mb-6">
-        {[
-          'Save and revisit any tasting session',
-          'Bookmark wines across sessions',
-          'Hall of Fame entries credited to you',
-          'Flavour radar profile over time',
-        ].map(perk => (
-          <div key={perk} className="flex items-center gap-2 text-xs text-fg-dim">
-            <div className="w-1.5 h-1.5 rounded-full bg-accent flex-shrink-0" />
-            {perk}
+      <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:22,paddingTop:14,borderTop:'1px solid var(--border)'}}>
+        {['Save and revisit any tasting session','Bookmark wines across sessions','Hall of Fame entries credited to your name','Flavour radar profile over time'].map(p => (
+          <div key={p} style={{display:'flex',alignItems:'center',gap:8,fontSize:11,color:'var(--fg-dim)'}}>
+            <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent)',flexShrink:0}} />
+            {p}
           </div>
         ))}
       </div>
-      <div className="flex gap-2">
-        <Link
-          href="/register"
-          className="flex-1 bg-accent text-bg font-bold py-2.5 rounded-lg text-sm text-center"
-        >
-          Create account
-        </Link>
-        <Link
-          href="/login"
-          className="flex-1 bg-bg3 border border-border text-fg font-bold py-2.5 rounded-lg text-sm text-center"
-        >
-          Sign in
-        </Link>
+      <div style={{display:'flex',gap:8}}>
+        <Link href="/register" className="btn-p" style={{flex:1,textAlign:'center',textDecoration:'none',display:'block'}}>Create account</Link>
+        <Link href="/login" className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',display:'block',marginTop:0}}>Sign in</Link>
       </div>
     </>
   )
@@ -167,28 +137,18 @@ function AccountPromo() {
 function AccountDashboard({ user }: { user: NonNullable<User> }) {
   return (
     <>
-      <div className="flex items-center gap-3 mb-5">
-        <div className="w-2 h-2 rounded-full bg-accent2" />
-        <div>
-          <p className="font-bold text-sm text-fg">{user.name}</p>
-          <p className="text-xs text-fg-dim">{user.email}</p>
+      <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'rgba(143,184,122,0.07)',border:'1px solid rgba(143,184,122,0.18)',borderRadius:10,marginBottom:16}}>
+        <div style={{width:8,height:8,borderRadius:'50%',background:'var(--accent2)',flexShrink:0}} />
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontWeight:700,fontSize:14}}>{user.name}</div>
+          <div style={{fontSize:11,color:'var(--fg-dim)',marginTop:1}}>{user.email}</div>
         </div>
       </div>
-      <div className="space-y-2">
-        {[
-          { href: '/me', label: '→ My dashboard' },
-          { href: '/me/history', label: '◷ Tasting history' },
-          { href: '/me/saved', label: '★ Saved wines' },
-          { href: '/me/profile', label: '◉ Flavour profile' },
-        ].map(({ href, label }) => (
-          <Link
-            key={href} href={href}
-            className="block w-full text-left px-3 py-2.5 rounded-lg bg-bg3 border border-border text-sm text-fg hover:border-accent transition-colors"
-          >
-            {label}
-          </Link>
-        ))}
-      </div>
+      {[{href:'/me',label:'⊞  my dashboard'},{href:'/me/history',label:'◷  tasting history'},{href:'/me/saved',label:'★  saved wines'},{href:'/me/profile',label:'◉  flavour profile'}].map(({href,label}) => (
+        <Link key={href} href={href} className="btn-g" style={{display:'block',textAlign:'left',textDecoration:'none',marginTop:0,marginBottom:6}}>
+          {label}
+        </Link>
+      ))}
     </>
   )
 }

@@ -3,10 +3,7 @@ import { useSession } from './SessionShell'
 import { WineCard } from '@/components/wine/WineCard'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useState } from 'react'
-import { useRouter, useParams } from 'next/navigation'
-
-const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
-const LBL: Record<string, string> = { red: 'Red', white: 'White', spark: 'Sparkling', rose: 'Rosé', nonalc: 'Non-Alc' }
+import { useRouter } from 'next/navigation'
 
 export function WineListScreen() {
   const { wines, myRatings, isHost, code, displayName, refresh } = useSession()
@@ -14,50 +11,48 @@ export function WineListScreen() {
   const router = useRouter()
 
   return (
-    <div className="p-4 max-w-screen-md mx-auto">
-      <div className="flex items-end justify-between mb-4">
-        <div>
-          <p className="text-xs text-fg-dim uppercase tracking-widest mb-1">// Wine list</p>
-          <h2 className="text-2xl font-bold text-fg">{wines.length} bottle{wines.length !== 1 ? 's' : ''}</h2>
+    <div style={{padding:'14px 14px 28px'}}>
+      <div style={{maxWidth:980,margin:'0 auto'}}>
+        <div className="subhead">
+          <div className="subhead-title">Wine list</div>
+          <div className="subhead-copy">{wines.length} bottle{wines.length !== 1 ? 's' : ''} in this session</div>
         </div>
-        {isHost && (
-          <button
-            onClick={() => setShowAdd(true)}
-            className="bg-bg3 border border-border text-fg text-sm font-bold px-4 py-2 rounded-xl hover:border-accent transition-colors"
-          >
-            + Add wine
-          </button>
+
+        {wines.length === 0 && (
+          <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
+            {isHost ? 'Add the first wine to get started.' : 'Waiting for the host to add wines.'}
+          </div>
         )}
-      </div>
 
-      {wines.length === 0 && (
-        <div className="text-center py-16 text-fg-dim text-sm">
-          {isHost ? 'Add the first wine to get started.' : 'Waiting for the host to add wines.'}
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1">
-        {wines.map(wine => {
-          const rating = myRatings[wine.id]
-          return (
+        <div className="wine-stack">
+          {wines.map(wine => (
             <WineCard
               key={wine.id}
               wine={wine}
-              score={rating?.score}
+              score={myRatings[wine.id]?.score}
               onClick={() => router.push(`/session/${code}/rate/${wine.id}?name=${encodeURIComponent(displayName)}`)}
             />
-          )
-        })}
-      </div>
+          ))}
+        </div>
 
-      {showAdd && (
-        <AddWineModal
-          code={code}
-          userName={displayName}
-          onClose={() => setShowAdd(false)}
-          onSaved={() => { setShowAdd(false); refresh() }}
-        />
-      )}
+        {isHost && (
+          <button
+            className="btn-g"
+            onClick={() => setShowAdd(true)}
+            style={{marginTop:14,display:'block'}}
+          >
+            + add wine to session
+          </button>
+        )}
+
+        {showAdd && (
+          <AddWineModal
+            code={code} userName={displayName}
+            onClose={() => setShowAdd(false)}
+            onSaved={() => { setShowAdd(false); refresh() }}
+          />
+        )}
+      </div>
     </div>
   )
 }

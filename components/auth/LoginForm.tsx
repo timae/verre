@@ -13,43 +13,28 @@ export function LoginForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    setLoading(true)
-    setError('')
+    setLoading(true); setError('')
     const res = await signIn('credentials', { email, password, redirect: false })
     setLoading(false)
     if (res?.error) { setError('Invalid email or password'); return }
-    router.push('/')
-    router.refresh()
+    router.push('/'); router.refresh()
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label className="block text-xs text-fg-dim mb-1 uppercase tracking-widest">Email</label>
-        <input
-          type="email" value={email} onChange={e => setEmail(e.target.value)} required
-          className="w-full bg-bg2 border border-border rounded-lg px-3 py-2.5 text-fg text-sm focus:outline-none focus:border-accent"
-          placeholder="you@example.com" autoComplete="email"
-        />
+    <form onSubmit={handleSubmit}>
+      <div className="field">
+        <div className="fl">email</div>
+        <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
       </div>
-      <div>
-        <label className="block text-xs text-fg-dim mb-1 uppercase tracking-widest">Password</label>
-        <input
-          type="password" value={password} onChange={e => setPassword(e.target.value)} required
-          className="w-full bg-bg2 border border-border rounded-lg px-3 py-2.5 text-fg text-sm focus:outline-none focus:border-accent"
-          placeholder="••••••••" autoComplete="current-password"
-        />
+      <div className="field">
+        <div className="fl">password</div>
+        <input className="fi" type="password" value={password} onChange={e => setPassword(e.target.value)} required placeholder="••••••••" autoComplete="current-password" />
       </div>
-      {error && <p className="text-red-400 text-xs">{error}</p>}
-      <button
-        type="submit" disabled={loading}
-        className="w-full bg-accent text-bg font-bold py-2.5 rounded-lg text-sm disabled:opacity-50"
-      >
-        {loading ? 'Signing in…' : '→ Sign in'}
-      </button>
-      <p className="text-center text-xs text-fg-dim">
+      {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+      <button className="btn-p" type="submit" disabled={loading}>{loading ? 'signing in…' : '→ sign in'}</button>
+      <p style={{textAlign:'center',marginTop:12,fontSize:11,color:'var(--fg-dim)'}}>
         No account?{' '}
-        <Link href="/register" className="text-accent underline">Create one free</Link>
+        <Link href="/register" style={{color:'var(--accent)'}}>Create one free</Link>
       </p>
     </form>
   )
