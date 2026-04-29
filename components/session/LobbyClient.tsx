@@ -109,6 +109,9 @@ export function LobbyClient({ user }: { user: User }) {
           {user ? <AccountDashboard user={user} /> : <AccountPromo />}
         </div>
       </div>
+
+      {/* Feature showcase — anonymous only */}
+      {!user && <FeatureShowcase />}
     </div>
   )
 }
@@ -135,6 +138,64 @@ function AccountPromo() {
         <Link href="/login" className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',display:'block',marginTop:0}}>Sign in</Link>
       </div>
     </>
+  )
+}
+
+const FREE_FEATURES = [
+  { icon: '🍷', title: 'Shared wine list',       copy: 'One session code. Everyone adds to the same lineup from their phone.',  pro: false },
+  { icon: '⭐', title: 'Private ratings',          copy: 'Stars, flavour sliders, and notes stay yours until you compare.',       pro: false },
+  { icon: '◉',  title: 'Flavour radar',            copy: 'Wine Folly-style polar chart tailored to red, white, sparkling, rosé.', pro: false },
+  { icon: '◈',  title: 'Compare & overlay',        copy: 'See everyone\'s profiles stacked on one chart. Find where you agree.',  pro: false },
+  { icon: '📋', title: 'Tasting history',          copy: 'Every session saved. Rejoin active tastings with one tap.',             pro: false },
+  { icon: '★',  title: 'Save wines',               copy: 'Bookmark any bottle across sessions. Tap ☆ on the detail screen.',      pro: false },
+  { icon: '🏅', title: 'Badges & XP',              copy: '60+ achievements. Level up from Novice to Legend.',                     pro: false },
+  { icon: '📄', title: 'PDF export',               copy: 'Print a clean A4 tasting report straight from the compare view.',       pro: false },
+  { icon: '🙈', title: 'Blind tastings',           copy: 'Tasters see Wine #1, #2… Host reveals after everyone has scored.',      pro: true  },
+  { icon: '👑', title: 'Co-host roles',            copy: 'Delegate wine management to trusted co-hosts mid-session.',             pro: true  },
+  { icon: '🔖', title: 'AI label scanning',        copy: 'Point your camera at a label — fields fill themselves.',                pro: false },
+  { icon: '🎯', title: 'Hall of Fame',             copy: 'Every 5-star rating is permanent. Your name on the board.',            pro: false },
+]
+
+function FeatureShowcase() {
+  return (
+    <div style={{maxWidth:1040,margin:'32px auto 0',padding:'0 0 40px'}}>
+      {/* Divider */}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:24}}>
+        <div style={{flex:1,height:'1px',background:'var(--border)'}} />
+        <span style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--fg-faint)',fontFamily:'var(--mono)'}}>what you get</span>
+        <div style={{flex:1,height:'1px',background:'var(--border)'}} />
+      </div>
+
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:8}}>
+        {FREE_FEATURES.map(f => (
+          <div
+            key={f.title}
+            style={{
+              padding:'14px 14px 12px',
+              borderRadius:14,
+              border: f.pro ? '1px solid rgba(200,150,60,0.2)' : '1px solid rgba(255,255,255,0.05)',
+              background: f.pro ? 'rgba(200,150,60,0.04)' : 'rgba(255,255,255,0.02)',
+              opacity: f.pro ? 0.6 : 1,
+              position:'relative',
+            }}
+          >
+            {f.pro && (
+              <div style={{position:'absolute',top:10,right:10,fontSize:8,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.35)',background:'rgba(200,150,60,0.1)',padding:'2px 6px',borderRadius:3}}>
+                pro
+              </div>
+            )}
+            <div style={{fontSize:22,marginBottom:8,lineHeight:1}}>{f.icon}</div>
+            <div style={{fontSize:12,fontWeight:700,color: f.pro ? 'var(--accent)' : 'var(--fg)',marginBottom:4,lineHeight:1.2}}>{f.title}</div>
+            <div style={{fontSize:10,color:'var(--fg-dim)',lineHeight:1.6}}>{f.copy}</div>
+          </div>
+        ))}
+      </div>
+
+      <p style={{textAlign:'center',marginTop:20,fontSize:10,color:'var(--fg-faint)',letterSpacing:'0.06em'}}>
+        Free to taste. <Link href="/register" style={{color:'var(--accent)'}}>Create an account</Link> to keep your history.
+        Pro features unlock blind tastings and more.
+      </p>
+    </div>
   )
 }
 
