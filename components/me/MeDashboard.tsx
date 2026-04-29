@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { useDashboardSections } from './DashboardSettings'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null }
@@ -55,6 +56,9 @@ export function MeDashboard({ user }: { user: User }) {
     router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(name.trim())}`)
   }
 
+  const [sections] = useDashboardSections()
+  const show = (id: string) => sections.find(s => s.id === id)?.enabled !== false
+
   const recent = sessions.slice(0, 3)
   const recentBooks = bookmarks.slice(0, 4)
 
@@ -68,7 +72,7 @@ export function MeDashboard({ user }: { user: User }) {
 
       <div style={{display:'grid',gridTemplateColumns:'minmax(0,1fr)',gap:14}} data-dash-grid>
         {/* New tasting card */}
-        <div className="lobby-card lobby-form">
+        {show('new_tasting') && <div className="lobby-card lobby-form">
           <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:14}}>start or join</p>
           <div className="field">
             <div className="fl">your name</div>
@@ -105,12 +109,12 @@ export function MeDashboard({ user }: { user: User }) {
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
           {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
-        </div>
+        </div>}
 
         {/* Right column */}
         <div style={{display:'flex',flexDirection:'column',gap:14}}>
           {/* Recent sessions */}
-          {recent.length > 0 && (
+          {show('recent_sessions') && recent.length > 0 && (
             <div className="panel" style={{margin:0}}>
               <div className="panel-hdr">recent tastings</div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
@@ -138,7 +142,7 @@ export function MeDashboard({ user }: { user: User }) {
           )}
 
           {/* Saved wines preview */}
-          {recentBooks.length > 0 && (
+          {show('saved_wines') && recentBooks.length > 0 && (
             <div className="panel" style={{margin:0}}>
               <div className="panel-hdr">saved wines</div>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
@@ -159,11 +163,13 @@ export function MeDashboard({ user }: { user: User }) {
           )}
 
           {/* Quick links */}
-          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-            {[{href:'/me/history',l:'◷ history'},{href:'/me/profile',l:'◉ profile'},{href:'/me/badges',l:'🏅 badges'},{href:'/hof',l:'★ hall of fame'}].map(({href,l}) => (
-              <Link key={href} href={href} className="btn-s" style={{textDecoration:'none',display:'inline-block'}}>{l}</Link>
-            ))}
-          </div>
+          {show('quick_links') && (
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {[{href:'/me/history',l:'◷ history'},{href:'/me/profile',l:'◉ profile'},{href:'/me/badges',l:'🏅 badges'},{href:'/hof',l:'★ hall of fame'}].map(({href,l}) => (
+                <Link key={href} href={href} className="btn-s" style={{textDecoration:'none',display:'inline-block'}}>{l}</Link>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

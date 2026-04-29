@@ -232,6 +232,15 @@ body {
   --bg-grad4: #F1E7D9;
 }
 
+/* Me layout */
+.me-nav-link:hover { background: var(--bg3); color: var(--fg); }
+.me-bottom-nav { display: none; }
+
+@media (max-width: 639px) {
+  .me-sidebar { display: none !important; }
+  .me-bottom-nav { display: block; }
+}
+
 /* Print */
 @media print {
   @page { size: A4; margin: 18mm 16mm; }
