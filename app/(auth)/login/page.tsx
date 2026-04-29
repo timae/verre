@@ -1,6 +1,7 @@
 import { LoginForm } from '@/components/auth/LoginForm'
 
-export default function LoginPage() {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ redirect?: string }> }) {
+  const { redirect: redirectTo } = await searchParams
   return (
     <div className="app-bg" style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
       <div style={{width:'100%',maxWidth:360}}>
@@ -10,7 +11,7 @@ export default function LoginPage() {
         </div>
         <div className="lobby-card lobby-form" style={{padding:22}}>
           <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Sign in to your account</div>
-          <LoginForm />
+          <LoginForm redirectTo={redirectTo} />
         </div>
       </div>
     </div>

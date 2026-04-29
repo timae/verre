@@ -12,7 +12,7 @@ export function SessionModal({ onClose, onLeave }: Props) {
   const [newName, setNewName] = useState(sessionMeta?.name || '')
   const [displayNameInput, setDisplayNameInput] = useState(displayName)
   const [copied, setCopied] = useState(false)
-  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/?join=${code}` : ''
+  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
 
   useEffect(() => {
     fetch(`/api/session/${code}`)
