@@ -80,6 +80,23 @@ export function LobbyClient({ user }: { user: User }) {
             <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
           </div>
 
+          {/* Blind tasting toggle — greyed out when not logged in or not pro */}
+          <div
+            style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,border:'1px solid var(--border)',background:'var(--bg3)',marginBottom:10,opacity:0.5,cursor:'default'}}
+            title="Requires a Pro account"
+          >
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:'var(--fg)',display:'flex',alignItems:'center',gap:6}}>
+                🙈 Blind tasting
+                <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>
+              </div>
+              <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only — host reveals after</div>
+            </div>
+            <div style={{width:36,height:20,borderRadius:10,background:'var(--bg4)',border:'1px solid var(--border2)',position:'relative',flexShrink:0}}>
+              <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',opacity:0.4,position:'absolute',top:2,left:2}} />
+            </div>
+          </div>
+
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : '→ create new tasting'}
           </button>
