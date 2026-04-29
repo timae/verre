@@ -4,20 +4,24 @@ import { useRouter } from 'next/navigation'
 import { useSession } from './SessionShell'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { AddWineModal } from '@/components/wine/AddWineModal'
-import { getFL, detectFL } from '@/lib/flavours'
+import { getFL, detectFL, FL } from '@/lib/flavours'
+import type { WineMeta } from '@/lib/session'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 export function RatingScreen({ params }: Props) {
   const { wineId } = use(params)
-  const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds } = useSession()
+  const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds, isBlind } = useSession()
   const router = useRouter()
 
   const wine = wines.find(w => w.id === wineId)
+  const w = wine as (WineMeta & { _blind?: boolean }) | undefined
+  const isRedacted = isBlind && w?._blind && !wine?.revealedAt
   const existing = myRatings[wineId]
   const fl = existing?.flavors && Object.keys(existing.flavors).length
     ? detectFL(existing.flavors as Record<string, number>)
+    : isRedacted ? FL  // generic dimensions for blind wines
     : wine ? getFL(wine.type) : getFL('white')
 
   const [score, setScore] = useState(existing?.score || 0)
@@ -91,7 +95,8 @@ export function RatingScreen({ params }: Props) {
     refresh(); router.back()
   }
 
-  const sub = [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ')
+  const sub = !isRedacted ? [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ') : ''
+  const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
     <div style={{padding:'14px 14px 28px',maxWidth:580,margin:'0 auto'}}>
@@ -99,13 +104,25 @@ export function RatingScreen({ params }: Props) {
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
         <button onClick={() => router.back()} style={{fontSize:12,color:'var(--fg-dim)',background:'none',border:'none',cursor:'pointer',fontFamily:'var(--mono)'}}>← back</button>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
-          {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
+          {isRedacted ? (
+            <>
+              <div style={{fontWeight:700,fontSize:14,color:'var(--fg-dim)'}}>🙈 Wine {wineIndex + 1}</div>
+              <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:1,letterSpacing:'0.06em'}}>identity hidden · host will reveal</div>
+            </>
+          ) : (
+            <>
+              <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                {wine.revealedAt && isBlind && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>}
+                {wine.name}
+              </div>
+              {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
+            </>
+          )}
         </div>
-        <span style={{fontSize:22,flexShrink:0}}>{ICO[wine.type] || '🍷'}</span>
+        <span style={{fontSize:22,flexShrink:0}}>{isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}</span>
       </div>
 
-      {wine.imageUrl && (
+      {!isRedacted && wine.imageUrl && (
         <img src={wine.imageUrl} alt={wine.name} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10}} />
       )}
 

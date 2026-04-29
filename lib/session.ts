@@ -12,6 +12,7 @@ export type WineMeta = {
   type: string
   image: string
   imageUrl: string
+  revealedAt?: string | null
 }
 
 export type RatingMeta = {

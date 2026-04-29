@@ -10,10 +10,11 @@ import { useSession as useAuthSession } from 'next-auth/react'
 
 type SessionCtx = {
   code: string; displayName: string; isHost: boolean
-  sessionMeta: { host: string; name: string; hostUserId: number | null } | null
+  sessionMeta: { host: string; name: string; hostUserId: number | null; blind?: boolean } | null
   wines: WineMeta[]; allRatings: Record<string, Record<string, RatingMeta>>
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
+  isBlind: boolean
 }
 const Ctx = createContext<SessionCtx | null>(null)
 export const useSession = () => {
@@ -42,8 +43,8 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   })
 
   const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
-    queryKey: ['wines', C],
-    queryFn: () => fetch(`/api/session/${C}/wines`).then(r => r.json()),
+    queryKey: ['wines', C, displayName],
+    queryFn: () => fetch(`/api/session/${C}/wines?name=${encodeURIComponent(displayName)}`).then(r => r.json()),
     refetchInterval: 5000,
   })
 
@@ -69,10 +70,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const isHost = isHostState || (metaData && displayName && metaData.host === displayName)
   const myRatings = ratingsData[displayName] || {}
 
+  const isBlind = !!(metaData?.blind)
   const ctx: SessionCtx = {
     code: C, displayName, isHost: !!isHost,
     sessionMeta: metaData || null,
-    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds,
+    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
   }
 
   const navItems = [

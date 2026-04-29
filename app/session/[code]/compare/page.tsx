@@ -8,7 +8,8 @@ import { getFL, detectFL, FL } from '@/lib/flavours'
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
 export default function ComparePage() {
-  const { wines, allRatings, displayName } = useSession()
+  const { wines, allRatings, displayName, isBlind } = useSession()
+  type BlindWine = typeof wines[0] & { _blind?: boolean }
   const [viewUser, setViewUser] = useState('__me')
 
   const ratedWines = wines.filter(w => Object.values(allRatings).some(u => u[w.id]?.score))
@@ -51,7 +52,10 @@ export default function ComparePage() {
 
       {/* Wine cards */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12}}>
-        {ratedWines.map(wine => {
+        {ratedWines.map((wine, wineIdx) => {
+          const bw = wine as BlindWine
+          const isRedacted = isBlind && bw._blind && !wine.revealedAt
+          const wasRevealed = isBlind && wine.revealedAt
           const allWineRatings = Object.entries(allRatings)
             .filter(([, u]) => u[wine.id])
             .map(([user, u], i) => ({ user, rating: u[wine.id], color: COLORS[i % COLORS.length] }))
@@ -77,8 +81,15 @@ export default function ComparePage() {
             <div key={wine.id} className="panel" style={{marginBottom:0}}>
               <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:12}}>
                 <div style={{minWidth:0}}>
-                  <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</p>
-                  <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{[wine.producer,wine.vintage].filter(Boolean).join(' · ')}</p>
+                  {isRedacted ? (
+                    <p style={{fontWeight:700,fontSize:13,color:'var(--fg-dim)'}}>🙈 Wine {wineIdx + 1}</p>
+                  ) : (
+                    <>
+                      {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
+                      <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</p>
+                      <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{[wine.producer,wine.vintage].filter(Boolean).join(' · ')}</p>
+                    </>
+                  )}
                 </div>
                 <div style={{textAlign:'right',flexShrink:0}}>
                   <span style={{fontSize:24,fontWeight:800,lineHeight:1,color:'var(--accent)'}}>{avgScore}</span>
