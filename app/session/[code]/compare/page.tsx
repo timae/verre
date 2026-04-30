@@ -104,8 +104,11 @@ export default function ComparePage() {
                   ) : (
                     <>
                       {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
-                      <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</p>
-                      <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{[wine.producer,wine.vintage].filter(Boolean).join(' · ')}</p>
+                      <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        {wine.name}
+                        {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
+                      </p>
+                      {wine.producer && <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{wine.producer}</p>}
                     </>
                   )}
                 </div>
