@@ -211,7 +211,7 @@ export function RatingScreen({ params }: Props) {
                 onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError('') }}
                 onKeyDown={e => e.key === 'Enter' && moveToPosition()}
                 onBlur={() => { if (movePos) moveToPosition() }}
-                placeholder={String(wines.length)}
+                placeholder="#"
                 style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none'}}
               />
             </div>
