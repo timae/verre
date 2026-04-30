@@ -195,19 +195,19 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine }: Pro
           )}
         </div>
 
-        <div className="field">
-          <div className="fl">name *</div>
-          <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="Château de Whatever, 2019" />
-        </div>
         <div style={{display:'flex',gap:8}}>
           <div className="field" style={{flex:1}}>
-            <div className="fl">producer</div>
-            <input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" />
+            <div className="fl">name *</div>
+            <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="Château de Whatever" />
           </div>
           <div className="field" style={{maxWidth:88}}>
             <div className="fl">vintage</div>
             <input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" />
           </div>
+        </div>
+        <div className="field">
+          <div className="fl">producer</div>
+          <input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" />
         </div>
         <div className="field">
           <div className="fl">type *</div>

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 type Session = {
   id: number; code: string; host_name: string; name: string | null
   created_at: string; joined_at: string; wines_rated: number; avg_score: string | null
+  date_from: string | null; address: string | null
 }
 
 export function HistoryClient() {
@@ -35,7 +36,9 @@ export function HistoryClient() {
       <h1 className="text-2xl font-bold mb-6">Tasting history</h1>
       <div className="space-y-3">
         {sessions.map(s => {
-          const date = new Date(s.joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+          const date = s.date_from
+            ? new Date(s.date_from).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : new Date(s.joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
           const hoursAgo = (Date.now() - new Date(s.joined_at).getTime()) / 3600000
           const active = hoursAgo < 47
           const wines = ratingsByCode[s.code] || []
@@ -52,7 +55,7 @@ export function HistoryClient() {
                       {active ? 'active' : 'expired'}
                     </span>
                   </div>
-                  <p className="text-xs text-fg-dim">{date} · {s.host_name} · {s.wines_rated} wines rated</p>
+                  <p className="text-xs text-fg-dim">{date}{s.address ? ` · ${s.address}` : ''} · {s.host_name} · {s.wines_rated} wines rated</p>
                 </div>
                 {active && (
                   <button

@@ -1,5 +1,5 @@
 'use client'
-import { use, createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { use, createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
@@ -34,9 +34,20 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const { data: authSession } = useAuthSession()
   const nameFromUrl = searchParams.get('name') || ''
   const displayName = nameFromUrl || authSession?.user?.name || ''
+  const needsName = !displayName && !authSession?.user
+  const [nameInput, setNameInput] = useState('')
+  const nameInputRef = useRef<HTMLInputElement>(null)
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showSessionPanel, setShowSessionPanel] = useState(false)
   const [showUserPanel,    setShowUserPanel]    = useState(false)
+
+  function confirmName() {
+    const n = nameInput.trim()
+    if (!n) return
+    const params = new URLSearchParams(searchParams.toString())
+    params.set('name', n)
+    router.replace(`/session/${C}?${params.toString()}`)
+  }
 
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
@@ -112,6 +123,21 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           </div>
         </header>
 
+        {needsName && (
+          <div style={{position:'fixed',inset:0,zIndex:100,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.75)',backdropFilter:'blur(6px)'}}>
+            <div style={{background:'var(--bg2)',borderRadius:16,padding:24,width:'min(90vw,360px)',border:'1px solid var(--border)'}}>
+              <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:4}}>welcome</div>
+              <div style={{fontSize:12,color:'var(--fg-dim)',marginBottom:16,lineHeight:1.6}}>Enter your name to join this tasting.</div>
+              <div className="field">
+                <div className="fl">your name</div>
+                <input ref={nameInputRef} className="fi" value={nameInput} onChange={e => setNameInput(e.target.value)}
+                  placeholder="firstname or alias" autoFocus
+                  onKeyDown={e => e.key === 'Enter' && confirmName()} />
+              </div>
+              <button className="btn-p" onClick={confirmName}>→ join</button>
+            </div>
+          </div>
+        )}
         {showSessionPanel && (
           <SessionPanel
             onClose={() => setShowSessionPanel(false)}

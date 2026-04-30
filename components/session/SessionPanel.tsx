@@ -25,12 +25,38 @@ function formatDate(dt: string) {
   } catch { return dt }
 }
 
+function formatTTL(seconds: number, lifespan?: string): string {
+  if (lifespan === 'unlimited') return '∞ unlimited'
+  if (seconds <= 0) return 'expired'
+  const days  = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const mins  = Math.floor((seconds % 3600) / 60)
+  if (days  > 0) return `${days}d ${hours}h left`
+  if (hours > 0) return `${hours}h ${mins}m left`
+  return `${mins}m left`
+}
+
 const HIDE_OPTIONS = [
   { value: 0,  label: 'at start time' },
   { value: 15, label: '15 min before' },
   { value: 30, label: '30 min before' },
   { value: 60, label: '1 hour before' },
 ]
+
+function SectionToggle({ label, open, onToggle }: { label: string; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      onClick={onToggle}
+      style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',
+        padding:'10px 0',background:'none',border:'none',borderTop:'1px solid var(--border)',
+        cursor:'pointer',color:'var(--fg-dim)',fontFamily:'var(--mono)',fontSize:9,
+        letterSpacing:'0.1em',textTransform:'uppercase',marginBottom: open ? 12 : 0}}
+    >
+      <span>{label}</span>
+      <span style={{fontSize:11,color:'var(--fg-faint)'}}>{open ? '▾' : '▸'}</span>
+    </button>
+  )
+}
 
 export function SessionPanel({ onClose, onLeave }: Props) {
   const { code, displayName, isHost, sessionMeta, refresh } = useSession()
@@ -41,6 +67,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     address?: string; dateFrom?: string | null; dateTo?: string | null
     description?: string; link?: string; blind?: boolean; lifespan?: string
     coHosts?: string[]; hideLineup?: boolean; hideLineupMinutesBefore?: number
+    ttlSeconds?: number
   }
 
   const [name,                    setName]                    = useState(m?.name                    || '')
@@ -54,11 +81,13 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
   const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
-  const [participants, setParticipants] = useState<string[]>([])
-  const [coHosts,      setCoHosts]      = useState<string[]>([])
-  const [copied,       setCopied]       = useState(false)
-  const [saving,       setSaving]       = useState(false)
-  const [saveError,    setSaveError]    = useState('')
+  const [participants,      setParticipants]      = useState<string[]>([])
+  const [coHosts,           setCoHosts]           = useState<string[]>([])
+  const [copied,            setCopied]            = useState(false)
+  const [saving,            setSaving]            = useState(false)
+  const [saveError,         setSaveError]         = useState('')
+  const [showParticipants,  setShowParticipants]  = useState(false)
+  const [showSettings,      setShowSettings]      = useState(false)
 
   const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
@@ -101,7 +130,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     if (res.ok) { const { meta } = await res.json(); setCoHosts(meta.coHosts || []) }
   }
 
-  const lifespanLabel = lifespan === 'unlimited' ? '∞ unlimited' : lifespan === '1w' ? '7 day session' : lifespan === '72h' ? '72h session' : '48h session'
+  const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
 
   return (
     <div
@@ -110,14 +139,14 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     >
       <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
         <div className="sheet-bar" />
+
+        {/* Header */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
           <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>{m?.name || code}</div>
-          {isHost && (
-            <div style={{display:'flex',gap:6}}>
-              <button className="btn-s" onClick={saveSettings} disabled={saving} style={{fontSize:9}}>{saving ? '…' : 'save'}</button>
-              <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
-            </div>
-          )}
+          <div style={{display:'flex',gap:6}}>
+            {isHost && <button className="btn-s" onClick={saveSettings} disabled={saving} style={{fontSize:9}}>{saving ? '…' : 'save'}</button>}
+            <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+          </div>
         </div>
 
         {/* Read-only metadata for non-hosts — order: description, date, address, link */}
@@ -148,153 +177,174 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           </div>
         )}
 
-        {/* Host settings */}
-        {isHost && (
-          <div style={{marginBottom:16}}>
-            <div className="fl" style={{marginBottom:10}}>// session settings</div>
-            <div className="field">
-              <div className="fl">session name</div>
-              <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
-            </div>
-            <div className="field">
-              <div className="fl">address</div>
-              <input className="fi" value={address} onChange={e => setAddress(e.target.value)} maxLength={255} placeholder="e.g. Restaurant du Palais, Paris" />
-            </div>
-            <div className="field">
-              <div className="fl">from</div>
-              <input className="fi" type="datetime-local" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
-            </div>
-            <div className="field">
-              <div className="fl">to</div>
-              <input className="fi" type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} />
-            </div>
-            <div className="field">
-              <div className="fl">description</div>
-              <textarea className="fi" value={description} onChange={e => setDescription(e.target.value)} maxLength={1000}
-                placeholder="A few words about this tasting…" rows={3}
-                style={{resize:'vertical',fontFamily:'var(--mono)',fontSize:12}} />
-            </div>
-            <div className="field">
-              <div className="fl">link</div>
-              <input className="fi" value={link} onChange={e => setLink(e.target.value)} maxLength={512} placeholder="https://…" type="url" />
-            </div>
-
-            {/* Hide lineup toggle — only when dateFrom is set */}
-            {dateFrom && (
-              <div style={{marginBottom:10}}>
-                <div
-                  onClick={() => setHideLineup(!hideLineup)}
-                  style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
-                    border:`1px solid ${hideLineup ? 'rgba(100,140,220,0.4)' : 'var(--border)'}`,
-                    background: hideLineup ? 'rgba(100,140,220,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom: hideLineup ? 8 : 0}}
-                >
-                  <div>
-                    <div style={{fontSize:11,fontWeight:700,color: hideLineup ? '#8aabff' : 'var(--fg)'}}>🔒 Hide lineup before tasting</div>
-                    <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Participants can&apos;t see wines until the lineup is revealed</div>
-                  </div>
-                  <div style={{width:36,height:20,borderRadius:10,background: hideLineup ? '#8aabff' : 'var(--bg4)',
-                    border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
-                    <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: hideLineup ? 18 : 2,transition:'left .2s'}} />
-                  </div>
-                </div>
-                {hideLineup && (
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap',paddingLeft:2}}>
-                    {HIDE_OPTIONS.map(o => (
-                      <button key={o.value} type="button"
-                        onClick={() => setHideLineupMinutesBefore(o.value)}
-                        style={{padding:'5px 10px',borderRadius:6,border: hideLineupMinutesBefore === o.value ? '1px solid #8aabff' : '1px solid var(--border)',
-                          background: hideLineupMinutesBefore === o.value ? 'rgba(100,140,220,0.1)' : 'var(--bg3)',
-                          color: hideLineupMinutesBefore === o.value ? '#8aabff' : 'var(--fg-dim)',
-                          fontSize:10,fontFamily:'var(--mono)',cursor:'pointer'}}>
-                        {o.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Blind tasting toggle */}
-            <div
-              onClick={() => setBlind(!blind)}
-              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
-                border:`1px solid ${blind ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,
-                background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom:10}}
-            >
-              <div>
-                <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)'}}>🙈 Blind tasting</div>
-                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
-              </div>
-              <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
-                border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
-                <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: blind ? 18 : 2,transition:'left .2s'}} />
-              </div>
-            </div>
-
-            {/* Lifespan */}
-            <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
-
-            {saveError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{saveError}</p>}
-            <button
-              onClick={saveSettings} disabled={saving}
-              style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
-            >{saving ? 'saving…' : '→ save settings'}</button>
-          </div>
-        )}
-
-        {/* Lifespan badge for non-hosts */}
+        {/* TTL for non-hosts */}
         {!isHost && (
           <div style={{fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',marginBottom:12}}>
-            session lifespan: {lifespanLabel}
+            {ttlLabel}
           </div>
         )}
 
-        {/* Participants */}
+        {/* Participants (collapsible) */}
         {participants.length > 0 && (
-          <div style={{marginBottom:16}}>
-            <div className="fl">// participants</div>
-            <div style={{display:'flex',flexDirection:'column',gap:4}}>
-              {participants.map(u => {
-                const isThisHost = u === sessionMeta?.host
-                const isCo = coHosts.includes(u)
-                const isMe = u === displayName
-                return (
-                  <div key={u} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
-                    <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
-                    <span style={{flex:1,fontSize:12}}>{u}</span>
-                    {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
-                    {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
-                    {isHost && !isThisHost && !isMe && (
-                      <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(u)}>
-                        {isCo ? 'remove role' : 'make co-host'}
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Invite */}
-        <div style={{marginBottom:16}}>
-          <div className="fl">invite link</div>
-          <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:8,lineHeight:1.6}}>Share the link or scan the QR code to join this session.</div>
-          <div style={{fontSize:11,color:'var(--accent)',wordBreak:'break-all',marginBottom:8,fontFamily:'var(--mono)'}}>{inviteUrl}</div>
-          <div style={{display:'flex',gap:8,marginBottom:12}}>
-            <button className="btn-s" onClick={copyInvite}>{copied ? 'copied ✓' : 'copy link'}</button>
-            {typeof navigator !== 'undefined' && 'share' in navigator && (
-              <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${code}` })}>share</button>
+          <div style={{marginBottom:4}}>
+            <SectionToggle
+              label={`participants (${participants.length})`}
+              open={showParticipants}
+              onToggle={() => setShowParticipants(!showParticipants)}
+            />
+            {showParticipants && (
+              <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
+                {participants.map(u => {
+                  const isThisHost = u === sessionMeta?.host
+                  const isCo = coHosts.includes(u)
+                  const isMe = u === displayName
+                  return (
+                    <div key={u} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
+                      <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
+                      <span style={{flex:1,fontSize:12}}>{u}</span>
+                      {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
+                      {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
+                      {isHost && !isThisHost && !isMe && (
+                        <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(u)}>
+                          {isCo ? 'remove role' : 'make co-host'}
+                        </button>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
             )}
           </div>
-          {inviteUrl && (
-            <div style={{display:'flex',justifyContent:'center',padding:12,background:'var(--bg3)',borderRadius:8}}>
-              <QRCodeSVG value={inviteUrl} size={160} bgColor="transparent" fgColor="var(--fg)" />
+        )}
+
+        {/* Invite / Share */}
+        <div style={{marginBottom:4}}>
+          <SectionToggle label="invite link" open={true} onToggle={() => {}} />
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:8,lineHeight:1.6}}>Share the link or scan the QR code to join this session.</div>
+            <div style={{fontSize:11,color:'var(--accent)',wordBreak:'break-all',marginBottom:8,fontFamily:'var(--mono)'}}>{inviteUrl}</div>
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <button className="btn-s" onClick={copyInvite}>{copied ? 'copied ✓' : 'copy link'}</button>
+              {typeof navigator !== 'undefined' && 'share' in navigator && (
+                <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${code}` })}>share</button>
+              )}
             </div>
-          )}
+            {inviteUrl && (
+              <div style={{display:'flex',justifyContent:'center',padding:12,background:'var(--bg3)',borderRadius:8}}>
+                <QRCodeSVG value={inviteUrl} size={160} bgColor="transparent" fgColor="var(--fg)" />
+              </div>
+            )}
+          </div>
         </div>
 
-        <button className="btn-p" onClick={onClose} style={{marginBottom:6}}>→ close</button>
+        {/* Settings (hosts only, collapsible) */}
+        {isHost && (
+          <div style={{marginBottom:4}}>
+            <SectionToggle
+              label="⚙ session settings"
+              open={showSettings}
+              onToggle={() => setShowSettings(!showSettings)}
+            />
+            {showSettings && (
+              <div style={{marginBottom:12}}>
+                <div className="field">
+                  <div className="fl">session name</div>
+                  <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+                </div>
+                <div className="field">
+                  <div className="fl">address</div>
+                  <input className="fi" value={address} onChange={e => setAddress(e.target.value)} maxLength={255} placeholder="e.g. Restaurant du Palais, Paris" />
+                </div>
+                <div style={{display:'flex',gap:8}}>
+                  <div className="field" style={{flex:1}}>
+                    <div className="fl">from</div>
+                    <input className="fi" type="datetime-local" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                  </div>
+                  <div className="field" style={{flex:1}}>
+                    <div className="fl">to</div>
+                    <input className="fi" type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                  </div>
+                </div>
+                <div className="field">
+                  <div className="fl">description</div>
+                  <textarea className="fi" value={description} onChange={e => setDescription(e.target.value)} maxLength={1000}
+                    placeholder="A few words about this tasting…" rows={3}
+                    style={{resize:'vertical',fontFamily:'var(--mono)',fontSize:12}} />
+                </div>
+                <div className="field">
+                  <div className="fl">link</div>
+                  <input className="fi" value={link} onChange={e => setLink(e.target.value)} maxLength={512} placeholder="https://…" type="url" />
+                </div>
+
+                {/* Hide lineup toggle — only when dateFrom is set */}
+                {dateFrom && (
+                  <div style={{marginBottom:10}}>
+                    <div
+                      onClick={() => setHideLineup(!hideLineup)}
+                      style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
+                        border:`1px solid ${hideLineup ? 'rgba(100,140,220,0.4)' : 'var(--border)'}`,
+                        background: hideLineup ? 'rgba(100,140,220,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom: hideLineup ? 8 : 0}}
+                    >
+                      <div>
+                        <div style={{fontSize:11,fontWeight:700,color: hideLineup ? '#8aabff' : 'var(--fg)'}}>🔒 Hide lineup before tasting</div>
+                        <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Participants see a locked screen until just before the session starts</div>
+                      </div>
+                      <div style={{width:36,height:20,borderRadius:10,background: hideLineup ? '#8aabff' : 'var(--bg4)',
+                        border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
+                        <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: hideLineup ? 18 : 2,transition:'left .2s'}} />
+                      </div>
+                    </div>
+                    {hideLineup && (
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap',paddingLeft:2}}>
+                        {HIDE_OPTIONS.map(o => (
+                          <button key={o.value} type="button"
+                            onClick={() => setHideLineupMinutesBefore(o.value)}
+                            style={{padding:'5px 10px',borderRadius:6,border: hideLineupMinutesBefore === o.value ? '1px solid #8aabff' : '1px solid var(--border)',
+                              background: hideLineupMinutesBefore === o.value ? 'rgba(100,140,220,0.1)' : 'var(--bg3)',
+                              color: hideLineupMinutesBefore === o.value ? '#8aabff' : 'var(--fg-dim)',
+                              fontSize:10,fontFamily:'var(--mono)',cursor:'pointer'}}>
+                            {o.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Blind tasting toggle */}
+                <div
+                  onClick={() => setBlind(!blind)}
+                  style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
+                    border:`1px solid ${blind ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,
+                    background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom:10}}
+                >
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)'}}>🙈 Blind tasting</div>
+                    <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
+                  </div>
+                  <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
+                    border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
+                    <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: blind ? 18 : 2,transition:'left .2s'}} />
+                  </div>
+                </div>
+
+                {/* Lifespan */}
+                <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
+
+                {/* TTL for hosts */}
+                <div style={{fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',marginTop:6,marginBottom:10}}>{ttlLabel}</div>
+
+                {saveError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{saveError}</p>}
+                <button
+                  onClick={saveSettings} disabled={saving}
+                  style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
+                >{saving ? 'saving…' : '→ save settings'}</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button className="btn-p" onClick={onClose} style={{marginBottom:6,marginTop:16}}>→ close</button>
         <button className="btn-g" onClick={onLeave}>leave session</button>
       </div>
     </div>

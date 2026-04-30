@@ -16,6 +16,11 @@ export default function RatePickerPage() {
 
   return (
     <div style={{padding:'14px 14px 28px'}}><div style={{maxWidth:980,margin:'0 auto'}}>
+      {sessionMeta?.name && (
+        <div style={{fontFamily:'var(--mono)',fontSize:'var(--fs-title)',fontWeight:800,letterSpacing:'0.02em',color:'var(--fg)',marginBottom:10}}>
+          {sessionMeta.name}
+        </div>
+      )}
       <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,marginBottom:16}}>
         <div className="subhead" style={{margin:0}}>
           <div className="subhead-title">Rate bottles</div>

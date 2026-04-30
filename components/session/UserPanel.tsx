@@ -6,8 +6,20 @@ import Link from 'next/link'
 import { signOut } from 'next-auth/react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
+import { AccountSettings } from '@/components/me/AccountSettings'
 
 interface Props { onClose: () => void }
+
+function formatTTL(seconds: number, lifespan?: string): string {
+  if (lifespan === 'unlimited') return '∞ unlimited'
+  if (seconds <= 0) return 'expired'
+  const days  = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const mins  = Math.floor((seconds % 3600) / 60)
+  if (days  > 0) return `${days}d ${hours}h left`
+  if (hours > 0) return `${hours}h ${mins}m left`
+  return `${mins}m left`
+}
 
 export function UserPanel({ onClose }: Props) {
   const { displayName, code, sessionMeta } = useSession()
@@ -15,14 +27,7 @@ export function UserPanel({ onClose }: Props) {
   const router = useRouter()
   const user = authSession?.user as { id: string; name: string; email: string; pro?: boolean } | undefined
 
-  const [tab,       setTab]       = useState<'overview' | 'settings'>('overview')
-  const [name,      setName]      = useState(user?.name  || '')
-  const [email,     setEmail]     = useState(user?.email || '')
-  const [currentPw, setCurrentPw] = useState('')
-  const [newPw,     setNewPw]     = useState('')
-  const [saving,    setSaving]    = useState(false)
-  const [error,     setError]     = useState('')
-  const [success,   setSuccess]   = useState('')
+  const [tab, setTab] = useState<'overview' | 'settings'>('overview')
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
@@ -45,34 +50,15 @@ export function UserPanel({ onClose }: Props) {
     select: (d: BadgesResponse) => (d.badges || []).filter(b => b.earned).slice(0, 6),
   })
 
-  async function saveAccount() {
-    setSaving(true); setError(''); setSuccess('')
-    const body: Record<string, string> = {}
-    if (name  !== user?.name)  body.name  = name
-    if (email !== user?.email) body.email = email
-    if (newPw) { body.currentPassword = currentPw; body.newPassword = newPw }
-    if (Object.keys(body).length === 0) { setSaving(false); return }
-
-    const res = await fetch('/api/me/account', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    setSaving(false)
-    if (res.ok) { setSuccess('changes saved'); setCurrentPw(''); setNewPw('') }
-    else { const d = await res.json(); setError(d.error || 'update failed') }
-  }
-
-  const lifespanLabel = (() => {
-    const ls = (sessionMeta as { lifespan?: string })?.lifespan
-    return ls === 'unlimited' ? '∞ unlimited' : ls === '1w' ? '7 day session' : ls === '72h' ? '72h session' : '48h session'
-  })()
+  const m = sessionMeta as typeof sessionMeta & { lifespan?: string; blind?: boolean; ttlSeconds?: number }
+  const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
 
   return (
     <div
       style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
+      <div style={{width:'100%',maxWidth:600,minHeight:'55vh',maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
         <div className="sheet-bar" />
         <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
           {displayName || 'you'}
@@ -88,8 +74,8 @@ export function UserPanel({ onClose }: Props) {
               {sessionMeta?.name && <span style={{color:'var(--fg-dim)'}}>{' · '}{sessionMeta.name}</span>}
             </div>
             <div style={{display:'flex',gap:6,marginTop:6,flexWrap:'wrap'}}>
-              <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid var(--border)',borderRadius:3,padding:'2px 7px',color:'var(--fg-faint)'}}>{lifespanLabel}</span>
-              {(sessionMeta as { blind?: boolean })?.blind && (
+              <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid var(--border)',borderRadius:3,padding:'2px 7px',color:'var(--fg-faint)'}}>{ttlLabel}</span>
+              {m?.blind && (
                 <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',borderRadius:3,padding:'2px 7px',color:'var(--accent)'}}>🙈 blind</span>
               )}
             </div>
@@ -97,7 +83,6 @@ export function UserPanel({ onClose }: Props) {
         </div>
 
         {!user ? (
-          /* Anonymous user */
           <div>
             <p style={{fontSize:12,color:'var(--fg-dim)',marginBottom:12,lineHeight:1.6}}>
               You&apos;re tasting anonymously. Create an account to save your history, earn badges, and unlock premium features.
@@ -106,7 +91,6 @@ export function UserPanel({ onClose }: Props) {
             <button className="btn-g" onClick={() => { onClose(); router.push('/login') }}>→ sign in</button>
           </div>
         ) : (
-          /* Logged-in user */
           <div>
             {/* Tabs */}
             <div style={{display:'flex',gap:1,marginBottom:16,background:'var(--bg3)',borderRadius:8,padding:3}}>
@@ -128,10 +112,15 @@ export function UserPanel({ onClose }: Props) {
                     <div className="fl">recent tastings</div>
                     {sessions.slice(0, 3).map(s => (
                       <div key={s.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
-                        <div>
-                          <p style={{fontSize:12,fontWeight:700}}>{s.name || `Session ${s.code}`}</p>
+                        <div style={{minWidth:0,flex:1}}>
+                          <p style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.name || `Session ${s.code}`}</p>
                           <p style={{fontSize:10,color:'var(--fg-dim)'}}>{s.wines_rated} wine{s.wines_rated !== 1 ? 's' : ''} rated</p>
                         </div>
+                        <button
+                          onClick={() => { onClose(); router.push(`/session/${s.code}?name=${encodeURIComponent(user.name)}`) }}
+                          style={{flexShrink:0,marginLeft:8,fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
+                          rejoin
+                        </button>
                       </div>
                     ))}
                     <Link href="/me/history" style={{fontSize:10,color:'var(--accent)',marginTop:8,display:'block',fontFamily:'var(--mono)'}} onClick={onClose}>view all →</Link>
@@ -165,30 +154,7 @@ export function UserPanel({ onClose }: Props) {
               </div>
             )}
 
-            {tab === 'settings' && (
-              <div>
-                <div className="field">
-                  <div className="fl">display name</div>
-                  <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={64} />
-                </div>
-                <div className="field">
-                  <div className="fl">email</div>
-                  <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} />
-                </div>
-                <div style={{marginTop:12,marginBottom:6,fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',textTransform:'uppercase'}}>change password</div>
-                <div className="field">
-                  <div className="fl">current password</div>
-                  <input className="fi" type="password" value={currentPw} onChange={e => setCurrentPw(e.target.value)} placeholder="required to change password" />
-                </div>
-                <div className="field">
-                  <div className="fl">new password</div>
-                  <input className="fi" type="password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="min 8 characters" />
-                </div>
-                {error   && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
-                {success && <p style={{color:'var(--accent2)',fontSize:11,marginBottom:8}}>✓ {success}</p>}
-                <button className="btn-p" onClick={saveAccount} disabled={saving}>{saving ? 'saving…' : '→ save changes'}</button>
-              </div>
-            )}
+            {tab === 'settings' && <AccountSettings />}
           </div>
         )}
 

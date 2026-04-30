@@ -11,9 +11,11 @@ export async function GET() {
     Array<{
       id: number; code: string; host_name: string; name: string | null
       created_at: Date; joined_at: Date; wines_rated: bigint; avg_score: number | null
+      date_from: Date | null; address: string | null
     }>
   >`
     SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
+           s.date_from, s.address,
            COUNT(DISTINCT r.id) AS wines_rated,
            ROUND(AVG(r.score)::numeric, 1) AS avg_score
     FROM session_members sm
@@ -21,7 +23,7 @@ export async function GET() {
     LEFT JOIN wines w ON w.session_id = s.id
     LEFT JOIN ratings r ON r.wine_id = w.id AND r.user_id = ${userId}
     WHERE sm.user_id = ${userId}
-    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at
+    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.address
     ORDER BY sm.joined_at DESC
     LIMIT 50
   `
@@ -29,5 +31,6 @@ export async function GET() {
   return NextResponse.json(rows.map(r => ({
     ...r,
     wines_rated: Number(r.wines_rated),
+    date_from: r.date_from ? r.date_from.toISOString() : null,
   })))
 }
