@@ -106,6 +106,9 @@ export function WineListScreen() {
             {m.description && (
               <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
             )}
+            {m.description && (m.dateFrom || m.address || m.link) && (
+              <div style={{borderTop:'1px solid var(--border)',margin:'6px 0 2px'}} />
+            )}
             {m.dateFrom && (
               <div style={{fontSize:11,color:'var(--fg-dim)',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
                 <span>🕐</span>

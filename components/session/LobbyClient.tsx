@@ -154,9 +154,9 @@ function AccountPromo() {
           </div>
         ))}
       </div>
-      <div style={{display:'flex',gap:8}}>
-        <Link href="/register" className="btn-p" style={{flex:1,textAlign:'center',textDecoration:'none',display:'block'}}>Create account</Link>
-        <Link href="/login" className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',display:'block',marginTop:0}}>Sign in</Link>
+      <div style={{display:'flex',gap:8,alignItems:'stretch'}}>
+        <Link href="/register" className="btn-p" style={{flex:1,textAlign:'center',textDecoration:'none',display:'flex',alignItems:'center',justifyContent:'center',padding:14,marginTop:0,boxSizing:'border-box'}}>Create account</Link>
+        <Link href="/login" style={{flex:1,textAlign:'center',textDecoration:'none',display:'flex',alignItems:'center',justifyContent:'center',padding:14,boxSizing:'border-box',background:'transparent',border:'1px solid var(--border2)',borderRadius:3,fontFamily:'var(--mono)',fontSize:11,fontWeight:700,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-dim)'}}>Sign in</Link>
       </div>
     </>
   )

@@ -15,9 +15,11 @@ function formatDate(dt: string) {
 function formatCountdown(ms: number): string {
   if (ms <= 0) return '00:00'
   const totalSecs = Math.floor(ms / 1000)
-  const hours = Math.floor(totalSecs / 3600)
+  const days  = Math.floor(totalSecs / 86400)
+  const hours = Math.floor((totalSecs % 86400) / 3600)
   const mins  = Math.floor((totalSecs % 3600) / 60)
   const secs  = totalSecs % 60
+  if (days  > 0) return `${days}d ${pad(hours)}:${pad(mins)}:${pad(secs)}`
   if (hours > 0) return `${pad(hours)}:${pad(mins)}:${pad(secs)}`
   return `${pad(mins)}:${pad(secs)}`
 }

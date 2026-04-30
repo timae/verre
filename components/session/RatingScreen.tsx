@@ -95,7 +95,7 @@ export function RatingScreen({ params }: Props) {
     refresh(); router.back()
   }
 
-  const sub = !isRedacted ? [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ') : ''
+  const sub = !isRedacted ? [wine.producer, wine.grape].filter(Boolean).join(' · ') : ''
   const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
@@ -114,6 +114,7 @@ export function RatingScreen({ params }: Props) {
               <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                 {wine.revealedAt && isBlind && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>}
                 {wine.name}
+                {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
               </div>
               {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
             </>

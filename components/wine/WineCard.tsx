@@ -6,7 +6,7 @@ const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7
 interface Props { wine: WineMeta; score?: number; index?: number; onClick?: () => void }
 
 export function WineCard({ wine, score, index, onClick }: Props) {
-  const sub = [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ')
+  const sub = [wine.producer, wine.grape].filter(Boolean).join(' · ')
   const accentColor = TCOL[wine.type] || TCOL.red
 
   return (
@@ -24,7 +24,10 @@ export function WineCard({ wine, score, index, onClick }: Props) {
         </div>
       )}
       <div style={{flex:1,minWidth:0}}>
-        <div style={{fontWeight:700,fontSize:13,color:'var(--fg)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
+        <div style={{fontWeight:700,fontSize:13,color:'var(--fg)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+          {wine.name}
+          {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
+        </div>
         {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sub}</div>}
       </div>
       {score != null && score > 0 && (
