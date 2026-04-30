@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
@@ -54,6 +55,7 @@ const HIDE_OPTIONS = [
 export function SessionPanel({ onClose, onLeave }: Props) {
   const { code, displayName, isHost, sessionMeta, refresh } = useSession()
   const { data: authSession } = useAuthSession()
+  const queryClient = useQueryClient()
   const isPro = !!(authSession?.user as { pro?: boolean })?.pro
 
   const m = sessionMeta as typeof sessionMeta & {
@@ -117,8 +119,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
       body: JSON.stringify({ userName: displayName, name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
     })
     setSaving(false)
-    if (res.ok) { refresh() }
-    else { const d = await res.json(); setSaveError(d.error || 'save failed') }
+    if (res.ok) {
+      await queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
+      refresh()
+    } else { const d = await res.json(); setSaveError(d.error || 'save failed') }
   }
 
   async function copyInvite() {
