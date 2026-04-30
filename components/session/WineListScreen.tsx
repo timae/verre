@@ -2,7 +2,7 @@
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { LineupLocked } from './LineupLocked'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 
@@ -42,6 +42,14 @@ export function WineListScreen() {
     ? new Date(new Date(m.dateFrom).getTime() - (m.hideLineupMinutesBefore || 0) * 60 * 1000)
     : null
   const lineupHidden = !isHost && !!revealAt && Date.now() < revealAt.getTime()
+
+  useEffect(() => {
+    if (!lineupHidden || !revealAt) return
+    const ms = revealAt.getTime() - Date.now()
+    if (ms <= 0) { refresh(); return }
+    const t = setTimeout(() => refresh(), ms + 500)
+    return () => clearTimeout(t)
+  }, [lineupHidden, revealAt?.getTime()])
 
   const allRevealed = wines.length > 0 && wines.every(w => w.revealedAt)
   const mapsUrl = m?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(m.address)}` : ''
@@ -140,7 +148,7 @@ export function WineListScreen() {
         </div>
 
         {/* Lineup hidden */}
-        {lineupHidden && revealAt && <LineupLocked revealAt={revealAt} />}
+        {lineupHidden && revealAt && <LineupLocked revealAt={revealAt} onReveal={refresh} />}
 
         {!lineupHidden && wines.length === 0 && (
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
