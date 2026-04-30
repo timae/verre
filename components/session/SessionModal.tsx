@@ -63,10 +63,22 @@ export function SessionModal({ onClose, onLeave }: Props) {
         {/* Account status */}
         <div style={{padding:'10px 12px',background:'rgba(143,184,122,0.07)',border:'1px solid rgba(143,184,122,0.18)',borderRadius:10,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
           <div style={{width:8,height:8,borderRadius:'50%',background:'var(--accent2)',flexShrink:0}} />
-          <div style={{fontSize:12,color:'var(--fg-dim)'}}>
-            Tasting as <strong style={{color:'var(--fg)'}}>{displayName}</strong>
-            {' · '}Session <strong style={{color:'var(--accent)',letterSpacing:'0.12em'}}>{code}</strong>
-            {sessionMeta?.name && <span style={{color:'var(--fg-dim)'}}>{' · '}{sessionMeta.name}</span>}
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:'var(--fg-dim)'}}>
+              Tasting as <strong style={{color:'var(--fg)'}}>{displayName}</strong>
+              {' · '}Session <strong style={{color:'var(--accent)',letterSpacing:'0.12em'}}>{code}</strong>
+              {sessionMeta?.name && <span style={{color:'var(--fg-dim)'}}>{' · '}{sessionMeta.name}</span>}
+            </div>
+            <div style={{display:'flex',gap:6,marginTop:6,flexWrap:'wrap'}}>
+              {(() => {
+                const ls = (sessionMeta as {lifespan?:string})?.lifespan
+                const label = ls === 'unlimited' ? '∞ unlimited' : ls === '1w' ? '7 day session' : ls === '72h' ? '72h session' : '48h session'
+                return <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid var(--border)',borderRadius:3,padding:'2px 7px',color:'var(--fg-faint)'}}>{label}</span>
+              })()}
+              {(sessionMeta as {blind?:boolean})?.blind && (
+                <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',borderRadius:3,padding:'2px 7px',color:'var(--accent)'}}>🙈 blind</span>
+              )}
+            </div>
           </div>
         </div>
 

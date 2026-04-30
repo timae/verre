@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHost, getSessionMeta, getWines, addWineToSession, pgUpsertWine } from '@/lib/session'
 import { deleteImage } from '@/lib/s3'
 import { prisma } from '@/lib/prisma'
@@ -28,7 +28,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   wines[idx] = result
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
-  await touch(c)
+  await touchWithMeta(c)
 
   if (session?.user) {
     try { await pgUpsertWine(c, result) } catch {}
@@ -55,7 +55,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const ratingKeys = await redis.keys(`s:${c}:r:*:${wineId}`)
   for (const rk of ratingKeys) await redis.del(rk)
   deleteImage(wineId).catch(() => {})
-  await touch(c)
+  await touchWithMeta(c)
 
   try { await prisma.wine.delete({ where: { id: wineId } }) } catch {}
 

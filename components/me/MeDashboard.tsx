@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
+import { LifespanSelector } from '@/components/session/LifespanSelector'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null }
@@ -16,6 +17,7 @@ export function MeDashboard({ user }: { user: User }) {
   const [name, setName] = useState(user.name)
   const [sessionName, setSessionName] = useState('')
   const [blind, setBlind] = useState(false)
+  const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -35,7 +37,7 @@ export function MeDashboard({ user }: { user: User }) {
     setLoading(true); setError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind }),
+      body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
     })
     setLoading(false)
     if (!res.ok) { setError('Could not create session'); return }
@@ -82,6 +84,8 @@ export function MeDashboard({ user }: { user: User }) {
             <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
             <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
           </div>
+          <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
+
           {/* Blind tasting toggle */}
           <div
             onClick={() => isPro ? setBlind(!blind) : null}

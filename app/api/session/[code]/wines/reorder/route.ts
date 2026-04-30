@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHost, getSessionMeta, getWines } from '@/lib/session'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -28,6 +28,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
   const reordered = orderedIds.map(id => byId.get(id)!)
   await redis.set(k.wines(c), JSON.stringify(reordered), { EX: TTL })
-  await touch(c)
+  await touchWithMeta(c)
   return NextResponse.json(reordered)
 }

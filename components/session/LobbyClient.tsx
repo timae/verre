@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { LifespanSelector } from '@/components/session/LifespanSelector'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -11,6 +12,7 @@ export function LobbyClient({ user }: { user: User }) {
   const router = useRouter()
   const [displayName, setDisplayName] = useState(user?.name || '')
   const [sessionName, setSessionName] = useState('')
+  const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -21,7 +23,7 @@ export function LobbyClient({ user }: { user: User }) {
     const res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostName: displayName.trim(), sessionName: sessionName.trim() }),
+      body: JSON.stringify({ hostName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
     })
     setLoading(false)
     if (!res.ok) { setError('Could not create session'); return }
@@ -79,6 +81,8 @@ export function LobbyClient({ user }: { user: User }) {
             <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
             <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
           </div>
+
+          <LifespanSelector value={lifespan} onChange={setLifespan} isPro={false} />
 
           {/* Blind tasting toggle — greyed out when not logged in or not pro */}
           <div

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     }
   }
 
-  await touch(c)
+  await touchWithMeta(c)
 
   // Award badges + XP directly (no HTTP round-trip)
   if (session?.user) {
