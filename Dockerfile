@@ -1,19 +1,19 @@
-# ── Verre — Wine Tasting OS ───────────────────
-# Node.js backend + static frontend
-# Deploio provides $PORT (default 8080) and $REDIS_URL via env vars
-
-FROM node:20-alpine
-
+# ── Verre v3 — Next.js 15 ─────────────────────────────────────
+FROM node:20-alpine AS builder
 WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY . .
+RUN npx prisma generate
+RUN npm run build
 
-# Install deps first (layer cache)
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev 2>/dev/null || npm install --omit=dev
-
-# Copy app code
-COPY server.js ./
-COPY public/ ./public/
-
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 EXPOSE 8080
-
 CMD ["node", "server.js"]

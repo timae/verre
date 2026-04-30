@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  name         String    @db.VarChar(64)
+  email        String    @unique @db.VarChar(255)
+  passwordHash String    @map("password_hash") @db.VarChar(255)
+  role         String    @default("taster") @db.VarChar(16)
+  pro          Boolean   @default(false)
+  createdAt    DateTime  @default(now()) @map("created_at")
+  members      SessionMember[]
+  ratings      Rating[]
+  bookmarks    Bookmark[]
+  hofEntries   HallOfFame[]
+
+  @@map("users")
+}
+
+model Session {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique @db.Char(4)
+  hostUserId  Int?      @map("host_user_id")
+  hostName    String    @map("host_name") @db.VarChar(64)
+  name        String?   @db.VarChar(255)
+  blind       Boolean   @default(false)
+  createdAt   DateTime  @map("created_at")
+  archivedAt  DateTime  @default(now()) @map("archived_at")
+  wines       Wine[]
+
+  @@map("sessions")
+}
+
+model Wine {
+  id          String    @id @db.VarChar(20)
+  sessionId   Int       @map("session_id")
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  name        String    @db.VarChar(255)
+  producer    String?
+  vintage     String?   @db.Char(4)
+  grape       String?
+  category    String    @default("wine") @db.VarChar(32)
+  style       String?   @db.VarChar(64)
+  imageUrl    String?   @map("image_url")
+  purchaseUrl String?   @map("purchase_url")
+  revealedAt  DateTime? @map("revealed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  ratings     Rating[]
+  bookmarks   Bookmark[]
+
+  @@map("wines")
+}
+
+model Rating {
+  id         Int      @id @default(autoincrement())
+  wineId     String   @map("wine_id") @db.VarChar(20)
+  wine       Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade)
+  userId     Int?     @map("user_id")
+  user       User?    @relation(fields: [userId], references: [id])
+  raterName  String   @map("rater_name") @db.VarChar(64)
+  isHost     Boolean  @default(false) @map("is_host")
+  score      Int      @db.SmallInt
+  flavors    Json     @default("{}")
+  notes      String?
+  ratedAt    DateTime @map("rated_at")
+
+  @@unique([wineId, userId])
+  @@unique([wineId, raterName])
+  @@map("ratings")
+}
+
+model SessionMember {
+  userId      Int      @map("user_id")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionCode String   @map("session_code") @db.Char(4)
+  joinedAt    DateTime @default(now()) @map("joined_at")
+  // No FK to Session — session_code links to Redis; Postgres session row may not exist yet
+  @@id([userId, sessionCode])
+  @@map("session_members")
+}
+
+model Bookmark {
+  id      Int      @id @default(autoincrement())
+  userId  Int      @map("user_id")
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wineId  String   @map("wine_id") @db.VarChar(20)
+  wine    Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade)
+  savedAt DateTime @default(now()) @map("saved_at")
+
+  @@unique([userId, wineId])
+  @@map("bookmarks")
+}
+
+model HallOfFame {
+  id          Int      @id @default(autoincrement())
+  wineName    String   @map("wine_name") @db.VarChar(255)
+  producer    String?
+  vintage     String?  @db.Char(4)
+  category    String   @default("wine") @db.VarChar(32)
+  style       String?  @db.VarChar(64)
+  score       Int      @db.SmallInt
+  raterName   String   @map("rater_name") @db.VarChar(64)
+  userId      Int?     @map("user_id")
+  user        User?    @relation(fields: [userId], references: [id])
+  sessionCode String?  @map("session_code") @db.Char(4)
+  ratedAt     DateTime @map("rated_at")
+
+  @@unique([wineName, raterName])
+  @@map("hall_of_fame")
+}

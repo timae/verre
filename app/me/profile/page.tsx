@@ -1,0 +1,14 @@
+import { ProfileClient } from '@/components/me/ProfileClient'
+import { DashboardSettings } from '@/components/me/DashboardSettings'
+
+export default function ProfilePage() {
+  return (
+    <div>
+      <h1 style={{fontSize:24,fontWeight:700,color:'#F0E3C6',marginBottom:20}}>Profile & Settings</h1>
+      <ProfileClient />
+      <div className="panel" style={{marginTop:16}}>
+        <DashboardSettings />
+      </div>
+    </div>
+  )
+}
