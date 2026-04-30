@@ -36,6 +36,8 @@ export type SessionMeta = {
   timezone?: string
   description?: string
   link?: string
+  hideLineup?: boolean
+  hideLineupMinutesBefore?: number
 }
 
 export function genCode(): string {

@@ -7,16 +7,30 @@ import { LifespanSelector } from './LifespanSelector'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
-function formatDate(dt: string, tz?: string) {
+function renderWithLinks(text: string) {
+  const parts = text.split(/(https?:\/\/[^\s]+)/g)
+  return parts.map((part, i) =>
+    /^https?:\/\//.test(part)
+      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{color:'var(--accent)'}}>{part}</a>
+      : part
+  )
+}
+
+function formatDate(dt: string) {
   if (!dt) return ''
   try {
     return new Intl.DateTimeFormat(undefined, {
-      timeZone: tz || undefined,
-      weekday: 'short', day: 'numeric', month: 'short',
-      hour: '2-digit', minute: '2-digit',
+      weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
     }).format(new Date(dt))
   } catch { return dt }
 }
+
+const HIDE_OPTIONS = [
+  { value: 0,  label: 'at start time' },
+  { value: 15, label: '15 min before' },
+  { value: 30, label: '30 min before' },
+  { value: 60, label: '1 hour before' },
+]
 
 export function SessionPanel({ onClose, onLeave }: Props) {
   const { code, displayName, isHost, sessionMeta, refresh } = useSession()
@@ -25,19 +39,20 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
-    timezone?: string; description?: string; link?: string
-    blind?: boolean; lifespan?: string; coHosts?: string[]
+    description?: string; link?: string; blind?: boolean; lifespan?: string
+    coHosts?: string[]; hideLineup?: boolean; hideLineupMinutesBefore?: number
   }
 
-  const [name,        setName]        = useState(m?.name        || '')
-  const [address,     setAddress]     = useState(m?.address     || '')
-  const [dateFrom,    setDateFrom]    = useState(m?.dateFrom    || '')
-  const [dateTo,      setDateTo]      = useState(m?.dateTo      || '')
-  const [timezone,    setTimezone]    = useState(m?.timezone    || '')
-  const [description, setDescription] = useState(m?.description || '')
-  const [link,        setLink]        = useState(m?.link        || '')
-  const [blind,       setBlind]       = useState(!!m?.blind)
-  const [lifespan,    setLifespan]    = useState(m?.lifespan    || '48h')
+  const [name,                    setName]                    = useState(m?.name                    || '')
+  const [address,                 setAddress]                 = useState(m?.address                 || '')
+  const [dateFrom,                setDateFrom]                = useState(m?.dateFrom                || '')
+  const [dateTo,                  setDateTo]                  = useState(m?.dateTo                  || '')
+  const [description,             setDescription]             = useState(m?.description             || '')
+  const [link,                    setLink]                    = useState(m?.link                    || '')
+  const [blind,                   setBlind]                   = useState(!!m?.blind)
+  const [lifespan,                setLifespan]                = useState(m?.lifespan                || '48h')
+  const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
+  const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
   const [participants, setParticipants] = useState<string[]>([])
   const [coHosts,      setCoHosts]      = useState<string[]>([])
@@ -65,7 +80,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setSaving(true); setSaveError('')
     const res = await fetch(`/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, name, address, dateFrom, dateTo, timezone, description, link, blind, lifespan }),
+      body: JSON.stringify({ userName: displayName, name, address, dateFrom, dateTo, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
     })
     setSaving(false)
     if (res.ok) { refresh() }
@@ -103,21 +118,24 @@ export function SessionPanel({ onClose, onLeave }: Props) {
         {!isHost && (m?.address || m?.dateFrom || m?.description || m?.link) && (
           <div style={{marginBottom:16,display:'flex',flexDirection:'column',gap:6}}>
             {m.address && (
-              <a href={mapsUrl} target="_blank" rel="noopener noreferrer" style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
+              <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
                 <span>📍</span>{m.address}
               </a>
             )}
             {m.dateFrom && (
               <div style={{fontSize:11,color:'var(--fg-dim)',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
                 <span>🕐</span>
-                <span>{formatDate(m.dateFrom, m.timezone)}</span>
-                {m.dateTo && <><span>→</span><span>{formatDate(m.dateTo, m.timezone)}</span></>}
-                {m.timezone && <span style={{fontSize:9,opacity:0.6}}>({m.timezone})</span>}
+                <span>{formatDate(m.dateFrom)}</span>
+                {m.dateTo && <><span>→</span><span>{formatDate(m.dateTo)}</span></>}
               </div>
             )}
-            {m.description && <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5}}>{m.description}</div>}
+            {m.description && (
+              <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
+            )}
             {m.link && (
-              <a href={m.link} target="_blank" rel="noopener noreferrer" style={{fontSize:11,color:'var(--accent)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6}}>
+              <a href={m.link} target="_blank" rel="noopener noreferrer"
+                style={{fontSize:11,color:'var(--accent)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6}}>
                 <span>🔗</span>{m.link}
               </a>
             )}
@@ -145,20 +163,50 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <input className="fi" type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} />
             </div>
             <div className="field">
-              <div className="fl">timezone <span style={{opacity:.5,textTransform:'none',letterSpacing:0,fontSize:9}}>(optional)</span></div>
-              <input className="fi" value={timezone} onChange={e => setTimezone(e.target.value)} maxLength={64}
-                placeholder={typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'e.g. Europe/Zurich'} />
-            </div>
-            <div className="field">
               <div className="fl">description</div>
               <textarea className="fi" value={description} onChange={e => setDescription(e.target.value)} maxLength={1000}
                 placeholder="A few words about this tasting…" rows={3}
-                style={{resize:'none',fontFamily:'var(--mono)',fontSize:12}} />
+                style={{resize:'vertical',fontFamily:'var(--mono)',fontSize:12}} />
             </div>
             <div className="field">
               <div className="fl">link</div>
               <input className="fi" value={link} onChange={e => setLink(e.target.value)} maxLength={512} placeholder="https://…" type="url" />
             </div>
+
+            {/* Hide lineup toggle — only when dateFrom is set */}
+            {dateFrom && (
+              <div style={{marginBottom:10}}>
+                <div
+                  onClick={() => setHideLineup(!hideLineup)}
+                  style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
+                    border:`1px solid ${hideLineup ? 'rgba(100,140,220,0.4)' : 'var(--border)'}`,
+                    background: hideLineup ? 'rgba(100,140,220,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom: hideLineup ? 8 : 0}}
+                >
+                  <div>
+                    <div style={{fontSize:11,fontWeight:700,color: hideLineup ? '#8aabff' : 'var(--fg)'}}>🔒 Hide lineup before tasting</div>
+                    <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Participants can&apos;t see wines until the lineup is revealed</div>
+                  </div>
+                  <div style={{width:36,height:20,borderRadius:10,background: hideLineup ? '#8aabff' : 'var(--bg4)',
+                    border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
+                    <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: hideLineup ? 18 : 2,transition:'left .2s'}} />
+                  </div>
+                </div>
+                {hideLineup && (
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap',paddingLeft:2}}>
+                    {HIDE_OPTIONS.map(o => (
+                      <button key={o.value} type="button"
+                        onClick={() => setHideLineupMinutesBefore(o.value)}
+                        style={{padding:'5px 10px',borderRadius:6,border: hideLineupMinutesBefore === o.value ? '1px solid #8aabff' : '1px solid var(--border)',
+                          background: hideLineupMinutesBefore === o.value ? 'rgba(100,140,220,0.1)' : 'var(--bg3)',
+                          color: hideLineupMinutesBefore === o.value ? '#8aabff' : 'var(--fg-dim)',
+                          fontSize:10,fontFamily:'var(--mono)',cursor:'pointer'}}>
+                        {o.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Blind tasting toggle */}
             <div
@@ -169,7 +217,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
             >
               <div>
                 <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)'}}>🙈 Blind tasting</div>
-                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only — you reveal after</div>
+                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
               </div>
               <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
                 border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
