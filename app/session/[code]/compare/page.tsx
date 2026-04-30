@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useSession } from '@/components/session/SessionShell'
+import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
 import { getFL, detectFL, FL } from '@/lib/flavours'
@@ -8,9 +9,21 @@ import { getFL, detectFL, FL } from '@/lib/flavours'
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
 export default function ComparePage() {
-  const { wines, allRatings, displayName, isBlind } = useSession()
+  const { wines, allRatings, displayName, isBlind, isHost, sessionMeta } = useSession()
   type BlindWine = typeof wines[0] & { _blind?: boolean }
   const [viewUser, setViewUser] = useState('__me')
+
+  const m = sessionMeta as typeof sessionMeta & { hideLineup?: boolean; hideLineupMinutesBefore?: number; dateFrom?: string | null }
+  const revealAt = m?.hideLineup && m.dateFrom
+    ? new Date(new Date(m.dateFrom).getTime() - (m.hideLineupMinutesBefore || 0) * 60 * 1000)
+    : null
+  const lineupHidden = !isHost && !!revealAt && Date.now() < revealAt.getTime()
+
+  if (lineupHidden && revealAt) return (
+    <div style={{padding:'14px 14px 28px',maxWidth:980,margin:'0 auto'}}>
+      <LineupLocked revealAt={revealAt} />
+    </div>
+  )
 
   const ratedWines = wines.filter(w => Object.values(allRatings).some(u => u[w.id]?.score))
   const raters = [...new Set(Object.keys(allRatings).filter(u => Object.keys(allRatings[u]).length > 0))]

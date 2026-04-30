@@ -110,18 +110,21 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     >
       <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
         <div className="sheet-bar" />
-        <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
-          {m?.name || code}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>{m?.name || code}</div>
+          {isHost && (
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn-s" onClick={saveSettings} disabled={saving} style={{fontSize:9}}>{saving ? '…' : 'save'}</button>
+              <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+            </div>
+          )}
         </div>
 
-        {/* Read-only metadata for non-hosts */}
-        {!isHost && (m?.address || m?.dateFrom || m?.description || m?.link) && (
+        {/* Read-only metadata for non-hosts — order: description, date, address, link */}
+        {!isHost && (m?.description || m?.dateFrom || m?.address || m?.link) && (
           <div style={{marginBottom:16,display:'flex',flexDirection:'column',gap:6}}>
-            {m.address && (
-              <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
-                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
-                <span>📍</span>{m.address}
-              </a>
+            {m.description && (
+              <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
             )}
             {m.dateFrom && (
               <div style={{fontSize:11,color:'var(--fg-dim)',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
@@ -130,8 +133,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 {m.dateTo && <><span>→</span><span>{formatDate(m.dateTo)}</span></>}
               </div>
             )}
-            {m.description && (
-              <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
+            {m.address && (
+              <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
+                <span>📍</span>{m.address}
+              </a>
             )}
             {m.link && (
               <a href={m.link} target="_blank" rel="noopener noreferrer"
@@ -229,7 +235,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
             <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
             {saveError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{saveError}</p>}
-            <button className="btn-s" onClick={saveSettings} disabled={saving}>{saving ? 'saving…' : 'save settings'}</button>
+            <button
+              onClick={saveSettings} disabled={saving}
+              style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
+            >{saving ? 'saving…' : '→ save settings'}</button>
           </div>
         )}
 
