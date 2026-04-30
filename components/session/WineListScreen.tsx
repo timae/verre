@@ -222,7 +222,7 @@ export function WineListScreen() {
         )}
 
         {showAdd && (
-          <AddWineModal code={code} userName={displayName} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
+          <AddWineModal code={code} userName={displayName} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
         )}
       </div>
     </div>

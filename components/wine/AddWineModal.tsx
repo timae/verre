@@ -21,21 +21,25 @@ interface Props {
   onClose: () => void
   onSaved: () => void
   editWine?: WineMeta // if set, we're editing
+  winesCount?: number // number of wines already in the list, used for position picker
 }
 
-export function AddWineModal({ code, userName, onClose, onSaved, editWine }: Props) {
+export function AddWineModal({ code, userName, onClose, onSaved, editWine, winesCount = 0 }: Props) {
   const isEdit = !!editWine
   const [name, setName] = useState(editWine?.name || '')
   const [producer, setProducer] = useState(editWine?.producer || '')
   const [vintage, setVintage] = useState(editWine?.vintage || '')
   const [grape, setGrape] = useState(editWine?.grape || '')
   const [type, setType] = useState(editWine?.type || '')
+  const [position, setPosition] = useState(String(winesCount + 1))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [photoDataUrl, setPhotoDataUrl] = useState('')
   const [existingPhotoUrl] = useState(editWine?.imageUrl || editWine?.image || '')
   const [scanning, setScanning] = useState(false)
   const [scanStatus, setScanStatus] = useState('')
+
+  const maxPosition = winesCount + 1
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -116,9 +120,18 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine }: Pro
   async function save() {
     if (!name.trim()) { setError('Name required'); return }
     if (!type) { setError('Select a type'); return }
+    let parsedPos: number | null = null
+    if (!isEdit) {
+      parsedPos = parseInt(position, 10)
+      if (!Number.isInteger(parsedPos) || parsedPos < 1 || parsedPos > maxPosition) {
+        setError(`Position must be between 1 and ${maxPosition}.`)
+        return
+      }
+    }
     setSaving(true); setError('')
     const body: Record<string, unknown> = { name, producer, vintage, grape, type, userName }
     if (photoDataUrl) body.image = photoDataUrl
+    if (!isEdit && parsedPos != null) body.position = parsedPos
     const url = isEdit
       ? `/api/session/${code}/wines/${editWine!.id}`
       : `/api/session/${code}/wines`
@@ -223,6 +236,15 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine }: Pro
           <div className="fl">grape / style</div>
           <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
         </div>
+
+        {!isEdit && (
+          <div className="field" style={{maxWidth:140}}>
+            <div className="fl">position</div>
+            <input className="fi" type="number" min={1} max={maxPosition} value={position}
+              onChange={e => setPosition(e.target.value)} />
+            <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4}}>1 = top · {maxPosition} = end</div>
+          </div>
+        )}
 
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
         <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>

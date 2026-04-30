@@ -34,6 +34,8 @@ export function RatingScreen({ params }: Props) {
   const [saving, setSaving] = useState(false)
   const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
   const [showEdit, setShowEdit] = useState(false)
+  const [movePos, setMovePos] = useState('')
+  const [moveError, setMoveError] = useState('')
 
   useEffect(() => {
     if (existing) {
@@ -83,6 +85,27 @@ export function RatingScreen({ params }: Props) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
     })
+    refresh()
+  }
+
+  async function moveToPosition() {
+    setMoveError('')
+    const target = parseInt(movePos, 10)
+    if (!Number.isInteger(target) || target < 1 || target > wines.length) {
+      setMoveError(`Position must be between 1 and ${wines.length}.`)
+      return
+    }
+    const idx = wines.findIndex(w => w.id === wineId)
+    if (idx === -1) return
+    if (target - 1 === idx) { setMovePos(''); return } // already there
+    const ordered = [...wines]
+    const [w] = ordered.splice(idx, 1)
+    ordered.splice(target - 1, 0, w)
+    await fetch(`/api/session/${code}/wines/reorder`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
+    })
+    setMovePos('')
     refresh()
   }
 
@@ -175,11 +198,24 @@ export function RatingScreen({ params }: Props) {
 
       {/* Host actions */}
       {isHost && (
-        <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
-          <button className="btn-s" style={{flex:1}} onClick={() => setShowEdit(true)}>edit wine</button>
-          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(-1)}>move earlier</button>
-          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(1)}>move later</button>
-        </div>
+        <>
+          <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap',alignItems:'stretch'}}>
+            <button className="btn-s" style={{flex:1}} onClick={() => setShowEdit(true)}>edit wine</button>
+            <button className="btn-s" style={{flex:1}} onClick={() => moveWine(-1)}>move earlier</button>
+            <button className="btn-s" style={{flex:1}} onClick={() => moveWine(1)}>move later</button>
+            <div style={{display:'flex',gap:4,alignItems:'stretch'}}>
+              <input
+                type="number" min={1} max={wines.length} value={movePos}
+                onChange={e => { setMovePos(e.target.value); setMoveError('') }}
+                onKeyDown={e => e.key === 'Enter' && moveToPosition()}
+                placeholder="#"
+                style={{width:48,fontFamily:'var(--mono)',fontSize:10,textAlign:'center',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:10,color:'var(--fg)',padding:'10px 6px',outline:'none'}}
+              />
+              <button className="btn-s" onClick={moveToPosition} disabled={!movePos}>move to #</button>
+            </div>
+          </div>
+          {moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}
+        </>
       )}
 
       <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>

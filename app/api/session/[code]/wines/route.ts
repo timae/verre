@@ -67,6 +67,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   wines.push(result)
+  // Optional one-shot insert position (1-indexed). Out-of-range silently
+  // falls through to "append at end" — frontend validates the range.
+  const pos = Number(body.position)
+  if (Number.isInteger(pos) && pos >= 1 && pos < wines.length) {
+    const inserted = wines.pop()!
+    wines.splice(pos - 1, 0, inserted)
+  }
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
   await touchWithMeta(c)
 
