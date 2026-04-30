@@ -55,13 +55,18 @@ export async function getWines(code: string): Promise<WineMeta[]> {
 }
 
 export function isHost(meta: SessionMeta & { coHosts?: string[] }, userId?: string, userName?: string): boolean {
-  if (userId && meta.hostUserId) {
-    if (String(meta.hostUserId) === userId) return true
+  // Host slot: when the session was created by a logged-in user, require a
+  // matching userId from the auth session — do not fall back to userName,
+  // since clients can put any name in the request body.
+  if (meta.hostUserId) {
+    if (userId && String(meta.hostUserId) === userId) return true
+  } else {
+    // Anonymous-hosted session: userName is the only identity available.
+    if (userName && userName === meta.host) return true
   }
-  if (userName) {
-    if (userName === meta.host) return true
-    if (meta.coHosts?.includes(userName)) return true
-  }
+  // Co-hosts are still tracked as display-name strings (Phase 2 will move
+  // them to ids). Treated as a soft check until then.
+  if (userName && meta.coHosts?.includes(userName)) return true
   return false
 }
 

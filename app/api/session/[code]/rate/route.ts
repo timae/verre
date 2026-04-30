@@ -14,6 +14,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     return NextResponse.json({ error: 'userName and wineId required' }, { status: 400 })
   }
 
+  // When authenticated, the userName in the body must match the auth session.
+  // Stops a logged-out (or different) client from submitting ratings under
+  // someone else's name.
+  if (session?.user && userName !== session.user.name) {
+    return NextResponse.json({ error: 'userName does not match authenticated user' }, { status: 403 })
+  }
+
   const ratingScore = score || 0
   await redis.set(
     k.rating(c, userName, wineId),

@@ -7,6 +7,7 @@ import { signOut } from 'next-auth/react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { AccountSettings } from '@/components/me/AccountSettings'
+import { clearSessionNames } from '@/lib/clientStorage'
 
 interface Props { onClose: () => void }
 
@@ -150,7 +151,7 @@ export function UserPanel({ onClose }: Props) {
                   ))}
                 </div>
 
-                <button className="btn-g" onClick={() => signOut({ callbackUrl: '/' })}>sign out</button>
+                <button className="btn-g" onClick={() => { clearSessionNames(); signOut({ callbackUrl: '/' }) }}>sign out</button>
               </div>
             )}
 

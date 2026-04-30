@@ -1,10 +1,11 @@
 'use client'
 import { signOut } from 'next-auth/react'
+import { clearSessionNames } from '@/lib/clientStorage'
 
 export function SignOutButton() {
   return (
     <button
-      onClick={() => signOut({ callbackUrl: '/login' })}
+      onClick={() => { clearSessionNames(); signOut({ callbackUrl: '/login' }) }}
       style={{
         fontFamily:'var(--mono)',fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',
         color:'var(--fg-faint)',background:'transparent',border:'1px solid var(--border)',
