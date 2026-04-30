@@ -3,9 +3,9 @@ import type { WineMeta } from '@/lib/session'
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 
-interface Props { wine: WineMeta; score?: number; onClick?: () => void }
+interface Props { wine: WineMeta; score?: number; index?: number; onClick?: () => void }
 
-export function WineCard({ wine, score, onClick }: Props) {
+export function WineCard({ wine, score, index, onClick }: Props) {
   const sub = [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ')
   const accentColor = TCOL[wine.type] || TCOL.red
 
@@ -13,6 +13,9 @@ export function WineCard({ wine, score, onClick }: Props) {
     <button onClick={onClick} className="wine-card" style={{width:'100%',textAlign:'left'}}>
       {/* type accent bar */}
       <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background:accentColor,opacity:0.6}} />
+      {index != null && (
+        <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{index + 1}</div>
+      )}
       {wine.imageUrl ? (
         <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
       ) : (

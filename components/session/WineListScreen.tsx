@@ -7,8 +7,22 @@ import type { WineMeta } from '@/lib/session'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 
+function formatDate(dt: string, tz?: string) {
+  if (!dt) return ''
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: tz || undefined,
+      weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    }).format(new Date(dt))
+  } catch { return dt }
+}
+
 export function WineListScreen() {
-  const { wines, myRatings, isHost, code, displayName, refresh, isBlind } = useSession()
+  const { wines, myRatings, isHost, code, displayName, refresh, isBlind, sessionMeta } = useSession()
+  const m = sessionMeta as typeof sessionMeta & {
+    address?: string; dateFrom?: string | null; dateTo?: string | null
+    timezone?: string; description?: string; link?: string
+  }
   const [showAdd, setShowAdd] = useState(false)
   const router = useRouter()
 
@@ -34,6 +48,34 @@ export function WineListScreen() {
           {isHost && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
         </div>
 
+        {/* Session metadata block */}
+        {(m?.address || m?.dateFrom || m?.description || m?.link) && (
+          <div style={{marginBottom:14,padding:'10px 12px',background:'var(--bg2)',borderRadius:8,border:'1px solid var(--border)',display:'flex',flexDirection:'column',gap:6}}>
+            {m.address && (
+              <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(m.address)}`}
+                target="_blank" rel="noopener noreferrer"
+                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
+                <span>📍</span>{m.address}
+              </a>
+            )}
+            {m.dateFrom && (
+              <div style={{fontSize:11,color:'var(--fg-dim)',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
+                <span>🕐</span>
+                <span>{formatDate(m.dateFrom, m.timezone)}</span>
+                {m.dateTo && <><span>→</span><span>{formatDate(m.dateTo, m.timezone)}</span></>}
+                {m.timezone && <span style={{fontSize:9,opacity:0.6}}>({m.timezone})</span>}
+              </div>
+            )}
+            {m.description && <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5}}>{m.description}</div>}
+            {m.link && (
+              <a href={m.link} target="_blank" rel="noopener noreferrer"
+                style={{fontSize:11,color:'var(--accent)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',display:'flex',alignItems:'center',gap:6}}>
+                <span>🔗</span>{m.link}
+              </a>
+            )}
+          </div>
+        )}
+
         {wines.length === 0 && (
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
             {isHost ? 'Add the first wine to get started.' : 'Waiting for the host to add wines.'}
@@ -56,6 +98,7 @@ export function WineListScreen() {
                   style={{width:'100%',textAlign:'left'}}
                 >
                   <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
+                  <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
                   {/* Icon / photo */}
                   {!isRedacted && wine.imageUrl ? (

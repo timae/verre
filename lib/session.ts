@@ -27,6 +27,15 @@ export type SessionMeta = {
   name: string
   createdAt: number
   hostUserId: number | null
+  blind?: boolean
+  lifespan?: string
+  coHosts?: string[]
+  address?: string
+  dateFrom?: string | null
+  dateTo?: string | null
+  timezone?: string
+  description?: string
+  link?: string
 }
 
 export function genCode(): string {

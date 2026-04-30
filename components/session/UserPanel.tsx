@@ -1,0 +1,199 @@
+'use client'
+import { useState, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { signOut } from 'next-auth/react'
+import { useSession } from './SessionShell'
+import { useSession as useAuthSession } from 'next-auth/react'
+
+interface Props { onClose: () => void }
+
+export function UserPanel({ onClose }: Props) {
+  const { displayName, code, sessionMeta } = useSession()
+  const { data: authSession } = useAuthSession()
+  const router = useRouter()
+  const user = authSession?.user as { id: string; name: string; email: string; pro?: boolean } | undefined
+
+  const [tab,       setTab]       = useState<'overview' | 'settings'>('overview')
+  const [name,      setName]      = useState(user?.name  || '')
+  const [email,     setEmail]     = useState(user?.email || '')
+  const [currentPw, setCurrentPw] = useState('')
+  const [newPw,     setNewPw]     = useState('')
+  const [saving,    setSaving]    = useState(false)
+  const [error,     setError]     = useState('')
+  const [success,   setSuccess]   = useState('')
+
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const { data: sessions = [] } = useQuery<Array<{ id: number; code: string; name: string | null; wines_rated: number; joined_at: string }>>({
+    queryKey: ['me-sessions'],
+    queryFn: () => fetch('/api/me/sessions').then(r => r.ok ? r.json() : []),
+    enabled: !!user,
+  })
+
+  type BadgeItem = { id: string; name: string; icon: string; earned: boolean }
+  type BadgesResponse = { badges: BadgeItem[] }
+  const { data: earnedBadges = [] } = useQuery<BadgesResponse, Error, BadgeItem[]>({
+    queryKey: ['me-badges'],
+    queryFn: () => fetch('/api/me/badges').then(r => r.ok ? r.json() : { badges: [] }),
+    enabled: !!user,
+    select: (d: BadgesResponse) => (d.badges || []).filter(b => b.earned).slice(0, 6),
+  })
+
+  async function saveAccount() {
+    setSaving(true); setError(''); setSuccess('')
+    const body: Record<string, string> = {}
+    if (name  !== user?.name)  body.name  = name
+    if (email !== user?.email) body.email = email
+    if (newPw) { body.currentPassword = currentPw; body.newPassword = newPw }
+    if (Object.keys(body).length === 0) { setSaving(false); return }
+
+    const res = await fetch('/api/me/account', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    setSaving(false)
+    if (res.ok) { setSuccess('changes saved'); setCurrentPw(''); setNewPw('') }
+    else { const d = await res.json(); setError(d.error || 'update failed') }
+  }
+
+  const lifespanLabel = (() => {
+    const ls = (sessionMeta as { lifespan?: string })?.lifespan
+    return ls === 'unlimited' ? '∞ unlimited' : ls === '1w' ? '7 day session' : ls === '72h' ? '72h session' : '48h session'
+  })()
+
+  return (
+    <div
+      style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
+      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+    >
+      <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
+        <div className="sheet-bar" />
+        <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
+          {displayName || 'you'}
+        </div>
+
+        {/* Session identity */}
+        <div style={{padding:'10px 12px',background:'rgba(143,184,122,0.07)',border:'1px solid rgba(143,184,122,0.18)',borderRadius:10,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
+          <div style={{width:8,height:8,borderRadius:'50%',background:'var(--accent2)',flexShrink:0}} />
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:'var(--fg-dim)'}}>
+              Tasting as <strong style={{color:'var(--fg)'}}>{displayName}</strong>
+              {' · '}Session <strong style={{color:'var(--accent)',letterSpacing:'0.12em'}}>{code}</strong>
+              {sessionMeta?.name && <span style={{color:'var(--fg-dim)'}}>{' · '}{sessionMeta.name}</span>}
+            </div>
+            <div style={{display:'flex',gap:6,marginTop:6,flexWrap:'wrap'}}>
+              <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid var(--border)',borderRadius:3,padding:'2px 7px',color:'var(--fg-faint)'}}>{lifespanLabel}</span>
+              {(sessionMeta as { blind?: boolean })?.blind && (
+                <span style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',borderRadius:3,padding:'2px 7px',color:'var(--accent)'}}>🙈 blind</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {!user ? (
+          /* Anonymous user */
+          <div>
+            <p style={{fontSize:12,color:'var(--fg-dim)',marginBottom:12,lineHeight:1.6}}>
+              You&apos;re tasting anonymously. Create an account to save your history, earn badges, and unlock premium features.
+            </p>
+            <button className="btn-p" onClick={() => { onClose(); router.push('/register') }} style={{marginBottom:6}}>→ create account</button>
+            <button className="btn-g" onClick={() => { onClose(); router.push('/login') }}>→ sign in</button>
+          </div>
+        ) : (
+          /* Logged-in user */
+          <div>
+            {/* Tabs */}
+            <div style={{display:'flex',gap:1,marginBottom:16,background:'var(--bg3)',borderRadius:8,padding:3}}>
+              {(['overview', 'settings'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                  style={{flex:1,padding:'6px 0',borderRadius:6,border:'none',
+                    background: tab === t ? 'var(--bg2)' : 'transparent',
+                    color: tab === t ? 'var(--fg)' : 'var(--fg-dim)',
+                    fontSize:11,fontFamily:'var(--mono)',letterSpacing:'0.06em',cursor:'pointer'}}>
+                  {t}
+                </button>
+              ))}
+            </div>
+
+            {tab === 'overview' && (
+              <div>
+                {sessions.slice(0, 3).length > 0 && (
+                  <div style={{marginBottom:16}}>
+                    <div className="fl">recent tastings</div>
+                    {sessions.slice(0, 3).map(s => (
+                      <div key={s.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
+                        <div>
+                          <p style={{fontSize:12,fontWeight:700}}>{s.name || `Session ${s.code}`}</p>
+                          <p style={{fontSize:10,color:'var(--fg-dim)'}}>{s.wines_rated} wine{s.wines_rated !== 1 ? 's' : ''} rated</p>
+                        </div>
+                      </div>
+                    ))}
+                    <Link href="/me/history" style={{fontSize:10,color:'var(--accent)',marginTop:8,display:'block',fontFamily:'var(--mono)'}} onClick={onClose}>view all →</Link>
+                  </div>
+                )}
+
+                {earnedBadges.length > 0 && (
+                  <div style={{marginBottom:16}}>
+                    <div className="fl">badges</div>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:6}}>
+                      {earnedBadges.map(b => (
+                        <span key={b.id} title={b.name} style={{fontSize:22}}>{b.icon}</span>
+                      ))}
+                    </div>
+                    <Link href="/me/badges" style={{fontSize:10,color:'var(--accent)',marginTop:8,display:'block',fontFamily:'var(--mono)'}} onClick={onClose}>view all →</Link>
+                  </div>
+                )}
+
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+                  {[
+                    { href: '/me',          l: '◉ dashboard' },
+                    { href: '/me/history',  l: '◷ history' },
+                    { href: '/me/saved',    l: '★ saved' },
+                    { href: '/me/badges',   l: '🏅 badges' },
+                  ].map(({ href, l }) => (
+                    <Link key={href} href={href} className="btn-s" style={{textDecoration:'none'}} onClick={onClose}>{l}</Link>
+                  ))}
+                </div>
+
+                <button className="btn-g" onClick={() => signOut({ callbackUrl: '/' })}>sign out</button>
+              </div>
+            )}
+
+            {tab === 'settings' && (
+              <div>
+                <div className="field">
+                  <div className="fl">display name</div>
+                  <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={64} />
+                </div>
+                <div className="field">
+                  <div className="fl">email</div>
+                  <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+                </div>
+                <div style={{marginTop:12,marginBottom:6,fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',textTransform:'uppercase'}}>change password</div>
+                <div className="field">
+                  <div className="fl">current password</div>
+                  <input className="fi" type="password" value={currentPw} onChange={e => setCurrentPw(e.target.value)} placeholder="required to change password" />
+                </div>
+                <div className="field">
+                  <div className="fl">new password</div>
+                  <input className="fi" type="password" value={newPw} onChange={e => setNewPw(e.target.value)} placeholder="min 8 characters" />
+                </div>
+                {error   && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+                {success && <p style={{color:'var(--accent2)',fontSize:11,marginBottom:8}}>✓ {success}</p>}
+                <button className="btn-p" onClick={saveAccount} disabled={saving}>{saving ? 'saving…' : '→ save changes'}</button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <button className="btn-p" onClick={onClose} style={{marginTop:12,marginBottom:0}}>→ close</button>
+      </div>
+    </div>
+  )
+}

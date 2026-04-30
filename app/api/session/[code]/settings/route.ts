@@ -1,0 +1,59 @@
+import { NextRequest, NextResponse } from 'next/server'
+import { auth } from '@/auth'
+import { redis, k, lifespanTTL } from '@/lib/redis'
+import { getSessionMeta, isHost } from '@/lib/session'
+import { prisma } from '@/lib/prisma'
+
+export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  const { code } = await params
+  const c = code.toUpperCase()
+  const session = await auth()
+  const body = await req.json()
+
+  const meta = await getSessionMeta(c)
+  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!isHost(meta, session?.user?.id, body.userName)) {
+    return NextResponse.json({ error: 'only the host can change session settings' }, { status: 403 })
+  }
+
+  const isPro = !!(session?.user as { pro?: boolean })?.pro
+
+  if (body.name !== undefined)        meta.name        = String(body.name        || '').trim().slice(0, 80)
+  if (body.address !== undefined)     meta.address     = String(body.address     || '').trim().slice(0, 255)
+  if (body.dateFrom !== undefined)    meta.dateFrom    = body.dateFrom    || null
+  if (body.dateTo !== undefined)      meta.dateTo      = body.dateTo      || null
+  if (body.timezone !== undefined)    meta.timezone    = String(body.timezone    || '').trim().slice(0, 64)
+  if (body.description !== undefined) meta.description = String(body.description || '').trim().slice(0, 1000)
+  if (body.link !== undefined)        meta.link        = String(body.link        || '').trim().slice(0, 512)
+  if (body.blind !== undefined)       meta.blind       = !!body.blind
+
+  if (body.lifespan !== undefined) {
+    if (body.lifespan !== '48h' && !isPro) {
+      return NextResponse.json({ error: 'pro required for extended lifespan' }, { status: 403 })
+    }
+    meta.lifespan = body.lifespan
+  }
+
+  const ttl = lifespanTTL(meta.lifespan)
+  await redis.set(k.meta(c), JSON.stringify(meta), { EX: ttl })
+  const keys = await redis.keys(`s:${c}:*`)
+  for (const key of keys) await redis.expire(key, ttl)
+
+  try {
+    await prisma.session.update({
+      where: { code: c },
+      data: {
+        name:        meta.name        || null,
+        blind:       !!meta.blind,
+        address:     meta.address     || null,
+        dateFrom:    meta.dateFrom    ? new Date(meta.dateFrom) : null,
+        dateTo:      meta.dateTo      ? new Date(meta.dateTo)   : null,
+        timezone:    meta.timezone    || null,
+        description: meta.description || null,
+        link:        meta.link        || null,
+      },
+    })
+  } catch {}
+
+  return NextResponse.json({ ok: true, meta })
+}

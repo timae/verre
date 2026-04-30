@@ -1,31 +1,34 @@
 'use client'
 import { useSession } from '@/components/session/SessionShell'
 import { WineCard } from '@/components/wine/WineCard'
-import { useRouter, useParams } from 'next/navigation'
+import { useRouter } from 'next/navigation'
 
 export default function RatePickerPage() {
   const { wines, myRatings, code, displayName } = useSession()
   const router = useRouter()
 
   return (
-    <div className="p-4 max-w-screen-md mx-auto">
-      <div className="mb-4">
-        <p className="text-xs text-fg-dim uppercase tracking-widest mb-1">// Rate bottles</p>
-        <h2 className="text-2xl font-bold text-fg">Select a wine to rate</h2>
+    <div style={{padding:'14px 14px 28px'}}><div style={{maxWidth:980,margin:'0 auto'}}>
+      <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,marginBottom:16}}>
+        <div className="subhead" style={{margin:0}}>
+          <div className="subhead-title">Rate bottles</div>
+          <div className="subhead-copy">{wines.length} bottle{wines.length !== 1 ? 's' : ''}</div>
+        </div>
       </div>
       {wines.length === 0 && (
-        <p className="text-center py-16 text-fg-dim text-sm">No wines added yet.</p>
+        <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>No wines added yet.</div>
       )}
-      <div className="flex flex-col gap-1">
-        {wines.map(wine => (
+      <div className="wine-stack">
+        {wines.map((wine, idx) => (
           <WineCard
             key={wine.id}
             wine={wine}
+            index={idx}
             score={myRatings[wine.id]?.score}
             onClick={() => router.push(`/session/${code}/rate/${wine.id}?name=${encodeURIComponent(displayName)}`)}
           />
         ))}
       </div>
-    </div>
+    </div></div>
   )
 }
