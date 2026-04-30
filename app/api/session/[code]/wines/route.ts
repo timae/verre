@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHost, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 
@@ -61,7 +61,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   wines.push(result)
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
-  await touch(c)
+  await touchWithMeta(c)
 
   if (session?.user) {
     try {

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHost, getSessionMeta, getWines } from '@/lib/session'
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   wines[idx] = { ...wines[idx], revealedAt: new Date().toISOString() }
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
-  await touch(c)
+  await touchWithMeta(c)
 
   return NextResponse.json({ ok: true, wine: wines[idx] })
 }

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { redis, k, TTL } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { touch } from '@/lib/session'
 
 export async function POST(req: NextRequest) {
@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
   if (!raw) return NextResponse.json({ error: 'session not found' }, { status: 404 })
 
   await redis.sAdd(k.users(c), userName)
-  await touch(c)
+  await touchWithMeta(c)
 
   return NextResponse.json({ ...JSON.parse(raw), code: c })
 }

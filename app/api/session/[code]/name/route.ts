@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, touch } from '@/lib/redis'
+import { redis, k, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, isHost } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 
@@ -19,7 +19,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const name = String(body.name || '').trim().slice(0, 80)
   meta.name = name
   await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
-  await touch(c)
+  await touchWithMeta(c)
   try { await prisma.session.update({ where: { code: c }, data: { name: name || null } }) } catch {}
   return NextResponse.json({ ok: true, name })
 }
