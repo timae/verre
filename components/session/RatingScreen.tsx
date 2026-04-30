@@ -36,6 +36,7 @@ export function RatingScreen({ params }: Props) {
   const [showEdit, setShowEdit] = useState(false)
   const [movePos, setMovePos] = useState('')
   const [moveError, setMoveError] = useState('')
+  const [moveSuccess, setMoveSuccess] = useState('')
 
   useEffect(() => {
     if (existing) {
@@ -90,6 +91,7 @@ export function RatingScreen({ params }: Props) {
 
   async function moveToPosition() {
     setMoveError('')
+    setMoveSuccess('')
     const target = parseInt(movePos, 10)
     if (!Number.isInteger(target) || target < 1 || target > wines.length) {
       setMoveError(`Position must be between 1 and ${wines.length}.`)
@@ -97,7 +99,7 @@ export function RatingScreen({ params }: Props) {
     }
     const idx = wines.findIndex(w => w.id === wineId)
     if (idx === -1) return
-    if (target - 1 === idx) { setMovePos(''); return } // already there
+    if (target - 1 === idx) { setMoveSuccess(`already at position ${target}`); return }
     const ordered = [...wines]
     const [w] = ordered.splice(idx, 1)
     ordered.splice(target - 1, 0, w)
@@ -105,7 +107,7 @@ export function RatingScreen({ params }: Props) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
     })
-    setMovePos('')
+    setMoveSuccess(`moved to position ${target}`)
     refresh()
   }
 
@@ -208,15 +210,19 @@ export function RatingScreen({ params }: Props) {
               <input
                 type="text" inputMode="numeric" pattern="[0-9]*"
                 value={movePos}
-                onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError('') }}
+                onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError(''); setMoveSuccess('') }}
                 onKeyDown={e => e.key === 'Enter' && moveToPosition()}
-                onBlur={() => { if (movePos) moveToPosition() }}
+                onBlur={() => { if (movePos && !moveSuccess) moveToPosition() }}
                 placeholder="#"
-                style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none'}}
+                style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',
+                  background: moveSuccess ? 'rgba(143,184,122,0.12)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${moveSuccess ? 'rgba(143,184,122,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none',transition:'background .25s, border-color .25s'}}
               />
             </div>
           </div>
           {moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}
+          {moveSuccess && <p style={{color:'var(--accent2)',fontSize:11,marginTop:6}}>✓ {moveSuccess}</p>}
         </>
       )}
 
