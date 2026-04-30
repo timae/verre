@@ -200,18 +200,20 @@ export function RatingScreen({ params }: Props) {
       {isHost && (
         <>
           <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap',alignItems:'stretch'}}>
-            <button className="btn-s" style={{flex:1}} onClick={() => setShowEdit(true)}>edit wine</button>
-            <button className="btn-s" style={{flex:1}} onClick={() => moveWine(-1)}>move earlier</button>
-            <button className="btn-s" style={{flex:1}} onClick={() => moveWine(1)}>move later</button>
-            <div style={{display:'flex',gap:4,alignItems:'stretch'}}>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => setShowEdit(true)}>edit wine</button>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(-1)}>move earlier</button>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(1)}>move later</button>
+            <div className="btn-s" style={{flex:1,padding:'4px 8px',display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'default'}}>
+              <span style={{whiteSpace:'nowrap'}}>move to:</span>
               <input
-                type="number" min={1} max={wines.length} value={movePos}
-                onChange={e => { setMovePos(e.target.value); setMoveError('') }}
+                type="text" inputMode="numeric" pattern="[0-9]*"
+                value={movePos}
+                onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError('') }}
                 onKeyDown={e => e.key === 'Enter' && moveToPosition()}
-                placeholder="#"
-                style={{width:48,fontFamily:'var(--mono)',fontSize:10,textAlign:'center',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.06)',borderRadius:10,color:'var(--fg)',padding:'10px 6px',outline:'none'}}
+                onBlur={() => { if (movePos) moveToPosition() }}
+                placeholder={String(wines.length)}
+                style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',background:'rgba(255,255,255,0.04)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none'}}
               />
-              <button className="btn-s" onClick={moveToPosition} disabled={!movePos}>move to #</button>
             </div>
           </div>
           {moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}

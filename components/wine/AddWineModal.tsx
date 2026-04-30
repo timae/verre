@@ -232,19 +232,20 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
             ))}
           </div>
         </div>
-        <div className="field">
-          <div className="fl">grape / style</div>
-          <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
-        </div>
-
-        {!isEdit && (
-          <div className="field" style={{maxWidth:140}}>
-            <div className="fl">position</div>
-            <input className="fi" type="number" min={1} max={maxPosition} value={position}
-              onChange={e => setPosition(e.target.value)} />
-            <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4}}>1 = top · {maxPosition} = end</div>
+        <div style={{display:'flex',gap:8}}>
+          <div className="field" style={{flex:1}}>
+            <div className="fl">grape / style</div>
+            <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
           </div>
-        )}
+          {!isEdit && (
+            <div className="field" style={{maxWidth:96}}>
+              <div className="fl">position</div>
+              <input className="fi" type="text" inputMode="numeric" pattern="[0-9]*"
+                value={position} onChange={e => setPosition(e.target.value.replace(/\D/g,''))}
+                placeholder={String(maxPosition)} />
+            </div>
+          )}
+        </div>
 
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
         <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>
