@@ -202,23 +202,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               </div>
             )}
 
-            {/* Share link */}
-            <div style={{marginBottom:16}}>
-              <div style={{fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:8,fontFamily:'var(--mono)'}}>invite link</div>
-              <div style={{fontSize:11,color:'var(--accent)',wordBreak:'break-all',marginBottom:8,fontFamily:'var(--mono)'}}>{inviteUrl}</div>
-              <div style={{display:'flex',gap:8,marginBottom:12}}>
-                <button className="btn-s" onClick={copyInvite}>{copied ? 'copied ✓' : 'copy link'}</button>
-                {typeof navigator !== 'undefined' && 'share' in navigator && (
-                  <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${code}` })}>share</button>
-                )}
-              </div>
-              {inviteUrl && (
-                <div style={{display:'flex',justifyContent:'center',padding:12,background:'var(--bg3)',borderRadius:8}}>
-                  <QRCodeSVG value={inviteUrl} size={160} bgColor="transparent" fgColor="var(--fg)" />
-                </div>
-              )}
-            </div>
-
             {/* Participants (collapsible, collapsed by default) */}
             {participants.length > 0 && (
               <div>
@@ -256,6 +239,23 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 )}
               </div>
             )}
+
+            {/* Share link */}
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:8,fontFamily:'var(--mono)',marginTop: participants.length > 0 ? 12 : 0}}>invite link</div>
+              <div style={{fontSize:11,color:'var(--accent)',wordBreak:'break-all',marginBottom:8,fontFamily:'var(--mono)'}}>{inviteUrl}</div>
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <button className="btn-s" onClick={copyInvite}>{copied ? 'copied ✓' : 'copy link'}</button>
+                {typeof navigator !== 'undefined' && 'share' in navigator && (
+                  <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${code}` })}>share</button>
+                )}
+              </div>
+              {inviteUrl && (
+                <div style={{display:'flex',justifyContent:'center',padding:12,background:'var(--bg3)',borderRadius:8}}>
+                  <QRCodeSVG value={inviteUrl} size={160} bgColor="transparent" fgColor="var(--fg)" />
+                </div>
+              )}
+            </div>
           </div>
         )}
 
