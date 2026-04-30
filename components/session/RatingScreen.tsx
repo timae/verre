@@ -165,7 +165,7 @@ export function RatingScreen({ params }: Props) {
       {/* Polar chart */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={280} />
+        <PolarChart flavors={flavors} fl={fl} size={480} />
       </div>
 
       {/* Sliders */}
@@ -228,7 +228,7 @@ export function RatingScreen({ params }: Props) {
 
       <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>
       <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
-        {bookmarked ? '★ saved' : '☆ save wine'}
+        {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>
       <button className="btn-g" onClick={() => router.back()}>cancel</button>
       {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}

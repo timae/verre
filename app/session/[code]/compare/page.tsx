@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSession } from '@/components/session/SessionShell'
 import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
@@ -8,10 +8,83 @@ import { getFL, detectFL, FL } from '@/lib/flavours'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
+const RATER_CHIP_LIMIT = 3
+
+type RaterEntry = { user: string; score: number }
+
+function RaterChip({ user, score }: RaterEntry) {
+  return (
+    <span style={{fontSize:10,background:'var(--bg3)',border:'1px solid var(--border)',padding:'2px 8px',borderRadius:3,color:'var(--fg-dim)',fontFamily:'var(--mono)',whiteSpace:'nowrap'}}>
+      {user} <span style={{color:'var(--accent)'}}>{score}★</span>
+    </span>
+  )
+}
+
+function RaterChips({ ratings }: { ratings: RaterEntry[] }) {
+  const [showPopover, setShowPopover] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!showPopover) return
+    function onDown(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setShowPopover(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setShowPopover(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [showPopover])
+
+  if (ratings.length === 0) return null
+
+  const visible = ratings.slice(0, RATER_CHIP_LIMIT)
+  const overflow = ratings.length - visible.length
+
+  return (
+    <div ref={wrapperRef} style={{display:'flex',flexWrap:'nowrap',gap:4,position:'relative',overflow:'hidden'}}>
+      {visible.map(r => <RaterChip key={r.user} {...r} />)}
+      {overflow > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowPopover(s => !s)}
+          style={{fontSize:10,background:'rgba(200,150,60,0.08)',border:'1px solid rgba(200,150,60,0.3)',padding:'2px 8px',borderRadius:3,color:'var(--accent)',fontFamily:'var(--mono)',cursor:'pointer',whiteSpace:'nowrap'}}
+        >
+          +{overflow} more
+        </button>
+      )}
+      {showPopover && (
+        <div style={{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:20,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,padding:10,boxShadow:'0 8px 24px rgba(0,0,0,0.4)',minWidth:160,maxWidth:260}}>
+          <div style={{fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-faint)',marginBottom:6,fontFamily:'var(--mono)'}}>all raters ({ratings.length})</div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+            {ratings.map(r => <RaterChip key={r.user} {...r} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function useIsNarrow(): boolean {
+  const [isNarrow, setIsNarrow] = useState(false)
+  useEffect(() => {
+    const m = window.matchMedia('(max-width: 619px)')
+    setIsNarrow(m.matches)
+    const handler = (e: MediaQueryListEvent) => setIsNarrow(e.matches)
+    m.addEventListener('change', handler)
+    return () => m.removeEventListener('change', handler)
+  }, [])
+  return isNarrow
+}
+
 export default function ComparePage() {
   const { wines, allRatings, displayName, isBlind, isHost, sessionMeta } = useSession()
   type BlindWine = typeof wines[0] & { _blind?: boolean }
   const [viewUser, setViewUser] = useState('__me')
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set())
+  const isNarrow = useIsNarrow()
 
   const m = sessionMeta as typeof sessionMeta & { hideLineup?: boolean; hideLineupMinutesBefore?: number; dateFrom?: string | null }
   const revealAt = m?.hideLineup && m.dateFrom
@@ -35,6 +108,14 @@ export default function ComparePage() {
   )
 
   const activeUser = viewUser === '__me' ? displayName : viewUser === '__all' ? null : viewUser
+
+  function toggleCard(wineId: string) {
+    setExpandedCards(prev => {
+      const next = new Set(prev)
+      if (next.has(wineId)) next.delete(wineId); else next.add(wineId)
+      return next
+    })
+  }
 
   return (
     <div style={{padding:'14px 14px 28px',maxWidth:980,margin:'0 auto'}}>
@@ -95,6 +176,9 @@ export default function ComparePage() {
             flavors: (r.rating.flavors || {}) as Record<string, number>,
           }))
 
+          const chartShown = !isNarrow || expandedCards.has(wine.id)
+          const raterEntries: RaterEntry[] = allWineRatings.map(r => ({ user: r.user, score: r.rating.score || 0 }))
+
           return (
             <div key={wine.id} className="panel" style={{marginBottom:0}}>
               <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:12}}>
@@ -118,41 +202,46 @@ export default function ComparePage() {
                 </div>
               </div>
 
-              <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
-                {viewUser === '__all' ? (
-                  <div>
-                    <RadarChart series={overlaySeries} fl={overlayFL} size={200} />
-                    <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,justifyContent:'center'}}>
-                      {overlaySeries.map((s, i) => (
-                        <div key={s.label} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'var(--fg-dim)'}}>
-                          <div style={{width:8,height:3,borderRadius:2,background:COLORS[i%COLORS.length],flexShrink:0}} />
-                          {s.label}
-                        </div>
-                      ))}
+              {chartShown && (
+                <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
+                  {viewUser === '__all' ? (
+                    <div style={{width:'100%'}}>
+                      <RadarChart series={overlaySeries} fl={overlayFL} size={380} />
+                      <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,justifyContent:'center'}}>
+                        {overlaySeries.map((s, i) => (
+                          <div key={s.label} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'var(--fg-dim)'}}>
+                            <div style={{width:8,height:3,borderRadius:2,background:COLORS[i%COLORS.length],flexShrink:0}} />
+                            {s.label}
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>
-                ) : singleRating ? (
-                  <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={200} />
-                ) : (
-                  <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
-                    no rating from {activeUser}
-                  </div>
-                )}
-              </div>
+                  ) : singleRating ? (
+                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={380} />
+                  ) : (
+                    <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
+                      no rating from {activeUser}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* All rater scores */}
-              <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
-                {allWineRatings.map(r => (
-                  <span key={r.user} style={{fontSize:10,background:'var(--bg3)',border:'1px solid var(--border)',padding:'2px 8px',borderRadius:3,color:'var(--fg-dim)',fontFamily:'var(--mono)'}}>
-                    {r.user} <span style={{color:'var(--accent)'}}>{r.rating.score}★</span>
-                  </span>
-                ))}
-              </div>
+              <RaterChips ratings={raterEntries} />
 
-              {singleRating?.notes && (
+              {singleRating?.notes && chartShown && (
                 <p style={{fontSize:11,color:'var(--fg-dim)',marginTop:8,fontStyle:'italic',borderTop:'1px solid var(--border)',paddingTop:6}}>
                   &ldquo;{singleRating.notes}&rdquo;
                 </p>
+              )}
+
+              {isNarrow && (
+                <button
+                  type="button" onClick={() => toggleCard(wine.id)}
+                  style={{marginTop:10,width:'100%',background:'transparent',border:'1px dashed var(--border)',borderRadius:6,padding:'6px 0',color:'var(--fg-dim)',fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',textTransform:'uppercase',cursor:'pointer'}}
+                >
+                  {chartShown ? '▴ hide chart' : '▾ show chart'}
+                </button>
               )}
             </div>
           )

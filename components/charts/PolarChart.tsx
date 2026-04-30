@@ -60,8 +60,8 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
   return (
     <svg
       viewBox={svg.vb}
-      width={svg.w}
-      height={svg.ht}
+      style={{ width: '100%', height: 'auto', maxWidth: size, display: 'block', margin: '0 auto' }}
+      preserveAspectRatio="xMidYMid meet"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       dangerouslySetInnerHTML={{ __html: svg.h }}

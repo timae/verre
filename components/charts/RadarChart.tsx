@@ -59,7 +59,10 @@ export function RadarChart({ series, fl, size = 240 }: Props) {
   }, [series, fl, size])
 
   return (
-    <svg viewBox={svg.vb} width={svg.w} height={svg.ht} xmlns="http://www.w3.org/2000/svg"
+    <svg viewBox={svg.vb}
+      style={{ width: '100%', height: 'auto', maxWidth: size, display: 'block', margin: '0 auto' }}
+      preserveAspectRatio="xMidYMid meet"
+      xmlns="http://www.w3.org/2000/svg"
       dangerouslySetInnerHTML={{ __html: svg.h }} />
   )
 }
