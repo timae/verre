@@ -1,11 +1,13 @@
 'use client'
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
+import { LineupLocked } from './LineupLocked'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
+const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
 
 function renderWithLinks(text: string) {
   const parts = text.split(/(https?:\/\/[^\s]+)/g)
@@ -36,14 +38,13 @@ export function WineListScreen() {
     hideLineup?: boolean; hideLineupMinutesBefore?: number
   }
 
-  // Compute lineup hidden state
-  const lineupHidden = !isHost && m?.hideLineup && m.dateFrom
-    ? Date.now() < new Date(m.dateFrom).getTime() - (m.hideLineupMinutesBefore || 0) * 60 * 1000
-    : false
-
   const revealAt = m?.hideLineup && m.dateFrom
     ? new Date(new Date(m.dateFrom).getTime() - (m.hideLineupMinutesBefore || 0) * 60 * 1000)
     : null
+  const lineupHidden = !isHost && !!revealAt && Date.now() < revealAt.getTime()
+
+  const allRevealed = wines.length > 0 && wines.every(w => w.revealedAt)
+  const mapsUrl = m?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(m.address)}` : ''
 
   async function revealWine(wineId: string) {
     await fetch(`/api/session/${code}/wines/${wineId}/reveal`, {
@@ -69,9 +70,13 @@ export function WineListScreen() {
     refresh()
   }
 
-  const mapsUrl = m?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(m.address)}` : ''
-  const hasAnyRevealed = wines.some(w => w.revealedAt)
-  const allRevealed = wines.length > 0 && wines.every(w => w.revealedAt)
+  async function hideAll() {
+    await fetch(`/api/session/${code}/wines/hide-all`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: displayName }),
+    })
+    refresh()
+  }
 
   return (
     <div style={{padding:'14px 14px 28px'}}>
@@ -79,19 +84,16 @@ export function WineListScreen() {
 
         {/* Session title */}
         {sessionMeta?.name && (
-          <div style={{fontFamily:'var(--mono)',fontSize:18,fontWeight:800,letterSpacing:'0.02em',color:'var(--fg)',marginBottom:10}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:'var(--fs-title)',fontWeight:800,letterSpacing:'0.02em',color:'var(--fg)',marginBottom:10}}>
             {sessionMeta.name}
           </div>
         )}
 
-        {/* Session metadata block */}
-        {(m?.address || m?.dateFrom || m?.description || m?.link) && (
+        {/* Session metadata block — order: description, date, address, link */}
+        {(m?.description || m?.dateFrom || m?.address || m?.link) && (
           <div style={{marginBottom:16,padding:'10px 12px',background:'var(--bg2)',borderRadius:8,border:'1px solid var(--border)',display:'flex',flexDirection:'column',gap:6}}>
-            {m.address && (
-              <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
-                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
-                <span>📍</span>{m.address}
-              </a>
+            {m.description && (
+              <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
             )}
             {m.dateFrom && (
               <div style={{fontSize:11,color:'var(--fg-dim)',display:'flex',alignItems:'center',gap:4,flexWrap:'wrap'}}>
@@ -100,8 +102,11 @@ export function WineListScreen() {
                 {m.dateTo && <><span>→</span><span>{formatDate(m.dateTo)}</span></>}
               </div>
             )}
-            {m.description && (
-              <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.5,whiteSpace:'pre-wrap'}}>{renderWithLinks(m.description)}</div>
+            {m.address && (
+              <a href={mapsUrl} target="_blank" rel="noopener noreferrer"
+                style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'var(--accent)',textDecoration:'none'}}>
+                <span>📍</span>{m.address}
+              </a>
             )}
             {m.link && (
               <a href={m.link} target="_blank" rel="noopener noreferrer"
@@ -118,25 +123,21 @@ export function WineListScreen() {
             {isBlind && <div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'3px 8px',borderRadius:3,marginBottom:8}}>🙈 Blind tasting</div>}
             <div className="subhead" style={{margin:0}}>
               <div className="subhead-title">Wine list</div>
-              <div className="subhead-copy">{wines.length} bottle{wines.length !== 1 ? 's' : ''}</div>
+              <div className="subhead-copy">{lineupHidden ? '??' : wines.length} bottle{!lineupHidden && wines.length !== 1 ? 's' : lineupHidden ? 's' : ''}</div>
             </div>
           </div>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
-            {isHost && isBlind && !allRevealed && wines.length > 0 && (
-              <button className="btn-s" onClick={revealAll}>reveal all</button>
+            {isHost && isBlind && wines.length > 0 && (
+              allRevealed
+                ? <button className="btn-s" onClick={hideAll}>hide all</button>
+                : <button className="btn-s" onClick={revealAll}>reveal all</button>
             )}
             {isHost && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
           </div>
         </div>
 
-        {/* Lineup hidden message */}
-        {lineupHidden && revealAt && (
-          <div style={{textAlign:'center',padding:'32px 0',color:'var(--fg-dim)',fontSize:13}}>
-            <div style={{fontSize:22,marginBottom:8}}>🔒</div>
-            <div style={{fontWeight:700,marginBottom:4}}>Something good awaits you.</div>
-            <div style={{fontSize:11,color:'var(--fg-faint)'}}>Lineup revealed at {formatDate(revealAt.toISOString())}</div>
-          </div>
-        )}
+        {/* Lineup hidden */}
+        {lineupHidden && revealAt && <LineupLocked revealAt={revealAt} />}
 
         {!lineupHidden && wines.length === 0 && (
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
@@ -163,12 +164,11 @@ export function WineListScreen() {
                     <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
                     <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
-                    {/* Icon / photo */}
                     {!isRedacted && wine.imageUrl ? (
                       <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
                     ) : (
                       <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
-                        {isRedacted ? '🙈' : '🍷'}
+                        {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}
                       </div>
                     )}
 
@@ -192,20 +192,15 @@ export function WineListScreen() {
                     )}
                   </button>
 
-                  {/* Host blind controls */}
                   {isHost && isBlind && !isRevealed && (
-                    <button
-                      onClick={() => revealWine(wine.id)}
-                      style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer',zIndex:1}}
-                    >
+                    <button onClick={() => revealWine(wine.id)}
+                      style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer',zIndex:1}}>
                       reveal
                     </button>
                   )}
                   {isHost && isBlind && isRevealed && (
-                    <button
-                      onClick={() => hideWine(wine.id)}
-                      style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer',zIndex:1}}
-                    >
+                    <button onClick={() => hideWine(wine.id)}
+                      style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer',zIndex:1}}>
                       ✓ hide again
                     </button>
                   )}

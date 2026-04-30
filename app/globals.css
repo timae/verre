@@ -136,7 +136,7 @@
 
 /* Subhead */
 .subhead{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:18px 0 12px;}
-.subhead-title{font-family:var(--mono);font-size:24px;font-weight:700;color:#F0E3C6;}
+.subhead-title{font-family:var(--mono);font-size:var(--fs-heading);font-weight:700;color:#F0E3C6;}
 .subhead-copy{font-size:11px;color:var(--fg-dim);max-width:42ch;line-height:1.6;}
 
 /* Hero kicker */
@@ -167,6 +167,8 @@
   --fg: #D4CFBE; --fg-dim: #6A6658; --fg-faint: #3A3A32;
   --accent: #C8963C; --accent2: #8FB87A;
   --nav-h: 56px; --hdr-h: 52px;
+  --fs-title: 24px;
+  --fs-heading: 18px;
 }
 
 /* ── Light theme ──────────────────────────── */
