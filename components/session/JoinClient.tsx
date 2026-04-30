@@ -84,11 +84,15 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                 </button>
 
                 {!isLoggedIn && (
-                  <p style={{textAlign:'center',marginTop:14,fontSize:11,color:'var(--fg-faint)'}}>
-                    Have an account?{' '}
-                    <Link href={`/login?redirect=/join/${code}`} style={{color:'var(--accent)'}}>Sign in first</Link>
-                    {' '}to save your ratings.
-                  </p>
+                  <>
+                    <p style={{textAlign:'center',marginTop:14,marginBottom:10,fontSize:11,color:'var(--fg-faint)'}}>
+                      Sign in or create an account to save your ratings.
+                    </p>
+                    <div style={{display:'flex',gap:6}}>
+                      <Link href={`/login?redirect=/join/${code}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ sign in</Link>
+                      <Link href="/register" className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ create account</Link>
+                    </div>
+                  </>
                 )}
               </>
             )}
