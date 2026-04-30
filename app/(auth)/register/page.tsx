@@ -1,6 +1,7 @@
 import { RegisterForm } from '@/components/auth/RegisterForm'
 
-export default function RegisterPage() {
+export default async function RegisterPage({ searchParams }: { searchParams: Promise<{ redirect?: string }> }) {
+  const { redirect: redirectTo } = await searchParams
   return (
     <div className="app-bg" style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
       <div style={{width:'100%',maxWidth:360}}>
@@ -10,7 +11,7 @@ export default function RegisterPage() {
         </div>
         <div className="lobby-card lobby-form" style={{padding:22}}>
           <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Free, always</div>
-          <RegisterForm />
+          <RegisterForm redirectTo={redirectTo} />
         </div>
       </div>
     </div>

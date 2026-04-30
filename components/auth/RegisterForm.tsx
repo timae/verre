@@ -17,8 +17,8 @@ function EyeIcon({ open }: { open: boolean }) {
   )
 }
 
-function PasswordField({ label, value, onChange, placeholder, autoComplete }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; autoComplete?: string
+function PasswordField({ label, value, onChange, placeholder, autoComplete, hint }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; autoComplete?: string; hint?: string
 }) {
   const [show, setShow] = useState(false)
   return (
@@ -34,11 +34,12 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete }: {
           <EyeIcon open={show} />
         </button>
       </div>
+      {hint && <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4}}>{hint}</div>}
     </div>
   )
 }
 
-export function RegisterForm() {
+export function RegisterForm({ redirectTo }: { redirectTo?: string }) {
   const router = useRouter()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -49,6 +50,7 @@ export function RegisterForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
     if (password !== confirmPw) { setError('Passwords do not match.'); return }
     setLoading(true); setError('')
     const res = await fetch('/api/auth/register', {
@@ -62,7 +64,7 @@ export function RegisterForm() {
       setLoading(false); return
     }
     await signIn('credentials', { email, password, redirect: false })
-    router.push('/'); router.refresh()
+    router.push(redirectTo || '/'); router.refresh()
   }
 
   return (
@@ -75,7 +77,7 @@ export function RegisterForm() {
         <div className="fl">email</div>
         <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
       </div>
-      <PasswordField label="password" value={password} onChange={setPassword} placeholder="min 8 characters" autoComplete="new-password" />
+      <PasswordField label="password" value={password} onChange={setPassword} placeholder="min 8 characters" autoComplete="new-password" hint="Use at least 8 characters." />
       <PasswordField label="confirm password" value={confirmPw} onChange={setConfirmPw} placeholder="retype password" autoComplete="new-password" />
       {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
       <button className="btn-p" type="submit" disabled={loading}>{loading ? 'creating account…' : '→ create account'}</button>

@@ -15,8 +15,8 @@ function EyeIcon({ open }: { open: boolean }) {
   )
 }
 
-function PasswordField({ label, value, onChange, placeholder, autoComplete }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; autoComplete?: string
+function PasswordField({ label, value, onChange, placeholder, autoComplete, hint }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; autoComplete?: string; hint?: string
 }) {
   const [show, setShow] = useState(false)
   return (
@@ -38,6 +38,7 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete }: {
           <EyeIcon open={show} />
         </button>
       </div>
+      {hint && <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4}}>{hint}</div>}
     </div>
   )
 }
@@ -58,6 +59,10 @@ export function AccountSettings() {
   async function saveAccount() {
     setSaving(true); setError(''); setSuccess('')
 
+    if (newPw && newPw.length < 8) {
+      setError('Password must be at least 8 characters.')
+      setSaving(false); return
+    }
     if (newPw && newPw !== confirmPw) {
       setError('New passwords do not match.')
       setSaving(false); return
@@ -96,7 +101,7 @@ export function AccountSettings() {
       </div>
       <div style={{marginTop:12,marginBottom:6,fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',textTransform:'uppercase'}}>change password</div>
       <PasswordField label="current password" value={currentPw} onChange={setCurrentPw} placeholder="required to change password" autoComplete="current-password" />
-      <PasswordField label="new password" value={newPw} onChange={setNewPw} placeholder="min 8 characters" autoComplete="new-password" />
+      <PasswordField label="new password" value={newPw} onChange={setNewPw} placeholder="min 8 characters" autoComplete="new-password" hint="Use at least 8 characters." />
       <PasswordField label="confirm new password" value={confirmPw} onChange={setConfirmPw} placeholder="retype new password" autoComplete="new-password" />
       {error   && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
       {success && <p style={{color:'var(--accent2)',fontSize:11,marginBottom:8}}>✓ {success}</p>}
