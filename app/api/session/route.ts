@@ -4,6 +4,12 @@ import { redis, k, TTL, lifespanTTL, LIFESPAN } from '@/lib/redis'
 import { genCode, pgUpsertSession } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@/lib/displayName'
+import {
+  newAnonIdentityId,
+  newAnonToken,
+  recordAnonToken,
+  recordIdentity,
+} from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
   const session = await auth()
@@ -45,6 +51,20 @@ export async function POST(req: NextRequest) {
   await redis.sAdd(k.users(code), hostName)
   await redis.expire(k.users(code), sessionTTL)
 
+  // Identity model. Anonymous host gets a per-session identity + token so
+  // subsequent requests can prove who they are without putting userName in
+  // the body. Logged-in users don't need an entry — the auth cookie is the
+  // trust anchor; their displayName comes from session.user.name.
+  let anonToken: string | null = null
+  if (!session?.user?.id) {
+    const anonId = newAnonIdentityId()
+    anonToken = newAnonToken()
+    await recordIdentity(code, { id: anonId, displayName: hostName, kind: 'anon' })
+    await recordAnonToken(code, anonToken, anonId)
+    await redis.expire(k.identities(code), sessionTTL)
+    await redis.expire(k.tokens(code), sessionTTL)
+  }
+
   if (session?.user) {
     try {
       await prisma.session.create({
@@ -60,5 +80,12 @@ export async function POST(req: NextRequest) {
     } catch {}
   }
 
-  return NextResponse.json({ code, name: meta.name, host: hostName, blind: !!blind, lifespan: resolvedLifespan })
+  return NextResponse.json({
+    code,
+    name: meta.name,
+    host: hostName,
+    blind: !!blind,
+    lifespan: resolvedLifespan,
+    ...(anonToken ? { anonToken } : {}),
+  })
 }

@@ -22,10 +22,15 @@ if (process.env.NODE_ENV !== 'production') globalForRedis.redis = redis
 
 // ── Key helpers ────────────────────────────────
 export const k = {
-  meta:   (c: string) => `s:${c}:meta`,
-  wines:  (c: string) => `s:${c}:wines`,
-  rating: (c: string, user: string, wid: string) => `s:${c}:r:${user}:${wid}`,
-  users:  (c: string) => `s:${c}:users`,
+  meta:       (c: string) => `s:${c}:meta`,
+  wines:      (c: string) => `s:${c}:wines`,
+  rating:     (c: string, user: string, wid: string) => `s:${c}:r:${user}:${wid}`,
+  users:      (c: string) => `s:${c}:users`,
+  // Identity model (Phase 2). Additive — old sessions keep working via legacy
+  // display-name paths. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
+  // current display name; tokens maps an anon token to its identity id.
+  identities: (c: string) => `s:${c}:identities`,
+  tokens:     (c: string) => `s:${c}:tokens`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h

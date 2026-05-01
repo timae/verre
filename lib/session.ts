@@ -2,6 +2,8 @@ import crypto from 'crypto'
 import { redis, k, TTL, touch } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
+import type { Identity } from '@/lib/identity'
+import { userIdentityId } from '@/lib/identity'
 
 export type WineMeta = {
   id: string
@@ -29,7 +31,8 @@ export type SessionMeta = {
   hostUserId: number | null
   blind?: boolean
   lifespan?: string
-  coHosts?: string[]
+  coHosts?: string[]      // legacy display-name list — kept in sync for old clients
+  coHostIds?: string[]    // identity-id list (Phase 2 trust anchor)
   address?: string
   dateFrom?: string | null
   dateTo?: string | null
@@ -54,21 +57,18 @@ export async function getWines(code: string): Promise<WineMeta[]> {
   return raw ? JSON.parse(raw) : []
 }
 
-export function isHost(meta: SessionMeta & { coHosts?: string[] }, userId?: string, userName?: string): boolean {
-  // Host slot: when the session was created by a logged-in user, require a
-  // matching userId from the auth session — do not fall back to userName,
-  // since clients can put any name in the request body.
-  if (meta.hostUserId) {
-    if (userId && String(meta.hostUserId) === userId) return true
-  } else {
-    // Anonymous-hosted session: userName is the only identity available.
-    if (userName && userName === meta.host) return true
-  }
-  // Co-hosts are still tracked as display-name strings (Phase 2 will move
-  // them to ids). Treated as a soft check until then.
-  if (userName && meta.coHosts?.includes(userName)) return true
+// Host check by stable identity id. Preferred over the legacy variants below.
+export function isHostByIdentity(meta: SessionMeta, identity: Identity | null): boolean {
+  if (!identity) return false
+  if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
+  if (meta.coHostIds?.includes(identity.id)) return true
+  // Legacy fallback: anonymous-hosted sessions still match by name. Goes away
+  // once all sessions in flight predate the identity refactor.
+  if (!meta.hostUserId && identity.displayName === meta.host) return true
+  if (meta.coHosts?.includes(identity.displayName)) return true
   return false
 }
+
 
 export function sanitizeImage(value: unknown): string {
   if (!value || typeof value !== 'string') return ''
