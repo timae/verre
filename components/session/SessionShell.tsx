@@ -88,7 +88,8 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     fetch(`/api/session/${C}/visit`, { method: 'POST' }).catch(() => {})
   }, [C])
 
-  const isHost = isHostState || (metaData && displayName && metaData.host === displayName)
+  const isCoHost = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))
+  const isHost = isHostState || (metaData && displayName && metaData.host === displayName) || isCoHost
   const myRatings = ratingsData[displayName] || {}
 
   const isBlind = !!(metaData?.blind)
