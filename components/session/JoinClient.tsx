@@ -38,7 +38,11 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
       body: JSON.stringify({ code, userName: n }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not join — session may have expired'); return }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Could not join — session may have expired')
+      return
+    }
     router.push(`/session/${code}?name=${encodeURIComponent(n)}`)
   }
 

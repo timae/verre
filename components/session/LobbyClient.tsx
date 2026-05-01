@@ -26,7 +26,11 @@ export function LobbyClient({ user }: { user: User }) {
       body: JSON.stringify({ hostName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not create session'); return }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Could not create session')
+      return
+    }
     const { code } = await res.json()
     router.push(`/session/${code}?host=1&name=${encodeURIComponent(displayName.trim())}`)
   }

@@ -40,7 +40,11 @@ export function MeDashboard({ user }: { user: User }) {
       body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not create session'); return }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Could not create session')
+      return
+    }
     const { code } = await res.json()
     router.push(`/session/${code}?host=1&name=${encodeURIComponent(name.trim())}`)
   }
@@ -54,7 +58,11 @@ export function MeDashboard({ user }: { user: User }) {
       body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: name.trim() }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Session not found'); return }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Session not found')
+      return
+    }
     router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(name.trim())}`)
   }
 
