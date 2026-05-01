@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { validateDisplayName } from '@/lib/displayName'
 
 const schema = z.object({
-  name:     z.string().min(1).max(64),
+  name:     z.string(),
   email:    z.string().email(),
   password: z.string().min(8),
 })
@@ -14,11 +15,15 @@ export async function POST(req: NextRequest) {
   const parsed = schema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: 'invalid input' }, { status: 400 })
 
-  const { name, email, password } = parsed.data
+  let name: string
+  try { name = validateDisplayName(parsed.data.name) }
+  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
+
+  const { email, password } = parsed.data
   try {
     const hash = await bcrypt.hash(password, 12)
     const user = await prisma.user.create({
-      data: { name: name.trim(), email: email.toLowerCase(), passwordHash: hash },
+      data: { name, email: email.toLowerCase(), passwordHash: hash },
       select: { id: true, name: true, email: true, role: true, pro: true },
     })
     return NextResponse.json({ user })

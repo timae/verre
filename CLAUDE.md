@@ -7,30 +7,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 docker run -d -p 6379:6379 redis:7-alpine   # Redis
 npm install
-node server.js                               # → http://localhost:8080
+npx prisma generate
+npm run dev                                  # → http://localhost:3000
 ```
 
-No build step. The server serves `public/index.html` as a static file. Changes to the frontend are live on refresh; changes to `server.js` or routes require restarting the Node process.
-
-Syntax-check server-side JS:
+Type-check + lint:
 ```bash
-node --check server.js
-node --check routes/auth.js routes/me.js
+npx tsc --noEmit
+npm run lint
 ```
 
-Check inline JS in `public/index.html`:
+Apply schema changes to the database (Prisma is the single source of truth):
 ```bash
-node -e "
-const fs=require('fs');
-const html=fs.readFileSync('public/index.html','utf8');
-const m=html.match(/<script>([\s\S]*?)<\/script>/);
-try{new Function(m[1]);console.log('JS OK');}catch(e){console.log('ERROR:',e.message);}
-"
-```
-
-Run schema migration against production Postgres (Nine Eco):
-```bash
-PGSSLMODE=require psql "$DATABASE_URL" -f db/schema.sql
+npx prisma db push          # dev / fast iteration
+npx prisma migrate dev      # create a versioned migration
 ```
 
 ## Architecture
@@ -98,7 +88,7 @@ Flavour dimensions are **type-specific**:
 
 ### Deployment (Deploio / Nine)
 
-- App: `moonlit-pond`, project: `timgrethler`, branch: `feature/postgres-s3-auth`
+- App: `moonlit-pond`, project: `timgrethler`, branch: `main`
 - Live URL: `tasting.tgweb.li`
 - `REDIS_URL`, `DATABASE_URL`, `JWT_SECRET`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` are set as env vars in Deploio
 - S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)

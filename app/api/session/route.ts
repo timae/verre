@@ -3,11 +3,15 @@ import { auth } from '@/auth'
 import { redis, k, TTL, lifespanTTL, LIFESPAN } from '@/lib/redis'
 import { genCode, pgUpsertSession } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
+import { validateDisplayName } from '@/lib/displayName'
 
 export async function POST(req: NextRequest) {
   const session = await auth()
-  const { hostName, sessionName, blind, lifespan } = await req.json()
-  if (!hostName) return NextResponse.json({ error: 'hostName required' }, { status: 400 })
+  const { hostName: rawHostName, sessionName, blind, lifespan } = await req.json()
+
+  let hostName: string
+  try { hostName = validateDisplayName(rawHostName) }
+  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
 
   // blind tasting requires a pro account
   if (blind && (!session?.user || !(session.user as { pro?: boolean }).pro)) {

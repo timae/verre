@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
+import { validateDisplayName } from '@/lib/displayName'
 
 export async function PATCH(req: NextRequest) {
   const session = await auth()
@@ -12,9 +13,8 @@ export async function PATCH(req: NextRequest) {
   const updates: Record<string, unknown> = {}
 
   if (name !== undefined) {
-    const n = String(name).trim().slice(0, 64)
-    if (!n) return NextResponse.json({ error: 'name required' }, { status: 400 })
-    updates.name = n
+    try { updates.name = validateDisplayName(name) }
+    catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
   }
 
   if (email !== undefined) {
@@ -30,7 +30,7 @@ export async function PATCH(req: NextRequest) {
     if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
-    updates.passwordHash = await bcrypt.hash(String(newPassword), 10)
+    updates.passwordHash = await bcrypt.hash(String(newPassword), 12)
   }
 
   if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true })

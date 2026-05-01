@@ -5,6 +5,10 @@ import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { authConfig } from '@/auth.config'
 
+// Constant-time guard against email enumeration via login timing.
+// Real bcrypt-12 hash that will never match any user's password.
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12)
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   providers: [
@@ -23,10 +27,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const user = await prisma.user.findUnique({
           where: { email: parsed.data.email.toLowerCase() },
         })
-        if (!user) return null
 
-        const valid = await bcrypt.compare(parsed.data.password, user.passwordHash)
-        if (!valid) return null
+        const valid = await bcrypt.compare(parsed.data.password, user?.passwordHash ?? DUMMY_HASH)
+        if (!user || !valid) return null
 
         return { id: String(user.id), name: user.name, email: user.email, role: user.role, pro: user.pro }
       },
