@@ -8,6 +8,9 @@ import { getFL, detectFL, FL } from '@/lib/flavours'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
+const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
+const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
+
 const RATER_CHIP_LIMIT = 3
 
 type RaterEntry = { user: string; score: number }
@@ -44,17 +47,19 @@ function RaterChips({ ratings }: { ratings: RaterEntry[] }) {
   const overflow = ratings.length - visible.length
 
   return (
-    <div ref={wrapperRef} style={{display:'flex',flexWrap:'nowrap',gap:4,position:'relative',overflow:'hidden'}}>
-      {visible.map(r => <RaterChip key={r.user} {...r} />)}
-      {overflow > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowPopover(s => !s)}
-          style={{fontSize:10,background:'rgba(200,150,60,0.08)',border:'1px solid rgba(200,150,60,0.3)',padding:'2px 8px',borderRadius:3,color:'var(--accent)',fontFamily:'var(--mono)',cursor:'pointer',whiteSpace:'nowrap'}}
-        >
-          +{overflow} more
-        </button>
-      )}
+    <div ref={wrapperRef} style={{position:'relative'}}>
+      <div style={{display:'flex',flexWrap:'nowrap',gap:4,overflow:'hidden'}}>
+        {visible.map(r => <RaterChip key={r.user} {...r} />)}
+        {overflow > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowPopover(s => !s)}
+            style={{fontSize:10,background:'rgba(200,150,60,0.08)',border:'1px solid rgba(200,150,60,0.3)',padding:'2px 8px',borderRadius:3,color:'var(--accent)',fontFamily:'var(--mono)',cursor:'pointer',whiteSpace:'nowrap'}}
+          >
+            +{overflow} more
+          </button>
+        )}
+      </div>
       {showPopover && (
         <div style={{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:20,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,padding:10,boxShadow:'0 8px 24px rgba(0,0,0,0.4)',minWidth:160,maxWidth:260}}>
           <div style={{fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-faint)',marginBottom:6,fontFamily:'var(--mono)'}}>all raters ({ratings.length})</div>
@@ -117,6 +122,12 @@ export default function ComparePage() {
     })
   }
 
+  const allExpanded = ratedWines.length > 0 && ratedWines.every(w => expandedCards.has(w.id))
+  function toggleAll() {
+    if (allExpanded) setExpandedCards(new Set())
+    else setExpandedCards(new Set(ratedWines.map(w => w.id)))
+  }
+
   return (
     <div style={{padding:'14px 14px 28px',maxWidth:980,margin:'0 auto'}}>
       {sessionMeta?.name && (
@@ -149,6 +160,15 @@ export default function ComparePage() {
         )}
       </div>
 
+      {/* Show/hide all charts toggle (narrow viewports only) */}
+      {isNarrow && ratedWines.length > 0 && (
+        <div style={{marginBottom:12}}>
+          <button className="btn-s" onClick={toggleAll} style={{width:'100%'}}>
+            {allExpanded ? '▴ hide all charts' : '▾ show all charts'}
+          </button>
+        </div>
+      )}
+
       {/* Wine cards */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12}}>
         {ratedWines.map((wine, wineIdx) => {
@@ -179,8 +199,10 @@ export default function ComparePage() {
           const chartShown = !isNarrow || expandedCards.has(wine.id)
           const raterEntries: RaterEntry[] = allWineRatings.map(r => ({ user: r.user, score: r.rating.score || 0 }))
 
+          const accentColor = TCOL[wine.type] || TCOL.red
           return (
-            <div key={wine.id} className="panel" style={{marginBottom:0}}>
+            <div key={wine.id} className="panel" style={{marginBottom:0,position:'relative'}}>
+              <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6,borderRadius:'2px 0 0 2px'}} />
               <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:12}}>
                 <div style={{minWidth:0}}>
                   {isRedacted ? (
@@ -189,6 +211,7 @@ export default function ComparePage() {
                     <>
                       {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
                       <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                        <span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>
                         {wine.name}
                         {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
                       </p>
