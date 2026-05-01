@@ -38,12 +38,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         await pgUpsertSession(c, meta)
         await pgUpsertWine(c, wine)
         await prisma.rating.upsert({
-          where: { wineId_raterName: { wineId, raterName: userName } },
+          where: { wineId_userId: { wineId, userId: Number(session.user.id) } },
           create: {
             wineId, userId: Number(session.user.id), raterName: userName,
             score: ratingScore, flavors: flavors || {}, notes: notes || null, ratedAt: new Date(),
           },
           update: {
+            raterName: userName,
             score: ratingScore, flavors: flavors || {}, notes: notes || null, ratedAt: new Date(),
           },
         })
@@ -53,13 +54,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     if (ratingScore === 5 && wine) {
       try {
         await prisma.hallOfFame.upsert({
-          where: { wineName_raterName: { wineName: wine.name, raterName: userName } },
+          where: { wineName_userId: { wineName: wine.name, userId: Number(session.user.id) } },
           create: {
             wineName: wine.name, producer: wine.producer || null, vintage: wine.vintage || null,
             style: wine.type || null, score: 5, raterName: userName,
             userId: Number(session.user.id), sessionCode: c, ratedAt: new Date(),
           },
-          update: { score: 5, ratedAt: new Date() },
+          update: { raterName: userName, score: 5, ratedAt: new Date() },
         })
       } catch {}
     }

@@ -78,7 +78,6 @@ model Rating {
   ratedAt    DateTime @map("rated_at")
 
   @@unique([wineId, userId])
-  @@unique([wineId, raterName])
   @@map("ratings")
 }
 
@@ -86,6 +85,7 @@ model SessionMember {
   userId      Int      @map("user_id")
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessionCode String   @map("session_code") @db.Char(4)
+  role        String   @default("taster") @db.VarChar(16)
   joinedAt    DateTime @default(now()) @map("joined_at")
   // No FK to Session — session_code links to Redis; Postgres session row may not exist yet
   @@id([userId, sessionCode])
@@ -118,6 +118,6 @@ model HallOfFame {
   sessionCode String?  @map("session_code") @db.Char(4)
   ratedAt     DateTime @map("rated_at")
 
-  @@unique([wineName, raterName])
+  @@unique([wineName, userId])
   @@map("hall_of_fame")
 }
