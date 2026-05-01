@@ -70,7 +70,7 @@ function RaterChips({ ratings }: { ratings: RaterEntry[] }) {
 function useIsNarrow(): boolean {
   const [isNarrow, setIsNarrow] = useState(false)
   useEffect(() => {
-    const m = window.matchMedia('(max-width: 619px)')
+    const m = window.matchMedia('(max-width: 600px)')
     setIsNarrow(m.matches)
     const handler = (e: MediaQueryListEvent) => setIsNarrow(e.matches)
     m.addEventListener('change', handler)
@@ -206,7 +206,7 @@ export default function ComparePage() {
                 <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
                   {viewUser === '__all' ? (
                     <div style={{width:'100%'}}>
-                      <RadarChart series={overlaySeries} fl={overlayFL} size={380} />
+                      <RadarChart series={overlaySeries} fl={overlayFL} size={460} />
                       <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,justifyContent:'center'}}>
                         {overlaySeries.map((s, i) => (
                           <div key={s.label} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'var(--fg-dim)'}}>
@@ -217,7 +217,7 @@ export default function ComparePage() {
                       </div>
                     </div>
                   ) : singleRating ? (
-                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={380} />
+                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={460} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
                       no rating from {activeUser}

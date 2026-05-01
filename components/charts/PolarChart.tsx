@@ -25,7 +25,7 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
     const cx = size / 2, cy = size / 2, n = fl.length
     const iR = size * 0.10, oR = size * 0.37, lR = size * 0.44
     const gap = 3, seg = 360 / n - gap
-    const vpad = 48
+    const vpad = 30
     const vb = `${-vpad} ${-vpad} ${size + vpad * 2} ${size + vpad * 2}`
 
     let h = ''

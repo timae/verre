@@ -165,7 +165,7 @@ export function RatingScreen({ params }: Props) {
       {/* Polar chart */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={480} />
+        <PolarChart flavors={flavors} fl={fl} size={560} />
       </div>
 
       {/* Sliders */}
