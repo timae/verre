@@ -31,25 +31,47 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const valid = await bcrypt.compare(parsed.data.password, user?.passwordHash ?? DUMMY_HASH)
         if (!user || !valid) return null
 
-        return { id: String(user.id), name: user.name, email: user.email, role: user.role, pro: user.pro }
+        return {
+          id: String(user.id),
+          name: user.name,
+          email: user.email,
+          tokenVersion: user.tokenVersion,
+        }
       },
     }),
   ],
   callbacks: {
-    jwt({ token, user }) {
+    async jwt({ token, user }) {
+      // Initial sign-in: persist id and tokenVersion from authorize()
       if (user) {
-        token.id   = user.id
-        token.role = (user as { role: string }).role
-        token.pro  = (user as { pro: boolean }).pro
+        token.id = user.id
+        token.tokenVersion = (user as { tokenVersion?: number }).tokenVersion ?? 0
+        return token
+      }
+      // Subsequent requests: validate tokenVersion is still current.
+      // Returning null here clears the JWT cookie — the user is logged out.
+      if (token.id) {
+        const dbUser = await prisma.user.findUnique({
+          where: { id: Number(token.id) },
+          select: { tokenVersion: true },
+        })
+        if (!dbUser || dbUser.tokenVersion !== token.tokenVersion) return null
       }
       return token
     },
-    session({ session, token }) {
-      if (session.user) {
-        session.user.id   = token.id as string
-        session.user.role = token.role as string
-        session.user.pro  = token.pro as boolean
-      }
+    async session({ session, token }) {
+      if (!session.user || !token.id) return session
+      // Fetch role/pro fresh on every session() call so changes (e.g. pro
+      // upgrade) take effect immediately without requiring re-login.
+      const dbUser = await prisma.user.findUnique({
+        where: { id: Number(token.id) },
+        select: { id: true, name: true, role: true, pro: true },
+      })
+      if (!dbUser) return session
+      session.user.id   = String(dbUser.id)
+      session.user.name = dbUser.name
+      session.user.role = dbUser.role
+      session.user.pro  = dbUser.pro
       return session
     },
   },

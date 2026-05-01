@@ -15,6 +15,7 @@ model User {
   role         String    @default("taster") @db.VarChar(16)
   pro          Boolean   @default(false)
   createdAt    DateTime  @default(now()) @map("created_at")
+  tokenVersion Int       @default(0) @map("token_version")
   members      SessionMember[]
   ratings      Rating[]
   bookmarks    Bookmark[]
