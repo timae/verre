@@ -23,23 +23,24 @@ function RaterChip({ user, score }: RaterEntry) {
   )
 }
 
-function RaterChips({ ratings }: { ratings: RaterEntry[] }) {
-  const [showPopover, setShowPopover] = useState(false)
+function RaterChips({ ratings, isOpen, onToggle, onClose }: {
+  ratings: RaterEntry[]; isOpen: boolean; onToggle: () => void; onClose: () => void
+}) {
   const wrapperRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    if (!showPopover) return
+    if (!isOpen) return
     function onDown(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setShowPopover(false)
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) onClose()
     }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setShowPopover(false) }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [showPopover])
+  }, [isOpen, onClose])
 
   if (ratings.length === 0) return null
 
@@ -53,14 +54,14 @@ function RaterChips({ ratings }: { ratings: RaterEntry[] }) {
         {overflow > 0 && (
           <button
             type="button"
-            onClick={() => setShowPopover(s => !s)}
+            onClick={onToggle}
             style={{fontSize:10,background:'rgba(200,150,60,0.08)',border:'1px solid rgba(200,150,60,0.3)',padding:'2px 8px',borderRadius:3,color:'var(--accent)',fontFamily:'var(--mono)',cursor:'pointer',whiteSpace:'nowrap'}}
           >
             +{overflow} more
           </button>
         )}
       </div>
-      {showPopover && (
+      {isOpen && (
         <div style={{position:'absolute',top:'calc(100% + 4px)',right:0,zIndex:20,background:'var(--bg2)',border:'1px solid var(--border)',borderRadius:8,padding:10,boxShadow:'0 8px 24px rgba(0,0,0,0.4)',minWidth:160,maxWidth:260}}>
           <div style={{fontSize:9,letterSpacing:'0.1em',textTransform:'uppercase',color:'var(--fg-faint)',marginBottom:6,fontFamily:'var(--mono)'}}>all raters ({ratings.length})</div>
           <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
@@ -89,6 +90,7 @@ export default function ComparePage() {
   type BlindWine = typeof wines[0] & { _blind?: boolean }
   const [viewUser, setViewUser] = useState('__me')
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set())
+  const [openRaterCard, setOpenRaterCard] = useState<string | null>(null)
   const isNarrow = useIsNarrow()
 
   const m = sessionMeta as typeof sessionMeta & { hideLineup?: boolean; hideLineupMinutesBefore?: number; dateFrom?: string | null }
@@ -200,9 +202,12 @@ export default function ComparePage() {
           const raterEntries: RaterEntry[] = allWineRatings.map(r => ({ user: r.user, score: r.rating.score || 0 }))
 
           const accentColor = TCOL[wine.type] || TCOL.red
+          const isRaterOpen = openRaterCard === wine.id
           return (
-            <div key={wine.id} className="panel" style={{marginBottom:0,position:'relative'}}>
-              <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6,borderRadius:'2px 0 0 2px'}} />
+            <div key={wine.id} className="panel" style={{marginBottom:0,position:'relative',zIndex: isRaterOpen ? 30 : undefined}}>
+              <div aria-hidden style={{position:'absolute',inset:0,overflow:'hidden',borderRadius:'inherit',pointerEvents:'none'}}>
+                <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
+              </div>
               <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:8,marginBottom:12}}>
                 <div style={{minWidth:0}}>
                   {isRedacted ? (
@@ -250,7 +255,12 @@ export default function ComparePage() {
               )}
 
               {/* All rater scores */}
-              <RaterChips ratings={raterEntries} />
+              <RaterChips
+                ratings={raterEntries}
+                isOpen={isRaterOpen}
+                onToggle={() => setOpenRaterCard(prev => prev === wine.id ? null : wine.id)}
+                onClose={() => setOpenRaterCard(null)}
+              />
 
               {singleRating?.notes && chartShown && (
                 <p style={{fontSize:11,color:'var(--fg-dim)',marginTop:8,fontStyle:'italic',borderTop:'1px solid var(--border)',paddingTop:6}}>
