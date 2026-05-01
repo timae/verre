@@ -37,12 +37,15 @@ function formatTTL(seconds: number, lifespan?: string): string {
   return `${mins}m left`
 }
 
-function toLocalDatetimeInput(iso: string): string {
-  if (!iso) return ''
+function splitLocalDatetime(iso: string): { date: string; time: string } {
+  if (!iso) return { date: '', time: '' }
   const d = new Date(iso)
-  if (isNaN(d.getTime())) return iso
+  if (isNaN(d.getTime())) return { date: '', time: '' }
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return {
+    date: `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`,
+    time: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+  }
 }
 
 const HIDE_OPTIONS = [
@@ -69,8 +72,12 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   const [name,                    setName]                    = useState(m?.name                    || '')
   const [address,                 setAddress]                 = useState(m?.address                 || '')
-  const [dateFrom,                setDateFrom]                = useState(() => toLocalDatetimeInput(m?.dateFrom || ''))
-  const [dateTo,                  setDateTo]                  = useState(() => toLocalDatetimeInput(m?.dateTo   || ''))
+  const initFrom = splitLocalDatetime(m?.dateFrom || '')
+  const initTo   = splitLocalDatetime(m?.dateTo   || '')
+  const [dateFromDate, setDateFromDate] = useState(initFrom.date)
+  const [dateFromTime, setDateFromTime] = useState(initFrom.time)
+  const [dateToDate,   setDateToDate]   = useState(initTo.date)
+  const [dateToTime,   setDateToTime]   = useState(initTo.time)
   const [description,             setDescription]             = useState(m?.description             || '')
   const [link,                    setLink]                    = useState(m?.link                    || '')
   const [blind,                   setBlind]                   = useState(!!m?.blind)
@@ -103,17 +110,13 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   async function saveSettings() {
     setSaveError('')
-    if (dateFrom && !dateFrom.includes('T')) {
-      setSaveError('Please add a time to the date (e.g. 19:00).')
-      return
-    }
-    if (dateTo && !dateTo.includes('T')) {
-      setSaveError('Please add a time to the end date.')
-      return
-    }
+    if (dateFromDate && !dateFromTime) { setSaveError('Please add a time to the start date.'); return }
+    if (dateFromTime && !dateFromDate) { setSaveError('Please add a date to the start time.'); return }
+    if (dateToDate   && !dateToTime)   { setSaveError('Please add a time to the end date.');   return }
+    if (dateToTime   && !dateToDate)   { setSaveError('Please add a date to the end time.');   return }
     setSaving(true)
-    const dateFromISO = dateFrom ? new Date(dateFrom).toISOString() : ''
-    const dateToISO   = dateTo   ? new Date(dateTo).toISOString()   : ''
+    const dateFromISO = dateFromDate && dateFromTime ? new Date(`${dateFromDate}T${dateFromTime}`).toISOString() : ''
+    const dateToISO   = dateToDate   && dateToTime   ? new Date(`${dateToDate}T${dateToTime}`).toISOString()     : ''
     const res = await fetch(`/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userName: displayName, name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
@@ -270,14 +273,20 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div className="fl">address</div>
               <input className="fi" value={address} onChange={e => setAddress(e.target.value)} maxLength={255} placeholder="e.g. Restaurant du Palais, Paris" />
             </div>
-            <div style={{display:'flex',gap:8}}>
-              <div className="field" style={{flex:1}}>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <div className="field" style={{flex:'1 1 220px',minWidth:0}}>
                 <div className="fl">from</div>
-                <input className="fi" type="datetime-local" value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                <div style={{display:'flex',gap:4}}>
+                  <input className="fi" type="date" value={dateFromDate} onChange={e => setDateFromDate(e.target.value)} style={{flex:1,minWidth:0}} />
+                  <input className="fi" type="time" value={dateFromTime} onChange={e => setDateFromTime(e.target.value)} style={{width:96,flexShrink:0}} />
+                </div>
               </div>
-              <div className="field" style={{flex:1}}>
+              <div className="field" style={{flex:'1 1 220px',minWidth:0}}>
                 <div className="fl">to</div>
-                <input className="fi" type="datetime-local" value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                <div style={{display:'flex',gap:4}}>
+                  <input className="fi" type="date" value={dateToDate} onChange={e => setDateToDate(e.target.value)} style={{flex:1,minWidth:0}} />
+                  <input className="fi" type="time" value={dateToTime} onChange={e => setDateToTime(e.target.value)} style={{width:96,flexShrink:0}} />
+                </div>
               </div>
             </div>
             <div className="field">
@@ -291,8 +300,8 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <input className="fi" value={link} onChange={e => setLink(e.target.value)} maxLength={512} placeholder="https://…" type="url" />
             </div>
 
-            {/* Hide lineup toggle — only when dateFrom is set */}
-            {dateFrom && (
+            {/* Hide lineup toggle — only when full from-datetime is set */}
+            {dateFromDate && dateFromTime && (
               <div style={{marginBottom:10}}>
                 <div
                   onClick={() => setHideLineup(!hideLineup)}
