@@ -79,6 +79,7 @@ export function AccountSettings() {
       body: JSON.stringify(body),
     })
     setSaving(false)
+    if (res.status === 401) { window.location.href = '/login'; return }
     if (res.ok) {
       setSuccess('changes saved')
       setCurrentPw(''); setNewPw(''); setConfirmPw('')

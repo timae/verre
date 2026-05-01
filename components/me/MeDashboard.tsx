@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
+import { authedFetch } from '@/lib/authedFetch'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
@@ -25,11 +26,11 @@ export function MeDashboard({ user }: { user: User }) {
 
   const { data: sessions = [] } = useQuery<Session[]>({
     queryKey: ['me-sessions'],
-    queryFn: () => fetch('/api/me/sessions').then(r => r.json()),
+    queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
   const { data: bookmarks = [] } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => fetch('/api/me/bookmarks').then(r => r.json()),
+    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
   })
 
   async function createSession() {

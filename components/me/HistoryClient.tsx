@@ -1,6 +1,7 @@
 'use client'
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
+import { authedFetch } from '@/lib/authedFetch'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
@@ -25,11 +26,11 @@ export function HistoryClient() {
   const { data: authSession } = useQuery({ queryKey: ['auth-me'], queryFn: () => fetch('/api/auth/session').then(r=>r.json()), staleTime: 60_000 })
   const { data: sessions = [], isLoading } = useQuery<Session[]>({
     queryKey: ['me-sessions'],
-    queryFn: () => fetch('/api/me/sessions').then(r => r.json()),
+    queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
   const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string }[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => fetch('/api/me/ratings').then(r => r.json()),
+    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string }[]>('/api/me/ratings'),
   })
 
   const ratingsByCode = ratings.reduce((acc, r) => {
