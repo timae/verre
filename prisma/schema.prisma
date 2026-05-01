@@ -32,6 +32,12 @@ model Session {
   blind       Boolean   @default(false)
   createdAt   DateTime  @map("created_at")
   archivedAt  DateTime  @default(now()) @map("archived_at")
+  address     String?   @db.VarChar(255)
+  dateFrom    DateTime? @map("date_from")
+  dateTo      DateTime? @map("date_to")
+  timezone    String?   @db.VarChar(64)
+  description String?   @db.Text
+  link        String?   @db.VarChar(512)
   wines       Wine[]
 
   @@map("sessions")

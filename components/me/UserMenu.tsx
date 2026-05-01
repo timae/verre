@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
+import { clearSessionNames } from '@/lib/clientStorage'
 
 interface Props {
   name: string
@@ -58,7 +59,7 @@ export function UserMenu({ name, email, pro }: Props) {
           ))}
 
           <button
-            onClick={() => signOut({ callbackUrl: '/login' })}
+            onClick={() => { clearSessionNames(); signOut({ callbackUrl: '/login' }) }}
             style={{display:'block',width:'100%',textAlign:'left',padding:'9px 12px',fontSize:11,color:'rgba(184,64,64,0.7)',fontFamily:'var(--mono)',letterSpacing:'0.04em',background:'none',border:'none',cursor:'pointer',transition:'color .12s'}}
             onMouseEnter={e => (e.currentTarget.style.color = 'rgba(184,64,64,1)')}
             onMouseLeave={e => (e.currentTarget.style.color = 'rgba(184,64,64,0.7)')}

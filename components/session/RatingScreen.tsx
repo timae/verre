@@ -34,6 +34,9 @@ export function RatingScreen({ params }: Props) {
   const [saving, setSaving] = useState(false)
   const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
   const [showEdit, setShowEdit] = useState(false)
+  const [movePos, setMovePos] = useState('')
+  const [moveError, setMoveError] = useState('')
+  const [moveSuccess, setMoveSuccess] = useState('')
 
   useEffect(() => {
     if (existing) {
@@ -86,6 +89,28 @@ export function RatingScreen({ params }: Props) {
     refresh()
   }
 
+  async function moveToPosition() {
+    setMoveError('')
+    setMoveSuccess('')
+    const target = parseInt(movePos, 10)
+    if (!Number.isInteger(target) || target < 1 || target > wines.length) {
+      setMoveError(`Position must be between 1 and ${wines.length}.`)
+      return
+    }
+    const idx = wines.findIndex(w => w.id === wineId)
+    if (idx === -1) return
+    if (target - 1 === idx) { setMoveSuccess(`already at position ${target}`); return }
+    const ordered = [...wines]
+    const [w] = ordered.splice(idx, 1)
+    ordered.splice(target - 1, 0, w)
+    await fetch(`/api/session/${code}/wines/reorder`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
+    })
+    setMoveSuccess(`moved to position ${target}`)
+    refresh()
+  }
+
   async function deleteWine() {
     if (!confirm(`Delete "${wine!.name}"? This removes it for everyone.`)) return
     await fetch(`/api/session/${code}/wines/${wineId}`, {
@@ -95,7 +120,7 @@ export function RatingScreen({ params }: Props) {
     refresh(); router.back()
   }
 
-  const sub = !isRedacted ? [wine.producer, wine.vintage, wine.grape].filter(Boolean).join(' · ') : ''
+  const sub = !isRedacted ? [wine.producer, wine.grape].filter(Boolean).join(' · ') : ''
   const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
@@ -114,6 +139,7 @@ export function RatingScreen({ params }: Props) {
               <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
                 {wine.revealedAt && isBlind && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>}
                 {wine.name}
+                {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
               </div>
               {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
             </>
@@ -139,7 +165,7 @@ export function RatingScreen({ params }: Props) {
       {/* Polar chart */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={280} />
+        <PolarChart flavors={flavors} fl={fl} size={560} />
       </div>
 
       {/* Sliders */}
@@ -174,16 +200,35 @@ export function RatingScreen({ params }: Props) {
 
       {/* Host actions */}
       {isHost && (
-        <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap'}}>
-          <button className="btn-s" style={{flex:1}} onClick={() => setShowEdit(true)}>edit wine</button>
-          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(-1)}>move earlier</button>
-          <button className="btn-s" style={{flex:1}} onClick={() => moveWine(1)}>move later</button>
-        </div>
+        <>
+          <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap',alignItems:'stretch'}}>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => setShowEdit(true)}>edit wine</button>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(-1)}>move earlier</button>
+            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(1)}>move later</button>
+            <div className="btn-s" style={{flex:1,padding:'4px 8px',display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'default'}}>
+              <span style={{whiteSpace:'nowrap'}}>move to:</span>
+              <input
+                type="text" inputMode="numeric" pattern="[0-9]*"
+                value={movePos}
+                onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError(''); setMoveSuccess('') }}
+                onKeyDown={e => e.key === 'Enter' && moveToPosition()}
+                onBlur={() => { if (movePos && !moveSuccess) moveToPosition() }}
+                placeholder="#"
+                style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',
+                  background: moveSuccess ? 'rgba(143,184,122,0.12)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${moveSuccess ? 'rgba(143,184,122,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none',transition:'background .25s, border-color .25s'}}
+              />
+            </div>
+          </div>
+          {moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}
+          {moveSuccess && <p style={{color:'var(--accent2)',fontSize:11,marginTop:6}}>✓ {moveSuccess}</p>}
+        </>
       )}
 
       <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>
       <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
-        {bookmarked ? '★ saved' : '☆ save wine'}
+        {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>
       <button className="btn-g" onClick={() => router.back()}>cancel</button>
       {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}

@@ -5,6 +5,19 @@ import { useRouter } from 'next/navigation'
 type Session = {
   id: number; code: string; host_name: string; name: string | null
   created_at: string; joined_at: string; wines_rated: number; avg_score: string | null
+  date_from: string | null; address: string | null
+  ttl_seconds: number; lifespan: string | null
+}
+
+function formatTTL(seconds: number, lifespan: string | null): string {
+  if (lifespan === 'unlimited') return '∞ unlimited'
+  if (seconds <= 0) return 'expired'
+  const days  = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const mins  = Math.floor((seconds % 3600) / 60)
+  if (days  > 0) return `${days}d ${hours}h left`
+  if (hours > 0) return `${hours}h ${mins}m left`
+  return `${mins}m left`
 }
 
 export function HistoryClient() {
@@ -35,9 +48,11 @@ export function HistoryClient() {
       <h1 className="text-2xl font-bold mb-6">Tasting history</h1>
       <div className="space-y-3">
         {sessions.map(s => {
-          const date = new Date(s.joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-          const hoursAgo = (Date.now() - new Date(s.joined_at).getTime()) / 3600000
-          const active = hoursAgo < 47
+          const date = s.date_from
+            ? new Date(s.date_from).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+            : new Date(s.joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
+          const active = s.lifespan === 'unlimited' || s.ttl_seconds > 0
+          const ttlLabel = formatTTL(s.ttl_seconds, s.lifespan)
           const wines = ratingsByCode[s.code] || []
 
           return (
@@ -49,10 +64,10 @@ export function HistoryClient() {
                     <span className={`text-xs px-2 py-0.5 rounded-full border ${
                       active ? 'text-accent2 border-accent2/30 bg-accent2/10' : 'text-fg-faint border-border'
                     }`}>
-                      {active ? 'active' : 'expired'}
+                      {ttlLabel}
                     </span>
                   </div>
-                  <p className="text-xs text-fg-dim">{date} · {s.host_name} · {s.wines_rated} wines rated</p>
+                  <p className="text-xs text-fg-dim">{date}{s.address ? ` · ${s.address}` : ''} · {s.host_name} · {s.wines_rated} wines rated</p>
                 </div>
                 {active && (
                   <button

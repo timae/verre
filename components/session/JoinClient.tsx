@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
@@ -20,17 +20,26 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
   const sessionLabel = sessionMeta?.name || `Session ${code}`
   const isExpired = !sessionMeta
 
-  async function join() {
-    if (!name.trim()) { setError('Enter your name'); return }
+  // Anonymous user who already joined from this browser → skip invite page
+  useEffect(() => {
+    if (isLoggedIn || isExpired) return
+    if (typeof window === 'undefined') return
+    const stored = sessionStorage.getItem(`vr_name_${code}`)
+    if (stored) router.replace(`/session/${code}`)
+  }, [code, isLoggedIn, isExpired])
+
+  async function join(joinName?: string) {
+    const n = (joinName ?? name).trim()
+    if (!n) { setError('Enter your name'); return }
     setLoading(true); setError('')
     const res = await fetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, userName: name.trim() }),
+      body: JSON.stringify({ code, userName: n }),
     })
     setLoading(false)
     if (!res.ok) { setError('Could not join — session may have expired'); return }
-    router.push(`/session/${code}?name=${encodeURIComponent(name.trim())}`)
+    router.push(`/session/${code}?name=${encodeURIComponent(n)}`)
   }
 
   return (
@@ -59,10 +68,20 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                 <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>This session has expired. Sessions last 48 hours.</p>
                 <Link href="/" className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to lobby</Link>
               </div>
+            ) : isLoggedIn ? (
+              <>
+                <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>
+                  // joining as <span style={{color:'var(--fg)'}}>{defaultName}</span>
+                </div>
+                {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+                <button className="btn-p" onClick={() => join(defaultName)} disabled={loading}>
+                  {loading ? 'joining…' : `→ join ${sessionLabel}`}
+                </button>
+              </>
             ) : (
               <>
                 <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>
-                  {isLoggedIn ? '// joining as your account' : '// enter your name to join'}
+                  // enter your name to join
                 </div>
 
                 <div className="field">
@@ -73,23 +92,23 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                     onChange={e => setName(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && join()}
                     placeholder="firstname or alias"
-                    autoFocus={!defaultName}
+                    autoFocus
                   />
                 </div>
 
                 {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
 
-                <button className="btn-p" onClick={join} disabled={loading}>
+                <button className="btn-p" onClick={() => join()} disabled={loading}>
                   {loading ? 'joining…' : `→ join ${sessionLabel}`}
                 </button>
 
-                {!isLoggedIn && (
-                  <p style={{textAlign:'center',marginTop:14,fontSize:11,color:'var(--fg-faint)'}}>
-                    Have an account?{' '}
-                    <Link href={`/login?redirect=/join/${code}`} style={{color:'var(--accent)'}}>Sign in first</Link>
-                    {' '}to save your ratings.
-                  </p>
-                )}
+                <p style={{textAlign:'center',marginTop:14,marginBottom:10,fontSize:11,color:'var(--fg-faint)'}}>
+                  Sign in or create an account to save your ratings.
+                </p>
+                <div style={{display:'flex',gap:6}}>
+                  <Link href={`/login?redirect=/join/${code}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ sign in</Link>
+                  <Link href={`/register?redirect=/join/${code}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ create account</Link>
+                </div>
               </>
             )}
           </div>

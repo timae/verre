@@ -5,7 +5,8 @@ import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import type { WineMeta, RatingMeta } from '@/lib/session'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { SessionModal } from './SessionModal'
+import { SessionPanel } from './SessionPanel'
+import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 
 type SessionCtx = {
@@ -32,9 +33,29 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   const { data: authSession } = useAuthSession()
   const nameFromUrl = searchParams.get('name') || ''
-  const displayName = nameFromUrl || authSession?.user?.name || ''
+  const [storedName, setStoredName] = useState(() => {
+    if (typeof window === 'undefined') return nameFromUrl
+    return sessionStorage.getItem(`vr_name_${C}`) || nameFromUrl
+  })
+  useEffect(() => {
+    if (nameFromUrl) {
+      sessionStorage.setItem(`vr_name_${C}`, nameFromUrl)
+      setStoredName(nameFromUrl)
+      const p = new URLSearchParams(searchParams.toString())
+      p.delete('name')
+      const newUrl = p.toString() ? `/session/${C}?${p.toString()}` : `/session/${C}`
+      router.replace(newUrl)
+    }
+  }, [C])
+  const displayName = storedName || authSession?.user?.name || ''
+  const needsName = !displayName && !authSession?.user
   const [isHostState] = useState(() => searchParams.get('host') === '1')
-  const [showModal, setShowModal] = useState(false)
+  const [showSessionPanel, setShowSessionPanel] = useState(false)
+  const [showUserPanel,    setShowUserPanel]    = useState(false)
+
+  useEffect(() => {
+    if (needsName) router.replace(`/join/${C}`)
+  }, [needsName, C])
 
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
@@ -78,12 +99,14 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   }
 
   const navItems = [
-    { label: 'Wines', path: `/session/${C}`, icon: '🍷', id: 'wines' },
-    { label: 'Rate', path: `/session/${C}/rate`, icon: '⭐', id: 'rate' },
+    { label: 'Wines', path: `/session/${C}`,         icon: '🍷', id: 'wines' },
+    { label: 'Rate',  path: `/session/${C}/rate`,     icon: '⭐', id: 'rate' },
     { label: 'Compare', path: `/session/${C}/compare`, icon: '◈', id: 'compare' },
   ]
 
   const sessionLabel = metaData?.name || C
+
+  if (needsName) return null
 
   return (
     <Ctx.Provider value={ctx}>
@@ -94,14 +117,14 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <ThemeToggle />
             <button
-              onClick={() => { navigator.clipboard?.writeText(C); }}
-              title="Copy session code"
+              onClick={() => setShowSessionPanel(true)}
+              title="Session settings"
               style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
             >
               {sessionLabel}
             </button>
             <button
-              onClick={() => setShowModal(true)}
+              onClick={() => setShowUserPanel(true)}
               style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.06em',color:'var(--fg-dim)',border:'1px solid var(--border)',background:'var(--bg2)',padding:'5px 10px',borderRadius:3,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}
             >
               <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent2)'}} />
@@ -110,11 +133,14 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           </div>
         </header>
 
-        {showModal && (
-          <SessionModal
-            onClose={() => setShowModal(false)}
-            onLeave={() => { setShowModal(false); router.push('/') }}
+        {showSessionPanel && (
+          <SessionPanel
+            onClose={() => setShowSessionPanel(false)}
+            onLeave={() => { setShowSessionPanel(false); router.push('/') }}
           />
+        )}
+        {showUserPanel && (
+          <UserPanel onClose={() => setShowUserPanel(false)} />
         )}
 
         {/* Content */}
@@ -131,7 +157,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
               </Link>
             )
           })}
-          <button onClick={() => setShowModal(true)} className="nav-item" style={{flex:1}}>
+          <button onClick={() => setShowUserPanel(true)} className="nav-item" style={{flex:1}}>
             <span style={{fontSize:14,lineHeight:1}}>👤</span>
             <span>You</span>
           </button>

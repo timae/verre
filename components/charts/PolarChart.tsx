@@ -25,7 +25,7 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
     const cx = size / 2, cy = size / 2, n = fl.length
     const iR = size * 0.10, oR = size * 0.37, lR = size * 0.44
     const gap = 3, seg = 360 / n - gap
-    const vpad = 48
+    const vpad = 30
     const vb = `${-vpad} ${-vpad} ${size + vpad * 2} ${size + vpad * 2}`
 
     let h = ''
@@ -60,8 +60,8 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
   return (
     <svg
       viewBox={svg.vb}
-      width={svg.w}
-      height={svg.ht}
+      style={{ width: '100%', height: 'auto', maxWidth: size, display: 'block', margin: '0 auto' }}
+      preserveAspectRatio="xMidYMid meet"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       dangerouslySetInnerHTML={{ __html: svg.h }}

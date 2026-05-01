@@ -32,7 +32,14 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const userName = req.nextUrl.searchParams.get('name')
 
   const wines = await getWines(c)
-  const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean }) | null
+  const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null
+  const isUserHost = isHost(meta as SessionMeta, session?.user?.id ?? undefined, userName ?? undefined)
+
+  // Lineup hidden until X minutes before start
+  if (meta?.hideLineup && meta.dateFrom && !isUserHost) {
+    const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
+    if (Date.now() < revealAt) return NextResponse.json([])
+  }
 
   if (meta?.blind && shouldRedact(meta as SessionMeta & { blind?: boolean }, userName, session?.user?.id ?? null)) {
     return NextResponse.json(wines.map((w, i) =>
@@ -60,6 +67,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   wines.push(result)
+  // Optional one-shot insert position (1-indexed). Out-of-range silently
+  // falls through to "append at end" — frontend validates the range.
+  const pos = Number(body.position)
+  if (Number.isInteger(pos) && pos >= 1 && pos < wines.length) {
+    const inserted = wines.pop()!
+    wines.splice(pos - 1, 0, inserted)
+  }
   await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
   await touchWithMeta(c)
 
