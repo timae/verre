@@ -7,7 +7,7 @@ import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
-type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null }
+type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -123,8 +123,7 @@ export function MeDashboard({ user }: { user: User }) {
               <div className="panel-hdr">recent tastings</div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 {recent.map(s => {
-                  const hoursAgo = (Date.now() - new Date(s.joined_at).getTime()) / 3600000
-                  const active = hoursAgo < 47
+                  const active = s.lifespan === 'unlimited' || s.ttl_seconds > 0
                   const dateStr = s.date_from || s.joined_at
                   const date = new Date(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric' })
                   return (
