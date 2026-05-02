@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, requireParticipant } from '@/lib/identity'
+import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 import { isHostByIdentity, type SessionMeta } from '@/lib/session'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
 
   const session = await auth()
   const caller = await requireParticipant(c, req, session)
-  if (!caller) return NextResponse.json({ error: 'not a participant' }, { status: 401 })
+  if (!caller) return authInvalid('not a participant')
 
   // Participants come from the identities map (id-keyed, the authoritative
   // source). The legacy `users` set is no longer written to.

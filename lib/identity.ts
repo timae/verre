@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import type { NextRequest } from 'next/server'
+import { NextResponse, type NextRequest } from 'next/server'
 import type { Session } from 'next-auth'
 import { redis, k } from '@/lib/redis'
 
@@ -105,4 +105,16 @@ export async function recordIdentity(code: string, identity: Identity): Promise<
 
 export async function recordAnonToken(code: string, token: string, id: string): Promise<void> {
   await redis.hSet(k.tokens(code), token, id)
+}
+
+// Standardized rejection for "you have no valid identity for this session"
+// (resolver returned null, or you're not a participant). The X-Vr-Auth header
+// signals the client to drop its stored token and bounce to /join, which is
+// distinct from a permission-denied 403 (e.g. "only the host can do this") —
+// those should NOT clear the token.
+export function authInvalid(error = 'identity required', status = 401): NextResponse {
+  return NextResponse.json({ error }, {
+    status,
+    headers: { 'X-Vr-Auth': 'invalid' },
+  })
 }

@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
-import { resolveIdentity, requireParticipant } from '@/lib/identity'
+import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -27,7 +27,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const session = await auth()
 
   const identity = await requireParticipant(c, req, session)
-  if (!identity) return NextResponse.json({ error: 'not a participant' }, { status: 401 })
+  if (!identity) return authInvalid('not a participant')
 
   const wines = await getWines(c)
   const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null

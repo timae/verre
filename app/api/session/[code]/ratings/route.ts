@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
-import { requireParticipant } from '@/lib/identity'
+import { requireParticipant, authInvalid } from '@/lib/identity'
 
 // Returns ratings for this session, id-keyed. Shape:
 //   { "u:42": { displayName: "Sam 🍅", ratings: { "<wineId>": {...} } }, ... }
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const session = await auth()
 
   const caller = await requireParticipant(c, req, session)
-  if (!caller) return NextResponse.json({ error: 'not a participant' }, { status: 401 })
+  if (!caller) return authInvalid('not a participant')
 
   const prefix = `s:${c}:r:`
   const keys = await redis.keys(`${prefix}*`)

@@ -350,15 +350,27 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               </div>
             )}
 
-            {/* Blind tasting toggle */}
+            {/* Blind tasting toggle. Enabling requires pro; non-pro/anon
+                hosts can still disable it (matches server-side check). */}
             <div
-              onClick={() => setBlind(!blind)}
+              onClick={() => {
+                // Block enabling when not pro. Allow disabling for anyone.
+                if (!blind && !isPro) return
+                setBlind(!blind)
+              }}
               style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
                 border:`1px solid ${blind ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,
-                background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom:10}}
+                background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',
+                cursor: (!blind && !isPro) ? 'default' : 'pointer',
+                opacity: (!blind && !isPro) ? 0.5 : 1,
+                marginBottom:10}}
+              title={(!blind && !isPro) ? 'Requires a Pro account' : undefined}
             >
               <div>
-                <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)'}}>🙈 Blind tasting</div>
+                <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)',display:'flex',alignItems:'center',gap:6}}>
+                  🙈 Blind tasting
+                  {!isPro && !blind && <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>}
+                </div>
                 <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
               </div>
               <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',

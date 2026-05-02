@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity } from '@/lib/identity'
+import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // body. Unauthenticated callers are rejected — there is no longer a body-
   // name fallback (would let any caller claim any name).
   const identity = await resolveIdentity(c, req, session, userName ?? null)
-  if (!identity) return NextResponse.json({ error: 'identity required' }, { status: 401 })
+  if (!identity) return authInvalid()
 
   const ratingScore = score || 0
   // Rating is keyed by identity id, never by display name. Two participants

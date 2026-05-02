@@ -30,18 +30,23 @@ export function clearAnonToken(code: string): void {
 // Fetch a session-context endpoint, attaching the anon token header when one
 // is stored locally for this session code.
 //
-// On 401/403 responses where a token was sent, we drop the stored token and
-// display name and bounce the user to the join page. This handles three
-// cases uniformly: (1) the session expired in Redis after 48h, (2) a future
-// "host kicks user" feature revoked the token, (3) the token got corrupted.
-// Logged-in users hitting 403 (e.g. lacking host permission) are untouched
-// because no token was sent on their request.
+// On responses carrying X-Vr-Auth: invalid, drop the stored token and
+// display name and bounce the user to the join page. The header is set by
+// the server only when the rejection was about identity itself (no token,
+// expired token, kicked, not a participant). Permission-denied 403s
+// ("only the host can do X", "pro required for blind tasting") do not
+// carry the header — those are surfaced to the caller as a normal failed
+// response so the UI can show an error without booting the user out.
 export async function sessionFetch(code: string, url: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers)
   const token = getAnonToken(code)
   if (token) headers.set('x-vr-anon-token', token)
   const res = await fetch(url, { ...init, headers })
-  if (token && (res.status === 401 || res.status === 403)) {
+  // Only act on X-Vr-Auth=invalid when WE sent a token. If we didn't send
+  // one, the 401 belongs to a logged-in user whose participant registration
+  // hasn't landed yet — surface to the caller so they can retry, don't
+  // bounce them out.
+  if (token && res.headers.get('X-Vr-Auth') === 'invalid') {
     clearAnonToken(code)
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(NAME_KEY(code))
