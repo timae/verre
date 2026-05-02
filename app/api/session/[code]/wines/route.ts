@@ -26,6 +26,15 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const c = code.toUpperCase()
   const session = await auth()
 
+  // Session-existence check first. If the session was deleted or never
+  // existed, return 404 — distinct from 401 ("session exists but you're
+  // not a participant"). The client uses this to decide whether to bounce
+  // the participant home (404 = session gone, leave) vs to /join/<code>
+  // (401 = token bad / not in session, try to join).
+  if (!(await redis.exists(k.meta(c)))) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
   const identity = await requireParticipant(c, req, session)
   if (!identity) return authInvalid('not a participant')
 

@@ -79,7 +79,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
           <div className="lobby-card lobby-form">
             {isExpired ? (
               <div style={{textAlign:'center',padding:'16px 0'}}>
-                <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>This session has expired. Sessions last 48 hours.</p>
+                <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>This session is no longer available. It may have been deleted by the host, or expired.</p>
                 <Link href="/" className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to lobby</Link>
               </div>
             ) : isLoggedIn ? (

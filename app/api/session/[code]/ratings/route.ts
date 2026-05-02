@@ -14,6 +14,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const c = code.toUpperCase()
   const session = await auth()
 
+  // Session-existence check before participant check. 404 on a deleted /
+  // never-existed session lets the client distinguish "go home" from
+  // "your token is bad, retry join" (401 + x-vr-auth: invalid).
+  if (!(await redis.exists(k.meta(c)))) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
   const caller = await requireParticipant(c, req, session)
   if (!caller) return authInvalid('not a participant')
 
