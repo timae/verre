@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertWine } from '@/lib/session'
-import { resolveIdentity } from '@/lib/identity'
+import { resolveIdentity, authInvalid } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
 import { prisma } from '@/lib/prisma'
 
@@ -17,6 +17,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const identity = await resolveIdentity(c, req, session, body.userName ?? null)
+  if (!identity) return authInvalid()
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can edit wines' }, { status: 403 })
   }
@@ -48,6 +49,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const identity = await resolveIdentity(c, req, session, body.userName ?? null)
+  if (!identity) return authInvalid()
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can delete wines' }, { status: 403 })
   }

@@ -66,6 +66,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const identity = await resolveIdentity(c, req, session, body.userName ?? null)
+  if (!identity) return authInvalid()
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can add wines' }, { status: 403 })
   }

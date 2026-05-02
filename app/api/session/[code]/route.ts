@@ -39,7 +39,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // promoting cohost B, etc.). Match against hostIdentityId (id-first),
   // hostUserId (logged-in legacy), or display name (anon-host legacy).
   const callerIdentity = await resolveIdentity(c, req, session, userName ?? null)
-  const callerIsHost = !!callerIdentity && (
+  if (!callerIdentity) return authInvalid()
+  const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
     (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
     (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
@@ -159,7 +160,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const meta = JSON.parse(raw) as SessionMeta
 
   const callerIdentity = await resolveIdentity(c, req, session)
-  const callerIsHost = !!callerIdentity && (
+  if (!callerIdentity) return authInvalid()
+  const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
     (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
     (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
