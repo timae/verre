@@ -108,17 +108,17 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     queryKey: ['wines', C, myId],
     queryFn: async () => {
       const r = await sessionFetch(C, `/api/session/${C}/wines`)
-      // Session was deleted by the host while we were inside it. Clear
-      // any local cached state for this code so the user can't get stuck
-      // in a bounce loop if they later type the (now-dead) code into
-      // the lobby — and bounce them home.
+      // Session is gone (deleted by host, expired, or never existed).
+      // Clear any local cached state for this code so the user can't
+      // get stuck in a redirect loop, then bounce to /join/<code> so
+      // they see the "Session not found" page with the code shown.
       if (r.status === 404 && typeof window !== 'undefined') {
         try {
           localStorage.removeItem(`vr_anon_${C}`)
           localStorage.removeItem(`vr_name_${C}`)
           localStorage.removeItem(`vr_id_${C}`)
         } catch {}
-        window.location.href = '/'
+        window.location.href = `/join/${C}`
         return []
       }
       return r.ok ? r.json() : []
