@@ -106,7 +106,16 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
     queryKey: ['wines', C, myId],
-    queryFn: () => sessionFetch(C, `/api/session/${C}/wines`).then(r => r.ok ? r.json() : []),
+    queryFn: async () => {
+      const r = await sessionFetch(C, `/api/session/${C}/wines`)
+      // Session was deleted by the host while we were inside it. Bounce
+      // home so participants don't sit on a stale-but-rendering page.
+      if (r.status === 404 && typeof window !== 'undefined') {
+        window.location.href = '/'
+        return []
+      }
+      return r.ok ? r.json() : []
+    },
     refetchInterval: 5000,
     enabled: readyToFetch,
   })

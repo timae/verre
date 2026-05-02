@@ -39,6 +39,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       if (meta) {
         await pgUpsertSession(c, meta)
         await pgUpsertWine(c, wine)
+
+        // Snapshot the prior rating + the user's prior month-bucket set so
+        // we can update the lifetime_* counters atomically, only bumping
+        // them on the relevant transitions (new rating, first 5★, longer
+        // note, new month). Counters NEVER decrement.
+        const prior = await prisma.rating.findUnique({
+          where: { wineId_userId: { wineId, userId } },
+        })
+        const noteLen = (notes || '').length
+        const wroteNote = noteLen > 5
+
         await prisma.rating.upsert({
           where: { wineId_userId: { wineId, userId } },
           create: {
@@ -50,8 +61,44 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             score: ratingScore, flavors: flavors || {}, notes: notes || null, ratedAt: new Date(),
           },
         })
+
+        // Lifetime counter updates. Done as a single SQL UPDATE with
+        // GREATEST() / conditional increments so we never double-count
+        // (e.g. re-rating to 5★ after rating to 5★ doesn't bump again).
+        const isNew = !prior
+        const newFiveStar = ratingScore === 5 && (prior?.score !== 5)
+        const newOneStar  = ratingScore === 1 && (prior?.score !== 1)
+        const newNote     = wroteNote && (!prior || (prior.notes || '').length <= 5)
+        const newPhoto    = isNew && !!(wine.imageUrl || wine.image)
+
+        // Did this rating add a brand-new month bucket to the user's set?
+        // Only checked on NEW ratings (re-rating same wine doesn't add a
+        // month). We just inserted, so the current month is guaranteed
+        // present; bump only if THIS rating is the only one in the bucket.
+        let newMonth = false
+        if (isNew) {
+          const [{ count }] = await prisma.$queryRaw<[{count:bigint}]>`
+            SELECT COUNT(*) AS count FROM ratings
+            WHERE user_id=${userId}
+              AND DATE_TRUNC('month', rated_at) = DATE_TRUNC('month', NOW())`
+          newMonth = Number(count) === 1
+        }
+
+        await prisma.$executeRaw`
+          UPDATE users SET
+            lifetime_ratings = lifetime_ratings + ${isNew ? 1 : 0},
+            lifetime_five_star = lifetime_five_star + ${newFiveStar ? 1 : 0},
+            lifetime_one_star = lifetime_one_star + ${newOneStar ? 1 : 0},
+            lifetime_notes_written = lifetime_notes_written + ${newNote ? 1 : 0},
+            lifetime_max_note_len = GREATEST(lifetime_max_note_len, ${noteLen}),
+            lifetime_photos_added = lifetime_photos_added + ${newPhoto ? 1 : 0},
+            lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
+            first_rated_at = COALESCE(first_rated_at, NOW())
+          WHERE id = ${userId}`
       }
-    } catch {}
+    } catch (err) {
+      console.error('rate counter update error:', err)
+    }
 
     if (ratingScore === 5) {
       try {

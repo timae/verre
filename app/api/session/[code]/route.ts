@@ -134,3 +134,98 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
   return NextResponse.json({ ok: true, meta })
 }
+
+// DELETE permanently removes a session and most of its data. Host-only
+// (co-hosts cannot delete — same restriction as cohost role assignment).
+//
+// Retention rule: per (user, wine) pair, if the user bookmarked the wine,
+// keep their rating row (so the bookmark detail still shows their score,
+// notes, flavors). Delete every other rating row for those wines. HoF
+// entries follow the rating: deleted when the corresponding rating is
+// deleted, kept otherwise.
+//
+// Wines themselves are kept (orphaned with session_id = NULL) so bookmarked
+// wines remain reachable from /me/saved with image, name, etc. intact.
+//
+// Lifetime counters on users do NOT decrement — that's the whole point of
+// the snapshot column design.
+export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  const { code } = await params
+  const c = code.toUpperCase()
+  const session = await auth()
+
+  const raw = await redis.get(k.meta(c))
+  if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const meta = JSON.parse(raw) as SessionMeta
+
+  const callerIdentity = await resolveIdentity(c, req, session)
+  const callerIsHost = !!callerIdentity && (
+    (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
+    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
+    (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
+  )
+  if (!callerIsHost) {
+    return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
+  }
+
+  // Postgres cleanup. Best-effort — if any single step fails we still wipe
+  // Redis below to give the user the immediate "session is gone" experience.
+  try {
+    const sessionRow = await prisma.session.findUnique({ where: { code: c } })
+    if (sessionRow) {
+      const sessionId = sessionRow.id
+
+      // 1. Delete ratings whose (user, wine) is NOT bookmarked. Anonymous
+      //    ratings only live in Redis; this only touches logged-in raters.
+      await prisma.$executeRaw`
+        DELETE FROM ratings r
+        USING wines w
+        WHERE r.wine_id = w.id
+          AND w.session_id = ${sessionId}
+          AND r.user_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM bookmarks b
+            WHERE b.user_id = r.user_id AND b.wine_id = r.wine_id
+          )
+      `
+
+      // 2. Delete HoF entries that correspond to ratings we just deleted.
+      //    HoF rows are denormalized (wineName + userId), so the rule is
+      //    symmetric: keep HoF when the rater bookmarked, drop otherwise.
+      await prisma.$executeRaw`
+        DELETE FROM hall_of_fame h
+        WHERE h.session_code = ${c}
+          AND h.user_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM bookmarks b JOIN wines w ON w.id = b.wine_id
+            WHERE w.session_id = ${sessionId}
+              AND b.user_id = h.user_id
+              AND w.name = h.wine_name
+          )
+      `
+
+      // 3. Orphan the wines (sessionId NULL). Schema's onDelete: SetNull
+      //    would do this automatically when we delete the session row,
+      //    but doing it explicitly is clearer.
+      await prisma.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
+
+      // 4. Delete session_members rows for this session.
+      await prisma.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
+
+      // 5. Delete the session row itself.
+      await prisma.$executeRaw`DELETE FROM sessions WHERE id = ${sessionId}`
+    }
+  } catch (err) {
+    console.error('session delete (postgres) error:', err)
+  }
+
+  // Wipe Redis. After this, every endpoint serving this session returns 404.
+  try {
+    const keys = await redis.keys(`s:${c}:*`)
+    if (keys.length > 0) await redis.del(keys)
+  } catch (err) {
+    console.error('session delete (redis) error:', err)
+  }
+
+  return NextResponse.json({ ok: true })
+}

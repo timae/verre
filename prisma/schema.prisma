@@ -16,6 +16,19 @@ model User {
   pro          Boolean   @default(false)
   createdAt    DateTime  @default(now()) @map("created_at")
   tokenVersion Int       @default(0) @map("token_version")
+  // Snapshot counters — monotonic, never decrement. Drive badge progression
+  // and shield user achievement state from rating deletions (e.g. when a
+  // host deletes a session that contained the user's ratings).
+  lifetimeRatings           Int       @default(0) @map("lifetime_ratings")
+  lifetimeFiveStar          Int       @default(0) @map("lifetime_five_star")
+  lifetimeOneStar           Int       @default(0) @map("lifetime_one_star")
+  lifetimeNotesWritten      Int       @default(0) @map("lifetime_notes_written")
+  lifetimeMaxNoteLength     Int       @default(0) @map("lifetime_max_note_len")
+  lifetimeSessionsJoined    Int       @default(0) @map("lifetime_sessions_joined")
+  lifetimeSessionsHosted    Int       @default(0) @map("lifetime_sessions_hosted")
+  lifetimePhotosAdded       Int       @default(0) @map("lifetime_photos_added")
+  lifetimeConsecutiveMonths Int       @default(0) @map("lifetime_consecutive_months")
+  firstRatedAt              DateTime? @map("first_rated_at")
   members      SessionMember[]
   ratings      Rating[]
   bookmarks    Bookmark[]
@@ -46,8 +59,11 @@ model Session {
 
 model Wine {
   id          String    @id @db.VarChar(20)
-  sessionId   Int       @map("session_id")
-  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // Nullable so wines can be retained when their session is deleted —
+  // bookmarked wines stay reachable from the bookmark page even after the
+  // hosting session is gone. Wines with sessionId=NULL are orphans.
+  sessionId   Int?      @map("session_id")
+  session     Session?  @relation(fields: [sessionId], references: [id], onDelete: SetNull)
   name        String    @db.VarChar(255)
   producer    String?
   vintage     String?   @db.Char(4)

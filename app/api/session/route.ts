@@ -87,6 +87,11 @@ export async function POST(req: NextRequest) {
           createdAt: new Date(meta.createdAt),
         },
       })
+      // Bump lifetime_sessions_hosted. Each session is a unique row (codes
+      // don't collide on create), so this is always a real new host event.
+      await prisma.$executeRaw`
+        UPDATE users SET lifetime_sessions_hosted = lifetime_sessions_hosted + 1
+        WHERE id = ${Number(session.user.id)}`
     } catch {}
   }
 

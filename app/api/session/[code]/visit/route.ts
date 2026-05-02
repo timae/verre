@@ -43,11 +43,21 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
 
   try {
     await pgUpsertSession(c, meta)
+    const userId = Number(session.user.id)
+    const existing = await prisma.sessionMember.findUnique({
+      where: { userId_sessionCode: { userId, sessionCode: c } },
+    })
     await prisma.sessionMember.upsert({
-      where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: c } },
-      create: { userId: Number(session.user.id), sessionCode: c, role },
+      where: { userId_sessionCode: { userId, sessionCode: c } },
+      create: { userId, sessionCode: c, role },
       update: {},
     })
+    // First-ever join of this session by this user → bump joined counter.
+    if (!existing) {
+      await prisma.$executeRaw`
+        UPDATE users SET lifetime_sessions_joined = lifetime_sessions_joined + 1
+        WHERE id = ${userId}`
+    }
   } catch (err) {
     console.error('visit error:', err)
   }

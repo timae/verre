@@ -94,6 +94,38 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [saving,        setSaving]        = useState(false)
   const [saveError,     setSaveError]     = useState('')
   const [showParticipants, setShowParticipants] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting,      setDeleting]      = useState(false)
+  const [deleteError,   setDeleteError]   = useState('')
+
+  // isStrictHost: true only for the actual session host, NOT co-hosts.
+  // Used for actions that we restrict to the host alone (currently:
+  // delete-session). isHost from context is true for cohosts too.
+  const sm = sessionMeta as typeof sessionMeta & { hostIdentityId?: string }
+  const isStrictHost = !!(myId && (
+    (sm?.hostIdentityId && myId === sm.hostIdentityId) ||
+    (sm?.hostUserId && myId === `u:${sm.hostUserId}`)
+  ))
+
+  async function deleteSession() {
+    setDeleteError(''); setDeleting(true)
+    const res = await sessionFetch(code, `/api/session/${code}`, { method: 'DELETE' })
+    setDeleting(false)
+    if (res.ok) {
+      // Clear any local cached session state so the next visit doesn't
+      // try to use a stale token / name pointing at a session that no
+      // longer exists. Then leave to the lobby.
+      try {
+        localStorage.removeItem(`vr_anon_${code.toUpperCase()}`)
+        localStorage.removeItem(`vr_name_${code.toUpperCase()}`)
+        localStorage.removeItem(`vr_id_${code.toUpperCase()}`)
+      } catch {}
+      window.location.href = '/'
+      return
+    }
+    const data = await res.json().catch(() => ({}))
+    setDeleteError(data.error || 'delete failed')
+  }
 
   const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
@@ -386,12 +418,56 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               onClick={saveSettings} disabled={saving}
               style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
             >{saving ? 'saving…' : '→ save settings'}</button>
+
+            {/* Danger zone — strict host only (not co-hosts). */}
+            {isStrictHost && (
+              <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
+                <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
+                <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
+                  Delete this session permanently. Wines stay saved for participants who bookmarked them; everyone else's ratings, notes and Hall of Fame entries from this session are removed. This cannot be undone.
+                </div>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  style={{width:'100%',padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.4)',background:'rgba(224,112,112,0.08)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+                >⌫ delete this session</button>
+              </div>
+            )}
           </div>
         )}
 
         <button className="btn-p" onClick={onClose} style={{marginBottom:6,marginTop:16}}>→ close</button>
         <button className="btn-g" onClick={onLeave}>leave session</button>
       </div>
+
+      {/* Delete-session confirmation modal. Stops propagation so a click
+          inside the modal doesn't close the SessionPanel underneath. */}
+      {showDeleteConfirm && (
+        <div
+          onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setShowDeleteConfirm(false) }}
+          style={{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',padding:16}}
+        >
+          <div style={{maxWidth:420,width:'100%',background:'var(--bg2)',borderRadius:16,padding:20,border:'1px solid rgba(224,112,112,0.3)'}}>
+            <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'#e07070'}}>Delete this session?</div>
+            <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.6,marginBottom:14}}>
+              This permanently removes the session and its wine list. Bookmarked wines stay saved with their ratings, notes and flavour wheel intact for those who bookmarked them. Every other rating and Hall of Fame entry from this session is removed.
+              <div style={{marginTop:8,color:'#e07070',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
+            </div>
+            {deleteError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{deleteError}</p>}
+            <div style={{display:'flex',gap:8}}>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid var(--border2)',background:'var(--bg3)',color:'var(--fg-dim)',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+              >cancel</button>
+              <button
+                onClick={deleteSession}
+                disabled={deleting}
+                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.5)',background:'rgba(224,112,112,0.15)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+              >{deleting ? 'deleting…' : 'delete'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

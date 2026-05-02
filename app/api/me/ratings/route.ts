@@ -17,6 +17,6 @@ export async function GET() {
     id: r.id, score: r.score, flavors: r.flavors, notes: r.notes, rated_at: r.ratedAt,
     wine_name: r.wine.name, producer: r.wine.producer, vintage: r.wine.vintage,
     style: r.wine.style, category: r.wine.category, image_url: r.wine.imageUrl,
-    session_code: r.wine.session.code, session_date: r.wine.session.createdAt,
+    session_code: r.wine.session?.code || null, session_date: r.wine.session?.createdAt || null,
   })))
 }

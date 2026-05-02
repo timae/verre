@@ -16,6 +16,6 @@ export async function GET() {
     saved_at: b.savedAt, wine_id: b.wineId,
     name: b.wine.name, producer: b.wine.producer, vintage: b.wine.vintage,
     style: b.wine.style, category: b.wine.category, image_url: b.wine.imageUrl,
-    purchase_url: b.wine.purchaseUrl, session_code: b.wine.session.code,
+    purchase_url: b.wine.purchaseUrl, session_code: b.wine.session?.code || null,
   })))
 }
