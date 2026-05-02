@@ -37,11 +37,23 @@ export async function POST(req: NextRequest) {
   const resolvedLifespan = (lifespan && lifespan !== '48h' && !isPro) ? '48h' : (lifespan || '48h')
   const sessionTTL = lifespanTTL(resolvedLifespan)
 
+  // Mint the host's identity id up front so it can be stamped into meta —
+  // host checks then work purely by id, no display-name fallback needed.
+  let anonToken: string | null = null
+  let identityId: string
+  if (session?.user?.id) {
+    identityId = userIdentityId(session.user.id)
+  } else {
+    identityId = newAnonIdentityId()
+    anonToken = newAnonToken()
+  }
+
   const meta = {
     host: hostName,
     name: sessionName ? String(sessionName).trim().slice(0, 80) : '',
     createdAt: Date.now(),
     hostUserId: session?.user?.id ? Number(session.user.id) : null,
+    hostIdentityId: identityId,
     blind: !!blind,
     lifespan: resolvedLifespan,
     coHosts: [] as string[],
@@ -50,18 +62,14 @@ export async function POST(req: NextRequest) {
   await redis.set(k.meta(code), JSON.stringify(meta), { EX: sessionTTL })
   await redis.set(k.wines(code), '[]', { EX: sessionTTL })
 
-  // Register the host in the identities map immediately so participant-gated
-  // reads (wines, ratings, session meta) work right after create — no need
-  // to wait for the visit endpoint to run. Anonymous host also gets a token.
-  let anonToken: string | null = null
-  let identityId: string
-  if (session?.user?.id) {
-    identityId = userIdentityId(session.user.id)
-    await recordIdentity(code, { id: identityId, displayName: hostName, kind: 'user' })
-  } else {
-    identityId = newAnonIdentityId()
-    anonToken = newAnonToken()
-    await recordIdentity(code, { id: identityId, displayName: hostName, kind: 'anon' })
+  // Register the host in the identities map so participant-gated reads
+  // (wines, ratings, session meta) work right after create.
+  await recordIdentity(code, {
+    id: identityId,
+    displayName: hostName,
+    kind: session?.user?.id ? 'user' : 'anon',
+  })
+  if (anonToken) {
     await recordAnonToken(code, anonToken, identityId)
     await redis.expire(k.tokens(code), sessionTTL)
   }

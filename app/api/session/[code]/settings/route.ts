@@ -27,7 +27,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (body.timezone !== undefined)    meta.timezone    = String(body.timezone    || '').trim().slice(0, 64)
   if (body.description !== undefined) meta.description = String(body.description || '').trim().slice(0, 1000)
   if (body.link !== undefined)               meta.link                    = String(body.link || '').trim().slice(0, 512)
-  if (body.blind !== undefined)              meta.blind                   = !!body.blind
+  if (body.blind !== undefined) {
+    // Enabling blind tasting requires a pro account. Disabling is always
+    // allowed (lets a host turn it off without having to be pro).
+    if (body.blind && !isPro) {
+      return NextResponse.json({ error: 'pro required for blind tasting' }, { status: 403 })
+    }
+    meta.blind = !!body.blind
+  }
   if (body.hideLineup !== undefined)         meta.hideLineup              = !!body.hideLineup
   if (body.hideLineupMinutesBefore !== undefined) meta.hideLineupMinutesBefore = Number(body.hideLineupMinutesBefore) || 0
 

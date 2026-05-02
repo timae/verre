@@ -29,6 +29,11 @@ export type SessionMeta = {
   name: string
   createdAt: number
   hostUserId: number | null
+  // Identity id of the host. For logged-in hosts this is `u:<userId>` and is
+  // redundant with hostUserId; for anonymous hosts it's `a:<uuid>` and is the
+  // only stable handle for host checks (anon hosts have no userId, so the
+  // legacy displayName-comparison would otherwise be the only path).
+  hostIdentityId?: string
   blind?: boolean
   lifespan?: string
   coHosts?: string[]      // legacy display-name list — kept in sync for old clients
@@ -60,11 +65,13 @@ export async function getWines(code: string): Promise<WineMeta[]> {
 // Host check by stable identity id. Preferred over the legacy variants below.
 export function isHostByIdentity(meta: SessionMeta, identity: Identity | null): boolean {
   if (!identity) return false
+  if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
   if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
   if (meta.coHostIds?.includes(identity.id)) return true
-  // Legacy fallback: anonymous-hosted sessions still match by name. Goes away
-  // once all sessions in flight predate the identity refactor.
-  if (!meta.hostUserId && identity.displayName === meta.host) return true
+  // Legacy fallback for sessions created before hostIdentityId was added —
+  // anonymous-hosted sessions match by display name. Goes away once all
+  // pre-Phase-2 sessions have expired from Redis (max 48h).
+  if (!meta.hostUserId && !meta.hostIdentityId && identity.displayName === meta.host) return true
   if (meta.coHosts?.includes(identity.displayName)) return true
   return false
 }

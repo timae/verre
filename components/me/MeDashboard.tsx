@@ -158,7 +158,7 @@ export function MeDashboard({ user }: { user: User }) {
                         <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{date} · {s.wines_rated} wines rated</p>
                       </div>
                       {active && (
-                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(`/session/${s.code}?name=${encodeURIComponent(name)}`)}>
+                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(`/session/${s.code}`)}>
                           → rejoin
                         </button>
                       )}

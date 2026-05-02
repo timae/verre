@@ -33,11 +33,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const meta = JSON.parse(raw) as SessionMeta
 
-  // Authorize the caller as the current host (id-first, name fallback).
+  // Authorize the caller as the *current host* — strictly. Co-hosts can do
+  // wine and settings work via isHostByIdentity, but role assignment is
+  // intentionally host-only to avoid privilege-escalation chains (cohost A
+  // promoting cohost B, etc.). Match against hostIdentityId (id-first),
+  // hostUserId (logged-in legacy), or display name (anon-host legacy).
   const callerIdentity = await resolveIdentity(c, req, session, userName ?? null)
   const callerIsHost = !!callerIdentity && (
+    (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
     (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
-    (!meta.hostUserId && callerIdentity.displayName === meta.host)
+    (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
   )
   if (!callerIsHost) {
     return NextResponse.json({ error: 'only the host can assign roles' }, { status: 403 })
@@ -85,11 +90,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       const idx = coHostIds.indexOf(targetId); if (idx !== -1) coHostIds.splice(idx, 1)
     }
   } else if (action === 'transfer-host') {
-    // Old host becomes co-host. New host: by display name (legacy) and id
-    // (when known). The previous host's identity comes from the resolved
-    // caller, not the request body.
+    // Old host becomes co-host. The new host's identity-id is the trust
+    // anchor; hostUserId stays for logged-in compatibility, host (display
+    // name) is just a label.
     meta.host = targetName
     meta.hostUserId = targetId?.startsWith('u:') ? Number(targetId.slice(2)) : null
+    meta.hostIdentityId = targetId || undefined
     meta.coHosts = callerIdentity ? [callerIdentity.displayName] : []
     meta.coHostIds = callerIdentity ? [callerIdentity.id] : []
   }

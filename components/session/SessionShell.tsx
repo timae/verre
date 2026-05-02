@@ -84,22 +84,38 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     if (needsName) router.replace(`/join/${C}`)
   }, [needsName, C])
 
+  // Logged-in users hit /session/<code> with an auth cookie but may not yet
+  // have an identities-map entry until the visit endpoint runs and registers
+  // them. Firing the participant-gated GETs (meta, wines, ratings) before
+  // visit completes returns 401 and triggers React Query backoff, which
+  // shows up as a slow first wine load. Gate the queries on `readyToFetch`
+  // so they wait for visit. Anons are already registered at join time and
+  // can fetch immediately (their identity entry exists before SessionShell
+  // mounts). Logged-in users wait until visit returns or a 1.5s safety
+  // timeout, whichever comes first.
+  const isLoggedIn = !!authSession?.user
+  const [visitResolved, setVisitResolved] = useState(false)
+  const readyToFetch = !isLoggedIn || visitResolved
+
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
     queryFn: () => sessionFetch(C, `/api/session/${C}`).then(r => r.ok ? r.json() : null),
     staleTime: 30_000,
+    enabled: readyToFetch,
   })
 
   const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
     queryKey: ['wines', C, myId],
     queryFn: () => sessionFetch(C, `/api/session/${C}/wines`).then(r => r.ok ? r.json() : []),
     refetchInterval: 5000,
+    enabled: readyToFetch,
   })
 
   const { data: ratingsData = {} as RatingsByIdentity, refetch: refetchRatings } = useQuery<RatingsByIdentity>({
     queryKey: ['ratings', C],
     queryFn: () => sessionFetch(C, `/api/session/${C}/ratings`).then(r => r.ok ? r.json() : {}),
     refetchInterval: 5000,
+    enabled: readyToFetch,
   })
 
   const refresh = useCallback(() => { refetchWines(); refetchRatings() }, [refetchWines, refetchRatings])
@@ -112,6 +128,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const bookmarkedIds = new Set(bookmarksData.map(b => b.wine_id))
 
   useEffect(() => {
+    // Safety timeout: if visit doesn't return within 1.5s (unlikely but
+    // possible on a slow connection), unblock the queries anyway and let
+    // React Query handle the 401 retry. Better than blocking the UI.
+    const timeout = setTimeout(() => setVisitResolved(true), 1500)
     sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -130,6 +150,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         }
       })
       .catch(() => {})
+      .finally(() => {
+        clearTimeout(timeout)
+        setVisitResolved(true)
+      })
   }, [C])
 
   // Host check is id-keyed against meta.hostUserId for logged-in users; the
