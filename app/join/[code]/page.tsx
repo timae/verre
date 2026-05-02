@@ -16,27 +16,18 @@ export default async function JoinPage({ params }: { params: Promise<{ code: str
     if (raw) sessionMeta = JSON.parse(raw)
   } catch {}
 
-  // If logged-in user has already joined this session, skip the invite page.
-  // Check both: Redis users set (live participants) and Postgres sessionMember
-  // (durable history that persists across Redis TTL expirations).
+  // If a logged-in user has already joined this session, skip the invite
+  // page. Authoritative source is Postgres sessionMember (id-keyed). The
+  // earlier Redis-users-set check was display-name based and incorrectly
+  // matched two distinct users sharing a display name, silently bouncing
+  // the second one into the session without going through the join flow.
   if (session?.user?.id && sessionMeta) {
-    let alreadyJoined = false
     try {
-      if (session.user.name) {
-        // Match either the bare name or a disambiguated `${name} <emoji>` form.
-        const members = await redis.sMembers(k.users(C))
-        alreadyJoined = members.some(n => n === session.user!.name || n.startsWith(`${session.user!.name} `))
-      }
+      const member = await prisma.sessionMember.findUnique({
+        where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
+      })
+      if (member) redirect(`/session/${C}`)
     } catch {}
-    if (!alreadyJoined) {
-      try {
-        const member = await prisma.sessionMember.findUnique({
-          where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
-        })
-        if (member) alreadyJoined = true
-      } catch {}
-    }
-    if (alreadyJoined) redirect(`/session/${C}`)
   }
 
   return (

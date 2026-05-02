@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { useSession } from '@/components/session/SessionShell'
+import type { RatingMeta } from '@/lib/session'
 import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
@@ -86,8 +87,12 @@ function useIsNarrow(): boolean {
 }
 
 export default function ComparePage() {
-  const { wines, allRatings, displayName, isBlind, isHost, sessionMeta } = useSession()
+  const { wines, allRatings, myId, isBlind, isHost, sessionMeta } = useSession()
   type BlindWine = typeof wines[0] & { _blind?: boolean }
+  // viewUser holds an identity id (e.g. "u:42", "a:<uuid>") or one of the
+  // sentinels "__me" / "__all". Storing the id rather than the display name
+  // means the filter survives a participant being renamed mid-session and
+  // never confuses two participants who share a display name.
   const [viewUser, setViewUser] = useState('__me')
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set())
   const [openRaterCard, setOpenRaterCard] = useState<string | null>(null)
@@ -105,8 +110,14 @@ export default function ComparePage() {
     </div>
   )
 
-  const ratedWines = wines.filter(w => Object.values(allRatings).some(u => u[w.id]?.score))
-  const raters = [...new Set(Object.keys(allRatings).filter(u => Object.keys(allRatings[u]).length > 0))]
+  // Build the rater list from the id-keyed allRatings shape. Each entry is
+  // { id, displayName, ratings } — id drives state, displayName drives UI.
+  type Rater = { id: string; displayName: string; ratings: Record<string, RatingMeta> }
+  const ratersWithRatings: Rater[] = Object.entries(allRatings)
+    .filter(([, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0)
+    .map(([id, bucket]) => ({ id, displayName: bucket.displayName, ratings: bucket.ratings }))
+
+  const ratedWines = wines.filter(w => ratersWithRatings.some(r => r.ratings[w.id]?.score))
 
   if (ratedWines.length === 0) return (
     <div style={{padding:16,textAlign:'center',paddingTop:64,color:'var(--fg-dim)',fontSize:13}}>
@@ -114,7 +125,9 @@ export default function ComparePage() {
     </div>
   )
 
-  const activeUser = viewUser === '__me' ? displayName : viewUser === '__all' ? null : viewUser
+  // activeUserId resolves "__me" / "__all" / specific-id into the id whose
+  // ratings should be shown (or null for "__all").
+  const activeUserId = viewUser === '__me' ? myId : viewUser === '__all' ? null : viewUser
 
   function toggleCard(wineId: string) {
     setExpandedCards(prev => {
@@ -150,12 +163,12 @@ export default function ComparePage() {
         <button className="btn-s" style={{opacity:viewUser==='__me'?1:0.5}} onClick={() => setViewUser('__me')}>
           my ratings
         </button>
-        {raters.filter(u => u !== displayName).map(u => (
-          <button key={u} className="btn-s" style={{opacity:viewUser===u?1:0.5}} onClick={() => setViewUser(u)}>
-            {u}
+        {ratersWithRatings.filter(r => r.id !== myId).map(r => (
+          <button key={r.id} className="btn-s" style={{opacity:viewUser===r.id?1:0.5}} onClick={() => setViewUser(r.id)}>
+            {r.displayName}
           </button>
         ))}
-        {raters.length > 1 && (
+        {ratersWithRatings.length > 1 && (
           <button className="btn-s" style={{opacity:viewUser==='__all'?1:0.5}} onClick={() => setViewUser('__all')}>
             overlay all
           </button>
@@ -177,15 +190,22 @@ export default function ComparePage() {
           const bw = wine as BlindWine
           const isRedacted = isBlind && bw._blind && !wine.revealedAt
           const wasRevealed = isBlind && wine.revealedAt
-          const allWineRatings = Object.entries(allRatings)
-            .filter(([, u]) => u[wine.id])
-            .map(([user, u], i) => ({ user, rating: u[wine.id], color: COLORS[i % COLORS.length] }))
+          // For each rater that rated *this* wine: pull their rating, attach a
+          // chart color, and remember their displayName for legends and chips.
+          const allWineRatings = ratersWithRatings
+            .filter(r => r.ratings[wine.id])
+            .map((r, i) => ({
+              id: r.id,
+              user: r.displayName,
+              rating: r.ratings[wine.id],
+              color: COLORS[i % COLORS.length],
+            }))
 
           const avgScore = allWineRatings.length
             ? (allWineRatings.reduce((s, r) => s + (r.rating.score || 0), 0) / allWineRatings.length).toFixed(1)
             : '—'
 
-          const singleRating = activeUser ? allRatings[activeUser]?.[wine.id] : null
+          const singleRating = activeUserId ? allRatings[activeUserId]?.ratings[wine.id] : null
           const fl = singleRating?.flavors
             ? detectFL(singleRating.flavors as Record<string, number>)
             : getFL(wine.type)
@@ -248,7 +268,7 @@ export default function ComparePage() {
                     <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={460} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
-                      no rating from {activeUser}
+                      no rating from {(activeUserId && allRatings[activeUserId]?.displayName) || 'this user'}
                     </div>
                   )}
                 </div>

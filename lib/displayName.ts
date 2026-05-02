@@ -34,16 +34,19 @@ const FOOD_EMOJI = [
   '🍭','🍬','🍫','🍩','🍪','🥜','🌰','🫖','🍵','☕','🧃','🥤',
 ]
 
-// If the requested name is already taken in this session's users set, suffix
-// it with a random food emoji. The disambiguated name is what gets stored in
-// Redis and returned to the client; from there everything (identity record,
-// participant list, future requests) sees the suffixed form.
+// If the requested name is already used by another participant in this
+// session, suffix it with a random food emoji so humans can tell two
+// participants apart in the UI. Disambiguation is purely cosmetic now —
+// since data is identity-id keyed, two identical display names no longer
+// cause data collisions. The check looks at the identities map (the
+// authoritative participant list).
 //
 // The collision check + write are not atomic, so a tight join-race could in
-// theory still produce two identical names. Acceptable for a 4–8 person
-// tasting flow; not worth a Lua script.
+// theory still produce two identical names; acceptable since the data layer
+// doesn't depend on uniqueness.
 export async function disambiguateDisplayName(code: string, name: string): Promise<string> {
-  const taken = await redis.sIsMember(k.users(code), name)
+  const identities = await redis.hGetAll(k.identities(code))
+  const taken = Object.values(identities).some(n => n === name)
   if (!taken) return name
   const emoji = FOOD_EMOJI[Math.floor(Math.random() * FOOD_EMOJI.length)]
   return `${name} ${emoji}`

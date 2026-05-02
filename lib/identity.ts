@@ -36,11 +36,15 @@ export function newAnonToken(): string {
 //
 // Returns null when nothing identifies the caller (anonymous request to an
 // endpoint that requires identity).
+// `bodyUserName` is retained as a parameter only to avoid touching every
+// caller site; the value is ignored. Kept callers can drop it in a later
+// cleanup pass.
 export async function resolveIdentity(
   code: string,
   req: NextRequest,
   authSession: Session | null,
-  bodyUserName: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  bodyUserName: string | null = null,
 ): Promise<Identity | null> {
   if (authSession?.user?.id) {
     // Prefer the per-session displayName from the identities map (set by the
@@ -71,19 +75,28 @@ export async function resolveIdentity(
     return null
   }
 
-  // Legacy path: anonymous client without a token, identifying via body name.
-  // Used during the Packet 4 → Packet 5 transition window. Anchored to the
-  // identities map when the name is known there; otherwise a synthetic anon
-  // identity (id = a:legacy:<name>) so isHost name-paths keep working.
-  if (bodyUserName) {
-    const idsByName = await redis.hGetAll(k.identities(code))
-    for (const [id, name] of Object.entries(idsByName)) {
-      if (name === bodyUserName) return { id, displayName: name, kind: id.startsWith('u:') ? 'user' : 'anon' }
-    }
-    return { id: `a:legacy:${bodyUserName}`, displayName: bodyUserName, kind: 'anon' }
-  }
-
+  // No auth, no token → no identity. The legacy body-name fallback was
+  // removed: it allowed unauthenticated callers to claim any name and have
+  // the server treat them as that participant for the duration of a request.
+  // After Packet 5 every real client carries either an auth cookie or an
+  // anon token; anything without either is an unauthenticated probe.
   return null
+}
+
+// Authorization check for session-scoped reads. A caller is a "participant"
+// if their resolved identity is registered in this session's identities map.
+// Returns the resolved identity on success, or null when the caller should
+// be rejected (no identity, or an identity not present in this session).
+export async function requireParticipant(
+  code: string,
+  req: NextRequest,
+  authSession: Session | null,
+): Promise<Identity | null> {
+  const identity = await resolveIdentity(code, req, authSession, null)
+  if (!identity) return null
+  const registered = await redis.hGet(k.identities(code), identity.id)
+  if (registered === null || registered === undefined) return null
+  return identity
 }
 
 export async function recordIdentity(code: string, identity: Identity): Promise<void> {

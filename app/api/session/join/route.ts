@@ -30,23 +30,22 @@ export async function POST(req: NextRequest) {
   // emoji suffixes. Anonymous joiners always get a fresh identity — each
   // browser session is a new participant from the server's point of view.
   let anonToken: string | null = null
+  let identityId: string
   if (session?.user?.id) {
-    const id = userIdentityId(session.user.id)
-    const registered = await redis.hGet(k.identities(c), id)
+    identityId = userIdentityId(session.user.id)
+    const registered = await redis.hGet(k.identities(c), identityId)
     if (registered) {
       userName = registered
     } else {
       userName = await disambiguateDisplayName(c, userName)
-      await redis.sAdd(k.users(c), userName)
-      await recordIdentity(c, { id, displayName: userName, kind: 'user' })
+      await recordIdentity(c, { id: identityId, displayName: userName, kind: 'user' })
     }
   } else {
     userName = await disambiguateDisplayName(c, userName)
-    await redis.sAdd(k.users(c), userName)
-    const anonId = newAnonIdentityId()
+    identityId = newAnonIdentityId()
     anonToken = newAnonToken()
-    await recordIdentity(c, { id: anonId, displayName: userName, kind: 'anon' })
-    await recordAnonToken(c, anonToken, anonId)
+    await recordIdentity(c, { id: identityId, displayName: userName, kind: 'anon' })
+    await recordAnonToken(c, anonToken, identityId)
   }
 
   await touchWithMeta(c)
@@ -54,6 +53,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ...JSON.parse(raw),
     code: c,
+    id: identityId,
     userName,
     ...(anonToken ? { anonToken } : {}),
   })

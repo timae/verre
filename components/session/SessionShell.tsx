@@ -10,10 +10,16 @@ import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
 
+// Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
+// Iterators (compare screen) use Object.entries; lookups (RatingScreen,
+// WineListScreen) read myRatings, which is the per-user ratings map already
+// projected from `data[myId].ratings` in SessionShell.
+export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
+
 type SessionCtx = {
-  code: string; displayName: string; isHost: boolean
+  code: string; displayName: string; myId: string; isHost: boolean
   sessionMeta: { host: string; name: string; hostUserId: number | null; blind?: boolean } | null
-  wines: WineMeta[]; allRatings: Record<string, Record<string, RatingMeta>>
+  wines: WineMeta[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
   isBlind: boolean
@@ -34,21 +40,41 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   const { data: authSession } = useAuthSession()
   const nameFromUrl = searchParams.get('name') || ''
+  const idFromUrl   = searchParams.get('id')   || ''
   const [storedName, setStoredName] = useState(() => {
     if (typeof window === 'undefined') return nameFromUrl
     return localStorage.getItem(`vr_name_${C}`) || nameFromUrl
   })
+  const [storedId, setStoredId] = useState(() => {
+    if (typeof window === 'undefined') return idFromUrl
+    return localStorage.getItem(`vr_id_${C}`) || idFromUrl
+  })
   useEffect(() => {
+    let urlChanged = false
     if (nameFromUrl) {
       localStorage.setItem(`vr_name_${C}`, nameFromUrl)
       setStoredName(nameFromUrl)
+      urlChanged = true
+    }
+    if (idFromUrl) {
+      localStorage.setItem(`vr_id_${C}`, idFromUrl)
+      setStoredId(idFromUrl)
+      urlChanged = true
+    }
+    if (urlChanged) {
       const p = new URLSearchParams(searchParams.toString())
       p.delete('name')
+      p.delete('id')
       const newUrl = p.toString() ? `/session/${C}?${p.toString()}` : `/session/${C}`
       router.replace(newUrl)
     }
   }, [C])
   const displayName = storedName || authSession?.user?.name || ''
+  // Identity id falls back to a derived id for logged-in users so they can
+  // act before the visit response lands (the server resolver returns the
+  // same `u:<userId>` regardless). Anon users have no fallback — they need
+  // their token's identity id to participate, which is set at join time.
+  const myId = storedId || (authSession?.user?.id ? `u:${authSession.user.id}` : '')
   const needsName = !displayName && !authSession?.user
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showSessionPanel, setShowSessionPanel] = useState(false)
@@ -60,19 +86,19 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
-    queryFn: () => fetch(`/api/session/${C}`).then(r => r.json()),
+    queryFn: () => sessionFetch(C, `/api/session/${C}`).then(r => r.ok ? r.json() : null),
     staleTime: 30_000,
   })
 
   const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
-    queryKey: ['wines', C, displayName],
-    queryFn: () => fetch(`/api/session/${C}/wines?name=${encodeURIComponent(displayName)}`).then(r => r.json()),
+    queryKey: ['wines', C, myId],
+    queryFn: () => sessionFetch(C, `/api/session/${C}/wines`).then(r => r.ok ? r.json() : []),
     refetchInterval: 5000,
   })
 
-  const { data: ratingsData = {}, refetch: refetchRatings } = useQuery<Record<string, Record<string, RatingMeta>>>({
+  const { data: ratingsData = {} as RatingsByIdentity, refetch: refetchRatings } = useQuery<RatingsByIdentity>({
     queryKey: ['ratings', C],
-    queryFn: () => fetch(`/api/session/${C}/ratings`).then(r => r.json()),
+    queryFn: () => sessionFetch(C, `/api/session/${C}/ratings`).then(r => r.ok ? r.json() : {}),
     refetchInterval: 5000,
   })
 
@@ -89,27 +115,38 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
-        // Logged-in users may have been disambiguated server-side (their
-        // account name collided with someone already in the session). Pick up
-        // the resolved per-session displayName so the UI and React Query
-        // cache keys (e.g. ['wines', C, displayName]) use the canonical form.
-        // Anon users get the same name back they sent at join time, so the
-        // update is a no-op for them.
+        // Logged-in users may have been disambiguated server-side; pick up
+        // the resolved per-session displayName so the UI and rating-key
+        // lookups use the canonical form. Anon users hit the early-return
+        // branch on the server (no body), so data has no displayName/id —
+        // the join response already populated localStorage for them.
         if (data?.displayName && data.displayName !== storedName) {
           localStorage.setItem(`vr_name_${C}`, data.displayName)
           setStoredName(data.displayName)
+        }
+        if (data?.id && data.id !== storedId) {
+          localStorage.setItem(`vr_id_${C}`, data.id)
+          setStoredId(data.id)
         }
       })
       .catch(() => {})
   }, [C])
 
-  const isCoHost = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))
-  const isHost = isHostState || (metaData && displayName && metaData.host === displayName) || isCoHost
-  const myRatings = ratingsData[displayName] || {}
+  // Host check is id-keyed against meta.hostUserId for logged-in users; the
+  // legacy display-name comparison remains as a fallback for sessions whose
+  // host is anonymous (no hostUserId stored).
+  const hostUserId = metaData?.hostUserId ?? null
+  const isCoHostById = !!(metaData?.coHostIds && myId && metaData.coHostIds.includes(myId))
+  const isCoHostByName = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))
+  const isCoHost = isCoHostById || isCoHostByName
+  const isHostById = !!(hostUserId && myId === `u:${hostUserId}`)
+  const isHostByName = !!(metaData && !hostUserId && displayName && metaData.host === displayName)
+  const isHost = isHostState || isHostById || isHostByName || isCoHost
+  const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 
   const isBlind = !!(metaData?.blind)
   const ctx: SessionCtx = {
-    code: C, displayName, isHost: !!isHost,
+    code: C, displayName, myId, isHost: !!isHost,
     sessionMeta: metaData || null,
     wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
   }

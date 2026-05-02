@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
-import { resolveIdentity } from '@/lib/identity'
+import { resolveIdentity, requireParticipant } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -25,11 +25,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const userName = req.nextUrl.searchParams.get('name')
+
+  const identity = await requireParticipant(c, req, session)
+  if (!identity) return NextResponse.json({ error: 'not a participant' }, { status: 401 })
 
   const wines = await getWines(c)
   const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null
-  const identity = await resolveIdentity(c, req, session, userName)
   const isUserHost = isHostByIdentity(meta as SessionMeta, identity)
 
   // Lineup hidden until X minutes before start

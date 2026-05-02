@@ -12,7 +12,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const identity = await resolveIdentity(c, req, session, userName ?? null)
   if (!identity) return NextResponse.json({ error: 'identity required' }, { status: 401 })
 
-  await redis.del(k.rating(c, identity.displayName, wineId))
+  await redis.del(k.rating(c, identity.id, wineId))
   await touchWithMeta(c)
   return NextResponse.json({ ok: true })
 }

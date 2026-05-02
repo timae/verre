@@ -9,6 +9,7 @@ import {
   newAnonToken,
   recordAnonToken,
   recordIdentity,
+  userIdentityId,
 } from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
@@ -48,22 +49,23 @@ export async function POST(req: NextRequest) {
 
   await redis.set(k.meta(code), JSON.stringify(meta), { EX: sessionTTL })
   await redis.set(k.wines(code), '[]', { EX: sessionTTL })
-  await redis.sAdd(k.users(code), hostName)
-  await redis.expire(k.users(code), sessionTTL)
 
-  // Identity model. Anonymous host gets a per-session identity + token so
-  // subsequent requests can prove who they are without putting userName in
-  // the body. Logged-in users don't need an entry — the auth cookie is the
-  // trust anchor; their displayName comes from session.user.name.
+  // Register the host in the identities map immediately so participant-gated
+  // reads (wines, ratings, session meta) work right after create — no need
+  // to wait for the visit endpoint to run. Anonymous host also gets a token.
   let anonToken: string | null = null
-  if (!session?.user?.id) {
-    const anonId = newAnonIdentityId()
+  let identityId: string
+  if (session?.user?.id) {
+    identityId = userIdentityId(session.user.id)
+    await recordIdentity(code, { id: identityId, displayName: hostName, kind: 'user' })
+  } else {
+    identityId = newAnonIdentityId()
     anonToken = newAnonToken()
-    await recordIdentity(code, { id: anonId, displayName: hostName, kind: 'anon' })
-    await recordAnonToken(code, anonToken, anonId)
-    await redis.expire(k.identities(code), sessionTTL)
+    await recordIdentity(code, { id: identityId, displayName: hostName, kind: 'anon' })
+    await recordAnonToken(code, anonToken, identityId)
     await redis.expire(k.tokens(code), sessionTTL)
   }
+  await redis.expire(k.identities(code), sessionTTL)
 
   if (session?.user) {
     try {
@@ -84,6 +86,7 @@ export async function POST(req: NextRequest) {
     code,
     name: meta.name,
     host: hostName,
+    id: identityId,
     userName: hostName,
     blind: !!blind,
     lifespan: resolvedLifespan,

@@ -24,13 +24,16 @@ if (process.env.NODE_ENV !== 'production') globalForRedis.redis = redis
 export const k = {
   meta:       (c: string) => `s:${c}:meta`,
   wines:      (c: string) => `s:${c}:wines`,
-  rating:     (c: string, user: string, wid: string) => `s:${c}:r:${user}:${wid}`,
-  users:      (c: string) => `s:${c}:users`,
-  // Identity model (Phase 2). Additive — old sessions keep working via legacy
-  // display-name paths. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
+  // Rating key uses identity id (e.g. "u:42" or "a:<uuid>"), not display
+  // name — names can collide between participants, ids cannot.
+  rating:     (c: string, identityId: string, wid: string) => `s:${c}:r:${identityId}:${wid}`,
+  // Identity model. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
   // current display name; tokens maps an anon token to its identity id.
   identities: (c: string) => `s:${c}:identities`,
   tokens:     (c: string) => `s:${c}:tokens`,
+  // Legacy: name-keyed participant set. No longer written to. Kept as a key
+  // helper so any straggler reader resolves correctly until the entry expires.
+  users:      (c: string) => `s:${c}:users`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h

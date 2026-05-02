@@ -57,7 +57,7 @@ const HIDE_OPTIONS = [
 ]
 
 export function SessionPanel({ onClose, onLeave }: Props) {
-  const { code, displayName, isHost, sessionMeta, refresh } = useSession()
+  const { code, displayName, myId, isHost, sessionMeta, refresh } = useSession()
   const { data: authSession } = useAuthSession()
   const queryClient = useQueryClient()
   const isPro = !!(authSession?.user as { pro?: boolean })?.pro
@@ -86,8 +86,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
   const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
-  const [participants,  setParticipants]  = useState<string[]>([])
+  type Participant = { id: string; displayName: string }
+  const [participants,  setParticipants]  = useState<Participant[]>([])
   const [coHosts,       setCoHosts]       = useState<string[]>([])
+  const [coHostIds,     setCoHostIds]     = useState<string[]>([])
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
   const [saveError,     setSaveError]     = useState('')
@@ -97,9 +99,14 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
 
   useEffect(() => {
-    fetch(`/api/session/${code}`)
-      .then(r => r.json())
-      .then(d => { setParticipants(d.users || []); setCoHosts(d.coHosts || []) })
+    sessionFetch(code, `/api/session/${code}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        setParticipants(d.participants || [])
+        setCoHosts(d.coHosts || [])
+        setCoHostIds(d.coHostIds || [])
+      })
       .catch(() => {})
   }, [code])
 
@@ -134,13 +141,17 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setCopied(true); setTimeout(() => setCopied(false), 2000)
   }
 
-  async function toggleCoHost(targetUser: string) {
-    const isCo = coHosts.includes(targetUser)
+  async function toggleCoHost(targetId: string) {
+    const isCo = coHostIds.includes(targetId)
     const res = await sessionFetch(code, `/api/session/${code}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetUser, action: isCo ? 'remove-cohost' : 'add-cohost' }),
+      body: JSON.stringify({ targetId, action: isCo ? 'remove-cohost' : 'add-cohost' }),
     })
-    if (res.ok) { const { meta } = await res.json(); setCoHosts(meta.coHosts || []) }
+    if (res.ok) {
+      const { meta } = await res.json()
+      setCoHosts(meta.coHosts || [])
+      setCoHostIds(meta.coHostIds || [])
+    }
   }
 
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
@@ -221,18 +232,21 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 </button>
                 {showParticipants && (
                   <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
-                    {participants.map(u => {
-                      const isThisHost = u === sessionMeta?.host
-                      const isCo = coHosts.includes(u)
-                      const isMe = u === displayName
+                    {participants.map(p => {
+                      const hostUserId = (sessionMeta as { hostUserId?: number | null } | null)?.hostUserId ?? null
+                      const isThisHost = hostUserId
+                        ? p.id === `u:${hostUserId}`
+                        : p.displayName === sessionMeta?.host
+                      const isCo = coHostIds.includes(p.id) || coHosts.includes(p.displayName)
+                      const isMe = p.id === myId
                       return (
-                        <div key={u} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
+                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
                           <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
-                          <span style={{flex:1,fontSize:12}}>{u}</span>
+                          <span style={{flex:1,fontSize:12}}>{p.displayName}</span>
                           {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
                           {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
                           {isHost && !isThisHost && !isMe && (
-                            <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(u)}>
+                            <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(p.id)}>
                               {isCo ? 'remove role' : 'make co-host'}
                             </button>
                           )}

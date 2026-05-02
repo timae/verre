@@ -13,19 +13,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
   if (!wineId) return NextResponse.json({ error: 'wineId required' }, { status: 400 })
 
-  // Identity comes from auth() or x-vr-anon-token, NEVER from the request body.
-  // Falls back to bodyUserName during the Packet 4→5 transition window for
-  // anonymous clients that haven't been wired to send the token yet.
+  // Identity comes from auth() or x-vr-anon-token. Never from the request
+  // body. Unauthenticated callers are rejected — there is no longer a body-
+  // name fallback (would let any caller claim any name).
   const identity = await resolveIdentity(c, req, session, userName ?? null)
   if (!identity) return NextResponse.json({ error: 'identity required' }, { status: 401 })
 
   const ratingScore = score || 0
-  // Redis rating key still uses displayName for compatibility with the
-  // existing ratings GET endpoint and frontend lookup. Identity-keyed Redis
-  // ratings are deferred (would require a separate migration of the ratings
-  // GET shape and the frontend ratingsData[displayName] lookup).
+  // Rating is keyed by identity id, never by display name. Two participants
+  // sharing a display name (legitimately via collision, or accidentally via
+  // a client-side race) cannot overwrite each other's ratings.
   await redis.set(
-    k.rating(c, identity.displayName, wineId),
+    k.rating(c, identity.id, wineId),
     JSON.stringify({ score: ratingScore, flavors: flavors || {}, notes: notes || '', at: Date.now() }),
     { EX: TTL },
   )

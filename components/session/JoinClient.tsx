@@ -49,7 +49,11 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     // Server may have suffixed the name with a food emoji to disambiguate
     // from someone already in the room. Use the returned form as canonical.
     const finalName = data.userName || n
-    router.push(`/session/${code}?name=${encodeURIComponent(finalName)}`)
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${code}?${params.toString()}`)
   }
 
   return (

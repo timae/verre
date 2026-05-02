@@ -2,24 +2,32 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity } from '@/lib/identity'
+import { resolveIdentity, requireParticipant } from '@/lib/identity'
 import { isHostByIdentity, type SessionMeta } from '@/lib/session'
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
   const c = code.toUpperCase()
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const users = await redis.sMembers(k.users(c))
+
+  const session = await auth()
+  const caller = await requireParticipant(c, req, session)
+  if (!caller) return NextResponse.json({ error: 'not a participant' }, { status: 401 })
+
+  // Participants come from the identities map (id-keyed, the authoritative
+  // source). The legacy `users` set is no longer written to.
+  const idsByName = await redis.hGetAll(k.identities(c))
+  const participants = Object.entries(idsByName).map(([id, displayName]) => ({ id, displayName }))
   const ttlSeconds = await redis.ttl(k.meta(c))
-  return NextResponse.json({ ...JSON.parse(raw), code: c, users, ttlSeconds })
+  return NextResponse.json({ ...JSON.parse(raw), code: c, participants, ttlSeconds })
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const { userName, targetUser, action } = await req.json()
+  const { userName, targetId: targetIdFromBody, targetUser, action } = await req.json()
 
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
@@ -35,29 +43,52 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     return NextResponse.json({ error: 'only the host can assign roles' }, { status: 403 })
   }
 
-  // Resolve the target user's identity from the session's identities map so
-  // we can mutate coHostIds (the trust anchor) alongside the legacy coHosts
-  // display-name list.
+  // Resolve the target by id (preferred) or by name (legacy fallback for
+  // older clients). Using the id avoids ambiguity when two participants
+  // share a display name. Both code paths produce a `{targetId, targetName}`
+  // pair anchored to the identities map — the trust source.
   const idsByName = await redis.hGetAll(k.identities(c))
-  const targetId = Object.entries(idsByName).find(([, name]) => name === targetUser)?.[0] || null
+  let targetId: string | null = null
+  let targetName: string = ''
+  if (typeof targetIdFromBody === 'string' && targetIdFromBody) {
+    const registered = idsByName[targetIdFromBody]
+    if (registered) {
+      targetId = targetIdFromBody
+      targetName = registered
+    }
+  }
+  if (!targetId && typeof targetUser === 'string' && targetUser) {
+    const found = Object.entries(idsByName).find(([, name]) => name === targetUser)
+    if (found) {
+      targetId = found[0]
+      targetName = found[1]
+    } else {
+      // Target not in identities — fall back to using the raw name for the
+      // legacy display-name lists. Loses the id-keyed guarantees, but keeps
+      // older flows working until all clients send targetId.
+      targetName = targetUser
+    }
+  }
+  if (!targetName) {
+    return NextResponse.json({ error: 'targetId or targetUser required' }, { status: 400 })
+  }
 
   const coHosts: string[] = meta.coHosts || []
   const coHostIds: string[] = meta.coHostIds || []
 
   if (action === 'add-cohost') {
-    if (!coHosts.includes(targetUser)) coHosts.push(targetUser)
+    if (!coHosts.includes(targetName)) coHosts.push(targetName)
     if (targetId && !coHostIds.includes(targetId)) coHostIds.push(targetId)
   } else if (action === 'remove-cohost') {
-    const ix = coHosts.indexOf(targetUser); if (ix !== -1) coHosts.splice(ix, 1)
+    const ix = coHosts.indexOf(targetName); if (ix !== -1) coHosts.splice(ix, 1)
     if (targetId) {
       const idx = coHostIds.indexOf(targetId); if (idx !== -1) coHostIds.splice(idx, 1)
     }
   } else if (action === 'transfer-host') {
     // Old host becomes co-host. New host: by display name (legacy) and id
-    // (when known). The previous host's display name comes from the resolved
-    // identity, not the request body, so dropping userName from the body is
-    // safe.
-    meta.host = targetUser
+    // (when known). The previous host's identity comes from the resolved
+    // caller, not the request body.
+    meta.host = targetName
     meta.hostUserId = targetId?.startsWith('u:') ? Number(targetId.slice(2)) : null
     meta.coHosts = callerIdentity ? [callerIdentity.displayName] : []
     meta.coHostIds = callerIdentity ? [callerIdentity.id] : []

@@ -43,7 +43,10 @@ export async function sessionFetch(code: string, url: string, init?: RequestInit
   const res = await fetch(url, { ...init, headers })
   if (token && (res.status === 401 || res.status === 403)) {
     clearAnonToken(code)
-    if (typeof localStorage !== 'undefined') localStorage.removeItem(NAME_KEY(code))
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(NAME_KEY(code))
+      localStorage.removeItem(`vr_id_${code.toUpperCase()}`)
+    }
     if (typeof window !== 'undefined') window.location.href = `/join/${code.toUpperCase()}`
   }
   return res

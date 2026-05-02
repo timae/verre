@@ -30,7 +30,6 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
         displayName = registered
       } else {
         displayName = await disambiguateDisplayName(c, displayName)
-        await redis.sAdd(k.users(c), displayName)
         await recordIdentity(c, { id, displayName, kind: 'user' })
       }
       await touchWithMeta(c)
@@ -52,5 +51,5 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
   } catch (err) {
     console.error('visit error:', err)
   }
-  return NextResponse.json({ ok: true, displayName })
+  return NextResponse.json({ ok: true, id, displayName })
 }

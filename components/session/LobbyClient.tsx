@@ -35,7 +35,12 @@ export function LobbyClient({ user }: { user: User }) {
     const data = await res.json()
     if (data.anonToken) setAnonToken(data.code, data.anonToken)
     const finalName = data.userName || displayName.trim()
-    router.push(`/session/${data.code}?host=1&name=${encodeURIComponent(finalName)}`)
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('host', '1')
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${data.code}?${params.toString()}`)
   }
 
   async function joinSession() {
@@ -57,7 +62,11 @@ export function LobbyClient({ user }: { user: User }) {
     const code = joinCode.trim().toUpperCase()
     if (data.anonToken) setAnonToken(code, data.anonToken)
     const finalName = data.userName || displayName.trim()
-    router.push(`/session/${code}?name=${encodeURIComponent(finalName)}`)
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${code}?${params.toString()}`)
   }
 
   return (
