@@ -2,12 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { touch } from '@/lib/session'
-import { validateDisplayName } from '@/lib/displayName'
+import { validateDisplayName, disambiguateDisplayName } from '@/lib/displayName'
 import {
   newAnonIdentityId,
   newAnonToken,
   recordAnonToken,
   recordIdentity,
+  userIdentityId,
 } from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
@@ -23,15 +24,25 @@ export async function POST(req: NextRequest) {
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'session not found' }, { status: 404 })
 
-  await redis.sAdd(k.users(c), userName)
-
-  // Identity model. Anonymous joiner: mint a per-session token tied to a
-  // fresh anon identity. The client persists the token in sessionStorage and
-  // replays it on every subsequent request via the x-vr-anon-token header
-  // (Packet 5 wires the persistence). Logged-in joiners don't need a token
-  // or an identities entry — auth() is the trust anchor.
+  // Logged-in users have a stable identity-id (`u:<userId>`). If they're
+  // already registered for this session, reuse their stored displayName so
+  // repeated join calls (back/forward, refresh, etc.) don't accumulate
+  // emoji suffixes. Anonymous joiners always get a fresh identity — each
+  // browser session is a new participant from the server's point of view.
   let anonToken: string | null = null
-  if (!session?.user?.id) {
+  if (session?.user?.id) {
+    const id = userIdentityId(session.user.id)
+    const registered = await redis.hGet(k.identities(c), id)
+    if (registered) {
+      userName = registered
+    } else {
+      userName = await disambiguateDisplayName(c, userName)
+      await redis.sAdd(k.users(c), userName)
+      await recordIdentity(c, { id, displayName: userName, kind: 'user' })
+    }
+  } else {
+    userName = await disambiguateDisplayName(c, userName)
+    await redis.sAdd(k.users(c), userName)
     const anonId = newAnonIdentityId()
     anonToken = newAnonToken()
     await recordIdentity(c, { id: anonId, displayName: userName, kind: 'anon' })
@@ -43,6 +54,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ...JSON.parse(raw),
     code: c,
+    userName,
     ...(anonToken ? { anonToken } : {}),
   })
 }

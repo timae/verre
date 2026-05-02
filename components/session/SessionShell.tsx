@@ -8,6 +8,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { SessionPanel } from './SessionPanel'
 import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 type SessionCtx = {
   code: string; displayName: string; isHost: boolean
@@ -85,7 +86,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const bookmarkedIds = new Set(bookmarksData.map(b => b.wine_id))
 
   useEffect(() => {
-    fetch(`/api/session/${C}/visit`, { method: 'POST' }).catch(() => {})
+    sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' }).catch(() => {})
   }, [C])
 
   const isCoHost = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))

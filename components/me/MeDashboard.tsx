@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
@@ -46,8 +47,10 @@ export function MeDashboard({ user }: { user: User }) {
       setError(data.error || 'Could not create session')
       return
     }
-    const { code } = await res.json()
-    router.push(`/session/${code}?host=1&name=${encodeURIComponent(name.trim())}`)
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(data.code, data.anonToken)
+    const finalName = data.userName || name.trim()
+    router.push(`/session/${data.code}?host=1&name=${encodeURIComponent(finalName)}`)
   }
 
   async function joinSession() {
@@ -64,7 +67,11 @@ export function MeDashboard({ user }: { user: User }) {
       setError(data.error || 'Session not found')
       return
     }
-    router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(name.trim())}`)
+    const data = await res.json()
+    const code = joinCode.trim().toUpperCase()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    const finalName = data.userName || name.trim()
+    router.push(`/session/${code}?name=${encodeURIComponent(finalName)}`)
   }
 
   const [sections] = useDashboardSections()

@@ -3,7 +3,8 @@ import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession, isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
-import { userIdentityId } from '@/lib/identity'
+import { userIdentityId, recordIdentity } from '@/lib/identity'
+import { disambiguateDisplayName } from '@/lib/displayName'
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -14,18 +15,31 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })
 
-  // Mirror logged-in user into the Redis participant set so any entry path
-  // (rejoin link, direct URL) reflects participation, not just /api/session/join.
-  if (session.user.name) {
+  // Mirror logged-in user into the Redis participant set on first visit so
+  // every entry path (rejoin link, direct URL, /api/session/join) reflects
+  // participation. Idempotent across re-entries via the identities map: if
+  // this user-id is already registered in this session, reuse the stored
+  // displayName instead of name-matching against the users set (which is
+  // lossy for display-name collisions).
+  const id = userIdentityId(session.user.id)
+  let displayName = session.user.name || ''
+  if (displayName) {
     try {
-      await redis.sAdd(k.users(c), session.user.name)
+      const registered = await redis.hGet(k.identities(c), id)
+      if (registered) {
+        displayName = registered
+      } else {
+        displayName = await disambiguateDisplayName(c, displayName)
+        await redis.sAdd(k.users(c), displayName)
+        await recordIdentity(c, { id, displayName, kind: 'user' })
+      }
       await touchWithMeta(c)
     } catch {}
   }
 
   // Persist the role at join time. Hosts get role='host' so future archival /
   // co-host audits can reconstruct who had what permissions in this session.
-  const identity = { id: userIdentityId(session.user.id), displayName: session.user.name, kind: 'user' as const }
+  const identity = { id, displayName, kind: 'user' as const }
   const role = isHostByIdentity(meta, identity) ? 'host' : 'taster'
 
   try {

@@ -4,3 +4,5 @@ node_modules/
 .claude/
 ios/
 .next/
+.DS_Store
+tsconfig.tsbuildinfo

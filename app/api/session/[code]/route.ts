@@ -54,12 +54,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     }
   } else if (action === 'transfer-host') {
     // Old host becomes co-host. New host: by display name (legacy) and id
-    // (when known). Anonymous transfers without an id resolution leave
-    // coHostIds empty for the old host — acceptable; isHost still recognizes
-    // the legacy coHosts entry.
+    // (when known). The previous host's display name comes from the resolved
+    // identity, not the request body, so dropping userName from the body is
+    // safe.
     meta.host = targetUser
     meta.hostUserId = targetId?.startsWith('u:') ? Number(targetId.slice(2)) : null
-    meta.coHosts = [userName]
+    meta.coHosts = callerIdentity ? [callerIdentity.displayName] : []
     meta.coHostIds = callerIdentity ? [callerIdentity.id] : []
   }
 

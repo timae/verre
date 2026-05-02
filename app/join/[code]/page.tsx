@@ -23,7 +23,9 @@ export default async function JoinPage({ params }: { params: Promise<{ code: str
     let alreadyJoined = false
     try {
       if (session.user.name) {
-        alreadyJoined = await redis.sIsMember(k.users(C), session.user.name)
+        // Match either the bare name or a disambiguated `${name} <emoji>` form.
+        const members = await redis.sMembers(k.users(C))
+        alreadyJoined = members.some(n => n === session.user!.name || n.startsWith(`${session.user!.name} `))
       }
     } catch {}
     if (!alreadyJoined) {

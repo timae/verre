@@ -6,6 +6,7 @@ import { PolarChart } from '@/components/charts/PolarChart'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -52,25 +53,25 @@ export function RatingScreen({ params }: Props) {
 
   async function save() {
     setSaving(true)
-    await fetch(`/api/session/${code}/rate`, {
+    await sessionFetch(code, `/api/session/${code}/rate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, wineId, score, flavors, notes }),
+      body: JSON.stringify({ wineId, score, flavors, notes }),
     })
     setSaving(false); refresh(); router.back()
   }
 
   async function resetRating() {
     if (!confirm('Reset your rating?')) return
-    await fetch(`/api/session/${code}/rate/${wineId}`, {
+    await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh(); router.back()
   }
 
   async function toggleBookmark() {
     const method = bookmarked ? 'DELETE' : 'POST'
-    await fetch(`/api/session/${code}/wines/${wineId}/bookmark`, {
+    await sessionFetch(code, `/api/session/${code}/wines/${wineId}/bookmark`, {
       method, headers: { 'Content-Type': 'application/json' },
     })
     setBookmarked(!bookmarked)
@@ -82,9 +83,9 @@ export function RatingScreen({ params }: Props) {
     const ordered = [...wines]
     const [w] = ordered.splice(idx, 1)
     ordered.splice(idx + delta, 0, w)
-    await fetch(`/api/session/${code}/wines/reorder`, {
+    await sessionFetch(code, `/api/session/${code}/wines/reorder`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
+      body: JSON.stringify({ orderedIds: ordered.map(w => w.id) }),
     })
     refresh()
   }
@@ -103,9 +104,9 @@ export function RatingScreen({ params }: Props) {
     const ordered = [...wines]
     const [w] = ordered.splice(idx, 1)
     ordered.splice(target - 1, 0, w)
-    await fetch(`/api/session/${code}/wines/reorder`, {
+    await sessionFetch(code, `/api/session/${code}/wines/reorder`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ orderedIds: ordered.map(w => w.id), userName: displayName }),
+      body: JSON.stringify({ orderedIds: ordered.map(w => w.id) }),
     })
     setMoveSuccess(`moved to position ${target}`)
     refresh()
@@ -113,9 +114,9 @@ export function RatingScreen({ params }: Props) {
 
   async function deleteWine() {
     if (!confirm(`Delete "${wine!.name}"? This removes it for everyone.`)) return
-    await fetch(`/api/session/${code}/wines/${wineId}`, {
+    await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh(); router.back()
   }

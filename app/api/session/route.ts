@@ -84,6 +84,7 @@ export async function POST(req: NextRequest) {
     code,
     name: meta.name,
     host: hostName,
+    userName: hostName,
     blind: !!blind,
     lifespan: resolvedLifespan,
     ...(anonToken ? { anonToken } : {}),

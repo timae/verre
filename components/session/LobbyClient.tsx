@@ -5,6 +5,7 @@ import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -31,8 +32,10 @@ export function LobbyClient({ user }: { user: User }) {
       setError(data.error || 'Could not create session')
       return
     }
-    const { code } = await res.json()
-    router.push(`/session/${code}?host=1&name=${encodeURIComponent(displayName.trim())}`)
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(data.code, data.anonToken)
+    const finalName = data.userName || displayName.trim()
+    router.push(`/session/${data.code}?host=1&name=${encodeURIComponent(finalName)}`)
   }
 
   async function joinSession() {
@@ -45,8 +48,16 @@ export function LobbyClient({ user }: { user: User }) {
       body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: displayName.trim() }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Session not found'); return }
-    router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(displayName.trim())}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Session not found')
+      return
+    }
+    const data = await res.json()
+    const code = joinCode.trim().toUpperCase()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    const finalName = data.userName || displayName.trim()
+    router.push(`/session/${code}?name=${encodeURIComponent(finalName)}`)
   }
 
   return (

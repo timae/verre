@@ -5,6 +5,7 @@ import { LineupLocked } from './LineupLocked'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
@@ -55,33 +56,33 @@ export function WineListScreen() {
   const mapsUrl = m?.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(m.address)}` : ''
 
   async function revealWine(wineId: string) {
-    await fetch(`/api/session/${code}/wines/${wineId}/reveal`, {
+    await sessionFetch(code, `/api/session/${code}/wines/${wineId}/reveal`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh()
   }
 
   async function hideWine(wineId: string) {
-    await fetch(`/api/session/${code}/wines/${wineId}/reveal`, {
+    await sessionFetch(code, `/api/session/${code}/wines/${wineId}/reveal`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh()
   }
 
   async function revealAll() {
-    await fetch(`/api/session/${code}/wines/reveal-all`, {
+    await sessionFetch(code, `/api/session/${code}/wines/reveal-all`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh()
   }
 
   async function hideAll() {
-    await fetch(`/api/session/${code}/wines/hide-all`, {
+    await sessionFetch(code, `/api/session/${code}/wines/hide-all`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName }),
+      body: JSON.stringify({}),
     })
     refresh()
   }

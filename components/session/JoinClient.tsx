@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 interface Props {
   code: string
@@ -43,7 +44,12 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
       setError(data.error || 'Could not join — session may have expired')
       return
     }
-    router.push(`/session/${code}?name=${encodeURIComponent(n)}`)
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    // Server may have suffixed the name with a food emoji to disambiguate
+    // from someone already in the room. Use the returned form as canonical.
+    const finalName = data.userName || n
+    router.push(`/session/${code}?name=${encodeURIComponent(finalName)}`)
   }
 
   return (

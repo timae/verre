@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -117,9 +118,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setSaving(true)
     const dateFromISO = dateFromDate && dateFromTime ? new Date(`${dateFromDate}T${dateFromTime}`).toISOString() : ''
     const dateToISO   = dateToDate   && dateToTime   ? new Date(`${dateToDate}T${dateToTime}`).toISOString()     : ''
-    const res = await fetch(`/api/session/${code}/settings`, {
+    const res = await sessionFetch(code, `/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
+      body: JSON.stringify({ name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
     })
     setSaving(false)
     if (res.ok) {
@@ -135,9 +136,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   async function toggleCoHost(targetUser: string) {
     const isCo = coHosts.includes(targetUser)
-    const res = await fetch(`/api/session/${code}`, {
+    const res = await sessionFetch(code, `/api/session/${code}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, targetUser, action: isCo ? 'remove-cohost' : 'add-cohost' }),
+      body: JSON.stringify({ targetUser, action: isCo ? 'remove-cohost' : 'add-cohost' }),
     })
     if (res.ok) { const { meta } = await res.json(); setCoHosts(meta.coHosts || []) }
   }
