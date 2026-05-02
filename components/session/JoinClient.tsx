@@ -25,7 +25,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
   useEffect(() => {
     if (isLoggedIn || isExpired) return
     if (typeof window === 'undefined') return
-    const stored = sessionStorage.getItem(`vr_name_${code}`)
+    const stored = localStorage.getItem(`vr_name_${code}`)
     if (stored) router.replace(`/session/${code}`)
   }, [code, isLoggedIn, isExpired])
 

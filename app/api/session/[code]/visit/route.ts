@@ -52,5 +52,5 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
   } catch (err) {
     console.error('visit error:', err)
   }
-  return NextResponse.json({ ok: true })
+  return NextResponse.json({ ok: true, displayName })
 }

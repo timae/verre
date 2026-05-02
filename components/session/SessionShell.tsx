@@ -36,11 +36,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const nameFromUrl = searchParams.get('name') || ''
   const [storedName, setStoredName] = useState(() => {
     if (typeof window === 'undefined') return nameFromUrl
-    return sessionStorage.getItem(`vr_name_${C}`) || nameFromUrl
+    return localStorage.getItem(`vr_name_${C}`) || nameFromUrl
   })
   useEffect(() => {
     if (nameFromUrl) {
-      sessionStorage.setItem(`vr_name_${C}`, nameFromUrl)
+      localStorage.setItem(`vr_name_${C}`, nameFromUrl)
       setStoredName(nameFromUrl)
       const p = new URLSearchParams(searchParams.toString())
       p.delete('name')
@@ -86,7 +86,21 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const bookmarkedIds = new Set(bookmarksData.map(b => b.wine_id))
 
   useEffect(() => {
-    sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' }).catch(() => {})
+    sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        // Logged-in users may have been disambiguated server-side (their
+        // account name collided with someone already in the session). Pick up
+        // the resolved per-session displayName so the UI and React Query
+        // cache keys (e.g. ['wines', C, displayName]) use the canonical form.
+        // Anon users get the same name back they sent at join time, so the
+        // update is a no-op for them.
+        if (data?.displayName && data.displayName !== storedName) {
+          localStorage.setItem(`vr_name_${C}`, data.displayName)
+          setStoredName(data.displayName)
+        }
+      })
+      .catch(() => {})
   }, [C])
 
   const isCoHost = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))

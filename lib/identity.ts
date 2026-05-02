@@ -43,9 +43,17 @@ export async function resolveIdentity(
   bodyUserName: string | null,
 ): Promise<Identity | null> {
   if (authSession?.user?.id) {
+    // Prefer the per-session displayName from the identities map (set by the
+    // visit/join endpoints, possibly with a disambiguation suffix). Falls back
+    // to the bare account name for users who have a session cookie but no
+    // identities entry yet (sessions created before the visit endpoint started
+    // writing identity records, or a tight race between visit and the first
+    // state-changing call).
+    const id = userIdentityId(authSession.user.id)
+    const registered = await redis.hGet(k.identities(code), id)
     return {
-      id: userIdentityId(authSession.user.id),
-      displayName: authSession.user.name || '',
+      id,
+      displayName: registered || authSession.user.name || '',
       kind: 'user',
     }
   }
