@@ -1,0 +1,12 @@
+# Deploio app configuration. Settings here are defaults; the admin GUI
+# (Cockpit) and `nctl` command-line take precedence. Documented at
+# https://guides.deplo.io/user-guide/configuring-your-application.html
+
+# Deploy Job: runs once before each new release goes live. We use it to
+# apply pending Prisma migrations (`prisma migrate deploy` is idempotent —
+# already-applied migrations are skipped). If the job fails, the release
+# is marked failed and the previous release keeps serving production, so
+# a broken migration doesn't take the app down.
+deployJob:
+  name: "migrate"
+  command: "npx prisma migrate deploy"

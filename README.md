@@ -97,8 +97,8 @@ Or via Cockpit:
 docker run -d -p 6379:6379 redis:7-alpine
 
 # Postgres: either run locally (docker) or point DATABASE_URL at a dev DB.
-# Then sync the schema:
-npx prisma db push
+# Then apply migrations to set up the schema:
+npx prisma migrate deploy
 
 # Start app
 npm install
