@@ -3,6 +3,7 @@ import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { validateDisplayName } from '@/lib/displayName'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
 
 const schema = z.object({
   name:     z.string(),
@@ -11,6 +12,18 @@ const schema = z.object({
 })
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 100 registrations per minute per IP. Generous enough for
+  // a busy event where many people sign up at once; tight enough to make
+  // sustained signup spam expensive.
+  const ip = getClientIp(req)
+  const rl = await checkRate(`rl:register:ip:${ip}:1m`, 100, 60)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: 'Too many registration attempts. Try again later.', retryAfter: rl.retryAfter },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+    )
+  }
+
   const body = await req.json()
   const parsed = schema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: 'invalid input' }, { status: 400 })

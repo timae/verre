@@ -30,7 +30,24 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
     setLoading(true); setError('')
     const res = await signIn('credentials', { email, password, redirect: false })
     setLoading(false)
-    if (res?.error) { setError('Invalid email or password'); return }
+    if (res?.error) {
+      // Server attaches "RATE_LIMITED:<seconds>" to the error when login is
+      // throttled. Surface a friendly "try again in N seconds" message;
+      // otherwise show the generic credentials error.
+      const m = /RATE_LIMITED:(\d+)/.exec(res.code || res.error || '')
+      if (m) {
+        const secs = Number(m[1])
+        // Show seconds when under a minute; otherwise round up to the
+        // nearest minute so "59 minutes" reads better than "3527 seconds".
+        const human = secs < 60
+          ? `${secs} second${secs === 1 ? '' : 's'}`
+          : `${Math.ceil(secs / 60)} minute${Math.ceil(secs / 60) === 1 ? '' : 's'}`
+        setError(`Too many login attempts. Try again in ${human}.`)
+      } else {
+        setError('Invalid email or password')
+      }
+      return
+    }
     router.push(redirectTo || '/me'); router.refresh()
   }
 

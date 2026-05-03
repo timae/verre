@@ -3,13 +3,25 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
 import { validateDisplayName } from '@/lib/displayName'
+import { checkRate } from '@/lib/rateLimit'
 
 export async function PATCH(req: NextRequest) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
-  const { name, email, currentPassword, newPassword } = await req.json()
+  // Rate limit: 20 PATCHes per hour per user. Caps brute-forcing of the
+  // current-password check (used when changing password) and curbs damage
+  // from a stolen session cookie.
   const userId = Number(session.user.id)
+  const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: 'Too many account changes. Try again later.', retryAfter: rl.retryAfter },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+    )
+  }
+
+  const { name, email, currentPassword, newPassword } = await req.json()
   const updates: Record<string, unknown> = {}
 
   if (name !== undefined) {

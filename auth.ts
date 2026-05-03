@@ -4,6 +4,7 @@ import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { authConfig } from '@/auth.config'
+import { checkRate, peekRates } from '@/lib/rateLimit'
 
 // Constant-time guard against email enumeration via login timing.
 // Real bcrypt-12 hash that will never match any user's password.
@@ -17,19 +18,44 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         email: { label: 'Email', type: 'email' },
         password: { label: 'Password', type: 'password' },
       },
-      async authorize(credentials) {
+      async authorize(credentials, request) {
         const parsed = z.object({
           email: z.string().email(),
           password: z.string().min(8),
         }).safeParse(credentials)
         if (!parsed.success) return null
 
-        const user = await prisma.user.findUnique({
-          where: { email: parsed.data.email.toLowerCase() },
-        })
+        const email = parsed.data.email.toLowerCase()
+        // Pull client IP from forwarded headers. The `request` param is the
+        // raw NextAuth request; fall back to 'unknown' if no IP header set.
+        const xff = request?.headers?.get?.('x-forwarded-for')
+        const ip = xff ? xff.split(',')[0].trim() : (request?.headers?.get?.('x-real-ip') || 'unknown')
 
+        // Rate limit FAILED login attempts. Successful logins don't count.
+        // Three counters: 10 fails/min per email, 20 fails/hour per email,
+        // 100 fails/10min per IP. We peek first (check without incrementing).
+        // If already at the limit, refuse with a special error message the
+        // login form surfaces. Otherwise run bcrypt; if THAT fails, we
+        // increment.
+        const rateChecks = [
+          { key: `rl:login:email:${email}:1m`, max: 10, windowSeconds: 60 },
+          { key: `rl:login:email:${email}:1h`, max: 20, windowSeconds: 3600 },
+          { key: `rl:login:ip:${ip}:10m`,      max: 100, windowSeconds: 600 },
+        ]
+        const rate = await peekRates(rateChecks)
+        if (!rate.allowed) {
+          // NextAuth surfaces this Error message via res.error. The login
+          // form parses RATE_LIMITED:<seconds> into a friendly message.
+          throw new Error(`RATE_LIMITED:${rate.retryAfter}`)
+        }
+
+        const user = await prisma.user.findUnique({ where: { email } })
         const valid = await bcrypt.compare(parsed.data.password, user?.passwordHash ?? DUMMY_HASH)
-        if (!user || !valid) return null
+        if (!user || !valid) {
+          // Failed attempt — increment all three counters.
+          for (const c of rateChecks) await checkRate(c.key, c.max, c.windowSeconds)
+          return null
+        }
 
         return {
           id: String(user.id),
