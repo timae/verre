@@ -27,7 +27,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const { userName, targetId: targetIdFromBody, targetUser, action } = await req.json()
+  const { targetId: targetIdFromBody, targetUser, action } = await req.json()
 
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
@@ -38,7 +38,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // intentionally host-only to avoid privilege-escalation chains (cohost A
   // promoting cohost B, etc.). Match against hostIdentityId (id-first),
   // hostUserId (logged-in legacy), or display name (anon-host legacy).
-  const callerIdentity = await resolveIdentity(c, req, session, userName ?? null)
+  const callerIdentity = await resolveIdentity(c, req, session)
   if (!callerIdentity) return authInvalid()
   const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
@@ -170,16 +170,19 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
   }
 
-  // Postgres cleanup. Best-effort — if any single step fails we still wipe
-  // Redis below to give the user the immediate "session is gone" experience.
+  // Postgres cleanup wrapped in a transaction so any failure rolls back the
+  // whole set — no half-deleted state where, say, ratings are gone but the
+  // session row remains. If the transaction throws, we still wipe Redis
+  // below so the user gets the "session is gone" experience client-side.
   try {
-    const sessionRow = await prisma.session.findUnique({ where: { code: c } })
-    if (sessionRow) {
+    await prisma.$transaction(async (tx) => {
+      const sessionRow = await tx.session.findUnique({ where: { code: c } })
+      if (!sessionRow) return
       const sessionId = sessionRow.id
 
       // 1. Delete ratings whose (user, wine) is NOT bookmarked. Anonymous
       //    ratings only live in Redis; this only touches logged-in raters.
-      await prisma.$executeRaw`
+      await tx.$executeRaw`
         DELETE FROM ratings r
         USING wines w
         WHERE r.wine_id = w.id
@@ -194,7 +197,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
       // 2. Delete HoF entries that correspond to ratings we just deleted.
       //    HoF rows are denormalized (wineName + userId), so the rule is
       //    symmetric: keep HoF when the rater bookmarked, drop otherwise.
-      await prisma.$executeRaw`
+      await tx.$executeRaw`
         DELETE FROM hall_of_fame h
         WHERE h.session_code = ${c}
           AND h.user_id IS NOT NULL
@@ -209,14 +212,14 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
       // 3. Orphan the wines (sessionId NULL). Schema's onDelete: SetNull
       //    would do this automatically when we delete the session row,
       //    but doing it explicitly is clearer.
-      await prisma.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
+      await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
 
       // 4. Delete session_members rows for this session.
-      await prisma.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
+      await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
 
       // 5. Delete the session row itself.
-      await prisma.$executeRaw`DELETE FROM sessions WHERE id = ${sessionId}`
-    }
+      await tx.$executeRaw`DELETE FROM sessions WHERE id = ${sessionId}`
+    })
   } catch (err) {
     console.error('session delete (postgres) error:', err)
   }

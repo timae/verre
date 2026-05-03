@@ -30,21 +30,14 @@ export function newAnonToken(): string {
 // Priority:
 //   1. NextAuth session (logged-in users)
 //   2. x-vr-anon-token header → Redis lookup in s:{CODE}:tokens
-//   3. Legacy fallback: body.userName matched against the session's identities
-//      map or, if the session predates Phase 2, just trusted as the displayName
-//      (closes Packet 5 once the frontend wires the token everywhere).
 //
-// Returns null when nothing identifies the caller (anonymous request to an
-// endpoint that requires identity).
-// `bodyUserName` is retained as a parameter only to avoid touching every
-// caller site; the value is ignored. Kept callers can drop it in a later
-// cleanup pass.
+// Returns null when nothing identifies the caller. There is no body-name
+// fallback — that would let any caller claim any name and have the server
+// treat them as that participant for the duration of a request.
 export async function resolveIdentity(
   code: string,
   req: NextRequest,
   authSession: Session | null,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  bodyUserName: string | null = null,
 ): Promise<Identity | null> {
   if (authSession?.user?.id) {
     // Prefer the per-session displayName from the identities map (set by the
@@ -92,7 +85,7 @@ export async function requireParticipant(
   req: NextRequest,
   authSession: Session | null,
 ): Promise<Identity | null> {
-  const identity = await resolveIdentity(code, req, authSession, null)
+  const identity = await resolveIdentity(code, req, authSession)
   if (!identity) return null
   const registered = await redis.hGet(k.identities(code), identity.id)
   if (registered === null || registered === undefined) return null

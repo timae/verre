@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, lifespanTTL, LIFESPAN } from '@/lib/redis'
-import { genCode, pgUpsertSession } from '@/lib/session'
+import { redis, k, lifespanTTL } from '@/lib/redis'
+import { genCode } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@/lib/displayName'
 import {

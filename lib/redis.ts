@@ -31,14 +31,11 @@ export const k = {
   // current display name; tokens maps an anon token to its identity id.
   identities: (c: string) => `s:${c}:identities`,
   tokens:     (c: string) => `s:${c}:tokens`,
-  // Legacy: name-keyed participant set. No longer written to. Kept as a key
-  // helper so any straggler reader resolves correctly until the entry expires.
-  users:      (c: string) => `s:${c}:users`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h
 
-export const LIFESPAN: Record<string, number> = {
+const LIFESPAN: Record<string, number> = {
   '48h':       48  * 60 * 60,
   '72h':       72  * 60 * 60,
   '1w':        7   * 24 * 60 * 60,
@@ -47,12 +44,6 @@ export const LIFESPAN: Record<string, number> = {
 
 export function lifespanTTL(lifespan?: string): number {
   return LIFESPAN[lifespan || '48h'] ?? TTL
-}
-
-export async function touch(code: string, ttl?: number) {
-  const effectiveTTL = ttl ?? TTL
-  const keys = await redis.keys(`s:${code}:*`)
-  for (const key of keys) await redis.expire(key, effectiveTTL)
 }
 
 export async function touchWithMeta(code: string) {

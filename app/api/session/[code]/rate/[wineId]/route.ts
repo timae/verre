@@ -7,9 +7,8 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const { code, wineId } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const { userName } = await req.json()
 
-  const identity = await resolveIdentity(c, req, session, userName ?? null)
+  const identity = await resolveIdentity(c, req, session)
   if (!identity) return authInvalid()
 
   await redis.del(k.rating(c, identity.id, wineId))

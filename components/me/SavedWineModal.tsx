@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { detectFL, FL } from '@/lib/flavours'
 

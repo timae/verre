@@ -1,5 +1,5 @@
 import crypto from 'crypto'
-import { redis, k, TTL, touch } from '@/lib/redis'
+import { redis, k, TTL } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
 import type { Identity } from '@/lib/identity'
@@ -159,5 +159,3 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
     },
   })
 }
-
-export { touch, TTL, k, redis }

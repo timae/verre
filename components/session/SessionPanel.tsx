@@ -265,10 +265,12 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 {showParticipants && (
                   <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
                     {participants.map(p => {
-                      const hostUserId = (sessionMeta as { hostUserId?: number | null } | null)?.hostUserId ?? null
-                      const isThisHost = hostUserId
-                        ? p.id === `u:${hostUserId}`
-                        : p.displayName === sessionMeta?.host
+                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string; host?: string } | null
+                      const isThisHost = meta?.hostIdentityId
+                        ? p.id === meta.hostIdentityId
+                        : meta?.hostUserId
+                          ? p.id === `u:${meta.hostUserId}`
+                          : p.displayName === meta?.host
                       const isCo = coHostIds.includes(p.id) || coHosts.includes(p.displayName)
                       const isMe = p.id === myId
                       return (

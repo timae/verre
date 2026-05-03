@@ -18,7 +18,7 @@ export type RatingsByIdentity = Record<string, { displayName: string; ratings: R
 
 type SessionCtx = {
   code: string; displayName: string; myId: string; isHost: boolean
-  sessionMeta: { host: string; name: string; hostUserId: number | null; blind?: boolean } | null
+  sessionMeta: { host: string; name: string; hostUserId: number | null; hostIdentityId?: string; blind?: boolean } | null
   wines: WineMeta[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
@@ -172,15 +172,19 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       })
   }, [C])
 
-  // Host check is id-keyed against meta.hostUserId for logged-in users; the
-  // legacy display-name comparison remains as a fallback for sessions whose
-  // host is anonymous (no hostUserId stored).
+  // Host check — mirrors server's isHostByIdentity. Identity-id-first via
+  // hostIdentityId (covers both logged-in u:<n> hosts and anon a:<uuid>
+  // hosts), then hostUserId for legacy sessions that pre-date hostIdentityId,
+  // then a displayName fallback for the oldest sessions.
+  const hostIdentityId = metaData?.hostIdentityId ?? null
   const hostUserId = metaData?.hostUserId ?? null
   const isCoHostById = !!(metaData?.coHostIds && myId && metaData.coHostIds.includes(myId))
   const isCoHostByName = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))
   const isCoHost = isCoHostById || isCoHostByName
-  const isHostById = !!(hostUserId && myId === `u:${hostUserId}`)
-  const isHostByName = !!(metaData && !hostUserId && displayName && metaData.host === displayName)
+  const isHostById =
+    !!(hostIdentityId && myId === hostIdentityId) ||
+    !!(hostUserId && myId === `u:${hostUserId}`)
+  const isHostByName = !!(metaData && !hostIdentityId && !hostUserId && displayName && metaData.host === displayName)
   const isHost = isHostState || isHostById || isHostByName || isCoHost
   const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 

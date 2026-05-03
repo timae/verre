@@ -33,43 +33,126 @@ npx prisma migrate dev      # create a versioned migration
 | Accounts & history | Nine Eco PostgreSQL | Users, archived sessions, bookmarks, Hall of Fame |
 | Images | Nine Object Storage (S3-compatible) | Bottle photos stored by URL |
 
-**Redis key namespace:** `s:{CODE}:meta`, `s:{CODE}:wines`, `s:{CODE}:r:{USER}:{WINEID}`, `s:{CODE}:users`
+**Redis key namespace:**
+- `s:{CODE}:meta` — JSON session metadata (host, name, blind, lifespan, hostIdentityId, hostUserId, coHosts, coHostIds, …)
+- `s:{CODE}:wines` — JSON array of wines for this session
+- `s:{CODE}:r:{IDENTITYID}:{WINEID}` — per-rating JSON (score, flavors, notes). Identity-id keyed (`u:<userId>` or `a:<uuid>`), never display name
+- `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
+- `s:{CODE}:tokens` — hash of anon-token → identity-id (used by the resolver)
 
 **Postgres archival is incremental:** data flows from Redis → Postgres only when a logged-in user commits a rating (`POST /api/session/:code/rate`) or joins a session (`POST /api/session/:code/visit`). Anonymous sessions stay Redis-only for 48h then expire.
+
+**Lifetime counter snapshots on `users`:** the rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.) on `users` rows. Counters never decrement — protects badge progression from rating deletions and gives O(1) reads on the badge hot path.
 
 ### Freemium split
 
 - **Anonymous / free**: session-based, Redis only, 48h lifespan. No account required.
 - **Logged-in (free account)**: same live session, but visit + ratings are archived to Postgres. History, bookmarks, Hall of Fame entries, and flavour profile persist indefinitely.
-- **Pro** (`users.pro = true`): future paid tier — `purchase_url` on wines, vendor role.
+- **Pro** (`users.pro = true`): paid tier. Currently gates: blind tastings (host pre-rates while wine identities are hidden from tasters), extended lifespan (72h / 1w / unlimited beyond the 48h default).
+
+### Session features
+
+- **Session metadata**: name, description (1000 chars), address, datetime range (dateFrom/dateTo with timezone), external link. All editable via settings PATCH.
+- **Lifespan**: 48h (default, all users) / 72h / 1w / unlimited (pro). Drives Redis TTL across all session keys.
+- **Blind tasting**: host can hide wine identities from tasters until they reveal them. Host POSTs `/wines/<id>/reveal` per wine, or `/wines/reveal-all` / `/wines/hide-all` for batch. Server redacts wine details for non-host callers when `meta.blind && !wine.revealedAt`. Pro-gated.
+- **Hide lineup before tasting**: when a host sets `meta.hideLineup = true` and provides `dateFrom`, the wine list is hidden from non-host participants until `dateFrom - hideLineupMinutesBefore`. Server returns `[]` for the wines GET in that window. The client shows a `LineupLocked` countdown screen, auto-refetches when the reveal time arrives.
+- **Co-host roles**: host can promote any participant to co-host. Co-hosts can do everything a host can — add/edit/delete wines, edit settings, reveal/hide blind wines, reorder — except assign cohost roles or delete the session (those are strict-host-only). Stored as `meta.coHostIds` (id list, trust anchor) plus legacy `meta.coHosts` (name list).
+- **Display-name disambiguation on join**: when a participant tries to join with a name already taken in this session, they get a random food emoji suffix appended (e.g. `Sam` → `Sam 🍅`). Idempotent for logged-in users — re-joining doesn't accumulate suffixes. The check uses the identities map, not the legacy users set.
+- **Bookmarks** (logged-in only): `POST /api/session/<code>/wines/<id>/bookmark`. Saved wines persist across sessions, survive session deletion (the wine row is orphaned with `session_id = NULL` rather than cascade-deleted).
+- **Hall of Fame** (logged-in only): every 5★ rating creates a row in `hall_of_fame`. Public leaderboard at `/hof`, no auth required to read. Denormalized — entries survive without the underlying wine/session row.
+- **Badges + XP**: ~60+ badges in `lib/badges.ts`, evaluated on every rate POST against the user's lifetime counter snapshots. Awarded badges are permanent (`user_badges` table); deleting ratings doesn't un-earn.
+
+### Session deletion
+
+Hosts (not co-hosts) can permanently delete a session. `DELETE /api/session/<code>`, host-strict authorization.
+
+**Retention rule** (per `(user, wine)` pair):
+- If the user **bookmarked** the wine, their rating row is **kept** so the bookmark detail page still renders score, notes, flavour wheel.
+- If the user **didn't bookmark**, their rating is deleted. Hall of Fame entries follow the same rule (kept when bookmarked, dropped otherwise).
+
+The wine rows themselves are kept (`session_id` set to NULL via the `ON DELETE SET NULL` foreign key) so bookmarked wines remain reachable from `/me/saved` with image and metadata intact.
+
+**Lifetime snapshot counters never decrement.** `users.lifetime_ratings` etc. stay at the higher value even after the underlying ratings are gone — protects badge progression. The live aggregations in `/me/profile` (avg flavor, total_rated count) will reflect the smaller dataset.
+
+The full Postgres cleanup runs in a `prisma.$transaction` so any failure rolls back; Redis wipe (`s:<code>:*`) runs after.
+
+**Participants in the deleted session** get bounced when their next polled wines GET returns 404. SessionShell clears local cache for that code and redirects to `/join/<code>`, which renders the "session not found" page.
 
 ### Auth
 
-JWT stored in browser `localStorage` as `vr_token`. Expiry: 30 days. Token payload: `{userId, name, role, pro}`.
+Two trust anchors:
+- **Logged-in users** carry a NextAuth session cookie (`__Secure-authjs.session-token`, JWE-encrypted, 30 day lifetime). Resolved server-side via `auth()`.
+- **Anonymous users** carry a per-session anon token (`crypto.randomUUID()`, stored in browser `localStorage` as `vr_anon_<CODE>`). Sent on every request as the `x-vr-anon-token` header. Maps to `s:{CODE}:tokens` → identity id.
 
-`optionalAuth` middleware (applied globally) populates `req.user` if a valid Bearer token is present; routes work for anonymous callers too. `requireAuth` is used only for `GET /api/me/*` endpoints.
+The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displayName, kind}` from one of those sources, or `null` for unauthenticated callers. Identity is never read from the request body.
 
-Host verification for wine mutations uses `isHost(meta, req)` which checks `req.user.userId === meta.hostUserId` for authenticated users, falling back to `req.body.userName === meta.host` for anonymous sessions. All wine mutation requests (`POST`, `PATCH`, `DELETE`, reorder) must include `userName: S.user` in the body.
+**Identity ids:** `u:<userId>` for logged-in users, `a:<uuid>` for anonymous. These ids are the trust anchor everywhere — Redis rating keys, host checks, cohost lists, all id-keyed.
+
+**Authorization patterns:**
+- Session reads (`GET /api/session/:code`, `/wines`, `/ratings`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
+- Session existence is checked first; nonexistent/deleted sessions return 404 (no auth header) so the client can distinguish "session is gone, go home" from "your token is bad, retry join."
+- Host actions (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)`, which matches `meta.hostIdentityId` first, then `meta.hostUserId` (legacy), then `meta.host` display name (oldest sessions only). Cohosts pass this check.
+- Strict-host actions (cohost role assignment, session delete) bypass the cohost check — only the actual session host can perform them.
+
+**Permission-denied vs auth-invalid:** the server returns 401 + `X-Vr-Auth: invalid` only when identity itself failed to resolve. Permission-denied 403s ("only the host can…", "pro required") return bare 403 without the header. The `lib/sessionFetch.ts` client-side wrapper only clears local state and bounces to `/join/<code>` on the auth-invalid header — permission denials are surfaced inline.
+
+### API surface
+
+| Endpoint | Method | Auth required | Authorization |
+|---|---|---|---|
+| `/api/auth/[...nextauth]` | GET/POST | none (auth flow) | NextAuth handles |
+| `/api/auth/register` | POST | none | rate-limit pending; email uniqueness |
+| `/api/me/profile` | GET | cookie | implicit (queries by `session.user.id`) |
+| `/api/me/sessions` | GET | cookie | implicit |
+| `/api/me/badges` | GET/POST/PATCH | cookie | implicit |
+| `/api/me/bookmarks` | GET | cookie | implicit |
+| `/api/me/ratings` | GET | cookie | implicit |
+| `/api/me/account` | PATCH | cookie | edits own row only |
+| `/api/hof` | GET | none | public leaderboard |
+| `/api/session` | POST | none (anyone can host) | blind requires pro; lifespan>48h requires pro |
+| `/api/session/join` | POST | none (anyone with the code) | by design |
+| `/api/session/<code>` | GET | participant | `requireParticipant` |
+| `/api/session/<code>` | PATCH | strict host | cohost role assignment |
+| `/api/session/<code>` | DELETE | strict host | session deletion |
+| `/api/session/<code>/visit` | POST | cookie (anon early-returns) | implicit; no-op for anons |
+| `/api/session/<code>/wines` | GET | participant | `requireParticipant` (blind redaction for non-hosts) |
+| `/api/session/<code>/wines` | POST | host | `isHostByIdentity` (cohosts pass) |
+| `/api/session/<code>/wines/<id>` | PATCH/DELETE | host | `isHostByIdentity` |
+| `/api/session/<code>/wines/<id>/reveal` | POST/DELETE | host | `isHostByIdentity` (blind reveal) |
+| `/api/session/<code>/wines/reveal-all` | POST | host | `isHostByIdentity` |
+| `/api/session/<code>/wines/hide-all` | POST | host | `isHostByIdentity` |
+| `/api/session/<code>/wines/reorder` | POST | host | `isHostByIdentity` |
+| `/api/session/<code>/wines/<id>/bookmark` | POST/DELETE | cookie | logged-in only; no anon bookmarks |
+| `/api/session/<code>/ratings` | GET | participant | `requireParticipant` |
+| `/api/session/<code>/rate` | POST | identity (cookie or anon-token) | rates own slot only (id-keyed Redis key) |
+| `/api/session/<code>/rate/<wineId>` | DELETE | identity | deletes own rating only |
+| `/api/session/<code>/settings` | PATCH | host | `isHostByIdentity`; pro-gated for blind/lifespan |
+| `/api/session/<code>/name` | PATCH | host | `isHostByIdentity` |
+
+**"Strict host"** = the original session host, not co-hosts. Reserved for role assignment (`PATCH /api/session/<code>` with cohost actions) and session deletion.
+
+**"Identity required"** = the request must produce a non-null result from `resolveIdentity` (cookie or valid anon-token). Different from "participant" — a stale or wrong token returns 401 + `X-Vr-Auth: invalid` for both, but session-existence-checked endpoints distinguish 404 (session is gone) from 401 (your token is bad).
 
 ### Frontend structure
 
-Everything lives in `public/index.html` — one large file with inline CSS, HTML screens, and a `<script>` block. Screens are `<div class="screen">` elements toggled with `display:none/block`. No build step, no bundler.
+Next.js 15 App Router. UI lives under `app/` (route segments) and `components/`.
 
-Key client-side state object:
-```javascript
-S = {
-  user,        // display name in current session
-  code,        // 4-char session code
-  isHost,      // whether current user created the session
-  sessionName, // optional human-readable session alias
-  authToken,   // JWT from localStorage
-  authUser,    // {id, name, email, role, pro}
-  bookmarks,   // Set of bookmarked wine IDs
-  wines, allRatings, curId, fromTab, cmpUser, selType
-}
-```
+Top-level routes:
+- `/` — lobby (`app/(public)/page.tsx` → `LobbyClient`)
+- `/login`, `/register` — NextAuth credentials flows
+- `/me` and subpaths — logged-in dashboard, history, saved, profile, badges, account
+- `/session/<code>` — in-session shell (`SessionShell` provides context to wine list, rate, compare screens)
+- `/session/<code>/rate/<wineId>` — per-wine rating screen
+- `/session/<code>/compare` — overlay/per-rater comparison view
+- `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
+- `/hof` — public Hall of Fame leaderboard
 
-Navigation: `tab(t)` switches between screens (`wines`, `rate`, `compare`, `saved`, `history`, `profile`). Dashboard nav (logged-in, no session) vs session nav (in a session) are toggled by `showDashboardNav()` / `showSessionNav()`.
+State management:
+- **Server state**: TanStack Query (`useQuery` + `refetchInterval`) for wines/ratings/meta polling.
+- **Client identity**: `localStorage` keys `vr_anon_<CODE>` (token), `vr_name_<CODE>` (display name), `vr_id_<CODE>` (identity id).
+- **Session-scoped context**: `components/session/SessionShell.tsx` exposes `useSession()` returning `{code, displayName, myId, isHost, sessionMeta, wines, allRatings, myRatings, refresh, …}` to descendant screens.
+
+State-changing fetches against session endpoints go through `lib/sessionFetch.ts` (auto-attaches the anon token header, handles auth-invalid responses). Logged-in `/me/*` reads use `lib/authedFetch.ts`.
 
 ### Flavour chart system
 
@@ -98,9 +181,9 @@ Flavour dimensions are **type-specific**:
 ### Schema notes for future features
 
 These columns exist in the schema but are not yet wired to UI:
-- `sessions.blind` — blind tasting mode (wines hidden from tasters until host reveals)
-- `wines.revealed_at` — timestamp when a blind wine is revealed
 - `wines.purchase_url` — vendor/pro feature: link to purchase
-- `ratings.is_host` — distinguishes host pre-ratings from taster ratings (blind tastings)
-- `users.role = 'vendor'` / `users.pro = true` — paid tier hooks
+- `ratings.is_host` — never set or read; legacy from blind-tasting prototype, candidate for removal
+- `users.role = 'vendor'` — paid tier hook (the `pro` boolean is wired)
 - `wines.category` — extensible drink type beyond wine (beer, spirit, kombucha)
+
+**Drift between Prisma schema and live DB**: the columns/tables `users.xp`, `badges`, `user_badges` exist in Postgres (added via raw SQL) but are absent from `prisma/schema.prisma`. Code in `lib/badgeService.ts` and `app/api/me/badges/route.ts` accesses them via `$queryRaw`. Pulling them into the schema is a planned cleanup item.

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { ALL_BADGES, BADGE_MAP } from '@/lib/badges'
+import { ALL_BADGES } from '@/lib/badges'
 import { ensureBadgesSeedOnce, checkAndAwardBadges } from '@/lib/badgeService'
 
 // GET — return all badges with earned status + XP

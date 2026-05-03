@@ -9,14 +9,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const { userName, wineId, score, flavors, notes } = await req.json()
+  const { wineId, score, flavors, notes } = await req.json()
 
   if (!wineId) return NextResponse.json({ error: 'wineId required' }, { status: 400 })
 
   // Identity comes from auth() or x-vr-anon-token. Never from the request
-  // body. Unauthenticated callers are rejected — there is no longer a body-
-  // name fallback (would let any caller claim any name).
-  const identity = await resolveIdentity(c, req, session, userName ?? null)
+  // body — the legacy body.userName fallback was removed in cleanup.
+  const identity = await resolveIdentity(c, req, session)
   if (!identity) return authInvalid()
 
   const ratingScore = score || 0

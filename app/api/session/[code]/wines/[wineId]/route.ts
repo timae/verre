@@ -16,7 +16,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const identity = await resolveIdentity(c, req, session, body.userName ?? null)
+  const identity = await resolveIdentity(c, req, session)
   if (!identity) return authInvalid()
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can edit wines' }, { status: 403 })
@@ -48,7 +48,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const identity = await resolveIdentity(c, req, session, body.userName ?? null)
+  const identity = await resolveIdentity(c, req, session)
   if (!identity) return authInvalid()
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can delete wines' }, { status: 403 })

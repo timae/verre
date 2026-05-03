@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { touch } from '@/lib/session'
+import { redis, k, touchWithMeta } from '@/lib/redis'
 import { validateDisplayName, disambiguateDisplayName } from '@/lib/displayName'
 import {
   newAnonIdentityId,
