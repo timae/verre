@@ -111,4 +111,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
   },
   session: { strategy: 'jwt' },
+  logger: {
+    error(error) {
+      // Collapse expected auth-failure noise so the real errors stand out.
+      if (error.name === 'CredentialsSignin') {
+        console.warn('[auth] failed login (wrong credentials)')
+        return
+      }
+      if (error.name === 'CallbackRouteError') {
+        const causeMsg = (error.cause as { err?: Error } | undefined)?.err?.message
+          ?? (error.cause as Error | undefined)?.message
+        const rl = causeMsg?.match(/^RATE_LIMITED:(\d+)$/)
+        if (rl) {
+          console.warn(`[auth] login rate-limited (retry in ${rl[1]}s)`)
+          return
+        }
+      }
+      console.error(error)
+    },
+  },
 })
