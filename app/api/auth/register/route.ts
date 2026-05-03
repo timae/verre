@@ -4,11 +4,14 @@ import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { validateDisplayName } from '@/lib/displayName'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { verifyRegisterToken } from '@/lib/registerToken'
 
 const schema = z.object({
-  name:     z.string(),
-  email:    z.string().email(),
-  password: z.string().min(8),
+  name:       z.string(),
+  email:      z.string().email(),
+  password:   z.string().min(8),
+  formToken:  z.string(),
+  website:  z.string().optional(),
 })
 
 export async function POST(req: NextRequest) {
@@ -27,6 +30,20 @@ export async function POST(req: NextRequest) {
   const body = await req.json()
   const parsed = schema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: 'invalid input' }, { status: 400 })
+
+  // Honeypot — only naive-bot trip; real users can't see the field.
+  if (parsed.data.website && parsed.data.website.trim() !== '') {
+    console.warn(`[register] honeypot triggered ip=${ip}`)
+    return NextResponse.json({ error: 'registration failed' }, { status: 400 })
+  }
+
+  // Form token — proves the form was rendered server-side and gives us a
+  // signed timestamp for the submit-timing check.
+  const verdict = verifyRegisterToken(parsed.data.formToken)
+  if (!verdict.ok) {
+    console.warn(`[register] formToken rejected reason=${verdict.reason} ip=${ip}`)
+    return NextResponse.json({ error: 'registration failed' }, { status: 400 })
+  }
 
   let name: string
   try { name = validateDisplayName(parsed.data.name) }

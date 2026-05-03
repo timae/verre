@@ -39,12 +39,13 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete, hint
   )
 }
 
-export function RegisterForm({ redirectTo }: { redirectTo?: string }) {
+export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; formToken: string }) {
   const router = useRouter()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPw, setConfirmPw] = useState('')
+  const [website, setWebsite] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -56,7 +57,7 @@ export function RegisterForm({ redirectTo }: { redirectTo?: string }) {
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, email, password }),
+      body: JSON.stringify({ name, email, password, formToken, website }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
@@ -69,6 +70,10 @@ export function RegisterForm({ redirectTo }: { redirectTo?: string }) {
 
   return (
     <form onSubmit={handleSubmit}>
+      <div aria-hidden="true" style={{position:'absolute',left:'-9999px',width:1,height:1,overflow:'hidden'}}>
+        <label>Website<input type="text" name="website" tabIndex={-1} autoComplete="off"
+          value={website} onChange={e => setWebsite(e.target.value)} /></label>
+      </div>
       <div className="field">
         <div className="fl">name</div>
         <input className="fi" type="text" value={name} onChange={e => setName(e.target.value)} required placeholder="firstname or alias" />
