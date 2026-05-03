@@ -119,3 +119,12 @@ export function getClientIp(req: Request): string {
   if (real) return real.trim()
   return 'unknown'
 }
+
+// Format a wait time for user-facing error messages. Seconds when under
+// a minute; round up to the nearest minute otherwise so "59 minutes"
+// reads better than "3527 seconds".
+export function formatWait(seconds: number): string {
+  if (seconds < 60) return `${seconds} second${seconds === 1 ? '' : 's'}`
+  const mins = Math.ceil(seconds / 60)
+  return `${mins} minute${mins === 1 ? '' : 's'}`
+}

@@ -4,7 +4,7 @@ import { redis, k, lifespanTTL } from '@/lib/redis'
 import { genCode } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@/lib/displayName'
-import { checkRate, getClientIp } from '@/lib/rateLimit'
+import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import {
   newAnonIdentityId,
   newAnonToken,
@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   const rl = await checkRate(rlKey, 10, 600)
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: 'Too many sessions created. Try again later.', retryAfter: rl.retryAfter },
+      { error: `Too many sessions created. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
       { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
     )
   }

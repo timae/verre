@@ -3,7 +3,7 @@ import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
 import { validateDisplayName } from '@/lib/displayName'
-import { checkRate, getClientIp } from '@/lib/rateLimit'
+import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 
 const schema = z.object({
   name:     z.string(),
@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
   const rl = await checkRate(`rl:register:ip:${ip}:1m`, 100, 60)
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: 'Too many registration attempts. Try again later.', retryAfter: rl.retryAfter },
+      { error: `Too many registration attempts. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
       { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
     )
   }

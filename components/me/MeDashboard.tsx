@@ -22,7 +22,8 @@ export function MeDashboard({ user }: { user: User }) {
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [joinError, setJoinError] = useState('')
   const isPro = user.pro
 
   const { data: sessions = [] } = useQuery<Session[]>({
@@ -35,8 +36,8 @@ export function MeDashboard({ user }: { user: User }) {
   })
 
   async function createSession() {
-    if (!name.trim()) { setError('Enter your name'); return }
-    setLoading(true); setError('')
+    if (!name.trim()) { setCreateError('Enter your name'); return }
+    setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
@@ -44,7 +45,7 @@ export function MeDashboard({ user }: { user: User }) {
     setLoading(false)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      setError(data.error || 'Could not create session')
+      setCreateError(data.error || 'Could not create session')
       return
     }
     const data = await res.json()
@@ -59,9 +60,9 @@ export function MeDashboard({ user }: { user: User }) {
   }
 
   async function joinSession() {
-    if (!name.trim()) { setError('Enter your name'); return }
-    if (joinCode.trim().length < 4) { setError('Enter a 4-char code'); return }
-    setLoading(true); setError('')
+    if (!name.trim()) { setJoinError('Enter your name'); return }
+    if (joinCode.trim().length < 4) { setJoinError('Enter a 4-char code'); return }
+    setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: name.trim() }),
@@ -69,7 +70,7 @@ export function MeDashboard({ user }: { user: User }) {
     setLoading(false)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
-      setError(data.error || 'Session not found')
+      setJoinError(data.error || 'Session not found')
       return
     }
     const data = await res.json()
@@ -130,6 +131,7 @@ export function MeDashboard({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : blind ? '→ create blind tasting' : '→ create new tasting'}
           </button>
+          {createError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{createError}</p>}
           <div className="lobby-divider">or join an existing room</div>
           <div className="field">
             <div className="fl">session code</div>
@@ -137,7 +139,7 @@ export function MeDashboard({ user }: { user: User }) {
               placeholder="e.g. A3F7" style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
-          {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+          {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
         </div>}
 
         {/* Right column */}

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { validateDisplayName, disambiguateDisplayName } from '@/lib/displayName'
-import { checkRate, resetRate, getClientIp } from '@/lib/rateLimit'
+import { checkRate, resetRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import {
   newAnonIdentityId,
   newAnonToken,
@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   const rl = await checkRate(rlKey, 30, 60)
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: 'Too many join attempts. Try again later.', retryAfter: rl.retryAfter },
+      { error: `Too many join attempts. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
       { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
     )
   }

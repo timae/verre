@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
 import { validateDisplayName } from '@/lib/displayName'
-import { checkRate } from '@/lib/rateLimit'
+import { checkRate, formatWait } from '@/lib/rateLimit'
 
 export async function PATCH(req: NextRequest) {
   const session = await auth()
@@ -16,7 +16,7 @@ export async function PATCH(req: NextRequest) {
   const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: 'Too many account changes. Try again later.', retryAfter: rl.retryAfter },
+      { error: `Too many account changes. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
       { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
     )
   }
