@@ -10,15 +10,20 @@ let seeded = false
 export async function ensureBadgesSeedOnce() {
   if (seeded) return
   try {
-    const existing = await prisma.$queryRaw<{id:string}[]>`SELECT id FROM badges LIMIT 1`
-    if (existing.length === 0) {
-      // Batch insert all badges in one statement
-      const vals = ALL_BADGES.map(b =>
-        `(${[b.id,b.name,b.description,b.icon,b.category,b.rarity,b.xp_reward].map((v,i) => i === 6 ? v : `'${String(v).replace(/'/g,"''")}'`).join(',')})`
-      ).join(',')
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO badges (id,name,description,icon,category,rarity,xp_reward) VALUES ${vals} ON CONFLICT (id) DO NOTHING`
-      )
+    const existing = await prisma.badge.findFirst({ select: { id: true } })
+    if (!existing) {
+      await prisma.badge.createMany({
+        data: ALL_BADGES.map(b => ({
+          id: b.id,
+          name: b.name,
+          description: b.description,
+          icon: b.icon,
+          category: b.category,
+          rarity: b.rarity,
+          xpReward: b.xp_reward,
+        })),
+        skipDuplicates: true,
+      })
     }
     seeded = true
   } catch {}
@@ -33,19 +38,16 @@ export async function ensureBadgesSeedOnce() {
 // the snapshot row and one count of bookmarks/HoF.
 export async function getUserStats(userId: number): Promise<UserStats> {
   // Snapshot — single primary-key lookup.
-  const [snap] = await prisma.$queryRaw<[{
-    lifetime_ratings:number; lifetime_five_star:number; lifetime_one_star:number
-    lifetime_notes_written:number; lifetime_max_note_len:number
-    lifetime_sessions_joined:number; lifetime_sessions_hosted:number
-    lifetime_photos_added:number; lifetime_consecutive_months:number
-    first_rated_at:Date|null
-  }]>`
-    SELECT lifetime_ratings, lifetime_five_star, lifetime_one_star,
-           lifetime_notes_written, lifetime_max_note_len,
-           lifetime_sessions_joined, lifetime_sessions_hosted,
-           lifetime_photos_added, lifetime_consecutive_months,
-           first_rated_at
-    FROM users WHERE id=${userId}`
+  const snap = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      lifetimeRatings: true, lifetimeFiveStar: true, lifetimeOneStar: true,
+      lifetimeNotesWritten: true, lifetimeMaxNoteLength: true,
+      lifetimeSessionsJoined: true, lifetimeSessionsHosted: true,
+      lifetimePhotosAdded: true, lifetimeConsecutiveMonths: true,
+      firstRatedAt: true,
+    },
+  })
 
   // Live — rendered on /me/profile only. Aggregates against ratings table.
   // Acceptable because /me/profile loads are infrequent compared to rate
@@ -87,23 +89,25 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     LEFT JOIN (SELECT session_code, COUNT(*) AS cnt FROM session_members GROUP BY session_code) mc ON mc.session_code=sm.session_code
     WHERE sm.user_id=${userId}`
 
-  const [bk]  = await prisma.$queryRaw<[{cnt:bigint}]>`SELECT COUNT(*) AS cnt FROM bookmarks WHERE user_id=${userId}`
-  const [hof] = await prisma.$queryRaw<[{cnt:bigint}]>`SELECT COUNT(*) AS cnt FROM hall_of_fame WHERE user_id=${userId}`
+  const [bookmarkCount, hofEntries] = await Promise.all([
+    prisma.bookmark.count({ where: { userId } }),
+    prisma.hallOfFame.count({ where: { userId } }),
+  ])
 
   // daysSinceFirst is derived from the snapshotted firstRatedAt — never
   // shrinks, even if the original first rating gets deleted later.
-  const daysSinceFirst = snap?.first_rated_at
-    ? Math.floor((Date.now() - new Date(snap.first_rated_at).getTime()) / 86400000)
+  const daysSinceFirst = snap?.firstRatedAt
+    ? Math.floor((Date.now() - new Date(snap.firstRatedAt).getTime()) / 86400000)
     : 0
 
   return {
-    totalRatings:        Number(snap?.lifetime_ratings || 0),
-    fiveStarCount:       Number(snap?.lifetime_five_star || 0),
-    oneStarCount:        Number(snap?.lifetime_one_star || 0),
-    notesWritten:        Number(snap?.lifetime_notes_written || 0),
-    maxNoteLength:       Number(snap?.lifetime_max_note_len || 0),
+    totalRatings:        snap?.lifetimeRatings ?? 0,
+    fiveStarCount:       snap?.lifetimeFiveStar ?? 0,
+    oneStarCount:        snap?.lifetimeOneStar ?? 0,
+    notesWritten:        snap?.lifetimeNotesWritten ?? 0,
+    maxNoteLength:       snap?.lifetimeMaxNoteLength ?? 0,
     daysSinceFirst,
-    consecutiveMonths:   Number(snap?.lifetime_consecutive_months || 0),
+    consecutiveMonths:   snap?.lifetimeConsecutiveMonths ?? 0,
     avgScore:            Number(main.avg_score) || 0,
     avgFlavorTannin:     Number(main.avg_tannin) || 0,
     avgFlavorAcid:       Number(main.avg_acid) || 0,
@@ -118,12 +122,12 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     nonalcCount:         Number(types.nonalc_count),
     uniqueStyles:        Number(types.unique_styles),
     uniqueGrapes:        Number(types.unique_grapes),
-    totalSessions:       Number(snap?.lifetime_sessions_joined || 0),
-    sessionsHosted:      Number(snap?.lifetime_sessions_hosted || 0),
+    totalSessions:       snap?.lifetimeSessionsJoined ?? 0,
+    sessionsHosted:      snap?.lifetimeSessionsHosted ?? 0,
     sessionParticipants: Number(soc.max_participants),
-    bookmarkCount:       Number(bk.cnt),
-    hofEntries:          Number(hof.cnt),
-    photosAdded:         Number(snap?.lifetime_photos_added || 0),
+    bookmarkCount,
+    hofEntries,
+    photosAdded:         snap?.lifetimePhotosAdded ?? 0,
     aiScansUsed:         0,
   }
 }
@@ -144,28 +148,39 @@ export async function checkAndAwardBadges(userId: number, action: string): Promi
 
   const [stats, existing] = await Promise.all([
     getUserStats(userId),
-    prisma.$queryRaw<{badge_id:string}[]>`SELECT badge_id FROM user_badges WHERE user_id=${userId}`,
+    prisma.userBadge.findMany({ where: { userId }, select: { badgeId: true } }),
   ])
 
-  const alreadyEarned = new Set(existing.map(b => b.badge_id))
+  const alreadyEarned = new Set(existing.map(b => b.badgeId))
   const newBadgeIds = evaluateBadges(stats, alreadyEarned)
 
-  for (const badgeId of newBadgeIds) {
-    const badge = BADGE_MAP[badgeId]
-    if (!badge) continue
-    await prisma.$executeRaw`INSERT INTO user_badges (user_id,badge_id,seen) VALUES (${userId},${badgeId},false) ON CONFLICT DO NOTHING`
-    xpGain += badge.xp_reward
+  if (newBadgeIds.length > 0) {
+    await prisma.userBadge.createMany({
+      data: newBadgeIds.map(badgeId => ({ userId, badgeId, seen: false })),
+      skipDuplicates: true,
+    })
+    for (const badgeId of newBadgeIds) {
+      const badge = BADGE_MAP[badgeId]
+      if (badge) xpGain += badge.xp_reward
+    }
   }
 
+  let totalXP = 0
   if (xpGain > 0) {
-    await prisma.$executeRaw`UPDATE users SET xp=xp+${xpGain} WHERE id=${userId}`
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { xp: { increment: xpGain } },
+      select: { xp: true },
+    })
+    totalXP = updated.xp
+  } else {
+    const u = await prisma.user.findUnique({ where: { id: userId }, select: { xp: true } })
+    totalXP = u?.xp ?? 0
   }
-
-  const [user] = await prisma.$queryRaw<[{xp:number}]>`SELECT xp FROM users WHERE id=${userId}`
 
   return {
     newBadges: newBadgeIds.map(id => BADGE_MAP[id]).filter(Boolean) as typeof ALL_BADGES,
     xpGained: xpGain,
-    totalXP: Number(user.xp),
+    totalXP,
   }
 }

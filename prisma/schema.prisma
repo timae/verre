@@ -29,10 +29,14 @@ model User {
   lifetimePhotosAdded       Int       @default(0) @map("lifetime_photos_added")
   lifetimeConsecutiveMonths Int       @default(0) @map("lifetime_consecutive_months")
   firstRatedAt              DateTime? @map("first_rated_at")
+  // XP from rating wines, hosting sessions, etc. — separate from lifetime_*
+  // because XP is a sum of weighted action points, not a count of actions.
+  xp           Int       @default(0)
   members      SessionMember[]
   ratings      Rating[]
   bookmarks    Bookmark[]
   hofEntries   HallOfFame[]
+  earnedBadges UserBadge[]
 
   @@map("users")
 }
@@ -136,4 +140,36 @@ model HallOfFame {
 
   @@unique([wineName, userId])
   @@map("hall_of_fame")
+}
+
+// Badge catalog. Seeded from lib/badges.ts via ensureBadgesSeedOnce().
+// IDs are stable string keys ("first_pour", "rated_10", etc.), not
+// autoincrement integers — easier to reference from code.
+model Badge {
+  id          String      @id @db.VarChar(60)
+  name        String      @db.VarChar(100)
+  description String      @db.VarChar(255)
+  icon        String      @db.VarChar(10)
+  category    String      @db.VarChar(30)
+  rarity      String      @default("common") @db.VarChar(20)
+  xpReward    Int         @default(50) @map("xp_reward")
+  earnedBy    UserBadge[]
+
+  @@map("badges")
+}
+
+// Awarded-badge join table. (userId, badgeId) is unique — a user can earn
+// each badge at most once. `seen` flips to true when the user views their
+// badges list, used to drive the "new badge" notification dot.
+model UserBadge {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  badgeId   String   @map("badge_id") @db.VarChar(60)
+  badge     Badge    @relation(fields: [badgeId], references: [id])
+  earnedAt  DateTime @default(now()) @map("earned_at")
+  seen      Boolean  @default(false)
+
+  @@unique([userId, badgeId])
+  @@map("user_badges")
 }
