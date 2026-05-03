@@ -18,17 +18,15 @@ COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
-# Migration tooling at /migrate. Fresh `npm ci --omit=dev` here gives the
-# Prisma CLI a complete prod-only dependency tree (no typescript / eslint /
-# tailwind, but with prisma + @prisma/* + transitive deps like effect, c12).
-# The Deploio deploy job (.deploio.yaml) cd's into /migrate before invoking
-# `prisma migrate deploy`. Kept separate from /app so it doesn't disturb
-# the Next.js standalone bundle.
-COPY --from=builder /app/package*.json /migrate/
+# Migration tooling at /migrate. Copy the builder's already-installed
+# node_modules wholesale so the Prisma CLI's transitive deps (effect, c12,
+# deepmerge-ts, empathic, …) are all present without us having to curate
+# them. The Deploio deploy job (.deploio.yaml) cd's into /migrate before
+# invoking the Prisma CLI directly. Image grows by ~700MB; acceptable in
+# exchange for not running another npm ci at deploy time.
 COPY --from=builder /app/prisma /migrate/prisma
-WORKDIR /migrate
-RUN npm ci --omit=dev && npx prisma generate
-WORKDIR /app
+COPY --from=builder /app/node_modules /migrate/node_modules
+COPY --from=builder /app/package.json /migrate/package.json
 
 EXPOSE 8080
 CMD ["node", "server.js"]

@@ -9,7 +9,7 @@
 # a broken migration doesn't take the app down.
 deployJob:
   name: "migrate"
-  # Migration tooling lives at /migrate (see Dockerfile). Fresh `npm ci
-  # --omit=dev` there builds a proper node_modules tree with the .bin
-  # symlinks intact, so `npx prisma migrate deploy` resolves cleanly.
+  # Migration tooling lives at /migrate (see Dockerfile). The whole
+  # builder-stage node_modules tree is copied there, so the .bin symlink
+  # for prisma is intact and `npx prisma migrate deploy` resolves cleanly.
   command: "cd /migrate && npx prisma migrate deploy"
