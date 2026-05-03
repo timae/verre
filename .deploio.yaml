@@ -9,7 +9,7 @@
 # a broken migration doesn't take the app down.
 deployJob:
   name: "migrate"
-  # Direct invocation of the Prisma CLI's entry point rather than `npx prisma`.
-  # The runner image ships node_modules/prisma but not node_modules/.bin/, so
-  # the npx symlink resolution fails. Calling the JS file directly avoids it.
-  command: "node node_modules/prisma/build/index.js migrate deploy"
+  # Migration tooling lives at /migrate (see Dockerfile). Fresh `npm ci
+  # --omit=dev` there builds a proper node_modules tree with the .bin
+  # symlinks intact, so `npx prisma migrate deploy` resolves cleanly.
+  command: "cd /migrate && npx prisma migrate deploy"
