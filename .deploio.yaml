@@ -9,7 +9,13 @@
 # a broken migration doesn't take the app down.
 deployJob:
   name: "migrate"
-  # Migration tooling lives at /migrate (see Dockerfile). The whole
-  # builder-stage node_modules tree is copied there, so the .bin symlink
-  # for prisma is intact and `npx prisma migrate deploy` resolves cleanly.
-  command: "cd /migrate && npx prisma migrate deploy"
+  # Wrapped in `sh -c` because Deploio executes the command via exec(), not
+  # via a shell — so without `sh -c`, `cd /migrate && …` gets word-split
+  # and `cd` is run as if it were a binary. With `sh -c`, the full string
+  # is passed to a real shell which handles `cd`, `&&`, and PATH lookup
+  # the way you'd expect.
+  #
+  # Migration tooling lives at /migrate (see Dockerfile). Calling the
+  # Prisma CLI's JS entry directly avoids any reliance on .bin symlinks
+  # or PATH munging.
+  command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy"'
