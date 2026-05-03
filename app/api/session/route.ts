@@ -4,6 +4,7 @@ import { redis, k, lifespanTTL } from '@/lib/redis'
 import { genCode } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@/lib/displayName'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
 import {
   newAnonIdentityId,
   newAnonToken,
@@ -14,6 +15,22 @@ import {
 
 export async function POST(req: NextRequest) {
   const session = await auth()
+
+  // Rate limit session creation: 10 per 10 minutes per user (logged-in)
+  // or per IP (anon). Generous enough for legitimate "hosting multiple
+  // tastings tonight" use; tight enough to make session-code-space
+  // exhaustion expensive.
+  const rlKey = session?.user?.id
+    ? `rl:create:user:${session.user.id}:10m`
+    : `rl:create:ip:${getClientIp(req)}:10m`
+  const rl = await checkRate(rlKey, 10, 600)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: 'Too many sessions created. Try again later.', retryAfter: rl.retryAfter },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+    )
+  }
+
   const { hostName: rawHostName, sessionName, blind, lifespan } = await req.json()
 
   let hostName: string
