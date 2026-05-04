@@ -89,7 +89,7 @@ export function CheckinModal({ onClose, onPosted }: Props) {
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 0' }}>
               <span style={{ fontSize: 22 }}>📷</span>
               <span style={{ fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>attach bottle photo</span>
-              <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={handlePhoto} />
+              <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handlePhoto} />
             </label>
           )}
         </div>

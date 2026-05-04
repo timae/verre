@@ -182,7 +182,7 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
             <label className="btn-s" style={{cursor:'pointer'}}>
               choose photo
-              <input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={handlePhoto} />
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={handlePhoto} />
             </label>
             {photo && (
               <button className="btn-s" onClick={scanLabel} disabled={scanning}>
