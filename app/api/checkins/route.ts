@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   if (!rl.allowed) return NextResponse.json({ error: `Too many check-ins. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
   const body = await req.json()
-  const { wineName, producer, vintage, grape, type, score, flavors, notes, imageData, venueName, city, country, lat, lng, isPublic } = body
+  const { wineName, producer, vintage, grape, type, score, flavors, notes, imageData, venueName, city, country, lat, lng, isPublic, taggedUserIds = [] } = body
   if (!wineName?.trim()) return NextResponse.json({ error: 'wine name required' }, { status: 400 })
 
   let imageUrl: string | null = null
@@ -42,6 +42,23 @@ export async function POST(req: NextRequest) {
       isPublic: isPublic !== false,
     },
   })
+
+  // Save tags — only mutual follows (verify server-side)
+  if (Array.isArray(taggedUserIds) && taggedUserIds.length > 0) {
+    const mutuals = await prisma.$queryRaw<{ id: number }[]>`
+      SELECT f1.following_id AS id
+      FROM follows f1
+      JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
+      WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+    `
+    const validIds = mutuals.map(m => m.id)
+    if (validIds.length > 0) {
+      await prisma.checkinTag.createMany({
+        data: validIds.map(uid => ({ checkinId: checkin.id, userId: uid })),
+        skipDuplicates: true,
+      })
+    }
+  }
 
   return NextResponse.json(checkin, { status: 201 })
 }

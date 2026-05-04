@@ -14,7 +14,7 @@ interface Props {
     id: number; wineName: string; producer?: string | null; vintage?: string | null
     type?: string | null; score?: number | null; notes?: string | null; imageUrl?: string | null
     venueName?: string | null; city?: string | null; country?: string | null
-    flavors?: Record<string, number> | null; likeCount?: number; createdAt?: string | Date | null
+    flavors?: Record<string, number> | null; likeCount?: number; createdAt?: string | Date | null; tags?: { id: number; name: string }[]
   }
   author?: { id: number; name: string; xp?: number } | null
   liked?: boolean
@@ -74,6 +74,13 @@ export function CheckinCard({ checkin, author, liked = false, showAuthor = true,
           <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.2 }}>{checkin.wineName}</div>
           {sub && <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: 2 }}>{sub}</div>}
           {locationStr && <div style={{ fontSize: 10, color: 'var(--fg-faint)', marginTop: 2 }}>📍 {locationStr}</div>}
+          {checkin.tags && checkin.tags.length > 0 && (
+            <div style={{ fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>
+              👥 with {checkin.tags.map((t, i) => (
+                <span key={t.id}>{i > 0 ? ', ' : ''}<a href={`/u/${t.id}`} style={{ color: 'var(--accent)', textDecoration: 'none' }}>{t.name}</a></span>
+              ))}
+            </div>
+          )}
         </div>
         {checkin.score != null && checkin.score > 0 && (
           <div style={{ textAlign: 'right', flexShrink: 0 }}>

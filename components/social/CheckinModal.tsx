@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { LocationPicker } from './LocationPicker'
+import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
 
 const TYPES = [
@@ -25,10 +26,13 @@ export function CheckinModal({ onClose, onPosted }: Props) {
   const [location, setLocation] = useState<{ venueName?: string; city?: string; country?: string; lat?: number; lng?: number }>({})
   const [isPublic, setIsPublic] = useState(true)
   const [showLocation, setShowLocation] = useState(false)
+  const [showTagPicker, setShowTagPicker] = useState(false)
+  const [taggedIds, setTaggedIds] = useState<number[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   const fl = getFL(type || 'white')
+  const { data: friends = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
 
   useEffect(() => {
     setFlavors(fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
@@ -62,7 +66,7 @@ export function CheckinModal({ onClose, onPosted }: Props) {
     setSaving(true); setError('')
     const res = await fetch('/api/checkins', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wineName, producer, vintage, grape, type, score: score || null, flavors, notes, imageData: imageData || undefined, isPublic, ...location }),
+      body: JSON.stringify({ wineName, producer, vintage, grape, type, score: score || null, flavors, notes, imageData: imageData || undefined, isPublic, taggedUserIds: taggedIds, ...location }),
     })
     setSaving(false)
     if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed'); return }
@@ -152,6 +156,32 @@ export function CheckinModal({ onClose, onPosted }: Props) {
           <div className="fl">tasting notes</div>
           <textarea className="fi" rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="aroma, palate, finish…" style={{ resize: 'none' }} />
         </div>
+
+        {/* Tag friends */}
+        {friends.length > 0 && (
+          <div style={{ marginBottom: 10 }}>
+            <button type="button" className="btn-s" onClick={() => setShowTagPicker(!showTagPicker)}>
+              👥 {taggedIds.length > 0 ? `with ${taggedIds.length} friend${taggedIds.length > 1 ? 's' : ''}` : 'tag friends'}
+            </button>
+            {showTagPicker && (
+              <div style={{ marginTop: 8, padding: '10px 12px', background: 'var(--bg3)', border: '1px solid var(--border)', borderRadius: 10 }}>
+                <div style={{ fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--fg-dim)', marginBottom: 8 }}>mutual follows</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {friends.map(f => {
+                    const selected = taggedIds.includes(f.id)
+                    return (
+                      <button key={f.id} type="button"
+                        onClick={() => setTaggedIds(prev => selected ? prev.filter(id => id !== f.id) : [...prev, f.id])}
+                        style={{ padding: '5px 10px', borderRadius: 999, border: `1px solid ${selected ? 'var(--accent)' : 'var(--border)'}`, background: selected ? 'rgba(200,150,60,0.1)' : 'var(--bg)', color: selected ? 'var(--accent)' : 'var(--fg-dim)', fontSize: 11, cursor: 'pointer', fontFamily: 'var(--mono)' }}>
+                        {selected ? '✓ ' : ''}{f.name}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Location toggle */}
         <button type="button" className="btn-s" onClick={() => setShowLocation(!showLocation)} style={{ marginBottom: 10 }}>

@@ -42,6 +42,7 @@ model User {
   following                 Follow[]       @relation("UserFollowers")
   checkins                  Checkin[]
   checkinLikes              CheckinLike[]
+  checkinTags               CheckinTag[]
 
   @@map("users")
 }
@@ -217,9 +218,22 @@ model Checkin {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   likes     CheckinLike[]
+  tags      CheckinTag[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("checkins")
+}
+
+
+model CheckinTag {
+  checkinId  Int     @map("checkin_id")
+  userId     Int     @map("user_id")
+  checkin    Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+  user       User    @relation(fields: [userId],    references: [id], onDelete: Cascade)
+
+  @@id([checkinId, userId])
+  @@index([userId])
+  @@map("checkin_tags")
 }
 
 model CheckinLike {
