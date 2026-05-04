@@ -64,6 +64,28 @@ async function deleteSessionFromRedis(code: string): Promise<void> {
   if (keys.length > 0) await redis.del(keys)
 }
 
+// Drop the Postgres archive of a session that's being deleted whole. Without
+// this, /me/history would keep showing the session for participants whose
+// session_members rows survive — they'd click rejoin and hit 404. By
+// definition (toDelete = no engagement from non-host identities), there are
+// no other-user ratings or HoF entries worth preserving here.
+async function deleteSessionFromPostgres(code: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    const row = await tx.session.findUnique({ where: { code }, select: { id: true } })
+    if (!row) return
+    const sid = row.id
+    // Order matters: drop ratings (referenced by wine.id) before we orphan
+    // wines, otherwise the subquery in the DELETE finds no rows.
+    await tx.$executeRaw`
+      DELETE FROM ratings WHERE wine_id IN (SELECT id FROM wines WHERE session_id = ${sid})
+    `
+    await tx.$executeRaw`DELETE FROM hall_of_fame WHERE session_code = ${code}`
+    await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sid}`
+    await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${code}`
+    await tx.$executeRaw`DELETE FROM sessions WHERE id = ${sid}`
+  })
+}
+
 // Keep the user's rating keys + identity map entry (relabeled to [deleted]).
 // Other tasters' compare views still see the rated data, just attributed to
 // the tombstone. Tombstone host fields and remove from cohost list as needed.
@@ -112,6 +134,11 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
           await pseudonymizeSessionInRedis(code, userId, meta)
           plan.toPseudonymize.push(code)
         } else {
+          // Drop Postgres archive too so the session disappears from
+          // participants' /me/history; otherwise it lingers as an
+          // un-rejoinable phantom.
+          try { await deleteSessionFromPostgres(code) }
+          catch (err) { console.error(`[accountDelete] postgres cleanup failed code=${code}`, err) }
           await deleteSessionFromRedis(code)
           plan.toDelete.push(code)
         }
