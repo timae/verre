@@ -62,7 +62,7 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 | Images | Nine Object Storage (S3-compatible) | Bottle photos stored by URL |
 
 **Redis key namespace:**
-- `s:{CODE}:meta` — JSON session metadata (host, name, blind, lifespan, hostIdentityId, hostUserId, coHosts, coHostIds, …)
+- `s:{CODE}:meta` — JSON session metadata (host, name, blind, lifespan, hostIdentityId, hostUserId, coHostIds, …)
 - `s:{CODE}:wines` — JSON array of wines for this session
 - `s:{CODE}:r:{IDENTITYID}:{WINEID}` — per-rating JSON (score, flavors, notes). Identity-id keyed (`u:<userId>` or `a:<uuid>`), never display name
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
@@ -84,7 +84,7 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 - **Lifespan**: 48h (default, all users) / 72h / 1w / unlimited (pro). Drives Redis TTL across all session keys.
 - **Blind tasting**: host can hide wine identities from tasters until they reveal them. Host POSTs `/wines/<id>/reveal` per wine, or `/wines/reveal-all` / `/wines/hide-all` for batch. Server redacts wine details for non-host callers when `meta.blind && !wine.revealedAt`. Pro-gated.
 - **Hide lineup before tasting**: when a host sets `meta.hideLineup = true` and provides `dateFrom`, the wine list is hidden from non-host participants until `dateFrom - hideLineupMinutesBefore`. Server returns `[]` for the wines GET in that window. The client shows a `LineupLocked` countdown screen, auto-refetches when the reveal time arrives.
-- **Co-host roles**: host can promote any participant to co-host. Co-hosts can do everything a host can — add/edit/delete wines, edit settings, reveal/hide blind wines, reorder — except assign cohost roles or delete the session (those are strict-host-only). Stored as `meta.coHostIds` (id list, trust anchor) plus legacy `meta.coHosts` (name list).
+- **Co-host roles**: host can promote any participant to co-host. Co-hosts can do everything a host can — add/edit/delete wines, edit settings, reveal/hide blind wines, reorder — except assign cohost roles or delete the session (those are strict-host-only). Tracked as `meta.coHostIds` (identity-id list, the trust anchor). When a host deletes their account on a session that has engagement, host fields are tombstoned and cohorts inherit delete rights via the softened strict-host check.
 - **Display-name disambiguation on join**: when a participant tries to join with a name already taken in this session, they get a random food emoji suffix appended (e.g. `Sam` → `Sam 🍅`). Idempotent for logged-in users — re-joining doesn't accumulate suffixes. The check uses the identities map, not the legacy users set.
 - **Bookmarks** (logged-in only): `POST /api/session/<code>/wines/<id>/bookmark`. Saved wines persist across sessions, survive session deletion (the wine row is orphaned with `session_id = NULL` rather than cascade-deleted).
 - **Hall of Fame** (logged-in only): every 5★ rating creates a row in `hall_of_fame`. Public leaderboard at `/hof`, no auth required to read. Denormalized — entries survive without the underlying wine/session row.
@@ -119,23 +119,68 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 **Authorization patterns:**
 - Session reads (`GET /api/session/:code`, `/wines`, `/ratings`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
 - Session existence is checked first; nonexistent/deleted sessions return 404 (no auth header) so the client can distinguish "session is gone, go home" from "your token is bad, retry join."
-- Host actions (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)`, which matches `meta.hostIdentityId` first, then `meta.hostUserId` (legacy), then `meta.host` display name (oldest sessions only). Cohosts pass this check.
+- Host actions (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)`, which matches `meta.hostIdentityId` first, then `meta.hostUserId` (logged-in fallback), then any entry in `meta.coHostIds`. Pure id-based; no display-name fallback.
 - Strict-host actions (cohost role assignment, session delete) bypass the cohost check — only the actual session host can perform them.
 
 **Permission-denied vs auth-invalid:** the server returns 401 + `X-Vr-Auth: invalid` only when identity itself failed to resolve. Permission-denied 403s ("only the host can…", "pro required") return bare 403 without the header. The `lib/sessionFetch.ts` client-side wrapper only clears local state and bounces to `/join/<code>` on the auth-invalid header — permission denials are surfaced inline.
+
+### Rate limiting
+
+Redis-backed limiters via `lib/rateLimit.ts`. Use `peekRate` / `peekRates` to check without incrementing (login does this so successful logins don't count); `checkRate` / `checkRates` to check + increment atomically. `formatWait(seconds)` produces the humanized "in 3 minutes" / "in 45 seconds" string surfaced in 429 responses.
+
+Limits in production:
+
+| Endpoint | Limit | Why |
+|---|---|---|
+| Login (NextAuth `authorize()`) | 10 fails/min/email + 20 fails/hour/email + 100 fails/10min/IP | Brute-force on stolen email knowledge. Counters increment on bcrypt failure only. |
+| `/api/auth/register` | 100/min/IP | Mass-signup spam. |
+| `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
+| `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
+| `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
+
+`/api/auth/login-precheck` exists because NextAuth v5 strips error messages from the client-side `signIn()` response. The login form calls it first and surfaces the "Try again in N seconds" message itself; on success it then hits the real `signIn()`. Precheck uses `peekRate` so it doesn't pollute the counter — only the actual auth call does.
+
+### Bot defenses on `/api/auth/register`
+
+- **Honeypot field**: an offscreen `<input name="website">` rendered by the register form. Real users never see it; bots scraping the DOM tend to fill plausibly-named text inputs. Non-empty submissions reject with a generic 400.
+- **Signed-timestamp form token**: `lib/registerToken.ts` mints a `<timestamp>.<hmac>` token at page render (server component, `force-dynamic`). The form posts it back with the body. Server verifies the HMAC, accepts only `>= 800ms` and `<= 30min` old. Rejects forged signatures, too-fast submits, and stale tokens with the same generic 400.
+- Both checks run **before** the bcrypt hash + DB write, so a tripped honeypot or bad token costs the server effectively nothing.
+
+### Account deletion
+
+`DELETE /api/me/account` takes `{password}`, bcrypt-verifies against the user row, then:
+
+1. **Postgres transaction**: tombstones references on tables with `ON DELETE NoAction` (`UPDATE ratings SET user_id=NULL, rater_name='[deleted]'` etc. for `ratings`, `hall_of_fame`, `sessions.host_user_id`), then `DELETE FROM users WHERE id=$id`. Cascades fire on `bookmarks`, `user_badges`, `session_members`.
+2. **Redis cleanup** (`lib/accountDelete.ts`): SCAN every `s:*:meta` and decide per session:
+   - If user is host AND no non-host has rated yet → drop the entire session (Redis + Postgres `sessions` row + wines orphan + session_members delete) so the session vanishes from participants' `/me/history`.
+   - If user is host AND there's engagement → keep the session alive, set `meta.host = '[deleted]'`, null `meta.hostUserId` and `meta.hostIdentityId`. The softened strict-host check in `app/api/session/[code]/route.ts` lets cohorts delete the session from there.
+   - If user is cohost or plain participant → relabel their identity-map entry to `'[deleted]'` and drop them from `meta.coHostIds`. Their rating data stays so other tasters' compare views are unchanged.
+
+The plan + apply runs as a single SCAN+decide+act loop per session — no TOCTOU window between observation and action.
+
+UI lives in `components/me/AccountSettings.tsx` as a Danger Zone modal: shows the email read-only, asks for password, on success wipes all `vr_anon_*` / `vr_name_*` / `vr_id_*` localStorage keys (so other tabs in the same browser don't render with stale identity) and `signOut()`s.
+
+### NextAuth logger override
+
+`auth.ts` overrides NextAuth's default error logger to collapse two expected-noise classes:
+- `CredentialsSignin` (any failed login) → one warn-level line `[auth] failed login (wrong credentials)`. No PII.
+- `CallbackRouteError` whose cause matches `RATE_LIMITED:N` (our throw from `authorize()` when login is rate-limited) → one warn-level line `[auth] login rate-limited (retry in Ns)`.
+
+Anything else falls through to `console.error(error)` with a full stack so genuine bugs stay visible.
 
 ### API surface
 
 | Endpoint | Method | Auth required | Authorization |
 |---|---|---|---|
 | `/api/auth/[...nextauth]` | GET/POST | none (auth flow) | NextAuth handles |
-| `/api/auth/register` | POST | none | rate-limit pending; email uniqueness |
+| `/api/auth/register` | POST | none | honeypot + signed-timestamp + rate-limit; email uniqueness |
 | `/api/me/profile` | GET | cookie | implicit (queries by `session.user.id`) |
 | `/api/me/sessions` | GET | cookie | implicit |
 | `/api/me/badges` | GET/POST/PATCH | cookie | implicit |
 | `/api/me/bookmarks` | GET | cookie | implicit |
 | `/api/me/ratings` | GET | cookie | implicit |
 | `/api/me/account` | PATCH | cookie | edits own row only |
+| `/api/me/account` | DELETE | cookie + password re-auth | tombstones references, drops user row, scrubs Redis |
 | `/api/hof` | GET | none | public leaderboard |
 | `/api/session` | POST | none (anyone can host) | blind requires pro; lifespan>48h requires pro |
 | `/api/session/join` | POST | none (anyone with the code) | by design |
@@ -201,7 +246,7 @@ Flavour dimensions are **type-specific**:
 
 - App: `moonlit-pond`, project: `timgrethler`, branch: `main`
 - Live URL: `tasting.tgweb.li`
-- `REDIS_URL`, `DATABASE_URL`, `JWT_SECRET`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` are set as env vars in Deploio
+- `REDIS_URL`, `DATABASE_URL`, `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret, NextAuth and `lib/registerToken.ts` look for any of those names in that order), `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` are set as env vars in Deploio
 - S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)
 - Postgres: `verre.d600599.db.postgres.nineapis.ch`, TLS with `rejectUnauthorized: false`
 - Deploio builds from the Dockerfile on every push to the tracked branch
@@ -210,8 +255,5 @@ Flavour dimensions are **type-specific**:
 
 These columns exist in the schema but are not yet wired to UI:
 - `wines.purchase_url` — vendor/pro feature: link to purchase
-- `ratings.is_host` — never set or read; legacy from blind-tasting prototype, candidate for removal
 - `users.role = 'vendor'` — paid tier hook (the `pro` boolean is wired)
 - `wines.category` — extensible drink type beyond wine (beer, spirit, kombucha)
-
-**Drift between Prisma schema and live DB**: the columns/tables `users.xp`, `badges`, `user_badges` exist in Postgres (added via raw SQL) but are absent from `prisma/schema.prisma`. Code in `lib/badgeService.ts` and `app/api/me/badges/route.ts` accesses them via `$queryRaw`. Pulling them into the schema is a planned cleanup item.

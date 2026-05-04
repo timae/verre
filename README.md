@@ -125,6 +125,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET | /api/me/ratings | This user's rating history |
 | GET / POST / PATCH | /api/me/badges | Earned badges, XP, manual recheck, mark-as-seen |
 | PATCH | /api/me/account | Edit own name / email / password |
+| DELETE | /api/me/account | Delete own account (password re-auth required) |
 
 **Sessions**
 
