@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHost, getSessionMeta, getWines } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -13,7 +14,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!isHost(meta, session?.user?.id, body.userName)) {
+  const identity = await resolveIdentity(c, req, session)
+  if (!identity) return authInvalid()
+  if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can hide all wines' }, { status: 403 })
   }
 

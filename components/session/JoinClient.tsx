@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 interface Props {
   code: string
@@ -24,9 +25,21 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
   useEffect(() => {
     if (isLoggedIn || isExpired) return
     if (typeof window === 'undefined') return
-    const stored = sessionStorage.getItem(`vr_name_${code}`)
+    const stored = localStorage.getItem(`vr_name_${code}`)
     if (stored) router.replace(`/session/${code}`)
   }, [code, isLoggedIn, isExpired])
+
+  // Session is gone (deleted, expired, or never existed). Drop any stale
+  // local cache for this code so it doesn't linger inertly forever and
+  // mislead later code that looks at these keys.
+  useEffect(() => {
+    if (!isExpired || typeof window === 'undefined') return
+    try {
+      localStorage.removeItem(`vr_anon_${code}`)
+      localStorage.removeItem(`vr_name_${code}`)
+      localStorage.removeItem(`vr_id_${code}`)
+    } catch {}
+  }, [code, isExpired])
 
   async function join(joinName?: string) {
     const n = (joinName ?? name).trim()
@@ -38,8 +51,21 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
       body: JSON.stringify({ code, userName: n }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not join — session may have expired'); return }
-    router.push(`/session/${code}?name=${encodeURIComponent(n)}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setError(data.error || 'Could not join — session may have expired')
+      return
+    }
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    // Server may have suffixed the name with a food emoji to disambiguate
+    // from someone already in the room. Use the returned form as canonical.
+    const finalName = data.userName || n
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${code}?${params.toString()}`)
   }
 
   return (
@@ -52,20 +78,28 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
       <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
         <div style={{width:'100%',maxWidth:400}}>
 
-          {/* Invite card */}
-          <div style={{textAlign:'center',marginBottom:24}}>
-            <div style={{fontSize:48,marginBottom:12}}>🍷</div>
-            <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:8}}>you've been invited</p>
-            <h1 style={{fontSize:26,fontWeight:800,color:'#F0E3C6',lineHeight:1.1,marginBottom:8}}>{sessionLabel}</h1>
-            {sessionMeta?.host && (
-              <p style={{fontSize:12,color:'var(--fg-dim)'}}>Hosted by <strong style={{color:'var(--fg)'}}>{sessionMeta.host}</strong></p>
-            )}
-          </div>
+          {/* Header — different framing for valid invite vs not-found */}
+          {isExpired ? (
+            <div style={{textAlign:'center',marginBottom:24}}>
+              <div style={{fontSize:48,marginBottom:12,opacity:0.4}}>🚫</div>
+              <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:8}}>session not found</p>
+              <h1 style={{fontSize:24,fontWeight:800,color:'#F0E3C6',lineHeight:1.2,marginBottom:8}}>This session does not exist</h1>
+            </div>
+          ) : (
+            <div style={{textAlign:'center',marginBottom:24}}>
+              <div style={{fontSize:48,marginBottom:12}}>🍷</div>
+              <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:8}}>you've been invited</p>
+              <h1 style={{fontSize:26,fontWeight:800,color:'#F0E3C6',lineHeight:1.1,marginBottom:8}}>{sessionLabel}</h1>
+              {sessionMeta?.host && (
+                <p style={{fontSize:12,color:'var(--fg-dim)'}}>Hosted by <strong style={{color:'var(--fg)'}}>{sessionMeta.host}</strong></p>
+              )}
+            </div>
+          )}
 
           <div className="lobby-card lobby-form">
             {isExpired ? (
               <div style={{textAlign:'center',padding:'16px 0'}}>
-                <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>This session has expired. Sessions last 48 hours.</p>
+                <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>The code may be wrong, or the session has been deleted or expired.</p>
                 <Link href="/" className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to lobby</Link>
               </div>
             ) : isLoggedIn ? (

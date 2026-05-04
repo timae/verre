@@ -25,12 +25,47 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
+  // Format seconds into a human-readable wait message.
+  function humanWait(secs: number): string {
+    return secs < 60
+      ? `${secs} second${secs === 1 ? '' : 's'}`
+      : `${Math.ceil(secs / 60)} minute${Math.ceil(secs / 60) === 1 ? '' : 's'}`
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true); setError('')
+
+    // NextAuth v5 strips custom error messages out of signIn()'s response,
+    // so we can't see "RATE_LIMITED:N" coming back from authorize(). Ask
+    // the precheck endpoint first (peeks counters, no increment). If
+    // already over the limit, show the friendly countdown and skip
+    // signIn() entirely.
+    try {
+      const pre = await fetch('/api/auth/login-precheck', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      if (pre.ok) {
+        const data = await pre.json()
+        if (!data.allowed) {
+          setLoading(false)
+          setError(`Too many login attempts. Try again in ${humanWait(Number(data.retryAfter) || 60)}.`)
+          return
+        }
+      }
+    } catch {
+      // Precheck failure is non-blocking — fall through to signIn() and let
+      // the server-side limit do its job.
+    }
+
     const res = await signIn('credentials', { email, password, redirect: false })
     setLoading(false)
-    if (res?.error) { setError('Invalid email or password'); return }
+    if (res?.error) {
+      setError('Invalid email or password')
+      return
+    }
     router.push(redirectTo || '/me'); router.refresh()
   }
 

@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { FL } from '@/lib/flavours'
+import { authedFetch } from '@/lib/authedFetch'
 
 type Profile = Record<string, number | string | null> & {
   total_rated?: number; avg_score?: string; five_star?: number
@@ -10,7 +11,7 @@ type Profile = Record<string, number | string | null> & {
 export function ProfileClient() {
   const { data: profile, isLoading } = useQuery<Profile>({
     queryKey: ['me-profile'],
-    queryFn: () => fetch('/api/me/profile').then(r => r.json()),
+    queryFn: () => authedFetch<Profile>('/api/me/profile'),
   })
 
   if (isLoading) return <p className="text-fg-dim text-sm">Loading…</p>

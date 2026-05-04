@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { ALL_BADGES, BADGE_MAP } from '@/lib/badges'
+import { ALL_BADGES } from '@/lib/badges'
 import { ensureBadgesSeedOnce, checkAndAwardBadges } from '@/lib/badgeService'
 
 // GET — return all badges with earned status + XP
@@ -12,20 +12,23 @@ export async function GET() {
 
   await ensureBadgesSeedOnce()
 
-  const [earned, users] = await Promise.all([
-    prisma.$queryRaw<{badge_id:string; earned_at:Date; seen:boolean}[]>`
-      SELECT badge_id, earned_at, seen FROM user_badges WHERE user_id=${userId} ORDER BY earned_at DESC`,
-    prisma.$queryRaw<[{xp:number}]>`SELECT xp FROM users WHERE id=${userId}`,
+  const [earned, user] = await Promise.all([
+    prisma.userBadge.findMany({
+      where: { userId },
+      select: { badgeId: true, earnedAt: true, seen: true },
+      orderBy: { earnedAt: 'desc' },
+    }),
+    prisma.user.findUnique({ where: { id: userId }, select: { xp: true } }),
   ])
 
-  const earnedMap = Object.fromEntries(earned.map(e => [e.badge_id, e]))
-  const xp = Number(users[0]?.xp || 0)
+  const earnedMap = Object.fromEntries(earned.map(e => [e.badgeId, e]))
+  const xp = user?.xp ?? 0
 
   return NextResponse.json({
     badges: ALL_BADGES.map(b => ({
       ...b,
       earned: !!earnedMap[b.id],
-      earned_at: earnedMap[b.id]?.earned_at || null,
+      earned_at: earnedMap[b.id]?.earnedAt || null,
       seen: earnedMap[b.id]?.seen ?? true,
     })),
     xp,
@@ -51,6 +54,9 @@ export async function POST(req: Request) {
 export async function PATCH() {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  await prisma.$executeRaw`UPDATE user_badges SET seen=true WHERE user_id=${Number(session.user.id)}`
+  await prisma.userBadge.updateMany({
+    where: { userId: Number(session.user.id), seen: false },
+    data: { seen: true },
+  })
   return NextResponse.json({ ok: true })
 }

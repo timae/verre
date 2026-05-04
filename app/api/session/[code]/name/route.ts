@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { getSessionMeta, isHost } from '@/lib/session'
+import { getSessionMeta, isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
+import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -12,7 +13,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!isHost(meta, session?.user?.id, body.userName)) {
+  const identity = await resolveIdentity(c, req, session)
+  if (!identity) return authInvalid()
+  if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can rename this session' }, { status: 403 })
   }
 

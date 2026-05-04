@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import type { WineMeta } from '@/lib/session'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -129,13 +130,13 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
       }
     }
     setSaving(true); setError('')
-    const body: Record<string, unknown> = { name, producer, vintage, grape, type, userName }
+    const body: Record<string, unknown> = { name, producer, vintage, grape, type }
     if (photoDataUrl) body.image = photoDataUrl
     if (!isEdit && parsedPos != null) body.position = parsedPos
     const url = isEdit
       ? `/api/session/${code}/wines/${editWine!.id}`
       : `/api/session/${code}/wines`
-    const res = await fetch(url, {
+    const res = await sessionFetch(code, url, {
       method: isEdit ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

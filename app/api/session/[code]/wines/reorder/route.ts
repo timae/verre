@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHost, getSessionMeta, getWines } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -11,7 +12,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!isHost(meta, session?.user?.id, body.userName)) {
+  const identity = await resolveIdentity(c, req, session)
+  if (!identity) return authInvalid()
+  if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can reorder wines' }, { status: 403 })
   }
 

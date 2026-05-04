@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
+import { sessionFetch } from '@/lib/sessionFetch'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -56,7 +57,7 @@ const HIDE_OPTIONS = [
 ]
 
 export function SessionPanel({ onClose, onLeave }: Props) {
-  const { code, displayName, isHost, sessionMeta, refresh } = useSession()
+  const { code, displayName, myId, isHost, sessionMeta, refresh } = useSession()
   const { data: authSession } = useAuthSession()
   const queryClient = useQueryClient()
   const isPro = !!(authSession?.user as { pro?: boolean })?.pro
@@ -64,7 +65,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
     description?: string; link?: string; blind?: boolean; lifespan?: string
-    coHosts?: string[]; hideLineup?: boolean; hideLineupMinutesBefore?: number
+    hideLineup?: boolean; hideLineupMinutesBefore?: number
     ttlSeconds?: number
   }
 
@@ -85,20 +86,63 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
   const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
-  const [participants,  setParticipants]  = useState<string[]>([])
-  const [coHosts,       setCoHosts]       = useState<string[]>([])
+  type Participant = { id: string; displayName: string }
+  const [participants,  setParticipants]  = useState<Participant[]>([])
+  const [coHostIds,     setCoHostIds]     = useState<string[]>([])
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
   const [saveError,     setSaveError]     = useState('')
   const [showParticipants, setShowParticipants] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleting,      setDeleting]      = useState(false)
+  const [deleteError,   setDeleteError]   = useState('')
+
+  // isStrictHost: true only for the actual session host, NOT co-hosts.
+  // Used for actions that we restrict to the host alone (currently:
+  // delete-session). isHost from context is true for cohosts too.
+  const sm = sessionMeta as typeof sessionMeta & { hostIdentityId?: string; coHostIds?: string[] }
+  const isStrictHost = !!(myId && (
+    (sm?.hostIdentityId && myId === sm.hostIdentityId) ||
+    (sm?.hostUserId && myId === `u:${sm.hostUserId}`)
+  ))
+  // Mirror the server's softened check (see app/api/session/[code]/route.ts).
+  // The literal '[deleted]' is also used by lib/accountDelete on the server;
+  // duplicated here to avoid pulling server-only deps into the client bundle.
+  const hostIsGone = !!(sm && !sm.hostIdentityId && !sm.hostUserId && sm.host === '[deleted]')
+  const isCohost = !!(myId && sm?.coHostIds?.includes(myId))
+  const canDeleteSession = isStrictHost || (hostIsGone && isCohost)
+
+  async function deleteSession() {
+    setDeleteError(''); setDeleting(true)
+    const res = await sessionFetch(code, `/api/session/${code}`, { method: 'DELETE' })
+    setDeleting(false)
+    if (res.ok) {
+      // Clear any local cached session state so the next visit doesn't
+      // try to use a stale token / name pointing at a session that no
+      // longer exists. Then leave to the lobby.
+      try {
+        localStorage.removeItem(`vr_anon_${code.toUpperCase()}`)
+        localStorage.removeItem(`vr_name_${code.toUpperCase()}`)
+        localStorage.removeItem(`vr_id_${code.toUpperCase()}`)
+      } catch {}
+      window.location.href = '/'
+      return
+    }
+    const data = await res.json().catch(() => ({}))
+    setDeleteError(data.error || 'delete failed')
+  }
 
   const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
 
   useEffect(() => {
-    fetch(`/api/session/${code}`)
-      .then(r => r.json())
-      .then(d => { setParticipants(d.users || []); setCoHosts(d.coHosts || []) })
+    sessionFetch(code, `/api/session/${code}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return
+        setParticipants(d.participants || [])
+        setCoHostIds(d.coHostIds || [])
+      })
       .catch(() => {})
   }, [code])
 
@@ -117,9 +161,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setSaving(true)
     const dateFromISO = dateFromDate && dateFromTime ? new Date(`${dateFromDate}T${dateFromTime}`).toISOString() : ''
     const dateToISO   = dateToDate   && dateToTime   ? new Date(`${dateToDate}T${dateToTime}`).toISOString()     : ''
-    const res = await fetch(`/api/session/${code}/settings`, {
+    const res = await sessionFetch(code, `/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
+      body: JSON.stringify({ name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
     })
     setSaving(false)
     if (res.ok) {
@@ -133,13 +177,16 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setCopied(true); setTimeout(() => setCopied(false), 2000)
   }
 
-  async function toggleCoHost(targetUser: string) {
-    const isCo = coHosts.includes(targetUser)
-    const res = await fetch(`/api/session/${code}`, {
+  async function toggleCoHost(targetId: string) {
+    const isCo = coHostIds.includes(targetId)
+    const res = await sessionFetch(code, `/api/session/${code}`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: displayName, targetUser, action: isCo ? 'remove-cohost' : 'add-cohost' }),
+      body: JSON.stringify({ targetId, action: isCo ? 'remove-cohost' : 'add-cohost' }),
     })
-    if (res.ok) { const { meta } = await res.json(); setCoHosts(meta.coHosts || []) }
+    if (res.ok) {
+      const { meta } = await res.json()
+      setCoHostIds(meta.coHostIds || [])
+    }
   }
 
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
@@ -220,18 +267,20 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 </button>
                 {showParticipants && (
                   <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
-                    {participants.map(u => {
-                      const isThisHost = u === sessionMeta?.host
-                      const isCo = coHosts.includes(u)
-                      const isMe = u === displayName
+                    {participants.map(p => {
+                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string } | null
+                      const isThisHost = !!(meta?.hostIdentityId && p.id === meta.hostIdentityId)
+                        || !!(meta?.hostUserId && p.id === `u:${meta.hostUserId}`)
+                      const isCo = coHostIds.includes(p.id)
+                      const isMe = p.id === myId
                       return (
-                        <div key={u} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
+                        <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
                           <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
-                          <span style={{flex:1,fontSize:12}}>{u}</span>
+                          <span style={{flex:1,fontSize:12}}>{p.displayName}</span>
                           {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
                           {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
                           {isHost && !isThisHost && !isMe && (
-                            <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(u)}>
+                            <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(p.id)}>
                               {isCo ? 'remove role' : 'make co-host'}
                             </button>
                           )}
@@ -335,15 +384,27 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               </div>
             )}
 
-            {/* Blind tasting toggle */}
+            {/* Blind tasting toggle. Enabling requires pro; non-pro/anon
+                hosts can still disable it (matches server-side check). */}
             <div
-              onClick={() => setBlind(!blind)}
+              onClick={() => {
+                // Block enabling when not pro. Allow disabling for anyone.
+                if (!blind && !isPro) return
+                setBlind(!blind)
+              }}
               style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
                 border:`1px solid ${blind ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,
-                background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',cursor:'pointer',marginBottom:10}}
+                background: blind ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',
+                cursor: (!blind && !isPro) ? 'default' : 'pointer',
+                opacity: (!blind && !isPro) ? 0.5 : 1,
+                marginBottom:10}}
+              title={(!blind && !isPro) ? 'Requires a Pro account' : undefined}
             >
               <div>
-                <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)'}}>🙈 Blind tasting</div>
+                <div style={{fontSize:11,fontWeight:700,color: blind ? 'var(--accent)' : 'var(--fg)',display:'flex',alignItems:'center',gap:6}}>
+                  🙈 Blind tasting
+                  {!isPro && !blind && <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>}
+                </div>
                 <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
               </div>
               <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
@@ -359,12 +420,56 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               onClick={saveSettings} disabled={saving}
               style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
             >{saving ? 'saving…' : '→ save settings'}</button>
+
+            {/* Danger zone — strict host only (not co-hosts). */}
+            {canDeleteSession && (
+              <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
+                <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
+                <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
+                  Delete this session permanently. Wines stay saved for participants who bookmarked them; everyone else&apos;s ratings, notes and Hall of Fame entries from this session are removed. This cannot be undone.
+                </div>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  style={{width:'100%',padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.4)',background:'rgba(224,112,112,0.08)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+                >⌫ delete this session</button>
+              </div>
+            )}
           </div>
         )}
 
         <button className="btn-p" onClick={onClose} style={{marginBottom:6,marginTop:16}}>→ close</button>
         <button className="btn-g" onClick={onLeave}>leave session</button>
       </div>
+
+      {/* Delete-session confirmation modal. Stops propagation so a click
+          inside the modal doesn't close the SessionPanel underneath. */}
+      {showDeleteConfirm && (
+        <div
+          onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) setShowDeleteConfirm(false) }}
+          style={{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',padding:16}}
+        >
+          <div style={{maxWidth:420,width:'100%',background:'var(--bg2)',borderRadius:16,padding:20,border:'1px solid rgba(224,112,112,0.3)'}}>
+            <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'#e07070'}}>Delete this session?</div>
+            <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.6,marginBottom:14}}>
+              This permanently removes the session and its wine list. Bookmarked wines stay saved with their ratings, notes and flavour wheel intact for those who bookmarked them. Every other rating and Hall of Fame entry from this session is removed.
+              <div style={{marginTop:8,color:'#e07070',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
+            </div>
+            {deleteError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{deleteError}</p>}
+            <div style={{display:'flex',gap:8}}>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={deleting}
+                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid var(--border2)',background:'var(--bg3)',color:'var(--fg-dim)',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+              >cancel</button>
+              <button
+                onClick={deleteSession}
+                disabled={deleting}
+                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.5)',background:'rgba(224,112,112,0.15)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+              >{deleting ? 'deleting…' : 'delete'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

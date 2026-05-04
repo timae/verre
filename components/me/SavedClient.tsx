@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
+import { authedFetch } from '@/lib/authedFetch'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
@@ -13,11 +14,11 @@ export function SavedClient() {
 
   const { data: bookmarks = [], isLoading } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => fetch('/api/me/bookmarks').then(r => r.json()),
+    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
   })
   const { data: ratings = [] } = useQuery<Rating[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => fetch('/api/me/ratings').then(r => r.json()),
+    queryFn: () => authedFetch<Rating[]>('/api/me/ratings'),
   })
 
   if (isLoading) return <p style={{color:'var(--fg-dim)',fontSize:13}}>Loading…</p>

@@ -2,6 +2,7 @@
 import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { LEVELS, getLevel, RARITY_COLOR, RARITY_ORDER, type Rarity } from '@/lib/badges'
+import { authedFetch } from '@/lib/authedFetch'
 
 type BadgeWithStatus = {
   id: string; name: string; description: string; icon: string
@@ -24,11 +25,11 @@ export function BadgesClient() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery<{ badges: BadgeWithStatus[]; xp: number; unseenCount: number }>({
     queryKey: ['me-badges'],
-    queryFn: () => fetch('/api/me/badges').then(r => r.json()),
+    queryFn: () => authedFetch<{ badges: BadgeWithStatus[]; xp: number; unseenCount: number }>('/api/me/badges'),
   })
 
   const markSeen = useMutation({
-    mutationFn: () => fetch('/api/me/badges', { method: 'PATCH' }).then(r => r.json()),
+    mutationFn: () => authedFetch<{ ok: boolean }>('/api/me/badges', { method: 'PATCH' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['me-badges'] }),
   })
 

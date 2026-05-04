@@ -22,5 +22,12 @@ export async function GET() {
     userId,
   )
 
-  return NextResponse.json(rows[0] || {})
+  // Postgres COUNT(*) returns bigint, which Prisma surfaces as JS BigInt;
+  // JSON.stringify can't serialize that. Coerce numeric fields to Number.
+  const row = rows[0] || {}
+  const safe: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(row)) {
+    safe[k] = typeof v === 'bigint' ? Number(v) : v
+  }
+  return NextResponse.json(safe)
 }

@@ -1,7 +1,11 @@
 import { RegisterForm } from '@/components/auth/RegisterForm'
+import { signRegisterToken } from '@/lib/registerToken'
+
+export const dynamic = 'force-dynamic'
 
 export default async function RegisterPage({ searchParams }: { searchParams: Promise<{ redirect?: string }> }) {
   const { redirect: redirectTo } = await searchParams
+  const formToken = signRegisterToken()
   return (
     <div className="app-bg" style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
       <div style={{width:'100%',maxWidth:360}}>
@@ -11,7 +15,7 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
         </div>
         <div className="lobby-card lobby-form" style={{padding:22}}>
           <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Free, always</div>
-          <RegisterForm redirectTo={redirectTo} />
+          <RegisterForm redirectTo={redirectTo} formToken={formToken} />
         </div>
       </div>
     </div>

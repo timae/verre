@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
+import { authedFetch } from '@/lib/authedFetch'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
@@ -20,42 +22,66 @@ export function MeDashboard({ user }: { user: User }) {
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [joinError, setJoinError] = useState('')
   const isPro = user.pro
 
   const { data: sessions = [] } = useQuery<Session[]>({
     queryKey: ['me-sessions'],
-    queryFn: () => fetch('/api/me/sessions').then(r => r.json()),
+    queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
   const { data: bookmarks = [] } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => fetch('/api/me/bookmarks').then(r => r.json()),
+    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
   })
 
   async function createSession() {
-    if (!name.trim()) { setError('Enter your name'); return }
-    setLoading(true); setError('')
+    if (!name.trim()) { setCreateError('Enter your name'); return }
+    setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not create session'); return }
-    const { code } = await res.json()
-    router.push(`/session/${code}?host=1&name=${encodeURIComponent(name.trim())}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setCreateError(data.error || 'Could not create session')
+      return
+    }
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(data.code, data.anonToken)
+    const finalName = data.userName || name.trim()
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('host', '1')
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${data.code}?${params.toString()}`)
   }
 
   async function joinSession() {
-    if (!name.trim()) { setError('Enter your name'); return }
-    if (joinCode.trim().length < 4) { setError('Enter a 4-char code'); return }
-    setLoading(true); setError('')
+    if (!name.trim()) { setJoinError('Enter your name'); return }
+    if (joinCode.trim().length < 4) { setJoinError('Enter a 4-char code'); return }
+    setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: name.trim() }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Session not found'); return }
-    router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(name.trim())}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setJoinError(data.error || 'Session not found')
+      return
+    }
+    const data = await res.json()
+    const code = joinCode.trim().toUpperCase()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    const finalName = data.userName || name.trim()
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${code}?${params.toString()}`)
   }
 
   const [sections] = useDashboardSections()
@@ -105,6 +131,7 @@ export function MeDashboard({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : blind ? '→ create blind tasting' : '→ create new tasting'}
           </button>
+          {createError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{createError}</p>}
           <div className="lobby-divider">or join an existing room</div>
           <div className="field">
             <div className="fl">session code</div>
@@ -112,7 +139,7 @@ export function MeDashboard({ user }: { user: User }) {
               placeholder="e.g. A3F7" style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
-          {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+          {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
         </div>}
 
         {/* Right column */}
@@ -133,7 +160,7 @@ export function MeDashboard({ user }: { user: User }) {
                         <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{date} · {s.wines_rated} wines rated</p>
                       </div>
                       {active && (
-                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(`/session/${s.code}?name=${encodeURIComponent(name)}`)}>
+                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(`/session/${s.code}`)}>
                           → rejoin
                         </button>
                       )}

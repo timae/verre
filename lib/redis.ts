@@ -22,15 +22,20 @@ if (process.env.NODE_ENV !== 'production') globalForRedis.redis = redis
 
 // ── Key helpers ────────────────────────────────
 export const k = {
-  meta:   (c: string) => `s:${c}:meta`,
-  wines:  (c: string) => `s:${c}:wines`,
-  rating: (c: string, user: string, wid: string) => `s:${c}:r:${user}:${wid}`,
-  users:  (c: string) => `s:${c}:users`,
+  meta:       (c: string) => `s:${c}:meta`,
+  wines:      (c: string) => `s:${c}:wines`,
+  // Rating key uses identity id (e.g. "u:42" or "a:<uuid>"), not display
+  // name — names can collide between participants, ids cannot.
+  rating:     (c: string, identityId: string, wid: string) => `s:${c}:r:${identityId}:${wid}`,
+  // Identity model. Identities maps id (e.g. "u:42" or "a:<uuid>") to the
+  // current display name; tokens maps an anon token to its identity id.
+  identities: (c: string) => `s:${c}:identities`,
+  tokens:     (c: string) => `s:${c}:tokens`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h
 
-export const LIFESPAN: Record<string, number> = {
+const LIFESPAN: Record<string, number> = {
   '48h':       48  * 60 * 60,
   '72h':       72  * 60 * 60,
   '1w':        7   * 24 * 60 * 60,
@@ -39,12 +44,6 @@ export const LIFESPAN: Record<string, number> = {
 
 export function lifespanTTL(lifespan?: string): number {
   return LIFESPAN[lifespan || '48h'] ?? TTL
-}
-
-export async function touch(code: string, ttl?: number) {
-  const effectiveTTL = ttl ?? TTL
-  const keys = await redis.keys(`s:${code}:*`)
-  for (const key of keys) await redis.expire(key, effectiveTTL)
 }
 
 export async function touchWithMeta(code: string) {

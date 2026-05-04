@@ -5,6 +5,7 @@ import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
+import { setAnonToken } from '@/lib/sessionFetch'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -14,35 +15,59 @@ export function LobbyClient({ user }: { user: User }) {
   const [sessionName, setSessionName] = useState('')
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
-  const [error, setError] = useState('')
+  const [createError, setCreateError] = useState('')
+  const [joinError, setJoinError] = useState('')
   const [loading, setLoading] = useState(false)
 
   async function createSession() {
-    if (!displayName.trim()) { setError('Enter your name'); return }
-    setLoading(true); setError('')
+    if (!displayName.trim()) { setCreateError('Enter your name'); return }
+    setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hostName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Could not create session'); return }
-    const { code } = await res.json()
-    router.push(`/session/${code}?host=1&name=${encodeURIComponent(displayName.trim())}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setCreateError(data.error || 'Could not create session')
+      return
+    }
+    const data = await res.json()
+    if (data.anonToken) setAnonToken(data.code, data.anonToken)
+    const finalName = data.userName || displayName.trim()
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('host', '1')
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${data.code}?${params.toString()}`)
   }
 
   async function joinSession() {
-    if (!displayName.trim()) { setError('Enter your name'); return }
-    if (!joinCode.trim() || joinCode.trim().length < 4) { setError('Enter a 4-char code'); return }
-    setLoading(true); setError('')
+    if (!displayName.trim()) { setJoinError('Enter your name'); return }
+    if (!joinCode.trim() || joinCode.trim().length < 4) { setJoinError('Enter a 4-char code'); return }
+    setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: displayName.trim() }),
     })
     setLoading(false)
-    if (!res.ok) { setError('Session not found'); return }
-    router.push(`/session/${joinCode.trim().toUpperCase()}?name=${encodeURIComponent(displayName.trim())}`)
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      setJoinError(data.error || 'Session not found')
+      return
+    }
+    const data = await res.json()
+    const code = joinCode.trim().toUpperCase()
+    if (data.anonToken) setAnonToken(code, data.anonToken)
+    const finalName = data.userName || displayName.trim()
+    const finalId   = data.id || ''
+    const params = new URLSearchParams()
+    params.set('name', finalName)
+    if (finalId) params.set('id', finalId)
+    router.push(`/session/${code}?${params.toString()}`)
   }
 
   return (
@@ -104,6 +129,7 @@ export function LobbyClient({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : '→ create new tasting'}
           </button>
+          {createError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{createError}</p>}
 
           <div className="lobby-divider">or join an existing room</div>
 
@@ -120,7 +146,7 @@ export function LobbyClient({ user }: { user: User }) {
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
 
-          {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+          {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
 
           <button className="btn-g" onClick={() => router.push('/hof')} style={{marginTop:20}}>★ hall of fame</button>
         </div>

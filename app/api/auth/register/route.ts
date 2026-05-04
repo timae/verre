@@ -2,23 +2,58 @@ import { NextRequest, NextResponse } from 'next/server'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { validateDisplayName } from '@/lib/displayName'
+import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { verifyRegisterToken } from '@/lib/registerToken'
 
 const schema = z.object({
-  name:     z.string().min(1).max(64),
-  email:    z.string().email(),
-  password: z.string().min(8),
+  name:       z.string(),
+  email:      z.string().email(),
+  password:   z.string().min(8),
+  formToken:  z.string(),
+  website:  z.string().optional(),
 })
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 100 registrations per minute per IP. Generous enough for
+  // a busy event where many people sign up at once; tight enough to make
+  // sustained signup spam expensive.
+  const ip = getClientIp(req)
+  const rl = await checkRate(`rl:register:ip:${ip}:1m`, 100, 60)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `Too many registration attempts. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+    )
+  }
+
   const body = await req.json()
   const parsed = schema.safeParse(body)
   if (!parsed.success) return NextResponse.json({ error: 'invalid input' }, { status: 400 })
 
-  const { name, email, password } = parsed.data
+  // Honeypot — only naive-bot trip; real users can't see the field.
+  if (parsed.data.website && parsed.data.website.trim() !== '') {
+    console.warn(`[register] honeypot triggered ip=${ip}`)
+    return NextResponse.json({ error: 'registration failed' }, { status: 400 })
+  }
+
+  // Form token — proves the form was rendered server-side and gives us a
+  // signed timestamp for the submit-timing check.
+  const verdict = verifyRegisterToken(parsed.data.formToken)
+  if (!verdict.ok) {
+    console.warn(`[register] formToken rejected reason=${verdict.reason} ip=${ip}`)
+    return NextResponse.json({ error: 'registration failed' }, { status: 400 })
+  }
+
+  let name: string
+  try { name = validateDisplayName(parsed.data.name) }
+  catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
+
+  const { email, password } = parsed.data
   try {
     const hash = await bcrypt.hash(password, 12)
     const user = await prisma.user.create({
-      data: { name: name.trim(), email: email.toLowerCase(), passwordHash: hash },
+      data: { name, email: email.toLowerCase(), passwordHash: hash },
       select: { id: true, name: true, email: true, role: true, pro: true },
     })
     return NextResponse.json({ user })

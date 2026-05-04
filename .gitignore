@@ -1,6 +1,9 @@
 node_modules/
 .env
 .env.*
+!.env.example
 .claude/
 ios/
 .next/
+.DS_Store
+tsconfig.tsbuildinfo

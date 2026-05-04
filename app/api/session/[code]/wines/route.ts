@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHost, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
+import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -20,20 +21,26 @@ function redactWine(wine: WineMeta, index: number): WineMeta {
   } as WineMeta & { _blind: boolean }
 }
 
-function shouldRedact(meta: SessionMeta & { blind?: boolean; coHosts?: string[] }, userName: string | null, userId: string | null): boolean {
-  if (!meta.blind) return false
-  return !isHost(meta, userId ?? undefined, userName ?? undefined)
-}
-
 export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const userName = req.nextUrl.searchParams.get('name')
+
+  // Session-existence check first. If the session was deleted or never
+  // existed, return 404 — distinct from 401 ("session exists but you're
+  // not a participant"). The client uses this to decide whether to bounce
+  // the participant home (404 = session gone, leave) vs to /join/<code>
+  // (401 = token bad / not in session, try to join).
+  if (!(await redis.exists(k.meta(c)))) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
+  const identity = await requireParticipant(c, req, session)
+  if (!identity) return authInvalid('not a participant')
 
   const wines = await getWines(c)
   const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null
-  const isUserHost = isHost(meta as SessionMeta, session?.user?.id ?? undefined, userName ?? undefined)
+  const isUserHost = isHostByIdentity(meta as SessionMeta, identity)
 
   // Lineup hidden until X minutes before start
   if (meta?.hideLineup && meta.dateFrom && !isUserHost) {
@@ -41,7 +48,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     if (Date.now() < revealAt) return NextResponse.json([])
   }
 
-  if (meta?.blind && shouldRedact(meta as SessionMeta & { blind?: boolean }, userName, session?.user?.id ?? null)) {
+  if (meta?.blind && !isUserHost) {
     return NextResponse.json(wines.map((w, i) =>
       w.revealedAt ? w : redactWine(w, i)
     ))
@@ -58,7 +65,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  if (!isHost(meta, session?.user?.id, body.userName)) {
+  const identity = await resolveIdentity(c, req, session)
+  if (!identity) return authInvalid()
+  if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can add wines' }, { status: 403 })
   }
 
