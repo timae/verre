@@ -44,7 +44,7 @@ export function LocationPicker({ value, onChange }: Props) {
     })
     const d = await res.json()
     setLoading(false)
-    if (d.error === 'places_not_configured') { setNotConfigured(true); return }
+    if (d.error === 'places_not_configured') { return }
     const r = d.results ?? []
     setResults(r)
     setOpen(r.length > 0)
@@ -73,7 +73,7 @@ export function LocationPicker({ value, onChange }: Props) {
       })
       const d = await res.json()
       setLoading(false)
-      if (d.error === 'places_not_configured') {
+      if (false && d.error === 'places_not_configured') {
         setNotConfigured(true)
         try {
           const geo = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json`)
