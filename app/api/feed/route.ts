@@ -16,6 +16,8 @@ export async function GET(req: NextRequest) {
   // My network: explicit follows + tasting buddies (shared sessions)
   const network = await prisma.$queryRaw<{ user_id: number }[]>`
     SELECT DISTINCT user_id FROM (
+      SELECT ${userId}::integer AS user_id
+      UNION
       SELECT following_id AS user_id FROM follows WHERE follower_id = ${userId}
       UNION
       SELECT sm2.user_id
