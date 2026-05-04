@@ -4,14 +4,17 @@ import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
 import { validateDisplayName } from '@/lib/displayName'
 import { checkRate, formatWait } from '@/lib/rateLimit'
+import { executeAccountDelete } from '@/lib/accountDelete'
 
 export async function PATCH(req: NextRequest) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
-  // Rate limit: 20 PATCHes per hour per user. Caps brute-forcing of the
-  // current-password check (used when changing password) and curbs damage
-  // from a stolen session cookie.
+  // Shared rl:account counter (also incremented by DELETE). 20/hour per user.
+  // Threat model: an attacker with a stolen session cookie tries to
+  // brute-force the current-password check used by both PATCH (password
+  // change) and DELETE (account deletion). Sharing the counter caps total
+  // attempts at 20/hour across both endpoints, not 20+20.
   const userId = Number(session.user.id)
   const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
   if (!rl.allowed) {
@@ -54,5 +57,40 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
   }
 
+  return NextResponse.json({ ok: true })
+}
+
+export async function DELETE(req: NextRequest) {
+  const session = await auth()
+  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+
+  const userId = Number(session.user.id)
+
+  // Shared rl:account counter (also incremented by PATCH). See PATCH for
+  // threat model: brute-force of the password re-prompt by a holder of a
+  // stolen session cookie. 20 total attempts/hour across both endpoints.
+  const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { error: `Too many account changes. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
+      { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+    )
+  }
+
+  const { password } = await req.json().catch(() => ({}))
+  if (!password) return NextResponse.json({ error: 'password required' }, { status: 400 })
+
+  const user = await prisma.user.findUnique({ where: { id: userId } })
+  if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
+  const valid = await bcrypt.compare(String(password), user.passwordHash)
+  if (!valid) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
+
+  try {
+    const plan = await executeAccountDelete(userId)
+    console.warn(`[account-delete] user=${userId} sessionsDeleted=${plan.toDelete.length} sessionsTombstoned=${plan.toPseudonymize.length} otherScrubs=${plan.scrubOnly.length}`)
+  } catch (err) {
+    console.error('[account-delete] failed', err)
+    return NextResponse.json({ error: 'deletion failed' }, { status: 500 })
+  }
   return NextResponse.json({ ok: true })
 }

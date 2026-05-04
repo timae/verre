@@ -4,6 +4,7 @@ import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 import { isHostByIdentity, type SessionMeta } from '@/lib/session'
+import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -166,7 +167,12 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
     (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
   )
-  if (!callerIsHost) {
+  // Cohosts inherit the right to delete a session whose host has tombstoned
+  // their account (host fields tombstoned and hostIdentityId/hostUserId both
+  // null). Without this, an orphaned active session would be undeletable.
+  const hostIsGone = !meta.hostIdentityId && !meta.hostUserId && meta.host === TOMBSTONE_NAME
+  const callerIsCohost = !!meta.coHostIds?.includes(callerIdentity.id)
+  if (!callerIsHost && !(hostIsGone && callerIsCohost)) {
     return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
   }
 
