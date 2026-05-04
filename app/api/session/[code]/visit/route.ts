@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { getSessionMeta, pgUpsertSession, isHostByIdentity } from '@/lib/session'
+import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { userIdentityId, recordIdentity } from '@/lib/identity'
 import { disambiguateDisplayName } from '@/lib/displayName'
@@ -36,10 +36,14 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ co
     } catch {}
   }
 
-  // Persist the role at join time. Hosts get role='host' so future archival /
-  // co-host audits can reconstruct who had what permissions in this session.
-  const identity = { id, displayName, kind: 'user' as const }
-  const role = isHostByIdentity(meta, identity) ? 'host' : 'taster'
+  // Persist the role at join time. The strict-host check is by id; cohosts
+  // get a distinct 'co_host' role so future archival audits can reconstruct
+  // who had what permissions. Don't reuse isHostByIdentity here — it lumps
+  // hosts and cohosts together, which would mislabel cohosts as host.
+  const isStrictHost = (meta.hostIdentityId && meta.hostIdentityId === id)
+    || (meta.hostUserId && userIdentityId(meta.hostUserId) === id)
+  const isCohost = !!meta.coHostIds?.includes(id)
+  const role: 'host' | 'co_host' | 'taster' = isStrictHost ? 'host' : isCohost ? 'co_host' : 'taster'
 
   try {
     await pgUpsertSession(c, meta)

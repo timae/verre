@@ -107,8 +107,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     meta.coHostIds = coHostIds
   }
 
-  // Mirror the role into Postgres for any logged-in target user. Hosts get
-  // 'host', co-hosts 'co_host', everyone else 'taster' (default at row create).
+  // Mirror the role into Postgres for any logged-in target user. Upsert (not
+  // update) so a promotion that happens before the target's first /visit
+  // still lands cleanly — without this, Prisma logs P2025 and the role
+  // defaults to 'taster' until the target visits.
   if (targetId?.startsWith('u:')) {
     const targetUserId = Number(targetId.slice(2))
     let role: 'host' | 'co_host' | 'taster' = 'taster'
@@ -116,21 +118,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     else if (action === 'add-cohost') role = 'co_host'
     else if (action === 'remove-cohost') role = 'taster'
     try {
-      await prisma.sessionMember.update({
+      await prisma.sessionMember.upsert({
         where: { userId_sessionCode: { userId: targetUserId, sessionCode: c } },
-        data: { role },
+        create: { userId: targetUserId, sessionCode: c, role },
+        update: { role },
       })
-    } catch { /* member may not exist yet; visit upsert will create with default */ }
+    } catch (err) { console.error('cohost role mirror failed:', err) }
   }
   // If we just demoted the previous host on transfer, downgrade them too.
   if (action === 'transfer-host' && callerIdentity?.id.startsWith('u:')) {
     const prevHostUserId = Number(callerIdentity.id.slice(2))
     try {
-      await prisma.sessionMember.update({
+      await prisma.sessionMember.upsert({
         where: { userId_sessionCode: { userId: prevHostUserId, sessionCode: c } },
-        data: { role: 'co_host' },
+        create: { userId: prevHostUserId, sessionCode: c, role: 'co_host' },
+        update: { role: 'co_host' },
       })
-    } catch {}
+    } catch (err) { console.error('prev-host downgrade failed:', err) }
   }
 
   await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
