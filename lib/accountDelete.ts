@@ -104,9 +104,6 @@ async function pseudonymizeSessionInRedis(code: string, userId: number, meta: Se
     meta.coHostIds = meta.coHostIds.filter(x => x !== id)
     dirty = true
   }
-  // Legacy meta.coHosts (display-name list) is intentionally not scrubbed —
-  // disambiguation may have suffixed the user's name with an emoji, so we
-  // can't be sure which entry is theirs. The field is phasing out.
   if (dirty) {
     const ttl = await redis.ttl(k.meta(code))
     const opts = ttl > 0 ? { EX: ttl } : undefined

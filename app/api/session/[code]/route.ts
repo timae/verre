@@ -37,23 +37,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // Authorize the caller as the *current host* — strictly. Co-hosts can do
   // wine and settings work via isHostByIdentity, but role assignment is
   // intentionally host-only to avoid privilege-escalation chains (cohost A
-  // promoting cohost B, etc.). Match against hostIdentityId (id-first),
-  // hostUserId (logged-in legacy), or display name (anon-host legacy).
+  // promoting cohost B, etc.). Match against hostIdentityId, falling back
+  // to hostUserId for sessions whose meta predates the identityId field.
   const callerIdentity = await resolveIdentity(c, req, session)
   if (!callerIdentity) return authInvalid()
   const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
-    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
-    (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
+    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
   )
   if (!callerIsHost) {
     return NextResponse.json({ error: 'only the host can assign roles' }, { status: 403 })
   }
 
-  // Resolve the target by id (preferred) or by name (legacy fallback for
-  // older clients). Using the id avoids ambiguity when two participants
-  // share a display name. Both code paths produce a `{targetId, targetName}`
-  // pair anchored to the identities map — the trust source.
+  // Resolve the target by id (preferred) or by name. Both must resolve to
+  // an identities-map entry — the trust source. targetName is only used to
+  // populate meta.host on transfer-host (display label).
   const idsByName = await redis.hGetAll(k.identities(c))
   let targetId: string | null = null
   let targetName: string = ''
@@ -69,41 +67,29 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     if (found) {
       targetId = found[0]
       targetName = found[1]
-    } else {
-      // Target not in identities — fall back to using the raw name for the
-      // legacy display-name lists. Loses the id-keyed guarantees, but keeps
-      // older flows working until all clients send targetId.
-      targetName = targetUser
     }
   }
-  if (!targetName) {
+  if (!targetId || !targetName) {
     return NextResponse.json({ error: 'targetId or targetUser required' }, { status: 400 })
   }
 
-  const coHosts: string[] = meta.coHosts || []
   const coHostIds: string[] = meta.coHostIds || []
 
   if (action === 'add-cohost') {
-    if (!coHosts.includes(targetName)) coHosts.push(targetName)
-    if (targetId && !coHostIds.includes(targetId)) coHostIds.push(targetId)
+    if (!coHostIds.includes(targetId)) coHostIds.push(targetId)
   } else if (action === 'remove-cohost') {
-    const ix = coHosts.indexOf(targetName); if (ix !== -1) coHosts.splice(ix, 1)
-    if (targetId) {
-      const idx = coHostIds.indexOf(targetId); if (idx !== -1) coHostIds.splice(idx, 1)
-    }
+    const idx = coHostIds.indexOf(targetId); if (idx !== -1) coHostIds.splice(idx, 1)
   } else if (action === 'transfer-host') {
     // Old host becomes co-host. The new host's identity-id is the trust
     // anchor; hostUserId stays for logged-in compatibility, host (display
     // name) is just a label.
     meta.host = targetName
-    meta.hostUserId = targetId?.startsWith('u:') ? Number(targetId.slice(2)) : null
-    meta.hostIdentityId = targetId || undefined
-    meta.coHosts = callerIdentity ? [callerIdentity.displayName] : []
-    meta.coHostIds = callerIdentity ? [callerIdentity.id] : []
+    meta.hostUserId = targetId.startsWith('u:') ? Number(targetId.slice(2)) : null
+    meta.hostIdentityId = targetId
+    meta.coHostIds = [callerIdentity.id]
   }
 
   if (action !== 'transfer-host') {
-    meta.coHosts = coHosts
     meta.coHostIds = coHostIds
   }
 
@@ -111,7 +97,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // update) so a promotion that happens before the target's first /visit
   // still lands cleanly — without this, Prisma logs P2025 and the role
   // defaults to 'taster' until the target visits.
-  if (targetId?.startsWith('u:')) {
+  if (targetId.startsWith('u:')) {
     const targetUserId = Number(targetId.slice(2))
     let role: 'host' | 'co_host' | 'taster' = 'taster'
     if (action === 'transfer-host') role = 'host'
@@ -126,7 +112,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     } catch (err) { console.error('cohost role mirror failed:', err) }
   }
   // If we just demoted the previous host on transfer, downgrade them too.
-  if (action === 'transfer-host' && callerIdentity?.id.startsWith('u:')) {
+  if (action === 'transfer-host' && callerIdentity.id.startsWith('u:')) {
     const prevHostUserId = Number(callerIdentity.id.slice(2))
     try {
       await prisma.sessionMember.upsert({
@@ -168,8 +154,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   if (!callerIdentity) return authInvalid()
   const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
-    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`) ||
-    (!meta.hostIdentityId && !meta.hostUserId && callerIdentity.displayName === meta.host)
+    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
   )
   // Cohosts inherit the right to delete a session whose host has tombstoned
   // their account (host fields tombstoned and hostIdentityId/hostUserId both

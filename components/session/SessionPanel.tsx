@@ -65,7 +65,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
     description?: string; link?: string; blind?: boolean; lifespan?: string
-    coHosts?: string[]; hideLineup?: boolean; hideLineupMinutesBefore?: number
+    hideLineup?: boolean; hideLineupMinutesBefore?: number
     ttlSeconds?: number
   }
 
@@ -88,7 +88,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   type Participant = { id: string; displayName: string }
   const [participants,  setParticipants]  = useState<Participant[]>([])
-  const [coHosts,       setCoHosts]       = useState<string[]>([])
   const [coHostIds,     setCoHostIds]     = useState<string[]>([])
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
@@ -142,7 +141,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
       .then(d => {
         if (!d) return
         setParticipants(d.participants || [])
-        setCoHosts(d.coHosts || [])
         setCoHostIds(d.coHostIds || [])
       })
       .catch(() => {})
@@ -187,7 +185,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     })
     if (res.ok) {
       const { meta } = await res.json()
-      setCoHosts(meta.coHosts || [])
       setCoHostIds(meta.coHostIds || [])
     }
   }
@@ -271,13 +268,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 {showParticipants && (
                   <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
                     {participants.map(p => {
-                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string; host?: string } | null
-                      const isThisHost = meta?.hostIdentityId
-                        ? p.id === meta.hostIdentityId
-                        : meta?.hostUserId
-                          ? p.id === `u:${meta.hostUserId}`
-                          : p.displayName === meta?.host
-                      const isCo = coHostIds.includes(p.id) || coHosts.includes(p.displayName)
+                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string } | null
+                      const isThisHost = !!(meta?.hostIdentityId && p.id === meta.hostIdentityId)
+                        || !!(meta?.hostUserId && p.id === `u:${meta.hostUserId}`)
+                      const isCo = coHostIds.includes(p.id)
                       const isMe = p.id === myId
                       return (
                         <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>

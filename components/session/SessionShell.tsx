@@ -172,20 +172,14 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       })
   }, [C])
 
-  // Host check — mirrors server's isHostByIdentity. Identity-id-first via
-  // hostIdentityId (covers both logged-in u:<n> hosts and anon a:<uuid>
-  // hosts), then hostUserId for legacy sessions that pre-date hostIdentityId,
-  // then a displayName fallback for the oldest sessions.
+  // Host check — mirrors server's isHostByIdentity. Pure id-based.
   const hostIdentityId = metaData?.hostIdentityId ?? null
   const hostUserId = metaData?.hostUserId ?? null
-  const isCoHostById = !!(metaData?.coHostIds && myId && metaData.coHostIds.includes(myId))
-  const isCoHostByName = !!(metaData?.coHosts && displayName && metaData.coHosts.includes(displayName))
-  const isCoHost = isCoHostById || isCoHostByName
+  const isCoHost = !!(metaData?.coHostIds && myId && metaData.coHostIds.includes(myId))
   const isHostById =
     !!(hostIdentityId && myId === hostIdentityId) ||
     !!(hostUserId && myId === `u:${hostUserId}`)
-  const isHostByName = !!(metaData && !hostIdentityId && !hostUserId && displayName && metaData.host === displayName)
-  const isHost = isHostState || isHostById || isHostByName || isCoHost
+  const isHost = isHostState || isHostById || isCoHost
   const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 
   const isBlind = !!(metaData?.blind)

@@ -73,7 +73,7 @@ export async function POST(req: NextRequest) {
     hostIdentityId: identityId,
     blind: !!blind,
     lifespan: resolvedLifespan,
-    coHosts: [] as string[],
+    coHostIds: [] as string[],
   }
 
   await redis.set(k.meta(code), JSON.stringify(meta), { EX: sessionTTL })

@@ -29,15 +29,12 @@ export type SessionMeta = {
   name: string
   createdAt: number
   hostUserId: number | null
-  // Identity id of the host. For logged-in hosts this is `u:<userId>` and is
-  // redundant with hostUserId; for anonymous hosts it's `a:<uuid>` and is the
-  // only stable handle for host checks (anon hosts have no userId, so the
-  // legacy displayName-comparison would otherwise be the only path).
+  // Identity id of the host. `u:<userId>` for logged-in hosts (redundant with
+  // hostUserId), `a:<uuid>` for anonymous hosts (the only stable handle).
   hostIdentityId?: string
   blind?: boolean
   lifespan?: string
-  coHosts?: string[]      // legacy display-name list — kept in sync for old clients
-  coHostIds?: string[]    // identity-id list (Phase 2 trust anchor)
+  coHostIds?: string[]
   address?: string
   dateFrom?: string | null
   dateTo?: string | null
@@ -62,17 +59,15 @@ export async function getWines(code: string): Promise<WineMeta[]> {
   return raw ? JSON.parse(raw) : []
 }
 
-// Host check by stable identity id. Preferred over the legacy variants below.
+// Host check by stable identity id. Returns true for the strict host AND
+// for any cohost — both are allowed to do host-equivalent actions like
+// editing wines and settings. Strict-host-only actions (cohost role
+// assignment, session delete) check hostIdentityId / hostUserId directly.
 export function isHostByIdentity(meta: SessionMeta, identity: Identity | null): boolean {
   if (!identity) return false
   if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
   if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
   if (meta.coHostIds?.includes(identity.id)) return true
-  // Legacy fallback for sessions created before hostIdentityId was added —
-  // anonymous-hosted sessions match by display name. Goes away once all
-  // pre-Phase-2 sessions have expired from Redis (max 48h).
-  if (!meta.hostUserId && !meta.hostIdentityId && identity.displayName === meta.host) return true
-  if (meta.coHosts?.includes(identity.displayName)) return true
   return false
 }
 
