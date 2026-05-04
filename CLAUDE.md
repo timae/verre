@@ -51,6 +51,16 @@ For destructive changes:
 
 This rule applies regardless of how much "easier" it would be to just drop and recreate. Lost user data doesn't come back from a `git revert`.
 
+## Branching workflow
+
+**Feature work goes on a branch, not `main`.** The threshold is intentionally low: anything beyond a single-file doc fix or typo gets its own branch.
+
+- **OK to commit directly to `main`**: single-file doc edits (CLAUDE.md, README), typo fixes, dependency bumps that don't touch behavior.
+- **Branch required**: anything that touches code, schema, config, or spans multiple files. Even small features.
+- **Branch naming**: `feature/<short-name>` (e.g. `feature/phase2-auth`, `feature/admin-panel`). Lowercase, kebab-case after the slash.
+- **Merge flow**: push the branch and merge yourself when ready. A PR isn't required — but opening one is encouraged, since it's nice for review, discussion, and capturing CI. The branch author can still merge their own PR; review is welcome, not a gate.
+- **Cleanup**: delete the branch (locally and on origin) after merge. Don't accumulate stale branches.
+
 ## Architecture
 
 ### Two-tier persistence
@@ -115,6 +125,8 @@ Two trust anchors:
 The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displayName, kind}` from one of those sources, or `null` for unauthenticated callers. Identity is never read from the request body.
 
 **Identity ids:** `u:<userId>` for logged-in users, `a:<uuid>` for anonymous. These ids are the trust anchor everywhere — Redis rating keys, host checks, cohost lists, all id-keyed.
+
+**Display names are presentation-only.** What a user types as their name (or what `users.name` holds for logged-in accounts) is user-chosen, mutable, non-unique within a session (collisions get an emoji suffix), and carries **zero** trust. It must never be used for identification, authentication, authorization, matching, or lookup. There is no concept of a "username" in this codebase — if a request, ticket, or PR talks about matching on username/name, translate it to identity id and push back on the framing. Fields like `meta.host`, `ratings.rater_name`, and the values (not keys) of `s:{CODE}:identities` are display strings: store them, render them, but never branch on them. All authorization checks resolve through `resolveIdentity` → `{id, kind}` and compare on `id`.
 
 **Authorization patterns:**
 - Session reads (`GET /api/session/:code`, `/wines`, `/ratings`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
