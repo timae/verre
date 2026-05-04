@@ -51,6 +51,16 @@ For destructive changes:
 
 This rule applies regardless of how much "easier" it would be to just drop and recreate. Lost user data doesn't come back from a `git revert`.
 
+## Branching workflow
+
+**Feature work goes on a branch, not `main`.** The threshold is intentionally low: anything beyond a single-file doc fix or typo gets its own branch.
+
+- **OK to commit directly to `main`**: single-file doc edits (CLAUDE.md, README), typo fixes, dependency bumps that don't touch behavior.
+- **Branch required**: anything that touches code, schema, config, or spans multiple files. Even small features.
+- **Branch naming**: `feature/<short-name>` (e.g. `feature/phase2-auth`, `feature/admin-panel`). Lowercase, kebab-case after the slash.
+- **Merge flow**: push the branch and merge yourself when ready. A PR isn't required — but opening one is encouraged, since it's nice for review, discussion, and capturing CI. The branch author can still merge their own PR; review is welcome, not a gate.
+- **Cleanup**: delete the branch (locally and on origin) after merge. Don't accumulate stale branches.
+
 ## Architecture
 
 ### Two-tier persistence
