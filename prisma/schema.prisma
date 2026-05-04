@@ -91,7 +91,6 @@ model Rating {
   wineId    String   @map("wine_id") @db.VarChar(20)
   userId    Int?     @map("user_id")
   raterName String   @map("rater_name") @db.VarChar(64)
-  isHost    Boolean  @default(false) @map("is_host")
   score     Int      @db.SmallInt
   flavors   Json     @default("{}")
   notes     String?
