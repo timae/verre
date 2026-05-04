@@ -5,6 +5,7 @@ import { LikeButton } from './LikeButton'
 import { detectFL, getFL } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { getLevel } from '@/lib/badges'
+import { timeAgo } from '@/lib/timeAgo'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
@@ -13,7 +14,7 @@ interface Props {
     id: number; wineName: string; producer?: string | null; vintage?: string | null
     type?: string | null; score?: number | null; notes?: string | null; imageUrl?: string | null
     venueName?: string | null; city?: string | null; country?: string | null
-    flavors?: Record<string, number> | null; likeCount?: number
+    flavors?: Record<string, number> | null; likeCount?: number; createdAt?: string | Date | null
   }
   author?: { id: number; name: string; xp?: number } | null
   liked?: boolean
@@ -46,9 +47,16 @@ export function CheckinCard({ checkin, author, liked = false, showAuthor = true,
               {level && <div style={{ fontSize: 9, color: 'var(--fg-faint)', letterSpacing: '0.06em' }}>{level.icon} {level.name}</div>}
             </div>
           </Link>
-          {isOwn && onDelete && (
-            <button onClick={onDelete} style={{ marginLeft: 'auto', fontSize: 9, color: 'var(--fg-faint)', background: 'none', border: 'none', cursor: 'pointer' }}>delete</button>
-          )}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+            {checkin.createdAt && (
+              <span style={{ fontSize: 9, color: 'var(--fg-faint)', fontFamily: 'var(--mono)', letterSpacing: '0.04em' }}>
+                {timeAgo(checkin.createdAt)}
+              </span>
+            )}
+            {isOwn && onDelete && (
+              <button onClick={onDelete} style={{ fontSize: 9, color: 'var(--fg-faint)', background: 'none', border: 'none', cursor: 'pointer' }}>delete</button>
+            )}
+          </div>
         </div>
       )}
 

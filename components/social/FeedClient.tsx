@@ -4,13 +4,14 @@ import { useQuery } from '@tanstack/react-query'
 import { CheckinCard } from './CheckinCard'
 import { CheckinModal } from './CheckinModal'
 import { getLevel } from '@/lib/badges'
+import { timeAgo } from '@/lib/timeAgo'
 import Link from 'next/link'
 
 type CheckinPayload = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
   type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
-  flavors?: Record<string,number>; likeCount: number
+  flavors?: Record<string,number>; likeCount: number; createdAt?: string
 }
 type FeedItem =
   | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
@@ -104,7 +105,10 @@ export function FeedClient({ myId }: { myId: number }) {
               <div style={{ fontWeight:700, fontSize:13 }}>{badge.name}</div>
               <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:2 }}>{badge.description}</div>
             </div>
-            <div style={{ fontSize:10, color:'var(--accent)', fontFamily:'var(--mono)', flexShrink:0 }}>+{badge.xp_reward} xp</div>
+            <div style={{ textAlign:'right', flexShrink:0 }}>
+              <div style={{ fontSize:10, color:'var(--accent)', fontFamily:'var(--mono)' }}>+{badge.xp_reward} xp</div>
+              <div style={{ fontSize:9, color:'var(--fg-faint)', fontFamily:'var(--mono)', marginTop:2 }}>{timeAgo(item.createdAt)}</div>
+            </div>
           </div>
         )
       })}
