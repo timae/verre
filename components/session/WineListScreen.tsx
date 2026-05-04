@@ -1,4 +1,5 @@
 'use client'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { LineupLocked } from './LineupLocked'
@@ -176,7 +177,7 @@ export function WineListScreen() {
                   <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
                   {!isRedacted && wine.imageUrl ? (
-                    <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
+                    <img src={wine.imageUrl} alt={wine.name} onClick={e=>{e.stopPropagation();openLightbox(wine.imageUrl!,wine.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
                   ) : (
                     <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
                       {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}

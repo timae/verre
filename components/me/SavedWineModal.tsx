@@ -1,4 +1,5 @@
 'use client'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { detectFL, FL } from '@/lib/flavours'
@@ -29,7 +30,7 @@ export function SavedWineModal({ wine, ratings, onClose }: Props) {
         <div className="sheet-bar" />
 
         {wine.image_url && (
-          <img src={wine.image_url} alt={wine.name} style={{width:'100%',height:140,objectFit:'cover',borderRadius:12,marginBottom:14}} />
+          <img src={wine.image_url} alt={wine.name} onClick={()=>openLightbox(wine.image_url!,wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:12,marginBottom:14,cursor:'zoom-in'}} />
         )}
 
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>

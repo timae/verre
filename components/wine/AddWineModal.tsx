@@ -1,4 +1,5 @@
 'use client'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useState, useEffect } from 'react'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
@@ -174,7 +175,7 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
         <div style={{marginBottom:14,border:'1px solid var(--border)',borderRadius:12,padding:12,background:'var(--bg3)'}}>
           {photo ? (
             <div style={{position:'relative',marginBottom:8}}>
-              <img src={photo} alt="bottle" style={{width:'100%',maxHeight:140,objectFit:'contain',borderRadius:8}} />
+              <img src={photo} alt="bottle" onClick={()=>openLightbox(photo)} style={{width:'100%',maxHeight:140,objectFit:'contain',borderRadius:8,cursor:'zoom-in'}} />
               {photoDataUrl && <button className="btn-s" style={{position:'absolute',top:6,right:6}} onClick={() => setPhotoDataUrl('')}>remove</button>}
             </div>
           ) : null}

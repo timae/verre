@@ -1,4 +1,5 @@
 'use client'
+'use client'
 import { use, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from './SessionShell'
@@ -7,6 +8,7 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -150,7 +152,7 @@ export function RatingScreen({ params }: Props) {
       </div>
 
       {!isRedacted && wine.imageUrl && (
-        <img src={wine.imageUrl} alt={wine.name} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10}} />
+        <img src={wine.imageUrl} alt={wine.name} onClick={() => openLightbox(wine.imageUrl!, wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10,cursor:'zoom-in'}} />
       )}
 
       {/* Stars */}

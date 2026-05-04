@@ -1,4 +1,6 @@
+'use client'
 import type { WineMeta } from '@/lib/session'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
@@ -17,7 +19,9 @@ export function WineCard({ wine, score, index, onClick }: Props) {
         <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{index + 1}</div>
       )}
       {wine.imageUrl ? (
-        <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
+        <img src={wine.imageUrl} alt={wine.name}
+          onClick={e => { e.stopPropagation(); openLightbox(wine.imageUrl!, wine.name) }}
+          style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
       ) : (
         <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
           {ICO[wine.type] || '🍷'}

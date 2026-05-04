@@ -1,4 +1,5 @@
 'use client'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
@@ -36,7 +37,7 @@ export function SavedClient() {
           return (
             <button key={b.wine_id} className="wine-card" style={{width:'100%',textAlign:'left'}} onClick={() => setSelected(b)}>
               {b.image_url ? (
-                <img src={b.image_url} alt={b.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
+                <img src={b.image_url} alt={b.name} onClick={e=>{e.stopPropagation();openLightbox(b.image_url!,b.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
               ) : (
                 <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
                   {ICO[b.style||'']||'🍷'}
