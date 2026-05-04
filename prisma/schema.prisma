@@ -38,9 +38,10 @@ model User {
   members                   SessionMember[]
   hostedSessions            Session[]
   earnedBadges              UserBadge[]
-  followers                 Follow[]    @relation("UserFollowing")
-  following                 Follow[]    @relation("UserFollowers")
+  followers                 Follow[]       @relation("UserFollowing")
+  following                 Follow[]       @relation("UserFollowers")
   checkins                  Checkin[]
+  checkinLikes              CheckinLike[]
 
   @@map("users")
 }
@@ -207,10 +208,27 @@ model Checkin {
   flavors   Json     @default("{}")
   notes     String?
   imageUrl  String?  @map("image_url")
+  venueName String?  @map("venue_name") @db.VarChar(255)
+  city      String?  @db.VarChar(100)
+  country   String?  @db.Char(2)
+  lat       Decimal? @db.Decimal(9, 6)
+  lng       Decimal? @db.Decimal(9, 6)
   isPublic  Boolean  @default(true) @map("is_public")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes     CheckinLike[]
 
   @@index([userId, createdAt(sort: Desc)])
   @@map("checkins")
+}
+
+model CheckinLike {
+  userId    Int      @map("user_id")
+  checkinId Int      @map("checkin_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  checkin   Checkin  @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+
+  @@id([userId, checkinId])
+  @@map("checkin_likes")
 }
