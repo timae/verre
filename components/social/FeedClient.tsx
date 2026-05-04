@@ -107,7 +107,7 @@ export function FeedClient({ myId }: { myId: number }) {
             </div>
             <div style={{ textAlign:'right', flexShrink:0 }}>
               <div style={{ fontSize:10, color:'var(--accent)', fontFamily:'var(--mono)' }}>+{badge.xp_reward} xp</div>
-              <div style={{ fontSize:9, color:'var(--fg-faint)', fontFamily:'var(--mono)', marginTop:2 }}>{timeAgo(item.createdAt)}</div>
+              <div style={{ fontSize:10, color:'var(--fg-dim)', fontFamily:'var(--mono)', marginTop:3 }}>{timeAgo(item.createdAt)}</div>
             </div>
           </div>
         )

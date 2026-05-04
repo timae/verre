@@ -49,7 +49,7 @@ export function CheckinCard({ checkin, author, liked = false, showAuthor = true,
           </Link>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
             {checkin.createdAt && (
-              <span style={{ fontSize: 9, color: 'var(--fg-faint)', fontFamily: 'var(--mono)', letterSpacing: '0.04em' }}>
+              <span style={{ fontSize: 10, color: 'var(--fg-dim)', fontFamily: 'var(--mono)', letterSpacing: '0.04em' }}>
                 {timeAgo(checkin.createdAt)}
               </span>
             )}
