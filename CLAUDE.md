@@ -258,7 +258,13 @@ Flavour dimensions are **type-specific**:
 
 - App: `moonlit-pond`, project: `timgrethler`, branch: `main`
 - Live URL: `tasting.tgweb.li`
-- `REDIS_URL`, `DATABASE_URL`, `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret, NextAuth and `lib/registerToken.ts` look for any of those names in that order), `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` are set as env vars in Deploio
+- Env vars set on Deploio:
+  - `REDIS_URL`, `DATABASE_URL` — service connections.
+  - `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret; NextAuth and `lib/registerToken.ts` look for any of those names in that order).
+  - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` — Nine Object Storage.
+  - `SERVER_ACTIONS_ALLOWED_ORIGINS` — the deployed hostname (e.g. `tasting.tgweb.li`). `localhost:8080` is always allowed; this var adds extra origins for CSRF on Server Actions. Comma-separated, no scheme.
+  - `PUBLIC_HOSTNAME` — the deployed hostname. Used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
+  - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places API for venue search; when unset, falls back to OSM Overpass + Nominatim.
 - S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)
 - Postgres: `verre.d600599.db.postgres.nineapis.ch`, TLS with `rejectUnauthorized: false`
 - Deploio builds from the Dockerfile on every push to the tracked branch

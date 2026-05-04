@@ -122,7 +122,7 @@ async function nominatimSearch(query: string, lat?: number, lng?: number) {
     ...(lat && lng ? { viewbox: `${lng - 0.5},${lat + 0.5},${lng + 0.5},${lat - 0.5}`, bounded: '1' } : {}),
   })
   const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
-    headers: { 'User-Agent': 'Verre/1.0 (tasting.tgweb.li)' },
+    headers: { 'User-Agent': `Verre/1.0 (${process.env.PUBLIC_HOSTNAME || 'self-hosted'})` },
   })
   const data = await res.json() as Record<string, unknown>[]
   const results: PlaceResult[] = data.map(p => {
