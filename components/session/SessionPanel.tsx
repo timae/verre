@@ -101,11 +101,17 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   // isStrictHost: true only for the actual session host, NOT co-hosts.
   // Used for actions that we restrict to the host alone (currently:
   // delete-session). isHost from context is true for cohosts too.
-  const sm = sessionMeta as typeof sessionMeta & { hostIdentityId?: string }
+  const sm = sessionMeta as typeof sessionMeta & { hostIdentityId?: string; coHostIds?: string[] }
   const isStrictHost = !!(myId && (
     (sm?.hostIdentityId && myId === sm.hostIdentityId) ||
     (sm?.hostUserId && myId === `u:${sm.hostUserId}`)
   ))
+  // Mirror the server's softened check (see app/api/session/[code]/route.ts).
+  // The literal '[deleted]' is also used by lib/accountDelete on the server;
+  // duplicated here to avoid pulling server-only deps into the client bundle.
+  const hostIsGone = !!(sm && !sm.hostIdentityId && !sm.hostUserId && sm.host === '[deleted]')
+  const isCohost = !!(myId && sm?.coHostIds?.includes(myId))
+  const canDeleteSession = isStrictHost || (hostIsGone && isCohost)
 
   async function deleteSession() {
     setDeleteError(''); setDeleting(true)
@@ -422,11 +428,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
             >{saving ? 'saving…' : '→ save settings'}</button>
 
             {/* Danger zone — strict host only (not co-hosts). */}
-            {isStrictHost && (
+            {canDeleteSession && (
               <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
                 <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
                 <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
-                  Delete this session permanently. Wines stay saved for participants who bookmarked them; everyone else's ratings, notes and Hall of Fame entries from this session are removed. This cannot be undone.
+                  Delete this session permanently. Wines stay saved for participants who bookmarked them; everyone else&apos;s ratings, notes and Hall of Fame entries from this session are removed. This cannot be undone.
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}

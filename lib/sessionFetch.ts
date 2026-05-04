@@ -38,21 +38,23 @@ export function clearAnonToken(code: string): void {
 // carry the header — those are surfaced to the caller as a normal failed
 // response so the UI can show an error without booting the user out.
 export async function sessionFetch(code: string, url: string, init?: RequestInit): Promise<Response> {
+  const C = code.toUpperCase()
   const headers = new Headers(init?.headers)
   const token = getAnonToken(code)
   if (token) headers.set('x-vr-anon-token', token)
   const res = await fetch(url, { ...init, headers })
-  // Only act on X-Vr-Auth=invalid when WE sent a token. If we didn't send
-  // one, the 401 belongs to a logged-in user whose participant registration
-  // hasn't landed yet — surface to the caller so they can retry, don't
-  // bounce them out.
-  if (token && res.headers.get('X-Vr-Auth') === 'invalid') {
+  // Auth-invalid means the server can't tie the caller to a participant in
+  // this session (no auth, expired cookie, deleted account, kicked, anon
+  // token lapsed). Always clear local cache and bounce to /join. The shell
+  // gates session-scoped GETs on `visitResolved`, so we no longer need to
+  // tolerate a "join race" 401 during initial load.
+  if (res.headers.get('X-Vr-Auth') === 'invalid') {
     clearAnonToken(code)
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(NAME_KEY(code))
-      localStorage.removeItem(`vr_id_${code.toUpperCase()}`)
+      localStorage.removeItem(`vr_id_${C}`)
     }
-    if (typeof window !== 'undefined') window.location.href = `/join/${code.toUpperCase()}`
+    if (typeof window !== 'undefined') window.location.href = `/join/${C}`
   }
   return res
 }

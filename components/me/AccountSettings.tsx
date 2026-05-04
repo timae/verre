@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useSession, signOut } from 'next-auth/react'
+import { clearSessionNames } from '@/lib/clientStorage'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -114,13 +115,12 @@ export function AccountSettings() {
 }
 
 function DangerZone({ email }: { email: string }) {
-  const [open,    setOpen]    = useState(false)
-  const [pw,      setPw]      = useState('')
-  const [typed,   setTyped]   = useState('')
-  const [busy,    setBusy]    = useState(false)
-  const [err,     setErr]     = useState('')
+  const [open, setOpen] = useState(false)
+  const [pw,   setPw]   = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err,  setErr]  = useState('')
 
-  const canSubmit = pw.length > 0 && typed === email && !busy
+  const canSubmit = pw.length > 0 && !busy
 
   async function deleteAccount() {
     setBusy(true); setErr('')
@@ -129,8 +129,9 @@ function DangerZone({ email }: { email: string }) {
       body: JSON.stringify({ password: pw }),
     })
     if (res.ok) {
-      // Postgres user row is gone — sign out cleanly so we don't leave a
-      // cookie referencing a vanished id, then go back to the public lobby.
+      // Wipe per-session client cache so other tabs don't render with the
+      // stale display name / identity once the auth cookie is gone.
+      try { clearSessionNames() } catch {}
       await signOut({ callbackUrl: '/' })
       return
     }
@@ -156,8 +157,8 @@ function DangerZone({ email }: { email: string }) {
             Sessions you host: if no one other than you has rated yet, the session is deleted entirely. If others have rated, the session keeps running under <em>[deleted]</em> so they can finish — your co-hosts (if any) inherit the right to delete it.
           </p>
           <div className="field">
-            <div className="fl">type your email to confirm</div>
-            <input className="fi" value={typed} onChange={e => setTyped(e.target.value)} placeholder={email} autoComplete="off" />
+            <div className="fl">deleting account for</div>
+            <div style={{padding:'8px 10px',background:'var(--bg3)',borderRadius:3,border:'1px solid var(--border)',fontFamily:'var(--mono)',fontSize:12,color:'var(--fg)'}}>{email}</div>
           </div>
           <div className="field">
             <div className="fl">password</div>
@@ -165,7 +166,7 @@ function DangerZone({ email }: { email: string }) {
           </div>
           {err && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{err}</p>}
           <div style={{display:'flex',gap:8}}>
-            <button onClick={() => { setOpen(false); setPw(''); setTyped(''); setErr('') }}
+            <button onClick={() => { setOpen(false); setPw(''); setErr('') }}
               style={{background:'transparent',border:'1px solid var(--border2)',color:'var(--fg-dim)',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:'pointer',borderRadius:3,flex:1}}>
               cancel
             </button>
