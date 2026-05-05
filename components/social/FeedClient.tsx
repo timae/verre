@@ -88,7 +88,8 @@ export function FeedClient({ myId }: { myId: number }) {
               liked={item.checkin.liked}
               isOwn={item.author.id === myId}
               onDelete={async () => {
-                await fetch(`/api/checkins/${item.checkin.id}`, { method:'DELETE' })
+                const res = await fetch(`/api/checkins/${item.checkin.id}`, { method:'DELETE' })
+                if (!res.ok) throw new Error(`delete failed: ${res.status}`)
                 setRefreshKey(k => k + 1)
               }}
             />
