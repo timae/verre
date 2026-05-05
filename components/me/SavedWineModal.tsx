@@ -1,8 +1,9 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
+import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
@@ -17,6 +18,7 @@ interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void; onRemo
 export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
   const rating = ratings.find(r => r.session_code === wine.session_code && r.wine_name === wine.name)
   const fl = rating?.flavors ? detectFL(rating.flavors) : FL
+  const wheelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -56,7 +58,14 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
             {Object.values(rating.flavors || {}).some(v => v > 0) && (
               <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                 <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-                <PolarChart flavors={rating.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
+                <div
+                  ref={wheelRef}
+                  onClick={() => openWheelLightbox(wheelRef, wine.name)}
+                  style={{cursor:'zoom-in'}}
+                  title="Click to expand"
+                >
+                  <PolarChart flavors={rating.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
+                </div>
               </div>
             )}
 

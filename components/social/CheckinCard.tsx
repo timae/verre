@@ -10,20 +10,7 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import { WineIdentity } from '@/components/wine/WineIdentity'
-
-function openWheelLightbox(ref: React.RefObject<HTMLDivElement | null>, label: string) {
-  const svg = ref.current?.querySelector('svg')
-  if (!svg) return
-  const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
-  const bg = isDark ? '#0E0E0C' : '#F6F0E6'
-  const clone = svg.cloneNode(true) as SVGElement
-  clone.setAttribute('style', `background:${bg};border-radius:16px;padding:24px;`)
-  const data = new XMLSerializer().serializeToString(clone)
-  const blob = new Blob([data], { type: 'image/svg+xml' })
-  const url = URL.createObjectURL(blob)
-  openLightbox(url, label + ' — flavour profile')
-  setTimeout(() => URL.revokeObjectURL(url), 60_000)
-}
+import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 

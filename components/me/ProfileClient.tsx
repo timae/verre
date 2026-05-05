@@ -1,7 +1,9 @@
 'use client'
+import { useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
+import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { FL } from '@/lib/flavours'
 import { authedFetch } from '@/lib/authedFetch'
 
@@ -10,6 +12,7 @@ type Profile = Record<string, number | string | null> & {
 }
 
 export function ProfileClient() {
+  const wheelRef = useRef<HTMLDivElement>(null)
   const { data: profile, isLoading } = useQuery<Profile>({
     queryKey: ['me-profile'],
     queryFn: () => authedFetch<Profile>('/api/me/profile'),
@@ -44,7 +47,12 @@ export function ProfileClient() {
           ))}
         </div>
 
-        <div className="flex justify-center">
+        <div
+          ref={wheelRef}
+          onClick={() => openWheelLightbox(wheelRef, 'Flavour profile')}
+          className="flex justify-center cursor-zoom-in"
+          title="Click to expand"
+        >
           <PolarChart flavors={flavors} fl={FL} size={CHART_SIZE.DETAIL} />
         </div>
 
