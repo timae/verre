@@ -23,10 +23,10 @@ interface Props {
     createdAt?: string|Date|null; tags?: {id:number;name:string}[]
   }
   author?: {id:number;name:string;xp?:number}|null
-  liked?: boolean; showAuthor?: boolean; onDelete?: ()=>void; isOwn?: boolean
+  liked?: boolean; showAuthor?: boolean; onDelete?: ()=>void; onEdited?: ()=>void; isOwn?: boolean
 }
 
-export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onDelete, isOwn }: Props) {
+export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onDelete, onEdited, isOwn }: Props) {
   const fl = checkin.flavors && Object.keys(checkin.flavors).length
     ? detectFL(checkin.flavors as Record<string,number>)
     : getFL(checkin.type || 'white')
@@ -193,7 +193,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
         <CheckinModal
           editCheckin={checkin as Parameters<typeof CheckinModal>[0]['editCheckin']}
           onClose={() => setEditing(false)}
-          onPosted={() => { setEditing(false); window.location.reload() }}
+          onPosted={() => { setEditing(false); onEdited?.() }}
           onDelete={onDelete ? () => { setEditing(false); onDelete() } : undefined}
         />
       )}

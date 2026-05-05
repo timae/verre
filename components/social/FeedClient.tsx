@@ -92,6 +92,7 @@ export function FeedClient({ myId }: { myId: number }) {
                 if (!res.ok) throw new Error(`delete failed: ${res.status}`)
                 setRefreshKey(k => k + 1)
               }}
+              onEdited={() => setRefreshKey(k => k + 1)}
             />
           )
         }

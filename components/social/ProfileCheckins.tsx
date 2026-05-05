@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { CheckinCard } from './CheckinCard'
 
 type Checkin = {
@@ -23,23 +24,33 @@ interface Props {
 // Client wrapper around the profile check-ins list. The profile page itself
 // is a server component — this carries the small bit of client state needed
 // so the profile owner can edit/delete their own check-ins (matching the
-// feed UX). On delete, the card is removed from local state; on edit, the
-// CheckinCard's own modal handles it and reloads the page on save.
+// feed UX).
+//
+// On delete: card is removed from local state immediately for snappy UX.
+// On edit: router.refresh() re-runs the server component with fresh data
+// so the card reflects the saved changes without a full page reload.
 //
 // Cards render with showAuthor=true so the edit button (which lives inside
 // the author row of CheckinCard) is reachable on the profile owner's view.
 export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, myId }: Props) {
-  const [checkins, setCheckins] = useState(initialCheckins)
+  const router = useRouter()
+  // Render initialCheckins directly (so router.refresh() re-pushes the
+  // freshest data without state-sync gymnastics). For optimistic delete
+  // before the next server roundtrip, mask hidden ids out via a Set —
+  // that survives prop changes naturally and gets reconciled when the
+  // server next re-fetches.
+  const [hiddenIds, setHiddenIds] = useState<Set<number>>(new Set())
   const isOwnProfile = myId !== null && myId === profileUserId
   const author = { id: profileUserId, name: profileUserName, xp: profileUserXp }
+  const visible = initialCheckins.filter(c => !hiddenIds.has(c.id))
 
-  if (checkins.length === 0) {
+  if (visible.length === 0) {
     return <p style={{ color: 'var(--fg-dim)', fontSize: 13, padding: '16px 0' }}>No public check-ins yet.</p>
   }
 
   return (
     <>
-      {checkins.map(c => (
+      {visible.map(c => (
         <CheckinCard
           key={c.id}
           checkin={c}
@@ -49,8 +60,10 @@ export function ProfileCheckins({ initialCheckins, profileUserId, profileUserNam
           onDelete={isOwnProfile ? async () => {
             const res = await fetch(`/api/checkins/${c.id}`, { method: 'DELETE' })
             if (!res.ok) throw new Error(`delete failed: ${res.status}`)
-            setCheckins(prev => prev.filter(x => x.id !== c.id))
+            setHiddenIds(prev => { const next = new Set(prev); next.add(c.id); return next })
+            router.refresh()
           } : undefined}
+          onEdited={isOwnProfile ? () => router.refresh() : undefined}
         />
       ))}
     </>
