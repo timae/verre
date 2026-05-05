@@ -1,7 +1,7 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
 
@@ -12,6 +12,7 @@ const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾',
 
 export function SavedClient() {
   const [selected, setSelected] = useState<Bookmark | null>(null)
+  const qc = useQueryClient()
 
   const { data: bookmarks = [], isLoading } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
@@ -60,7 +61,17 @@ export function SavedClient() {
       </div>
 
       {selected && (
-        <SavedWineModal wine={selected} ratings={ratings} onClose={() => setSelected(null)} />
+        <SavedWineModal
+          wine={selected}
+          ratings={ratings}
+          onClose={() => setSelected(null)}
+          onRemove={async () => {
+            const res = await fetch(`/api/me/bookmarks/${selected.wine_id}`, { method: 'DELETE' })
+            if (!res.ok) throw new Error(`remove failed: ${res.status}`)
+            setSelected(null)
+            qc.invalidateQueries({ queryKey: ['me-bookmarks'] })
+          }}
+        />
       )}
     </>
   )

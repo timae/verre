@@ -3,15 +3,16 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { detectFL, FL } from '@/lib/flavours'
+import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
-interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void }
+interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void; onRemove?: () => void | Promise<void> }
 
-export function SavedWineModal({ wine, ratings, onClose }: Props) {
+export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
   const rating = ratings.find(r => r.session_code === wine.session_code && r.wine_name === wine.name)
   const fl = rating?.flavors ? detectFL(rating.flavors) : FL
 
@@ -74,6 +75,13 @@ export function SavedWineModal({ wine, ratings, onClose }: Props) {
         )}
 
         <button className="btn-g" onClick={onClose}>close</button>
+        {onRemove && (
+          <ConfirmDeleteButton
+            label="⌫ remove from saved"
+            confirmLabel="tap again to remove"
+            onConfirm={onRemove}
+          />
+        )}
       </div>
     </div>
   )
