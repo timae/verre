@@ -250,10 +250,10 @@ Primitives in place today:
 - **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`.
 - **Lightbox** (`components/ui/ImageLightbox.tsx`). Use `openLightbox(url, alt)` to display any image full-screen.
 - **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
+- **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
 
 Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
 
-- `lib/chartSizes.ts` — named PolarChart sizes (`THUMB`, `CARD`, `DETAIL`, `HERO`) instead of inline `size={180}`/`size={260}` etc.
 - `<WineIdentityFields>` — sibling for create/edit forms (CheckinModal, AddWineModal). Same canonical field order as `<WineIdentity>`.
 
 **Modals must use a portal.** Several layout styles in this app create a containing block that traps `position: fixed` descendants — most notably `.panel` with `backdrop-filter`. New modal/overlay components must wrap their JSX in `createPortal(children, document.body)` so the overlay is attached at the document root and reliably covers the viewport regardless of where it's rendered from. `CheckinModal` does this correctly; older overlays (`AddWineModal`, `SavedWineModal`, `ImageLightbox`, `UserPanel`, `SessionPanel`) still need the migration.

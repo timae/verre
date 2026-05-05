@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
@@ -171,7 +172,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         {type && (
           <>
             <div style={{ display: 'flex', justifyContent: 'center', margin: '4px 0 8px' }}>
-              <PolarChart flavors={flavors} fl={fl} size={220} />
+              <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.EMBED} />
             </div>
             <div className="panel" style={{ marginBottom: 10 }}>
               {fl.map(f => {

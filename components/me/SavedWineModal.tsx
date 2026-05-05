@@ -2,6 +2,7 @@
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
@@ -55,7 +56,7 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
             {Object.values(rating.flavors || {}).some(v => v > 0) && (
               <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
                 <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-                <PolarChart flavors={rating.flavors} fl={fl} size={260} />
+                <PolarChart flavors={rating.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
               </div>
             )}
 

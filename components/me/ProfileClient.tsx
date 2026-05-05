@@ -1,6 +1,7 @@
 'use client'
 import { useQuery } from '@tanstack/react-query'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { FL } from '@/lib/flavours'
 import { authedFetch } from '@/lib/authedFetch'
 
@@ -44,7 +45,7 @@ export function ProfileClient() {
         </div>
 
         <div className="flex justify-center">
-          <PolarChart flavors={flavors} fl={FL} size={300} />
+          <PolarChart flavors={flavors} fl={FL} size={CHART_SIZE.DETAIL} />
         </div>
 
         {topFlavors.length > 0 && (

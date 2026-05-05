@@ -3,6 +3,7 @@ import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { CheckinModal } from './CheckinModal'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { LikeButton } from './LikeButton'
 import { detectFL, getFL } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
@@ -158,7 +159,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
                 style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', cursor:'zoom-in' }}
                 title="Click to expand"
               >
-                <PolarChart flavors={checkin.flavors as Record<string,number>} fl={fl} size={180} />
+                <PolarChart flavors={checkin.flavors as Record<string,number>} fl={fl} size={CHART_SIZE.THUMB} />
               </div>
             )}
           </div>

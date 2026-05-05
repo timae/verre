@@ -5,6 +5,7 @@ import type { RatingMeta } from '@/lib/session'
 import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 
@@ -254,7 +255,7 @@ export default function ComparePage() {
                 <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
                   {viewUser === '__all' ? (
                     <div style={{width:'100%'}}>
-                      <RadarChart series={overlaySeries} fl={overlayFL} size={460} />
+                      <RadarChart series={overlaySeries} fl={overlayFL} size={CHART_SIZE.COMPARE} />
                       <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,justifyContent:'center'}}>
                         {overlaySeries.map((s, i) => (
                           <div key={s.label} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'var(--fg-dim)'}}>
@@ -265,7 +266,7 @@ export default function ComparePage() {
                       </div>
                     </div>
                   ) : singleRating ? (
-                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={460} />
+                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
                       no rating from {(activeUserId && allRatings[activeUserId]?.displayName) || 'this user'}

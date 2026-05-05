@@ -3,6 +3,7 @@ import { use, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from './SessionShell'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
@@ -165,7 +166,7 @@ export function RatingScreen({ params }: Props) {
       {/* Polar chart */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={560} />
+        <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.HERO} />
       </div>
 
       {/* Sliders */}
