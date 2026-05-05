@@ -1,6 +1,7 @@
 'use client'
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
+import { CheckinModal } from './CheckinModal'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { LikeButton } from './LikeButton'
 import { detectFL, getFL } from '@/lib/flavours'
@@ -43,6 +44,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
 
   const hasFlavors = checkin.flavors && Object.values(checkin.flavors).some(v => v > 0)
   const wheelRef = useRef<HTMLDivElement>(null)
+  const [editing, setEditing] = useState(false)
   const sub = [checkin.producer, checkin.vintage].filter(Boolean).join(' · ')
   const locationParts = [checkin.venueName, checkin.city, checkin.country].filter(Boolean)
   const level = author?.xp != null ? getLevel(author.xp) : null
@@ -71,11 +73,19 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             {checkin.createdAt && (
               <span style={{ fontSize:11, color:'var(--fg-dim)', fontFamily:'var(--mono)' }}>{timeAgo(checkin.createdAt)}</span>
             )}
-            {isOwn && onDelete && (
-              <button onClick={onDelete}
-                style={{ fontSize:11, color:'var(--fg-dim)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
-                delete
-              </button>
+            {isOwn && (
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={() => setEditing(true)}
+                  style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
+                  edit
+                </button>
+                {onDelete && (
+                  <button onClick={onDelete}
+                    style={{ fontSize:11, color:'var(--fg-dim)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
+                    delete
+                  </button>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -198,6 +208,14 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
       <div style={{ marginTop:12 }}>
         <LikeButton checkinId={checkin.id} initialLiked={liked} initialCount={checkin.likeCount??0} />
       </div>
+
+      {editing && (
+        <CheckinModal
+          editCheckin={checkin as Parameters<typeof CheckinModal>[0]['editCheckin']}
+          onClose={() => setEditing(false)}
+          onPosted={() => { setEditing(false); window.location.reload() }}
+        />
+      )}
     </div>
   )
 }

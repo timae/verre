@@ -11,20 +11,37 @@ const TYPES = [
   { k: 'nonalc', l: 'Non-alc', ico: '🌿' },
 ]
 
-interface Props { onClose: () => void; onPosted: () => void }
+type EditCheckin = {
+  id: number; wineName: string; producer?: string|null; vintage?: string|null
+  grape?: string|null; type?: string|null; score?: number|null; flavors?: Record<string,number>|null
+  notes?: string|null; imageUrl?: string|null; venueName?: string|null; city?: string|null
+  country?: string|null; lat?: number|null; lng?: number|null; isPublic?: boolean
+}
 
-export function CheckinModal({ onClose, onPosted }: Props) {
-  const [wineName, setWineName] = useState('')
-  const [producer, setProducer] = useState('')
-  const [vintage, setVintage] = useState('')
-  const [grape, setGrape] = useState('')
-  const [type, setType] = useState('')
-  const [score, setScore] = useState(0)
-  const [flavors, setFlavors] = useState<Record<string, number>>({})
-  const [notes, setNotes] = useState('')
+interface Props { onClose: () => void; onPosted: () => void; editCheckin?: EditCheckin }
+
+export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
+  const isEdit = !!editCheckin
+  const [wineName, setWineName] = useState(editCheckin?.wineName || '')
+  const [producer, setProducer] = useState(editCheckin?.producer || '')
+  const [vintage, setVintage] = useState(editCheckin?.vintage || '')
+  const [grape, setGrape] = useState(editCheckin?.grape || '')
+  const [type, setType] = useState(editCheckin?.type || '')
+  const [score, setScore] = useState(editCheckin?.score || 0)
+  const [flavors, setFlavors] = useState<Record<string, number>>(
+    (editCheckin?.flavors as Record<string,number>) || {}
+  )
+  const [notes, setNotes] = useState(editCheckin?.notes || '')
   const [imageData, setImageData] = useState('')
-  const [location, setLocation] = useState<{ venueName?: string; city?: string; country?: string; lat?: number; lng?: number }>({})
-  const [isPublic, setIsPublic] = useState(true)
+  const [existingImageUrl] = useState(editCheckin?.imageUrl || '')
+  const [location, setLocation] = useState<{ venueName?: string; city?: string; country?: string; lat?: number; lng?: number }>({
+    venueName: editCheckin?.venueName || undefined,
+    city: editCheckin?.city || undefined,
+    country: editCheckin?.country || undefined,
+    lat: editCheckin?.lat || undefined,
+    lng: editCheckin?.lng || undefined,
+  })
+  const [isPublic, setIsPublic] = useState(editCheckin?.isPublic !== false)
   const [showLocation, setShowLocation] = useState(false)
   const [showTagPicker, setShowTagPicker] = useState(false)
   const [taggedIds, setTaggedIds] = useState<number[]>([])
@@ -64,9 +81,17 @@ export function CheckinModal({ onClose, onPosted }: Props) {
   async function submit() {
     if (!wineName.trim()) { setError('Wine name required'); return }
     setSaving(true); setError('')
-    const res = await fetch('/api/checkins', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wineName, producer, vintage, grape, type, score: score || null, flavors, notes, imageData: imageData || undefined, isPublic, taggedUserIds: taggedIds, ...location }),
+    const url = isEdit ? `/api/checkins/${editCheckin!.id}` : '/api/checkins'
+    const method = isEdit ? 'PATCH' : 'POST'
+    const res = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wineName, producer, vintage, grape, type,
+        score: score || null, flavors, notes,
+        imageData: imageData === '__remove__' ? null : (imageData || undefined),
+        isPublic, ...location,
+        ...(isEdit ? {} : { taggedUserIds: taggedIds }),
+      }),
     })
     setSaving(false)
     if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.error || 'Failed'); return }
@@ -79,20 +104,22 @@ export function CheckinModal({ onClose, onPosted }: Props) {
       <div style={{ width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32 }}>
         <div className="sheet-bar" />
         <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
-          Check in a wine
+          {isEdit ? 'Edit check-in' : 'Check in a wine'}
         </div>
 
         {/* Photo */}
         <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--bg3)' }}>
-          {imageData ? (
+          {imageData || existingImageUrl ? (
             <div style={{ position: 'relative' }}>
-              <img src={imageData} alt="bottle" style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8 }} />
-              <button className="btn-s" style={{ position: 'absolute', top: 6, right: 6 }} onClick={() => setImageData('')}>remove</button>
+              <img src={imageData || existingImageUrl} alt="bottle" style={{ width: '100%', maxHeight: 120, objectFit: 'contain', borderRadius: 8 }} />
+              <button className="btn-s" style={{ position: 'absolute', top: 6, right: 6 }} onClick={() => setImageData('__remove__')}>remove</button>
             </div>
           ) : (
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 0' }}>
               <span style={{ fontSize: 22 }}>📷</span>
-              <span style={{ fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>attach bottle photo</span>
+              <span style={{ fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                {isEdit ? 'replace photo' : 'attach bottle photo'}
+              </span>
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handlePhoto} />
             </label>
           )}
@@ -202,7 +229,7 @@ export function CheckinModal({ onClose, onPosted }: Props) {
         </div>
 
         {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
-        <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? 'posting…' : '→ post check-in'}</button>
+        <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>
         <button className="btn-g" onClick={onClose}>cancel</button>
       </div>
     </div>
