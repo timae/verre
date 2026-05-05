@@ -1,0 +1,21 @@
+# Deploio app configuration. Settings here are defaults; the admin GUI
+# (Cockpit) and `nctl` command-line take precedence. Documented at
+# https://guides.deplo.io/user-guide/configuring-your-application.html
+
+# Deploy Job: runs once before each new release goes live. We use it to
+# apply pending Prisma migrations (`prisma migrate deploy` is idempotent —
+# already-applied migrations are skipped). If the job fails, the release
+# is marked failed and the previous release keeps serving production, so
+# a broken migration doesn't take the app down.
+deployJob:
+  name: "migrate"
+  # Wrapped in `sh -c` because Deploio executes the command via exec(), not
+  # via a shell — so without `sh -c`, `cd /migrate && …` gets word-split
+  # and `cd` is run as if it were a binary. With `sh -c`, the full string
+  # is passed to a real shell which handles `cd`, `&&`, and PATH lookup
+  # the way you'd expect.
+  #
+  # Migration tooling lives at /migrate (see Dockerfile). Calling the
+  # Prisma CLI's JS entry directly avoids any reliance on .bin symlinks
+  # or PATH munging.
+  command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy"'
