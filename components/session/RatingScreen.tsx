@@ -9,6 +9,7 @@ import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
+import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -63,7 +64,6 @@ export function RatingScreen({ params }: Props) {
   }
 
   async function resetRating() {
-    if (!confirm('Reset your rating?')) return
     await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -115,7 +115,6 @@ export function RatingScreen({ params }: Props) {
   }
 
   async function deleteWine() {
-    if (!confirm(`Delete "${wine!.name}"? This removes it for everyone.`)) return
     await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
@@ -234,8 +233,8 @@ export function RatingScreen({ params }: Props) {
         {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>
       <button className="btn-g" onClick={() => router.back()}>cancel</button>
-      {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}
-      {isHost && <button className="btn-del" onClick={deleteWine}>⌫ delete this wine</button>}
+      {existing && <ConfirmDeleteButton className="btn-g" label="⌫ reset my rating" confirmLabel="tap again to reset" onConfirm={resetRating} />}
+      {isHost && <ConfirmDeleteButton label="⌫ delete this wine" confirmLabel="tap again to delete" onConfirm={deleteWine} />}
 
       {showEdit && wine && (
         <AddWineModal
