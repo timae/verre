@@ -31,7 +31,10 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     where: { userId, isPublic: true },
     orderBy: { createdAt: 'desc' },
     take: 10,
-    include: { _count: { select: { likes: true } } },
+    include: {
+      _count: { select: { likes: true } },
+      tags: { include: { user: { select: { id: true, name: true } } } },
+    },
   })
 
   const level = getLevel(user.xp)
@@ -92,6 +95,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
             venueName: c.venueName, city: c.city, country: c.country,
             flavors: c.flavors as Record<string, number>, likeCount: c._count.likes,
             createdAt: c.createdAt,
+            tags: c.tags?.map(t => t.user) ?? [],
           }))}
         />
       </div>

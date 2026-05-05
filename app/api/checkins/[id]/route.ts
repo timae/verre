@@ -23,7 +23,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   const body = await req.json()
   const { wineName, producer, vintage, grape, type, score, flavors, notes,
-    imageData, venueName, city, country, lat, lng, isPublic } = body
+    imageData, venueName, city, country, lat, lng, isPublic, taggedUserIds } = body
   if (score !== undefined) {
     const c = validateScore(score); if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
   }
@@ -39,25 +39,60 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     imageUrl = null
   }
 
-  const updated = await prisma.checkin.update({
-    where: { id: Number(id) },
-    data: {
-      wineName:  wineName  !== undefined ? (wineName?.trim()  || checkin.wineName) : checkin.wineName,
-      producer:  producer  !== undefined ? (producer?.trim()  || null) : checkin.producer,
-      vintage:   vintage   !== undefined ? (vintage?.trim().slice(0,4) || null) : checkin.vintage,
-      grape:     grape     !== undefined ? (grape?.trim()     || null) : checkin.grape,
-      type:      type      !== undefined ? (type              || null) : checkin.type,
-      score:     score     !== undefined ? (score             ?? null) : checkin.score,
-      flavors:   flavors   !== undefined ? flavors            : checkin.flavors,
-      notes:     notes     !== undefined ? (notes?.trim()     || null) : checkin.notes,
-      imageUrl,
-      venueName: venueName !== undefined ? (venueName?.trim() || null) : checkin.venueName,
-      city:      city      !== undefined ? (city?.trim()      || null) : checkin.city,
-      country:   country   !== undefined ? (country?.trim().slice(0,2).toUpperCase() || null) : checkin.country,
-      lat:       lat       !== undefined ? (lat               ?? null) : checkin.lat,
-      lng:       lng       !== undefined ? (lng               ?? null) : checkin.lng,
-      isPublic:  isPublic  !== undefined ? isPublic           : checkin.isPublic,
-    },
+  // If the client sent taggedUserIds, verify each is a mutual follow before
+  // we touch the tag rows. Same check as POST — clients can ask to tag
+  // anyone, but only mutuals actually get persisted.
+  let validTagIds: number[] | undefined
+  if (Array.isArray(taggedUserIds)) {
+    if (taggedUserIds.length === 0) {
+      validTagIds = []
+    } else {
+      const mutuals = await prisma.$queryRaw<{ id: number }[]>`
+        SELECT f1.following_id AS id
+        FROM follows f1
+        JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
+        WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+      `
+      validTagIds = mutuals.map(m => m.id)
+    }
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const updatedCheckin = await tx.checkin.update({
+      where: { id: Number(id) },
+      data: {
+        wineName:  wineName  !== undefined ? (wineName?.trim()  || checkin.wineName) : checkin.wineName,
+        producer:  producer  !== undefined ? (producer?.trim()  || null) : checkin.producer,
+        vintage:   vintage   !== undefined ? (vintage?.trim().slice(0,4) || null) : checkin.vintage,
+        grape:     grape     !== undefined ? (grape?.trim()     || null) : checkin.grape,
+        type:      type      !== undefined ? (type              || null) : checkin.type,
+        score:     score     !== undefined ? (score             ?? null) : checkin.score,
+        flavors:   flavors   !== undefined ? flavors            : checkin.flavors,
+        notes:     notes     !== undefined ? (notes?.trim()     || null) : checkin.notes,
+        imageUrl,
+        venueName: venueName !== undefined ? (venueName?.trim() || null) : checkin.venueName,
+        city:      city      !== undefined ? (city?.trim()      || null) : checkin.city,
+        country:   country   !== undefined ? (country?.trim().slice(0,2).toUpperCase() || null) : checkin.country,
+        lat:       lat       !== undefined ? (lat               ?? null) : checkin.lat,
+        lng:       lng       !== undefined ? (lng               ?? null) : checkin.lng,
+        isPublic:  isPublic  !== undefined ? isPublic           : checkin.isPublic,
+      },
+    })
+
+    // Replace tags atomically if the client sent any list (including empty
+    // — explicit empty means "remove all tags"). Skip when undefined so a
+    // PATCH that only updates other fields doesn't drop existing tags.
+    if (validTagIds !== undefined) {
+      await tx.checkinTag.deleteMany({ where: { checkinId: Number(id) } })
+      if (validTagIds.length > 0) {
+        await tx.checkinTag.createMany({
+          data: validTagIds.map(uid => ({ checkinId: Number(id), userId: uid })),
+          skipDuplicates: true,
+        })
+      }
+    }
+
+    return updatedCheckin
   })
 
   return NextResponse.json(updated)

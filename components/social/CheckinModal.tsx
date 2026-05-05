@@ -19,6 +19,7 @@ type EditCheckin = {
   grape?: string|null; type?: string|null; score?: number|null; flavors?: Record<string,number>|null
   notes?: string|null; imageUrl?: string|null; venueName?: string|null; city?: string|null
   country?: string|null; lat?: number|null; lng?: number|null; isPublic?: boolean
+  tags?: { id: number; name: string }[]
 }
 
 interface Props { onClose: () => void; onPosted: () => void; editCheckin?: EditCheckin; onDelete?: () => void }
@@ -47,7 +48,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
   const [isPublic, setIsPublic] = useState(editCheckin?.isPublic !== false)
   const [showLocation, setShowLocation] = useState(false)
   const [showTagPicker, setShowTagPicker] = useState(false)
-  const [taggedIds, setTaggedIds] = useState<number[]>([])
+  const [taggedIds, setTaggedIds] = useState<number[]>(editCheckin?.tags?.map(t => t.id) ?? [])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -97,7 +98,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         score: score || null, flavors, notes,
         imageData: imageData === '__remove__' ? null : (imageData || undefined),
         isPublic, ...location,
-        ...(isEdit ? {} : { taggedUserIds: taggedIds }),
+        taggedUserIds: taggedIds,
       }),
     })
     setSaving(false)
