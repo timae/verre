@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 
-  const rl = await checkRate(`rl:checkin:${userId}:1h`, 20, 3600)
+  const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many check-ins. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
   const body = await req.json()

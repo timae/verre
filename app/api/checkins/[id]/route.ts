@@ -13,7 +13,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const userId = Number(session.user.id)
 
   // Share the create budget — edits and creates count toward the same hourly cap.
-  const rl = await checkRate(`rl:checkin:${userId}:1h`, 20, 3600)
+  const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
   const { id } = await params
