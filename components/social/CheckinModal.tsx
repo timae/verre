@@ -18,9 +18,9 @@ type EditCheckin = {
   country?: string|null; lat?: number|null; lng?: number|null; isPublic?: boolean
 }
 
-interface Props { onClose: () => void; onPosted: () => void; editCheckin?: EditCheckin }
+interface Props { onClose: () => void; onPosted: () => void; editCheckin?: EditCheckin; onDelete?: () => void }
 
-export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
+export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props) {
   const isEdit = !!editCheckin
   const [wineName, setWineName] = useState(editCheckin?.wineName || '')
   const [producer, setProducer] = useState(editCheckin?.producer || '')
@@ -235,6 +235,18 @@ export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
         {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
         <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>
         <button className="btn-g" onClick={onClose}>cancel</button>
+        {isEdit && onDelete && (
+          <button
+            className="btn-del"
+            onClick={() => {
+              const label = wineName.trim() || editCheckin?.wineName || 'this check-in'
+              if (!confirm(`Delete this check-in for "${label}"? This cannot be undone.`)) return
+              onDelete()
+            }}
+          >
+            ⌫ delete check-in
+          </button>
+        )}
       </div>
     </div>
   )

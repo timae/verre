@@ -74,18 +74,10 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
               <span style={{ fontSize:11, color:'var(--fg-dim)', fontFamily:'var(--mono)' }}>{timeAgo(checkin.createdAt)}</span>
             )}
             {isOwn && (
-              <div style={{ display:'flex', gap:8 }}>
-                <button onClick={() => setEditing(true)}
-                  style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
-                  edit
-                </button>
-                {onDelete && (
-                  <button onClick={onDelete}
-                    style={{ fontSize:11, color:'var(--fg-dim)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
-                    delete
-                  </button>
-                )}
-              </div>
+              <button onClick={() => setEditing(true)}
+                style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}>
+                edit
+              </button>
             )}
           </div>
         </div>
@@ -214,6 +206,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
           editCheckin={checkin as Parameters<typeof CheckinModal>[0]['editCheckin']}
           onClose={() => setEditing(false)}
           onPosted={() => { setEditing(false); window.location.reload() }}
+          onDelete={onDelete ? () => { setEditing(false); onDelete() } : undefined}
         />
       )}
     </div>
