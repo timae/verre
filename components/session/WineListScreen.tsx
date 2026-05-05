@@ -228,7 +228,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
         )}
 
         {showAdd && (
-          <AddWineModal code={code} userName={displayName} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
+          <AddWineModal code={code} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
         )}
 
         {rateWineId && (

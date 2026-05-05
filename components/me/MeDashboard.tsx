@@ -41,7 +41,7 @@ export function MeDashboard({ user }: { user: User }) {
     setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
+      body: JSON.stringify({ hostDisplayName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -51,7 +51,7 @@ export function MeDashboard({ user }: { user: User }) {
     }
     const data = await res.json()
     if (data.anonToken) setAnonToken(data.code, data.anonToken)
-    const finalName = data.userName || name.trim()
+    const finalName = data.displayName || name.trim()
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('host', '1')
@@ -66,7 +66,7 @@ export function MeDashboard({ user }: { user: User }) {
     setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: name.trim() }),
+      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), displayName: name.trim() }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -77,7 +77,7 @@ export function MeDashboard({ user }: { user: User }) {
     const data = await res.json()
     const code = joinCode.trim().toUpperCase()
     if (data.anonToken) setAnonToken(code, data.anonToken)
-    const finalName = data.userName || name.trim()
+    const finalName = data.displayName || name.trim()
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('name', finalName)

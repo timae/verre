@@ -241,7 +241,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
 
       {showEdit && wine && (
         <AddWineModal
-          code={code} userName={displayName} editWine={wine}
+          code={code} editWine={wine}
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refresh() }}
         />

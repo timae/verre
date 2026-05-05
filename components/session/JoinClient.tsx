@@ -48,7 +48,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     const res = await fetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code, userName: n }),
+      body: JSON.stringify({ code, displayName: n }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -60,7 +60,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     if (data.anonToken) setAnonToken(code, data.anonToken)
     // Server may have suffixed the name with a food emoji to disambiguate
     // from someone already in the room. Use the returned form as canonical.
-    const finalName = data.userName || n
+    const finalName = data.displayName || n
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('name', finalName)

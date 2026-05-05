@@ -31,7 +31,9 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const { hostName: rawHostName, sessionName, blind, lifespan } = await req.json()
+  // Public field is `hostDisplayName` — there's no concept of a "username"
+  // in this codebase (see CLAUDE.md Auth section), only display names.
+  const { hostDisplayName: rawHostName, sessionName, blind, lifespan } = await req.json()
 
   let hostName: string
   try { hostName = validateDisplayName(rawHostName) }
@@ -122,7 +124,7 @@ export async function POST(req: NextRequest) {
     name: meta.name,
     host: hostName,
     id: identityId,
-    userName: hostName,
+    displayName: hostName,
     blind: !!blind,
     lifespan: resolvedLifespan,
     ...(anonToken ? { anonToken } : {}),

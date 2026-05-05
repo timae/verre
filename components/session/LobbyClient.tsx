@@ -25,7 +25,7 @@ export function LobbyClient({ user }: { user: User }) {
     const res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
+      body: JSON.stringify({ hostDisplayName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -35,7 +35,7 @@ export function LobbyClient({ user }: { user: User }) {
     }
     const data = await res.json()
     if (data.anonToken) setAnonToken(data.code, data.anonToken)
-    const finalName = data.userName || displayName.trim()
+    const finalName = data.displayName || displayName.trim()
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('host', '1')
@@ -51,7 +51,7 @@ export function LobbyClient({ user }: { user: User }) {
     const res = await fetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), userName: displayName.trim() }),
+      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), displayName: displayName.trim() }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -62,7 +62,7 @@ export function LobbyClient({ user }: { user: User }) {
     const data = await res.json()
     const code = joinCode.trim().toUpperCase()
     if (data.anonToken) setAnonToken(code, data.anonToken)
-    const finalName = data.userName || displayName.trim()
+    const finalName = data.displayName || displayName.trim()
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('name', finalName)

@@ -20,14 +20,13 @@ const AI_PROVIDERS = {
 
 interface Props {
   code: string
-  userName: string
   onClose: () => void
   onSaved: () => void
   editWine?: WineMeta // if set, we're editing
   winesCount?: number // number of wines already in the list, used for position picker
 }
 
-export function AddWineModal({ code, userName, onClose, onSaved, editWine, winesCount = 0 }: Props) {
+export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 }: Props) {
   const isEdit = !!editWine
   const [name, setName] = useState(editWine?.name || '')
   const [producer, setProducer] = useState(editWine?.producer || '')
