@@ -2,7 +2,7 @@ import { auth } from '@/auth'
 import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
-import { CheckinCard } from '@/components/social/CheckinCard'
+import { ProfileCheckins } from '@/components/social/ProfileCheckins'
 import { FollowButton } from '@/components/social/FollowButton'
 import Link from 'next/link'
 
@@ -81,16 +81,19 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
 
         {/* Check-ins */}
         <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--fg-dim)', marginBottom: 10 }}>// check-ins</div>
-        {checkins.length === 0 && (
-          <p style={{ color: 'var(--fg-dim)', fontSize: 13, padding: '16px 0' }}>No public check-ins yet.</p>
-        )}
-        {checkins.map(c => (
-          <CheckinCard
-            key={c.id}
-            checkin={{ id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl, venueName: c.venueName, city: c.city, country: c.country, flavors: c.flavors as Record<string, number>, likeCount: c._count.likes }}
-            showAuthor={false}
-          />
-        ))}
+        <ProfileCheckins
+          profileUserId={userId}
+          profileUserName={user.name}
+          profileUserXp={user.xp}
+          myId={myId}
+          initialCheckins={checkins.map(c => ({
+            id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
+            type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
+            venueName: c.venueName, city: c.city, country: c.country,
+            flavors: c.flavors as Record<string, number>, likeCount: c._count.likes,
+            createdAt: c.createdAt,
+          }))}
+        />
       </div>
     </div>
   )
