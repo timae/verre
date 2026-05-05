@@ -2,6 +2,7 @@
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 import { LineupLocked } from './LineupLocked'
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
@@ -185,15 +186,13 @@ export function WineListScreen() {
                   )}
 
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isRedacted ? 'var(--fg-dim)' : 'var(--fg)'}}>
-                      {wine.name}
-                      {!isRedacted && wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-                    </div>
-                    {!isRedacted && wine.producer && (
-                      <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{wine.producer}</div>
-                    )}
-                    {isRedacted && (
-                      <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
+                    {isRedacted ? (
+                      <>
+                        <div style={{fontWeight:700,fontSize:13,color:'var(--fg-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
+                        <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
+                      </>
+                    ) : (
+                      <WineIdentity wine={wine} size="compact" />
                     )}
                   </div>
 

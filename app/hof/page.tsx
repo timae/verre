@@ -1,3 +1,5 @@
+import { WineIdentity } from '@/components/wine/WineIdentity'
+
 export const dynamic = 'force-dynamic'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -21,8 +23,7 @@ export default async function HofPage() {
             <div key={i} className="bg-bg2 border border-border rounded-xl p-4 flex items-center gap-4">
               <span className="text-2xl">{ICO[e.type || ''] || '🍷'}</span>
               <div className="flex-1 min-w-0">
-                <p className="font-bold text-sm">{e.wineName}</p>
-                <p className="text-xs text-fg-dim">{[e.producer, e.vintage].filter(Boolean).join(' · ')}</p>
+                <WineIdentity wine={{ name: e.wineName, vintage: e.vintage, producer: e.producer }} size="compact" />
                 <p className="text-xs text-fg-faint mt-0.5">{e.accountName || e.rater} · {new Date(e.at).toLocaleDateString()}</p>
               </div>
               <div className="text-2xl font-extrabold text-accent">★5</div>
