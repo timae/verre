@@ -1,5 +1,4 @@
 'use client'
-'use client'
 import { use, useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from './SessionShell'
