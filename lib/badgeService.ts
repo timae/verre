@@ -10,17 +10,13 @@ let seeded = false
 export async function ensureBadgesSeedOnce() {
   if (seeded) return
   try {
-    const existing = await prisma.badge.findFirst({ select: { id: true } })
-    if (!existing) {
+    const count = await prisma.badge.count()
+    // Re-seed whenever the DB count is behind the code definition (e.g. new badges added)
+    if (count < ALL_BADGES.length) {
       await prisma.badge.createMany({
         data: ALL_BADGES.map(b => ({
-          id: b.id,
-          name: b.name,
-          description: b.description,
-          icon: b.icon,
-          category: b.category,
-          rarity: b.rarity,
-          xpReward: b.xp_reward,
+          id: b.id, name: b.name, description: b.description,
+          icon: b.icon, category: b.category, rarity: b.rarity, xpReward: b.xp_reward,
         })),
         skipDuplicates: true,
       })
@@ -155,13 +151,14 @@ export async function checkAndAwardBadges(userId: number, action: string): Promi
   const newBadgeIds = evaluateBadges(stats, alreadyEarned)
 
   if (newBadgeIds.length > 0) {
-    await prisma.userBadge.createMany({
-      data: newBadgeIds.map(badgeId => ({ userId, badgeId, seen: false })),
-      skipDuplicates: true,
-    })
+    // Insert individually so a missing badge FK (shouldn't happen after seed fix)
+    // doesn't abort the entire batch and lose all XP
     for (const badgeId of newBadgeIds) {
-      const badge = BADGE_MAP[badgeId]
-      if (badge) xpGain += badge.xp_reward
+      try {
+        await prisma.userBadge.create({ data: { userId, badgeId, seen: false } })
+        const badge = BADGE_MAP[badgeId]
+        if (badge) xpGain += badge.xp_reward
+      } catch { /* duplicate or missing badge — skip */ }
     }
   }
 
