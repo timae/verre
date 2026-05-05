@@ -51,7 +51,7 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
       const lx = cx + lR * Math.cos(mRad)
       const ly = cy + lR * Math.sin(mRad)
       const anch = Math.cos(mRad) > 0.2 ? 'start' : Math.cos(mRad) < -0.2 ? 'end' : 'middle'
-      h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7.5" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
+      h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${Math.max(8, size * 0.04)}" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
     })
 
     return { vb, h, w: size, ht: size }
