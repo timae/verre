@@ -9,11 +9,21 @@ export async function GET(req: NextRequest) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
+  // Defense-in-depth: the SQL below uses prisma.$queryRaw's tagged template
+  // form which parameterizes ${userId}, so this is already safe. But TypeScript
+  // can't prevent a future caller from sneaking a non-integer through (e.g. via
+  // a header or refactor that bypasses Number()). Reject anything that isn't a
+  // positive integer up front so the SQL only ever sees a sane value.
+  if (!Number.isInteger(userId) || userId < 1) {
+    return NextResponse.json({ error: 'invalid session' }, { status: 401 })
+  }
 
   const cursorParam = req.nextUrl.searchParams.get('cursor')
   const cursor = cursorParam ? new Date(cursorParam) : new Date()
 
-  // My network: explicit follows + tasting buddies (shared sessions)
+  // My network: explicit follows + tasting buddies (shared sessions). The
+  // ${userId} interpolations below are parameterized by Prisma's tagged
+  // template handling, not concatenated into the SQL string.
   const network = await prisma.$queryRaw<{ user_id: number }[]>`
     SELECT DISTINCT user_id FROM (
       SELECT ${userId}::integer AS user_id
