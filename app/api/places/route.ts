@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { checkRate, formatWait } from '@/lib/rateLimit'
 
 const KEY = process.env.GOOGLE_PLACES_API_KEY
 
@@ -11,11 +12,16 @@ export interface PlaceResult {
 // adapter over Google Places (when GOOGLE_PLACES_API_KEY is set) or OSM
 // Overpass+Nominatim (fallback). Both upstreams are themselves public; we
 // expose this endpoint without auth so the LocationPicker can be used by
-// anonymous users on the check-in modal. Caller-side rate-limiting is a
-// pending follow-up — current upstream quotas are the only ceiling.
+// anonymous users on the check-in modal. Per-IP rate-limiting protects
+// upstream quotas from abuse — Google Places billing and Nominatim's
+// 1-req/sec policy in particular.
 //
 // body: { type: 'nearby', lat, lng } | { type: 'autocomplete', query, lat?, lng? }
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const rl = await checkRate(`rl:places:${ip}:1m`, 30, 60)
+  if (!rl.allowed) return NextResponse.json({ error: `Too many place lookups. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+
   const body = await req.json()
   try {
     if (KEY) {
