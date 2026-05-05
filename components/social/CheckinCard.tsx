@@ -1,4 +1,5 @@
 'use client'
+import { useRef } from 'react'
 import Link from 'next/link'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { LikeButton } from './LikeButton'
@@ -6,6 +7,20 @@ import { detectFL, getFL } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
+
+function openWheelLightbox(ref: React.RefObject<HTMLDivElement | null>, label: string) {
+  const svg = ref.current?.querySelector('svg')
+  if (!svg) return
+  // Add white background so the lightbox looks clean on any theme
+  const clone = svg.cloneNode(true) as SVGElement
+  clone.setAttribute('style', 'background:#0E0E0C;border-radius:16px;')
+  const data = new XMLSerializer().serializeToString(clone)
+  const blob = new Blob([data], { type: 'image/svg+xml' })
+  const url = URL.createObjectURL(blob)
+  openLightbox(url, label + ' — flavour profile')
+  // Revoke after a moment so memory is freed
+  setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
@@ -27,6 +42,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
     : getFL(checkin.type || 'white')
 
   const hasFlavors = checkin.flavors && Object.values(checkin.flavors).some(v => v > 0)
+  const wheelRef = useRef<HTMLDivElement>(null)
   const sub = [checkin.producer, checkin.vintage].filter(Boolean).join(' · ')
   const locationParts = [checkin.venueName, checkin.city, checkin.country].filter(Boolean)
   const level = author?.xp != null ? getLevel(author.xp) : null
@@ -133,9 +149,14 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             {/* Divider */}
             {hasFlavors && <div style={{ height:1, background:'var(--border)', margin:'6px 0 8px' }} />}
 
-            {/* Polar wheel */}
+            {/* Polar wheel — click to expand */}
             {hasFlavors && (
-              <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <div
+                ref={wheelRef}
+                onClick={() => openWheelLightbox(wheelRef, checkin.wineName)}
+                style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', cursor:'zoom-in' }}
+                title="Click to expand"
+              >
                 <PolarChart flavors={checkin.flavors as Record<string,number>} fl={fl} size={180} />
               </div>
             )}
