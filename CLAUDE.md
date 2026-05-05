@@ -256,7 +256,7 @@ Pending extractions that are on the follow-up list (extract them when you next t
 
 - `<WineIdentityFields>` — sibling for create/edit forms (CheckinModal, AddWineModal). Same canonical field order as `<WineIdentity>`.
 
-**Modals must use a portal.** Several layout styles in this app create a containing block that traps `position: fixed` descendants — most notably `.panel` with `backdrop-filter`. New modal/overlay components must wrap their JSX in `createPortal(children, document.body)` so the overlay is attached at the document root and reliably covers the viewport regardless of where it's rendered from. `CheckinModal` does this correctly; older overlays (`AddWineModal`, `SavedWineModal`, `ImageLightbox`, `UserPanel`, `SessionPanel`) still need the migration.
+**Modals use the shared `<Modal>` primitive.** `components/ui/Modal.tsx` handles `createPortal(children, document.body)` (so the overlay is never trapped in a parent stacking context — important because `.panel` uses `backdrop-filter` which creates a containing block for fixed descendants), backdrop click-to-close, Escape-key-to-close, and the standard sheet styling. New modal/overlay components should use it rather than re-rolling `position: fixed; inset: 0; …` boilerplate. `ImageLightbox` is the deliberate exception — it has unique styling needs (z-index 9999 to float over everything, full-black backdrop, center-aligned close button) and stays standalone.
 
 ### Flavour chart system
 

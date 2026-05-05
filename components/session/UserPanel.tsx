@@ -1,5 +1,6 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import { Modal } from '@/components/ui/Modal'
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
@@ -30,11 +31,6 @@ export function UserPanel({ onClose }: Props) {
 
   const [tab, setTab] = useState<'overview' | 'settings'>('overview')
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
 
   const { data: sessions = [] } = useQuery<Array<{ id: number; code: string; name: string | null; wines_rated: number; joined_at: string }>>({
     queryKey: ['me-sessions'],
@@ -55,12 +51,8 @@ export function UserPanel({ onClose }: Props) {
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
 
   return (
-    <div
-      style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div style={{width:'100%',maxWidth:600,minHeight:'55vh',maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
-        <div className="sheet-bar" />
+    <Modal onClose={onClose} maxWidth={600} minHeight="55vh" maxHeight="90vh">
+      <div className="sheet-bar" />
         <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
           {displayName || 'you'}
         </div>
@@ -160,7 +152,6 @@ export function UserPanel({ onClose }: Props) {
         )}
 
         <button className="btn-p" onClick={onClose} style={{marginTop:12,marginBottom:0}}>→ close</button>
-      </div>
-    </div>
+    </Modal>
   )
 }

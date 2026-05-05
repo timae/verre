@@ -1,12 +1,13 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
+import { Modal } from '@/components/ui/Modal'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
@@ -20,16 +21,8 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
   const fl = rating?.flavors ? detectFL(rating.flavors) : FL
   const wheelRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', fn)
-    return () => document.removeEventListener('keydown', fn)
-  }, [onClose])
-
   return (
-    <div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{width:'100%',maxWidth:560,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
+    <Modal onClose={onClose} maxWidth={560} maxHeight="90vh">
         <div className="sheet-bar" />
 
         {wine.image_url && (
@@ -90,7 +83,6 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
             onConfirm={onRemove}
           />
         )}
-      </div>
-    </div>
+    </Modal>
   )
 }

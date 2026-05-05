@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import { Modal } from '@/components/ui/Modal'
 import { useQueryClient } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
@@ -146,11 +147,21 @@ export function SessionPanel({ onClose, onLeave }: Props) {
       .catch(() => {})
   }, [code])
 
+  // While the delete-confirm is open, intercept Escape in the capture phase
+  // so it closes the confirm (and only the confirm), not the parent Modal
+  // underneath. Without this, Modal's keydown listener would fire first
+  // and dismiss the whole panel on Escape — surprising and destructive.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onClose])
+    if (!showDeleteConfirm) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setShowDeleteConfirm(false)
+      }
+    }
+    document.addEventListener('keydown', onKey, { capture: true })
+    return () => document.removeEventListener('keydown', onKey, { capture: true })
+  }, [showDeleteConfirm])
 
   async function saveSettings() {
     setSaveError('')
@@ -192,12 +203,8 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
 
   return (
-    <div
-      style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
-    >
-      <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
-        <div className="sheet-bar" />
+    <Modal onClose={onClose} maxWidth={600} maxHeight="90vh">
+      <div className="sheet-bar" />
 
         {/* Header */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
@@ -439,7 +446,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
         <button className="btn-p" onClick={onClose} style={{marginBottom:6,marginTop:16}}>→ close</button>
         <button className="btn-g" onClick={onLeave}>leave session</button>
-      </div>
 
       {/* Delete-session confirmation modal. Stops propagation so a click
           inside the modal doesn't close the SessionPanel underneath. */}
@@ -470,6 +476,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           </div>
         </div>
       )}
-    </div>
+    </Modal>
   )
 }
