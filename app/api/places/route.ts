@@ -7,7 +7,13 @@ export interface PlaceResult {
   city: string; country: string; lat: number; lng: number; types: string[]
 }
 
-// POST /api/places
+// POST /api/places — public-by-design (no auth). The route is a thin
+// adapter over Google Places (when GOOGLE_PLACES_API_KEY is set) or OSM
+// Overpass+Nominatim (fallback). Both upstreams are themselves public; we
+// expose this endpoint without auth so the LocationPicker can be used by
+// anonymous users on the check-in modal. Caller-side rate-limiting is a
+// pending follow-up — current upstream quotas are the only ceiling.
+//
 // body: { type: 'nearby', lat, lng } | { type: 'autocomplete', query, lat?, lng? }
 export async function POST(req: NextRequest) {
   const body = await req.json()
