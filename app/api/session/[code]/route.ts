@@ -73,6 +73,14 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     return NextResponse.json({ error: 'targetId or targetUser required' }, { status: 400 })
   }
 
+  // Reject unknown actions loudly. Without this guard a typo (e.g.
+  // "addCohost" instead of "add-cohost") falls through to the no-op
+  // path and returns 200 with the unchanged meta — so the caller
+  // thinks the change took effect when nothing happened.
+  if (action !== 'add-cohost' && action !== 'remove-cohost' && action !== 'transfer-host') {
+    return NextResponse.json({ error: 'unknown action' }, { status: 400 })
+  }
+
   const coHostIds: string[] = meta.coHostIds || []
 
   if (action === 'add-cohost') {
