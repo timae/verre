@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
@@ -103,7 +104,13 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
     onPosted()
   }
 
-  return (
+  // Render via a portal on document.body so the fixed-position overlay is
+  // never trapped inside a parent stacking context. Several ancestor styles
+  // in this app (notably `.panel` with backdrop-filter) create a containing
+  // block for fixed descendants — without the portal the modal renders
+  // inside the card it was opened from instead of covering the viewport.
+  if (typeof document === 'undefined') return null
+  return createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', overflowY: 'auto' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div style={{ width: '100%', maxWidth: 560, minHeight: 'min(70vh, 600px)', background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32, marginTop: 'auto' }}>
@@ -244,6 +251,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
           />
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
