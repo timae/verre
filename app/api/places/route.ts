@@ -8,6 +8,22 @@ export interface PlaceResult {
   city: string; country: string; lat: number; lng: number; types: string[]
 }
 
+// Fetch + parse JSON with informative errors. Upstream APIs occasionally
+// return HTML (rate limit pages, gateway timeouts, maintenance notices)
+// instead of JSON; without these checks the failure surfaces as a generic
+// `JSON.parse: Unexpected token` in the logs which tells you nothing about
+// which upstream actually failed.
+async function fetchJson(url: string, init: RequestInit, label: string): Promise<unknown> {
+  const res = await fetch(url, init)
+  if (!res.ok) throw new Error(`${label} returned ${res.status} ${res.statusText}`)
+  const ct = res.headers.get('content-type') || ''
+  if (!ct.includes('json')) {
+    const preview = (await res.text()).slice(0, 120)
+    throw new Error(`${label} returned non-JSON content-type "${ct}": ${preview}`)
+  }
+  return res.json()
+}
+
 // POST /api/places — public-by-design (no auth). The route is a thin
 // adapter over Google Places (when GOOGLE_PLACES_API_KEY is set) or OSM
 // Overpass+Nominatim (fallback). Both upstreams are themselves public; we
@@ -55,7 +71,7 @@ export async function POST(req: NextRequest) {
 // ── Google Places API ─────────────────────────────────────────
 
 async function googleNearby(lat: number, lng: number) {
-  const res = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+  const data = await fetchJson('https://places.googleapis.com/v1/places:searchNearby', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -67,13 +83,12 @@ async function googleNearby(lat: number, lng: number) {
       maxResultCount: 10,
       locationRestriction: { circle: { center: { latitude: lat, longitude: lng }, radius: 500 } },
     }),
-  })
-  const data = await res.json()
+  }, 'google nearby') as { places?: Record<string, unknown>[] }
   return NextResponse.json({ results: (data.places ?? []).map(parseGooglePlace) })
 }
 
 async function googleAutocomplete(query: string, lat?: number, lng?: number) {
-  const res = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+  const data = await fetchJson('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': KEY! },
     body: JSON.stringify({
@@ -81,15 +96,14 @@ async function googleAutocomplete(query: string, lat?: number, lng?: number) {
       includedPrimaryTypes: ['bar', 'restaurant', 'wine_bar', 'liquor_store', 'cafe', 'establishment'],
       ...(lat && lng ? { locationBias: { circle: { center: { latitude: lat, longitude: lng }, radius: 50000 } } } : {}),
     }),
-  })
-  const data = await res.json()
+  }, 'google autocomplete') as { suggestions?: Record<string, unknown>[] }
   const results: PlaceResult[] = await Promise.all(
     (data.suggestions ?? []).slice(0, 6).map(async (s: Record<string, unknown>) => {
       const placeId = (s.placePrediction as Record<string, unknown>)?.placeId
       if (!placeId) return null
-      const detail = await fetch(`https://places.googleapis.com/v1/places/${placeId}`, {
+      const detail = await fetchJson(`https://places.googleapis.com/v1/places/${placeId}`, {
         headers: { 'X-Goog-Api-Key': KEY!, 'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,types,addressComponents' },
-      }).then(r => r.json())
+      }, 'google place detail') as Record<string, unknown>
       return parseGooglePlace(detail)
     })
   ).then(r => r.filter(Boolean) as PlaceResult[])
@@ -119,12 +133,11 @@ const OSM_SHOP_FILTER  = '"shop"~"^(wine|alcohol|beverages)$","name"'
 
 async function overpassNearby(lat: number, lng: number) {
   const q = `[out:json][timeout:10];(node[${OSM_VENUE_FILTER}](around:500,${lat},${lng});node[${OSM_SHOP_FILTER}](around:500,${lat},${lng}););out body 12;`
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
+  const data = await fetchJson('https://overpass-api.de/api/interpreter', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `data=${encodeURIComponent(q)}`,
-  })
-  const data = await res.json()
+  }, 'overpass nearby') as { elements?: Record<string, unknown>[] }
   const results: PlaceResult[] = (data.elements ?? []).map((e: Record<string, unknown>) => {
     const tags = e.tags as Record<string, string> | undefined ?? {}
     return {
@@ -145,10 +158,9 @@ async function nominatimSearch(query: string, lat?: number, lng?: number) {
     q: query, format: 'jsonv2', limit: '6', addressdetails: '1',
     ...(lat && lng ? { viewbox: `${lng - 0.5},${lat + 0.5},${lng + 0.5},${lat - 0.5}`, bounded: '1' } : {}),
   })
-  const res = await fetch(`https://nominatim.openstreetmap.org/search?${params}`, {
+  const data = await fetchJson(`https://nominatim.openstreetmap.org/search?${params}`, {
     headers: { 'User-Agent': `Verre/1.0 (${process.env.PUBLIC_HOSTNAME || 'self-hosted'})` },
-  })
-  const data = await res.json() as Record<string, unknown>[]
+  }, 'nominatim search') as Record<string, unknown>[]
   const results: PlaceResult[] = data.map(p => {
     const addr = p.address as Record<string, string> | undefined ?? {}
     const name = addr.amenity ?? addr.shop ?? addr.tourism ?? String(p.display_name ?? '').split(',')[0]
