@@ -32,7 +32,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     // Enabling blind tasting requires a pro account. Disabling is always
     // allowed (lets a host turn it off without having to be pro).
     if (body.blind && !isPro) {
-      return NextResponse.json({ error: 'pro required for blind tasting' }, { status: 403 })
+      return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
     }
     meta.blind = !!body.blind
   }
@@ -41,7 +41,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 
   if (body.lifespan !== undefined) {
     if (body.lifespan !== '48h' && !isPro) {
-      return NextResponse.json({ error: 'pro required for extended lifespan' }, { status: 403 })
+      return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
     }
     meta.lifespan = body.lifespan
   }
