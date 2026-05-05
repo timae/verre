@@ -41,12 +41,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       // almost always changes). If upload failed, keep the old URL and
       // don't touch S3.
       if (checkin.imageUrl && checkin.imageUrl !== newUrl) {
-        deleteImageByUrl(checkin.imageUrl).catch(() => {})
+        deleteImageByUrl(checkin.imageUrl)
       }
       imageUrl = newUrl
     }
   } else if (imageData === null) {
-    if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl).catch(() => {})
+    if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl)
     imageUrl = null
   }
 
@@ -120,6 +120,6 @@ export async function DELETE(_req: NextRequest, { params }: Ctx) {
   // Fire-and-forget: reclaim the S3 object after the DB row is gone. If
   // the S3 delete fails we still report success — the row is gone, the
   // object becomes a harmless orphan that a future cleanup can sweep.
-  if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl).catch(() => {})
+  if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl)
   return NextResponse.json({ ok: true })
 }

@@ -35,9 +35,17 @@ export async function uploadImage(wineId: string, dataUrl: string): Promise<stri
 export async function deleteImage(wineId: string) {
   if (!s3 || !BUCKET) return
   for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
+    const key = `wines/${wineId}.${ext}`
     try {
-      await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: `wines/${wineId}.${ext}` }))
-    } catch {}
+      await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+    } catch (err) {
+      // Per-extension delete blast — most calls hit "no such key" since
+      // only one extension exists per wine. Warn rather than swallow so
+      // real failures (auth, outage) reach the logs instead of vanishing.
+      // S3's NoSuchKey response is technically not an error in the AWS
+      // SDK (DeleteObject is idempotent), so this only fires on real issues.
+      console.warn('[s3] deleteImage failed:', { key, err })
+    }
   }
 }
 
@@ -54,5 +62,10 @@ export async function deleteImageByUrl(url: string | null | undefined) {
   if (!key) return
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
-  } catch {}
+  } catch (err) {
+    // Failure isn't fatal — the row is the source of truth and an orphan
+    // object is harmless cost. Log so transient outages or auth issues
+    // surface in runtime logs rather than disappearing silently.
+    console.warn('[s3] deleteImageByUrl failed:', { key, err })
+  }
 }
