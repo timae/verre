@@ -126,11 +126,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
         </div>
 
         {/* Wine details */}
-        <div className="field"><div className="fl">wine name *</div><input className="fi" value={wineName} onChange={e => setWineName(e.target.value)} placeholder="Château de Whatever" /></div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <div className="field" style={{ flex: 1 }}><div className="fl">producer</div><input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" /></div>
+          <div className="field" style={{ flex: 1 }}><div className="fl">wine name *</div><input className="fi" value={wineName} onChange={e => setWineName(e.target.value)} placeholder="Château de Whatever" /></div>
           <div className="field" style={{ maxWidth: 88 }}><div className="fl">vintage</div><input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" /></div>
         </div>
+        <div className="field"><div className="fl">producer</div><input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" /></div>
 
         {/* Type */}
         <div className="field">
