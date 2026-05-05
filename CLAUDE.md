@@ -265,6 +265,7 @@ Flavour dimensions are **type-specific**:
   - `SERVER_ACTIONS_ALLOWED_ORIGINS` — the deployed hostname (e.g. `tasting.tgweb.li`). `localhost:8080` is always allowed; this var adds extra origins for CSRF on Server Actions. Comma-separated, no scheme.
   - `PUBLIC_HOSTNAME` — the deployed hostname. Used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
   - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places API for venue search; when unset, falls back to OSM Overpass + Nominatim.
+  - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
 - S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)
 - Postgres: `verre.d600599.db.postgres.nineapis.ch`, TLS with `rejectUnauthorized: false`
 - Deploio builds from the Dockerfile on every push to the tracked branch
