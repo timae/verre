@@ -1,6 +1,18 @@
 'use client'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+
+// Module-level stack of open Modal instances. The Escape key closes only
+// the topmost (most recently opened) — without this, every open Modal's
+// own keydown listener would fire and they'd all close at once. That's
+// jarring when modals stack (e.g. RatingScreen has an "edit wine" button
+// that opens AddWineModal on top — Escape there should close just the
+// inner one and leave the outer one alone).
+//
+// Tokens are arbitrary objects — we just need referential identity to
+// compare "is this the topmost?". A useRef gives us a stable token per
+// component instance.
+const modalStack: object[] = []
 
 interface Props {
   children: ReactNode
@@ -48,11 +60,33 @@ interface Props {
 //     if they want one — kept here as a caller responsibility for now
 //     since not every modal needs it).
 export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight, align = 'flex-end' }: Props) {
+  // Stable token for this Modal instance — used to identify ourselves in
+  // the open-modal stack so we only respond to Escape when topmost.
+  const tokenRef = useRef<object>({})
+
+  // Capture onClose in a ref so the mount/unmount effect can stay
+  // dep-free. Without this, a parent re-render passing a new arrow
+  // function would re-run the effect, popping and re-pushing this
+  // Modal's token — which reorders the stack when modals are nested
+  // and an outer parent re-renders during a poll. The effect below
+  // must mount exactly once per Modal lifetime.
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose })
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const token = tokenRef.current
+    modalStack.push(token)
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (modalStack[modalStack.length - 1] === token) onCloseRef.current()
+    }
     document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
+    return () => {
+      document.removeEventListener('keydown', handler)
+      const i = modalStack.indexOf(token)
+      if (i !== -1) modalStack.splice(i, 1)
+    }
+  }, [])
 
   if (typeof document === 'undefined') return null
   return createPortal(

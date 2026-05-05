@@ -1,6 +1,5 @@
 'use client'
-import { use, useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect } from 'react'
 import { useSession } from './SessionShell'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
@@ -11,14 +10,13 @@ import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
+import { Modal } from '@/components/ui/Modal'
 
-interface Props { params: Promise<{ code: string; wineId: string }> }
+interface Props { wineId: string; onClose: () => void }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
-export function RatingScreen({ params }: Props) {
-  const { wineId } = use(params)
+export function RatingScreen({ wineId, onClose }: Props) {
   const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds, isBlind } = useSession()
-  const router = useRouter()
 
   const wine = wines.find(w => w.id === wineId)
   const w = wine as (WineMeta & { _blind?: boolean }) | undefined
@@ -53,7 +51,13 @@ export function RatingScreen({ params }: Props) {
     }
   }, [wineId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!wine) return <div style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</div>
+  if (!wine) return (
+    <Modal onClose={onClose} maxWidth={400}>
+      <div className="sheet-bar" />
+      <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
+      <button className="btn-g" onClick={onClose}>close</button>
+    </Modal>
+  )
 
   async function save() {
     setSaving(true)
@@ -61,7 +65,7 @@ export function RatingScreen({ params }: Props) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wineId, score, flavors, notes }),
     })
-    setSaving(false); refresh(); router.back()
+    setSaving(false); refresh(); onClose()
   }
 
   async function resetRating() {
@@ -69,7 +73,7 @@ export function RatingScreen({ params }: Props) {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
-    refresh(); router.back()
+    refresh(); onClose()
   }
 
   async function toggleBookmark() {
@@ -120,16 +124,16 @@ export function RatingScreen({ params }: Props) {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
-    refresh(); router.back()
+    refresh(); onClose()
   }
 
   const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
-    <div style={{padding:'14px 14px 28px',maxWidth:580,margin:'0 auto'}}>
-      {/* Back + title */}
+    <Modal onClose={onClose} maxWidth={580} maxHeight="90vh">
+      <div className="sheet-bar" />
+      {/* Title row */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
-        <button onClick={() => router.back()} style={{fontSize:12,color:'var(--fg-dim)',background:'none',border:'none',cursor:'pointer',fontFamily:'var(--mono)'}}>← back</button>
         <div style={{flex:1,minWidth:0}}>
           {isRedacted ? (
             <>
@@ -231,7 +235,7 @@ export function RatingScreen({ params }: Props) {
       <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
         {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>
-      <button className="btn-g" onClick={() => router.back()}>cancel</button>
+      <button className="btn-g" onClick={() => onClose()}>cancel</button>
       {existing && <ConfirmDeleteButton className="btn-g" label="⌫ reset my rating" confirmLabel="tap again to reset" onConfirm={resetRating} />}
       {isHost && <ConfirmDeleteButton label="⌫ delete this wine" confirmLabel="tap again to delete" onConfirm={deleteWine} />}
 
@@ -242,6 +246,6 @@ export function RatingScreen({ params }: Props) {
           onSaved={() => { setShowEdit(false); refresh() }}
         />
       )}
-    </div>
+    </Modal>
   )
 }

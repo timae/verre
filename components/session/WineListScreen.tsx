@@ -4,8 +4,9 @@ import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { LineupLocked } from './LineupLocked'
+import { RatingScreen } from './RatingScreen'
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 
@@ -30,10 +31,14 @@ function formatDate(dt: string) {
   } catch { return dt }
 }
 
-export function WineListScreen() {
+interface Props { initialRateWineId?: string }
+
+export function WineListScreen({ initialRateWineId }: Props = {}) {
   const { wines, myRatings, isHost, code, displayName, refresh, isBlind, sessionMeta } = useSession()
   const [showAdd, setShowAdd] = useState(false)
+  const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()
+  const pathname = usePathname()
 
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
@@ -173,7 +178,7 @@ export function WineListScreen() {
 
               return (
                 <div key={wine.id} className="wine-card" style={{cursor:'pointer'}}
-                  onClick={() => router.push(`/session/${code}/rate/${wine.id}?name=${encodeURIComponent(displayName)}`)}>
+                  onClick={() => setRateWineId(wine.id)}>
                   <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
                   <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
@@ -224,6 +229,16 @@ export function WineListScreen() {
 
         {showAdd && (
           <AddWineModal code={code} userName={displayName} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
+        )}
+
+        {rateWineId && (
+          <RatingScreen wineId={rateWineId} onClose={() => {
+            setRateWineId(null)
+            // If the user landed via direct URL /session/<code>/rate/<wineId>,
+            // closing the modal should leave them on the wine list URL —
+            // not on the rate URL where a refresh would re-open the modal.
+            if (pathname?.includes('/rate/')) router.replace(`/session/${code}`)
+          }} />
         )}
       </div>
     </div>
