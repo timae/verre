@@ -1,9 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { uploadImage, deleteImageByUrl } from '@/lib/s3'
+import { uploadImage } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+
+// Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
+// silently dropped by Next 15.5 / webpack 5.98 when more than two named
+// exports live alongside the existing uploadImage/deleteImage. Until that
+// bundling bug is understood, keep this local copy so the route survives.
+const ENDPOINT = process.env.S3_ENDPOINT
+const BUCKET = process.env.S3_BUCKET
+const s3 = ENDPOINT
+  ? new S3Client({
+      endpoint: ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!s3 || !BUCKET || !url || !ENDPOINT) return
+  const prefix = `${ENDPOINT}/${BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -41,12 +72,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       // almost always changes). If upload failed, keep the old URL and
       // don't touch S3.
       if (checkin.imageUrl && checkin.imageUrl !== newUrl) {
-        deleteImageByUrl(checkin.imageUrl)
+        reclaimImage(checkin.imageUrl)
       }
       imageUrl = newUrl
     }
   } else if (imageData === null) {
-    if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl)
+    if (checkin.imageUrl) reclaimImage(checkin.imageUrl)
     imageUrl = null
   }
 
@@ -120,6 +151,6 @@ export async function DELETE(_req: NextRequest, { params }: Ctx) {
   // Fire-and-forget: reclaim the S3 object after the DB row is gone. If
   // the S3 delete fails we still report success — the row is gone, the
   // object becomes a harmless orphan that a future cleanup can sweep.
-  if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl)
+  if (checkin.imageUrl) reclaimImage(checkin.imageUrl)
   return NextResponse.json({ ok: true })
 }

@@ -1,9 +1,38 @@
 import crypto from 'crypto'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { redis, k, TTL } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { uploadImage, deleteImageByUrl } from '@/lib/s3'
+import { uploadImage } from '@/lib/s3'
 import type { Identity } from '@/lib/identity'
 import { userIdentityId } from '@/lib/identity'
+
+// Inlined S3 reclaim — see app/api/checkins/[id]/route.ts for the same
+// helper and the bundler-bug rationale.
+const _S3_ENDPOINT = process.env.S3_ENDPOINT
+const _S3_BUCKET = process.env.S3_BUCKET
+const _s3 = _S3_ENDPOINT
+  ? new S3Client({
+      endpoint: _S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
+  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 export type WineMeta = {
   id: string
@@ -106,7 +135,7 @@ export async function addWineToSession(
       const url = await uploadImage(id, image)
       if (url) {
         if (existing?.imageUrl && existing.imageUrl !== url) {
-          deleteImageByUrl(existing.imageUrl)
+          reclaimImage(existing.imageUrl)
         }
         imageUrl = url
         image = ''
