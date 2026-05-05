@@ -11,14 +11,14 @@ import { timeAgo } from '@/lib/timeAgo'
 function openWheelLightbox(ref: React.RefObject<HTMLDivElement | null>, label: string) {
   const svg = ref.current?.querySelector('svg')
   if (!svg) return
-  // Add white background so the lightbox looks clean on any theme
+  const isDark = document.documentElement.getAttribute('data-theme') !== 'light'
+  const bg = isDark ? '#0E0E0C' : '#F6F0E6'
   const clone = svg.cloneNode(true) as SVGElement
-  clone.setAttribute('style', 'background:#0E0E0C;border-radius:16px;')
+  clone.setAttribute('style', `background:${bg};border-radius:16px;padding:24px;`)
   const data = new XMLSerializer().serializeToString(clone)
   const blob = new Blob([data], { type: 'image/svg+xml' })
   const url = URL.createObjectURL(blob)
   openLightbox(url, label + ' — flavour profile')
-  // Revoke after a moment so memory is freed
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }
 
