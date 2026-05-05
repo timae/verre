@@ -44,7 +44,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   return (
     <div className="app-bg" style={{ minHeight: '100vh', padding: '0 0 40px' }}>
       <header style={{ padding: '0 16px', height: 'var(--hdr-h)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid rgba(255,255,255,0.04)', background: 'rgba(14,14,12,0.82)', backdropFilter: 'blur(18px)', position: 'sticky', top: 0, zIndex: 10 }}>
-        <Link href="/me" style={{ fontFamily: 'var(--mono)', fontSize: 21, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none' }}>Verre</Link>
+        <Link href={session?.user ? '/me' : '/'} style={{ fontFamily: 'var(--mono)', fontSize: 21, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none' }}>Verre</Link>
       </header>
 
       <div style={{ maxWidth: 640, margin: '0 auto', padding: '24px 16px 0' }}>

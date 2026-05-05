@@ -50,6 +50,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     return localStorage.getItem(`vr_id_${C}`) || idFromUrl
   })
   useEffect(() => {
+    // Bootstrap params (`name`, `id`, `host`) are presentation-only — captured
+    // synchronously into useState initializers (above for name/id, below for
+    // host), then stripped here so the URL doesn't carry them around.
+    // Copy-pasting a URL with `host=1` would otherwise show the recipient
+    // host UI even though the server rejects their actions.
     let urlChanged = false
     if (nameFromUrl) {
       localStorage.setItem(`vr_name_${C}`, nameFromUrl)
@@ -61,10 +66,12 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       setStoredId(idFromUrl)
       urlChanged = true
     }
+    if (searchParams.get('host')) urlChanged = true
     if (urlChanged) {
       const p = new URLSearchParams(searchParams.toString())
       p.delete('name')
       p.delete('id')
+      p.delete('host')
       const newUrl = p.toString() ? `/session/${C}?${p.toString()}` : `/session/${C}`
       router.replace(newUrl)
     }
@@ -204,7 +211,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
         {/* Header */}
         <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
-          <Link href="/me" style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
+          <Link href={authSession?.user ? '/me' : '/'} style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <ThemeToggle />
             <button
@@ -227,7 +234,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         {showSessionPanel && (
           <SessionPanel
             onClose={() => setShowSessionPanel(false)}
-            onLeave={() => { setShowSessionPanel(false); router.push('/') }}
+            onLeave={() => { setShowSessionPanel(false); router.push(authSession?.user ? '/me' : '/') }}
           />
         )}
         {showUserPanel && (
@@ -252,7 +259,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
             <span style={{fontSize:14,lineHeight:1}}>👤</span>
             <span>You</span>
           </button>
-          <button onClick={() => router.push('/me')} className="nav-item" style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}>
+          <button onClick={() => router.push(authSession?.user ? '/me' : '/')} className="nav-item" style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}>
             <span style={{fontSize:16,lineHeight:1}}>←</span>
             <span>Leave</span>
           </button>
