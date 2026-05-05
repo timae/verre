@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
@@ -51,7 +51,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
   const fl = getFL(type || 'white')
   const { data: friends = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
 
+  // Reset flavors when the user picks a different type (the dimensions change).
+  // Skip the very first run so editing a check-in keeps its stored flavors.
+  const firstTypeChange = useRef(true)
   useEffect(() => {
+    if (firstTypeChange.current) { firstTypeChange.current = false; return }
     setFlavors(fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
   }, [type])
 
@@ -99,9 +103,9 @@ export function CheckinModal({ onClose, onPosted, editCheckin }: Props) {
   }
 
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', overflowY: 'auto' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ width: '100%', maxWidth: 560, maxHeight: '92vh', overflowY: 'auto', background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32 }}>
+      <div style={{ width: '100%', maxWidth: 560, background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32, marginTop: 'auto' }}>
         <div className="sheet-bar" />
         <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
           {isEdit ? 'Edit check-in' : 'Check in a wine'}
