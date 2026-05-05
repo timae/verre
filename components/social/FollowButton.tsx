@@ -25,7 +25,7 @@ export function FollowButton({ userId, initialFollowing, onToggle }: Props) {
       disabled={loading}
       className={following ? 'btn-g' : 'btn-s'}
       style={{
-        minWidth: 80, marginTop: 0,
+        width: 'auto', minWidth: 110, marginTop: 0, padding: '10px 14px',
         ...(following ? {} : { background: 'rgba(200,150,60,0.1)', borderColor: 'rgba(200,150,60,0.4)', color: 'var(--accent)' }),
       }}
     >
