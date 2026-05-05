@@ -144,6 +144,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
           <div className="field" style={{ maxWidth: 88 }}><div className="fl">vintage</div><input className="fi" value={vintage} onChange={e => setVintage(e.target.value)} maxLength={4} placeholder="20XX" /></div>
         </div>
         <div className="field"><div className="fl">producer</div><input className="fi" value={producer} onChange={e => setProducer(e.target.value)} placeholder="Domaine…" /></div>
+        <div className="field"><div className="fl">grape / style</div><input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" /></div>
 
         {/* Type */}
         <div className="field">

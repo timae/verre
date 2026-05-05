@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
@@ -34,7 +35,6 @@ export function SavedClient() {
       <div className="wine-stack">
         {bookmarks.map(b => {
           const rating = ratings.find(r => r.session_code === b.session_code && r.wine_name === b.name)
-          const sub = [b.producer, b.vintage].filter(Boolean).join(' · ')
           return (
             <button key={b.wine_id} className="wine-card" style={{width:'100%',textAlign:'left'}} onClick={() => setSelected(b)}>
               {b.image_url ? (
@@ -45,9 +45,8 @@ export function SavedClient() {
                 </div>
               )}
               <div style={{flex:1,minWidth:0}}>
-                <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.name}</p>
-                {sub && <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{sub}</p>}
-                <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:1,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {b.session_code}</p>
+                <WineIdentity wine={b} size="compact" />
+                <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {b.session_code}</p>
               </div>
               {rating && (
                 <div style={{flexShrink:0,textAlign:'right'}}>
