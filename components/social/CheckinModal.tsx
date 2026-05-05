@@ -173,7 +173,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         {type && (
           <>
             <div style={{ display: 'flex', justifyContent: 'center', margin: '4px 0 8px' }}>
-              <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.EMBED} />
+              <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.DETAIL} />
             </div>
             <div className="panel" style={{ marginBottom: 10 }}>
               {fl.map(f => {

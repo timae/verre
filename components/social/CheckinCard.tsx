@@ -146,7 +146,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
                 style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', cursor:'zoom-in' }}
                 title="Click to expand"
               >
-                <PolarChart flavors={checkin.flavors as Record<string,number>} fl={fl} size={CHART_SIZE.THUMB} />
+                <PolarChart flavors={checkin.flavors as Record<string,number>} fl={fl} size={CHART_SIZE.DETAIL} />
               </div>
             )}
           </div>
