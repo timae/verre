@@ -4,6 +4,7 @@ import { PolarChart } from '@/components/charts/PolarChart'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
+import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' }, { k: 'white', l: 'White', ico: '🥂' },
@@ -105,7 +106,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'flex-end', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', overflowY: 'auto' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{ width: '100%', maxWidth: 560, background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32, marginTop: 'auto' }}>
+      <div style={{ width: '100%', maxWidth: 560, minHeight: 'min(70vh, 600px)', background: 'var(--bg2)', borderRadius: '22px 22px 0 0', padding: 18, paddingBottom: 32, marginTop: 'auto' }}>
         <div className="sheet-bar" />
         <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
           {isEdit ? 'Edit check-in' : 'Check in a wine'}
@@ -236,16 +237,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>
         <button className="btn-g" onClick={onClose}>cancel</button>
         {isEdit && onDelete && (
-          <button
-            className="btn-del"
-            onClick={() => {
-              const label = wineName.trim() || editCheckin?.wineName || 'this check-in'
-              if (!confirm(`Delete this check-in for "${label}"? This cannot be undone.`)) return
-              onDelete()
-            }}
-          >
-            ⌫ delete check-in
-          </button>
+          <ConfirmDeleteButton
+            label="⌫ delete check-in"
+            confirmLabel="tap again to delete"
+            onConfirm={onDelete}
+          />
         )}
       </div>
     </div>
