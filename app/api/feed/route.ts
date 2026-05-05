@@ -66,7 +66,7 @@ export async function GET(req: NextRequest) {
       author: c.user,
       checkin: {
         id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
-        type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
+        grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
         venueName: c.venueName, city: c.city, country: c.country,
         flavors: c.flavors, likeCount: c._count.likes, createdAt: c.createdAt,
         tags: c.tags?.map(t => t.user) ?? [], liked: myLikes.has(c.id),

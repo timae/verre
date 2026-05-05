@@ -6,6 +6,7 @@ import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
 import { getFL, detectFL, FL } from '@/lib/flavours'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
@@ -235,12 +236,11 @@ export default function ComparePage() {
                   ) : (
                     <>
                       {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
-                      <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                        <span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>
-                        {wine.name}
-                        {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-                      </p>
-                      {wine.producer && <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{wine.producer}</p>}
+                      <WineIdentity
+                        wine={wine}
+                        size="compact"
+                        titlePrefix={<span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>}
+                      />
                     </>
                   )}
                 </div>

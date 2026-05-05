@@ -9,6 +9,7 @@ import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
 interface Props { params: Promise<{ code: string; wineId: string }> }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -121,7 +122,6 @@ export function RatingScreen({ params }: Props) {
     refresh(); router.back()
   }
 
-  const sub = !isRedacted ? [wine.producer, wine.grape].filter(Boolean).join(' · ') : ''
   const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
@@ -136,14 +136,13 @@ export function RatingScreen({ params }: Props) {
               <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:1,letterSpacing:'0.06em'}}>identity hidden · host will reveal</div>
             </>
           ) : (
-            <>
-              <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                {wine.revealedAt && isBlind && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>}
-                {wine.name}
-                {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-              </div>
-              {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
-            </>
+            <WineIdentity
+              wine={wine}
+              size="compact"
+              titlePrefix={wine.revealedAt && isBlind ? (
+                <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>
+              ) : undefined}
+            />
           )}
         </div>
         <span style={{fontSize:22,flexShrink:0}}>{isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}</span>

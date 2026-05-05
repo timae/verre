@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }

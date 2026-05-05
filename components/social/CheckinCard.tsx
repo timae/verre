@@ -8,6 +8,7 @@ import { detectFL, getFL } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
 function openWheelLightbox(ref: React.RefObject<HTMLDivElement | null>, label: string) {
   const svg = ref.current?.querySelector('svg')
@@ -28,7 +29,7 @@ const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾',
 interface Props {
   checkin: {
     id: number; wineName: string; producer?: string|null; vintage?: string|null
-    type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+    grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
     venueName?: string|null; city?: string|null; country?: string|null
     flavors?: Record<string,number>|null; likeCount?: number
     createdAt?: string|Date|null; tags?: {id:number;name:string}[]
@@ -45,7 +46,8 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
   const hasFlavors = checkin.flavors && Object.values(checkin.flavors).some(v => v > 0)
   const wheelRef = useRef<HTMLDivElement>(null)
   const [editing, setEditing] = useState(false)
-  const sub = [checkin.producer, checkin.vintage].filter(Boolean).join(' · ')
+  // Map check-in's wineName field onto the {name, ...} shape WineIdentity expects.
+  const wineForId = { name: checkin.wineName, vintage: checkin.vintage, producer: checkin.producer, grape: checkin.grape }
   const locationParts = [checkin.venueName, checkin.city, checkin.country].filter(Boolean)
   const level = author?.xp != null ? getLevel(author.xp) : null
   const hasMedia = checkin.imageUrl || hasFlavors
@@ -119,10 +121,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             {/* Wine name + score */}
             <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8, marginBottom:4 }}>
               <div style={{ minWidth:0 }}>
-                <h2 style={{ fontSize:'clamp(16px,4vw,22px)', fontWeight:800, color:'var(--fg)', lineHeight:1.15, margin:0, wordBreak:'break-word' }}>
-                  {checkin.wineName}
-                </h2>
-                {sub && <div style={{ fontSize:11, color:'var(--fg-dim)', marginTop:3 }}>{sub}</div>}
+                <WineIdentity wine={wineForId} size="hero" />
               </div>
               {checkin.score != null && checkin.score > 0 && (
                 <div style={{ flexShrink:0, lineHeight:1 }}>
@@ -168,7 +167,9 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
         /* No media at all — just text layout */
         <div>
           <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12, marginBottom:4 }}>
-            <h2 style={{ fontSize:20, fontWeight:800, color:'var(--fg)', lineHeight:1.15, margin:0 }}>{checkin.wineName}</h2>
+            <div style={{ flex:1, minWidth:0 }}>
+              <WineIdentity wine={wineForId} size="card" />
+            </div>
             {checkin.score != null && checkin.score > 0 && (
               <div style={{ flexShrink:0 }}>
                 <span style={{ fontSize:28, fontWeight:800, color:'var(--accent)' }}>{checkin.score}</span>
@@ -176,7 +177,6 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
               </div>
             )}
           </div>
-          {sub && <div style={{ fontSize:11, color:'var(--fg-dim)', marginTop:3, marginBottom:4 }}>{sub}</div>}
           {locationParts.length > 0 && (
             <div style={{ fontSize:11, color:'var(--fg-dim)', display:'flex', alignItems:'center', gap:3 }}>
               <span>📍</span>{locationParts.join(', ')}

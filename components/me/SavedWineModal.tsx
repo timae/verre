@@ -4,8 +4,9 @@ import { useEffect } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -22,8 +23,6 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
     return () => document.removeEventListener('keydown', fn)
   }, [onClose])
 
-  const sub = [wine.producer, wine.vintage].filter(Boolean).join(' · ')
-
   return (
     <div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -36,10 +35,9 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
 
         <div style={{display:'flex',alignItems:'flex-start',gap:12,marginBottom:16}}>
           {!wine.image_url && <span style={{fontSize:28}}>{ICO[wine.style||'']||'🍷'}</span>}
-          <div>
-            <h2 style={{fontSize:16,fontWeight:800,lineHeight:1.2}}>{wine.name}</h2>
-            {sub && <p style={{fontSize:11,color:'var(--fg-dim)',marginTop:3}}>{sub}</p>}
-            <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)'}}>session {wine.session_code}</p>
+          <div style={{flex:1, minWidth:0}}>
+            <WineIdentity wine={wine} size="card" />
+            <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>session {wine.session_code}</p>
           </div>
         </div>
 
