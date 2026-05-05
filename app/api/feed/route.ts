@@ -41,6 +41,14 @@ export async function GET(req: NextRequest) {
     take: PAGE,
   })
 
+  // Which of these checkins has the current user already liked?
+  const myLikes = new Set(
+    (await prisma.checkinLike.findMany({
+      where: { userId, checkinId: { in: checkins.map(c => c.id) } },
+      select: { checkinId: true },
+    })).map(l => l.checkinId)
+  )
+
   // Badge unlocks (last 30 days)
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
   const badges = await prisma.userBadge.findMany({
@@ -60,7 +68,8 @@ export async function GET(req: NextRequest) {
         id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
         type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
         venueName: c.venueName, city: c.city, country: c.country,
-        flavors: c.flavors, likeCount: c._count.likes, createdAt: c.createdAt, tags: c.tags?.map(t => t.user) ?? [],
+        flavors: c.flavors, likeCount: c._count.likes, createdAt: c.createdAt,
+        tags: c.tags?.map(t => t.user) ?? [], liked: myLikes.has(c.id),
       },
     })),
     ...badges.map(b => ({

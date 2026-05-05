@@ -11,7 +11,7 @@ type CheckinPayload = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
   type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
-  flavors?: Record<string,number>; likeCount: number; createdAt?: string
+  flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
 }
 type FeedItem =
   | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
@@ -85,6 +85,7 @@ export function FeedClient({ myId }: { myId: number }) {
               checkin={item.checkin}
               author={item.author}
               showAuthor
+              liked={item.checkin.liked}
               isOwn={item.author.id === myId}
               onDelete={async () => {
                 await fetch(`/api/checkins/${item.checkin.id}`, { method:'DELETE' })
