@@ -2,20 +2,34 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
+import { checkRate, formatWait } from '@/lib/rateLimit'
+import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 
 type Ctx = { params: Promise<{ id: string }> }
 
 export async function PATCH(req: NextRequest, { params }: Ctx) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  const userId = Number(session.user.id)
+
+  // Share the create budget — edits and creates count toward the same hourly cap.
+  const rl = await checkRate(`rl:checkin:${userId}:1h`, 20, 3600)
+  if (!rl.allowed) return NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+
   const { id } = await params
   const checkin = await prisma.checkin.findUnique({ where: { id: Number(id) } })
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (checkin.userId !== Number(session.user.id)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  if (checkin.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
   const body = await req.json()
   const { wineName, producer, vintage, grape, type, score, flavors, notes,
     imageData, venueName, city, country, lat, lng, isPublic } = body
+  if (score !== undefined) {
+    const c = validateScore(score); if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+  }
+  if (flavors !== undefined) {
+    const c = validateFlavors(flavors); if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+  }
 
   let imageUrl = checkin.imageUrl
   if (imageData?.startsWith('data:image/')) {
