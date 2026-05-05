@@ -22,18 +22,30 @@ export async function POST(req: NextRequest) {
   const rl = await checkRate(`rl:places:${ip}:1m`, 30, 60)
   if (!rl.allowed) return NextResponse.json({ error: `Too many place lookups. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
-  const body = await req.json()
+  const body = await req.json().catch(() => ({} as Record<string, unknown>))
+  const isNearby = body.type === 'nearby'
+  const isAutocomplete = body.type === 'autocomplete'
+  if (!isNearby && !isAutocomplete) return NextResponse.json({ error: 'type must be "nearby" or "autocomplete"' }, { status: 400 })
+  if (isNearby && (typeof body.lat !== 'number' || typeof body.lng !== 'number')) {
+    return NextResponse.json({ error: 'lat and lng (numbers) required for nearby search' }, { status: 400 })
+  }
+  if (isAutocomplete && (typeof body.query !== 'string' || !body.query.trim())) {
+    return NextResponse.json({ error: 'query required for autocomplete' }, { status: 400 })
+  }
+
+  // Await inside the try so async errors from the upstream calls (Overpass
+  // timeouts, malformed JSON, etc.) are caught here and surface as an empty
+  // result set rather than an unhandled rejection → 500.
   try {
     if (KEY) {
-      return body.type === 'nearby'
-        ? googleNearby(body.lat, body.lng)
-        : googleAutocomplete(body.query, body.lat, body.lng)
-    } else {
-      // Fallback: OpenStreetMap (Overpass + Nominatim) — free, no key required
-      return body.type === 'nearby'
-        ? overpassNearby(body.lat, body.lng)
-        : nominatimSearch(body.query, body.lat, body.lng)
+      return await (isNearby
+        ? googleNearby(body.lat as number, body.lng as number)
+        : googleAutocomplete(body.query as string, body.lat as number | undefined, body.lng as number | undefined))
     }
+    // Fallback: OpenStreetMap (Overpass + Nominatim) — free, no key required
+    return await (isNearby
+      ? overpassNearby(body.lat as number, body.lng as number)
+      : nominatimSearch(body.query as string, body.lat as number | undefined, body.lng as number | undefined))
   } catch (err) {
     console.error('places error:', err)
     return NextResponse.json({ results: [] })
