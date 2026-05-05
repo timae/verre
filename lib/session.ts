@@ -1,7 +1,7 @@
 import crypto from 'crypto'
 import { redis, k, TTL } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { uploadImage } from '@/lib/s3'
+import { uploadImage, deleteImage } from '@/lib/s3'
 import type { Identity } from '@/lib/identity'
 import { userIdentityId } from '@/lib/identity'
 
@@ -94,10 +94,17 @@ export async function addWineToSession(
     ? (existing?.image || '')
     : sanitizeImage(body.image)
 
-  // Upload to S3 if new base64 image provided
+  // Upload to S3 if new base64 image provided. uploadImage keys by wine id,
+  // so a same-extension replace overwrites in place — but if the new image
+  // has a different extension (e.g. old jpg, new png) the old object would
+  // be orphaned. Clean up all known extensions on this id before uploading
+  // so the bucket only ever holds the latest.
   if (image && image.startsWith('data:image/')) {
     try {
       const id = existing?.id || Date.now().toString()
+      if (existing?.imageUrl) {
+        await deleteImage(id).catch(() => {})
+      }
       const url = await uploadImage(id, image)
       if (url) { imageUrl = url; image = '' }
     } catch {}

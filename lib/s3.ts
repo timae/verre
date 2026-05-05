@@ -40,3 +40,19 @@ export async function deleteImage(wineId: string) {
     } catch {}
   }
 }
+
+// Delete an S3 object by its public URL. Used when we have an imageUrl
+// stored on a row and want to reclaim the storage — e.g. on check-in
+// edit (replacing the image) or delete. URL shape is `${ENDPOINT}/${BUCKET}/${key}`,
+// so we slice the key off the end. No-ops if S3 isn't configured or the
+// URL doesn't match the expected shape.
+export async function deleteImageByUrl(url: string | null | undefined) {
+  if (!s3 || !BUCKET || !url || !ENDPOINT) return
+  const prefix = `${ENDPOINT}/${BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+  } catch {}
+}

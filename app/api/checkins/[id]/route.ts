@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { uploadImage } from '@/lib/s3'
+import { uploadImage, deleteImageByUrl } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 
@@ -34,8 +34,19 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   let imageUrl = checkin.imageUrl
   if (imageData?.startsWith('data:image/')) {
     const tempId = `ci_${checkin.userId}_${checkin.id}`
-    imageUrl = await uploadImage(tempId, imageData).catch(() => checkin.imageUrl)
+    const newUrl = await uploadImage(tempId, imageData).catch(() => null)
+    if (newUrl) {
+      // Replace successful — reclaim the old object if it was different
+      // (POST keys by timestamp, PATCH keys by checkin id, so the URL
+      // almost always changes). If upload failed, keep the old URL and
+      // don't touch S3.
+      if (checkin.imageUrl && checkin.imageUrl !== newUrl) {
+        deleteImageByUrl(checkin.imageUrl).catch(() => {})
+      }
+      imageUrl = newUrl
+    }
   } else if (imageData === null) {
+    if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl).catch(() => {})
     imageUrl = null
   }
 
@@ -106,5 +117,9 @@ export async function DELETE(_req: NextRequest, { params }: Ctx) {
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   if (checkin.userId !== Number(session.user.id)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   await prisma.checkin.delete({ where: { id: Number(id) } })
+  // Fire-and-forget: reclaim the S3 object after the DB row is gone. If
+  // the S3 delete fails we still report success — the row is gone, the
+  // object becomes a harmless orphan that a future cleanup can sweep.
+  if (checkin.imageUrl) deleteImageByUrl(checkin.imageUrl).catch(() => {})
   return NextResponse.json({ ok: true })
 }
