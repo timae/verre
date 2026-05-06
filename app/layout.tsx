@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { SessionProvider } from 'next-auth/react'
 import { auth } from '@/auth'
 import { QueryProvider } from '@/components/QueryProvider'
+import { ImageLightbox } from '@/components/ui/ImageLightbox'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -22,6 +23,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <SessionProvider session={session}>
           <QueryProvider>
             {children}
+            <ImageLightbox />
           </QueryProvider>
         </SessionProvider>
       </body>

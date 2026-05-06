@@ -1,7 +1,9 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { openLightbox } from '@/components/ui/ImageLightbox'
+import { useState } from 'react'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { Modal } from '@/components/ui/Modal'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -18,14 +20,13 @@ const AI_PROVIDERS = {
 
 interface Props {
   code: string
-  userName: string
   onClose: () => void
   onSaved: () => void
   editWine?: WineMeta // if set, we're editing
   winesCount?: number // number of wines already in the list, used for position picker
 }
 
-export function AddWineModal({ code, userName, onClose, onSaved, editWine, winesCount = 0 }: Props) {
+export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 }: Props) {
   const isEdit = !!editWine
   const [name, setName] = useState(editWine?.name || '')
   const [producer, setProducer] = useState(editWine?.producer || '')
@@ -42,11 +43,6 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
 
   const maxPosition = winesCount + 1
 
-  useEffect(() => {
-    const fn = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
-    document.addEventListener('keydown', fn)
-    return () => document.removeEventListener('keydown', fn)
-  }, [onClose])
 
   async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
@@ -161,10 +157,8 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
   }
 
   return (
-    <div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'flex-end',justifyContent:'center',background:'rgba(0,0,0,0.6)',backdropFilter:'blur(4px)'}}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}>
-      <div style={{width:'100%',maxWidth:600,maxHeight:'90vh',overflowY:'auto',background:'var(--bg2)',borderRadius:'22px 22px 0 0',padding:18,paddingBottom:32}}>
-        <div className="sheet-bar" />
+    <Modal onClose={onClose} maxWidth={600} maxHeight="90vh">
+      <div className="sheet-bar" />
         <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
           {isEdit ? 'Edit wine' : 'Add wine'}{' '}
           <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
@@ -174,14 +168,14 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
         <div style={{marginBottom:14,border:'1px solid var(--border)',borderRadius:12,padding:12,background:'var(--bg3)'}}>
           {photo ? (
             <div style={{position:'relative',marginBottom:8}}>
-              <img src={photo} alt="bottle" style={{width:'100%',maxHeight:140,objectFit:'contain',borderRadius:8}} />
+              <img src={photo} alt="bottle" onClick={()=>openLightbox(photo)} style={{width:'100%',maxHeight:140,objectFit:'contain',borderRadius:8,cursor:'zoom-in'}} />
               {photoDataUrl && <button className="btn-s" style={{position:'absolute',top:6,right:6}} onClick={() => setPhotoDataUrl('')}>remove</button>}
             </div>
           ) : null}
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
             <label className="btn-s" style={{cursor:'pointer'}}>
               choose photo
-              <input type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={handlePhoto} />
+              <input type="file" accept="image/*" style={{display:'none'}} onChange={handlePhoto} />
             </label>
             {photo && (
               <button className="btn-s" onClick={scanLabel} disabled={scanning}>
@@ -251,7 +245,6 @@ export function AddWineModal({ code, userName, onClose, onSaved, editWine, wines
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
         <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>
         <button className="btn-g" onClick={onClose}>cancel</button>
-      </div>
-    </div>
+    </Modal>
   )
 }

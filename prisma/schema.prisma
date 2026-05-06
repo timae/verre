@@ -38,6 +38,11 @@ model User {
   members                   SessionMember[]
   hostedSessions            Session[]
   earnedBadges              UserBadge[]
+  followers                 Follow[]       @relation("UserFollowing")
+  following                 Follow[]       @relation("UserFollowers")
+  checkins                  Checkin[]
+  checkinLikes              CheckinLike[]
+  checkinTags               CheckinTag[]
 
   @@map("users")
 }
@@ -174,4 +179,70 @@ model UserBadge {
 
   @@unique([userId, badgeId])
   @@map("user_badges")
+}
+
+// ── Social Feed ───────────────────────────────────────────────
+
+// Explicit social graph — who follows whom.
+model Follow {
+  followerId  Int      @map("follower_id")
+  followingId Int      @map("following_id")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  follower    User     @relation("UserFollowers",  fields: [followerId],  references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowing",  fields: [followingId], references: [id], onDelete: Cascade)
+
+  @@id([followerId, followingId])
+  @@index([followingId])
+  @@map("follows")
+}
+
+// Standalone wine check-ins — log a bottle outside a session.
+model Checkin {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  wineName  String   @map("wine_name") @db.VarChar(255)
+  producer  String?  @db.VarChar(255)
+  vintage   String?  @db.Char(4)
+  grape     String?  @db.VarChar(255)
+  type      String?  @db.VarChar(16)
+  score     Int?     @db.SmallInt
+  flavors   Json     @default("{}")
+  notes     String?
+  imageUrl  String?  @map("image_url")
+  venueName String?  @map("venue_name") @db.VarChar(255)
+  city      String?  @db.VarChar(100)
+  country   String?  @db.Char(2)
+  lat       Decimal? @db.Decimal(9, 6)
+  lng       Decimal? @db.Decimal(9, 6)
+  isPublic  Boolean  @default(true) @map("is_public")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes     CheckinLike[]
+  tags      CheckinTag[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("checkins")
+}
+
+
+model CheckinTag {
+  checkinId  Int     @map("checkin_id")
+  userId     Int     @map("user_id")
+  checkin    Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+  user       User    @relation(fields: [userId],    references: [id], onDelete: Cascade)
+
+  @@id([checkinId, userId])
+  @@index([userId])
+  @@map("checkin_tags")
+}
+
+model CheckinLike {
+  userId    Int      @map("user_id")
+  checkinId Int      @map("checkin_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  checkin   Checkin  @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+
+  @@id([userId, checkinId])
+  @@map("checkin_likes")
 }

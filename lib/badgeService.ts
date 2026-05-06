@@ -2,31 +2,44 @@
  * Badge service — called directly (not via HTTP) from rate/session routes.
  * Runs stats query, evaluates badge criteria, awards new badges, updates XP.
  */
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES, BADGE_MAP, evaluateBadges, XP_REWARDS, type UserStats } from '@/lib/badges'
+
+// Errors we expect during best-effort badge inserts: a duplicate from a
+// concurrent award (P2002) or a missing badge id when the in-code badge
+// catalog is briefly ahead of the seeded rows (P2003). Anything else —
+// connection drops, query timeouts, schema drift — should be surfaced
+// rather than silently swallowed so real bugs stay visible.
+function isExpectedAwardError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError
+    && (err.code === 'P2002' || err.code === 'P2003')
+}
 
 // ── Seed ─────────────────────────────────────────────────────
 let seeded = false
 export async function ensureBadgesSeedOnce() {
   if (seeded) return
   try {
-    const existing = await prisma.badge.findFirst({ select: { id: true } })
-    if (!existing) {
+    const count = await prisma.badge.count()
+    // Re-seed whenever the DB count is behind the code definition (e.g. new badges added)
+    if (count < ALL_BADGES.length) {
       await prisma.badge.createMany({
         data: ALL_BADGES.map(b => ({
-          id: b.id,
-          name: b.name,
-          description: b.description,
-          icon: b.icon,
-          category: b.category,
-          rarity: b.rarity,
-          xpReward: b.xp_reward,
+          id: b.id, name: b.name, description: b.description,
+          icon: b.icon, category: b.category, rarity: b.rarity, xpReward: b.xp_reward,
         })),
         skipDuplicates: true,
       })
     }
     seeded = true
-  } catch {}
+  } catch (err) {
+    // First call after boot — log the failure so genuine seeding bugs
+    // (DB unreachable, schema drift) stay visible. Subsequent calls
+    // re-attempt (seeded stays false on failure) instead of silently
+    // pretending the seed succeeded.
+    console.error('[badges] ensureBadgesSeedOnce failed:', err)
+  }
 }
 
 // ── Stats ─────────────────────────────────────────────────────
@@ -155,13 +168,18 @@ export async function checkAndAwardBadges(userId: number, action: string): Promi
   const newBadgeIds = evaluateBadges(stats, alreadyEarned)
 
   if (newBadgeIds.length > 0) {
-    await prisma.userBadge.createMany({
-      data: newBadgeIds.map(badgeId => ({ userId, badgeId, seen: false })),
-      skipDuplicates: true,
-    })
+    // Insert individually so a duplicate or missing-FK on one badge doesn't
+    // abort the whole batch and lose accumulated XP. Only swallow the two
+    // expected error codes (P2002 unique, P2003 FK) — rethrow anything else
+    // so real bugs (connection drops, schema drift) stay visible.
     for (const badgeId of newBadgeIds) {
-      const badge = BADGE_MAP[badgeId]
-      if (badge) xpGain += badge.xp_reward
+      try {
+        await prisma.userBadge.create({ data: { userId, badgeId, seen: false } })
+        const badge = BADGE_MAP[badgeId]
+        if (badge) xpGain += badge.xp_reward
+      } catch (err) {
+        if (!isExpectedAwardError(err)) throw err
+      }
     }
   }
 

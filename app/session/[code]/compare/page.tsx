@@ -5,7 +5,9 @@ import type { RatingMeta } from '@/lib/session'
 import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { getFL, detectFL, FL } from '@/lib/flavours'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']
 
@@ -235,12 +237,11 @@ export default function ComparePage() {
                   ) : (
                     <>
                       {wasRevealed && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',display:'block',marginBottom:2}}>✓ revealed</span>}
-                      <p style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                        <span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>
-                        {wine.name}
-                        {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-                      </p>
-                      {wine.producer && <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{wine.producer}</p>}
+                      <WineIdentity
+                        wine={wine}
+                        size="compact"
+                        titlePrefix={<span style={{marginRight:6}}>{ICO[wine.type] || '🍷'}</span>}
+                      />
                     </>
                   )}
                 </div>
@@ -254,7 +255,7 @@ export default function ComparePage() {
                 <div style={{display:'flex',justifyContent:'center',marginBottom:10}}>
                   {viewUser === '__all' ? (
                     <div style={{width:'100%'}}>
-                      <RadarChart series={overlaySeries} fl={overlayFL} size={460} />
+                      <RadarChart series={overlaySeries} fl={overlayFL} size={CHART_SIZE.COMPARE} />
                       <div style={{display:'flex',flexWrap:'wrap',gap:6,marginTop:8,justifyContent:'center'}}>
                         {overlaySeries.map((s, i) => (
                           <div key={s.label} style={{display:'flex',alignItems:'center',gap:4,fontSize:10,color:'var(--fg-dim)'}}>
@@ -265,7 +266,7 @@ export default function ComparePage() {
                       </div>
                     </div>
                   ) : singleRating ? (
-                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={460} />
+                    <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
                       no rating from {(activeUserId && allRatings[activeUserId]?.displayName) || 'this user'}

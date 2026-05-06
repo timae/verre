@@ -16,7 +16,7 @@ const s3 = ENDPOINT
     })
   : null
 
-export async function uploadImage(wineId: string, dataUrl: string): Promise<string> {
+export const uploadImage = async (wineId: string, dataUrl: string): Promise<string> => {
   if (!s3 || !BUCKET) return ''
   const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/)
   if (!match) return ''
@@ -32,11 +32,15 @@ export async function uploadImage(wineId: string, dataUrl: string): Promise<stri
   return `${ENDPOINT}/${BUCKET}/${key}`
 }
 
-export async function deleteImage(wineId: string) {
+export const deleteImage = async (wineId: string): Promise<void> => {
   if (!s3 || !BUCKET) return
   for (const ext of ['jpg', 'jpeg', 'png', 'webp']) {
+    const key = `wines/${wineId}.${ext}`
     try {
-      await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: `wines/${wineId}.${ext}` }))
-    } catch {}
+      await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+    } catch (err) {
+      console.warn('[s3] deleteImage failed:', { key, err })
+    }
   }
 }
+

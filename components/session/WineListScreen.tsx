@@ -1,9 +1,12 @@
 'use client'
+import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
+import { WineIdentity } from '@/components/wine/WineIdentity'
 import { LineupLocked } from './LineupLocked'
+import { RatingScreen } from './RatingScreen'
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, usePathname } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 
@@ -28,10 +31,14 @@ function formatDate(dt: string) {
   } catch { return dt }
 }
 
-export function WineListScreen() {
+interface Props { initialRateWineId?: string }
+
+export function WineListScreen({ initialRateWineId }: Props = {}) {
   const { wines, myRatings, isHost, code, displayName, refresh, isBlind, sessionMeta } = useSession()
   const [showAdd, setShowAdd] = useState(false)
+  const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()
+  const pathname = usePathname()
 
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
@@ -171,12 +178,12 @@ export function WineListScreen() {
 
               return (
                 <div key={wine.id} className="wine-card" style={{cursor:'pointer'}}
-                  onClick={() => router.push(`/session/${code}/rate/${wine.id}?name=${encodeURIComponent(displayName)}`)}>
+                  onClick={() => setRateWineId(wine.id)}>
                   <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
                   <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
                   {!isRedacted && wine.imageUrl ? (
-                    <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
+                    <img src={wine.imageUrl} alt={wine.name} onClick={e=>{e.stopPropagation();openLightbox(wine.imageUrl!,wine.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
                   ) : (
                     <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
                       {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}
@@ -184,15 +191,13 @@ export function WineListScreen() {
                   )}
 
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontWeight:700,fontSize:13,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color: isRedacted ? 'var(--fg-dim)' : 'var(--fg)'}}>
-                      {wine.name}
-                      {!isRedacted && wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-                    </div>
-                    {!isRedacted && wine.producer && (
-                      <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{wine.producer}</div>
-                    )}
-                    {isRedacted && (
-                      <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
+                    {isRedacted ? (
+                      <>
+                        <div style={{fontWeight:700,fontSize:13,color:'var(--fg-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
+                        <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
+                      </>
+                    ) : (
+                      <WineIdentity wine={wine} size="compact" />
                     )}
                   </div>
 
@@ -223,7 +228,17 @@ export function WineListScreen() {
         )}
 
         {showAdd && (
-          <AddWineModal code={code} userName={displayName} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
+          <AddWineModal code={code} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
+        )}
+
+        {rateWineId && (
+          <RatingScreen wineId={rateWineId} onClose={() => {
+            setRateWineId(null)
+            // If the user landed via direct URL /session/<code>/rate/<wineId>,
+            // closing the modal should leave them on the wine list URL —
+            // not on the rate URL where a refresh would re-open the modal.
+            if (pathname?.includes('/rate/')) router.replace(`/session/${code}`)
+          }} />
         )}
       </div>
     </div>

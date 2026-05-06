@@ -1,4 +1,7 @@
+'use client'
 import type { WineMeta } from '@/lib/session'
+import { openLightbox } from '@/components/ui/ImageLightbox'
+import { WineIdentity } from './WineIdentity'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
@@ -6,7 +9,6 @@ const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7
 interface Props { wine: WineMeta; score?: number; index?: number; onClick?: () => void }
 
 export function WineCard({ wine, score, index, onClick }: Props) {
-  const sub = [wine.producer, wine.grape].filter(Boolean).join(' · ')
   const accentColor = TCOL[wine.type] || TCOL.red
 
   return (
@@ -17,18 +19,16 @@ export function WineCard({ wine, score, index, onClick }: Props) {
         <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{index + 1}</div>
       )}
       {wine.imageUrl ? (
-        <img src={wine.imageUrl} alt={wine.name} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0}} />
+        <img src={wine.imageUrl} alt={wine.name}
+          onClick={e => { e.stopPropagation(); openLightbox(wine.imageUrl!, wine.name) }}
+          style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
       ) : (
         <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>
           {ICO[wine.type] || '🍷'}
         </div>
       )}
       <div style={{flex:1,minWidth:0}}>
-        <div style={{fontWeight:700,fontSize:13,color:'var(--fg)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-          {wine.name}
-          {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-        </div>
-        {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sub}</div>}
+        <WineIdentity wine={wine} size="compact" />
       </div>
       {score != null && score > 0 && (
         <div style={{flexShrink:0,textAlign:'right'}}>

@@ -1,0 +1,57 @@
+name: Schema vs migrations in sync
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight run when a new commit lands on the same ref.
+concurrency:
+  group: schema-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      # Compare the committed migrations directory against schema.prisma.
+      # `--exit-code` makes Prisma return 2 when they differ — meaning someone
+      # changed the schema without running `prisma migrate dev` to generate
+      # the matching migration file. Catches the failure mode where the app
+      # runs fine locally (via `db push`) but breaks on Deploio because the
+      # migration file is missing.
+      #
+      # `--from-migrations` requires a shadow database: Prisma applies the
+      # migration SQL to it, reads the resulting schema, and diffs that
+      # against schema.prisma.
+      - name: Check schema and migrations are in sync
+        run: |
+          npx prisma migrate diff \
+            --from-migrations prisma/migrations \
+            --to-schema-datamodel prisma/schema.prisma \
+            --shadow-database-url "postgres://prisma:prisma@localhost:5432/shadow" \
+            --exit-code
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: prisma
+          POSTGRES_PASSWORD: prisma
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U prisma -d shadow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5

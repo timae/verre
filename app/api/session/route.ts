@@ -31,16 +31,28 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const { hostName: rawHostName, sessionName, blind, lifespan } = await req.json()
+  // Public field is `hostDisplayName` — there's no concept of a "username"
+  // in this codebase (see CLAUDE.md Auth section), only display names.
+  const { hostDisplayName: rawHostName, sessionName, blind, lifespan } = await req.json()
 
   let hostName: string
   try { hostName = validateDisplayName(rawHostName) }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
 
   // blind tasting requires a pro account
-  if (blind && (!session?.user || !(session.user as { pro?: boolean }).pro)) {
+  const isPro = !!(session?.user as { pro?: boolean } | undefined)?.pro
+  if (blind && !isPro) {
     return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
   }
+
+  // lifespan beyond 48h requires pro. Reject loudly rather than silently
+  // downgrading — a non-pro caller asking for 72h is making an explicit
+  // choice we shouldn't honor and shouldn't quietly substitute.
+  if (lifespan && lifespan !== '48h' && !isPro) {
+    return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
+  }
+  const resolvedLifespan = lifespan || '48h'
+  const sessionTTL = lifespanTTL(resolvedLifespan)
 
   let code: string
   for (let i = 0; i < 10; i++) {
@@ -48,11 +60,6 @@ export async function POST(req: NextRequest) {
     if (!(await redis.exists(k.meta(code!)))) break
   }
   code = code!
-
-  // lifespan beyond 48h requires pro
-  const isPro = !!(session?.user as { pro?: boolean } | undefined)?.pro
-  const resolvedLifespan = (lifespan && lifespan !== '48h' && !isPro) ? '48h' : (lifespan || '48h')
-  const sessionTTL = lifespanTTL(resolvedLifespan)
 
   // Mint the host's identity id up front so it can be stamped into meta —
   // host checks then work purely by id, no display-name fallback needed.
@@ -117,7 +124,7 @@ export async function POST(req: NextRequest) {
     name: meta.name,
     host: hostName,
     id: identityId,
-    userName: hostName,
+    displayName: hostName,
     blind: !!blind,
     lifespan: resolvedLifespan,
     ...(anonToken ? { anonToken } : {}),

@@ -29,11 +29,13 @@ export async function POST(req: NextRequest) {
     )
   }
 
-  const { code, userName: rawUserName } = await req.json()
+  // Public field is `displayName` — see CLAUDE.md Auth section, names
+  // are presentation-only and there is no concept of a username.
+  const { code, displayName: rawDisplayName } = await req.json()
   if (!code) return NextResponse.json({ error: 'code required' }, { status: 400 })
 
-  let userName: string
-  try { userName = validateDisplayName(rawUserName) }
+  let displayName: string
+  try { displayName = validateDisplayName(rawDisplayName) }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
 
   const c = code.toUpperCase()
@@ -55,16 +57,16 @@ export async function POST(req: NextRequest) {
     identityId = userIdentityId(session.user.id)
     const registered = await redis.hGet(k.identities(c), identityId)
     if (registered) {
-      userName = registered
+      displayName = registered
     } else {
-      userName = await disambiguateDisplayName(c, userName)
-      await recordIdentity(c, { id: identityId, displayName: userName, kind: 'user' })
+      displayName = await disambiguateDisplayName(c, displayName)
+      await recordIdentity(c, { id: identityId, displayName, kind: 'user' })
     }
   } else {
-    userName = await disambiguateDisplayName(c, userName)
+    displayName = await disambiguateDisplayName(c, displayName)
     identityId = newAnonIdentityId()
     anonToken = newAnonToken()
-    await recordIdentity(c, { id: identityId, displayName: userName, kind: 'anon' })
+    await recordIdentity(c, { id: identityId, displayName, kind: 'anon' })
     await recordAnonToken(c, anonToken, identityId)
   }
 
@@ -74,7 +76,7 @@ export async function POST(req: NextRequest) {
     ...JSON.parse(raw),
     code: c,
     id: identityId,
-    userName,
+    displayName,
     ...(anonToken ? { anonToken } : {}),
   })
 }

@@ -123,9 +123,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     const action = ratingScore === 5
       ? (hasNote ? 'rate_5star_note' : 'rate_5star')
       : (hasNote ? 'rate_with_note' : 'rate')
+    // Fire-and-forget: badge awards run in the background after the rate
+    // POST has already responded. Log unexpected errors so genuine bugs
+    // (DB drops, schema drift) stay visible — checkAndAwardBadges itself
+    // already swallows the two known-safe Prisma codes (P2002/P2003).
     import('@/lib/badgeService').then(({ checkAndAwardBadges }) =>
       checkAndAwardBadges(userId, action)
-    ).catch(() => {})
+    ).catch(err => console.error('[badges] award failed in rate handler:', err))
   }
 
   return NextResponse.json({ ok: true })

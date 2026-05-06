@@ -61,6 +61,30 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 - **Merge flow**: push the branch and merge yourself when ready. A PR isn't required — but opening one is encouraged, since it's nice for review, discussion, and capturing CI. The branch author can still merge their own PR; review is welcome, not a gate.
 - **Cleanup**: delete the branch (locally and on origin) after merge. Don't accumulate stale branches.
 
+## Working with this codebase
+
+Update this file (CLAUDE.md) whenever you:
+- add/remove an API endpoint, or change its auth tier (the API surface table needs to stay accurate)
+- add an env var the app reads (Deployment section)
+- introduce a shared primitive or coding rule (Shared visual primitives section)
+- write a schema migration with non-obvious behaviour (Architecture / schema notes)
+- ship a feature with its own coherent surface — new endpoints, new tables, new architectural concept. The bar is "deserves its own section in this file" (e.g. the social feed got its own section because it added /api/feed, /api/checkins/*, /api/users/*, and a follow graph; a small route addition wouldn't).
+
+Update README.md when:
+- local dev setup or deploy story changes
+- the user-facing feature scope changes meaningfully — a new flagship feature should appear in the "What it does" list and its endpoints in the API table
+- the API request/response shape of an endpoint already documented there changes (the README API table includes example body shapes; keep them accurate)
+
+Schema and migrations: enforced by `.github/workflows/check-schema.yml` — `prisma migrate diff` fails the build if `schema.prisma` and the migrations directory disagree. Don't try to bypass it; either generate the migration via `prisma migrate dev` or roll back the schema change.
+
+Spawn a reviewer (Agent tool, `general-purpose` subagent) before pushing when the diff:
+- touches authentication or authorization
+- touches schema/migrations
+- spans more than ~3 files or ~50 lines
+- introduces a new shared primitive or refactors a cross-cutting concern
+
+Brief the reviewer with specific concerns to look for (parameter validation, edge cases, race conditions, deploy-time risk). After the reviewer flags real issues, fix them and re-review. A reviewer pass that finds nothing is still cheap insurance — single-file doc fixes and trivial cleanups can skip it.
+
 ## Architecture
 
 ### Two-tier persistence
@@ -116,6 +140,28 @@ The full Postgres cleanup runs in a `prisma.$transaction` so any failure rolls b
 
 **Participants in the deleted session** get bounced when their next polled wines GET returns 404. SessionShell clears local cache for that code and redirects to `/join/<code>`, which renders the "session not found" page.
 
+### Social feed
+
+A separate logged-in surface around individual users — sessions are still the primary tasting context, the feed is *what someone has been drinking* outside or alongside sessions.
+
+**Schema** (Postgres, additive — sessions/ratings/HoF unaffected):
+- `follows(followerId, followingId)` — explicit social graph, composite PK, cascade on user delete. No-self-follow is enforced at both the DB level (CHECK constraint in the migration SQL — not visible in `schema.prisma`) and the route level (`/api/users/<id>/follow` rejects with 400).
+- `checkins(id, userId, wineName, producer, vintage, grape, type, score, flavors, notes, imageUrl, venueName, city, country, lat, lng, isPublic, createdAt)` — standalone wine logs (no session).
+- `checkin_likes(userId, checkinId)` — composite PK, cascade.
+- `checkin_tags(checkinId, userId)` — composite PK; `userId` is the *tagged* user, not the author.
+
+**Network query.** `/api/feed` resolves the caller's "network" as the union of: the caller themselves, everyone they follow, and everyone they share a session with (`session_members` self-join). The feed merges check-ins (public only) and badge unlocks (last 30 days) ordered by createdAt, paginated by cursor.
+
+**Tags require mutual follow.** `/api/checkins` POST and PATCH both run a SQL self-join against `follows` to filter the requested `taggedUserIds` down to mutual-follows-of-the-author. Non-mutuals are silently dropped server-side — clients can request anyone, only mutuals get persisted. Edit-time re-validation means an unfollow after creation drops the tag on the next save (acceptable: if you can't tag them today, the tag shouldn't survive an edit).
+
+**Likes are persisted.** `/api/feed` includes a `liked: boolean` per check-in, computed by a single `checkin_likes` lookup keyed by the caller. The like button reflects the server state; toggling sends POST or DELETE to `/api/checkins/<id>/like`.
+
+**S3 reclaim on edit/delete.** Check-in images live at `wines/ci_<userId>_<keyId>.<ext>` (POST keys by timestamp, PATCH keys by check-in id, so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
+
+**Places search** (`/api/places`) is a thin adapter: Google Places when `GOOGLE_PLACES_API_KEY` is set, OSM Overpass + Nominatim fallback otherwise. Both upstreams parameterised via `fetchJson` helper that throws labelled errors on non-OK / non-JSON responses (so transient outages surface in logs instead of a generic SyntaxError).
+
+**Public surface.** Profiles at `/u/<id>` are public reads; viewer's `isFollowing` flag populated when authed. `/api/users/search` is anonymous prefix lookup for follow/tag discovery — never participates in authorization (see the Auth section's display-name rule).
+
 ### Auth
 
 Two trust anchors:
@@ -127,6 +173,8 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 **Identity ids:** `u:<userId>` for logged-in users, `a:<uuid>` for anonymous. These ids are the trust anchor everywhere — Redis rating keys, host checks, cohost lists, all id-keyed.
 
 **Display names are presentation-only.** What a user types as their name (or what `users.name` holds for logged-in accounts) is user-chosen, mutable, non-unique within a session (collisions get an emoji suffix), and carries **zero** trust. It must never be used for identification, authentication, authorization, matching, or lookup. There is no concept of a "username" in this codebase — if a request, ticket, or PR talks about matching on username/name, translate it to identity id and push back on the framing. Fields like `meta.host`, `ratings.rater_name`, and the values (not keys) of `s:{CODE}:identities` are display strings: store them, render them, but never branch on them. All authorization checks resolve through `resolveIdentity` → `{id, kind}` and compare on `id`.
+
+**URL query parameters are presentation-only too.** Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed the client UI on first render after a redirect from create/join. They must be captured synchronously into `useState` initializers (so the first render has the value) and stripped from the URL via `router.replace` in a mount effect — see `SessionShell.tsx`. Never branch authorization on a URL param; never leave one in the URL where copy-paste turns it into a confused-UI bug for the recipient. Server trust still flows only through the NextAuth cookie or the `x-vr-anon-token` header.
 
 **Authorization patterns:**
 - Session reads (`GET /api/session/:code`, `/wines`, `/ratings`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
@@ -213,6 +261,17 @@ Anything else falls through to `console.error(error)` with a full stack so genui
 | `/api/session/<code>/rate/<wineId>` | DELETE | identity | deletes own rating only |
 | `/api/session/<code>/settings` | PATCH | host | `isHostByIdentity`; pro-gated for blind/lifespan |
 | `/api/session/<code>/name` | PATCH | host | `isHostByIdentity` |
+| `/api/me/bookmarks/<wineId>` | DELETE | cookie | session-agnostic unbookmark; works on orphaned wines |
+| `/api/me/friends` | GET | cookie | mutual follows of the calling user |
+| `/api/feed` | GET | cookie | social feed (network-scoped: explicit follows + tasting buddies) |
+| `/api/checkins` | POST | cookie | create check-in; rate-limited 100/h shared with PATCH; mutual-follow tags verified server-side |
+| `/api/checkins/<id>` | PATCH | cookie + owner | edit own check-in; image replace reclaims old S3; tags re-validated against current mutuals |
+| `/api/checkins/<id>` | DELETE | cookie + owner | delete own check-in; reclaims S3 image |
+| `/api/checkins/<id>/like` | POST/DELETE | cookie | like/unlike a check-in |
+| `/api/users/<id>` | GET | optional cookie | public profile; viewer's `isFollowing` populated when authed |
+| `/api/users/<id>/follow` | POST/DELETE | cookie | follow/unfollow; self-follow rejected with 400 |
+| `/api/users/search` | GET | none | display-name prefix lookup for follow/tag discovery (rate-limited per-IP); never participates in authorization |
+| `/api/places` | POST | none | venue search adapter (Google Places when `GOOGLE_PLACES_API_KEY` set, OSM Overpass+Nominatim fallback); rate-limited per-IP |
 
 **"Strict host"** = the original session host, not co-hosts. Reserved for role assignment (`PATCH /api/session/<code>` with cohost actions) and session deletion.
 
@@ -225,11 +284,12 @@ Next.js 15 App Router. UI lives under `app/` (route segments) and `components/`.
 Top-level routes:
 - `/` — lobby (`app/(public)/page.tsx` → `LobbyClient`)
 - `/login`, `/register` — NextAuth credentials flows
-- `/me` and subpaths — logged-in dashboard, history, saved, profile, badges, account
+- `/me` and subpaths — logged-in dashboard, history, saved, profile, badges, account, feed
 - `/session/<code>` — in-session shell (`SessionShell` provides context to wine list, rate, compare screens)
-- `/session/<code>/rate/<wineId>` — per-wine rating screen
+- `/session/<code>/rate/<wineId>` — direct-link entry into the rate modal (renders the wine list with the modal pre-opened; the rate flow itself is a `<Modal>`, not a separate route)
 - `/session/<code>/compare` — overlay/per-rater comparison view
 - `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
+- `/u/<id>` — public user profile + recent check-ins
 - `/hof` — public Hall of Fame leaderboard
 
 State management:
@@ -238,6 +298,25 @@ State management:
 - **Session-scoped context**: `components/session/SessionShell.tsx` exposes `useSession()` returning `{code, displayName, myId, isHost, sessionMeta, wines, allRatings, myRatings, refresh, …}` to descendant screens.
 
 State-changing fetches against session endpoints go through `lib/sessionFetch.ts` (auto-attaches the anon token header, handles auth-invalid responses). Logged-in `/me/*` reads use `lib/authedFetch.ts`.
+
+### Shared visual primitives
+
+Visual consistency across screens is enforced by reusable primitives, not by convention. The standing rule: **if a visual pattern appears in 3+ places, extract it into a shared component or constant.** Inline magic numbers and copy-pasted layout tend to drift across commits — especially when multiple authors (or AI tools) are working on the project.
+
+Primitives in place today:
+
+- **Color tokens** (`app/globals.css` CSS variables exposed via Tailwind). Use `var(--bg2)`, `var(--accent)`, `text-fg-dim`, etc. — never raw hex codes.
+- **Element classes** (`.btn-p`, `.btn-g`, `.btn-s`, `.btn-del`, `.fi`, `.field`, `.fl`, `.panel`, `.chip`). Use these for buttons and form fields rather than re-styling inline.
+- **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`.
+- **Lightbox** (`components/ui/ImageLightbox.tsx`). Use `openLightbox(url, alt)` to display any image full-screen.
+- **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
+- **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
+
+Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
+
+- `<WineIdentityFields>` — sibling for create/edit forms (CheckinModal, AddWineModal). Same canonical field order as `<WineIdentity>`.
+
+**Modals use the shared `<Modal>` primitive.** `components/ui/Modal.tsx` handles `createPortal(children, document.body)` (so the overlay is never trapped in a parent stacking context — important because `.panel` uses `backdrop-filter` which creates a containing block for fixed descendants), backdrop click-to-close, Escape-key-to-close, and the standard sheet styling. New modal/overlay components should use it rather than re-rolling `position: fixed; inset: 0; …` boilerplate. `ImageLightbox` is the deliberate exception — it has unique styling needs (z-index 9999 to float over everything, full-black backdrop, center-aligned close button) and stays standalone.
 
 ### Flavour chart system
 
@@ -258,7 +337,14 @@ Flavour dimensions are **type-specific**:
 
 - App: `moonlit-pond`, project: `timgrethler`, branch: `main`
 - Live URL: `tasting.tgweb.li`
-- `REDIS_URL`, `DATABASE_URL`, `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret, NextAuth and `lib/registerToken.ts` look for any of those names in that order), `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` are set as env vars in Deploio
+- Env vars set on Deploio:
+  - `REDIS_URL`, `DATABASE_URL` — service connections.
+  - `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret; NextAuth and `lib/registerToken.ts` look for any of those names in that order).
+  - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` — Nine Object Storage.
+  - `SERVER_ACTIONS_ALLOWED_ORIGINS` — the deployed hostname (e.g. `tasting.tgweb.li`). `localhost:8080` is always allowed; this var adds extra origins for CSRF on Server Actions. Comma-separated, no scheme.
+  - `PUBLIC_HOSTNAME` — the deployed hostname. Used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
+  - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places API for venue search; when unset, falls back to OSM Overpass + Nominatim.
+  - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
 - S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)
 - Postgres: `verre.d600599.db.postgres.nineapis.ch`, TLS with `rejectUnauthorized: false`
 - Deploio builds from the Dockerfile on every push to the tracked branch

@@ -39,7 +39,7 @@ export function RadarChart({ series, fl, size = 240 }: Props) {
       h += `<line x1="${cx}" y1="${cy}" x2="${cx + R * Math.cos(a)}" y2="${cy + R * Math.sin(a)}" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>`
       const lx = cx + (R + 24) * Math.cos(a), ly = cy + (R + 24) * Math.sin(a)
       const anch = Math.cos(a) > 0.15 ? 'start' : Math.cos(a) < -0.15 ? 'end' : 'middle'
-      h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="7.5" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
+      h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${Math.max(8, size * 0.04)}" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
     })
 
     // Each user's polygon

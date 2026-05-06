@@ -5,6 +5,7 @@ import { useDashboardSections } from './DashboardSettings'
 
 const BASE_NAV = [
   { href: '/me',          icon: '⊞', label: 'Home',    id: null },
+  { href: '/me/feed',     icon: '🌐', label: 'Feed',    id: null },
   { href: '/me/history',  icon: '◷', label: 'History', id: null },
   { href: '/me/saved',    icon: '★',  label: 'Saved',   id: null },
   { href: '/me/profile',  icon: '◉', label: 'Profile', id: null },

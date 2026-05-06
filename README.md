@@ -20,6 +20,8 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Co-host roles to delegate wine management
 - Hide the wine lineup before the tasting starts
 - Hosts can permanently delete a session and its data; bookmarked wines stay saved
+- Social feed: log standalone check-ins (with photo, location, tagged friends), follow other users, like and discover what your tasting network is drinking
+- Public profiles at `/u/<id>` showing recent check-ins and stats
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -131,8 +133,8 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/session | Create session (body: `{hostName, sessionName?, blind?, lifespan?}`) → `{code, id, anonToken?}` |
-| POST | /api/session/join | Join session (body: `{code, userName}`) → `{id, anonToken?, userName}` |
+| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?}`) → `{code, id, displayName, anonToken?}` |
+| POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | PATCH | /api/session/:code | Cohost role assignment (host-only) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
@@ -161,6 +163,27 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET | /api/session/:code/ratings | All ratings, id-keyed (participant-gated) |
 | POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes}`) |
 | DELETE | /api/session/:code/rate/:wineId | Reset own rating |
+
+**Social feed** (logged-in)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
+| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, isPublic?, taggedUserIds?}`) |
+| PATCH | /api/checkins/:id | Edit own check-in; image replace reclaims old S3 |
+| DELETE | /api/checkins/:id | Delete own check-in; reclaims S3 image |
+| POST/DELETE | /api/checkins/:id/like | Like / unlike a check-in |
+| POST/DELETE | /api/users/:id/follow | Follow / unfollow a user (no self-follow) |
+| GET | /api/users/:id | Public profile + stats; viewer's `isFollowing` flag when authed |
+| GET | /api/me/friends | Mutual follows of the calling user |
+| DELETE | /api/me/bookmarks/:wineId | Unbookmark; works on orphaned wines too |
+
+**Discovery / venue**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /api/users/search | Display-name prefix lookup (rate-limited) |
+| POST | /api/places | Venue search adapter — Google Places (with key) or OSM (without) |
 
 **Public**
 

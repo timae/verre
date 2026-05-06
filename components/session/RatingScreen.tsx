@@ -1,20 +1,22 @@
 'use client'
-import { use, useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect } from 'react'
 import { useSession } from './SessionShell'
 import { PolarChart } from '@/components/charts/PolarChart'
+import { CHART_SIZE } from '@/components/charts/sizes'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { openLightbox } from '@/components/ui/ImageLightbox'
+import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { WineIdentity } from '@/components/wine/WineIdentity'
+import { Modal } from '@/components/ui/Modal'
 
-interface Props { params: Promise<{ code: string; wineId: string }> }
+interface Props { wineId: string; onClose: () => void }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
-export function RatingScreen({ params }: Props) {
-  const { wineId } = use(params)
+export function RatingScreen({ wineId, onClose }: Props) {
   const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds, isBlind } = useSession()
-  const router = useRouter()
 
   const wine = wines.find(w => w.id === wineId)
   const w = wine as (WineMeta & { _blind?: boolean }) | undefined
@@ -49,7 +51,13 @@ export function RatingScreen({ params }: Props) {
     }
   }, [wineId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!wine) return <div style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</div>
+  if (!wine) return (
+    <Modal onClose={onClose} maxWidth={400}>
+      <div className="sheet-bar" />
+      <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
+      <button className="btn-g" onClick={onClose}>close</button>
+    </Modal>
+  )
 
   async function save() {
     setSaving(true)
@@ -57,16 +65,15 @@ export function RatingScreen({ params }: Props) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ wineId, score, flavors, notes }),
     })
-    setSaving(false); refresh(); router.back()
+    setSaving(false); refresh(); onClose()
   }
 
   async function resetRating() {
-    if (!confirm('Reset your rating?')) return
     await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
-    refresh(); router.back()
+    refresh(); onClose()
   }
 
   async function toggleBookmark() {
@@ -113,22 +120,20 @@ export function RatingScreen({ params }: Props) {
   }
 
   async function deleteWine() {
-    if (!confirm(`Delete "${wine!.name}"? This removes it for everyone.`)) return
     await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
-    refresh(); router.back()
+    refresh(); onClose()
   }
 
-  const sub = !isRedacted ? [wine.producer, wine.grape].filter(Boolean).join(' · ') : ''
   const wineIndex = wines.findIndex(w2 => w2.id === wineId)
 
   return (
-    <div style={{padding:'14px 14px 28px',maxWidth:580,margin:'0 auto'}}>
-      {/* Back + title */}
+    <Modal onClose={onClose} maxWidth={580} maxHeight="90vh">
+      <div className="sheet-bar" />
+      {/* Title row */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
-        <button onClick={() => router.back()} style={{fontSize:12,color:'var(--fg-dim)',background:'none',border:'none',cursor:'pointer',fontFamily:'var(--mono)'}}>← back</button>
         <div style={{flex:1,minWidth:0}}>
           {isRedacted ? (
             <>
@@ -136,21 +141,20 @@ export function RatingScreen({ params }: Props) {
               <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:1,letterSpacing:'0.06em'}}>identity hidden · host will reveal</div>
             </>
           ) : (
-            <>
-              <div style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                {wine.revealedAt && isBlind && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>}
-                {wine.name}
-                {wine.vintage && <span style={{fontWeight:400,color:'var(--fg-dim)',marginLeft:6}}>– {wine.vintage}</span>}
-              </div>
-              {sub && <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{sub}</div>}
-            </>
+            <WineIdentity
+              wine={wine}
+              size="compact"
+              titlePrefix={wine.revealedAt && isBlind ? (
+                <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',marginRight:6,border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>revealed</span>
+              ) : undefined}
+            />
           )}
         </div>
         <span style={{fontSize:22,flexShrink:0}}>{isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}</span>
       </div>
 
       {!isRedacted && wine.imageUrl && (
-        <img src={wine.imageUrl} alt={wine.name} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10}} />
+        <img src={wine.imageUrl} alt={wine.name} onClick={() => openLightbox(wine.imageUrl!, wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10,cursor:'zoom-in'}} />
       )}
 
       {/* Stars */}
@@ -166,7 +170,7 @@ export function RatingScreen({ params }: Props) {
       {/* Polar chart */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={560} />
+        <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.HERO} />
       </div>
 
       {/* Sliders */}
@@ -231,17 +235,17 @@ export function RatingScreen({ params }: Props) {
       <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
         {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>
-      <button className="btn-g" onClick={() => router.back()}>cancel</button>
-      {existing && <button className="btn-g" onClick={resetRating}>⌫ reset my rating</button>}
-      {isHost && <button className="btn-del" onClick={deleteWine}>⌫ delete this wine</button>}
+      <button className="btn-g" onClick={() => onClose()}>cancel</button>
+      {existing && <ConfirmDeleteButton className="btn-g" label="⌫ reset my rating" confirmLabel="tap again to reset" onConfirm={resetRating} />}
+      {isHost && <ConfirmDeleteButton label="⌫ delete this wine" confirmLabel="tap again to delete" onConfirm={deleteWine} />}
 
       {showEdit && wine && (
         <AddWineModal
-          code={code} userName={displayName} editWine={wine}
+          code={code} editWine={wine}
           onClose={() => setShowEdit(false)}
           onSaved={() => { setShowEdit(false); refresh() }}
         />
       )}
-    </div>
+    </Modal>
   )
 }
