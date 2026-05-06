@@ -7,7 +7,7 @@ import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode, joinPath } from '@/lib/sessionCode'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -135,7 +135,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setDeleteError(data.error || 'delete failed')
   }
 
-  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
+  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}${joinPath(code)}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
 
   useEffect(() => {

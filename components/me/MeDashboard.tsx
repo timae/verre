@@ -8,7 +8,7 @@ import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCode, formatCodeInput } from '@/lib/sessionCode'
+import { validateCodeInput, formatCode, formatCodeInput, sessionPath } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
@@ -58,7 +58,7 @@ export function MeDashboard({ user }: { user: User }) {
     params.set('host', '1')
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${data.code}?${params.toString()}`)
+    router.push(`${sessionPath(data.code)}?${params.toString()}`)
   }
 
   async function joinSession() {
@@ -90,7 +90,7 @@ export function MeDashboard({ user }: { user: User }) {
     const params = new URLSearchParams()
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${code}?${params.toString()}`)
+    router.push(`${sessionPath(code)}?${params.toString()}`)
   }
 
   const [sections] = useDashboardSections()
@@ -171,7 +171,7 @@ export function MeDashboard({ user }: { user: User }) {
                         <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{date} · {s.wines_rated} wines rated</p>
                       </div>
                       {active && (
-                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(`/session/${s.code}`)}>
+                        <button className="btn-s" style={{flexShrink:0,marginLeft:8}} onClick={() => router.push(sessionPath(s.code))}>
                           → rejoin
                         </button>
                       )}

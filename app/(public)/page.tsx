@@ -1,7 +1,7 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { LobbyClient } from '@/components/session/LobbyClient'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode, joinPath } from '@/lib/sessionCode'
 
 export default async function LobbyPage({
   searchParams,
@@ -15,7 +15,7 @@ export default async function LobbyPage({
   // canonical form. Invalid codes fall through to the lobby.
   if (join) {
     const c = normalizeCode(join)
-    if (c) redirect(`/join/${c}`)
+    if (c) redirect(joinPath(c))
   }
 
   const session = await auth()

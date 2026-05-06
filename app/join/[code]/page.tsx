@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { JoinClient } from '@/components/session/JoinClient'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode, sessionPath } from '@/lib/sessionCode'
 
 export default async function JoinPage({ params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -32,7 +32,7 @@ export default async function JoinPage({ params }: { params: Promise<{ code: str
       const member = await prisma.sessionMember.findUnique({
         where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
       })
-      if (member) redirect(`/session/${C}`)
+      if (member) redirect(sessionPath(C))
     } catch {}
   }
 

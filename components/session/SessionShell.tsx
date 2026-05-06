@@ -9,7 +9,7 @@ import { SessionPanel } from './SessionPanel'
 import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { normalizeCode, formatCode } from '@/lib/sessionCode'
+import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
 // Iterators (compare screen) use Object.entries; lookups (RatingScreen,
@@ -77,7 +77,8 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       p.delete('name')
       p.delete('id')
       p.delete('host')
-      const newUrl = p.toString() ? `/session/${C}?${p.toString()}` : `/session/${C}`
+      const base = sessionPath(C)
+      const newUrl = p.toString() ? `${base}?${p.toString()}` : base
       router.replace(newUrl)
     }
   }, [C])
@@ -93,7 +94,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const [showUserPanel,    setShowUserPanel]    = useState(false)
 
   useEffect(() => {
-    if (needsName) router.replace(`/join/${C}`)
+    if (needsName) router.replace(joinPath(C))
   }, [needsName, C])
 
   // Logged-in users hit /session/<code> with an auth cookie but may not yet
@@ -130,7 +131,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           localStorage.removeItem(`vr_name_${C}`)
           localStorage.removeItem(`vr_id_${C}`)
         } catch {}
-        window.location.href = `/join/${C}`
+        window.location.href = joinPath(C)
         return []
       }
       return r.ok ? r.json() : []
@@ -202,9 +203,9 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   }
 
   const navItems = [
-    { label: 'Wines', path: `/session/${C}`,         icon: '🍷', id: 'wines' },
-    { label: 'Rate',  path: `/session/${C}/rate`,     icon: '⭐', id: 'rate' },
-    { label: 'Compare', path: `/session/${C}/compare`, icon: '◈', id: 'compare' },
+    { label: 'Wines', path: sessionPath(C),            icon: '🍷', id: 'wines' },
+    { label: 'Rate',  path: sessionPath(C, 'rate'),    icon: '⭐', id: 'rate' },
+    { label: 'Compare', path: sessionPath(C, 'compare'), icon: '◈', id: 'compare' },
   ]
 
   const sessionLabel = metaData?.name || formatCode(C)

@@ -9,7 +9,7 @@ import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { AccountSettings } from '@/components/me/AccountSettings'
 import { clearSessionNames } from '@/lib/clientStorage'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode, sessionPath } from '@/lib/sessionCode'
 
 interface Props { onClose: () => void }
 
@@ -111,7 +111,7 @@ export function UserPanel({ onClose }: Props) {
                           <p style={{fontSize:10,color:'var(--fg-dim)'}}>{s.wines_rated} wine{s.wines_rated !== 1 ? 's' : ''} rated</p>
                         </div>
                         <button
-                          onClick={() => { onClose(); router.push(`/session/${s.code}?name=${encodeURIComponent(user.name)}`) }}
+                          onClick={() => { onClose(); router.push(`${sessionPath(s.code)}?name=${encodeURIComponent(user.name)}`) }}
                           style={{flexShrink:0,marginLeft:8,fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
                           rejoin
                         </button>

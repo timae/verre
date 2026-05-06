@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCodeInput } from '@/lib/sessionCode'
+import { validateCodeInput, formatCodeInput, sessionPath } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -42,7 +42,7 @@ export function LobbyClient({ user }: { user: User }) {
     params.set('host', '1')
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${data.code}?${params.toString()}`)
+    router.push(`${sessionPath(data.code)}?${params.toString()}`)
   }
 
   async function joinSession() {
@@ -75,7 +75,7 @@ export function LobbyClient({ user }: { user: User }) {
     const params = new URLSearchParams()
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${code}?${params.toString()}`)
+    router.push(`${sessionPath(code)}?${params.toString()}`)
   }
 
   return (

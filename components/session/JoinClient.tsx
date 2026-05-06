@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
 
 interface Props {
   code: string
@@ -27,7 +27,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     if (isLoggedIn || isExpired) return
     if (typeof window === 'undefined') return
     const stored = localStorage.getItem(`vr_name_${code}`)
-    if (stored) router.replace(`/session/${code}`)
+    if (stored) router.replace(sessionPath(code))
   }, [code, isLoggedIn, isExpired])
 
   // Session is gone (deleted, expired, or never existed). Drop any stale
@@ -66,7 +66,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     const params = new URLSearchParams()
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${code}?${params.toString()}`)
+    router.push(`${sessionPath(code)}?${params.toString()}`)
   }
 
   return (
@@ -141,15 +141,15 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                   Sign in or create an account to save your ratings.
                 </p>
                 <div style={{display:'flex',gap:6}}>
-                  <Link href={`/login?redirect=/join/${code}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ sign in</Link>
-                  <Link href={`/register?redirect=/join/${code}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ create account</Link>
+                  <Link href={`/login?redirect=${encodeURIComponent(joinPath(code))}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ sign in</Link>
+                  <Link href={`/register?redirect=${encodeURIComponent(joinPath(code))}`} className="btn-g" style={{flex:1,textAlign:'center',textDecoration:'none',marginTop:0}}>→ create account</Link>
                 </div>
               </>
             )}
           </div>
 
           <p style={{textAlign:'center',marginTop:16,fontSize:10,color:'var(--fg-faint)',fontFamily:'var(--mono)',letterSpacing:'0.08em'}}>
-            SESSION CODE: {code}
+            SESSION CODE: {formatCode(code)}
           </p>
         </div>
       </div>

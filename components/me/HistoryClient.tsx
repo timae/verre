@@ -2,7 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode, sessionPath } from '@/lib/sessionCode'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
@@ -79,7 +79,7 @@ export function HistoryClient() {
                     onClick={() => {
                     const name = authSession?.user?.name || ''
                     const q = name ? `?name=${encodeURIComponent(name)}` : ''
-                    router.push(`/session/${s.code}${q}`)
+                    router.push(`${sessionPath(s.code)}${q}`)
                   }}
                     className="text-xs text-accent border border-accent/30 px-3 py-1.5 rounded-lg flex-shrink-0"
                   >

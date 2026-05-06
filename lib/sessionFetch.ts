@@ -9,7 +9,7 @@
 // Logged-in users don't need a token (the auth cookie is their trust anchor),
 // so getAnonToken returns null for them and sessionFetch sends no extra header.
 
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode, joinPath } from '@/lib/sessionCode'
 
 // Defensive: callers should pass canonical codes (post-normalizeCode), but
 // fall back to upper-case if normalize rejects so a malformed code at least
@@ -60,7 +60,7 @@ export async function sessionFetch(code: string, url: string, init?: RequestInit
       localStorage.removeItem(NAME_KEY(code))
       localStorage.removeItem(`vr_id_${C}`)
     }
-    if (typeof window !== 'undefined') window.location.href = `/join/${C}`
+    if (typeof window !== 'undefined') window.location.href = joinPath(C)
   }
   return res
 }

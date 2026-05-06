@@ -70,3 +70,17 @@ export function formatCodeInput(raw: string): string {
   if (stripped.length <= 4) return stripped
   return `${stripped.slice(0, 4)}-${stripped.slice(4)}`
 }
+
+// URL builders. Codes in URLs use the formatted (hyphenated for 8-char) form
+// so share links read cleanly off-app. Server entry points run normalizeCode
+// which strips the hyphen — so URLs accept either form, but the rendered form
+// is the hyphenated one. Use these helpers everywhere a session URL is built;
+// raw `/session/${code}` interpolation creates display drift.
+export function sessionPath(code: string, sub?: string): string {
+  const base = `/session/${formatCode(code)}`
+  return sub ? `${base}/${sub}` : base
+}
+
+export function joinPath(code: string): string {
+  return `/join/${formatCode(code)}`
+}

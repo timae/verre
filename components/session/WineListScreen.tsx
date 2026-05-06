@@ -9,6 +9,7 @@ import { useState, useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { sessionPath } from '@/lib/sessionCode'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
@@ -237,7 +238,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
             // If the user landed via direct URL /session/<code>/rate/<wineId>,
             // closing the modal should leave them on the wine list URL —
             // not on the rate URL where a refresh would re-open the modal.
-            if (pathname?.includes('/rate/')) router.replace(`/session/${code}`)
+            if (pathname?.includes('/rate/')) router.replace(sessionPath(code))
           }} />
         )}
       </div>
