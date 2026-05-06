@@ -8,9 +8,4 @@ export function clearSessionNames() {
       localStorage.removeItem(key)
     }
   })
-  // Also clear the legacy sessionStorage entries from before the localStorage
-  // migration; otherwise stale per-tab data lingers until tab close.
-  Object.keys(sessionStorage).forEach(key => {
-    if (key.startsWith('vr_name_')) sessionStorage.removeItem(key)
-  })
 }

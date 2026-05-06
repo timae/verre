@@ -29,9 +29,6 @@ async function scanSessions(): Promise<ScanHit[]> {
 }
 
 function isHostOfSession(meta: SessionMeta, userId: number): boolean {
-  // Match strictly on hostIdentityId. Pre-Phase-2 sessions with only
-  // hostUserId (no hostIdentityId) get ignored on purpose — they're TTL-bound
-  // and the legacy code path isn't worth maintaining in the deletion flow.
   return meta.hostIdentityId === userIdentityId(userId)
 }
 
