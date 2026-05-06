@@ -1,9 +1,39 @@
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '@/lib/prisma'
 import { redis, k } from '@/lib/redis'
 import { userIdentityId } from '@/lib/identity'
 import type { SessionMeta } from '@/lib/session'
 
 export const TOMBSTONE_NAME = '[deleted]'
+
+// Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
+// lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
+// webpack 5.98 bundling bug; keeping copies here until that's fixed upstream.
+const _S3_ENDPOINT = process.env.S3_ENDPOINT
+const _S3_BUCKET = process.env.S3_BUCKET
+const _s3 = _S3_ENDPOINT
+  ? new S3Client({
+      endpoint: _S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
+  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 type ScanHit = {
   code: string
@@ -156,15 +186,32 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
 // Postgres transaction is the GDPR-relevant step (atomic). Redis cleanup
 // runs after, best-effort — Redis state is bounded by session lifespan TTL.
 export async function executeAccountDelete(userId: number): Promise<DeletePlan> {
+  // Capture image URLs before the cascade fires. Reclaim happens AFTER commit
+  // — fire-and-forget; if the transaction rolls back we haven't deleted any
+  // S3 objects, and if S3 fails after commit the row is already gone (orphan
+  // bytes that a future cleanup can sweep, never a broken DB state).
+  const checkinImages = await prisma.checkin.findMany({
+    where: { userId, imageUrl: { not: null } },
+    select: { imageUrl: true },
+  })
+  const hostedWineImages = await prisma.wine.findMany({
+    where: { imageUrl: { not: null }, session: { hostUserId: userId } },
+    select: { imageUrl: true },
+  })
+
   await prisma.$transaction(async (tx) => {
     // UPDATE before DELETE because ratings/hof/sessions FK constraints are
     // ON DELETE NoAction — Postgres won't drop the user row otherwise.
-    // Cascades on bookmarks/user_badges/session_members fire on the DELETE.
+    // Cascades on bookmarks/user_badges/session_members/checkins/follows fire
+    // on the DELETE. See CLAUDE.md "Cascade vs. tombstone — the rule".
     await tx.$executeRaw`UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME} WHERE user_id = ${userId}`
     await tx.$executeRaw`UPDATE hall_of_fame SET user_id = NULL, rater_name = ${TOMBSTONE_NAME} WHERE user_id = ${userId}`
     await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME} WHERE host_user_id = ${userId}`
     await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
   })
+
+  for (const c of checkinImages) reclaimImage(c.imageUrl)
+  for (const w of hostedWineImages) reclaimImage(w.imageUrl)
 
   return applyRedisCleanup(userId)
 }
