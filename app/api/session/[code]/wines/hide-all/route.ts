@@ -10,7 +10,6 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = code.toUpperCase()
   const session = await auth()
-  const body = await req.json().catch(() => ({}))
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })

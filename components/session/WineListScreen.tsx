@@ -34,7 +34,7 @@ function formatDate(dt: string) {
 interface Props { initialRateWineId?: string }
 
 export function WineListScreen({ initialRateWineId }: Props = {}) {
-  const { wines, myRatings, isHost, code, displayName, refresh, isBlind, sessionMeta } = useSession()
+  const { wines, myRatings, isHost, code, refresh, isBlind, sessionMeta } = useSession()
   const [showAdd, setShowAdd] = useState(false)
   const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()

@@ -228,6 +228,15 @@ The plan + apply runs as a single SCAN+decide+act loop per session — no TOCTOU
 
 UI lives in `components/me/AccountSettings.tsx` as a Danger Zone modal: shows the email read-only, asks for password, on success wipes all `vr_anon_*` / `vr_name_*` / `vr_id_*` localStorage keys (so other tabs in the same browser don't render with stale identity) and `signOut()`s.
 
+**Cascade vs. tombstone — the rule.** Two distinct deletion behaviors, picked per data type:
+
+- **Tombstone** (UPDATE → `[deleted]`, FK set to NULL) — used when *other users' data references it*. Applied to `ratings`, `hall_of_fame`, hosted `sessions.host_user_id`, and the in-Redis identity map. Reason: deleting one user shouldn't break other tasters' compare views or HoF leaderboard.
+- **Cascade hard-delete** (FK `onDelete: Cascade`) — used when the data is purely the user's own with no other-user references that need preserving. Applied to `checkins`, `checkin_likes`, `checkin_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`. Postgres handles these atomically inside the same transaction.
+
+When adding a new table tied to users, decide which side it falls on. The test: does another user's view (own history, compare screen, leaderboard, ongoing session they're in) reference this row in a way where deletion would leave their experience broken or nonsensical? Yes → tombstone. No → cascade.
+
+**S3 image reclaim is independent of cascade.** Postgres cascade-deleting a row does NOT trigger S3 cleanup — the bytes stay in the bucket forever unless the deletion path explicitly fires `reclaimImage()`. Any new table that stores an `imageUrl` field needs explicit reclaim added to its deletion paths (account-delete, session-delete, edit-replace). See `lib/accountDelete.ts` and `app/api/session/[code]/route.ts` for examples.
+
 ### NextAuth logger override
 
 `auth.ts` overrides NextAuth's default error logger to collapse two expected-noise classes:
@@ -343,19 +352,16 @@ Flavour dimensions are **type-specific**:
 
 ### Deployment (Deploio / Nine)
 
-- App: `moonlit-pond`, project: `timgrethler`, branch: `main`
-- Live URL: `tasting.tgweb.li`
-- Env vars set on Deploio:
+- Hosted on Deploio, deployed from `main` on push (Dockerfile build).
+- Postgres + Redis + S3-compatible Object Storage all on Nine. Specific app names, project IDs, hostnames, and live URLs are intentionally not in this file — see the Deploio dashboard.
+- Env vars set on Deploio (values not stored in repo):
   - `REDIS_URL`, `DATABASE_URL` — service connections.
-  - `AUTH_SECRET` (or `NEXTAUTH_SECRET` / `JWT_SECRET` — same secret; NextAuth and `lib/registerToken.ts` look for any of those names in that order).
-  - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION=us-east-1` — Nine Object Storage.
-  - `SERVER_ACTIONS_ALLOWED_ORIGINS` — the deployed hostname (e.g. `tasting.tgweb.li`). `localhost:8080` is always allowed; this var adds extra origins for CSRF on Server Actions. Comma-separated, no scheme.
-  - `PUBLIC_HOSTNAME` — the deployed hostname. Used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
-  - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places API for venue search; when unset, falls back to OSM Overpass + Nominatim.
+  - `AUTH_SECRET` — NextAuth + register-token HMAC. (`NEXTAUTH_SECRET` / `JWT_SECRET` accepted as fallback names by `auth.ts` and `lib/registerToken.ts`.)
+  - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` — Object Storage.
+  - `SERVER_ACTIONS_ALLOWED_ORIGINS` — comma-separated extra origins for Server Actions CSRF (deployed hostname; `localhost:8080` always allowed; no scheme).
+  - `PUBLIC_HOSTNAME` — used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
+  - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places; when unset, falls back to OSM Overpass + Nominatim.
   - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
-- S3 endpoint: `https://es34.objects.nineapis.ch` (Nine Object Storage, region always `us-east-1`)
-- Postgres: `verre.d600599.db.postgres.nineapis.ch`, TLS with `rejectUnauthorized: false`
-- Deploio builds from the Dockerfile on every push to the tracked branch
 
 ### Schema notes for future features
 

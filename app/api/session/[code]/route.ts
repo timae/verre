@@ -1,10 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
-import { isHostByIdentity, type SessionMeta } from '@/lib/session'
+import { type SessionMeta } from '@/lib/session'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
+
+// Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
+// lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
+// webpack 5.98 bundling bug; keeping copies here until that's fixed upstream.
+const _S3_ENDPOINT = process.env.S3_ENDPOINT
+const _S3_BUCKET = process.env.S3_BUCKET
+const _s3 = _S3_ENDPOINT
+  ? new S3Client({
+      endpoint: _S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
+  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
@@ -177,11 +207,26 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   // whole set — no half-deleted state where, say, ratings are gone but the
   // session row remains. If the transaction throws, we still wipe Redis
   // below so the user gets the "session is gone" experience client-side.
+  let reclaimUrls: string[] = []
   try {
-    await prisma.$transaction(async (tx) => {
+    reclaimUrls = await prisma.$transaction(async (tx): Promise<string[]> => {
       const sessionRow = await tx.session.findUnique({ where: { code: c } })
-      if (!sessionRow) return
+      if (!sessionRow) return []
       const sessionId = sessionRow.id
+
+      // Capture image URLs of wines nobody bookmarked. Bookmarked wines stay
+      // reachable from /me/saved so we keep their image; orphans lose their
+      // last reader the moment this session is gone, so the bytes can go.
+      // Race window: a bookmark INSERT racing this tx (READ COMMITTED) could
+      // land after this SELECT but before commit, leaving the bookmarker with
+      // a wine row whose image we then reclaim. Narrow (single-user clicking
+      // bookmark in the seconds during host delete) and acceptable.
+      const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
+        SELECT image_url FROM wines
+        WHERE session_id = ${sessionId}
+          AND image_url IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
+      `
 
       // 1. Delete ratings whose (user, wine) is NOT bookmarked. Anonymous
       //    ratings only live in Redis; this only touches logged-in raters.
@@ -222,10 +267,17 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
 
       // 5. Delete the session row itself.
       await tx.$executeRaw`DELETE FROM sessions WHERE id = ${sessionId}`
+
+      return orphanImages.map(r => r.image_url).filter(Boolean)
     })
   } catch (err) {
     console.error('session delete (postgres) error:', err)
   }
+
+  // Reclaim S3 objects fire-and-forget after commit. If the transaction rolled
+  // back, reclaimUrls is [] so nothing happens. If S3 fails, the row is
+  // already gone — orphan bytes for a future cleanup, never broken DB state.
+  for (const url of reclaimUrls) reclaimImage(url)
 
   // Wipe Redis. After this, every endpoint serving this session returns 404.
   try {

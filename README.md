@@ -87,7 +87,7 @@ Or via Cockpit:
 
 ```bash
 # Cloudflare DNS:
-# CNAME  tasting  →  your-app.d600599.deploio.app  (DNS only, grey cloud)
+# CNAME  tasting  →  your-app.<deploio-org-id>.deploio.app  (DNS only, grey cloud)
 # TXT    _deploio.tasting  →  deploio-site-verification=...
 # SSL/TLS mode: Full
 ```
