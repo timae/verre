@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
 
 export async function POST(_req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 

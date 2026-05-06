@@ -9,6 +9,7 @@ import { SessionPanel } from './SessionPanel'
 import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { normalizeCode } from '@/lib/sessionCode'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
 // Iterators (compare screen) use Object.entries; lookups (RatingScreen,
@@ -33,7 +34,11 @@ export const useSession = () => {
 
 export function SessionShell({ children, params }: { children: React.ReactNode; params: Promise<{ code: string }> }) {
   const { code } = use(params)
-  const C = code.toUpperCase()
+  // Canonical form for React Query cache keys, Redis lookups, and localStorage
+  // suffixes. If normalize returns null (user typed a malformed code into the
+  // URL bar), fall through with the raw uppercased value — the wines GET will
+  // 404 and the existing redirect-to-/join path takes over.
+  const C = normalizeCode(code) ?? code.toUpperCase()
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()

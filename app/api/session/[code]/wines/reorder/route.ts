@@ -2,11 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
   const body = await req.json()
 

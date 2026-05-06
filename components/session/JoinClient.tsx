@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { setAnonToken } from '@/lib/sessionFetch'
+import { formatCode } from '@/lib/sessionCode'
 
 interface Props {
   code: string
@@ -18,7 +19,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  const sessionLabel = sessionMeta?.name || `Session ${code}`
+  const sessionLabel = sessionMeta?.name || `Session ${formatCode(code)}`
   const isExpired = !sessionMeta
 
   // Anonymous user who already joined from this browser → skip invite page

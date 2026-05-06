@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
 
 export async function POST(req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
   const meta = await getSessionMeta(c)
@@ -32,7 +34,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
   const meta = await getSessionMeta(c)

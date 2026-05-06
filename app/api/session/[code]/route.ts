@@ -5,6 +5,7 @@ import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 import { type SessionMeta } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
@@ -38,7 +39,8 @@ async function reclaimImage(url: string | null | undefined) {
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
@@ -56,7 +58,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
   const { targetId: targetIdFromBody, targetUser, action } = await req.json()
 
@@ -181,7 +184,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 // the snapshot column design.
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
   const raw = await redis.get(k.meta(c))

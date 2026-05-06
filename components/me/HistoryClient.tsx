@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
+import { formatCode } from '@/lib/sessionCode'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
@@ -61,7 +62,7 @@ export function HistoryClient() {
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <p className="font-bold text-sm">{s.name || `Session ${s.code}`}</p>
+                    <p className="font-bold text-sm">{s.name || `Session ${formatCode(s.code)}`}</p>
                     <span className={`text-xs px-2 py-0.5 rounded-full border ${
                       active ? 'text-accent2 border-accent2/30 bg-accent2/10' : 'text-fg-faint border-border'
                     }`}>

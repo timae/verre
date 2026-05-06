@@ -8,6 +8,7 @@ import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
 import { setAnonToken } from '@/lib/sessionFetch'
+import { validateCodeInput, formatCode, formatCodeInput } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
@@ -62,11 +63,19 @@ export function MeDashboard({ user }: { user: User }) {
 
   async function joinSession() {
     if (!name.trim()) { setJoinError('Enter your name'); return }
-    if (joinCode.trim().length < 4) { setJoinError('Enter a 4-char code'); return }
+    const v = validateCodeInput(joinCode)
+    if (!v.ok) {
+      switch (v.error) {
+        case 'empty':           setJoinError('Enter a code'); return
+        case 'invalid-length':  setJoinError('Code must be 4 or 8 characters'); return
+        case 'invalid-char':    setJoinError('Your code contains invalid characters — check for typos'); return
+      }
+    }
+    const code = v.code
     setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), displayName: name.trim() }),
+      body: JSON.stringify({ code, displayName: name.trim() }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -75,7 +84,6 @@ export function MeDashboard({ user }: { user: User }) {
       return
     }
     const data = await res.json()
-    const code = joinCode.trim().toUpperCase()
     if (data.anonToken) setAnonToken(code, data.anonToken)
     const finalName = data.displayName || name.trim()
     const finalId   = data.id || ''
@@ -136,8 +144,10 @@ export function MeDashboard({ user }: { user: User }) {
           <div className="lobby-divider">or join an existing room</div>
           <div className="field">
             <div className="fl">session code</div>
-            <input className="fi" value={joinCode} onChange={e => setJoinCode(e.target.value.toUpperCase())} maxLength={4}
-              placeholder="e.g. A3F7" style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
+            <input className="fi" value={joinCode} onChange={e => setJoinCode(formatCodeInput(e.target.value))} maxLength={9}
+              placeholder="e.g. A3F7 or XYZW-1234"
+              autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false} inputMode="text"
+              style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
           {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
@@ -157,7 +167,7 @@ export function MeDashboard({ user }: { user: User }) {
                   return (
                     <div key={s.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid var(--bg3)'}}>
                       <div style={{minWidth:0}}>
-                        <p style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.name || `Session ${s.code}`}</p>
+                        <p style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.name || `Session ${formatCode(s.code)}`}</p>
                         <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{date} · {s.wines_rated} wines rated</p>
                       </div>
                       {active && (
