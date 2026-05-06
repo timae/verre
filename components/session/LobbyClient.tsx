@@ -148,7 +148,7 @@ export function LobbyClient({ user }: { user: User }) {
               value={joinCode}
               onChange={e => setJoinCode(formatCodeInput(e.target.value))}
               maxLength={9}
-              placeholder="e.g. A3F7 or XYZW-1234"
+              placeholder="A3F7 or XYZW-1234"
               autoCapitalize="characters"
               autoComplete="off"
               autoCorrect="off"

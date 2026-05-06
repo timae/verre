@@ -145,7 +145,7 @@ export function MeDashboard({ user }: { user: User }) {
           <div className="field">
             <div className="fl">session code</div>
             <input className="fi" value={joinCode} onChange={e => setJoinCode(formatCodeInput(e.target.value))} maxLength={9}
-              placeholder="e.g. A3F7 or XYZW-1234"
+              placeholder="A3F7 or XYZW-1234"
               autoCapitalize="characters" autoComplete="off" autoCorrect="off" spellCheck={false} inputMode="text"
               style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
           </div>
