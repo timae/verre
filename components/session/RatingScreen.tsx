@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useSession } from './SessionShell'
-import { PolarChart } from '@/components/charts/PolarChart'
+import { FlavorWheel, type WheelGeometry } from '@/components/charts/FlavorWheel'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
@@ -11,6 +11,28 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
+
+// Geometry preference is stored per-device in localStorage. Sunset:
+// after a couple of weeks of real-world use we expect to settle on one
+// preset and remove the toggle. Until then, the console.warn fires on
+// each toggle interaction so the next maintainer (or future me) can't
+// miss it.
+const GEOMETRY_KEY = 'vr_wheel_geometry'
+const GEOMETRY_SUNSET = '2026-05-20'
+
+function readGeometry(): WheelGeometry {
+  if (typeof window === 'undefined') return 'spacious'
+  try {
+    const v = window.localStorage.getItem(GEOMETRY_KEY)
+    return v === 'compact' ? 'compact' : 'spacious'
+  } catch {
+    return 'spacious'
+  }
+}
+function writeGeometry(g: WheelGeometry): void {
+  if (typeof window === 'undefined') return
+  try { window.localStorage.setItem(GEOMETRY_KEY, g) } catch { /* private mode / quota */ }
+}
 
 interface Props { wineId: string; onClose: () => void }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
@@ -36,6 +58,21 @@ export function RatingScreen({ wineId, onClose }: Props) {
   const [notes, setNotes] = useState(existing?.notes || '')
   const [saving, setSaving] = useState(false)
   const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
+  const [geometry, setGeometry] = useState<WheelGeometry>(readGeometry)
+  // One-shot warning if the sunset date has passed and the toggle is
+  // still in the codebase. Fires on mount of the rate modal — much more
+  // likely to be noticed than a per-click warning that only surfaces if
+  // someone happens to be at devtools at the moment of toggle.
+  useEffect(() => {
+    if (new Date() > new Date(GEOMETRY_SUNSET)) {
+      console.warn(`[wheel] geometry toggle was scheduled for removal ${GEOMETRY_SUNSET} — please clean up`)
+    }
+  }, [])
+  function toggleGeometry() {
+    const next: WheelGeometry = geometry === 'spacious' ? 'compact' : 'spacious'
+    setGeometry(next)
+    writeGeometry(next)
+  }
   const [showEdit, setShowEdit] = useState(false)
   const [movePos, setMovePos] = useState('')
   const [moveError, setMoveError] = useState('')
@@ -167,30 +204,21 @@ export function RatingScreen({ wineId, onClose }: Props) {
         </div>
       </div>
 
-      {/* Polar chart */}
+      {/* Flavour wheel — input + visualization in one widget. Replaces
+          the previous read-only polar chart + slider stack. */}
       <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.HERO} />
-      </div>
-
-      {/* Sliders */}
-      <div className="panel">
-        {fl.map(f => {
-          const v = flavors[f.k] || 0
-          return (
-            <div key={f.k} style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
-              <span style={{fontSize:11,color:'var(--fg-dim)',width:70,flexShrink:0,fontFamily:'var(--mono)'}}>{f.l}</span>
-              <div style={{flex:1}}>
-                <input
-                  type="range" min={0} max={5} step={1} value={v}
-                  onChange={e => setFlavors(prev => ({ ...prev, [f.k]: Number(e.target.value) }))}
-                  style={{width:'100%',height:4,appearance:'none',borderRadius:2,background:`linear-gradient(to right,${f.c} ${v*20}%,var(--bg3) ${v*20}%)`}}
-                />
-              </div>
-              <span style={{fontSize:11,color:'var(--fg)',width:14,textAlign:'right',fontFamily:'var(--mono)'}}>{v}</span>
-            </div>
-          )
-        })}
+        <FlavorWheel flavors={flavors} fl={fl} onChange={setFlavors} size={CHART_SIZE.INPUT} geometry={geometry} />
+        <button
+          type="button"
+          className="btn-s"
+          onClick={toggleGeometry}
+          style={{marginTop:14,fontSize:10,padding:'8px 14px'}}
+          aria-label="switch wheel layout"
+          aria-pressed={geometry === 'compact'}
+        >
+          try {geometry === 'spacious' ? 'compact' : 'spacious'} wheel
+        </button>
       </div>
 
       {/* Notes */}
