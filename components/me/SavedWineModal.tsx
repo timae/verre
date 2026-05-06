@@ -8,9 +8,10 @@ import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
+import { formatCode } from '@/lib/sessionCode'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
-type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
+type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
@@ -33,7 +34,9 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           {!wine.image_url && <span style={{fontSize:28}}>{ICO[wine.style||'']||'🍷'}</span>}
           <div style={{flex:1, minWidth:0}}>
             <WineIdentity wine={wine} size="card" />
-            <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>session {wine.session_code}</p>
+            {wine.session_code && (
+              <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>session {formatCode(wine.session_code)}</p>
+            )}
           </div>
         </div>
 

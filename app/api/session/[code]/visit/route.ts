@@ -2,13 +2,15 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 import { userIdentityId, recordIdentity } from '@/lib/identity'
 import { disambiguateDisplayName } from '@/lib/displayName'
 
 export async function POST(_req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ ok: true })
 

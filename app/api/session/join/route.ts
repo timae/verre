@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
+import { normalizeCode } from '@/lib/sessionCode'
 import { validateDisplayName, disambiguateDisplayName } from '@/lib/displayName'
 import { checkRate, resetRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import {
@@ -38,7 +39,8 @@ export async function POST(req: NextRequest) {
   try { displayName = validateDisplayName(rawDisplayName) }
   catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }) }
 
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'session not found' }, { status: 404 })
 

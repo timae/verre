@@ -1,4 +1,3 @@
-import crypto from 'crypto'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
@@ -74,9 +73,7 @@ export type SessionMeta = {
   hideLineupMinutesBefore?: number
 }
 
-export function genCode(): string {
-  return crypto.randomBytes(2).toString('hex').toUpperCase()
-}
+export { genCode } from '@/lib/sessionCode'
 
 export async function getSessionMeta(code: string): Promise<SessionMeta | null> {
   const raw = await redis.get(k.meta(code))

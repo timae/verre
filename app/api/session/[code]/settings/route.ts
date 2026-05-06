@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, lifespanTTL } from '@/lib/redis'
 import { getSessionMeta, isHostByIdentity } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, authInvalid } from '@/lib/identity'
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
   const body = await req.json()
 

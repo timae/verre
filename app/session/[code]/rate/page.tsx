@@ -3,6 +3,7 @@ import { useSession } from '@/components/session/SessionShell'
 import { WineCard } from '@/components/wine/WineCard'
 import { LineupLocked } from '@/components/session/LineupLocked'
 import { useRouter } from 'next/navigation'
+import { sessionPath } from '@/lib/sessionCode'
 
 export default function RatePickerPage() {
   const { wines, myRatings, code, displayName, isHost, sessionMeta } = useSession()
@@ -41,7 +42,7 @@ export default function RatePickerPage() {
               wine={wine}
               index={idx}
               score={myRatings[wine.id]?.score}
-              onClick={() => router.push(`/session/${code}/rate/${wine.id}?name=${encodeURIComponent(displayName)}`)}
+              onClick={() => router.push(`${sessionPath(code, `rate/${wine.id}`)}?name=${encodeURIComponent(displayName)}`)}
             />
           ))}
         </div>

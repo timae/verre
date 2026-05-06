@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
+import { formatCode, sessionPath } from '@/lib/sessionCode'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
@@ -28,12 +29,15 @@ export function HistoryClient() {
     queryKey: ['me-sessions'],
     queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
-  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string }[]>({
+  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string | null }[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string }[]>('/api/me/ratings'),
+    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string | null }[]>('/api/me/ratings'),
   })
 
   const ratingsByCode = ratings.reduce((acc, r) => {
+    // Skip ratings whose session was deleted (session_code null) — they
+    // can't be associated with any session row in the history list.
+    if (!r.session_code) return acc
     if (!acc[r.session_code]) acc[r.session_code] = []
     acc[r.session_code].push(r)
     return acc
@@ -61,7 +65,7 @@ export function HistoryClient() {
               <div className="flex items-start justify-between gap-3 mb-3">
                 <div>
                   <div className="flex items-center gap-2 mb-1">
-                    <p className="font-bold text-sm">{s.name || `Session ${s.code}`}</p>
+                    <p className="font-bold text-sm">{s.name || `Session ${formatCode(s.code)}`}</p>
                     <span className={`text-xs px-2 py-0.5 rounded-full border ${
                       active ? 'text-accent2 border-accent2/30 bg-accent2/10' : 'text-fg-faint border-border'
                     }`}>
@@ -75,7 +79,7 @@ export function HistoryClient() {
                     onClick={() => {
                     const name = authSession?.user?.name || ''
                     const q = name ? `?name=${encodeURIComponent(name)}` : ''
-                    router.push(`/session/${s.code}${q}`)
+                    router.push(`${sessionPath(s.code)}${q}`)
                   }}
                     className="text-xs text-accent border border-accent/30 px-3 py-1.5 rounded-lg flex-shrink-0"
                   >

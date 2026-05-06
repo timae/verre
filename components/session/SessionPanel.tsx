@@ -7,6 +7,7 @@ import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { formatCode, joinPath } from '@/lib/sessionCode'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -122,9 +123,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
       // try to use a stale token / name pointing at a session that no
       // longer exists. Then leave to the lobby.
       try {
-        localStorage.removeItem(`vr_anon_${code.toUpperCase()}`)
-        localStorage.removeItem(`vr_name_${code.toUpperCase()}`)
-        localStorage.removeItem(`vr_id_${code.toUpperCase()}`)
+        // code is already canonical via SessionShell's normalizeCode.
+        localStorage.removeItem(`vr_anon_${code}`)
+        localStorage.removeItem(`vr_name_${code}`)
+        localStorage.removeItem(`vr_id_${code}`)
       } catch {}
       window.location.href = '/'
       return
@@ -133,7 +135,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setDeleteError(data.error || 'delete failed')
   }
 
-  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}/join/${code}` : ''
+  const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}${joinPath(code)}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
 
   useEffect(() => {
@@ -208,7 +210,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
         {/* Header */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
-          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>{m?.name || code}</div>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>{m?.name || formatCode(code)}</div>
           <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
         </div>
         <div style={{fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.08em',marginBottom:16}}>{ttlLabel}</div>
@@ -306,7 +308,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div style={{display:'flex',gap:8,marginBottom:12}}>
                 <button className="btn-s" onClick={copyInvite}>{copied ? 'copied ✓' : 'copy link'}</button>
                 {typeof navigator !== 'undefined' && 'share' in navigator && (
-                  <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${code}` })}>share</button>
+                  <button className="btn-s" onClick={() => navigator.share?.({ url: inviteUrl, title: `Join tasting ${formatCode(code)}` })}>share</button>
                 )}
               </div>
               {inviteUrl && (

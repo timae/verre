@@ -4,7 +4,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 
 ## What it does
 
-- Create or join a tasting with a 4-character session code
+- Create or join a tasting with a short shareable code
 - Keep one shared bottle lineup across the whole table
 - Rate privately on each phone with stars, flavour radar, and notes
 - Sign up for an account to keep your history, or stay anonymous

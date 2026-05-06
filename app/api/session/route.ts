@@ -54,12 +54,31 @@ export async function POST(req: NextRequest) {
   const resolvedLifespan = lifespan || '48h'
   const sessionTTL = lifespanTTL(resolvedLifespan)
 
-  let code: string
+  // Collision check on BOTH Redis and Postgres. Anonymous sessions only
+  // touch Redis, but a Postgres row can survive a Redis TTL expiry — re-using
+  // such a code would clobber the unique constraint at create time. Log the
+  // retry count so namespace-exhaustion shows up in logs before it bites.
+  let code: string | null = null
+  let attempts = 0
   for (let i = 0; i < 10; i++) {
-    code = genCode()
-    if (!(await redis.exists(k.meta(code!)))) break
+    attempts++
+    const candidate = genCode()
+    const [redisHit, pgHit] = await Promise.all([
+      redis.exists(k.meta(candidate)),
+      prisma.session.findUnique({ where: { code: candidate }, select: { id: true } }),
+    ])
+    if (!redisHit && !pgHit) {
+      code = candidate
+      break
+    }
   }
-  code = code!
+  if (!code) {
+    console.error(`[session] code generation failed after ${attempts} attempts`)
+    return NextResponse.json({ error: 'could not allocate session code' }, { status: 500 })
+  }
+  if (attempts > 1) {
+    console.warn(`[session] code allocated after ${attempts} attempts`)
+  }
 
   // Mint the host's identity id up front so it can be stamped into meta —
   // host checks then work purely by id, no display-name fallback needed.
@@ -111,12 +130,21 @@ export async function POST(req: NextRequest) {
           createdAt: new Date(meta.createdAt),
         },
       })
-      // Bump lifetime_sessions_hosted. Each session is a unique row (codes
-      // don't collide on create), so this is always a real new host event.
+    } catch (err) {
+      // Pre-create collision check ran above, so a P2002 here means a race —
+      // log loudly and surface it. Any other failure also surfaces; the
+      // Redis state we just wrote is harmless and TTLs out.
+      console.error('[session] postgres create failed', err)
+      return NextResponse.json({ error: 'could not archive session' }, { status: 500 })
+    }
+    // Best-effort counter bump. A failure here doesn't undo the session.
+    try {
       await prisma.$executeRaw`
         UPDATE users SET lifetime_sessions_hosted = lifetime_sessions_hosted + 1
         WHERE id = ${Number(session.user.id)}`
-    } catch {}
+    } catch (err) {
+      console.warn('[session] lifetime counter bump failed', err)
+    }
   }
 
   return NextResponse.json({

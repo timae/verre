@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { setAnonToken } from '@/lib/sessionFetch'
+import { validateCodeInput, formatCodeInput, sessionPath } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 
@@ -41,17 +42,25 @@ export function LobbyClient({ user }: { user: User }) {
     params.set('host', '1')
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${data.code}?${params.toString()}`)
+    router.push(`${sessionPath(data.code)}?${params.toString()}`)
   }
 
   async function joinSession() {
     if (!displayName.trim()) { setJoinError('Enter your name'); return }
-    if (!joinCode.trim() || joinCode.trim().length < 4) { setJoinError('Enter a 4-char code'); return }
+    const v = validateCodeInput(joinCode)
+    if (!v.ok) {
+      switch (v.error) {
+        case 'empty':           setJoinError('Enter a code'); return
+        case 'invalid-length':  setJoinError('Code must be 4 or 8 characters'); return
+        case 'invalid-char':    setJoinError('Your code contains invalid characters — check for typos'); return
+      }
+    }
+    const code = v.code
     setLoading(true); setJoinError('')
     const res = await fetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: joinCode.trim().toUpperCase(), displayName: displayName.trim() }),
+      body: JSON.stringify({ code, displayName: displayName.trim() }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -60,14 +69,13 @@ export function LobbyClient({ user }: { user: User }) {
       return
     }
     const data = await res.json()
-    const code = joinCode.trim().toUpperCase()
     if (data.anonToken) setAnonToken(code, data.anonToken)
     const finalName = data.displayName || displayName.trim()
     const finalId   = data.id || ''
     const params = new URLSearchParams()
     params.set('name', finalName)
     if (finalId) params.set('id', finalId)
-    router.push(`/session/${code}?${params.toString()}`)
+    router.push(`${sessionPath(code)}?${params.toString()}`)
   }
 
   return (
@@ -138,9 +146,14 @@ export function LobbyClient({ user }: { user: User }) {
             <input
               className="fi"
               value={joinCode}
-              onChange={e => setJoinCode(e.target.value.toUpperCase())}
-              maxLength={4}
-              placeholder="e.g. A3F7"
+              onChange={e => setJoinCode(formatCodeInput(e.target.value))}
+              maxLength={9}
+              placeholder="A3F7 or XYZW-1234"
+              autoCapitalize="characters"
+              autoComplete="off"
+              autoCorrect="off"
+              spellCheck={false}
+              inputMode="text"
               style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}}
             />
           </div>

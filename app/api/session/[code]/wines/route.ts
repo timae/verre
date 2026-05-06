@@ -3,6 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
+import { normalizeCode } from '@/lib/sessionCode'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -23,7 +24,8 @@ function redactWine(wine: WineMeta, index: number): WineMeta {
 
 export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
   // Session-existence check first. If the session was deleted or never
@@ -59,7 +61,8 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 
 export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await auth()
   const body = await req.json()
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
+import { normalizeCode } from '@/lib/sessionCode'
 import { requireParticipant, authInvalid } from '@/lib/identity'
 
 // Returns ratings for this session, id-keyed. Shape:
@@ -11,7 +12,8 @@ import { requireParticipant, authInvalid } from '@/lib/identity'
 // who happen to know the session code are rejected.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
-  const c = code.toUpperCase()
+  const c = normalizeCode(code)
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
   // Session-existence check before participant check. 404 on a deleted /

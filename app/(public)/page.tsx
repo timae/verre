@@ -1,6 +1,7 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { LobbyClient } from '@/components/session/LobbyClient'
+import { normalizeCode, joinPath } from '@/lib/sessionCode'
 
 export default async function LobbyPage({
   searchParams,
@@ -9,8 +10,13 @@ export default async function LobbyPage({
 }) {
   const { join } = await searchParams
 
-  // Legacy invite URLs: /?join=CODE → /join/CODE
-  if (join) redirect(`/join/${join.toUpperCase()}`)
+  // Legacy invite URLs: /?join=CODE → /join/CODE. Normalize so dirty
+  // input (lowercase, hyphenated, padded with spaces) lands on the
+  // canonical form. Invalid codes fall through to the lobby.
+  if (join) {
+    const c = normalizeCode(join)
+    if (c) redirect(joinPath(c))
+  }
 
   const session = await auth()
   if (session?.user) redirect('/me')

@@ -9,8 +9,14 @@
 // Logged-in users don't need a token (the auth cookie is their trust anchor),
 // so getAnonToken returns null for them and sessionFetch sends no extra header.
 
-const TOKEN_KEY = (code: string) => `vr_anon_${code.toUpperCase()}`
-const NAME_KEY  = (code: string) => `vr_name_${code.toUpperCase()}`
+import { normalizeCode, joinPath } from '@/lib/sessionCode'
+
+// Defensive: callers should pass canonical codes (post-normalizeCode), but
+// fall back to upper-case if normalize rejects so a malformed code at least
+// produces stable keys instead of mismatched ones.
+const canonical = (code: string) => normalizeCode(code) ?? code.toUpperCase()
+const TOKEN_KEY = (code: string) => `vr_anon_${canonical(code)}`
+const NAME_KEY  = (code: string) => `vr_name_${canonical(code)}`
 
 export function setAnonToken(code: string, token: string): void {
   if (typeof localStorage === 'undefined') return
@@ -38,7 +44,7 @@ export function clearAnonToken(code: string): void {
 // carry the header — those are surfaced to the caller as a normal failed
 // response so the UI can show an error without booting the user out.
 export async function sessionFetch(code: string, url: string, init?: RequestInit): Promise<Response> {
-  const C = code.toUpperCase()
+  const C = canonical(code)
   const headers = new Headers(init?.headers)
   const token = getAnonToken(code)
   if (token) headers.set('x-vr-anon-token', token)
@@ -54,7 +60,7 @@ export async function sessionFetch(code: string, url: string, init?: RequestInit
       localStorage.removeItem(NAME_KEY(code))
       localStorage.removeItem(`vr_id_${C}`)
     }
-    if (typeof window !== 'undefined') window.location.href = `/join/${C}`
+    if (typeof window !== 'undefined') window.location.href = joinPath(C)
   }
   return res
 }
