@@ -9,6 +9,7 @@ import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { AccountSettings } from '@/components/me/AccountSettings'
 import { clearSessionNames } from '@/lib/clientStorage'
+import { formatCode } from '@/lib/sessionCode'
 
 interface Props { onClose: () => void }
 
@@ -63,7 +64,7 @@ export function UserPanel({ onClose }: Props) {
           <div style={{flex:1}}>
             <div style={{fontSize:12,color:'var(--fg-dim)'}}>
               Tasting as <strong style={{color:'var(--fg)'}}>{displayName}</strong>
-              {' · '}Session <strong style={{color:'var(--accent)',letterSpacing:'0.12em'}}>{code}</strong>
+              {' · '}Session <strong style={{color:'var(--accent)',letterSpacing:'0.12em'}}>{formatCode(code)}</strong>
               {sessionMeta?.name && <span style={{color:'var(--fg-dim)'}}>{' · '}{sessionMeta.name}</span>}
             </div>
             <div style={{display:'flex',gap:6,marginTop:6,flexWrap:'wrap'}}>
@@ -106,7 +107,7 @@ export function UserPanel({ onClose }: Props) {
                     {sessions.slice(0, 3).map(s => (
                       <div key={s.id} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid var(--bg3)'}}>
                         <div style={{minWidth:0,flex:1}}>
-                          <p style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.name || `Session ${s.code}`}</p>
+                          <p style={{fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.name || `Session ${formatCode(s.code)}`}</p>
                           <p style={{fontSize:10,color:'var(--fg-dim)'}}>{s.wines_rated} wine{s.wines_rated !== 1 ? 's' : ''} rated</p>
                         </div>
                         <button

@@ -51,8 +51,11 @@ export function validateCodeInput(input: string): CodeValidationResult {
   return { ok: true, code: s }
 }
 
-export function formatCode(stored: string): string {
+export function formatCode(stored: string | null | undefined): string {
   // 4-char legacy: bare. 8-char canonical: hyphenated for groupability.
+  // Null/undefined input → empty string so callers can render unconditionally
+  // without TypeError (e.g. for orphaned wines whose session was deleted).
+  if (!stored) return ''
   if (stored.length === 4) return stored
   if (stored.length === 8) return `${stored.slice(0, 4)}-${stored.slice(4)}`
   return stored

@@ -9,7 +9,7 @@ import { SessionPanel } from './SessionPanel'
 import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode, formatCode } from '@/lib/sessionCode'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
 // Iterators (compare screen) use Object.entries; lookups (RatingScreen,
@@ -207,7 +207,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     { label: 'Compare', path: `/session/${C}/compare`, icon: '◈', id: 'compare' },
   ]
 
-  const sessionLabel = metaData?.name || C
+  const sessionLabel = metaData?.name || formatCode(C)
 
   if (needsName) return null
 

@@ -7,8 +7,8 @@ import { authedFetch } from '@/lib/authedFetch'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@/lib/sessionCode'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string }
-type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
+type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
@@ -47,7 +47,9 @@ export function SavedClient() {
               )}
               <div style={{flex:1,minWidth:0}}>
                 <WineIdentity wine={b} size="compact" />
-                <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {formatCode(b.session_code)}</p>
+                {b.session_code && (
+                  <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {formatCode(b.session_code)}</p>
+                )}
               </div>
               {rating && (
                 <div style={{flexShrink:0,textAlign:'right'}}>

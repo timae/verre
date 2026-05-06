@@ -29,12 +29,15 @@ export function HistoryClient() {
     queryKey: ['me-sessions'],
     queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
-  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string }[]>({
+  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string | null }[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string }[]>('/api/me/ratings'),
+    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string | null }[]>('/api/me/ratings'),
   })
 
   const ratingsByCode = ratings.reduce((acc, r) => {
+    // Skip ratings whose session was deleted (session_code null) — they
+    // can't be associated with any session row in the history list.
+    if (!r.session_code) return acc
     if (!acc[r.session_code]) acc[r.session_code] = []
     acc[r.session_code].push(r)
     return acc
