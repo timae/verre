@@ -4,7 +4,7 @@ import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
-import { isHostByIdentity, type SessionMeta } from '@/lib/session'
+import { type SessionMeta } from '@/lib/session'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and

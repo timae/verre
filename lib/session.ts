@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { redis, k, TTL } from '@/lib/redis'
+import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
 import type { Identity } from '@/lib/identity'

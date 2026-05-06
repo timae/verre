@@ -58,7 +58,7 @@ const HIDE_OPTIONS = [
 ]
 
 export function SessionPanel({ onClose, onLeave }: Props) {
-  const { code, displayName, myId, isHost, sessionMeta, refresh } = useSession()
+  const { code, myId, isHost, sessionMeta, refresh } = useSession()
   const { data: authSession } = useAuthSession()
   const queryClient = useQueryClient()
   const isPro = !!(authSession?.user as { pro?: boolean })?.pro

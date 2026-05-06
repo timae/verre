@@ -16,7 +16,7 @@ interface Props { wineId: string; onClose: () => void }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 export function RatingScreen({ wineId, onClose }: Props) {
-  const { wines, myRatings, code, displayName, refresh, isHost, bookmarkedIds, isBlind } = useSession()
+  const { wines, myRatings, code, refresh, isHost, bookmarkedIds, isBlind } = useSession()
 
   const wine = wines.find(w => w.id === wineId)
   const w = wine as (WineMeta & { _blind?: boolean }) | undefined

@@ -3,7 +3,6 @@ import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CheckinCard } from './CheckinCard'
 import { CheckinModal } from './CheckinModal'
-import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import Link from 'next/link'
 
