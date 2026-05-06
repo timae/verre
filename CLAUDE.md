@@ -85,6 +85,14 @@ Spawn a reviewer (Agent tool, `general-purpose` subagent) before pushing when th
 
 Brief the reviewer with specific concerns to look for (parameter validation, edge cases, race conditions, deploy-time risk). After the reviewer flags real issues, fix them and re-review. A reviewer pass that finds nothing is still cheap insurance — single-file doc fixes and trivial cleanups can skip it.
 
+## Coding style
+
+- **Guard clauses, not nested conditionals.** Validate, reject, return early at the top of a function. The happy path runs at the base indent level.
+
+- **Compact code, no fluff.** No newlines between obviously-related statements. No comments for what well-named code already says. A 40-line function that reads top-to-bottom beats the same logic fragmented into five 8-line helpers.
+
+- **When to extract a function:** the logic repeats in 3+ places across files; or the function no longer fits on screen; or extracting gives it a name that's clearer than the inline code. Cross-file helpers go in `lib/` under a module name that names what they do.
+
 ## Architecture
 
 ### Two-tier persistence
