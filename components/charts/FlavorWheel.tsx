@@ -76,8 +76,8 @@ const MAX = 5
 // `size/2 - labelGutter`, NOT `size * fraction`. This way labels never
 // clip the SVG box at any reasonable size.
 const GEOMETRY = {
-  spacious: { rInnerFrac: 0.13, gapDeg: 3, labelGutter: 72 },
-  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 72 },
+  spacious: { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 96 },
+  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 96 },
 } as const
 
 function computeDims(size: number, geometry: WheelGeometry, n: number) {
@@ -86,15 +86,13 @@ function computeDims(size: number, geometry: WheelGeometry, n: number) {
   const cfg = GEOMETRY[geometry]
   const labelGutter = cfg.labelGutter
   const rOuter = size / 2 - labelGutter
-  // Compact preset uses the read-only PolarChart's proportions
-  // (rInner ≈ 10%, rOuter ≈ 37%) so users can directly compare. We
-  // re-derive rInner from the same fraction for visual fidelity.
-  const rInner = geometry === 'compact'
-    ? Math.max(20, size * cfg.rInnerFrac)
-    : Math.max(30, size * cfg.rInnerFrac)
-  // Spacious shrinks the inner hub a bit and lets wedges fill most of
-  // the available radial space. Compact keeps a thin band, matching
-  // PolarChart's "lots of breathing room" aesthetic.
+  // Both presets share the same inner-radius fraction now (matches
+  // PolarChart's proportions). Hub diameter at INPUT=400 = 80px,
+  // comfortably fits the 40px center digit.
+  const rInner = size * cfg.rInnerFrac
+  // Compact keeps a thin wedge band — matches PolarChart's "lots of
+  // breathing room" read-only aesthetic. Spacious lets wedges fill the
+  // full available radial space.
   const effectiveOuter = geometry === 'compact'
     ? rInner + (rOuter - rInner) * 0.5
     : rOuter
@@ -127,6 +125,15 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
   // wedge is locked yet. We're waiting to see if the user drags out
   // (transition to locked) or releases without leaving (no-op tap).
   const pendingHubRef = useRef<boolean>(false)
+
+  // Tracks whether the previous gesture sample was inside the hub.
+  // Used to detect a re-cross outward through the hub, which is an
+  // explicit "I'm switching wedges" signal: lock the wedge under the
+  // finger AT THE NEW POSITION, even if a different wedge was already
+  // locked. This is distinct from tangential drift (which keeps the
+  // existing lock per the wedge-lock contract) — the finger has to
+  // physically pass through the dead zone to trigger a re-lock.
+  const wasInHubRef = useRef<boolean>(false)
 
   // The most recently touched wedge index — drives the center readout
   // and the visual focus / "active" indicator. State because it triggers
@@ -180,37 +187,65 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
     }
   }, [size])
 
-  // Process a pointer position during an active gesture. Handles the
-  // pending-hub → locked transition: if no wedge is currently locked
-  // but the pointer has just crossed outside rInner, lock the wedge
-  // under the finger at this moment and start tracking.
+  // Process a pointer position during an active gesture. Handles two
+  // wedge-locking transitions:
+  //   - pending-hub → locked: pointer started inside the hub and just
+  //     crossed outward. Lock the wedge under the finger now.
+  //   - locked → re-locked (different wedge): pointer was already
+  //     locked, drifted back into the hub, and is now leaving the hub
+  //     again. Treat as an explicit wedge switch: lock to whatever
+  //     wedge the finger is now over.
+  //
+  // Tangential drift WITHOUT entering the hub keeps the existing lock.
+  // The wasInHubRef sentinel is the discriminator — the pointer has to
+  // physically pass through the dead zone for a re-lock to fire.
   const processGesturePoint = useCallback((clientX: number, clientY: number) => {
     const pt = clientToSvg(clientX, clientY)
     if (!pt) return
     const dx = pt.x - cx
     const dy = pt.y - cy
     const dist = Math.hypot(dx, dy)
+    const inHub = dist < rInner
 
     // Pending-hub: waiting for pointer to leave the hub before locking.
     if (pendingHubRef.current && lockRef.current === null) {
-      if (dist < rInner) return  // still in hub, do nothing
+      if (inHub) {
+        wasInHubRef.current = true
+        return  // still in hub, do nothing
+      }
       // Crossed outward — lock the wedge under the finger now.
       const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
       if (!hit) return
       lockRef.current = hit.idx
       pendingHubRef.current = false
+      wasInHubRef.current = false
       setActiveIdx(hit.idx)
       haptics.tap()
       lastLevelsRef.current[fl[hit.idx].k] = flavorsRef.current[fl[hit.idx].k] ?? 0
       // Fall through to the level-update block below.
     }
 
-    // Already-locked drags must NOT re-enter pending-hub: a user who
-    // drags inward to clear a wedge (level → 0, lock retained) and
-    // then drags back outward should keep tracking the original locked
-    // wedge, even if the pointer is now angularly over a neighbour.
-    // The lock-prevents-tangential-hop contract documented at the top
-    // of this file depends on this gating.
+    // Already locked. Two sub-cases:
+    //   (a) Pointer is inside the hub now — record that fact, treat as
+    //       level 0 for the locked wedge (the drag-to-clear path).
+    //   (b) Pointer is outside the hub. If it was just inside on the
+    //       previous sample, this is a hub re-cross — re-lock to the
+    //       new wedge under the finger. Otherwise it's normal drag
+    //       motion on the currently-locked wedge.
+    if (lockRef.current !== null && wasInHubRef.current && !inHub) {
+      // Re-cross: switch to the wedge under the new position.
+      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
+      if (hit && hit.idx !== lockRef.current) {
+        lockRef.current = hit.idx
+        setActiveIdx(hit.idx)
+        haptics.tap()
+        lastLevelsRef.current[fl[hit.idx].k] = flavorsRef.current[fl[hit.idx].k] ?? 0
+      }
+      // Same-wedge re-cross: leave lock alone, fall through to level
+      // update — the user is correcting a value, not switching.
+    }
+    wasInHubRef.current = inHub
+
     const lockedIdx = lockRef.current
     if (lockedIdx === null) return  // still pending-hub or idle
     const level = levelFromDist(dist, rInner, rOuter, MAX)
@@ -243,6 +278,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
   const endGesture = useCallback(() => {
     lockRef.current = null
     pendingHubRef.current = false
+    wasInHubRef.current = false
     detachFallback()
   }, [detachFallback])
 
@@ -438,13 +474,15 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
               - Wrapping multi-word labels onto two stacked lines
                 ("DARK FRUIT" → "DARK" / "FRUIT") so they fit in the
                 gutter without clipping at the wheel's east/west edges.
-              - Using a slightly smaller font (size * 0.035) than
-                PolarChart's 0.04 because the wheel is interactive and
-                bigger labels would crowd the touch surface on phones.
+              - Using a smaller font (size * 0.032) than PolarChart's
+                0.04 because the wheel is interactive (bigger labels
+                crowd the touch surface on phones) and because longest
+                single-word labels like "ACIDITY" must fit inside the
+                label gutter at the cardinal east/west positions.
             */}
         {fl.map((f, i) => {
           const pos = labelPosition(cx, cy, rLabel, i, n)
-          const fontSize = Math.max(8, size * 0.035)
+          const fontSize = Math.max(8, size * 0.032)
           const lineHeight = fontSize * 1.05
           const upper = f.l.toUpperCase()
           // Split on space OR slash so multi-token labels stack as
@@ -508,10 +546,11 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
             textAnchor="middle"
             dominantBaseline="central"
             // 28px floor exists for legibility, not to fit any rInner.
-            // At INPUT=400 (the only call site today) rInner=52, hub
-            // diameter=104, plenty of room for a 40px digit. If a
-            // future caller uses a smaller size, verify the digit still
-            // fits inside the hub before lowering the floor.
+            // At INPUT=400 (the only call site today) rInner=40, hub
+            // diameter=80, room for a 40px digit with breathing space
+            // on each side. If a future caller uses a smaller size,
+            // verify the digit still fits inside the hub before
+            // lowering the floor.
             fontSize={Math.max(28, size * 0.10)}
             fontFamily="var(--mono, 'JetBrains Mono', monospace)"
             fill={activeColor}
