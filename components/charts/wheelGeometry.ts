@@ -86,30 +86,63 @@ export function wedgeFromXY(cx: number, cy: number, x: number, y: number, n: num
   return { idx, dist }
 }
 
-// Convert a radial distance to an integer level [0, max].
+// Level distribution along the wedge's radial extent.
 //
-// Uses Math.round so each integer level has its display radius at the
-// exact center of its commit band. Level k displays at t = k/max and
-// commits when t falls in [k - 0.5, k + 0.5] / max. This is the only
-// scheme where levelFromDist and levelToFillRadius are exact inverses —
-// any other rounding makes the wedge stop short of (or extend past) the
-// guide ring at the committed level, which feels broken.
+// Linear bands (each level = 1/MAX of the depth) make a level-1 rating
+// almost invisible — a thin sliver near the hub that's hard to
+// distinguish from level 0. We therefore use a non-linear distribution:
+// level 1 takes 1.5 "units" of depth, levels 2..5 each take 0.875 units
+// (total = 5 units, normalized to fill the band from rInner to rOuter).
+//
+// LEVEL_FRACS[k] is the cumulative fraction of the band depth at which
+// level k's outer edge sits. So:
+//   - levelToFillRadius(k) = rInner + LEVEL_FRACS[k] * (rOuter - rInner)
+//   - levelFromDist returns the largest k whose breakpoint exceeds t.
+//
+// Both functions read from the same table so they stay exact inverses
+// regardless of how the distribution is tuned. The number of levels
+// (MAX_LEVEL = LEVEL_FRACS.length - 1) is derived, not parameterized —
+// changing the level count means rewriting the table by hand.
+const LEVEL_FRACS = [0.0, 0.30, 0.475, 0.65, 0.825, 1.0]
+export const MAX_LEVEL = LEVEL_FRACS.length - 1  // = 5
+
+// Breakpoints between consecutive levels. LEVEL_BREAKPOINTS[k] is the
+// upper edge of level k's commit zone — i.e. level k commits when
+// `t < LEVEL_BREAKPOINTS[k]` AND no earlier breakpoint matched.
+const LEVEL_BREAKPOINTS = (() => {
+  const bp: number[] = []
+  for (let k = 1; k <= MAX_LEVEL; k++) {
+    bp.push((LEVEL_FRACS[k - 1] + LEVEL_FRACS[k]) / 2)
+  }
+  return bp
+})()
+
+// Convert a radial distance to an integer level [0, MAX_LEVEL].
 //
 // Edge bands: dist < rInner returns 0 (the drag-to-clear path). Dist
-// >= rOuter saturates at max (so the very tip of the wedge always
-// reaches level max).
-export function levelFromDist(dist: number, rInner: number, rOuter: number, max: number): number {
+// >= rOuter saturates at MAX_LEVEL (so the very tip of the wedge always
+// reaches max). Between rInner and rOuter, t is mapped to the nearest
+// level via the LEVEL_BREAKPOINTS table.
+//
+// MUST be the exact inverse of levelToFillRadius. Both read from
+// LEVEL_FRACS — never edit one without updating the other.
+export function levelFromDist(dist: number, rInner: number, rOuter: number): number {
   if (dist < rInner) return 0
   const t = (dist - rInner) / (rOuter - rInner)
-  if (t >= 1) return max
-  return Math.max(0, Math.min(max, Math.round(t * max)))
+  if (t >= 1) return MAX_LEVEL
+  for (let k = 0; k < LEVEL_BREAKPOINTS.length; k++) {
+    if (t < LEVEL_BREAKPOINTS[k]) return k
+  }
+  return MAX_LEVEL
 }
 
 // Inverse of levelFromDist for display: where does the outer edge of a
-// filled wedge sit for a given level? Each level's display radius is at
-// t = level/max, matching levelFromDist's band centers.
-export function levelToFillRadius(level: number, rInner: number, rOuter: number, max: number): number {
+// filled wedge sit for a given level?
+//
+// MUST be the exact inverse of levelFromDist. Both read from
+// LEVEL_FRACS — never edit one without updating the other.
+export function levelToFillRadius(level: number, rInner: number, rOuter: number): number {
   if (level <= 0) return rInner
-  if (level >= max) return rOuter
-  return rInner + (level / max) * (rOuter - rInner)
+  if (level >= MAX_LEVEL) return rOuter
+  return rInner + LEVEL_FRACS[level] * (rOuter - rInner)
 }

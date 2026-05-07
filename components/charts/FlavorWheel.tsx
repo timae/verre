@@ -8,6 +8,7 @@ import {
   labelPosition,
   levelFromDist,
   levelToFillRadius,
+  MAX_LEVEL,
   slotAngles,
   wedgeFromXY,
 } from './wheelGeometry'
@@ -64,7 +65,11 @@ interface Props {
   geometry?: WheelGeometry
 }
 
-const MAX = 5
+// Re-export under the local name the rest of the component already uses
+// (range-input max attribute, focus-ring branches, aria-label). Imported
+// from wheelGeometry so the level-count source-of-truth stays in one
+// place — the table that drives levelFromDist / levelToFillRadius.
+const MAX = MAX_LEVEL
 
 // Geometry presets. Numbers are fractions of `size` (the SVG viewBox
 // edge length). The wheel is rendered with `aspect-ratio: 1` so x/y
@@ -269,7 +274,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
 
     const lockedIdx = lockRef.current
     if (lockedIdx === null) return  // still pending-hub or idle
-    const level = levelFromDist(dist, rInner, rOuter, MAX)
+    const level = levelFromDist(dist, rInner, rOuter)
     const key = fl[lockedIdx].k
     const prev = flavorsRef.current[key] ?? 0
     if (level !== prev) {
@@ -331,7 +336,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
       lockRef.current = hit.idx
       setActiveIdx(hit.idx)
       haptics.tap()
-      const level = levelFromDist(hit.dist, rInner, rOuter, MAX)
+      const level = levelFromDist(hit.dist, rInner, rOuter)
       const key = fl[hit.idx].k
       if (level !== (flavorsRef.current[key] ?? 0)) {
         onChangeRef.current({ ...flavorsRef.current, [key]: level })
@@ -424,7 +429,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
           const a0g = a0 + gap / 2
           const a1g = a1 - gap / 2
           const v = flavors[f.k] ?? 0
-          const fillR = levelToFillRadius(v, rInner, rOuter, MAX)
+          const fillR = levelToFillRadius(v, rInner, rOuter)
           const isActive = activeIdx === i
 
           return (
@@ -505,15 +510,17 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
                 cushion for that overshoot. Without edge-anchoring, a
                 2-line label at the top would have its second line dip
                 much further into the wedge below.
-              - Using a smaller font (size * 0.030) than PolarChart's
+              - Using a smaller font (size * 0.033) than PolarChart's
                 0.04 because the wheel is interactive (bigger labels
                 crowd the touch surface on phones) and because the
                 longest single-word labels like "ACIDITY" must fit
                 inside the gutter at the cardinal east/west positions.
+                Earlier ran at 0.030 — the bump to 0.033 stays safely
+                inside the vpad-extended viewBox at INPUT=400.
             */}
         {fl.map((f, i) => {
           const pos = labelPosition(cx, cy, rLabel, i, n)
-          const fontSize = Math.max(8, size * 0.030)
+          const fontSize = Math.max(8, size * 0.033)
           const lineHeight = fontSize * 1.05
           const upper = f.l.toUpperCase()
           // Split on space OR slash so multi-token labels stack.
