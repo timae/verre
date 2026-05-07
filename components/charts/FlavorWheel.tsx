@@ -67,8 +67,8 @@ const MAX = 5
 // `size/2 - labelGutter`, NOT `size * fraction`. This way labels never
 // clip the SVG box at any reasonable size.
 const GEOMETRY = {
-  spacious: { rInnerFrac: 0.13, labelGutter: 50 },
-  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 50 },
+  spacious: { rInnerFrac: 0.13, gapDeg: 1, labelGutter: 64 },
+  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 64 },
 } as const
 
 function computeDims(size: number, geometry: WheelGeometry, n: number) {
@@ -93,11 +93,12 @@ function computeDims(size: number, geometry: WheelGeometry, n: number) {
   return { cx, cy, rInner, rOuter: effectiveOuter, rLabel, n }
 }
 
-// Inter-wedge angular gap, in radians. Spacious has none (touching);
-// compact mirrors the read-only chart's 3° gaps.
+// Inter-wedge angular gap, in radians. Both presets get a small gap
+// (spacious 1°, compact 3°). The gap is rendered as background
+// (transparent), not as a drawn line — wedges sit close but don't touch,
+// matching PolarChart's read-only treatment.
 function gapRad(geometry: WheelGeometry): number {
-  if (geometry === 'compact') return (3 * Math.PI) / 180
-  return 0
+  return (GEOMETRY[geometry].gapDeg * Math.PI) / 180
 }
 
 export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, geometry = 'spacious' }: Props) {
@@ -303,17 +304,24 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {/* Concentric guide rings — one per integer level. Uses
-            currentColor on a wrapper so the rings inherit a
-            theme-appropriate hue from the parent text color. */}
-        <g style={{ color: 'var(--border2)' }}>
-          {[1, 2, 3, 4, 5].map(k => {
-            const r = levelToFillRadius(k, rInner, rOuter, MAX)
-            return (
-              <circle key={k} cx={cx} cy={cy} r={r} fill="none" stroke="currentColor" strokeOpacity={0.55} strokeDasharray="2 4" />
-            )
-          })}
-        </g>
+        {/* Concentric guide rings — one per integer level. Matches
+            PolarChart's dashed treatment (rgba(255,255,255,0.08),
+            stroke-width 0.6, stroke-dasharray 1.5,2.5). */}
+        {[1, 2, 3, 4, 5].map(k => {
+          const r = levelToFillRadius(k, rInner, rOuter, MAX)
+          return (
+            <circle
+              key={k}
+              cx={cx}
+              cy={cy}
+              r={r}
+              fill="none"
+              stroke="rgba(255,255,255,0.08)"
+              strokeWidth={0.6}
+              strokeDasharray="1.5,2.5"
+            />
+          )
+        })}
 
         {/* Wedges */}
         {fl.map((f, i) => {
@@ -327,44 +335,72 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
 
           return (
             <g key={f.k}>
-              {/* Faint full-radius guide showing the wedge's bounds */}
+              {/* Faint full-radius background guide. Matches PolarChart's
+                  0.13 opacity treatment so empty wedges still hint at
+                  their flavour color without drawing any boundary
+                  strokes. */}
               <path
                 d={arcPath(cx, cy, rInner, rOuter, a0g, a1g)}
                 fill={f.c}
-                fillOpacity={0.06}
-                stroke="var(--border2)"
-                strokeOpacity={0.4}
-                strokeWidth={0.5}
+                opacity={0.13}
               />
-              {/* Filled wedge for current value */}
+              {/* Filled wedge for current value. Same opacity as
+                  PolarChart's filled wedges (0.85) for visual
+                  consistency between the rate modal and the read-only
+                  chart in the feed/history. */}
               {v > 0 && (
                 <path
                   d={arcPath(cx, cy, rInner, fillR, a0g, a1g)}
                   fill={f.c}
-                  fillOpacity={0.78}
-                  stroke={f.c}
-                  strokeWidth={1}
+                  opacity={0.85}
                 />
               )}
-              {/* Active-wedge focus ring (drawn on SVG since the real
-                  focusable element is the hidden input below). */}
-              {isActive && (
+              {/* Active-wedge indicator. Two modes — both stroke-free
+                  so we don't reintroduce the "dotted line" busyness:
+                    - v === 0 (empty wedge focused): bump the whole
+                      wedge to 0.30 opacity.
+                    - v > 0 (filled wedge focused): light up the
+                      remaining empty radial space (from fillR to
+                      rOuter) at 0.30 opacity, leaving the filled
+                      portion at its normal 0.85.
+                  WCAG 2.4.7 requires a visible focus state for
+                  sighted keyboard / switch users; without this,
+                  tabbing through filled wedges would have no visible
+                  effect. */}
+              {isActive && v === 0 && (
                 <path
                   d={arcPath(cx, cy, rInner, rOuter, a0g, a1g)}
-                  fill="none"
-                  stroke={f.c}
-                  strokeWidth={1.5}
-                  strokeOpacity={0.9}
+                  fill={f.c}
+                  opacity={0.30}
+                />
+              )}
+              {isActive && v > 0 && v < MAX && (
+                <path
+                  d={arcPath(cx, cy, fillR, rOuter, a0g, a1g)}
+                  fill={f.c}
+                  opacity={0.30}
+                />
+              )}
+              {isActive && v >= MAX && (
+                /* Level 5 leaves no empty radial space for the annulus,
+                   so we lay a thin highlight strip over the filled
+                   wedge — visible difference, still no stroke. */
+                <path
+                  d={arcPath(cx, cy, rInner, rOuter, a0g, a1g)}
+                  fill={f.c}
+                  opacity={0.20}
                 />
               )}
             </g>
           )
         })}
 
-        {/* Labels — colored by flavour when value > 0, dim otherwise */}
+        {/* Labels — uppercase, letter-spaced, dim grey regardless of
+            value. Matches PolarChart's read-only treatment exactly so
+            the rate modal and the feed/history charts share visual
+            language. */}
         {fl.map((f, i) => {
           const pos = labelPosition(cx, cy, rLabel, i, n)
-          const v = flavors[f.k] ?? 0
           return (
             <text
               key={`lbl-${f.k}`}
@@ -372,43 +408,53 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
               y={pos.y}
               textAnchor={pos.anchor}
               dominantBaseline="middle"
-              fontSize={Math.max(9, size * 0.028)}
-              fontFamily="var(--mono, 'JetBrains Mono', monospace)"
-              fontWeight={v > 0 ? 600 : 500}
-              fill={v > 0 ? f.c : 'var(--fg-dim)'}
+              fontSize={Math.max(8, size * 0.04)}
+              fontFamily="Manrope, sans-serif"
+              fontWeight={700}
+              letterSpacing="0.06em"
+              fill="rgba(180,170,150,0.8)"
               style={{ pointerEvents: 'none' }}
             >
-              {f.l}
+              {f.l.toUpperCase()}
             </text>
           )
         })}
 
-        {/* Center hub */}
-        <circle cx={cx} cy={cy} r={rInner} fill="var(--bg2)" stroke="var(--border2)" />
+        {/* Center hub. No stroke — the inner ring lives implicitly via
+            contrast with the wedge backgrounds. */}
+        <circle cx={cx} cy={cy} r={rInner} fill="var(--bg2)" />
 
         {/* Center readout — digit only, in active wedge color. Default
-            "drag" hint when no wedge has been touched yet. */}
+            "drag" hint when no wedge has been touched yet.
+            dominantBaseline="central" puts the geometric center of the
+            glyph on the y coordinate, so y={cy} is exactly centered. */}
         {activeIdx === null ? (
           <text
             x={cx}
-            y={cy + rInner * 0.12}
+            y={cy}
             textAnchor="middle"
-            dominantBaseline="middle"
-            fontSize={Math.max(8, size * 0.026)}
-            fontFamily="var(--mono, 'JetBrains Mono', monospace)"
-            fill="var(--fg-dim)"
+            dominantBaseline="central"
+            fontSize={Math.max(9, size * 0.034)}
+            fontFamily="Manrope, sans-serif"
+            fill="rgba(180,170,150,0.8)"
             fontWeight={500}
-            style={{ pointerEvents: 'none' }}
+            letterSpacing="0.08em"
+            style={{ pointerEvents: 'none', textTransform: 'uppercase' }}
           >
-            drag
+            DRAG
           </text>
         ) : (
           <text
             x={cx}
-            y={cy + rInner * 0.18}
+            y={cy}
             textAnchor="middle"
-            dominantBaseline="middle"
-            fontSize={Math.max(20, size * 0.07)}
+            dominantBaseline="central"
+            // 28px floor exists for legibility, not to fit any rInner.
+            // At INPUT=400 (the only call site today) rInner=52, hub
+            // diameter=104, plenty of room for a 40px digit. If a
+            // future caller uses a smaller size, verify the digit still
+            // fits inside the hub before lowering the floor.
+            fontSize={Math.max(28, size * 0.10)}
             fontFamily="var(--mono, 'JetBrains Mono', monospace)"
             fill={activeColor}
             fontWeight={700}
