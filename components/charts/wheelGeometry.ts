@@ -40,33 +40,41 @@ export function arcPath(cx: number, cy: number, rInner: number, rOuter: number, 
 }
 
 // Label anchor position for a slot. Returns the point at the slot's
-// angular midpoint and a text-anchor hint that keeps long labels from
-// drifting over the wheel.
-export function labelPosition(cx: number, cy: number, rLabel: number, i: number, n: number): { x: number; y: number; anchor: 'start' | 'middle' | 'end' } {
+// angular midpoint, a text-anchor hint that keeps long labels from
+// drifting over the wheel, and the raw sin of the midpoint angle —
+// callers use sin to decide vertical anchoring of multi-line labels
+// (top-half labels anchor by their bottom edge, bottom-half by their
+// top, side labels center).
+export function labelPosition(cx: number, cy: number, rLabel: number, i: number, n: number): { x: number; y: number; anchor: 'start' | 'middle' | 'end'; sin: number } {
   const [a0, a1] = slotAngles(i, n)
   const am = (a0 + a1) / 2
   const cos = Math.cos(am)
+  const sin = Math.sin(am)
   const x = cx + cos * rLabel
-  const y = cy + Math.sin(am) * rLabel
+  const y = cy + sin * rLabel
   const anchor: 'start' | 'middle' | 'end' = cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle'
-  return { x, y, anchor }
+  return { x, y, anchor, sin }
 }
 
 // Hit-test: which wedge does (x, y) belong to, and how far is it from
-// center? Returns null if the point is inside the inner dead zone.
-//
-// The dead zone matters for the gesture model: an initial pointer-down
-// at dist < rInner must NOT lock a wedge — it would land on the central
-// hub (the "drag out" hint area) and silently zero whichever wedge the
-// pointer happened to be over angularly.
+// center? Returns null if the point is in either dead zone:
+//   - inside the inner hub (dist < rInner): central "drag out" area;
+//     a pointer-down here must NOT lock a wedge.
+//   - outside the outer rim (dist > rOuter + OUTER_EPSILON): the SVG's
+//     viewBox extends past the wheel for label space (vpad), and a
+//     click in that empty area shouldn't silently set the angularly
+//     nearest wedge to MAX. The small epsilon tolerates pointer events
+//     that round just past rOuter mid-drag.
 //
 // Once a wedge IS locked, drag motion that passes back through rInner is
 // fine — that's the drag-to-clear path, handled by the caller.
-export function wedgeFromXY(cx: number, cy: number, x: number, y: number, n: number, rInner: number): { idx: number; dist: number } | null {
+const OUTER_EPSILON = 8
+export function wedgeFromXY(cx: number, cy: number, x: number, y: number, n: number, rInner: number, rOuter?: number): { idx: number; dist: number } | null {
   const dx = x - cx
   const dy = y - cy
   const dist = Math.hypot(dx, dy)
   if (dist < rInner) return null
+  if (rOuter !== undefined && dist > rOuter + OUTER_EPSILON) return null
   // Math.atan2 returns [-π, π]. Add π/2 so slot 0 is at 12 o'clock, then
   // normalise to [0, 2π).
   let a = Math.atan2(dy, dx) + Math.PI / 2

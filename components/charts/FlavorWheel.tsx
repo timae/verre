@@ -75,10 +75,24 @@ const MAX = 5
 // wedges' outer edge. The wheel's outer radius is therefore
 // `size/2 - labelGutter`, NOT `size * fraction`. This way labels never
 // clip the SVG box at any reasonable size.
+// labelGutter is generous because labels render OUTSIDE the wedges'
+// outer rim. We claw back wheel-area by extending the SVG viewBox via
+// VPAD (below) so labels can spill past the original size×size box
+// without clipping. Same trick PolarChart uses (vpad: 30 there).
 const GEOMETRY = {
-  spacious: { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 96 },
-  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 96 },
+  spacious: { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 60 },
+  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 60 },
 } as const
+
+// Radial space outside the wedges' outer rim where the text baseline
+// sits. Smaller = labels closer to the wheel.
+const LABEL_OFFSET = 12
+
+// Padding added to the viewBox on all four sides so labels can extend
+// past the nominal size×size bounds without clipping. The longest
+// label at the cardinal east/west positions ("ACIDITY") otherwise
+// runs off the SVG edge; vpad gives it room.
+const VPAD = 36
 
 function computeDims(size: number, geometry: WheelGeometry, n: number) {
   const cx = size / 2
@@ -96,7 +110,7 @@ function computeDims(size: number, geometry: WheelGeometry, n: number) {
   const effectiveOuter = geometry === 'compact'
     ? rInner + (rOuter - rInner) * 0.5
     : rOuter
-  const rLabel = effectiveOuter + 18
+  const rLabel = effectiveOuter + LABEL_OFFSET
   return { cx, cy, rInner, rOuter: effectiveOuter, rLabel, n }
 }
 
@@ -174,16 +188,23 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
   // parent ever forces a non-square layout (unusual flex constraints,
   // explicit height override on the .panel), x and y must still map
   // correctly into viewBox space.
+  //
+  // The viewBox now extends by VPAD on each side (so labels can spill
+  // outside the nominal size×size area without clipping). The visible
+  // SVG bounding rect corresponds to viewBox (-VPAD,-VPAD) to
+  // (size+VPAD, size+VPAD). We map back into the (0..size, 0..size)
+  // space the rest of the code uses by subtracting VPAD after scaling.
   const clientToSvg = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
     const el = svgRef.current
     if (!el) return null
     const rect = el.getBoundingClientRect()
     if (rect.width === 0 || rect.height === 0) return null
-    const scaleX = size / rect.width
-    const scaleY = size / rect.height
+    const vbSpan = size + 2 * VPAD
+    const scaleX = vbSpan / rect.width
+    const scaleY = vbSpan / rect.height
     return {
-      x: (clientX - rect.left) * scaleX,
-      y: (clientY - rect.top) * scaleY,
+      x: (clientX - rect.left) * scaleX - VPAD,
+      y: (clientY - rect.top) * scaleY - VPAD,
     }
   }, [size])
 
@@ -214,7 +235,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         return  // still in hub, do nothing
       }
       // Crossed outward — lock the wedge under the finger now.
-      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
+      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner, rOuter)
       if (!hit) return
       lockRef.current = hit.idx
       pendingHubRef.current = false
@@ -234,7 +255,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
     //       motion on the currently-locked wedge.
     if (lockRef.current !== null && wasInHubRef.current && !inHub) {
       // Re-cross: switch to the wedge under the new position.
-      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
+      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner, rOuter)
       if (hit && hit.idx !== lockRef.current) {
         lockRef.current = hit.idx
         setActiveIdx(hit.idx)
@@ -296,7 +317,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
 
     const pt = clientToSvg(e.clientX, e.clientY)
     if (!pt) return
-    const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
+    const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner, rOuter)
 
     if (!hit) {
       // Pointer-down inside the inner hub. Don't lock, don't commit —
@@ -378,7 +399,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
     <div style={{ position: 'relative', width: '100%', maxWidth: size, margin: '0 auto' }}>
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${size} ${size}`}
+        viewBox={`${-VPAD} ${-VPAD} ${size + 2 * VPAD} ${size + 2 * VPAD}`}
         style={{ width: '100%', aspectRatio: '1 / 1', display: 'block', touchAction: 'none', userSelect: 'none' }}
         // Mark the SVG inert to assistive tech. Spatial exploration
         // (VoiceOver swiping over wedges) would otherwise produce dead
@@ -471,30 +492,53 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         {/* Labels — uppercase, letter-spaced, dim grey regardless of
             value. Matches PolarChart's read-only treatment in spirit;
             we go a step further by:
-              - Wrapping multi-word labels onto two stacked lines
-                ("DARK FRUIT" → "DARK" / "FRUIT") so they fit in the
-                gutter without clipping at the wheel's east/west edges.
-              - Using a smaller font (size * 0.032) than PolarChart's
+              - Wrapping multi-word labels onto stacked lines (DARK
+                FRUIT → DARK / FRUIT; FLORAL/HERB → FLORAL / HERB) so
+                they fit in the label gutter without clipping at the
+                cardinal east/west positions.
+              - Edge-anchoring multi-line labels: top-half labels (sin
+                negative) anchor so the MIDLINE of the wheel-facing
+                line sits at pos.y; bottom-half labels symmetrically;
+                side labels center on pos.y. With dominantBaseline
+                "middle" the actual glyph extends ~half a fontSize
+                past pos.y toward the wheel — LABEL_OFFSET (12) gives
+                cushion for that overshoot. Without edge-anchoring, a
+                2-line label at the top would have its second line dip
+                much further into the wedge below.
+              - Using a smaller font (size * 0.030) than PolarChart's
                 0.04 because the wheel is interactive (bigger labels
-                crowd the touch surface on phones) and because longest
-                single-word labels like "ACIDITY" must fit inside the
-                label gutter at the cardinal east/west positions.
+                crowd the touch surface on phones) and because the
+                longest single-word labels like "ACIDITY" must fit
+                inside the gutter at the cardinal east/west positions.
             */}
         {fl.map((f, i) => {
           const pos = labelPosition(cx, cy, rLabel, i, n)
-          const fontSize = Math.max(8, size * 0.032)
+          const fontSize = Math.max(8, size * 0.030)
           const lineHeight = fontSize * 1.05
           const upper = f.l.toUpperCase()
-          // Split on space OR slash so multi-token labels stack as
-          // separate lines. Covers "DARK FRUIT" → "DARK"/"FRUIT" and
-          // "FLORAL/HERB" → "FLORAL"/"HERB". Single-token labels render
-          // as a single line.
+          // Split on space OR slash so multi-token labels stack.
           const lines = upper.split(/[ /]/)
-          // Vertically center multi-line labels: shift the first line up
-          // by half the total stack height so the visual midpoint sits
-          // at pos.y. dominantBaseline="middle" then handles per-line
-          // baseline alignment.
-          const yStart = pos.y - ((lines.length - 1) * lineHeight) / 2
+          // Edge-anchor multi-line labels by the side facing the
+          // wheel. Single-line labels just sit at pos.y.
+          const lineCount = lines.length
+          let yStart: number
+          if (lineCount === 1) {
+            yStart = pos.y
+          } else if (pos.sin < -0.3) {
+            // Top half: bottom of stack at pos.y → first line is
+            // (lineCount-1) lines higher.
+            yStart = pos.y - (lineCount - 1) * lineHeight
+          } else if (pos.sin > 0.3) {
+            // Bottom half: top of stack at pos.y → first line at pos.y.
+            yStart = pos.y
+          } else {
+            // Side (|sin| ≤ 0.3): center on pos.y. With n=10 slots and
+            // slot 0 at 12 o'clock, no slot lands at exactly 3 or 9
+            // o'clock — closest slots are at sin ≈ ±0.59 or ±0.95.
+            // This branch is defensive for hypothetical multi-line
+            // labels at the cardinal sides.
+            yStart = pos.y - ((lineCount - 1) * lineHeight) / 2
+          }
           return (
             <text
               key={`lbl-${f.k}`}
