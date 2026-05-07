@@ -28,10 +28,24 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
     const vpad = 30
     const vb = `${-vpad} ${-vpad} ${size + vpad * 2} ${size + vpad * 2}`
 
+    // Hybrid level distribution: level 1 sits at the equal-area
+    // one-fifth radius (so a level-1 fill *looks* like a fair share of
+    // the wedge instead of a thin sliver). Levels 2-5 then space
+    // linearly from there to the rim, keeping high-end discriminability.
+    // The inner empty hub (iR) is unchanged.
+    const r1Sq = iR * iR + (1 / 5) * (oR * oR - iR * iR)
+    const r1 = Math.sqrt(r1Sq)
+    const radiusForLevel = (lvl: number) => {
+      if (lvl <= 0) return iR
+      if (lvl >= 5) return oR
+      if (lvl === 1) return r1
+      return r1 + (oR - r1) * (lvl - 1) / 4
+    }
+
     let h = ''
     // scale rings
     for (let ring = 1; ring <= 5; ring++) {
-      const r = iR + (oR - iR) * ring / 5
+      const r = radiusForLevel(ring)
       h += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.6" stroke-dasharray="1.5,2.5"/>`
     }
 
@@ -44,7 +58,7 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
 
       h += arcSeg(cx, cy, iR, oR, a1, a2, f.c, 0.13)
       if (val > 0) {
-        const vr = iR + (oR - iR) * val / 5
+        const vr = radiusForLevel(val)
         h += arcSeg(cx, cy, iR, vr, a1, a2, f.c, 0.85)
       }
 
