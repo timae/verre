@@ -16,19 +16,28 @@ import {
 // slider stack on the rate screen. Each wedge represents one flavour
 // dimension; intensity 0–5 is encoded as the wedge's outer radius.
 //
-// Gesture model:
-//   1. Pointer-down inside the inner hub (dist < rInner) is a no-op.
-//      Without this, every tap on the central "drag out" hint area
-//      would silently zero whichever wedge happened to be under the
-//      pointer angularly.
-//   2. Pointer-down on a real wedge LOCKS that wedge. The locked index
-//      is held in a ref (not state) because the iOS Safari fallback path
-//      attaches global listeners that close over their initial state.
-//   3. Drag updates the locked wedge's level based on pointer distance
-//      from center. Drift inside rInner during a drag clears the wedge
-//      (level → 0). The lock means a user dragging tangentially past a
-//      wedge boundary doesn't accidentally hop to the neighbour.
-//   4. Pointer-up releases the lock.
+// Gesture model (three states):
+//   - idle: no pointer down.
+//   - pending-hub: pointer is down inside the inner hub (dist < rInner).
+//     No wedge is locked yet, no value committed. If the pointer leaves
+//     the hub (dist crosses rInner outward) before pointer-up, we
+//     transition to locked using the wedge under the finger AT THAT
+//     MOMENT. If pointer-up happens while still in the hub, the gesture
+//     ends with no commit (a tap inside the hub is a no-op).
+//   - locked: a wedge index is locked in a ref. Drag updates the
+//     locked wedge's level based on radial distance. Drift back inside
+//     rInner clears the wedge (level → 0). The lock means tangential
+//     motion past a wedge boundary doesn't hop to the neighbour.
+//
+// Why pending-hub exists: users can press in the middle and drag
+// outward to set a value. But a *tap* inside the hub must NOT commit
+// anything — there's no wedge under the finger angularly to commit to
+// in a stable way, and tap-on-hub is naturally how a user explores
+// "what does this center thing do."
+//
+// The locked wedge index is held in a ref (not state) because the iOS
+// Safari fallback path attaches global listeners that close over their
+// initial state.
 //
 // Geometry: two presets, "spacious" (default) and "compact". Spacious
 // uses fat wedges that fill most of the wheel (good touch targets, big
@@ -67,8 +76,8 @@ const MAX = 5
 // `size/2 - labelGutter`, NOT `size * fraction`. This way labels never
 // clip the SVG box at any reasonable size.
 const GEOMETRY = {
-  spacious: { rInnerFrac: 0.13, gapDeg: 1, labelGutter: 64 },
-  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 64 },
+  spacious: { rInnerFrac: 0.13, gapDeg: 3, labelGutter: 72 },
+  compact:  { rInnerFrac: 0.10, gapDeg: 3, labelGutter: 72 },
 } as const
 
 function computeDims(size: number, geometry: WheelGeometry, n: number) {
@@ -113,6 +122,11 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
   // attach window-level listeners on the fallback path; React state
   // inside those would stale-close.
   const lockRef = useRef<number | null>(null)
+
+  // Pending-hub state: pointer is down inside the inner hub but no
+  // wedge is locked yet. We're waiting to see if the user drags out
+  // (transition to locked) or releases without leaving (no-op tap).
+  const pendingHubRef = useRef<boolean>(false)
 
   // The most recently touched wedge index — drives the center readout
   // and the visual focus / "active" indicator. State because it triggers
@@ -166,12 +180,39 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
     }
   }, [size])
 
-  const setWedgeFromPoint = useCallback((clientX: number, clientY: number, lockedIdx: number) => {
+  // Process a pointer position during an active gesture. Handles the
+  // pending-hub → locked transition: if no wedge is currently locked
+  // but the pointer has just crossed outside rInner, lock the wedge
+  // under the finger at this moment and start tracking.
+  const processGesturePoint = useCallback((clientX: number, clientY: number) => {
     const pt = clientToSvg(clientX, clientY)
     if (!pt) return
     const dx = pt.x - cx
     const dy = pt.y - cy
     const dist = Math.hypot(dx, dy)
+
+    // Pending-hub: waiting for pointer to leave the hub before locking.
+    if (pendingHubRef.current && lockRef.current === null) {
+      if (dist < rInner) return  // still in hub, do nothing
+      // Crossed outward — lock the wedge under the finger now.
+      const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
+      if (!hit) return
+      lockRef.current = hit.idx
+      pendingHubRef.current = false
+      setActiveIdx(hit.idx)
+      haptics.tap()
+      lastLevelsRef.current[fl[hit.idx].k] = flavorsRef.current[fl[hit.idx].k] ?? 0
+      // Fall through to the level-update block below.
+    }
+
+    // Already-locked drags must NOT re-enter pending-hub: a user who
+    // drags inward to clear a wedge (level → 0, lock retained) and
+    // then drags back outward should keep tracking the original locked
+    // wedge, even if the pointer is now angularly over a neighbour.
+    // The lock-prevents-tangential-hop contract documented at the top
+    // of this file depends on this gating.
+    const lockedIdx = lockRef.current
+    if (lockedIdx === null) return  // still pending-hub or idle
     const level = levelFromDist(dist, rInner, rOuter, MAX)
     const key = fl[lockedIdx].k
     const prev = flavorsRef.current[key] ?? 0
@@ -183,7 +224,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         lastLevelsRef.current[key] = level
       }
     }
-  }, [clientToSvg, cx, cy, rInner, rOuter, fl])
+  }, [clientToSvg, cx, cy, rInner, rOuter, n, fl])
 
   // Global-listener fallback. Some iOS Safari versions throw on
   // setPointerCapture for SVG elements after re-render, or silently fail
@@ -201,6 +242,7 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
 
   const endGesture = useCallback(() => {
     lockRef.current = null
+    pendingHubRef.current = false
     detachFallback()
   }, [detachFallback])
 
@@ -219,26 +261,37 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
     const pt = clientToSvg(e.clientX, e.clientY)
     if (!pt) return
     const hit = wedgeFromXY(cx, cy, pt.x, pt.y, n, rInner)
-    if (!hit) return  // Dead zone — no lock, no commit.
 
-    lockRef.current = hit.idx
-    setActiveIdx(hit.idx)
-    haptics.tap()
-
-    const level = levelFromDist(hit.dist, rInner, rOuter, MAX)
-    const key = fl[hit.idx].k
-    if (level !== (flavorsRef.current[key] ?? 0)) {
-      onChangeRef.current({ ...flavorsRef.current, [key]: level })
+    if (!hit) {
+      // Pointer-down inside the inner hub. Don't lock, don't commit —
+      // but mark pending-hub so a subsequent drag outward can pick up
+      // the gesture. If pointer-up happens without ever leaving the
+      // hub, this becomes a no-op tap.
+      pendingHubRef.current = true
+    } else {
+      // Pointer-down on a real wedge. Lock immediately, commit the
+      // tap-to-set value, fire haptic.
+      lockRef.current = hit.idx
+      setActiveIdx(hit.idx)
+      haptics.tap()
+      const level = levelFromDist(hit.dist, rInner, rOuter, MAX)
+      const key = fl[hit.idx].k
+      if (level !== (flavorsRef.current[key] ?? 0)) {
+        onChangeRef.current({ ...flavorsRef.current, [key]: level })
+      }
+      lastLevelsRef.current[key] = level
     }
-    lastLevelsRef.current[key] = level
 
-    // Try native pointer-capture first; fall back to window listeners.
+    // Either way, attach pointer capture / fallback listeners so we
+    // can track motion. Pending-hub gestures need this just as much
+    // as locked ones — the whole point is to detect the hub-to-wedge
+    // crossing.
     try {
       e.currentTarget.setPointerCapture(e.pointerId)
     } catch {
       const move = (ev: PointerEvent) => {
-        if (lockRef.current === null) return
-        setWedgeFromPoint(ev.clientX, ev.clientY, lockRef.current)
+        if (lockRef.current === null && !pendingHubRef.current) return
+        processGesturePoint(ev.clientX, ev.clientY)
       }
       const up = () => endGesture()
       fallbackHandlersRef.current = { move, up }
@@ -246,14 +299,12 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
       window.addEventListener('pointerup', up)
       window.addEventListener('pointercancel', up)
     }
-  }, [clientToSvg, cx, cy, rInner, rOuter, n, fl, setWedgeFromPoint, endGesture])
-  // (endGesture is referenced both inside the fallback's `up` handler
-  // and at the top of onPointerDown for the re-entrant guard.)
+  }, [clientToSvg, cx, cy, rInner, rOuter, n, fl, processGesturePoint, endGesture])
 
   const onPointerMove = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
-    if (lockRef.current === null) return
-    setWedgeFromPoint(e.clientX, e.clientY, lockRef.current)
-  }, [setWedgeFromPoint])
+    if (lockRef.current === null && !pendingHubRef.current) return
+    processGesturePoint(e.clientX, e.clientY)
+  }, [processGesturePoint])
 
   const onPointerUp = useCallback((e: React.PointerEvent<SVGSVGElement>) => {
     try {
@@ -304,24 +355,10 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        {/* Concentric guide rings — one per integer level. Matches
-            PolarChart's dashed treatment (rgba(255,255,255,0.08),
-            stroke-width 0.6, stroke-dasharray 1.5,2.5). */}
-        {[1, 2, 3, 4, 5].map(k => {
-          const r = levelToFillRadius(k, rInner, rOuter, MAX)
-          return (
-            <circle
-              key={k}
-              cx={cx}
-              cy={cy}
-              r={r}
-              fill="none"
-              stroke="rgba(255,255,255,0.08)"
-              strokeWidth={0.6}
-              strokeDasharray="1.5,2.5"
-            />
-          )
-        })}
+        {/* No concentric level guide rings. The user explicitly asked
+            for "no more lines between the steps" — visual feedback on
+            level comes from wedge fill height alone, plus the live
+            digit readout in the center hub during drag. */}
 
         {/* Wedges */}
         {fl.map((f, i) => {
@@ -396,26 +433,47 @@ export function FlavorWheel({ flavors, fl, onChange, size = CHART_SIZE.INPUT, ge
         })}
 
         {/* Labels — uppercase, letter-spaced, dim grey regardless of
-            value. Matches PolarChart's read-only treatment exactly so
-            the rate modal and the feed/history charts share visual
-            language. */}
+            value. Matches PolarChart's read-only treatment in spirit;
+            we go a step further by:
+              - Wrapping multi-word labels onto two stacked lines
+                ("DARK FRUIT" → "DARK" / "FRUIT") so they fit in the
+                gutter without clipping at the wheel's east/west edges.
+              - Using a slightly smaller font (size * 0.035) than
+                PolarChart's 0.04 because the wheel is interactive and
+                bigger labels would crowd the touch surface on phones.
+            */}
         {fl.map((f, i) => {
           const pos = labelPosition(cx, cy, rLabel, i, n)
+          const fontSize = Math.max(8, size * 0.035)
+          const lineHeight = fontSize * 1.05
+          const upper = f.l.toUpperCase()
+          // Split on space OR slash so multi-token labels stack as
+          // separate lines. Covers "DARK FRUIT" → "DARK"/"FRUIT" and
+          // "FLORAL/HERB" → "FLORAL"/"HERB". Single-token labels render
+          // as a single line.
+          const lines = upper.split(/[ /]/)
+          // Vertically center multi-line labels: shift the first line up
+          // by half the total stack height so the visual midpoint sits
+          // at pos.y. dominantBaseline="middle" then handles per-line
+          // baseline alignment.
+          const yStart = pos.y - ((lines.length - 1) * lineHeight) / 2
           return (
             <text
               key={`lbl-${f.k}`}
               x={pos.x}
-              y={pos.y}
+              y={yStart}
               textAnchor={pos.anchor}
               dominantBaseline="middle"
-              fontSize={Math.max(8, size * 0.04)}
+              fontSize={fontSize}
               fontFamily="Manrope, sans-serif"
               fontWeight={700}
               letterSpacing="0.06em"
               fill="rgba(180,170,150,0.8)"
               style={{ pointerEvents: 'none' }}
             >
-              {f.l.toUpperCase()}
+              {lines.map((line, j) => (
+                <tspan key={j} x={pos.x} dy={j === 0 ? 0 : lineHeight}>{line}</tspan>
+              ))}
             </text>
           )
         })}

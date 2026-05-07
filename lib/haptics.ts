@@ -42,8 +42,10 @@ export const haptics = {
   // Pointer-down on an interactive target. Single short pulse.
   tap(): void {
     vibrate(TAP_MS)
-    // A tap also resets the tick rate-limiter so the first tick after
-    // engagement isn't suppressed.
+    // Reset the tick rate-limiter clock so any tick fired immediately
+    // after this tap (e.g. when crossing a level boundary at the same
+    // moment as engaging the target) is suppressed. The user feels one
+    // intentional buzz at engagement, not tap-then-tick stacked.
     lastTickAt = Date.now()
   },
 
