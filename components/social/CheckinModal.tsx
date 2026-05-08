@@ -158,6 +158,8 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         {/* Flavour chips (only if type selected) */}
         {type && (
           <div className="panel" style={{ marginBottom: 10 }}>
+            <div className="panel-hdr">flavour profile</div>
+            <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -6, marginBottom: 12 }}>tap or drag to mark perceived intensity</div>
             <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
           </div>
         )}

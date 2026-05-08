@@ -169,6 +169,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
       {/* Flavours */}
       <div className="panel">
         <div className="panel-hdr">flavour profile</div>
+        <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -6, marginBottom: 12 }}>tap or drag to mark perceived intensity</div>
         <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
       </div>
 
