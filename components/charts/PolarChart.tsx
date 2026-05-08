@@ -54,7 +54,7 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
     // bounds without clipping. The longest single-word labels at the
     // cardinal east/west positions ("ACIDITY") otherwise cut off at
     // the SVG edge — vpad gives them room.
-    const vpad = 36
+    const vpad = 30
     const vb = `${-vpad} ${-vpad} ${size + vpad * 2} ${size + vpad * 2}`
 
     // Hybrid level distribution: level 1 sits at the equal-area
