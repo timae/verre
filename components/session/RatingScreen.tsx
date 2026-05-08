@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useSession } from './SessionShell'
 import { FlavorChips } from '@/components/rate/FlavorChips'
+import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
@@ -169,7 +170,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
       {/* Flavours */}
       <div className="panel">
         <div className="panel-hdr">flavour profile</div>
-        <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -6, marginBottom: 12 }}>tap or drag to mark perceived intensity</div>
+        <IntensityHelp />
         <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
       </div>
 

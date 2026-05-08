@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { FlavorChips } from '@/components/rate/FlavorChips'
+import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
@@ -159,7 +160,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         {type && (
           <div className="panel" style={{ marginBottom: 10 }}>
             <div className="panel-hdr">flavour profile</div>
-            <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -6, marginBottom: 12 }}>tap or drag to mark perceived intensity</div>
+            <IntensityHelp />
             <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
           </div>
         )}

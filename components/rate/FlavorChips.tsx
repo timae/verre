@@ -1,6 +1,7 @@
 'use client'
 import { useRef, useState, useEffect } from 'react'
 import type { FlItem } from '@/lib/flavours'
+import { INTENSITY } from './IntensityHelp'
 
 interface Props {
   flavors: Record<string, number>
@@ -9,7 +10,6 @@ interface Props {
 }
 
 const MAX = 5
-const INTENSITY = ['none', 'faint', 'light', 'medium', 'bold', 'intense']
 const ACCENT_SET = 0.85
 const ACCENT_EMPTY = 0.5
 const BAR_OPACITY = 0.34
