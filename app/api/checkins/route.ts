@@ -23,7 +23,7 @@ const _s3 = _S3_ENDPOINT
     })
   : null
 
-// Server-side S3 copy for the "I had this too" flow. Caller passes a source
+// Server-side S3 copy for the "had a sip" flow. Caller passes a source
 // check-in id (already authorized to view that row), we resolve its stored
 // imageUrl and clone the bytes into a fresh user-owned key. The image URL
 // itself is never trusted from the client. Returns the new URL on success,
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
     const tempId = `ci_${userId}_${Date.now()}`
     imageUrl = await uploadImage(tempId, imageData).catch(() => null)
   } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0) {
-    // "I had this too" flow: resolve the source row server-side, verify the
+    // "had a sip" flow: resolve the source row server-side, verify the
     // caller is allowed to copy it, then clone the bytes. The client never
     // gets to point at an arbitrary S3 URL.
     const source = await prisma.checkin.findUnique({

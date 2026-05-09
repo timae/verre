@@ -67,6 +67,7 @@ export function ProfileCheckins({ initialCheckins, profileUserId, profileUserNam
             city: copySource.city,
             country: copySource.country,
             author: { id: profileUserId, name: profileUserName },
+            taggedViewer: !!copySource.tags?.some(t => t.id === myId),
           } satisfies CopySource}
           onClose={() => setCopySource(null)}
           onPosted={() => { setCopySource(null); router.refresh() }}

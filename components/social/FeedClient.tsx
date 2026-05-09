@@ -12,6 +12,7 @@ type CheckinPayload = {
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
   viewerFollowsAuthor?: boolean
+  tags?: { id: number; name: string }[]
 }
 type FeedItem =
   | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
@@ -107,6 +108,7 @@ export function FeedClient({ myId }: { myId: number }) {
                 city: item.checkin.city,
                 country: item.checkin.country,
                 author: { id: item.author.id, name: item.author.name },
+                taggedViewer: !!item.checkin.tags?.some(t => t.id === myId),
               })}
             />
           )

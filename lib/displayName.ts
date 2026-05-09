@@ -12,10 +12,16 @@ const RESERVED = new Set([
 // Excludes Redis key separators (`:`, `*`) and control characters.
 const ALLOWED = /^[\p{L}\p{N} '_.\-]+$/u
 
+// Min 2 chars matches the search/typeahead minimum so every user remains
+// discoverable by prefix; existing 1-char names from before this rule landed
+// are grandfathered (validation only fires on register / name change).
+export const DISPLAY_NAME_MIN = 2
+
 export function validateDisplayName(raw: unknown): string {
   if (typeof raw !== 'string') throw new Error('name must be a string')
   const trimmed = raw.trim().normalize('NFKC')
   if (trimmed.length === 0) throw new Error('name is required')
+  if (trimmed.length < DISPLAY_NAME_MIN) throw new Error(`name must be at least ${DISPLAY_NAME_MIN} characters`)
   if (trimmed.length > 64) throw new Error('name must be at most 64 characters')
   if (!ALLOWED.test(trimmed)) throw new Error('name contains invalid characters')
   if (RESERVED.has(trimmed.toLowerCase())) throw new Error('name is reserved')

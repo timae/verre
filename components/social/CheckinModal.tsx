@@ -29,6 +29,9 @@ export type CopySource = {
   imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   author: { id: number; name: string }
+  // True when the viewer was tagged on the source — implies they were there,
+  // so the modal auto-fills the venue group on mount.
+  taggedViewer?: boolean
 }
 
 interface Props {
@@ -86,6 +89,21 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     }
   }, [friends, isCopy, sourceAuthorId])
 
+  // If the viewer was tagged on the source, they were there — auto-fill the
+  // venue group rather than making them click "copy from original".
+  useEffect(() => {
+    if (!isCopy || !copyFromCheckin?.taggedViewer || !copyFromCheckin.venueName) return
+    setLocation({
+      venueName: copyFromCheckin.venueName || undefined,
+      city: copyFromCheckin.city || undefined,
+      country: copyFromCheckin.country || undefined,
+    })
+    setShowLocation(true)
+    setLocationVersion(v => v + 1)
+    // Run once on mount with the copy source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Reset flavors when the user picks a different type (the dimensions change).
   // Skip the very first run so editing a check-in keeps its stored flavors.
   const firstTypeChange = useRef(true)
@@ -140,7 +158,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)">
       <div className="sheet-bar" />
       <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
-          {isEdit ? 'Edit check-in' : isCopy ? `I had this too` : 'Check in a wine'}
+          {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
         </div>
         {isCopy && copyFromCheckin && (
           <p style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -10, marginBottom: 14 }}>

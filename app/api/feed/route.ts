@@ -59,7 +59,7 @@ export async function GET(req: NextRequest) {
     })).map(l => l.checkinId)
   )
 
-  // Set of viewer-follows-author — gates the "I had this too" button per row.
+  // Set of viewer-follows-author — gates the "had a sip" button per row.
   const myFollowing = new Set(
     (await prisma.follow.findMany({
       where: { followerId: userId, followingId: { in: checkins.map(c => c.user.id) } },

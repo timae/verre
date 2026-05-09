@@ -24,7 +24,7 @@ interface Props {
   }
   author?: {id:number;name:string;xp?:number}|null
   liked?: boolean; showAuthor?: boolean; onDelete?: ()=>void; onEdited?: ()=>void; isOwn?: boolean
-  // When provided on a non-own card, shows an "I had this too" button in the
+  // When provided on a non-own card, shows the "+ had a sip" button in the
   // same slot the edit button takes on own cards. Caller is responsible for
   // opening CheckinModal in copy mode.
   onCopy?: ()=>void
@@ -76,7 +76,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
               <button onClick={onCopy}
                 style={{ fontSize:11, color:'var(--accent)', background:'none', border:'none', cursor:'pointer', fontFamily:'var(--mono)' }}
                 title="Log your own check-in for this wine">
-                + I had this too
+                + had a sip
               </button>
             ) : null}
           </div>

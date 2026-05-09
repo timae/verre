@@ -2,8 +2,9 @@ import { auth } from '@/auth'
 import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
-import { ProfileCheckins } from '@/components/social/ProfileCheckins'
+import { ProfileTabs } from '@/components/profile/ProfileTabs'
 import { FollowButton } from '@/components/social/FollowButton'
+import { resolveProfileViewer } from '@/lib/profileVisibility'
 import Link from 'next/link'
 
 export default async function ProfilePage({ params }: { params: Promise<{ id: string }> }) {
@@ -11,7 +12,11 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   const session = await auth()
   const myId = session?.user ? Number(session.user.id) : null
   const userId = Number(id)
-  if (isNaN(userId)) notFound()
+  if (!Number.isInteger(userId) || userId < 1) notFound()
+
+  const gate = await resolveProfileViewer(userId, myId)
+  if (gate.status === 'gone') notFound()
+  const isFollowing = gate.viewer.followsProfile
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -22,10 +27,6 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     },
   })
   if (!user) notFound()
-
-  const isFollowing = myId && myId !== userId
-    ? !!(await prisma.follow.findUnique({ where: { followerId_followingId: { followerId: myId, followingId: userId } } }))
-    : false
 
   const checkins = await prisma.checkin.findMany({
     where: { userId, isPublic: true },
@@ -48,7 +49,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
       </header>
 
       <div style={{ maxWidth: 640, margin: '0 auto', padding: '24px 16px 0' }}>
-        {/* Profile header */}
+        {/* Profile header — server-rendered; stays put across tab switches. */}
         <div className="panel" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
             <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(200,150,60,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 700, color: 'var(--accent)', flexShrink: 0 }}>
@@ -65,31 +66,20 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
               <FollowButton userId={userId} initialFollowing={isFollowing} />
             )}
           </div>
-
-          {/* Stats */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
-            {[
-              { label: 'ratings', value: user.lifetimeRatings },
-              { label: 'check-ins', value: user._count.checkins },
-              { label: 'badges', value: user._count.earnedBadges },
-              { label: 'followers', value: user._count.followers },
-            ].map(({ label, value }) => (
-              <div key={label} style={{ textAlign: 'center', padding: '8px 4px', background: 'var(--bg3)', borderRadius: 8 }}>
-                <div style={{ fontSize: 18, fontWeight: 800, color: 'var(--accent)', lineHeight: 1 }}>{value}</div>
-                <div style={{ fontSize: 9, color: 'var(--fg-dim)', marginTop: 2, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</div>
-              </div>
-            ))}
-          </div>
         </div>
 
-        {/* Check-ins */}
-        <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--fg-dim)', marginBottom: 10 }}>// check-ins</div>
-        <ProfileCheckins
+        <ProfileTabs
           profileUserId={userId}
           profileUserName={user.name}
           profileUserXp={user.xp}
           myId={myId}
           viewerFollowsProfile={isFollowing}
+          stats={{
+            ratings: user.lifetimeRatings,
+            checkins: user._count.checkins,
+            badges: user._count.earnedBadges,
+            followers: user._count.followers,
+          }}
           initialCheckins={checkins.map(c => ({
             id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
             grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
