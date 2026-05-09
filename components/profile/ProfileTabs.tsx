@@ -112,22 +112,6 @@ export function ProfileTabs({
         })}
       </div>
 
-      {/* Tab strip */}
-      <div role="tablist" className="seg" style={{ marginBottom:14 }}>
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            role="tab"
-            aria-selected={tab === t.key}
-            onClick={() => setTab(t.key)}
-            className="seg-item"
-            data-active={tab === t.key ? '' : undefined}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       {/* Swipeable panels — overflow:hidden clips the off-screen panes.
           Drag is disabled until ResizeObserver gives us a real width — keeps
           the panes from stacking horizontally before the constraint is known. */}
