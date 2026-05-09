@@ -182,6 +182,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     if (res.ok) {
       await queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
       refresh()
+      onClose()
     } else { const d = await res.json(); setSaveError(d.error || 'save failed') }
   }
 

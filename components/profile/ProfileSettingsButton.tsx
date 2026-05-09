@@ -1,5 +1,6 @@
 'use client'
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Modal } from '@/components/ui/Modal'
 import { AccountSettings } from '@/components/me/AccountSettings'
 import { DashboardSettings } from '@/components/me/DashboardSettings'
@@ -12,6 +13,17 @@ import { DashboardSettings } from '@/components/me/DashboardSettings'
 // phone where the avatar/name/level take most of the row.
 export function ProfileSettingsButton() {
   const [open, setOpen] = useState(false)
+  const router = useRouter()
+  // After a successful AccountSettings save, close the modal and trigger
+  // an SSR re-render so the new display name flows through to the
+  // profile header, the WineIdentity rows in the check-in feed, and
+  // anywhere else the SSR shell embedded the user name. NextAuth's
+  // `update()` already refreshed the JWT-driven client state — this
+  // closes the loop for server-rendered surfaces.
+  function handleSaved() {
+    setOpen(false)
+    router.refresh()
+  }
   return (
     <>
       <button
@@ -40,7 +52,7 @@ export function ProfileSettingsButton() {
           </div>
           <div className="panel">
             <div className="panel-hdr">account</div>
-            <AccountSettings />
+            <AccountSettings onSaved={handleSaved} />
           </div>
           <div className="panel" style={{ marginTop: 16 }}>
             <DashboardSettings />

@@ -66,14 +66,15 @@ export function ProfilePanelRatings({ lifetimeRatings, flavor, profileUserName, 
   return (
     <div>
       <div className="panel" style={{ marginBottom: 12 }}>
-        {/* "rated" shows lifetimeRatings (monotonic) for non-owners so
-            the active/lifetime delta isn't visible alongside the public
-            big-tile lifetimeRatings up top — that delta would reveal how
-            many sessions the user has had deleted. Owners see the live
-            count and a caption explaining the relationship. */}
+        {/* "rated" always shows lifetimeRatings (monotonic, public) so
+            the panel matches the big stat tile up top. The wheel itself
+            uses the live aggregate, and an owner-only caption below
+            explains the delta when the live count is smaller. Showing
+            two different "rated" numbers in the same view (e.g. 29 up
+            top, 16 here) was confusing. */}
         <div style={{ display: 'flex', justifyContent: 'space-around', marginBottom: 14 }}>
           {[
-            { label: 'rated', value: isOwn ? flavor.activeRatings : lifetimeRatings },
+            { label: 'rated', value: lifetimeRatings },
             { label: 'avg score', value: flavor.avgScore == null ? '—' : flavor.avgScore },
             { label: '5-star', value: flavor.fiveStar },
           ].map(({ label, value }) => (
