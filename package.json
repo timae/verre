@@ -25,6 +25,7 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-zoom-pan-pinch": "^4.0.3",
     "redis": "^4.7.0",
     "zod": "^3.24.2"
   },

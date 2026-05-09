@@ -1,6 +1,7 @@
 'use client'
-import { useEffect, useState } from 'react'
-import { AnimatePresence, motion, useMotionValue, type PanInfo } from 'framer-motion'
+import { useEffect, useRef, useState } from 'react'
+import { AnimatePresence, motion } from 'framer-motion'
+import { TransformWrapper, TransformComponent, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
 
 export type LightboxEvent = CustomEvent<{ src: string; alt?: string }>
 
@@ -15,17 +16,20 @@ export function openLightbox(src: string, alt?: string) {
 }
 
 const DISMISS_DISTANCE = 120
-const DISMISS_VELOCITY = 600
 
 export function ImageLightbox() {
   const [state, setState] = useState<{ src: string; alt?: string } | null>(null)
-  const y = useMotionValue(0)
+  // Drives the cursor + tap-to-close gating. State, not ref, so the cursor
+  // re-renders when the user pinches in/out.
+  const [zoomed, setZoomed] = useState(false)
+  const panStartRef = useRef<{ x: number; y: number } | null>(null)
+  const transformRef = useRef<ReactZoomPanPinchContentRef | null>(null)
 
   useEffect(() => {
-    const handler = (e: LightboxEvent) => { y.set(0); setState(e.detail) }
+    const handler = (e: LightboxEvent) => setState(e.detail)
     window.addEventListener('open-lightbox', handler)
     return () => window.removeEventListener('open-lightbox', handler)
-  }, [y])
+  }, [])
 
   useEffect(() => {
     if (!state) return
@@ -34,11 +38,30 @@ export function ImageLightbox() {
     return () => document.removeEventListener('keydown', close)
   }, [state])
 
-  function onDragEnd(_: unknown, info: PanInfo) {
-    // Swipe-down only — swipe-up snaps back so users don't dismiss by reflex.
-    if (info.offset.y > DISMISS_DISTANCE || info.velocity.y > DISMISS_VELOCITY) {
+  function onPanningStart(ref: ReactZoomPanPinchRef) {
+    panStartRef.current = { x: ref.state.positionX, y: ref.state.positionY }
+  }
+
+  function onPanningStop(ref: ReactZoomPanPinchRef) {
+    const start = panStartRef.current
+    panStartRef.current = null
+    // Read scale from the live lib state, not React state — avoids a
+    // closure-staleness race when a pinch-out finishes immediately before
+    // a pan ends (the rerender hasn't landed yet).
+    if (ref.state.scale > 1) return
+    if (!start) return
+    const dy = ref.state.positionY - start.y
+    if (dy > DISMISS_DISTANCE) {
       setState(null)
+      return
     }
+    // Snap back to centre — at scale=1 we don't want stray horizontal or
+    // sub-threshold vertical pans to leave the image translated.
+    transformRef.current?.resetTransform(180)
+  }
+
+  function onTransformed(_: ReactZoomPanPinchRef, st: { scale: number }) {
+    setZoomed(st.scale > 1)
   }
 
   return (
@@ -54,13 +77,13 @@ export function ImageLightbox() {
             position: 'fixed', inset: 0, zIndex: 9999,
             background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(8px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 16, cursor: 'zoom-out',
+            padding: 16, cursor: zoomed ? 'zoom-out' : 'zoom-in',
           }}
         >
           <button
             onClick={() => setState(null)}
             style={{
-              position: 'absolute', top: 16, right: 16,
+              position: 'absolute', top: 16, right: 16, zIndex: 1,
               width: 36, height: 36, borderRadius: '50%',
               background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)',
               color: '#fff', fontSize: 18, lineHeight: 1, cursor: 'pointer',
@@ -70,28 +93,38 @@ export function ImageLightbox() {
             ✕
           </button>
 
-          {/* touch-action: pinch-zoom keeps native pinch alive — when the
-              browser claims the gesture it fires pointercancel, which ends
-              framer-motion's drag session cleanly. */}
-          <motion.img
-            src={state.src}
-            alt={state.alt || ''}
-            drag="y"
-            dragElastic={0.3}
-            dragConstraints={{ top: 0, bottom: 0 }}
-            onDragEnd={onDragEnd}
-            onTap={(e: PointerEvent) => { e.stopPropagation(); setState(null) }}
-            onClick={e => e.stopPropagation()}
-            style={{
-              maxWidth: '100%', maxHeight: '90vh',
-              objectFit: 'contain', borderRadius: 12,
-              boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
-              cursor: 'zoom-out',
-              y,
-              touchAction: 'pan-y pinch-zoom',
-            }}
-            draggable={false}
-          />
+          <TransformWrapper
+            ref={transformRef}
+            minScale={1}
+            maxScale={5}
+            limitToBounds={false}
+            centerOnInit
+            doubleClick={{ mode: 'toggle', step: 1.5 }}
+            onPanningStart={onPanningStart}
+            onPanningStop={onPanningStop}
+            onTransform={onTransformed}
+            wheel={{ step: 0.2 }}
+          >
+            <TransformComponent
+              wrapperStyle={{ width: '100%', height: '100%' }}
+              contentStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}
+            >
+              <img
+                src={state.src}
+                alt={state.alt || ''}
+                onClick={e => { e.stopPropagation(); if (!zoomed) setState(null) }}
+                draggable={false}
+                style={{
+                  maxWidth: '100%', maxHeight: '90vh',
+                  objectFit: 'contain', borderRadius: 12,
+                  boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+                  cursor: zoomed ? 'zoom-out' : 'zoom-in',
+                  userSelect: 'none',
+                  WebkitTouchCallout: 'none',
+                }}
+              />
+            </TransformComponent>
+          </TransformWrapper>
 
           {state.alt && (
             <div style={{
