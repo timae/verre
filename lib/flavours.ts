@@ -15,8 +15,8 @@ export const FL_RED: FlItem[] = [
 
 export const FL_WHITE: FlItem[] = [
   { k: 'citrus',   l: 'Citrus',      c: '#E8C040' },
-  { k: 'stone',    l: 'Stone Fruit', c: '#E89040' },
   { k: 'tropical', l: 'Tropical',    c: '#58C870' },
+  { k: 'stone',    l: 'Stone Fruit', c: '#E89040' },
   { k: 'floral',   l: 'Floral',      c: '#E8809A' },
   { k: 'herbal',   l: 'Herbal',      c: '#58B070' },
   { k: 'mineral',  l: 'Mineral',     c: '#90A4AE' },

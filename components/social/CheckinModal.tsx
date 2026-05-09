@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
-import { PolarChart } from '@/components/charts/PolarChart'
-import { CHART_SIZE } from '@/components/charts/sizes'
+import { FlavorChips } from '@/components/rate/FlavorChips'
+import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
@@ -156,27 +156,13 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
           </div>
         </div>
 
-        {/* Flavour chart + sliders (only if type selected) */}
+        {/* Flavour chips (only if type selected) */}
         {type && (
-          <>
-            <div style={{ display: 'flex', justifyContent: 'center', margin: '4px 0 8px' }}>
-              <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.DETAIL} />
-            </div>
-            <div className="panel" style={{ marginBottom: 10 }}>
-              {fl.map(f => {
-                const v = flavors[f.k] || 0
-                return (
-                  <div key={f.k} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    <span style={{ fontSize: 11, color: 'var(--fg-dim)', width: 72, flexShrink: 0, fontFamily: 'var(--mono)' }}>{f.l}</span>
-                    <input type="range" min={0} max={5} step={1} value={v}
-                      onChange={e => setFlavors(p => ({ ...p, [f.k]: Number(e.target.value) }))}
-                      style={{ flex: 1, height: 4, appearance: 'none', borderRadius: 2, background: `linear-gradient(to right,${f.c} ${v * 20}%,var(--bg3) ${v * 20}%)` }} />
-                    <span style={{ fontSize: 11, color: 'var(--fg)', width: 14, textAlign: 'right', fontFamily: 'var(--mono)' }}>{v}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </>
+          <div className="panel" style={{ marginBottom: 10 }}>
+            <div className="panel-hdr">flavour profile</div>
+            <IntensityHelp />
+            <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
+          </div>
         )}
 
         {/* Notes */}

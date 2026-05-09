@@ -241,6 +241,27 @@ body {
 @media (max-width: 639px) {
   .me-sidebar { display: none !important; }
   .me-bottom-nav { display: block; }
+
+  /* iOS auto-zooms when an input's font-size is below 16px. The .fi
+     class and several other inputs render at 13px on desktop for
+     density; bump them to 16px on mobile to suppress the zoom-in
+     animation. Slightly larger inputs on phones are also a touch-
+     target win.
+     `!important` is necessary because some call sites set font-size
+     via inline style (RatingScreen's notes textarea and the host's
+     "move to:" position input). Without !important, those inline
+     styles win on mobile and re-trigger the zoom. */
+  .fi,
+  textarea,
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="number"],
+  input[type="search"],
+  input[type="tel"],
+  input[type="url"] {
+    font-size: 16px !important;
+  }
 }
 
 /* Print */

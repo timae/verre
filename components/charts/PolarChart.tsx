@@ -20,18 +20,61 @@ function arcSeg(cx: number, cy: number, r1: number, r2: number, a1d: number, a2d
   return `<path d="M${x1},${y1}L${x2},${y2}A${r2},${r2},0,${lg},1,${x3},${y3}L${x4},${y4}A${r1},${r1},0,${lg},0,${x1},${y1}Z" fill="${fill}" opacity="${opacity}"/>`
 }
 
+// Render a single (possibly multi-line) label at a given (mx, my)
+// midpoint angle. Multi-token labels (split on space or slash, e.g.
+// "DARK FRUIT" → DARK / FRUIT, "FLORAL/HERB" → FLORAL / HERB) stack as
+// <tspan> lines. Top-half labels anchor by the bottom edge of the
+// stack so they don't dip into the wedge below; bottom-half labels
+// symmetrically; side labels center vertically. Single-line labels
+// just sit on `my`.
+function renderLabel(label: string, lx: number, ly: number, sin: number, anchor: string, fontSize: number): string {
+  const upper = label.toUpperCase()
+  const lines = upper.split(/[ /]/)
+  const lineHeight = fontSize * 1.05
+  let yStart: number
+  if (lines.length === 1) {
+    yStart = ly
+  } else if (sin < -0.3) {
+    yStart = ly - (lines.length - 1) * lineHeight
+  } else if (sin > 0.3) {
+    yStart = ly
+  } else {
+    yStart = ly - ((lines.length - 1) * lineHeight) / 2
+  }
+  const tspans = lines.map((line, j) => `<tspan x="${lx}" dy="${j === 0 ? 0 : lineHeight}">${line}</tspan>`).join('')
+  return `<text x="${lx}" y="${yStart}" text-anchor="${anchor}" dominant-baseline="middle" font-size="${fontSize}" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${tspans}</text>`
+}
+
 export function PolarChart({ flavors, fl, size = 300, className }: Props) {
   const svg = useMemo(() => {
     const cx = size / 2, cy = size / 2, n = fl.length
-    const iR = size * 0.10, oR = size * 0.37, lR = size * 0.44
+    const iR = size * 0.10, oR = size * 0.37, lR = size * 0.41
     const gap = 3, seg = 360 / n - gap
+    // Extended viewBox so labels can spill past the nominal size×size
+    // bounds without clipping. The longest single-word labels at the
+    // cardinal east/west positions ("ACIDITY") otherwise cut off at
+    // the SVG edge — vpad gives them room.
     const vpad = 30
     const vb = `${-vpad} ${-vpad} ${size + vpad * 2} ${size + vpad * 2}`
+
+    // Hybrid level distribution: level 1 sits at the equal-area
+    // one-fifth radius (so a level-1 fill *looks* like a fair share of
+    // the wedge instead of a thin sliver). Levels 2-5 then space
+    // linearly from there to the rim, keeping high-end discriminability.
+    // The inner empty hub (iR) is unchanged.
+    const r1Sq = iR * iR + (1 / 5) * (oR * oR - iR * iR)
+    const r1 = Math.sqrt(r1Sq)
+    const radiusForLevel = (lvl: number) => {
+      if (lvl <= 0) return iR
+      if (lvl >= 5) return oR
+      if (lvl === 1) return r1
+      return r1 + (oR - r1) * (lvl - 1) / 4
+    }
 
     let h = ''
     // scale rings
     for (let ring = 1; ring <= 5; ring++) {
-      const r = iR + (oR - iR) * ring / 5
+      const r = radiusForLevel(ring)
       h += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="0.6" stroke-dasharray="1.5,2.5"/>`
     }
 
@@ -44,14 +87,16 @@ export function PolarChart({ flavors, fl, size = 300, className }: Props) {
 
       h += arcSeg(cx, cy, iR, oR, a1, a2, f.c, 0.13)
       if (val > 0) {
-        const vr = iR + (oR - iR) * val / 5
+        const vr = radiusForLevel(val)
         h += arcSeg(cx, cy, iR, vr, a1, a2, f.c, 0.85)
       }
 
-      const lx = cx + lR * Math.cos(mRad)
-      const ly = cy + lR * Math.sin(mRad)
-      const anch = Math.cos(mRad) > 0.2 ? 'start' : Math.cos(mRad) < -0.2 ? 'end' : 'middle'
-      h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${Math.max(8, size * 0.04)}" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
+      const cosM = Math.cos(mRad), sinM = Math.sin(mRad)
+      const lx = cx + lR * cosM
+      const ly = cy + lR * sinM
+      const anch = cosM > 0.2 ? 'start' : cosM < -0.2 ? 'end' : 'middle'
+      const fontSize = Math.max(8, size * 0.033)
+      h += renderLabel(f.l, lx, ly, sinM, anch, fontSize)
     })
 
     return { vb, h, w: size, ht: size }

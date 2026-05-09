@@ -1,8 +1,8 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { useSession } from './SessionShell'
-import { PolarChart } from '@/components/charts/PolarChart'
-import { CHART_SIZE } from '@/components/charts/sizes'
+import { FlavorChips } from '@/components/rate/FlavorChips'
+import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import type { WineMeta } from '@/lib/session'
@@ -167,30 +167,11 @@ export function RatingScreen({ wineId, onClose }: Props) {
         </div>
       </div>
 
-      {/* Polar chart */}
-      <div className="panel" style={{display:'flex',flexDirection:'column',alignItems:'center'}}>
-        <div className="panel-hdr" style={{alignSelf:'flex-start',width:'100%'}}>flavour profile</div>
-        <PolarChart flavors={flavors} fl={fl} size={CHART_SIZE.HERO} />
-      </div>
-
-      {/* Sliders */}
+      {/* Flavours */}
       <div className="panel">
-        {fl.map(f => {
-          const v = flavors[f.k] || 0
-          return (
-            <div key={f.k} style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
-              <span style={{fontSize:11,color:'var(--fg-dim)',width:70,flexShrink:0,fontFamily:'var(--mono)'}}>{f.l}</span>
-              <div style={{flex:1}}>
-                <input
-                  type="range" min={0} max={5} step={1} value={v}
-                  onChange={e => setFlavors(prev => ({ ...prev, [f.k]: Number(e.target.value) }))}
-                  style={{width:'100%',height:4,appearance:'none',borderRadius:2,background:`linear-gradient(to right,${f.c} ${v*20}%,var(--bg3) ${v*20}%)`}}
-                />
-              </div>
-              <span style={{fontSize:11,color:'var(--fg)',width:14,textAlign:'right',fontFamily:'var(--mono)'}}>{v}</span>
-            </div>
-          )
-        })}
+        <div className="panel-hdr">flavour profile</div>
+        <IntensityHelp />
+        <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
       </div>
 
       {/* Notes */}
