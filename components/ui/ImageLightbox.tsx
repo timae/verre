@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { TransformWrapper, TransformComponent, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
+import { TransformWrapper, TransformComponent, useTransformComponent, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
 
 export type LightboxEvent = CustomEvent<{ src: string; alt?: string }>
 
@@ -19,9 +19,6 @@ const DISMISS_DISTANCE = 120
 
 export function ImageLightbox() {
   const [state, setState] = useState<{ src: string; alt?: string } | null>(null)
-  // Drives the cursor + tap-to-close gating. State, not ref, so the cursor
-  // re-renders when the user pinches in/out.
-  const [zoomed, setZoomed] = useState(false)
   const panStartRef = useRef<{ x: number; y: number } | null>(null)
   const transformRef = useRef<ReactZoomPanPinchContentRef | null>(null)
 
@@ -45,9 +42,9 @@ export function ImageLightbox() {
   function onPanningStop(ref: ReactZoomPanPinchRef) {
     const start = panStartRef.current
     panStartRef.current = null
-    // Read scale from the live lib state, not React state — avoids a
-    // closure-staleness race when a pinch-out finishes immediately before
-    // a pan ends (the rerender hasn't landed yet).
+    // Read live scale from the lib state (not React state) — guards against
+    // a closure-staleness race when pinch-out finishes immediately before
+    // pan-end.
     if (ref.state.scale > 1) return
     if (!start) return
     const dy = ref.state.positionY - start.y
@@ -55,13 +52,22 @@ export function ImageLightbox() {
       setState(null)
       return
     }
-    // Snap back to centre — at scale=1 we don't want stray horizontal or
-    // sub-threshold vertical pans to leave the image translated.
+    // Snap back at scale=1: stray horizontal or sub-threshold vertical pans
+    // shouldn't leave the image translated.
     transformRef.current?.resetTransform(180)
   }
 
-  function onTransformed(_: ReactZoomPanPinchRef, st: { scale: number }) {
-    setZoomed(st.scale > 1)
+  // Suppress click-to-close briefly after any transform change so the
+  // synthetic click that fires alongside the lib's double-tap zoom-out
+  // doesn't dismiss the lightbox.
+  const lastTransformRef = useRef(0)
+
+  function onImageClick(e: React.MouseEvent) {
+    e.stopPropagation()
+    const scale = transformRef.current?.instance.state.scale ?? 1
+    if (scale > 1) return
+    if (Date.now() - lastTransformRef.current < 350) return
+    setState(null)
   }
 
   return (
@@ -77,7 +83,7 @@ export function ImageLightbox() {
             position: 'fixed', inset: 0, zIndex: 9999,
             background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(8px)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            padding: 16, cursor: zoomed ? 'zoom-out' : 'zoom-in',
+            padding: 16,
           }}
         >
           <button
@@ -102,28 +108,10 @@ export function ImageLightbox() {
             doubleClick={{ mode: 'toggle', step: 1.5 }}
             onPanningStart={onPanningStart}
             onPanningStop={onPanningStop}
-            onTransform={onTransformed}
+            onTransform={() => { lastTransformRef.current = Date.now() }}
             wheel={{ step: 0.2 }}
           >
-            <TransformComponent
-              wrapperStyle={{ width: '100%', height: '100%' }}
-              contentStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}
-            >
-              <img
-                src={state.src}
-                alt={state.alt || ''}
-                onClick={e => { e.stopPropagation(); if (!zoomed) setState(null) }}
-                draggable={false}
-                style={{
-                  maxWidth: '100%', maxHeight: '90vh',
-                  objectFit: 'contain', borderRadius: 12,
-                  boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
-                  cursor: zoomed ? 'zoom-out' : 'zoom-in',
-                  userSelect: 'none',
-                  WebkitTouchCallout: 'none',
-                }}
-              />
-            </TransformComponent>
+            <LightboxContent src={state.src} alt={state.alt} onImageClick={onImageClick} />
           </TransformWrapper>
 
           {state.alt && (
@@ -139,5 +127,34 @@ export function ImageLightbox() {
         </motion.div>
       )}
     </AnimatePresence>
+  )
+}
+
+// Inner content — uses useTransformComponent to read live scale so cursor
+// updates on every transform tick. The hook only works inside the
+// TransformWrapper context.
+function LightboxContent({ src, alt, onImageClick }: { src: string; alt?: string; onImageClick: (e: React.MouseEvent) => void }) {
+  const scale = useTransformComponent(s => s.state.scale)
+  const cursor = scale > 1 ? 'zoom-out' : 'zoom-in'
+  return (
+    <TransformComponent
+      wrapperStyle={{ width: '100%', height: '100%', cursor }}
+      contentStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}
+    >
+      <img
+        src={src}
+        alt={alt || ''}
+        onClick={onImageClick}
+        draggable={false}
+        style={{
+          maxWidth: '100%', maxHeight: '90vh',
+          objectFit: 'contain', borderRadius: 12,
+          boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+          cursor,
+          userSelect: 'none',
+          WebkitTouchCallout: 'none',
+        }}
+      />
+    </TransformComponent>
   )
 }
