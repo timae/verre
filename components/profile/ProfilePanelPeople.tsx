@@ -29,11 +29,15 @@ export function ProfilePanelPeople({ profileUserId, myId }: Props) {
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')
 
-  // Debounce search input → server query.
+  // Debounce search input → server query. The server enforces a 2-char
+  // minimum; mirroring it client-side avoids a wasted request and a flash
+  // of "no results" while the user is still typing.
+  const trimmed = qInput.trim()
+  const tooShort = trimmed.length === 1
   useEffect(() => {
-    const t = setTimeout(() => setQ(qInput.trim()), 250)
+    const t = setTimeout(() => setQ(tooShort ? '' : trimmed), 250)
     return () => clearTimeout(t)
-  }, [qInput])
+  }, [trimmed, tooShort])
 
   const queryKey = ['profile-people', profileUserId, direction, mutual, q]
   const { data, isLoading } = useQuery<{ users: PersonRow[]; nextCursor: string | null }>({
@@ -86,13 +90,21 @@ export function ProfilePanelPeople({ profileUserId, myId }: Props) {
         />
       </div>
 
-      {isLoading && <p style={{ color:'var(--fg-dim)', fontSize:13 }}>Loading…</p>}
-      {empty && (
+      {tooShort ? (
         <p style={{ color:'var(--fg-dim)', fontSize:13, padding:'16px 0' }}>
-          {q ? 'No matches.' : EMPTY_COPY[direction][mutual]}
+          Type at least 2 characters to search.
         </p>
+      ) : (
+        <>
+          {isLoading && <p style={{ color:'var(--fg-dim)', fontSize:13 }}>Loading…</p>}
+          {empty && (
+            <p style={{ color:'var(--fg-dim)', fontSize:13, padding:'16px 0' }}>
+              {q ? 'No matches.' : EMPTY_COPY[direction][mutual]}
+            </p>
+          )}
+          {users.map(u => <PersonRow key={u.id} row={u} myId={myId} direction={direction} />)}
+        </>
       )}
-      {users.map(u => <PersonRow key={u.id} row={u} myId={myId} direction={direction} />)}
     </div>
   )
 }

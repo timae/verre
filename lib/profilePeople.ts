@@ -10,7 +10,7 @@ const SEARCH_MIN = 2
 
 // Shared handler for /api/users/[id]/followers and /following.
 // ?mutual=mutual|non   filter on the reverse edge
-// ?q=<prefix>          name prefix (case-insensitive, min 2 chars)
+// ?q=<query>           name substring (case-insensitive, min 2 chars)
 // ?cursor=<userId>     pagination (descending user id)
 //
 // Logged-in only — anonymous viewers see profile basics + counts on /u/<id>
@@ -59,7 +59,10 @@ export async function listProfilePeople(
     ? Prisma.sql`AND NOT EXISTS (SELECT 1 FROM follows fr WHERE fr.follower_id = ${reverseFollower} AND fr.following_id = ${reverseFollowing})`
     : Prisma.empty
 
-  const qClause = q ? Prisma.sql`AND u.name ILIKE ${q + '%'}` : Prisma.empty
+  // Substring match — escape ILIKE wildcards so a literal `%`/`_` in `q`
+  // doesn't act as a wildcard, then wrap in `%…%` for substring semantics.
+  const qEscaped = q.replace(/[\\%_]/g, '\\$&')
+  const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
   const cursorClause = cursorId ? Prisma.sql`AND u.id < ${cursorId}` : Prisma.empty
 
   const rows = await prisma.$queryRaw<{ id: number; name: string; xp: number }[]>`
