@@ -3,22 +3,31 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useDashboardSections } from './DashboardSettings'
 
-const BASE_NAV = [
-  { href: '/me',          icon: '⊞', label: 'Home',    id: null },
-  { href: '/me/feed',     icon: '🌐', label: 'Feed',    id: null },
-  { href: '/me/history',  icon: '◷', label: 'History', id: null },
-  { href: '/me/saved',    icon: '★',  label: 'Saved',   id: null },
-  { href: '/me/profile',  icon: '◉', label: 'Profile', id: null },
-  { href: '/me/badges',   icon: '🏅', label: 'Badges',  id: 'show_badges' },
-]
+interface NavProps {
+  // Logged-in user's id, used to build the public-profile link target
+  // (`/u/<id>`). The /me/profile route was removed; "Profile" now goes
+  // straight to the public surface.
+  myId: number
+}
+
+function buildNav(myId: number) {
+  return [
+    { href: '/me',           icon: '⊞', label: 'Home',    id: null },
+    { href: '/me/feed',      icon: '🌐', label: 'Feed',    id: null },
+    { href: '/me/history',   icon: '◷', label: 'History', id: null },
+    { href: '/me/saved',     icon: '★',  label: 'Saved',   id: null },
+    { href: `/u/${myId}`,    icon: '◉', label: 'Profile', id: null },
+    { href: '/me/badges',    icon: '🏅', label: 'Badges',  id: 'show_badges' },
+  ]
+}
 
 // Bottom nav (mobile)
-export function MeNav() {
+export function MeNav({ myId }: NavProps) {
   const pathname = usePathname()
   const [sections] = useDashboardSections()
   const show = (id: string | null) => !id || sections.find(s => s.id === id)?.enabled !== false
 
-  const items = BASE_NAV.filter(n => show(n.id))
+  const items = buildNav(myId).filter(n => show(n.id))
 
   return (
     <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',position:'relative',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
@@ -36,12 +45,12 @@ export function MeNav() {
 }
 
 // Sidebar nav (desktop) — same items, different style
-export function MeSidebar() {
+export function MeSidebar({ myId }: NavProps) {
   const pathname = usePathname()
   const [sections] = useDashboardSections()
   const show = (id: string | null) => !id || sections.find(s => s.id === id)?.enabled !== false
 
-  const items = BASE_NAV.filter(n => show(n.id))
+  const items = buildNav(myId).filter(n => show(n.id))
 
   return (
     <>

@@ -259,9 +259,16 @@ body {
 .me-nav-link:hover { background: var(--bg3); color: var(--fg); }
 .me-bottom-nav { display: none; }
 
+/* Hide on narrow viewports — used to drop secondary labels next to
+   icon-only affordances (e.g. the "settings" word next to the gear in
+   the profile-header button). The icon stays visible; only the text
+   collapses. */
+.hide-narrow { display: inline; }
+
 @media (max-width: 639px) {
   .me-sidebar { display: none !important; }
   .me-bottom-nav { display: block; }
+  .hide-narrow { display: none !important; }
 
   /* iOS auto-zooms when an input's font-size is below 16px. The .fi
      class and several other inputs render at 13px on desktop for

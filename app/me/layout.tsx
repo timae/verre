@@ -8,6 +8,7 @@ import { MeNav, MeSidebar } from '@/components/me/MeNav'
 export default async function MeLayout({ children }: { children: React.ReactNode }) {
   const session = await auth()
   if (!session?.user) redirect('/login')
+  const myId = Number(session.user.id)
 
   return (
     <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
@@ -17,6 +18,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <ThemeToggle />
           <UserMenu
+            myId={myId}
             name={session.user.name}
             email={session.user.email}
             pro={!!(session.user as { pro?: boolean }).pro}
@@ -28,7 +30,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
       <div style={{flex:1,display:'flex',overflow:'hidden'}}>
         {/* Sidebar — desktop only */}
         <aside style={{width:180,flexShrink:0,borderRight:'1px solid rgba(255,255,255,0.04)',padding:'16px 8px',display:'flex',flexDirection:'column',gap:2,overflowY:'auto'}} className="me-sidebar">
-          <MeSidebar />
+          <MeSidebar myId={myId} />
         </aside>
 
         {/* Main content */}
@@ -41,7 +43,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
 
       {/* Bottom nav — mobile only */}
       <div className="me-bottom-nav">
-        <MeNav />
+        <MeNav myId={myId} />
       </div>
     </div>
   )

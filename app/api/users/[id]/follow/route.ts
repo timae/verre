@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
+import { parsePathId } from '@/lib/parsePathId'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -10,7 +11,8 @@ export async function POST(_req: NextRequest, { params }: Ctx) {
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)
   const { id } = await params
-  const followingId = Number(id)
+  const followingId = parsePathId(id)
+  if (followingId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
   if (followerId === followingId) return NextResponse.json({ error: 'cannot follow yourself' }, { status: 400 })
 
   const rl = await checkRate(`rl:follow:${followerId}:1h`, 60, 3600)
@@ -28,7 +30,8 @@ export async function DELETE(_req: NextRequest, { params }: Ctx) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)
-  const followingId = Number((await params).id)
+  const followingId = parsePathId((await params).id)
+  if (followingId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
   await prisma.follow.deleteMany({ where: { followerId, followingId } })
   return NextResponse.json({ following: false })
 }

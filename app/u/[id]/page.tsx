@@ -4,15 +4,19 @@ import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { ProfileTabs } from '@/components/profile/ProfileTabs'
 import { FollowButton } from '@/components/social/FollowButton'
+import { ProfileSettingsButton } from '@/components/profile/ProfileSettingsButton'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { getProfileFlavor } from '@/lib/profileFlavor'
+import { parsePathId } from '@/lib/parsePathId'
 import Link from 'next/link'
 
 export default async function ProfilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const session = await auth()
   const myId = session?.user ? Number(session.user.id) : null
-  const userId = Number(id)
-  if (!Number.isInteger(userId) || userId < 1) notFound()
+  const parsedId = parsePathId(id)
+  if (parsedId === null) notFound()
+  const userId = parsedId
 
   const gate = await resolveProfileViewer(userId, myId)
   if (gate.status === 'gone') notFound()
@@ -28,15 +32,28 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   })
   if (!user) notFound()
 
-  const checkins = await prisma.checkin.findMany({
-    where: { userId, isPublic: true },
-    orderBy: { createdAt: 'desc' },
-    take: 10,
-    include: {
-      _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, name: true } } } },
-    },
-  })
+  const [checkins, flavorFull] = await Promise.all([
+    prisma.checkin.findMany({
+      where: { userId, isPublic: true },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      include: {
+        _count: { select: { likes: true } },
+        tags: { include: { user: { select: { id: true, name: true } } } },
+      },
+    }),
+    getProfileFlavor(userId),
+  ])
+
+  // Mirror the API redaction in the RSC payload — `'use client'` props
+  // get serialised into the page's __next_f and any non-owner viewer
+  // could read `flavor.activeRatings` from devtools, defeating the API
+  // response stripping in /api/users/[id]. Same redaction policy as the
+  // route: keep activeRatings owner-only, ship the wheel data to all.
+  const isOwner = myId === userId
+  const flavor = isOwner
+    ? flavorFull
+    : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   const level = getLevel(user.xp)
   const nextXP = level.nextXP
@@ -62,9 +79,11 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
                 <div style={{ height: '100%', width: `${Math.min(100, progress)}%`, background: 'var(--accent)', borderRadius: 2 }} />
               </div>
             </div>
-            {myId && myId !== userId && (
+            {myId === userId ? (
+              <ProfileSettingsButton />
+            ) : myId ? (
               <FollowButton userId={userId} initialFollowing={isFollowing} />
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -80,6 +99,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
             badges: user._count.earnedBadges,
             followers: user._count.followers,
           }}
+          flavor={flavor}
           initialCheckins={checkins.map(c => ({
             id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
             grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+import { parsePathId } from '@/lib/parsePathId'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -47,8 +48,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
-  const { id } = await params
-  const checkin = await prisma.checkin.findUnique({ where: { id: Number(id) } })
+  const checkinId = parsePathId((await params).id)
+  if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const checkin = await prisma.checkin.findUnique({ where: { id: checkinId } })
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   if (checkin.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
@@ -101,7 +103,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   const updated = await prisma.$transaction(async (tx) => {
     const updatedCheckin = await tx.checkin.update({
-      where: { id: Number(id) },
+      where: { id: checkinId },
       data: {
         wineName:  wineName  !== undefined ? (wineName?.trim()  || checkin.wineName) : checkin.wineName,
         producer:  producer  !== undefined ? (producer?.trim()  || null) : checkin.producer,
@@ -125,10 +127,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // — explicit empty means "remove all tags"). Skip when undefined so a
     // PATCH that only updates other fields doesn't drop existing tags.
     if (validTagIds !== undefined) {
-      await tx.checkinTag.deleteMany({ where: { checkinId: Number(id) } })
+      await tx.checkinTag.deleteMany({ where: { checkinId } })
       if (validTagIds.length > 0) {
         await tx.checkinTag.createMany({
-          data: validTagIds.map(uid => ({ checkinId: Number(id), userId: uid })),
+          data: validTagIds.map(uid => ({ checkinId, userId: uid })),
           skipDuplicates: true,
         })
       }
@@ -143,11 +145,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 export async function DELETE(_req: NextRequest, { params }: Ctx) {
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  const { id } = await params
-  const checkin = await prisma.checkin.findUnique({ where: { id: Number(id) } })
+  const checkinId = parsePathId((await params).id)
+  if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const checkin = await prisma.checkin.findUnique({ where: { id: checkinId } })
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   if (checkin.userId !== Number(session.user.id)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  await prisma.checkin.delete({ where: { id: Number(id) } })
+  await prisma.checkin.delete({ where: { id: checkinId } })
   // Fire-and-forget: reclaim the S3 object after the DB row is gone. If
   // the S3 delete fails we still report success — the row is gone, the
   // object becomes a harmless orphan that a future cleanup can sweep.

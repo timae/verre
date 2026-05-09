@@ -69,7 +69,7 @@ export async function POST(req: NextRequest) {
   if (imageData?.startsWith('data:image/')) {
     const tempId = `ci_${userId}_${Date.now()}`
     imageUrl = await uploadImage(tempId, imageData).catch(() => null)
-  } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0) {
+  } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
     // "had a sip" flow: resolve the source row server-side, verify the
     // caller is allowed to copy it, then clone the bytes. The client never
     // gets to point at an arbitrary S3 URL.

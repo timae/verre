@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { ALL_BADGES } from '@/lib/badges'
 import { checkRate } from '@/lib/rateLimit'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { parsePathId } from '@/lib/parsePathId'
 
 // Public list of a user's earned badges, with the full ALL_BADGES catalog so
 // the UI can render earned + locked side-by-side. Logged-in only — same rule
@@ -19,8 +20,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   const { id } = await params
-  const profileId = Number(id)
-  if (!Number.isInteger(profileId) || profileId < 1) {
+  const profileId = parsePathId(id)
+  if (profileId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400 })
   }
 

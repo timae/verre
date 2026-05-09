@@ -3,14 +3,24 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { getProfileFlavor } from '@/lib/profileFlavor'
+import { parsePathId } from '@/lib/parsePathId'
+import { checkRate } from '@/lib/rateLimit'
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
   const { id } = await params
-  const userId = Number(id)
-  if (!Number.isInteger(userId) || userId < 1) {
+  const userId = parsePathId(id)
+  if (userId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400 })
   }
+
+  // Public, anonymous-readable, and runs an extra SQL aggregate over
+  // `ratings`. Rate-limited per-IP to prevent enumeration + DB-load
+  // amplification. Same shape as the sibling /badges endpoint.
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const rl = await checkRate(`rl:profile:${ip}:1m`, 60, 60)
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   const viewerId = session?.user ? Number(session.user.id) : null
   const gate = await resolveProfileViewer(userId, viewerId)
@@ -28,6 +38,19 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   if (!user) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   const level = getLevel(user.xp)
+
+  // Live flavor-wheel aggregate. The tile in the UI uses lifetimeRatings
+  // (monotonic); the wheel itself uses live `flavor.keys` (current
+  // dataset). For non-owners we redact `activeRatings` because that
+  // exact count combined with the public `lifetimeRatings` would let
+  // any visitor compute how many sessions the profile owner has
+  // deleted. The owner gets the full block to render the "based on N
+  // of M" caption on their own profile.
+  const isOwner = viewerId !== null && viewerId === userId
+  const flavorFull = await getProfileFlavor(userId)
+  const flavor = isOwner
+    ? flavorFull
+    : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   // Explicit select — never ship lat/lng on the public wire (matches feed/profile-page payloads).
   const recentCheckins = await prisma.checkin.findMany({
@@ -55,6 +78,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       followers: user._count.followers,
       following: user._count.following,
     },
+    flavor,
     isFollowing,
     recentCheckins,
   })

@@ -4,10 +4,13 @@ import { motion, useMotionValue, animate, type PanInfo } from 'framer-motion'
 import { ProfileCheckins } from '@/components/social/ProfileCheckins'
 import { ProfilePanelBadges } from './ProfilePanelBadges'
 import { ProfilePanelPeople } from './ProfilePanelPeople'
+import { ProfilePanelRatings } from './ProfilePanelRatings'
+import type { FlavorBlock } from '@/lib/profileFlavor'
 
-type Tab = 'checkins' | 'badges' | 'people'
+type Tab = 'checkins' | 'ratings' | 'badges' | 'people'
 const TABS: { key: Tab; label: string }[] = [
   { key: 'checkins', label: 'Check-ins' },
+  { key: 'ratings',  label: 'Ratings' },
   { key: 'badges',   label: 'Badges' },
   { key: 'people',   label: 'People' },
 ]
@@ -30,13 +33,14 @@ interface Props {
   initialCheckins: CheckinSeed
   initialTab?: Tab
   stats: Stats
+  flavor: FlavorBlock
 }
 
 const SWIPE_THRESHOLD = 60
 const SWIPE_VELOCITY = 400
 
 export function ProfileTabs({
-  profileUserId, profileUserName, profileUserXp, myId, viewerFollowsProfile, initialCheckins, initialTab = 'checkins', stats,
+  profileUserId, profileUserName, profileUserXp, myId, viewerFollowsProfile, initialCheckins, initialTab = 'checkins', stats, flavor,
 }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab)
   // Track which tabs have ever been active so adjacent panels can lazy-mount
@@ -77,37 +81,36 @@ export function ProfileTabs({
     setTab(TABS[next].key)
   }
 
-  const tiles: { label: string; value: number; tab: Tab | null }[] = [
-    { label: 'ratings',   value: stats.ratings,   tab: null },
+  const tiles: { label: string; value: number; tab: Tab }[] = [
     { label: 'check-ins', value: stats.checkins,  tab: 'checkins' },
+    { label: 'ratings',   value: stats.ratings,   tab: 'ratings' },
     { label: 'badges',    value: stats.badges,    tab: 'badges' },
     { label: 'followers', value: stats.followers, tab: 'people' },
   ]
 
   return (
     <div>
-      {/* Stats grid — clickable tiles switch the tab below; ratings stays inert. */}
+      {/* Stats grid — every tile is clickable and switches the tab below. */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(4, 1fr)', gap:8, marginBottom:16 }}>
         {tiles.map(t => {
-          const clickable = t.tab !== null
-          const active = clickable && tab === t.tab
-          const Cmp = clickable ? 'button' : 'div'
+          const active = tab === t.tab
           return (
-            <Cmp
+            <button
               key={t.label}
-              {...(clickable ? { type: 'button' as const, onClick: () => setTab(t.tab!) } : {})}
+              type="button"
+              onClick={() => setTab(t.tab)}
               style={{
                 textAlign:'center', padding:'8px 4px',
                 background: active ? 'rgba(200,150,60,0.12)' : 'var(--bg3)',
                 border:`1px solid ${active ? 'rgba(200,150,60,0.4)' : 'transparent'}`,
                 borderRadius:8,
-                cursor: clickable ? 'pointer' : 'default',
+                cursor: 'pointer',
                 color: 'inherit',
               }}
             >
               <div style={{ fontSize:18, fontWeight:800, color:'var(--accent)', lineHeight:1 }}>{t.value}</div>
               <div style={{ fontSize:9, color:'var(--fg-dim)', marginTop:2, letterSpacing:'0.06em', textTransform:'uppercase' }}>{t.label}</div>
-            </Cmp>
+            </button>
           )
         })}
       </div>
@@ -132,6 +135,16 @@ export function ProfileTabs({
                 myId={myId}
                 viewerFollowsProfile={viewerFollowsProfile}
                 initialCheckins={initialCheckins}
+              />
+            )}
+          </PaneShell>
+          <PaneShell active={tab === 'ratings'} width={width}>
+            {visited.has('ratings') && (
+              <ProfilePanelRatings
+                lifetimeRatings={stats.ratings}
+                flavor={flavor}
+                profileUserName={profileUserName}
+                isOwn={myId === profileUserId}
               />
             )}
           </PaneShell>

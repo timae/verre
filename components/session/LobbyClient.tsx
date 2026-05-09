@@ -269,7 +269,7 @@ function AccountDashboard({ user }: { user: NonNullable<User> }) {
           <div style={{fontSize:11,color:'var(--fg-dim)',marginTop:1}}>{user.email}</div>
         </div>
       </div>
-      {[{href:'/me',label:'⊞  my dashboard'},{href:'/me/history',label:'◷  tasting history'},{href:'/me/saved',label:'★  saved wines'},{href:'/me/profile',label:'◉  flavour profile'}].map(({href,label}) => (
+      {[{href:'/me',label:'⊞  my dashboard'},{href:'/me/history',label:'◷  tasting history'},{href:'/me/saved',label:'★  saved wines'},{href:`/u/${user.id}`,label:'◉  profile'}].map(({href,label}) => (
         <Link key={href} href={href} className="btn-g" style={{display:'block',textAlign:'left',textDecoration:'none',marginTop:0,marginBottom:6}}>
           {label}
         </Link>
