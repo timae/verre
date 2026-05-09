@@ -94,11 +94,35 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
   }, [])
 
   // Drag-to-dismiss is bottom-anchored sheets only. dragListener=false +
-  // dragControls.start in onPointerDown means only the sheet-bar handle
-  // arms the drag — body taps and scrolls aren't affected.
+  // explicit dragControls.start ensures only specific gestures arm a drag:
+  //   1. Pointerdown on the sheet-bar handle (always arms).
+  //   2. Pointerdown anywhere on the body when scrollTop === 0 — i.e.
+  //      the user is at scroll-top, an upward drag has nothing to scroll
+  //      to, and a downward drag should pull the sheet (iOS native
+  //      sheet behaviour). When mid-scroll, body scroll wins.
   const dragControls = useDragControls()
+  const sheetRef = useRef<HTMLDivElement | null>(null)
   const draggable = align === 'flex-end'
   const y = useMotionValue(0)
+
+  function onSheetPointerDown(e: React.PointerEvent) {
+    if (!draggable) return
+    // Touch-only — on desktop, "drag the body of a dialog" isn't a
+    // convention and a stray mouse drag could dismiss accidentally.
+    if (e.pointerType !== 'touch') return
+    const el = sheetRef.current
+    if (!el) return
+    // Only arm sheet drag when at scroll-top — otherwise let the body scroll.
+    if (el.scrollTop > 0) return
+    // Skip interactive controls and gesture-claiming patterns:
+    // - form controls so taps on them work normally
+    // - role=button so the handle bar's own drag isn't double-armed
+    // - .chip because FlavorChips uses its own vertical drag for intensity
+    // - label so label→input forwarding isn't lost to a micro-wobble drag
+    const target = e.target as HTMLElement
+    if (target.closest('input, textarea, select, button, [role="button"], label, .chip, [contenteditable], a[href]')) return
+    dragControls.start(e)
+  }
 
   function dismiss() {
     // Slide the sheet off-screen before unmounting so swipe dismissals
@@ -125,15 +149,25 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
         display: 'flex', alignItems: align, justifyContent: 'center',
         background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
         overflowY: 'auto',
+        // Stop overscroll from pulling the underlying page (which triggers
+        // pull-to-refresh on iOS / an aggressive bounce on Safari).
+        overscrollBehavior: 'contain',
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
       <motion.div
+        ref={sheetRef}
         drag={draggable ? 'y' : false}
         dragControls={dragControls}
         dragListener={false}
+        onPointerDown={onSheetPointerDown}
+        // Both constraints anchor the rest position. Elastic 1 on the
+        // bottom = no resistance, sheet follows finger 1:1 going down.
+        // Elastic 0.2 on top = upward drag resists. On release without
+        // dismissing, the sheet springs back to y=0 because the value
+        // is outside the constraint range while > 0.
         dragConstraints={{ top: 0, bottom: 0 }}
-        dragElastic={0.2}
+        dragElastic={{ top: 0.2, bottom: 1 }}
         onDragEnd={onDragEnd}
         style={{
           width: '100%', maxWidth,
@@ -144,6 +178,8 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
           borderRadius: '22px 22px 0 0',
           padding: 18, paddingBottom: 32,
           ...(align === 'flex-end' ? { marginTop: 'auto' } : {}),
+          // Keep momentum-scroll inside the sheet from bubbling out.
+          overscrollBehavior: 'contain',
         }}
       >
         {draggable && (
@@ -152,8 +188,8 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
           <div
             role="button"
             tabIndex={0}
-            aria-label="Drag down or press to dismiss"
-            onPointerDown={e => dragControls.start(e)}
+            aria-label="Dismiss"
+            onPointerDown={e => { e.stopPropagation(); dragControls.start(e) }}
             onKeyDown={onHandleKeyDown}
             style={{
               padding: '8px 0', margin: '-8px 0 10px',
