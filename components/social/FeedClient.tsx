@@ -2,7 +2,7 @@
 import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CheckinCard } from './CheckinCard'
-import { CheckinModal } from './CheckinModal'
+import { CheckinModal, type CopySource } from './CheckinModal'
 import { timeAgo } from '@/lib/timeAgo'
 import Link from 'next/link'
 
@@ -11,6 +11,7 @@ type CheckinPayload = {
   grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
+  viewerFollowsAuthor?: boolean
 }
 type FeedItem =
   | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
@@ -22,6 +23,7 @@ export function FeedClient({ myId }: { myId: number }) {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [extra, setExtra] = useState<FeedItem[]>([])
   const [showCheckin, setShowCheckin] = useState(false)
+  const [copySource, setCopySource] = useState<CopySource | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
 
@@ -46,6 +48,7 @@ export function FeedClient({ myId }: { myId: number }) {
 
   const handlePosted = useCallback(() => {
     setShowCheckin(false)
+    setCopySource(null)
     setRefreshKey(k => k + 1)
   }, [])
 
@@ -92,6 +95,19 @@ export function FeedClient({ myId }: { myId: number }) {
                 setRefreshKey(k => k + 1)
               }}
               onEdited={() => setRefreshKey(k => k + 1)}
+              onCopy={item.author.id === myId || !item.checkin.viewerFollowsAuthor ? undefined : () => setCopySource({
+                id: item.checkin.id,
+                wineName: item.checkin.wineName,
+                producer: item.checkin.producer,
+                vintage: item.checkin.vintage,
+                grape: item.checkin.grape,
+                type: item.checkin.type,
+                imageUrl: item.checkin.imageUrl,
+                venueName: item.checkin.venueName,
+                city: item.checkin.city,
+                country: item.checkin.country,
+                author: { id: item.author.id, name: item.author.name },
+              })}
             />
           )
         }
@@ -122,6 +138,13 @@ export function FeedClient({ myId }: { myId: number }) {
       )}
 
       {showCheckin && <CheckinModal onClose={() => setShowCheckin(false)} onPosted={handlePosted} />}
+      {copySource && (
+        <CheckinModal
+          copyFromCheckin={copySource}
+          onClose={() => setCopySource(null)}
+          onPosted={handlePosted}
+        />
+      )}
     </div>
   )
 }

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckinCard } from './CheckinCard'
+import { CheckinModal, type CopySource } from './CheckinModal'
 
 type Checkin = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
@@ -13,33 +14,18 @@ type Checkin = {
 
 interface Props {
   initialCheckins: Checkin[]
-  // The id and identity of the user whose profile is being viewed.
   profileUserId: number
   profileUserName: string
   profileUserXp?: number
-  // The viewer's id (the logged-in user). null when not signed in.
   myId: number | null
+  viewerFollowsProfile?: boolean
 }
 
-// Client wrapper around the profile check-ins list. The profile page itself
-// is a server component — this carries the small bit of client state needed
-// so the profile owner can edit/delete their own check-ins (matching the
-// feed UX).
-//
-// On delete: card is removed from local state immediately for snappy UX.
-// On edit: router.refresh() re-runs the server component with fresh data
-// so the card reflects the saved changes without a full page reload.
-//
-// Cards render with showAuthor=true so the edit button (which lives inside
-// the author row of CheckinCard) is reachable on the profile owner's view.
-export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, myId }: Props) {
+export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, myId, viewerFollowsProfile }: Props) {
   const router = useRouter()
-  // Render initialCheckins directly (so router.refresh() re-pushes the
-  // freshest data without state-sync gymnastics). For optimistic delete
-  // before the next server roundtrip, mask hidden ids out via a Set —
-  // that survives prop changes naturally and gets reconciled when the
-  // server next re-fetches.
+  // Optimistic delete: hide ids client-side until the next router.refresh().
   const [hiddenIds, setHiddenIds] = useState<Set<number>>(new Set())
+  const [copySource, setCopySource] = useState<Checkin | null>(null)
   const isOwnProfile = myId !== null && myId === profileUserId
   const author = { id: profileUserId, name: profileUserName, xp: profileUserXp }
   const visible = initialCheckins.filter(c => !hiddenIds.has(c.id))
@@ -64,8 +50,28 @@ export function ProfileCheckins({ initialCheckins, profileUserId, profileUserNam
             router.refresh()
           } : undefined}
           onEdited={isOwnProfile ? () => router.refresh() : undefined}
+          onCopy={isOwnProfile || myId === null || !viewerFollowsProfile ? undefined : () => setCopySource(c)}
         />
       ))}
+      {copySource && (
+        <CheckinModal
+          copyFromCheckin={{
+            id: copySource.id,
+            wineName: copySource.wineName,
+            producer: copySource.producer,
+            vintage: copySource.vintage,
+            grape: copySource.grape,
+            type: copySource.type,
+            imageUrl: copySource.imageUrl,
+            venueName: copySource.venueName,
+            city: copySource.city,
+            country: copySource.country,
+            author: { id: profileUserId, name: profileUserName },
+          } satisfies CopySource}
+          onClose={() => setCopySource(null)}
+          onPosted={() => { setCopySource(null); router.refresh() }}
+        />
+      )}
     </>
   )
 }

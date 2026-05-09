@@ -59,6 +59,14 @@ export async function GET(req: NextRequest) {
     })).map(l => l.checkinId)
   )
 
+  // Set of viewer-follows-author — gates the "I had this too" button per row.
+  const myFollowing = new Set(
+    (await prisma.follow.findMany({
+      where: { followerId: userId, followingId: { in: checkins.map(c => c.user.id) } },
+      select: { followingId: true },
+    })).map(f => f.followingId)
+  )
+
   // Badge unlocks (last 30 days)
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
   const badges = await prisma.userBadge.findMany({
@@ -80,6 +88,7 @@ export async function GET(req: NextRequest) {
         venueName: c.venueName, city: c.city, country: c.country,
         flavors: c.flavors, likeCount: c._count.likes, createdAt: c.createdAt,
         tags: c.tags?.map(t => t.user) ?? [], liked: myLikes.has(c.id),
+        viewerFollowsAuthor: myFollowing.has(c.user.id),
       },
     })),
     ...badges.map(b => ({

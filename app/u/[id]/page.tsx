@@ -89,6 +89,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
           profileUserName={user.name}
           profileUserXp={user.xp}
           myId={myId}
+          viewerFollowsProfile={isFollowing}
           initialCheckins={checkins.map(c => ({
             id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
             grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
