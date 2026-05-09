@@ -149,6 +149,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
           )}
         </div>
         <span style={{fontSize:22,flexShrink:0}}>{isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}</span>
+        <button className="btn-s" onClick={onClose} style={{fontSize:9,flexShrink:0}}>close</button>
       </div>
 
       {!isRedacted && wine.imageUrl && (

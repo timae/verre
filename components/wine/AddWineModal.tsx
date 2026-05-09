@@ -158,9 +158,12 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
 
   return (
     <Modal onClose={onClose} maxWidth={600} maxHeight="90vh">
-        <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
-          {isEdit ? 'Edit wine' : 'Add wine'}{' '}
-          <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>
+            {isEdit ? 'Edit wine' : 'Add wine'}{' '}
+            <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
+          </div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
         </div>
 
         {/* Photo + scan */}

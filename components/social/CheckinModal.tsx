@@ -156,8 +156,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
 
   return (
     <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)" maxHeight="90vh">
-      <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
-          {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em' }}>
+            {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
+          </div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
         </div>
         {isCopy && copyFromCheckin && (
           <p style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -10, marginBottom: 14 }}>

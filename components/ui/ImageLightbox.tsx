@@ -1,7 +1,7 @@
 'use client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { TransformWrapper, TransformComponent, useTransformEffect, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef, type ReactZoomPanPinchContextState } from 'react-zoom-pan-pinch'
+import { TransformWrapper, TransformComponent, useTransformEffect, useControls, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef, type ReactZoomPanPinchContextState } from 'react-zoom-pan-pinch'
 
 export type LightboxEvent = CustomEvent<{ src: string; alt?: string }>
 
@@ -98,7 +98,7 @@ export function ImageLightbox() {
             maxScale={5}
             limitToBounds={false}
             centerOnInit
-            doubleClick={{ mode: 'toggle', step: 1.5 }}
+            doubleClick={{ disabled: true }}
             onPanningStart={onPanningStart}
             onPanningStop={onPanningStop}
             onTransform={() => { lastTransformRef.current = Date.now() }}
@@ -140,6 +140,9 @@ function LightboxContent({
 }) {
   const [scale, setScale] = useState(1)
   const scaleRef = useRef(1)
+  const pendingClickRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastClickRef = useRef(0)
+  const { resetTransform } = useControls()
   // Stable callback so useTransformEffect doesn't re-subscribe on every
   // render — high-frequency churn during pinch gestures otherwise.
   const onTransform = useCallback((s: ReactZoomPanPinchContextState) => {
@@ -147,13 +150,39 @@ function LightboxContent({
     setScale(s.state.scale)
   }, [])
   useTransformEffect(onTransform)
+  // Clear any deferred single-tap action if the lightbox unmounts mid-
+  // window — otherwise the timeout fires after teardown and calls
+  // close() unnecessarily.
+  useEffect(() => () => {
+    if (pendingClickRef.current) clearTimeout(pendingClickRef.current)
+  }, [])
+
+  function performSingleClickAction() {
+    const sinceTransform = Date.now() - lastTransformRef.current
+    if (scaleRef.current > 1) return
+    if (sinceTransform < 350) return
+    close()
+  }
 
   function onImageClick(e: React.MouseEvent) {
     e.stopPropagation()
-    // Read from ref, not state — avoids any closure-staleness hazard.
-    if (scaleRef.current > 1) return
-    if (Date.now() - lastTransformRef.current < 350) return
-    close()
+    const now = Date.now()
+    const sinceLastClick = now - lastClickRef.current
+    lastClickRef.current = now
+    // Second click within 300ms = double-tap — cancel the pending single-
+    // tap action and reset zoom.
+    if (sinceLastClick < 300 && pendingClickRef.current !== null) {
+      clearTimeout(pendingClickRef.current)
+      pendingClickRef.current = null
+      lastClickRef.current = 0
+      resetTransform(200)
+      return
+    }
+    // Defer single-tap action by 300ms so a fast second tap can cancel it.
+    pendingClickRef.current = setTimeout(() => {
+      pendingClickRef.current = null
+      performSingleClickAction()
+    }, 300)
   }
 
   const cursor = scale > 1 ? 'zoom-out' : 'zoom-in'
@@ -162,10 +191,11 @@ function LightboxContent({
       wrapperStyle={{ width: '100%', height: '100%', cursor }}
       contentStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}
     >
-      {/* onClick on a wrapper div catches taps that fall on padding /
-          background between the img bounds and the content div, which can
-          happen on mobile due to objectFit and library-applied transforms. */}
-      <div onClick={onImageClick} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      {/* Wrapper fills the content area so taps anywhere inside the
+          TransformComponent route through onImageClick — which keeps
+          tap-to-close working on the area around the image and gates
+          dismissal on scaleRef so a zoomed image isn't closed. */}
+      <div onClick={onImageClick} style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', touchAction: 'manipulation' }}>
         <img
           src={src}
           alt={alt || ''}
@@ -177,6 +207,7 @@ function LightboxContent({
             cursor,
             userSelect: 'none',
             WebkitTouchCallout: 'none',
+            touchAction: 'manipulation',
           }}
         />
       </div>

@@ -24,6 +24,10 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={560} maxHeight="90vh">
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>saved wine</div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+        </div>
         {wine.image_url && (
           <img src={wine.image_url} alt={wine.name} onClick={()=>openLightbox(wine.image_url!,wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:12,marginBottom:14,cursor:'zoom-in'}} />
         )}
@@ -76,7 +80,6 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           </div>
         )}
 
-        <button className="btn-g" onClick={onClose}>close</button>
         {onRemove && (
           <ConfirmDeleteButton
             label="⌫ remove from saved"
