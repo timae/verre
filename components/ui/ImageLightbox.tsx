@@ -1,7 +1,7 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { TransformWrapper, TransformComponent, useTransformEffect, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef } from 'react-zoom-pan-pinch'
+import { TransformWrapper, TransformComponent, useTransformEffect, type ReactZoomPanPinchRef, type ReactZoomPanPinchContentRef, type ReactZoomPanPinchContextState } from 'react-zoom-pan-pinch'
 
 export type LightboxEvent = CustomEvent<{ src: string; alt?: string }>
 
@@ -67,7 +67,7 @@ export function ImageLightbox() {
     <AnimatePresence>
       {state && (
         <motion.div
-          onClick={() => setState(null)}
+          onClick={e => { if (e.target === e.currentTarget) setState(null) }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
@@ -139,11 +139,19 @@ function LightboxContent({
   lastTransformRef: React.MutableRefObject<number>
 }) {
   const [scale, setScale] = useState(1)
-  useTransformEffect(s => { setScale(s.state.scale) })
+  const scaleRef = useRef(1)
+  // Stable callback so useTransformEffect doesn't re-subscribe on every
+  // render — high-frequency churn during pinch gestures otherwise.
+  const onTransform = useCallback((s: ReactZoomPanPinchContextState) => {
+    scaleRef.current = s.state.scale
+    setScale(s.state.scale)
+  }, [])
+  useTransformEffect(onTransform)
 
   function onImageClick(e: React.MouseEvent) {
     e.stopPropagation()
-    if (scale > 1) return
+    // Read from ref, not state — avoids any closure-staleness hazard.
+    if (scaleRef.current > 1) return
     if (Date.now() - lastTransformRef.current < 350) return
     close()
   }
@@ -154,20 +162,24 @@ function LightboxContent({
       wrapperStyle={{ width: '100%', height: '100%', cursor }}
       contentStyle={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%' }}
     >
-      <img
-        src={src}
-        alt={alt || ''}
-        onClick={onImageClick}
-        draggable={false}
-        style={{
-          maxWidth: '100%', maxHeight: '90vh',
-          objectFit: 'contain', borderRadius: 12,
-          boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
-          cursor,
-          userSelect: 'none',
-          WebkitTouchCallout: 'none',
-        }}
-      />
+      {/* onClick on a wrapper div catches taps that fall on padding /
+          background between the img bounds and the content div, which can
+          happen on mobile due to objectFit and library-applied transforms. */}
+      <div onClick={onImageClick} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <img
+          src={src}
+          alt={alt || ''}
+          draggable={false}
+          style={{
+            maxWidth: '100%', maxHeight: '90vh',
+            objectFit: 'contain', borderRadius: 12,
+            boxShadow: '0 24px 80px rgba(0,0,0,0.6)',
+            cursor,
+            userSelect: 'none',
+            WebkitTouchCallout: 'none',
+          }}
+        />
+      </div>
     </TransformComponent>
   )
 }

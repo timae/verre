@@ -36,8 +36,8 @@ interface Props {
   align?: 'flex-end' | 'center'
 }
 
-const SWIPE_DISMISS = 120
-const SWIPE_VELOCITY = 600
+const SWIPE_DISMISS = 100
+const SWIPE_VELOCITY = 500
 
 // Shared modal/sheet primitive.
 //
@@ -104,24 +104,59 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
   const sheetRef = useRef<HTMLDivElement | null>(null)
   const draggable = align === 'flex-end'
   const y = useMotionValue(0)
+  // Active per-gesture cleanup functions — drained on unmount so that any
+  // pointermove/pointerup window listeners don't outlive the component.
+  const activeCleanupsRef = useRef<Set<() => void>>(new Set())
+  useEffect(() => {
+    return () => { activeCleanupsRef.current.forEach(fn => fn()); activeCleanupsRef.current.clear() }
+  }, [])
 
+  // Defer-arm: instead of calling dragControls.start on pointerdown (which
+  // would steal pointer-capture from anything beneath, breaking chips and
+  // form controls), watch for movement direction. Only when the user
+  // actually moves vertically — and we're at scroll-top — arm the sheet
+  // drag. Horizontal movement leaves the gesture alone so things like
+  // FlavorChips' horizontal pan-to-set-intensity still work.
   function onSheetPointerDown(e: React.PointerEvent) {
     if (!draggable) return
-    // Touch-only — on desktop, "drag the body of a dialog" isn't a
-    // convention and a stray mouse drag could dismiss accidentally.
     if (e.pointerType !== 'touch') return
     const el = sheetRef.current
     if (!el) return
-    // Only arm sheet drag when at scroll-top — otherwise let the body scroll.
     if (el.scrollTop > 0) return
-    // Skip interactive controls and gesture-claiming patterns:
-    // - form controls so taps on them work normally
-    // - role=button so the handle bar's own drag isn't double-armed
-    // - .chip because FlavorChips uses its own vertical drag for intensity
-    // - label so label→input forwarding isn't lost to a micro-wobble drag
+    // Skip text-input interactions: typing inside an input shouldn't even
+    // be considered for arming. Buttons get clean clicks because no
+    // movement = no arm.
     const target = e.target as HTMLElement
-    if (target.closest('input, textarea, select, button, [role="button"], label, .chip, [contenteditable], a[href]')) return
-    dragControls.start(e)
+    if (target.closest('input, textarea, select, [contenteditable], a[href]')) return
+
+    const startX = e.clientX
+    const startY = e.clientY
+    const pointerId = e.pointerId
+    const SLOP = 8
+
+    function onMove(ev: PointerEvent) {
+      if (ev.pointerId !== pointerId) return
+      const dx = Math.abs(ev.clientX - startX)
+      const dy = ev.clientY - startY
+      if (dy < SLOP) return
+      if (dx > Math.abs(dy)) { cleanup(); return }
+      cleanup()
+      dragControls.start(ev)
+    }
+    function onEnd(ev: PointerEvent) {
+      if (ev.pointerId !== pointerId) return
+      cleanup()
+    }
+    function cleanup() {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onEnd)
+      window.removeEventListener('pointercancel', onEnd)
+      activeCleanupsRef.current.delete(cleanup)
+    }
+    activeCleanupsRef.current.add(cleanup)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onEnd)
+    window.addEventListener('pointercancel', onEnd)
   }
 
   function dismiss() {
