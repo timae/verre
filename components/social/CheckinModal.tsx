@@ -156,7 +156,6 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
 
   return (
     <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)">
-      <div className="sheet-bar" />
       <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
           {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
         </div>

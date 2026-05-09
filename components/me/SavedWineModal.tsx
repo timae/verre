@@ -24,8 +24,6 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={560} maxHeight="90vh">
-        <div className="sheet-bar" />
-
         {wine.image_url && (
           <img src={wine.image_url} alt={wine.name} onClick={()=>openLightbox(wine.image_url!,wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:12,marginBottom:14,cursor:'zoom-in'}} />
         )}

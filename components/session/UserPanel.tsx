@@ -53,7 +53,6 @@ export function UserPanel({ onClose }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={600} minHeight="55vh" maxHeight="90vh">
-      <div className="sheet-bar" />
         <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
           {displayName || 'you'}
         </div>

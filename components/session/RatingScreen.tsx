@@ -53,7 +53,6 @@ export function RatingScreen({ wineId, onClose }: Props) {
 
   if (!wine) return (
     <Modal onClose={onClose} maxWidth={400}>
-      <div className="sheet-bar" />
       <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
       <button className="btn-g" onClick={onClose}>close</button>
     </Modal>
@@ -131,7 +130,6 @@ export function RatingScreen({ wineId, onClose }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={580} maxHeight="90vh">
-      <div className="sheet-bar" />
       {/* Title row */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
         <div style={{flex:1,minWidth:0}}>

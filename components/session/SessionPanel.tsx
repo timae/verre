@@ -206,8 +206,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={600} maxHeight="90vh">
-      <div className="sheet-bar" />
-
         {/* Header */}
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
           <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>{m?.name || formatCode(code)}</div>

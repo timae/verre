@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useRef, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { motion, useDragControls, useMotionValue, animate, type PanInfo } from 'framer-motion'
 
 // Module-level stack of open Modal instances. The Escape key closes only
 // the topmost (most recently opened) — without this, every open Modal's
@@ -35,6 +36,9 @@ interface Props {
   align?: 'flex-end' | 'center'
 }
 
+const SWIPE_DISMISS = 120
+const SWIPE_VELOCITY = 600
+
 // Shared modal/sheet primitive.
 //
 // Renders children inside a fixed-position backdrop, attached to
@@ -53,12 +57,13 @@ interface Props {
 //     to the bottom of the viewport with rounded top corners and a
 //     thin grab handle, scroll handled on the backdrop so tall
 //     content doesn't get cropped on short viewports.
+//   - The sheet-bar drag handle: rendered automatically for bottom-
+//     anchored sheets. Only the handle starts a drag — the sheet body
+//     is left alone so form scroll inside the modal never gets
+//     hijacked by an accidental swipe.
 //
 // What the caller owns:
 //   - The contents (forms, content, buttons).
-//   - Sheet-bar visibility (call sites add their own `<div className="sheet-bar" />`
-//     if they want one — kept here as a caller responsibility for now
-//     since not every modal needs it).
 export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight, align = 'flex-end' }: Props) {
   // Stable token for this Modal instance — used to identify ourselves in
   // the open-modal stack so we only respond to Escape when topmost.
@@ -88,6 +93,30 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
     }
   }, [])
 
+  // Drag-to-dismiss is bottom-anchored sheets only. dragListener=false +
+  // dragControls.start in onPointerDown means only the sheet-bar handle
+  // arms the drag — body taps and scrolls aren't affected.
+  const dragControls = useDragControls()
+  const draggable = align === 'flex-end'
+  const y = useMotionValue(0)
+
+  function dismiss() {
+    // Slide the sheet off-screen before unmounting so swipe dismissals
+    // don't visually cut. ~700px covers any reasonable viewport height.
+    animate(y, 700, { duration: 0.18, ease: 'easeIn', onComplete: () => onCloseRef.current() })
+  }
+
+  function onDragEnd(_: unknown, info: PanInfo) {
+    if (info.offset.y > SWIPE_DISMISS || info.velocity.y > SWIPE_VELOCITY) dismiss()
+  }
+
+  function onHandleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      dismiss()
+    }
+  }
+
   if (typeof document === 'undefined') return null
   return createPortal(
     <div
@@ -99,9 +128,16 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
       }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}
     >
-      <div
+      <motion.div
+        drag={draggable ? 'y' : false}
+        dragControls={dragControls}
+        dragListener={false}
+        dragConstraints={{ top: 0, bottom: 0 }}
+        dragElastic={0.2}
+        onDragEnd={onDragEnd}
         style={{
           width: '100%', maxWidth,
+          y,
           ...(minHeight ? { minHeight } : {}),
           ...(maxHeight ? { maxHeight, overflowY: 'auto' } : {}),
           background: 'var(--bg2)',
@@ -110,8 +146,26 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
           ...(align === 'flex-end' ? { marginTop: 'auto' } : {}),
         }}
       >
+        {draggable && (
+          // Padded hit area around the visible 36×3px bar — so a slightly-
+          // off pointerdown still arms the drag.
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Drag down or press to dismiss"
+            onPointerDown={e => dragControls.start(e)}
+            onKeyDown={onHandleKeyDown}
+            style={{
+              padding: '8px 0', margin: '-8px 0 10px',
+              cursor: 'grab', touchAction: 'none',
+              display: 'flex', justifyContent: 'center',
+            }}
+          >
+            <div className="sheet-bar" style={{ margin: 0 }} />
+          </div>
+        )}
         {children}
-      </div>
+      </motion.div>
     </div>,
     document.body,
   )
