@@ -158,6 +158,18 @@ Scores are decimal `0..5` in `0.25` steps (quarter-stars). `0` means "not rated"
 
 **Hall of Fame trigger.** A row is created when `score >= 5` on commit (the only way to hit it post-decimal is exactly `5`, since the snap caps there). The check is on the canonical numeric value, not on a string compare — relevant if you touch the rate POST handler.
 
+### User avatars
+
+Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/u_<userId>_<timestamp>.<ext>`; the URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
+
+**Edit endpoint.** `POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth + 10/h per-user rate limit. POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. On replace, the prior URL is reclaimed from S3 fire-and-forget after the new upload + DB update succeed. On account-delete, `lib/accountDelete.ts` reclaims the avatar alongside check-in and wine images.
+
+**JPEG metadata strip.** `lib/s3.ts:stripJpegMetadata` is a pure-JS byte walker that drops APP0..APP15 and COM segments before the bytes hit S3 — primarily to remove EXIF GPS coordinates from mobile-camera photos. Runs for `image/jpeg` only. iOS Safari converts HEIC → JPEG on upload, so the JPEG-only coverage handles nearly all real upload paths. PNG/WebP/GIF metadata is not stripped (rare for camera output, no GPS surface). Pre-allocated `Buffer + body.copy` — push-spread on a 2MB SOS payload would crash V8's argument-stack limit.
+
+**Render path.** `loadProfile` returns `imageUrl: string | null` to every consumer (`/api/users/<id>` route + SSR `/u/<id>`); `/api/feed` selects `user.imageUrl` for check-in authors and badge users; `lib/profilePeople.ts` selects `image_url` for followers/following lists. The `<Avatar>` primitive renders the URL as `<img src>` with `objectFit: cover` + `borderRadius: 50%`, falling back to an initial-letter circle on null. `<EditableAvatar>` is the owner-side wrapper (tap opens AvatarEditor; on save, optimistic data-URL render + `router.refresh()` + `queryClient.invalidateQueries(['user-profile', userId])` for in-tasting cache); `<ZoomableAvatar>` is the non-owner wrapper (tap opens the full-screen lightbox).
+
+**Editor UX.** `components/profile/AvatarEditor.tsx` is a `<Modal>` with file picker → `react-easy-crop` (round mask, square aspect, 1×–4× zoom slider, drag to reposition) → canvas crop to 512×512 JPEG @ 0.85 quality → POST. The canvas re-encode incidentally strips metadata (defense-in-depth alongside the server-side strip). Remove uses `<ConfirmDeleteButton>` with `btn-del` styling. Picker accepts `image/jpeg|png|webp` only — HEIC was dropped because non-Safari browsers can't decode it for the cropper.
+
 ### Session codes
 
 Two valid lengths coexist: **4-char** (legacy bare form, e.g. `B369`) and **8-char canonical** (hyphenated for display: `XYZW-1234`). Both draw from the **Crockford base32 alphabet** — `0-9 A-Z` minus `I L O U` (32 chars, case-insensitive, profanity-resistant by removing the U). Existing 4-char rows happen to use the hex subset (legacy `genCode`), but the validators accept any Crockford char in either length — `genCode` only emits 8-char today, and any short codes that appear later would draw from the full 32-char alphabet.
@@ -274,6 +286,7 @@ Limits in production:
 | Login (NextAuth `authorize()`) | 10 fails/min/email + 20 fails/hour/email + 100 fails/10min/IP | Brute-force on stolen email knowledge. Counters increment on bcrypt failure only. |
 | `/api/auth/register` | 100/min/IP | Mass-signup spam. |
 | `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
+| `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 
@@ -329,6 +342,8 @@ Anything else falls through to `console.error(error)` with a full stack so genui
 | `/api/me/ratings` | GET | cookie | implicit |
 | `/api/me/account` | PATCH | cookie | edits own row only |
 | `/api/me/account` | DELETE | cookie + password re-auth | tombstones references, drops user row, scrubs Redis |
+| `/api/me/avatar` | POST | cookie | upload/replace own avatar; 10/h rate-limit; reclaims old S3 |
+| `/api/me/avatar` | DELETE | cookie | remove own avatar; reclaims S3 |
 | `/api/hof` | GET | none | public leaderboard |
 | `/api/session` | POST | none (anyone can host) | blind requires pro; lifespan>48h requires pro |
 | `/api/session/join` | POST | none (anyone with the code) | by design |
@@ -402,6 +417,7 @@ Primitives in place today:
 - **`<FlavorChips>`** (`components/rate/FlavorChips.tsx`) — canonical input surface for setting flavour intensity (none → intense, 0–5). Used in RatingScreen and CheckinModal. Tap-or-drag pill chips with a separate × clear button per row; the `INTENSITY` label array is shared with `<IntensityHelp>` (`components/rate/IntensityHelp.tsx`), the (i)-popover that explains the scale, so chip captions and help text can't drift.
 - **`<StarRating>`** (`components/ui/StarRating.tsx`) + **`formatScore`** (`lib/formatScore.ts`) — canonical *read-side* score rendering. The component renders `★ <num>` in two size tiers (`compact` / `detail`); `formatScore(v)` is the same logic exported for non-component call sites (compare-page chips, history sublist rows where the full primitive would dominate the surrounding row). Use one of these on every surface that displays a score — never re-implement `★ ${v}` inline. Display rule (locked): single star + number, no `/5` denominator; whole numbers show `.0` (`4.0`), half-steps trim trailing zero (`4.5`), quarters keep both decimals (`4.25`); empty state (null/undefined/0/NaN) renders nothing.
 - **`<ScoreSlider>`** (`components/ui/ScoreSlider.tsx`) — canonical *write-side* score input. Touch-and-drag slider (0..5, snaps to 0.25), tabular-nums + `.toFixed(2)` for stable digits during drag, full keyboard support via `role="slider"` + arrow/Page/Home/End handlers. Used in RatingScreen and CheckinModal. Replaces the old 5-button score row; if a third score-entry surface appears, route it through this primitive too.
+- **`<Avatar>`** (`components/profile/Avatar.tsx`) — canonical user-avatar circle. Renders `<img>` when `imageUrl` is set, falls back to the user's initial letter on an accent-tinted background. Single `size` prop (pixels). Use this everywhere a user circle appears (ProfileHeader, ProfilePreviewInline, CheckinCard author byline, ProfilePanelPeople rows, AvatarEditor empty state). Two thin client wrappers add behavior: `<EditableAvatar>` (own avatar — tap opens AvatarEditor with optimistic UI + TanStack invalidation on save), `<ZoomableAvatar>` (other users — tap opens the full-screen lightbox).
 
 Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
 

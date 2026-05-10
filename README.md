@@ -22,6 +22,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Hosts can permanently delete a session and its data; bookmarked wines stay saved
 - Social feed: log standalone check-ins (with photo, location, tagged friends), follow other users, like and discover what your tasting network is drinking
 - Public profiles at `/u/<id>` showing recent check-ins and stats
+- Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -128,6 +129,8 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET / POST / PATCH | /api/me/badges | Earned badges, XP, manual recheck, mark-as-seen |
 | PATCH | /api/me/account | Edit own name / email / password |
 | DELETE | /api/me/account | Delete own account (password re-auth required) |
+| POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
+| DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
 
 **Sessions**
 
