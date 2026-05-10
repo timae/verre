@@ -4,11 +4,13 @@ import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { getLevel } from '@/lib/badges'
 import { FollowButton } from '@/components/social/FollowButton'
+import { Avatar } from './Avatar'
 
 type Direction = 'followers' | 'following'
 type MutualFilter = 'mutual' | 'all' | 'non'
 type PersonRow = {
   id: number; name: string; xp: number
+  imageUrl: string | null
   isFollowing: boolean
   profileFollowsThem: boolean | null
 }
@@ -119,13 +121,7 @@ function PersonRow({ row, myId, direction }: { row: PersonRow; myId: number | nu
       borderRadius:10, background:'var(--bg3)', border:'1px solid var(--border)',
     }}>
       <Link href={`/u/${row.id}`} style={{ display:'flex', alignItems:'center', gap:10, flex:1, minWidth:0, textDecoration:'none' }}>
-        <div style={{
-          width:36, height:36, borderRadius:'50%', flexShrink:0,
-          background:'rgba(200,150,60,0.18)', display:'flex', alignItems:'center', justifyContent:'center',
-          fontSize:15, fontWeight:800, color:'var(--accent)',
-        }}>
-          {row.name[0]?.toUpperCase() ?? '?'}
-        </div>
+        <Avatar name={row.name} imageUrl={row.imageUrl} size={36} />
         <div style={{ minWidth:0, flex:1 }}>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
             {row.name}

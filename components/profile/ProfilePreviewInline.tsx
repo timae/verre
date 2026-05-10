@@ -56,19 +56,8 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
         )}
 
         {data && (
-          <div style={{ display: 'flex', alignItems: 'stretch', gap: 12 }}>
-            {/* aspect-ratio:1 + alignSelf:stretch makes the circle's
-                height span name-row → visit-profile-row, and width
-                follows that height so it stays a circle. */}
-            <Avatar
-              name={data.name}
-              imageUrl={data.imageUrl}
-              style={{
-                alignSelf: 'stretch',
-                aspectRatio: '1 / 1',
-                fontSize: 'clamp(20px, 4vw, 32px)',
-              }}
-            />
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <Avatar name={data.name} imageUrl={data.imageUrl} size={96} />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ flex: 1, minWidth: 0, fontWeight: 700, fontSize: 13, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

@@ -17,17 +17,18 @@ interface Props {
   profileUserId: number
   profileUserName: string
   profileUserXp?: number
+  profileUserImageUrl?: string | null
   myId: number | null
   viewerFollowsProfile?: boolean
 }
 
-export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, myId, viewerFollowsProfile }: Props) {
+export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile }: Props) {
   const router = useRouter()
   // Optimistic delete: hide ids client-side until the next router.refresh().
   const [hiddenIds, setHiddenIds] = useState<Set<number>>(new Set())
   const [copySource, setCopySource] = useState<Checkin | null>(null)
   const isOwnProfile = myId !== null && myId === profileUserId
-  const author = { id: profileUserId, name: profileUserName, xp: profileUserXp }
+  const author = { id: profileUserId, name: profileUserName, xp: profileUserXp, imageUrl: profileUserImageUrl }
   const visible = initialCheckins.filter(c => !hiddenIds.has(c.id))
 
   if (visible.length === 0) {

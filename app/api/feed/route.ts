@@ -52,7 +52,7 @@ export async function GET(req: NextRequest) {
   const checkins = await prisma.checkin.findMany({
     where: { userId: { in: networkIds }, isPublic: true, createdAt: { lt: cursor } },
     include: {
-      user: { select: { id: true, name: true, xp: true } },
+      user: { select: { id: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
       tags: { include: { user: { select: { id: true, name: true } } } },
     },
@@ -80,7 +80,7 @@ export async function GET(req: NextRequest) {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
   const badges = await prisma.userBadge.findMany({
     where: { userId: { in: networkIds }, earnedAt: { lt: cursor, gt: thirtyDaysAgo } },
-    include: { user: { select: { id: true, name: true } } },
+    include: { user: { select: { id: true, name: true, imageUrl: true } } },
     orderBy: { earnedAt: 'desc' },
     take: PAGE,
   })

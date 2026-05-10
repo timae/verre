@@ -12,6 +12,7 @@ import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
+import { Avatar } from '@/components/profile/Avatar'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
@@ -23,7 +24,7 @@ interface Props {
     flavors?: Record<string,number>|null; likeCount?: number
     createdAt?: string|Date|null; tags?: {id:number;name:string}[]
   }
-  author?: {id:number;name:string;xp?:number}|null
+  author?: {id:number;name:string;xp?:number;imageUrl?:string|null}|null
   liked?: boolean; showAuthor?: boolean; onDelete?: ()=>void; onEdited?: ()=>void; isOwn?: boolean
   // When provided on a non-own card, shows the "+ had a sip" button in the
   // same slot the edit button takes on own cards. Caller is responsible for
@@ -52,13 +53,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
       {showAuthor && author && (
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
           <Link href={`/u/${author.id}`} style={{ textDecoration:'none', display:'flex', alignItems:'center', gap:10 }}>
-            <div style={{
-              width:40, height:40, borderRadius:'50%', flexShrink:0,
-              background:'rgba(200,150,60,0.18)', display:'flex', alignItems:'center', justifyContent:'center',
-              fontSize:17, fontWeight:800, color:'var(--accent)',
-            }}>
-              {author.name[0].toUpperCase()}
-            </div>
+            <Avatar name={author.name} imageUrl={author.imageUrl} size={40} />
             <div>
               <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2 }}>{author.name}</div>
               {level && <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:1 }}>{level.icon} {level.name}</div>}

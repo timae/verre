@@ -65,8 +65,8 @@ export async function listProfilePeople(
   const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
   const cursorClause = cursorId ? Prisma.sql`AND u.id < ${cursorId}` : Prisma.empty
 
-  const rows = await prisma.$queryRaw<{ id: number; name: string; xp: number }[]>`
-    SELECT u.id, u.name, u.xp
+  const rows = await prisma.$queryRaw<{ id: number; name: string; xp: number; image_url: string | null }[]>`
+    SELECT u.id, u.name, u.xp, u.image_url
     FROM follows f
     JOIN users u ON u.id = ${otherCol}
     WHERE ${fixedCol} = ${profileId}
@@ -108,6 +108,7 @@ export async function listProfilePeople(
       id: r.id,
       name: r.name,
       xp: r.xp,
+      imageUrl: r.image_url,
       isFollowing: myFollowing.has(r.id),
       profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
     })),

@@ -1,7 +1,8 @@
 import { getLevel } from '@/lib/badges'
 import { ProfileSettingsButton } from './ProfileSettingsButton'
 import { FollowButton } from '@/components/social/FollowButton'
-import { Avatar } from './Avatar'
+import { EditableAvatar } from './EditableAvatar'
+import { ZoomableAvatar } from './ZoomableAvatar'
 
 interface Props {
   userId: number
@@ -21,7 +22,10 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
-        <Avatar name={userName} imageUrl={userImageUrl} size={56} />
+        {isOwner
+          ? <EditableAvatar name={userName} imageUrl={userImageUrl ?? null} size={56} />
+          : <ZoomableAvatar name={userName} imageUrl={userImageUrl} size={56} />
+        }
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{userName}</h1>
           <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{level.icon} {level.name} · {userXp.toLocaleString()} XP</div>

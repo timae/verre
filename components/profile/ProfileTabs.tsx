@@ -28,6 +28,7 @@ interface Props {
   profileUserId: number
   profileUserName: string
   profileUserXp: number
+  profileUserImageUrl?: string | null
   myId: number | null
   viewerFollowsProfile: boolean
   initialCheckins: CheckinSeed
@@ -40,7 +41,7 @@ const SWIPE_THRESHOLD = 60
 const SWIPE_VELOCITY = 400
 
 export function ProfileTabs({
-  profileUserId, profileUserName, profileUserXp, myId, viewerFollowsProfile, initialCheckins, initialTab = 'checkins', stats, flavor,
+  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialTab = 'checkins', stats, flavor,
 }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab)
   // Track which tabs have ever been active so adjacent panels can lazy-mount
@@ -136,6 +137,7 @@ export function ProfileTabs({
                 profileUserId={profileUserId}
                 profileUserName={profileUserName}
                 profileUserXp={profileUserXp}
+                profileUserImageUrl={profileUserImageUrl}
                 myId={myId}
                 viewerFollowsProfile={viewerFollowsProfile}
                 initialCheckins={initialCheckins}
