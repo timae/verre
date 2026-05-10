@@ -114,6 +114,22 @@ Brief the reviewer with specific concerns to look for (parameter validation, edg
 
 **Lifetime counter snapshots on `users`:** the rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.) on `users` rows. Counters never decrement — protects badge progression from rating deletions and gives O(1) reads on the badge hot path.
 
+### Score system
+
+Scores are decimal `0..5` in `0.25` steps (quarter-stars). `0` means "not rated" — empty state. Anything stored is `> 0`.
+
+**Storage.** Both `ratings.score` (in-session) and `checkins.score` (standalone) are `Decimal(3,2)` in Postgres. The same value lives transiently in Redis as a JSON number under `s:{CODE}:r:{IDENTITYID}:{WINEID}` while a session is live, then gets archived to the relational column on commit.
+
+**Validation.** A value passes if `Number.isFinite(v) && v >= 0 && v <= 5 && Number.isInteger(v * 4)` — the `× 4` integer check accepts dyadic fractions and rejects 0.1, 0.3, 1/3, etc. Apply this at every write boundary: `/api/session/<code>/rate`, `/api/checkins` POST, `/api/checkins/<id>` PATCH. Reject with `400` if it fails; never silently round.
+
+**Wire format.** Prisma's runtime `Decimal` (decimal.js) serializes to a JSON **string** (`"4.25"`), not a number. Every API response that surfaces a score must coerce via `Number()` before sending — search for `score: c.score == null ? null : Number(c.score)` or equivalent at the route boundary. Forgetting this ships strings to the client where number arithmetic silently breaks (concatenation instead of addition, `>` comparisons that look right for single digits but fail at 10+).
+
+**Display.** Always go through `<StarRating>` or `formatScore(v)` (see Shared visual primitives) — those encode the locked display rule (`★ 4.0` / `★ 4.5` / `★ 4.25`, no `/5`). Never compose `★ ${v}` inline.
+
+**Input.** Always go through `<ScoreSlider>` for write surfaces. Don't reintroduce a 5-button row, a native `<input type="range">`, or any other control — the slider is the single source of touch + keyboard + ARIA correctness.
+
+**Hall of Fame trigger.** A row is created when `score >= 5` on commit (the only way to hit it post-decimal is exactly `5`, since the snap caps there). The check is on the canonical numeric value, not on a string compare — relevant if you touch the rate POST handler.
+
 ### Session codes
 
 Two valid lengths coexist: **4-char** (legacy bare form, e.g. `B369`) and **8-char canonical** (hyphenated for display: `XYZW-1234`). Both draw from the **Crockford base32 alphabet** — `0-9 A-Z` minus `I L O U` (32 chars, case-insensitive, profanity-resistant by removing the U). Existing 4-char rows happen to use the hex subset (legacy `genCode`), but the validators accept any Crockford char in either length — `genCode` only emits 8-char today, and any short codes that appear later would draw from the full 32-char alphabet.
@@ -356,6 +372,8 @@ Primitives in place today:
 - **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
 - **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
 - **`<FlavorChips>`** (`components/rate/FlavorChips.tsx`) — canonical input surface for setting flavour intensity (none → intense, 0–5). Used in RatingScreen and CheckinModal. Tap-or-drag pill chips with a separate × clear button per row; the `INTENSITY` label array is shared with `<IntensityHelp>` (`components/rate/IntensityHelp.tsx`), the (i)-popover that explains the scale, so chip captions and help text can't drift.
+- **`<StarRating>`** (`components/ui/StarRating.tsx`) + **`formatScore`** (`lib/formatScore.ts`) — canonical *read-side* score rendering. The component renders `★ <num>` in two size tiers (`compact` / `detail`); `formatScore(v)` is the same logic exported for non-component call sites (compare-page chips, history sublist rows where the full primitive would dominate the surrounding row). Use one of these on every surface that displays a score — never re-implement `★ ${v}` inline. Display rule (locked): single star + number, no `/5` denominator; whole numbers show `.0` (`4.0`), half-steps trim trailing zero (`4.5`), quarters keep both decimals (`4.25`); empty state (null/undefined/0/NaN) renders nothing.
+- **`<ScoreSlider>`** (`components/ui/ScoreSlider.tsx`) — canonical *write-side* score input. Touch-and-drag slider (0..5, snaps to 0.25), tabular-nums + `.toFixed(2)` for stable digits during drag, full keyboard support via `role="slider"` + arrow/Page/Home/End handlers. Used in RatingScreen and CheckinModal. Replaces the old 5-button score row; if a third score-entry surface appears, route it through this primitive too.
 
 Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
 
