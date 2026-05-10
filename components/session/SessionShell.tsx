@@ -17,9 +17,18 @@ import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionC
 // projected from `data[myId].ratings` in SessionShell.
 export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
 
+type Participant = { id: string; displayName: string }
+
 type SessionCtx = {
   code: string; displayName: string; myId: string; isHost: boolean
-  sessionMeta: { host: string; name: string; hostUserId: number | null; hostIdentityId?: string; blind?: boolean } | null
+  sessionMeta: {
+    host: string; name: string
+    hostUserId: number | null
+    hostIdentityId?: string
+    blind?: boolean
+    participants: Participant[]
+    coHostIds: string[]
+  } | null
   wines: WineMeta[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
@@ -114,10 +123,13 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const [visitResolved, setVisitResolved] = useState(false)
   const readyToFetch = !isLoggedIn || visitResolved
 
+  // Polled every 5s so participant joins/leaves and cohost role changes
+  // surface in the UI without a manual reload. Same cadence as wines /
+  // ratings so the whole session view stays consistent.
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
     queryFn: () => sessionFetch(C, `/api/session/${C}`).then(r => r.ok ? r.json() : null),
-    staleTime: 30_000,
+    refetchInterval: 5000,
     enabled: readyToFetch,
   })
 

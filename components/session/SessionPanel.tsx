@@ -8,6 +8,7 @@ import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { formatCode, joinPath } from '@/lib/sessionCode'
+import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -88,9 +89,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
   const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
-  type Participant = { id: string; displayName: string }
-  const [participants,  setParticipants]  = useState<Participant[]>([])
-  const [coHostIds,     setCoHostIds]     = useState<string[]>([])
+  // Read from the polled SessionShell meta — joins/leaves and role
+  // changes appear without a manual reload.
+  const participants = sessionMeta?.participants ?? []
+  const coHostIds = sessionMeta?.coHostIds ?? []
+  const [expandedId,    setExpandedId]    = useState<string | null>(null)
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
   const [saveError,     setSaveError]     = useState('')
@@ -137,17 +140,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   const inviteUrl = typeof window !== 'undefined' ? `${window.location.origin}${joinPath(code)}` : ''
   const mapsUrl = address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}` : ''
-
-  useEffect(() => {
-    sessionFetch(code, `/api/session/${code}`)
-      .then(r => r.ok ? r.json() : null)
-      .then(d => {
-        if (!d) return
-        setParticipants(d.participants || [])
-        setCoHostIds(d.coHostIds || [])
-      })
-      .catch(() => {})
-  }, [code])
 
   // While the delete-confirm is open, intercept Escape in the capture phase
   // so it closes the confirm (and only the confirm), not the parent Modal
@@ -197,10 +189,15 @@ export function SessionPanel({ onClose, onLeave }: Props) {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ targetId, action: isCo ? 'remove-cohost' : 'add-cohost' }),
     })
-    if (res.ok) {
-      const { meta } = await res.json()
-      setCoHostIds(meta.coHostIds || [])
-    }
+    if (!res.ok) return
+    // Patch the cached meta from the PATCH response so the actor sees
+    // the new role instantly. Other participants pick it up on their
+    // own next poll tick.
+    const { meta } = await res.json()
+    queryClient.setQueryData(['session-meta', code], (prev: unknown) => ({
+      ...(prev as object),
+      coHostIds: meta.coHostIds || [],
+    }))
   }
 
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
@@ -296,30 +293,46 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                         || !!(meta?.hostUserId && p.id === `u:${meta.hostUserId}`)
                       const isCo = coHostIds.includes(p.id)
                       const isMe = p.id === myId
-                      // Identity-id prefix tells us logged-in vs anon.
-                      // `u:<userId>` means a real account; `a:<uuid>`
-                      // means a session-scoped anon. Bold logged-in
-                      // users so they stand out from anon participants.
+                      // `u:<userId>` = logged-in account, `a:<uuid>` = anon.
+                      // Only logged-in rows are clickable + bold.
                       const isLoggedIn = p.id.startsWith('u:')
+                      const isExpanded = expandedId === p.id
+                      const isClickable = isLoggedIn
+                      const profileUserId = isLoggedIn ? Number(p.id.slice(2)) : null
+                      const onRowClick = () => {
+                        if (!isClickable) return
+                        setExpandedId(isExpanded ? null : p.id)
+                      }
                       return (
-                        <div key={p.id} style={{
-                          display:'flex',alignItems:'center',gap:8,
-                          padding:'6px 8px',
-                          borderBottom:'1px solid var(--bg3)',
-                          borderRadius: isMe ? 6 : 0,
-                          background: isMe ? 'rgba(200,150,60,0.08)' : 'transparent',
-                        }}>
-                          <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
-                          <span style={{flex:1,fontSize:11,fontWeight: isLoggedIn ? 700 : 400}}>
-                            {p.displayName}
-                            {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
-                          </span>
-                          {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
-                          {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
-                          {isHost && !isThisHost && !isMe && (
-                            <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}} onClick={() => toggleCoHost(p.id)}>
-                              {isCo ? 'remove role' : 'make co-host'}
-                            </button>
+                        <div key={p.id}>
+                          <div style={{
+                            display:'flex',alignItems:'center',gap:8,
+                            padding:'6px 8px',
+                            borderBottom: isExpanded ? 'none' : '1px solid var(--bg3)',
+                            borderRadius: isMe ? 6 : 0,
+                            background: isMe ? 'rgba(200,150,60,0.08)' : 'transparent',
+                            cursor: isClickable ? 'pointer' : 'default',
+                          }} onClick={onRowClick}>
+                            <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
+                            <span style={{flex:1,fontSize:11,fontWeight: isLoggedIn ? 700 : 400}}>
+                              {p.displayName}
+                              {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
+                            </span>
+                            {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
+                            {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
+                            {isHost && !isThisHost && !isMe && (
+                              <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}}
+                                onClick={e => { e.stopPropagation(); toggleCoHost(p.id) }}>
+                                {isCo ? 'remove role' : 'make co-host'}
+                              </button>
+                            )}
+                          </div>
+                          {isExpanded && profileUserId !== null && (
+                            <ProfilePreviewInline
+                              userId={profileUserId}
+                              isSelf={isMe}
+                              viewerLoggedIn={!!myId && myId.startsWith('u:')}
+                            />
                           )}
                         </div>
                       )
