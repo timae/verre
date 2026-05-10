@@ -4,27 +4,20 @@
 // appears (ProfileHeader, ProfilePreviewInline, participant chips,
 // feed authors). Surrounding chrome stays in the call site.
 
-import type React from 'react'
-
 interface Props {
   name: string
   imageUrl?: string | null
-  // Either a fixed pixel size, or omit and pass `style` to let the
-  // parent layout drive height (used by ProfilePreviewInline where
-  // the avatar stretches to span the right column).
-  size?: number
-  style?: React.CSSProperties
+  size: number
   onClick?: () => void
 }
 
-export function Avatar({ name, imageUrl, size, style, onClick }: Props) {
+export function Avatar({ name, imageUrl, size, onClick }: Props) {
   const initial = name[0]?.toUpperCase() ?? '?'
-  const dim = size != null ? { width: size, height: size } : null
-  // Letter font size scales with the circle when a fixed size is set;
-  // when stretching, the parent passes a clamp() in `style`.
-  const letterFontSize = size != null ? Math.round(size * 0.45) : undefined
+  const letterFontSize = Math.round(size * 0.45)
 
-  const base: React.CSSProperties = {
+  const base = {
+    width: size,
+    height: size,
     borderRadius: '50%',
     background: 'rgba(200,150,60,0.2)',
     display: 'flex',
@@ -35,9 +28,7 @@ export function Avatar({ name, imageUrl, size, style, onClick }: Props) {
     flexShrink: 0,
     overflow: 'hidden',
     cursor: onClick ? 'pointer' : undefined,
-    ...dim,
-    ...style,
-  }
+  } as const
 
   if (imageUrl) {
     return (

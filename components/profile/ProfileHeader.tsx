@@ -23,7 +23,7 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
     <div className="panel" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
         {isOwner
-          ? <EditableAvatar name={userName} imageUrl={userImageUrl ?? null} size={56} />
+          ? <EditableAvatar userId={userId} name={userName} imageUrl={userImageUrl ?? null} size={56} />
           : <ZoomableAvatar name={userName} imageUrl={userImageUrl} size={56} />
         }
         <div style={{ flex: 1, minWidth: 0 }}>

@@ -3,17 +3,21 @@ import { useRef, useState, useCallback } from 'react'
 import Cropper, { type Area } from 'react-easy-crop'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { Avatar } from './Avatar'
 
 interface Props {
+  name: string
   currentUrl: string | null
   onClose: () => void
-  onSaved: () => void
+  // Receives the freshly-rendered crop data URL on save (used for
+  // optimistic UI before SSR refetch lands), or null on remove.
+  onSaved: (newDataUrl: string | null) => void
 }
 
-const OUTPUT_SIZE = 256
+const OUTPUT_SIZE = 512
 const JPEG_QUALITY = 0.85
 
-export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
+export function AvatarEditor({ name, currentUrl, onClose, onSaved }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   // The data URL of the picked file. Once set, the cropper UI takes
   // over. Initial state shows either the existing avatar (with a
@@ -39,7 +43,7 @@ export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
     if (!file) return
     if (!file.type.startsWith('image/')) { setError('Please pick an image file.'); return }
     // Quick client-side cap; server still validates. 10MB raw input is
-    // generous — the cropper downsamples to 256×256 JPEG before upload.
+    // generous — the cropper downsamples to 512×512 JPEG before upload.
     if (file.size > 10 * 1024 * 1024) { setError('Image is too large (10 MB max).'); return }
     const reader = new FileReader()
     reader.onload = () => setSrc(typeof reader.result === 'string' ? reader.result : null)
@@ -62,7 +66,7 @@ export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
         throw new Error(d.error || `upload failed (${res.status})`)
       }
       await res.json()
-      onSaved()
+      onSaved(dataUrl)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -70,11 +74,19 @@ export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
     }
   }
 
+  // ConfirmDeleteButton handles its own pending/failed states from the
+  // throw, but the modal also has an error region — set that too so
+  // both surfaces stay informative.
   async function remove() {
     setError('')
-    const res = await fetch('/api/me/avatar', { method: 'DELETE' })
-    if (!res.ok) throw new Error(`delete failed (${res.status})`)
-    onSaved()
+    try {
+      const res = await fetch('/api/me/avatar', { method: 'DELETE' })
+      if (!res.ok) throw new Error(`delete failed (${res.status})`)
+      onSaved(null)
+    } catch (e) {
+      setError((e as Error).message)
+      throw e
+    }
   }
 
   return (
@@ -89,18 +101,14 @@ export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+        accept="image/jpeg,image/png,image/webp"
         onChange={onFile}
         style={{ display: 'none' }}
       />
 
       {!src && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '20px 0' }}>
-          {currentUrl ? (
-            <img src={currentUrl} alt="current avatar" style={{ width: 120, height: 120, borderRadius: '50%', objectFit: 'cover' }} />
-          ) : (
-            <div style={{ width: 120, height: 120, borderRadius: '50%', background: 'var(--bg3)' }} />
-          )}
+          <Avatar name={name} imageUrl={currentUrl} size={120} />
           <button className="btn-s" onClick={pickFile} disabled={busy}>
             {currentUrl ? 'replace' : 'choose photo'}
           </button>
@@ -160,9 +168,11 @@ export function AvatarEditor({ currentUrl, onClose, onSaved }: Props) {
 }
 
 // Render the cropped region of the source image to a square JPEG data
-// URL at OUTPUT_SIZE. Drawing through canvas incidentally strips
-// metadata (canvas reads pixels, not EXIF), giving us defense-in-depth
-// alongside the server-side strip in lib/s3.ts.
+// URL at OUTPUT_SIZE (512×512 — large enough that the lightbox view
+// still looks crisp on a phone, small enough that the wire payload
+// stays well under the 2MB server cap). Drawing through canvas
+// incidentally strips metadata (canvas reads pixels, not EXIF),
+// giving us defense-in-depth alongside the server-side strip in lib/s3.ts.
 async function renderCroppedJpeg(src: string, area: Area): Promise<string> {
   const img = await loadImage(src)
   const canvas = document.createElement('canvas')

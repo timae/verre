@@ -57,6 +57,9 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
 
         {data && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            {/* Fixed size — earlier "stretch to right-column height"
+                burst out of the panel when an image rendered. 96px
+                matches the natural height of name+level+button. */}
             <Avatar name={data.name} imageUrl={data.imageUrl} size={96} />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
