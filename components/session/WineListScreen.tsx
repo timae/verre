@@ -11,6 +11,15 @@ import { useRouter, usePathname } from 'next/navigation'
 import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { sessionPath } from '@/lib/sessionCode'
+import {
+  DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor,
+  useSensor, useSensors, type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext, sortableKeyboardCoordinates, verticalListSortingStrategy,
+  useSortable, arrayMove,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
@@ -96,6 +105,62 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
     refresh()
   }
 
+  // Optimistic drag-reorder. We override the displayed wine order with
+  // `pendingOrder` while a reorder POST is in flight; on success we drop
+  // the override and let the next refresh's order win, on failure we
+  // drop the override AND refresh to surface the server's truth.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
+
+  // Reset the pending override whenever the server-side order changes —
+  // protects against stale overrides surviving a refresh from another
+  // tab or a co-host's reorder.
+  useEffect(() => { setPendingOrder(null) }, [wines.map(w => w.id).join(',')])
+
+  const displayWines = (() => {
+    if (!pendingOrder) return wines
+    const byId = new Map(wines.map(w => [w.id, w]))
+    const ordered: typeof wines = []
+    for (const id of pendingOrder) {
+      const w = byId.get(id)
+      if (w) ordered.push(w)
+    }
+    // Append any wines added since the override (extremely rare race) so
+    // we don't drop rows on screen.
+    for (const w of wines) if (!pendingOrder.includes(w.id)) ordered.push(w)
+    return ordered
+  })()
+
+  const sensors = useSensors(
+    // Drag from the handle — `distance: 4` means a small finger jitter
+    // doesn't initiate a drag, but a deliberate move does. Activation
+    // requires the dnd-kit `listeners` to be attached to the handle, so
+    // tapping anywhere else on the row stays a click-to-rate.
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+
+  async function onDragEnd(e: DragEndEvent) {
+    const { active, over } = e
+    if (!over || active.id === over.id) return
+    const ids = displayWines.map(w => w.id)
+    const oldIdx = ids.indexOf(String(active.id))
+    const newIdx = ids.indexOf(String(over.id))
+    if (oldIdx === -1 || newIdx === -1) return
+    const next = arrayMove(ids, oldIdx, newIdx)
+    setPendingOrder(next)
+    const res = await sessionFetch(code, `/api/session/${code}/wines/reorder`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderedIds: next }),
+    })
+    if (!res.ok) {
+      setPendingOrder(null)
+      refresh()
+      return
+    }
+    refresh()
+  }
+
   return (
     <div style={{padding:'14px 14px 28px'}}>
       <div style={{maxWidth:980,margin:'0 auto'}}>
@@ -174,58 +239,25 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
         )}
 
         {!lineupHidden && (
-          <div className="wine-stack">
-            {wines.map((wine, idx) => {
-              const w = wine as WineMeta & { _blind?: boolean }
-              const isRevealed = !!wine.revealedAt
-              const isRedacted = isBlind && w._blind
-              const rating = myRatings[wine.id]
-              const accentColor = TCOL[wine.type] || TCOL.red
-
-              return (
-                <div key={wine.id} className="wine-card" style={{cursor:'pointer'}}
-                  onClick={() => setRateWineId(wine.id)}>
-                  <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
-                  <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
-
-                  {!isRedacted && wine.imageUrl ? (
-                    <img src={wine.imageUrl} alt={wine.name} onClick={e=>{e.stopPropagation();openLightbox(wine.imageUrl!,wine.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
-                  ) : (
-                    <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
-                      {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}
-                    </div>
-                  )}
-
-                  <div style={{flex:1,minWidth:0}}>
-                    {isRedacted ? (
-                      <>
-                        <div style={{fontWeight:700,fontSize:13,color:'var(--fg-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
-                        <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
-                      </>
-                    ) : (
-                      <WineIdentity wine={wine} size="compact" />
-                    )}
-                  </div>
-
-                  <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}} onClick={e => e.stopPropagation()}>
-                    {isHost && isBlind && !isRevealed && (
-                      <button onClick={() => revealWine(wine.id)}
-                        style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
-                        reveal
-                      </button>
-                    )}
-                    {isHost && isBlind && isRevealed && (
-                      <button onClick={() => hideWine(wine.id)}
-                        style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
-                        ✓ hide
-                      </button>
-                    )}
-                    {rating?.score ? <StarRating value={rating.score} /> : null}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+          <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+            <SortableContext items={displayWines.map(w => w.id)} strategy={verticalListSortingStrategy}>
+              <div className="wine-stack">
+                {displayWines.map((wine, idx) => (
+                  <WineRow
+                    key={wine.id}
+                    wine={wine as WineMeta & { _blind?: boolean }}
+                    idx={idx}
+                    isBlind={isBlind}
+                    isHost={isHost}
+                    rating={myRatings[wine.id]}
+                    onClick={() => setRateWineId(wine.id)}
+                    onReveal={() => revealWine(wine.id)}
+                    onHide={() => hideWine(wine.id)}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         )}
 
         {showAdd && (
@@ -240,6 +272,109 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
             // not on the rate URL where a refresh would re-open the modal.
             if (pathname?.includes('/rate/')) router.replace(sessionPath(code))
           }} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// Sortable wine-list row. Drag handle is host-only and lives on the
+// right edge between the reveal/hide control and the score chip;
+// activating it requires a small (4px / 200ms-touch) movement, so taps
+// elsewhere on the card still open the rate modal. Tasters see no
+// handle and the SortableContext's listeners are simply not attached
+// — the API would reject any reorder POST from a non-host anyway, but
+// hiding the affordance is the right UX.
+function WineRow({
+  wine, idx, isBlind, isHost, rating, onClick, onReveal, onHide,
+}: {
+  wine: WineMeta & { _blind?: boolean }
+  idx: number
+  isBlind: boolean
+  isHost: boolean
+  rating?: { score: number }
+  onClick: () => void
+  onReveal: () => void
+  onHide: () => void
+}) {
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
+    useSortable({ id: wine.id, disabled: !isHost })
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    cursor: 'pointer',
+    // Lift the dragged row above its siblings so the `transform` from
+    // dnd-kit doesn't get clipped by neighbouring cards' stacking.
+    zIndex: isDragging ? 2 : undefined,
+    opacity: isDragging ? 0.85 : 1,
+    boxShadow: isDragging ? '0 12px 32px rgba(0,0,0,0.5)' : undefined,
+  }
+
+  const isRevealed = !!wine.revealedAt
+  const isRedacted = isBlind && wine._blind
+  const accentColor = TCOL[wine.type] || TCOL.red
+
+  return (
+    <div ref={setNodeRef} style={style} className="wine-card" onClick={onClick}>
+      <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
+      <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
+
+      {!isRedacted && wine.imageUrl ? (
+        <img src={wine.imageUrl} alt={wine.name} onClick={e=>{e.stopPropagation();openLightbox(wine.imageUrl!,wine.name)}} style={{width:38,height:38,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'zoom-in'}} />
+      ) : (
+        <div style={{width:38,height:38,borderRadius:8,background:'var(--bg3)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize: isRedacted ? 22 : 18}}>
+          {isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}
+        </div>
+      )}
+
+      <div style={{flex:1,minWidth:0}}>
+        {isRedacted ? (
+          <>
+            <div style={{fontWeight:700,fontSize:13,color:'var(--fg-dim)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{wine.name}</div>
+            <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:2,letterSpacing:'0.06em'}}>hidden until revealed</div>
+          </>
+        ) : (
+          <WineIdentity wine={wine} size="compact" />
+        )}
+      </div>
+
+      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}} onClick={e => e.stopPropagation()}>
+        {isHost && isBlind && !isRevealed && (
+          <button onClick={onReveal}
+            style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
+            reveal
+          </button>
+        )}
+        {isHost && isBlind && isRevealed && (
+          <button onClick={onHide}
+            style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
+            ✓ hide
+          </button>
+        )}
+        {rating?.score ? <StarRating value={rating.score} /> : null}
+        {isHost && (
+          // Activator pattern: spread `attributes` + `listeners` and set
+          // the node ref on the handle (NOT the row), so dnd-kit knows
+          // which element initiated the drag and the keyboard sensor
+          // works from a focused handle. Spreading on the row would
+          // make every taster's row a Tab-stop with role="button".
+          <button
+            ref={setActivatorNodeRef}
+            type="button"
+            aria-label="Drag to reorder"
+            {...attributes}
+            {...listeners}
+            onClick={e => e.stopPropagation()}
+            style={{
+              touchAction: 'none', cursor: 'grab', padding: '6px 4px',
+              background: 'transparent', border: 'none',
+              color: 'var(--fg-faint)', fontSize: 14, lineHeight: 1,
+              display: 'flex', alignItems: 'center',
+            }}
+          >
+            ⋮⋮
+          </button>
         )}
       </div>
     </div>
