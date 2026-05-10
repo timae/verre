@@ -77,7 +77,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
         <Link href={session?.user ? '/me' : '/'} style={{ fontFamily: 'var(--mono)', fontSize: 21, fontWeight: 800, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--accent)', textDecoration: 'none' }}>Verre</Link>
       </header>
 
-      <div style={{ maxWidth: 640, margin: '0 auto', padding: '24px 16px 0' }}>
+      <div style={{ maxWidth: 860, margin: '0 auto', padding: '24px 16px 0' }}>
         {/* Profile header — server-rendered; stays put across tab switches. */}
         <div className="panel" style={{ marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
@@ -114,7 +114,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
           flavor={flavor}
           initialCheckins={checkins.map(c => ({
             id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
-            grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
+            grape: c.grape, type: c.type, score: c.score == null ? null : Number(c.score), notes: c.notes, imageUrl: c.imageUrl,
             venueName: c.venueName, city: c.city, country: c.country,
             flavors: c.flavors as Record<string, number>, likeCount: c._count.likes,
             liked: likedSet.has(c.id),

@@ -8,6 +8,7 @@ import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
+import { decimalToNumber } from '@/lib/decimal'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -172,7 +173,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     return updatedCheckin
   })
 
-  return NextResponse.json(updated)
+  return NextResponse.json({ ...updated, score: decimalToNumber(updated.score) })
 }
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {

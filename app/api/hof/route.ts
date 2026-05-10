@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
+import { decimalToNumber } from '@/lib/decimal'
 
 export async function GET() {
   const entries = await prisma.hallOfFame.findMany({
@@ -10,7 +11,7 @@ export async function GET() {
 
   return NextResponse.json(entries.map(e => ({
     wineName: e.wineName, producer: e.producer, vintage: e.vintage,
-    type: e.style, score: e.score, rater: e.raterName,
+    type: e.style, score: decimalToNumber(e.score), rater: e.raterName,
     accountName: e.user?.name, sessionCode: e.sessionCode, at: e.ratedAt,
   })))
 }

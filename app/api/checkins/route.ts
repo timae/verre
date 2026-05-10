@@ -7,6 +7,7 @@ import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
+import { decimalToNumber } from '@/lib/decimal'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
 // 15.5 / webpack 5.98 bundling bug (see lib/accountDelete.ts for the same
@@ -165,5 +166,5 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  return NextResponse.json(checkin, { status: 201 })
+  return NextResponse.json({ ...checkin, score: decimalToNumber(checkin.score) }, { status: 201 })
 }

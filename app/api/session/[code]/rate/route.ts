@@ -92,9 +92,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // Lifetime counter updates. Done as a single SQL UPDATE with
         // GREATEST() / conditional increments so we never double-count
         // (e.g. re-rating to 5★ after rating to 5★ doesn't bump again).
+        // Prisma surfaces Decimal columns as runtime Decimal objects;
+        // coerce via Number() (or toNumber()) before strict equality.
         const isNew = !prior
-        const newFiveStar = ratingScore === 5 && (prior?.score !== 5)
-        const newOneStar  = ratingScore === 1 && (prior?.score !== 1)
+        const priorScore = prior?.score == null ? null : Number(prior.score)
+        const newFiveStar = ratingScore === 5 && priorScore !== 5
+        const newOneStar  = ratingScore === 1 && priorScore !== 1
         const newNote     = wroteNote && (!prior || (prior.notes || '').length <= 5)
         const newPhoto    = isNew && !!(wine.imageUrl || wine.image)
 

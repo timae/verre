@@ -48,7 +48,7 @@ export async function getProfileFlavor(userId: number): Promise<FlavorBlock> {
     `SELECT ${weightedAvg},
             COUNT(*) AS total_rated,
             ROUND(AVG(score)::numeric, 1) AS avg_score,
-            COUNT(CASE WHEN score = 5 THEN 1 END) AS five_star
+            COUNT(CASE WHEN score = 5.00 THEN 1 END) AS five_star
      FROM ratings WHERE user_id = $1 AND score > 0`,
     userId,
   )

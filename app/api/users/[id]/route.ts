@@ -6,6 +6,7 @@ import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { getProfileFlavor } from '@/lib/profileFlavor'
 import { parsePathId } from '@/lib/parsePathId'
 import { checkRate } from '@/lib/rateLimit'
+import { decimalToNumber } from '@/lib/decimal'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
@@ -80,6 +81,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     },
     flavor,
     isFollowing,
-    recentCheckins,
+    // Coerce score Decimal → number on the wire so consumers don't get
+    // `"5.00"` strings when they expect a JS number.
+    recentCheckins: recentCheckins.map(c => ({ ...c, score: decimalToNumber(c.score) })),
   })
 }
