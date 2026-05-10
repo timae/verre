@@ -3,6 +3,7 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useSession } from './SessionShell'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { WineIdentity } from '@/components/wine/WineIdentity'
+import { StarRating } from '@/components/ui/StarRating'
 import { LineupLocked } from './LineupLocked'
 import { RatingScreen } from './RatingScreen'
 import { useState, useEffect } from 'react'
@@ -215,12 +216,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                         ✓ hide
                       </button>
                     )}
-                    {rating?.score && rating.score > 0 && (
-                      <div style={{textAlign:'right'}}>
-                        <span style={{fontSize:22,fontWeight:800,lineHeight:1,color:'var(--accent)'}}>{rating.score}</span>
-                        <span style={{fontSize:10,color:'var(--fg-dim)'}}>/5</span>
-                      </div>
-                    )}
+                    {rating?.score ? <StarRating value={rating.score} /> : null}
                   </div>
                 </div>
               )

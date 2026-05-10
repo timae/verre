@@ -2,6 +2,7 @@
 import type { WineMeta } from '@/lib/session'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { WineIdentity } from './WineIdentity'
+import { StarRating } from '@/components/ui/StarRating'
 
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
@@ -30,12 +31,11 @@ export function WineCard({ wine, score, index, onClick }: Props) {
       <div style={{flex:1,minWidth:0}}>
         <WineIdentity wine={wine} size="compact" />
       </div>
-      {score != null && score > 0 && (
-        <div style={{flexShrink:0,textAlign:'right'}}>
-          <span style={{fontSize:22,fontWeight:800,color:'var(--accent)',lineHeight:1}}>{score}</span>
-          <span style={{fontSize:10,color:'var(--fg-dim)'}}>/5</span>
+      {score ? (
+        <div style={{flexShrink:0}}>
+          <StarRating value={score} />
         </div>
-      )}
+      ) : null}
     </button>
   )
 }

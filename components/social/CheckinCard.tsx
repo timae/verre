@@ -7,6 +7,7 @@ import { CHART_SIZE } from '@/components/charts/sizes'
 import { LikeButton } from './LikeButton'
 import { detectFL, getFL } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
+import { StarRating } from '@/components/ui/StarRating'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import { WineIdentity } from '@/components/wine/WineIdentity'
@@ -121,12 +122,11 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
               <div style={{ minWidth:0 }}>
                 <WineIdentity wine={wineForId} size="hero" />
               </div>
-              {checkin.score != null && checkin.score > 0 && (
-                <div style={{ flexShrink:0, lineHeight:1 }}>
-                  <span style={{ fontSize:28, fontWeight:800, color:'var(--accent)' }}>{checkin.score}</span>
-                  <span style={{ fontSize:12, color:'var(--fg-dim)' }}>/5</span>
+              {checkin.score ? (
+                <div style={{ flexShrink:0 }}>
+                  <StarRating value={checkin.score} size="detail" />
                 </div>
-              )}
+              ) : null}
             </div>
 
             {/* Location */}
@@ -168,12 +168,11 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             <div style={{ flex:1, minWidth:0 }}>
               <WineIdentity wine={wineForId} size="card" />
             </div>
-            {checkin.score != null && checkin.score > 0 && (
+            {checkin.score ? (
               <div style={{ flexShrink:0 }}>
-                <span style={{ fontSize:28, fontWeight:800, color:'var(--accent)' }}>{checkin.score}</span>
-                <span style={{ fontSize:12, color:'var(--fg-dim)' }}>/5</span>
+                <StarRating value={checkin.score} size="detail" />
               </div>
-            )}
+            ) : null}
           </div>
           {locationParts.length > 0 && (
             <div style={{ fontSize:11, color:'var(--fg-dim)', display:'flex', alignItems:'center', gap:3 }}>

@@ -8,6 +8,7 @@ import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
+import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@/lib/sessionCode'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
@@ -46,10 +47,8 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           <>
             <div className="panel">
               <div className="panel-hdr">your score</div>
-              <div style={{display:'flex',justifyContent:'center',gap:8}}>
-                {[1,2,3,4,5].map(n => (
-                  <span key={n} style={{fontSize:24,color:n<=rating.score?'var(--accent)':'var(--fg-faint)'}}>★</span>
-                ))}
+              <div style={{display:'flex',justifyContent:'center'}}>
+                <StarRating value={rating.score} size="detail" />
               </div>
             </div>
 
