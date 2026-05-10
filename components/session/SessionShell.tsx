@@ -24,6 +24,10 @@ type SessionCtx = {
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
   isBlind: boolean
+  // True before the first wines fetch settles. Distinguishes "loading
+  // the wine list" from "host hasn't added any yet" — visually
+  // identical otherwise, but the message should differ.
+  winesLoading: boolean
 }
 const Ctx = createContext<SessionCtx | null>(null)
 export const useSession = () => {
@@ -117,7 +121,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     enabled: readyToFetch,
   })
 
-  const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
+  const { data: winesData = [], refetch: refetchWines, isPending: winesPending } = useQuery<WineMeta[]>({
     queryKey: ['wines', C, myId],
     queryFn: async () => {
       const r = await sessionFetch(C, `/api/session/${C}/wines`)
@@ -200,6 +204,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     code: C, displayName, myId, isHost: !!isHost,
     sessionMeta: metaData || null,
     wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
+    // Loading is true until the first fetch resolves; the gate
+    // (`enabled: readyToFetch`) keeps it pending while we resolve
+    // the identity, which is exactly the period a user sees a
+    // session URL with no wines yet rendered.
+    winesLoading: winesPending,
   }
 
   const navItems = [

@@ -9,6 +9,7 @@ import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { ScoreSlider } from '@/components/ui/ScoreSlider'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
 
@@ -156,14 +157,10 @@ export function RatingScreen({ wineId, onClose }: Props) {
         <img src={wine.imageUrl} alt={wine.name} onClick={() => openLightbox(wine.imageUrl!, wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10,cursor:'zoom-in'}} />
       )}
 
-      {/* Stars */}
+      {/* Score slider — drag or tap, snaps to 0.25 */}
       <div className="panel">
-        <div className="panel-hdr">overall score</div>
-        <div style={{display:'flex',justifyContent:'center',gap:12}}>
-          {[1,2,3,4,5].map(n => (
-            <button key={n} onClick={() => setScore(n === score ? 0 : n)} style={{fontSize:28,background:'none',border:'none',cursor:'pointer',color:n<=score?'var(--accent)':'var(--fg-faint)',transition:'transform .1s',lineHeight:1}}>★</button>
-          ))}
-        </div>
+        <div className="panel-hdr">score</div>
+        <ScoreSlider value={score} onChange={setScore} />
       </div>
 
       {/* Flavours */}

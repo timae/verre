@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { Modal } from '@/components/ui/Modal'
+import { ScoreSlider } from '@/components/ui/ScoreSlider'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' }, { k: 'white', l: 'White', ico: '🥂' },
@@ -206,15 +207,13 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           </div>
         </div>
 
-        {/* Stars */}
-        <div className="field">
-          <div className="fl">score</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {[1, 2, 3, 4, 5].map(n => (
-              <button key={n} type="button" onClick={() => setScore(n === score ? 0 : n)}
-                style={{ fontSize: 24, background: 'none', border: 'none', cursor: 'pointer', color: n <= score ? 'var(--accent)' : 'var(--fg-faint)', lineHeight: 1 }}>★</button>
-            ))}
-          </div>
+        {/* Score slider — drag or tap, snaps to 0.25.
+            Wrapped in a panel so the visual width matches the rest of
+            the form (the inputs above/below sit inside `field` blocks,
+            but a slider full-width inside a `field` looked stretched). */}
+        <div className="panel">
+          <div className="panel-hdr">score</div>
+          <ScoreSlider value={score} onChange={setScore} />
         </div>
 
         {/* Flavour chips (only if type selected) */}

@@ -36,7 +36,7 @@ function formatDate(dt: string) {
 interface Props { initialRateWineId?: string }
 
 export function WineListScreen({ initialRateWineId }: Props = {}) {
-  const { wines, myRatings, isHost, code, refresh, isBlind, sessionMeta } = useSession()
+  const { wines, myRatings, isHost, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
   const [showAdd, setShowAdd] = useState(false)
   const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()
@@ -165,7 +165,11 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
 
         {!lineupHidden && wines.length === 0 && (
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
-            {isHost ? 'Add the first wine to get started.' : 'Waiting for the host to add wines.'}
+            {winesLoading
+              ? 'Loading wines…'
+              : isHost
+                ? 'Add the first wine to get started.'
+                : 'No wines yet — the host hasn\'t added any.'}
           </div>
         )}
 

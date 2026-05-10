@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation'
 import { sessionPath } from '@/lib/sessionCode'
 
 export default function RatePickerPage() {
-  const { wines, myRatings, code, displayName, isHost, sessionMeta } = useSession()
+  const { wines, myRatings, code, displayName, isHost, sessionMeta, winesLoading } = useSession()
   const router = useRouter()
 
   const m = sessionMeta as typeof sessionMeta & { hideLineup?: boolean; hideLineupMinutesBefore?: number; dateFrom?: string | null }
@@ -32,7 +32,9 @@ export default function RatePickerPage() {
       {lineupHidden && revealAt && <LineupLocked revealAt={revealAt} />}
 
       {!lineupHidden && wines.length === 0 && (
-        <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>No wines added yet.</div>
+        <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
+          {winesLoading ? 'Loading wines…' : 'No wines added yet.'}
+        </div>
       )}
       {!lineupHidden && (
         <div className="wine-stack">
