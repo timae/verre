@@ -51,13 +51,17 @@ export function ProfileTabs({
   const [width, setWidth] = useState(0)
   const x = useMotionValue(0)
 
-  // Track the container width so the drag offset maps cleanly to one tab-width per page.
+  // Track the container width so the drag offset maps cleanly to one
+  // tab-width per page. Capture the element at effect-setup time —
+  // ResizeObserver can fire `update` after the ref has been cleared
+  // during route changes, which would dereference null.
   useEffect(() => {
-    if (!containerRef.current) return
-    const update = () => setWidth(containerRef.current!.clientWidth)
+    const el = containerRef.current
+    if (!el) return
+    const update = () => setWidth(el.clientWidth)
     update()
     const ro = new ResizeObserver(update)
-    ro.observe(containerRef.current)
+    ro.observe(el)
     return () => ro.disconnect()
   }, [])
 
@@ -160,14 +164,13 @@ export function ProfileTabs({
   )
 }
 
-// `inert` removes inactive panels from focus + AT trees while keeping them
-// in the DOM so the swipe gesture works. React 19 supports it as an attribute;
-// the cast keeps older TS type defs happy.
+// `inert` removes inactive panels from focus + AT trees while keeping
+// them in the DOM so the swipe gesture works. React 19 takes inert as
+// a real boolean attribute — no string-coercion needed.
 function PaneShell({ active, width, children }: { active: boolean; width: number; children: React.ReactNode }) {
-  const inertProp = active ? {} : ({ inert: '' } as Record<string, string>)
   return (
     <div
-      {...inertProp}
+      inert={!active}
       aria-hidden={!active}
       style={{ width: width || '100%', flexShrink:0 }}
     >

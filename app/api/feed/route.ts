@@ -18,8 +18,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'invalid session' }, { status: 401 })
   }
 
+  // cursor must parse as a finite Date; bad input → 400 not 500.
   const cursorParam = req.nextUrl.searchParams.get('cursor')
-  const cursor = cursorParam ? new Date(cursorParam) : new Date()
+  let cursor: Date
+  if (cursorParam) {
+    const d = new Date(cursorParam)
+    if (Number.isNaN(d.getTime())) return NextResponse.json({ error: 'invalid cursor' }, { status: 400 })
+    cursor = d
+  } else {
+    cursor = new Date()
+  }
 
   // My network: explicit follows + tasting buddies (shared sessions). The
   // ${userId} interpolations below are parameterized by Prisma's tagged

@@ -5,6 +5,7 @@ import { genCode } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@/lib/displayName'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { isSameOrigin } from '@/lib/csrf'
 import {
   newAnonIdentityId,
   newAnonToken,
@@ -14,6 +15,7 @@ import {
 } from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
 
   // Rate limit session creation: 10 per 10 minutes per user (logged-in)
@@ -33,7 +35,9 @@ export async function POST(req: NextRequest) {
 
   // Public field is `hostDisplayName` — there's no concept of a "username"
   // in this codebase (see CLAUDE.md Auth section), only display names.
-  const { hostDisplayName: rawHostName, sessionName, blind, lifespan } = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { hostDisplayName: rawHostName, sessionName, blind, lifespan } = body as Record<string, unknown>
 
   let hostName: string
   try { hostName = validateDisplayName(rawHostName) }
@@ -51,7 +55,7 @@ export async function POST(req: NextRequest) {
   if (lifespan && lifespan !== '48h' && !isPro) {
     return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
   }
-  const resolvedLifespan = lifespan || '48h'
+  const resolvedLifespan = typeof lifespan === 'string' && lifespan ? lifespan : '48h'
   const sessionTTL = lifespanTTL(resolvedLifespan)
 
   // Collision check on BOTH Redis and Postgres. Anonymous sessions only

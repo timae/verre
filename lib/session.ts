@@ -2,6 +2,7 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
+import { scrub } from '@/lib/textSafe'
 import type { Identity } from '@/lib/identity'
 import { userIdentityId } from '@/lib/identity'
 
@@ -105,12 +106,19 @@ export function sanitizeImage(value: unknown): string {
   return value
 }
 
+// `scrub()` handles control chars + bidi/zero-width spoofing. It
+// returns null for empty input; we coerce back to '' here so the
+// existing wine-name truthy check still works the same way.
+function clean(v: unknown): string {
+  return scrub(v) ?? ''
+}
+
 export async function addWineToSession(
   code: string,
   body: Partial<WineMeta>,
   existing?: WineMeta,
 ): Promise<WineMeta | { error: string }> {
-  const name = String(body.name || '').trim()
+  const name = clean(body.name)
   const type = String(body.type || '').trim()
   if (!name) return { error: 'name required' }
   if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) return { error: 'valid type required' }
@@ -143,9 +151,9 @@ export async function addWineToSession(
   return {
     id: existing?.id || Date.now().toString(),
     name,
-    producer: String(body.producer || '').trim(),
-    vintage: String(body.vintage || '').trim().slice(0, 4),
-    grape: String(body.grape || '').trim(),
+    producer: clean(body.producer),
+    vintage: clean(body.vintage).slice(0, 4),
+    grape: clean(body.grape),
     type,
     image,
     imageUrl,

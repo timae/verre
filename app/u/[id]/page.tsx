@@ -45,6 +45,18 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     getProfileFlavor(userId),
   ])
 
+  // Hydrate the viewer's "liked" state per checkin so the heart matches
+  // the feed's behavior. Skipped for anon viewers — no caller, no
+  // possible like rows. One round-trip for the page-load batch.
+  const likedSet = myId
+    ? new Set(
+        (await prisma.checkinLike.findMany({
+          where: { userId: myId, checkinId: { in: checkins.map(c => c.id) } },
+          select: { checkinId: true },
+        })).map(l => l.checkinId),
+      )
+    : new Set<number>()
+
   // Mirror the API redaction in the RSC payload — `'use client'` props
   // get serialised into the page's __next_f and any non-owner viewer
   // could read `flavor.activeRatings` from devtools, defeating the API
@@ -105,6 +117,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
             grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
             venueName: c.venueName, city: c.city, country: c.country,
             flavors: c.flavors as Record<string, number>, likeCount: c._count.likes,
+            liked: likedSet.has(c.id),
             createdAt: c.createdAt,
             tags: c.tags?.map(t => t.user) ?? [],
           }))}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
+import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ wineId: string }> }
 
@@ -8,7 +9,8 @@ type Ctx = { params: Promise<{ wineId: string }> }
 // Session-agnostic: works on orphaned wines (session_id = NULL) where the
 // existing /api/session/<code>/wines/<id>/bookmark endpoint would need a
 // session code that no longer exists.
-export async function DELETE(_req: NextRequest, { params }: Ctx) {
+export async function DELETE(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const { wineId } = await params

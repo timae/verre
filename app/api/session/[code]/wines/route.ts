@@ -5,6 +5,7 @@ import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertS
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
+import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -60,11 +61,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 }
 
 export async function POST(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await auth()
-  const body = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })

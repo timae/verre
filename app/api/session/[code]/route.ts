@@ -7,6 +7,7 @@ import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity
 import { type SessionMeta } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
+import { isSameOrigin } from '@/lib/csrf'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -57,11 +58,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
-  const { targetId: targetIdFromBody, targetUser, action } = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { targetId: targetIdFromBody, targetUser, action } = body as Record<string, unknown>
 
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
@@ -183,6 +187,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 // Lifetime counters on users do NOT decrement — that's the whole point of
 // the snapshot column design.
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })

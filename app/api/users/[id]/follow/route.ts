@@ -3,10 +3,12 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { parsePathId } from '@/lib/parsePathId'
+import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ id: string }> }
 
-export async function POST(_req: NextRequest, { params }: Ctx) {
+export async function POST(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)
@@ -26,7 +28,8 @@ export async function POST(_req: NextRequest, { params }: Ctx) {
   return NextResponse.json({ following: true })
 }
 
-export async function DELETE(_req: NextRequest, { params }: Ctx) {
+export async function DELETE(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)

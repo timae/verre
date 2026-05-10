@@ -5,8 +5,10 @@ import bcrypt from 'bcrypt'
 import { validateDisplayName } from '@/lib/displayName'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete } from '@/lib/accountDelete'
+import { isSameOrigin } from '@/lib/csrf'
 
 export async function PATCH(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
@@ -24,7 +26,9 @@ export async function PATCH(req: NextRequest) {
     )
   }
 
-  const { name, email, currentPassword, newPassword } = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { name, email, currentPassword, newPassword } = body
   const updates: Record<string, unknown> = {}
 
   if (name !== undefined) {
@@ -34,7 +38,15 @@ export async function PATCH(req: NextRequest) {
 
   if (email !== undefined) {
     const e = String(email).trim().toLowerCase()
+    // Reject control chars (NULL byte trips Postgres P22021 → 500),
+    // bidi/zero-width invisibles, and the obvious "no @" case. The
+    // RFC 5322 grammar isn't enforced — bcrypt-grade strictness is
+    // overkill for a write-side guard that only protects the column.
+    if (!e || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/.test(e)) {
+      return NextResponse.json({ error: 'invalid email' }, { status: 400 })
+    }
     if (!e.includes('@')) return NextResponse.json({ error: 'invalid email' }, { status: 400 })
+    if (e.length > 320) return NextResponse.json({ error: 'invalid email' }, { status: 400 })
     updates.email = e
   }
 
@@ -61,6 +73,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
