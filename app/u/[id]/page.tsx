@@ -1,10 +1,9 @@
 import { auth } from '@/auth'
 import { notFound } from 'next/navigation'
-import { prisma } from '@/lib/prisma'
 import { ProfileTabs } from '@/components/profile/ProfileTabs'
 import { ProfileHeader } from '@/components/profile/ProfileHeader'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
-import { getProfileFlavor } from '@/lib/profileFlavor'
+import { loadProfile } from '@/lib/profileLoad'
 import { parsePathId } from '@/lib/parsePathId'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { UserMenu } from '@/components/me/UserMenu'
@@ -21,52 +20,11 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
 
   const gate = await resolveProfileViewer(userId, myId)
   if (gate.status === 'gone') notFound()
-  const isFollowing = gate.viewer.followsProfile
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true, name: true, xp: true,
-      lifetimeRatings: true, lifetimeSessionsJoined: true,
-      _count: { select: { earnedBadges: true, checkins: { where: { isPublic: true } }, followers: true, following: true } },
-    },
-  })
-  if (!user) notFound()
-
-  const [checkins, flavorFull] = await Promise.all([
-    prisma.checkin.findMany({
-      where: { userId, isPublic: true },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-      include: {
-        _count: { select: { likes: true } },
-        tags: { include: { user: { select: { id: true, name: true } } } },
-      },
-    }),
-    getProfileFlavor(userId),
-  ])
-
-  // Hydrate the viewer's "liked" state per checkin so the heart matches
-  // the feed's behavior. Skipped for anon viewers — no caller, no
-  // possible like rows. One round-trip for the page-load batch.
-  const likedSet = myId
-    ? new Set(
-        (await prisma.checkinLike.findMany({
-          where: { userId: myId, checkinId: { in: checkins.map(c => c.id) } },
-          select: { checkinId: true },
-        })).map(l => l.checkinId),
-      )
-    : new Set<number>()
-
-  // Mirror the API redaction in the RSC payload — `'use client'` props
-  // get serialised into the page's __next_f and any non-owner viewer
-  // could read `flavor.activeRatings` from devtools, defeating the API
-  // response stripping in /api/users/[id]. Same redaction policy as the
-  // route: keep activeRatings owner-only, ship the wheel data to all.
-  const isOwner = myId === userId
-  const flavor = isOwner
-    ? flavorFull
-    : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
+  // Same loader the API route uses — single source for the payload
+  // shape. SSR calls Prisma directly; the API call goes over the wire.
+  const profile = await loadProfile({ userId, viewerId: myId, isFollowing: gate.viewer.followsProfile })
+  if (!profile) notFound()
 
   // Profile content. Logged-in viewers get the `/me/*` chrome (sidebar
   // + bottom nav + UserMenu) so navigation stays consistent when
@@ -77,34 +35,29 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   const profileBody = (
     <>
         <ProfileHeader
-          userId={userId}
-          userName={user.name}
-          userXp={user.xp}
+          userId={profile.id}
+          userName={profile.name}
+          userXp={profile.xp}
           myId={myId}
-          isFollowing={isFollowing}
+          isFollowing={profile.isFollowing}
         />
 
         <ProfileTabs
-          profileUserId={userId}
-          profileUserName={user.name}
-          profileUserXp={user.xp}
+          profileUserId={profile.id}
+          profileUserName={profile.name}
+          profileUserXp={profile.xp}
           myId={myId}
-          viewerFollowsProfile={isFollowing}
+          viewerFollowsProfile={profile.isFollowing}
           stats={{
-            ratings: user.lifetimeRatings,
-            checkins: user._count.checkins,
-            badges: user._count.earnedBadges,
-            followers: user._count.followers,
+            ratings: profile.stats.ratings,
+            checkins: profile.stats.checkins,
+            badges: profile.stats.badges,
+            followers: profile.stats.followers,
           }}
-          flavor={flavor}
-          initialCheckins={checkins.map(c => ({
-            id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
-            grape: c.grape, type: c.type, score: c.score == null ? null : Number(c.score), notes: c.notes, imageUrl: c.imageUrl,
-            venueName: c.venueName, city: c.city, country: c.country,
-            flavors: c.flavors as Record<string, number>, likeCount: c._count.likes,
-            liked: likedSet.has(c.id),
-            createdAt: c.createdAt,
-            tags: c.tags?.map(t => t.user) ?? [],
+          flavor={profile.flavor}
+          initialCheckins={profile.recentCheckins.map(c => ({
+            ...c,
+            flavors: c.flavors as Record<string, number>,
           }))}
         />
     </>

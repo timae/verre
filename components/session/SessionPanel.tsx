@@ -332,6 +332,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                               userId={profileUserId}
                               isSelf={isMe}
                               viewerLoggedIn={!!myId && myId.startsWith('u:')}
+                              myId={myId && myId.startsWith('u:') ? Number(myId.slice(2)) : null}
                             />
                           )}
                         </div>

@@ -1,9 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { useRouter } from 'next/navigation'
-import { Modal } from '@/components/ui/Modal'
-import { AccountSettings } from '@/components/me/AccountSettings'
-import { DashboardSettings } from '@/components/me/DashboardSettings'
+import { AccountSettingsModal } from '@/components/me/AccountSettingsModal'
 
 // Rendered in the same slot the FollowButton occupies for non-self
 // viewers. On wide viewports it mirrors FollowButton's footprint
@@ -13,17 +10,6 @@ import { DashboardSettings } from '@/components/me/DashboardSettings'
 // phone where the avatar/name/level take most of the row.
 export function ProfileSettingsButton() {
   const [open, setOpen] = useState(false)
-  const router = useRouter()
-  // After a successful AccountSettings save, close the modal and trigger
-  // an SSR re-render so the new display name flows through to the
-  // profile header, the WineIdentity rows in the check-in feed, and
-  // anywhere else the SSR shell embedded the user name. NextAuth's
-  // `update()` already refreshed the JWT-driven client state — this
-  // closes the loop for server-rendered surfaces.
-  function handleSaved() {
-    setOpen(false)
-    router.refresh()
-  }
   return (
     <>
       <button
@@ -42,23 +28,7 @@ export function ProfileSettingsButton() {
         </svg>
         <span className="hide-narrow">settings</span>
       </button>
-      {open && (
-        <Modal onClose={() => setOpen(false)} maxWidth={600} maxHeight="90vh">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-            <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em' }}>
-              Settings
-            </div>
-            <button className="btn-s" onClick={() => setOpen(false)} style={{ fontSize: 9 }}>close</button>
-          </div>
-          <div className="panel">
-            <div className="panel-hdr">account</div>
-            <AccountSettings onSaved={handleSaved} />
-          </div>
-          <div className="panel" style={{ marginTop: 16 }}>
-            <DashboardSettings />
-          </div>
-        </Modal>
-      )}
+      {open && <AccountSettingsModal onClose={() => setOpen(false)} />}
     </>
   )
 }
