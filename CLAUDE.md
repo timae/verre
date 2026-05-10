@@ -4,46 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Local development
 
+Setup (Redis + MinIO + bucket policy + `.env`) is documented in README.md. Day-to-day:
+
 ```bash
-docker run -d -p 6379:6379 redis:7-alpine   # Redis
-docker run -d --name verre-minio \           # S3 (minio)
-  -p 9000:9000 -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  -v verre-minio-data:/data \
-  minio/minio:latest server /data --console-address ":9001"
-# First-time bucket creation + public-read policy (so <img src> from
-# the browser can fetch uploaded objects):
-docker run --rm --network host \
-  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
-  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
-  s3 mb s3://verre-local
-docker run --rm --network host \
-  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
-  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
-  s3api put-bucket-policy --bucket verre-local --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::verre-local/*"]}]}'
 npm install
 npx prisma generate
-npm run dev                                  # → http://localhost:3000
-```
-
-Local `.env` for the minio bucket:
-```
-S3_ENDPOINT=http://localhost:9000
-S3_BUCKET=verre-local
-S3_ACCESS_KEY=minioadmin
-S3_SECRET_KEY=minioadmin
-S3_REGION=us-east-1
-```
-
-To test from a phone on the LAN, replace `localhost:9000` with your host's LAN IP (e.g. `http://192.168.1.42:9000`) in BOTH `S3_ENDPOINT` and the `<img src>` it produces — the upload flow stores the endpoint as a literal prefix in `users.image_url`. Existing rows uploaded under one address won't resolve from another, so wiping the bucket + clearing `users.image_url` is the simplest reset when switching networks.
-
-To wipe local upload state: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`. Re-create the bucket per the steps above.
-
-Type-check + lint:
-```bash
-npx tsc --noEmit
+npm run dev                  # → http://localhost:3000
+npx tsc --noEmit             # type-check
 npm run lint
 ```
+
+LAN testing gotcha: `S3_ENDPOINT` is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. Switching networks → wipe the bucket and clear `users.image_url`. Wipe command: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`, then recreate the bucket per README.
 
 Apply schema changes to the database (Prisma is the single source of truth):
 ```bash
@@ -92,10 +63,10 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 ## Working with this codebase
 
 Update this file (CLAUDE.md) whenever you:
-- add/remove an API endpoint, or change its auth tier (the API surface table needs to stay accurate)
 - add an env var the app reads (Deployment section)
 - introduce a shared primitive or coding rule (Shared visual primitives section)
 - write a schema migration with non-obvious behaviour (Architecture / schema notes)
+- change an authorization tier (Auth section)
 - ship a feature with its own coherent surface — new endpoints, new tables, new architectural concept. The bar is "deserves its own section in this file" (e.g. the social feed got its own section because it added /api/feed, /api/checkins/*, /api/users/*, and a follow graph; a small route addition wouldn't).
 
 Update README.md when:
@@ -164,9 +135,7 @@ Optional user-uploaded profile pictures, free for all users. The data column is 
 
 **Edit endpoint.** `POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth + 10/h per-user rate limit. POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. On replace, the prior URL is reclaimed from S3 fire-and-forget after the new upload + DB update succeed. On account-delete, `lib/accountDelete.ts` reclaims the avatar alongside check-in and wine images.
 
-**JPEG metadata strip.** `lib/s3.ts:stripJpegMetadata` is a pure-JS byte walker that drops APP0..APP15 and COM segments before the bytes hit S3 — primarily to remove EXIF GPS coordinates from mobile-camera photos. Runs for `image/jpeg` only. iOS Safari converts HEIC → JPEG on upload, so the JPEG-only coverage handles nearly all real upload paths. PNG/WebP/GIF metadata is not stripped (rare for camera output, no GPS surface). Pre-allocated `Buffer + body.copy` — push-spread on a 2MB SOS payload would crash V8's argument-stack limit.
-
-**Render path.** `loadProfile` returns `imageUrl: string | null` to every consumer (`/api/users/<id>` route + SSR `/u/<id>`); `/api/feed` selects `user.imageUrl` for check-in authors and badge users; `lib/profilePeople.ts` selects `image_url` for followers/following lists. The `<Avatar>` primitive renders the URL as `<img src>` with `objectFit: cover` + `borderRadius: 50%`, falling back to an initial-letter circle on null. `<EditableAvatar>` is the owner-side wrapper (tap opens AvatarEditor; on save, optimistic data-URL render + `router.refresh()` + `queryClient.invalidateQueries(['user-profile', userId])` for in-tasting cache); `<ZoomableAvatar>` is the non-owner wrapper (tap opens the full-screen lightbox).
+**JPEG metadata strip.** `lib/s3.ts:stripJpegMetadata` drops APP/COM segments before S3 to remove EXIF GPS. JPEG-only — iOS HEIC→JPEG conversion covers the camera path; PNG/WebP/GIF aren't stripped.
 
 **Editor UX.** `components/profile/AvatarEditor.tsx` is a `<Modal>` with file picker → `react-easy-crop` (round mask, square aspect, 1×–4× zoom slider, drag to reposition) → canvas crop to 512×512 JPEG @ 0.85 quality → POST. The canvas re-encode incidentally strips metadata (defense-in-depth alongside the server-side strip). Remove uses `<ConfirmDeleteButton>` with `btn-del` styling. Picker accepts `image/jpeg|png|webp` only — HEIC was dropped because non-Safari browsers can't decode it for the cropper.
 
@@ -245,9 +214,7 @@ A separate logged-in surface around individual users — sessions are still the 
 
 **S3 reclaim on edit/delete.** Check-in images live at `wines/ci_<userId>_<keyId>.<ext>` (POST keys by timestamp, PATCH keys by check-in id, so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
-**"Had a sip" copy flow.** A logged-in viewer who **follows** the source author can clone a public check-in via the `+ had a sip` button in the same slot the author's `edit` button occupies (in feed and on `/u/<id>`). `<CheckinModal>` opens in `copyFromCheckin` mode: wine identity (name, producer, vintage, grape, type) and the source's image are prefilled; score, flavours, notes are empty for the copier to fill. If the copier and source are **mutual** follows, the source author is auto-tagged (server's existing mutual-follow tag filter is the trust anchor; the UI just prefills the chip when the relationship qualifies). Venue: empty by default, with a "copy from original" button beside the location toggle that copies `venueName/city/country` only (lat/lng are deliberately not on the public wire). **Exception**: if the viewer was tagged on the source check-in (which implies they were there with the author), the venue group auto-fills on mount — they were physically present, so re-typing the venue is friction. `lat/lng` still don't transfer; if they want a map pin they re-pick. The client posts `copyFromCheckinId: <number>`; server resolves the row and rejects unless: source `isPublic`, source author ≠ caller (no self-copy), and `follows(follower=caller, following=source.userId)` exists. Then it runs an S3 `CopyObjectCommand` from the source's stored `imageUrl` into a fresh `wines/ci_<copierId>_<timestamp>.<ext>` key. The image URL is never trusted from the client — the wire field is the source row's id, not its URL. Each resulting check-in fully owns its image bytes (no refcount, no shared ownership) so existing `reclaimImage` paths stay correct: deleting the source leaves copiers' rows and bytes intact, and vice versa. **Privacy caveat (open):** the no-refcount design means a source author cannot recall image bytes once cloned; this needs to be reflected in the privacy policy or addressed via a per-source `allowCopy` flag — not yet decided.
-
-The feed payload includes `viewerFollowsAuthor: boolean` per check-in (`/api/feed` fetches the viewer's `follows` rows for the page's authors as a Set) so the UI can gate the button without a per-row roundtrip; the profile page passes its already-computed `isFollowing` down to `ProfileCheckins`.
+**"Had a sip" copy flow.** A logged-in viewer who follows the source author can clone a public check-in (`+ had a sip` button on feed cards and `/u/<id>`). Wire field is `copyFromCheckinId` — image URL is never trusted from the client; server resolves the row, rejects unless source `isPublic` + source author ≠ caller + caller→source follow exists, then S3 `CopyObjectCommand`s into a fresh key the copier owns. No refcount: each check-in owns its image bytes outright, so existing `reclaimImage` paths stay correct. The feed payload includes `viewerFollowsAuthor` per check-in to gate the button without a per-row roundtrip.
 
 **Places search** (`/api/places`) is a thin adapter: Google Places when `GOOGLE_PLACES_API_KEY` is set, OSM Overpass + Nominatim fallback otherwise. Both upstreams parameterised via `fetchJson` helper that throws labelled errors on non-OK / non-JSON responses (so transient outages surface in logs instead of a generic SyntaxError).
 
@@ -321,64 +288,15 @@ When adding a new table tied to users, decide which side it falls on. The test: 
 
 **S3 image reclaim is independent of cascade.** Postgres cascade-deleting a row does NOT trigger S3 cleanup — the bytes stay in the bucket forever unless the deletion path explicitly fires `reclaimImage()`. Any new table that stores an `imageUrl` field needs explicit reclaim added to its deletion paths (account-delete, session-delete, edit-replace). See `lib/accountDelete.ts` and `app/api/session/[code]/route.ts` for examples.
 
-### NextAuth logger override
-
-`auth.ts` overrides NextAuth's default error logger to collapse two expected-noise classes:
-- `CredentialsSignin` (any failed login) → one warn-level line `[auth] failed login (wrong credentials)`. No PII.
-- `CallbackRouteError` whose cause matches `RATE_LIMITED:N` (our throw from `authorize()` when login is rate-limited) → one warn-level line `[auth] login rate-limited (retry in Ns)`.
-
-Anything else falls through to `console.error(error)` with a full stack so genuine bugs stay visible.
-
 ### API surface
 
-| Endpoint | Method | Auth required | Authorization |
-|---|---|---|---|
-| `/api/auth/[...nextauth]` | GET/POST | none (auth flow) | NextAuth handles |
-| `/api/auth/register` | POST | none | honeypot + signed-timestamp + rate-limit; email uniqueness |
-| `/api/me/profile` | GET | cookie | implicit (queries by `session.user.id`) |
-| `/api/me/sessions` | GET | cookie | implicit |
-| `/api/me/badges` | GET/POST/PATCH | cookie | implicit |
-| `/api/me/bookmarks` | GET | cookie | implicit |
-| `/api/me/ratings` | GET | cookie | implicit |
-| `/api/me/account` | PATCH | cookie | edits own row only |
-| `/api/me/account` | DELETE | cookie + password re-auth | tombstones references, drops user row, scrubs Redis |
-| `/api/me/avatar` | POST | cookie | upload/replace own avatar; 10/h rate-limit; reclaims old S3 |
-| `/api/me/avatar` | DELETE | cookie | remove own avatar; reclaims S3 |
-| `/api/hof` | GET | none | public leaderboard |
-| `/api/session` | POST | none (anyone can host) | blind requires pro; lifespan>48h requires pro |
-| `/api/session/join` | POST | none (anyone with the code) | by design |
-| `/api/session/<code>` | GET | participant | `requireParticipant` |
-| `/api/session/<code>` | PATCH | strict host | cohost role assignment |
-| `/api/session/<code>` | DELETE | strict host | session deletion |
-| `/api/session/<code>/visit` | POST | cookie (anon early-returns) | implicit; no-op for anons |
-| `/api/session/<code>/wines` | GET | participant | `requireParticipant` (blind redaction for non-hosts) |
-| `/api/session/<code>/wines` | POST | host | `isHostByIdentity` (cohosts pass) |
-| `/api/session/<code>/wines/<id>` | PATCH/DELETE | host | `isHostByIdentity` |
-| `/api/session/<code>/wines/<id>/reveal` | POST/DELETE | host | `isHostByIdentity` (blind reveal) |
-| `/api/session/<code>/wines/reveal-all` | POST | host | `isHostByIdentity` |
-| `/api/session/<code>/wines/hide-all` | POST | host | `isHostByIdentity` |
-| `/api/session/<code>/wines/reorder` | POST | host | `isHostByIdentity` |
-| `/api/session/<code>/wines/<id>/bookmark` | POST/DELETE | cookie | logged-in only; no anon bookmarks |
-| `/api/session/<code>/ratings` | GET | participant | `requireParticipant` |
-| `/api/session/<code>/rate` | POST | identity (cookie or anon-token) | rates own slot only (id-keyed Redis key) |
-| `/api/session/<code>/rate/<wineId>` | DELETE | identity | deletes own rating only |
-| `/api/session/<code>/settings` | PATCH | host | `isHostByIdentity`; pro-gated for blind/lifespan |
-| `/api/session/<code>/name` | PATCH | host | `isHostByIdentity` |
-| `/api/me/bookmarks/<wineId>` | DELETE | cookie | session-agnostic unbookmark; works on orphaned wines |
-| `/api/me/friends` | GET | cookie | mutual follows of the calling user |
-| `/api/feed` | GET | cookie | social feed (network-scoped: explicit follows + tasting buddies) |
-| `/api/checkins` | POST | cookie | create check-in; rate-limited 100/h shared with PATCH; mutual-follow tags verified server-side; optional `copyFromCheckinId` clones a source's image bytes (requires source `isPublic`, source author ≠ caller, and caller→source follow) |
-| `/api/checkins/<id>` | PATCH | cookie + owner | edit own check-in; image replace reclaims old S3; tags re-validated against current mutuals |
-| `/api/checkins/<id>` | DELETE | cookie + owner | delete own check-in; reclaims S3 image |
-| `/api/checkins/<id>/like` | POST/DELETE | cookie | like/unlike a check-in |
-| `/api/users/<id>` | GET | optional cookie | public profile; viewer's `isFollowing` populated when authed |
-| `/api/users/<id>/follow` | POST/DELETE | cookie | follow/unfollow; self-follow rejected with 400 |
-| `/api/users/search` | GET | none | display-name prefix lookup for follow/tag discovery (rate-limited per-IP); never participates in authorization |
-| `/api/places` | POST | none | venue search adapter (Google Places when `GOOGLE_PLACES_API_KEY` set, OSM Overpass+Nominatim fallback); rate-limited per-IP |
+The full endpoint list lives in README.md. Authorization tier vocabulary used here and in route code:
 
-**"Strict host"** = the original session host, not co-hosts. Reserved for role assignment (`PATCH /api/session/<code>` with cohost actions) and session deletion.
-
-**"Identity required"** = the request must produce a non-null result from `resolveIdentity` (cookie or valid anon-token). Different from "participant" — a stale or wrong token returns 401 + `X-Vr-Auth: invalid` for both, but session-existence-checked endpoints distinguish 404 (session is gone) from 401 (your token is bad).
+- **strict host** — the original session host, not co-hosts. Reserved for cohost role assignment (`PATCH /api/session/<code>`) and session deletion.
+- **host** — passes `isHostByIdentity`: original host OR any cohost in `meta.coHostIds`.
+- **participant** — passes `requireParticipant`: registered in this session's identities map.
+- **identity required** — request must produce non-null `resolveIdentity` (cookie or valid anon-token). Stale/wrong token returns 401 + `X-Vr-Auth: invalid`; session-existence endpoints distinguish 404 (gone) from 401 (token bad).
+- **cookie** — NextAuth session cookie. Logged-in users only.
 
 ### Frontend structure
 

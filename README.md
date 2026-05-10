@@ -96,10 +96,28 @@ Or via Cockpit:
 ## Local development
 
 ```bash
-# Start Redis
+# Redis
 docker run -d -p 6379:6379 redis:7-alpine
 
-# Postgres: either run locally (docker) or point DATABASE_URL at a dev DB.
+# S3 (MinIO)
+docker run -d --name verre-minio \
+  -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  -v verre-minio-data:/data \
+  minio/minio:latest server /data --console-address ":9001"
+
+# First-time bucket creation + public-read policy (so <img src> from
+# the browser can fetch uploaded objects):
+docker run --rm --network host \
+  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
+  s3 mb s3://verre-local
+docker run --rm --network host \
+  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
+  s3api put-bucket-policy --bucket verre-local --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::verre-local/*"]}]}'
+
+# Postgres: run locally (docker) or point DATABASE_URL at a dev DB.
 # Then apply migrations to set up the schema:
 npx prisma migrate deploy
 
@@ -109,6 +127,17 @@ npx prisma generate
 npm run dev
 # → http://localhost:3000
 ```
+
+Local `.env` for the MinIO bucket:
+```
+S3_ENDPOINT=http://localhost:9000
+S3_BUCKET=verre-local
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_REGION=us-east-1
+```
+
+To test from a phone on the LAN, replace `localhost:9000` with your host's LAN IP (e.g. `http://192.168.1.42:9000`) in BOTH `S3_ENDPOINT` and the `<img src>` it produces — the upload flow stores the endpoint as a literal prefix in `users.image_url`. Existing rows uploaded under one address won't resolve from another.
 
 Open `http://localhost:3000`, create a session, and join from a second device if you want to test the shared flow.
 
