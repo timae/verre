@@ -32,6 +32,7 @@ model User {
   lifetimePhotosAdded       Int             @default(0) @map("lifetime_photos_added")
   lifetimeConsecutiveMonths Int             @default(0) @map("lifetime_consecutive_months")
   firstRatedAt              DateTime?       @map("first_rated_at") @db.Timestamp(6)
+  imageUrl                  String?         @map("image_url") @db.VarChar(512)
   bookmarks                 Bookmark[]
   hofEntries                HallOfFame[]
   ratings                   Rating[]
@@ -96,7 +97,11 @@ model Rating {
   wineId    String   @map("wine_id") @db.VarChar(20)
   userId    Int?     @map("user_id")
   raterName String   @map("rater_name") @db.VarChar(64)
-  score     Int      @db.SmallInt
+  // Decimal(3,2) accepts 0.00 through 5.00 in 0.25 increments.
+  // Stored as numeric so AVG / GREATEST / range comparisons work
+  // directly in SQL. Validation enforces the 0.25-step constraint at
+  // the route layer (lib/checkinValidation.ts).
+  score     Decimal  @db.Decimal(3, 2)
   flavors   Json     @default("{}")
   notes     String?
   ratedAt   DateTime @map("rated_at") @db.Timestamptz(6)
@@ -104,6 +109,7 @@ model Rating {
   wine      Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([wineId, userId])
+  @@index([userId])
   @@map("ratings")
 }
 
@@ -138,7 +144,10 @@ model HallOfFame {
   vintage     String?  @db.Char(4)
   category    String   @default("wine") @db.VarChar(32)
   style       String?  @db.VarChar(64)
-  score       Int      @db.SmallInt
+  // Quarter-stars: 0.00 through 5.00 in 0.25 steps. HoF entries are
+  // currently created only on score === 5.00 (strict five-star), so
+  // existing rows stay at 5.00 after the type widen.
+  score       Decimal  @db.Decimal(3, 2)
   raterName   String   @map("rater_name") @db.VarChar(64)
   userId      Int?     @map("user_id")
   sessionCode String?  @map("session_code") @db.VarChar(16)
@@ -205,7 +214,10 @@ model Checkin {
   vintage   String?  @db.Char(4)
   grape     String?  @db.VarChar(255)
   type      String?  @db.VarChar(16)
-  score     Int?     @db.SmallInt
+  // Quarter-stars: 0.00 through 5.00 in 0.25 steps; null when the
+  // user hasn't rated this check-in yet (the check-in row exists for
+  // the wine identity + flavors + notes alone).
+  score     Decimal? @db.Decimal(3, 2)
   flavors   Json     @default("{}")
   notes     String?
   imageUrl  String?  @map("image_url")

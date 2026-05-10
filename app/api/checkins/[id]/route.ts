@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { uploadImage } from '@/lib/s3'
+import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+import { parsePathId } from '@/lib/parsePathId'
+import { isSameOrigin } from '@/lib/csrf'
+import { scrub } from '@/lib/textSafe'
+import { decimalToNumber } from '@/lib/decimal'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -39,6 +43,7 @@ async function reclaimImage(url: string | null | undefined) {
 type Ctx = { params: Promise<{ id: string }> }
 
 export async function PATCH(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
@@ -47,25 +52,54 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const rl = await checkRate(`rl:checkin:${userId}:1h`, 100, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many check-in writes. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
 
-  const { id } = await params
-  const checkin = await prisma.checkin.findUnique({ where: { id: Number(id) } })
+  const checkinId = parsePathId((await params).id)
+  if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const checkin = await prisma.checkin.findUnique({ where: { id: checkinId } })
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   if (checkin.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
-  const body = await req.json()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, notes,
     imageData, venueName, city, country, lat, lng, isPublic, taggedUserIds } = body
+  // Mirror the per-field length caps from POST so over-sized PATCH input
+  // returns 400 instead of letting Prisma raise P2000 (→ 500).
+  // Caps match prisma column widths so over-sized input lands as 400
+  // rather than tripping Prisma P2000 → 500.
+  const lenCheck: Array<[string, unknown, number]> = [
+    ['wineName', wineName, 200], ['producer', producer, 200], ['vintage', vintage, 8],
+    ['grape', grape, 200], ['type', type, 32],
+    ['venueName', venueName, 200], ['city', city, 100], ['country', country, 8],
+    ['notes', notes, 4000],
+  ]
+  for (const [k, v, max] of lenCheck) {
+    if (typeof v === 'string' && v.length > max) return NextResponse.json({ error: `${k} too long (max ${max})` }, { status: 400 })
+  }
+  // Run validators and capture the parsed values. POST writes the
+  // validated result; PATCH originally discarded `.value` and wrote
+  // raw user input — meaning a payload that *passed* the validator
+  // but then was over-written with the unvalidated original. Carry
+  // the parsed values through to the actual write.
+  let validScore: number | null | undefined = undefined
+  let validFlavorsValue: Record<string, number> | undefined = undefined
   if (score !== undefined) {
-    const c = validateScore(score); if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    const c = validateScore(score)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validScore = c.value
   }
   if (flavors !== undefined) {
-    const c = validateFlavors(flavors); if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    const c = validateFlavors(flavors)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validFlavorsValue = c.value
   }
 
   let imageUrl = checkin.imageUrl
   if (imageData?.startsWith('data:image/')) {
-    const tempId = `ci_${checkin.userId}_${checkin.id}`
-    const newUrl = await uploadImage(tempId, imageData).catch(() => null)
+    if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
+      return NextResponse.json({ error: 'image too large' }, { status: 400 })
+    }
+    const keyBase = `wines/ci_${checkin.userId}_${checkin.id}`
+    const newUrl = await uploadImage(keyBase, imageData).catch(() => null)
     if (newUrl) {
       // Replace successful — reclaim the old object if it was different
       // (POST keys by timestamp, PATCH keys by checkin id, so the URL
@@ -101,20 +135,22 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   const updated = await prisma.$transaction(async (tx) => {
     const updatedCheckin = await tx.checkin.update({
-      where: { id: Number(id) },
+      where: { id: checkinId },
       data: {
-        wineName:  wineName  !== undefined ? (wineName?.trim()  || checkin.wineName) : checkin.wineName,
-        producer:  producer  !== undefined ? (producer?.trim()  || null) : checkin.producer,
-        vintage:   vintage   !== undefined ? (vintage?.trim().slice(0,4) || null) : checkin.vintage,
-        grape:     grape     !== undefined ? (grape?.trim()     || null) : checkin.grape,
-        type:      type      !== undefined ? (type              || null) : checkin.type,
-        score:     score     !== undefined ? (score             ?? null) : checkin.score,
-        flavors:   flavors   !== undefined ? flavors            : checkin.flavors,
-        notes:     notes     !== undefined ? (notes?.trim()     || null) : checkin.notes,
+        // scrub() strips C0 control chars (incl. NULL byte that would
+        // trip Postgres P22021) and returns null for empty payloads.
+        wineName:  wineName  !== undefined ? (scrub(wineName)  || checkin.wineName) : checkin.wineName,
+        producer:  producer  !== undefined ? scrub(producer)   : checkin.producer,
+        vintage:   vintage   !== undefined ? (scrub(vintage)?.slice(0,4) || null) : checkin.vintage,
+        grape:     grape     !== undefined ? scrub(grape)      : checkin.grape,
+        type:      type      !== undefined ? (type             || null) : checkin.type,
+        score:     score     !== undefined ? (validScore       ?? null) : checkin.score,
+        flavors:   flavors   !== undefined ? (validFlavorsValue ?? {}) : (checkin.flavors as object),
+        notes:     notes     !== undefined ? scrub(notes)      : checkin.notes,
         imageUrl,
-        venueName: venueName !== undefined ? (venueName?.trim() || null) : checkin.venueName,
-        city:      city      !== undefined ? (city?.trim()      || null) : checkin.city,
-        country:   country   !== undefined ? (country?.trim().slice(0,2).toUpperCase() || null) : checkin.country,
+        venueName: venueName !== undefined ? scrub(venueName)  : checkin.venueName,
+        city:      city      !== undefined ? scrub(city)       : checkin.city,
+        country:   country   !== undefined ? (scrub(country)?.slice(0,2).toUpperCase() || null) : checkin.country,
         lat:       lat       !== undefined ? (lat               ?? null) : checkin.lat,
         lng:       lng       !== undefined ? (lng               ?? null) : checkin.lng,
         isPublic:  isPublic  !== undefined ? isPublic           : checkin.isPublic,
@@ -125,10 +161,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // — explicit empty means "remove all tags"). Skip when undefined so a
     // PATCH that only updates other fields doesn't drop existing tags.
     if (validTagIds !== undefined) {
-      await tx.checkinTag.deleteMany({ where: { checkinId: Number(id) } })
+      await tx.checkinTag.deleteMany({ where: { checkinId } })
       if (validTagIds.length > 0) {
         await tx.checkinTag.createMany({
-          data: validTagIds.map(uid => ({ checkinId: Number(id), userId: uid })),
+          data: validTagIds.map(uid => ({ checkinId, userId: uid })),
           skipDuplicates: true,
         })
       }
@@ -137,17 +173,19 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     return updatedCheckin
   })
 
-  return NextResponse.json(updated)
+  return NextResponse.json({ ...updated, score: decimalToNumber(updated.score) })
 }
 
-export async function DELETE(_req: NextRequest, { params }: Ctx) {
+export async function DELETE(req: NextRequest, { params }: Ctx) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
-  const { id } = await params
-  const checkin = await prisma.checkin.findUnique({ where: { id: Number(id) } })
+  const checkinId = parsePathId((await params).id)
+  if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const checkin = await prisma.checkin.findUnique({ where: { id: checkinId } })
   if (!checkin) return NextResponse.json({ error: 'not found' }, { status: 404 })
   if (checkin.userId !== Number(session.user.id)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  await prisma.checkin.delete({ where: { id: Number(id) } })
+  await prisma.checkin.delete({ where: { id: checkinId } })
   // Fire-and-forget: reclaim the S3 object after the DB row is gone. If
   // the S3 delete fails we still report success — the row is gone, the
   // object becomes a harmless orphan that a future cleanup can sweep.

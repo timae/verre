@@ -6,8 +6,10 @@ import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 import { userIdentityId, recordIdentity } from '@/lib/identity'
 import { disambiguateDisplayName } from '@/lib/displayName'
+import { isSameOrigin } from '@/lib/csrf'
 
-export async function POST(_req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })

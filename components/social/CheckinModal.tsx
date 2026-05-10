@@ -7,6 +7,7 @@ import { useQuery } from '@tanstack/react-query'
 import { getFL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { Modal } from '@/components/ui/Modal'
+import { ScoreSlider } from '@/components/ui/ScoreSlider'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' }, { k: 'white', l: 'White', ico: '🥂' },
@@ -22,22 +23,42 @@ type EditCheckin = {
   tags?: { id: number; name: string }[]
 }
 
-interface Props { onClose: () => void; onPosted: () => void; editCheckin?: EditCheckin; onDelete?: () => void }
+export type CopySource = {
+  id: number
+  wineName: string; producer?: string|null; vintage?: string|null
+  grape?: string|null; type?: string|null
+  imageUrl?: string|null
+  venueName?: string|null; city?: string|null; country?: string|null
+  author: { id: number; name: string }
+  // True when the viewer was tagged on the source — implies they were there,
+  // so the modal auto-fills the venue group on mount.
+  taggedViewer?: boolean
+}
 
-export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props) {
+interface Props {
+  onClose: () => void
+  onPosted: () => void
+  editCheckin?: EditCheckin
+  copyFromCheckin?: CopySource
+  onDelete?: () => void
+}
+
+export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, onDelete }: Props) {
   const isEdit = !!editCheckin
-  const [wineName, setWineName] = useState(editCheckin?.wineName || '')
-  const [producer, setProducer] = useState(editCheckin?.producer || '')
-  const [vintage, setVintage] = useState(editCheckin?.vintage || '')
-  const [grape, setGrape] = useState(editCheckin?.grape || '')
-  const [type, setType] = useState(editCheckin?.type || '')
+  const isCopy = !isEdit && !!copyFromCheckin
+  const prefill = editCheckin || (isCopy ? copyFromCheckin : null)
+  const [wineName, setWineName] = useState(prefill?.wineName || '')
+  const [producer, setProducer] = useState(prefill?.producer || '')
+  const [vintage, setVintage] = useState(prefill?.vintage || '')
+  const [grape, setGrape] = useState(prefill?.grape || '')
+  const [type, setType] = useState(prefill?.type || '')
   const [score, setScore] = useState(editCheckin?.score || 0)
   const [flavors, setFlavors] = useState<Record<string, number>>(
     (editCheckin?.flavors as Record<string,number>) || {}
   )
   const [notes, setNotes] = useState(editCheckin?.notes || '')
   const [imageData, setImageData] = useState('')
-  const [existingImageUrl] = useState(editCheckin?.imageUrl || '')
+  const [existingImageUrl] = useState(editCheckin?.imageUrl || copyFromCheckin?.imageUrl || '')
   const [location, setLocation] = useState<{ venueName?: string; city?: string; country?: string; lat?: number; lng?: number }>({
     venueName: editCheckin?.venueName || undefined,
     city: editCheckin?.city || undefined,
@@ -47,6 +68,10 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
   })
   const [isPublic, setIsPublic] = useState(editCheckin?.isPublic !== false)
   const [showLocation, setShowLocation] = useState(false)
+  // Bump to force-remount LocationPicker — its internal query state is seeded
+  // from props on mount, so wholesale replacements (copy-from-original) need
+  // a fresh instance to keep the input field in sync.
+  const [locationVersion, setLocationVersion] = useState(0)
   const [showTagPicker, setShowTagPicker] = useState(false)
   const [taggedIds, setTaggedIds] = useState<number[]>(editCheckin?.tags?.map(t => t.id) ?? [])
   const [saving, setSaving] = useState(false)
@@ -54,6 +79,31 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
 
   const fl = getFL(type || 'white')
   const { data: friends = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
+
+  const sourceAuthorId = copyFromCheckin?.author.id
+  const autoTagPrimed = useRef(false)
+  useEffect(() => {
+    if (!isCopy || autoTagPrimed.current || !sourceAuthorId) return
+    if (friends.some(f => f.id === sourceAuthorId)) {
+      setTaggedIds(prev => prev.includes(sourceAuthorId) ? prev : [...prev, sourceAuthorId])
+      autoTagPrimed.current = true
+    }
+  }, [friends, isCopy, sourceAuthorId])
+
+  // If the viewer was tagged on the source, they were there — auto-fill the
+  // venue group rather than making them click "copy from original".
+  useEffect(() => {
+    if (!isCopy || !copyFromCheckin?.taggedViewer || !copyFromCheckin.venueName) return
+    setLocation({
+      venueName: copyFromCheckin.venueName || undefined,
+      city: copyFromCheckin.city || undefined,
+      country: copyFromCheckin.country || undefined,
+    })
+    setShowLocation(true)
+    setLocationVersion(v => v + 1)
+    // Run once on mount with the copy source.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Reset flavors when the user picks a different type (the dimensions change).
   // Skip the very first run so editing a check-in keeps its stored flavors.
@@ -85,12 +135,17 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
     setSaving(true); setError('')
     const url = isEdit ? `/api/checkins/${editCheckin!.id}` : '/api/checkins'
     const method = isEdit ? 'PATCH' : 'POST'
+    // Send the source id when the user kept the source image — server resolves
+    // and authorizes the row, then CopyObjects the bytes. Replacement/remove
+    // paths fall through to the normal imageData branch.
+    const copyFromCheckinId = isCopy && !imageData && existingImageUrl ? copyFromCheckin!.id : undefined
     const res = await fetch(url, {
       method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         wineName, producer, vintage, grape, type,
         score: score || null, flavors, notes,
         imageData: imageData === '__remove__' ? null : (imageData || undefined),
+        copyFromCheckinId,
         isPublic, ...location,
         taggedUserIds: taggedIds,
       }),
@@ -101,11 +156,18 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
   }
 
   return (
-    <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)">
-      <div className="sheet-bar" />
-      <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', marginBottom: 16 }}>
-          {isEdit ? 'Edit check-in' : 'Check in a wine'}
+    <Modal onClose={onClose} maxWidth={560} minHeight="min(70vh, 600px)" maxHeight="90vh">
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+          <div style={{ fontFamily: 'var(--mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.04em' }}>
+            {isEdit ? 'Edit check-in' : isCopy ? 'Had a sip' : 'Check in a wine'}
+          </div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
         </div>
+        {isCopy && copyFromCheckin && (
+          <p style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: -10, marginBottom: 14 }}>
+            Wine details copied from {copyFromCheckin.author.name}&rsquo;s check-in. Add your own rating, flavours, and notes.
+          </p>
+        )}
 
         {/* Photo */}
         <div style={{ marginBottom: 12, border: '1px solid var(--border)', borderRadius: 12, padding: 12, background: 'var(--bg3)' }}>
@@ -118,7 +180,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 0' }}>
               <span style={{ fontSize: 22 }}>📷</span>
               <span style={{ fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                {isEdit ? 'replace photo' : 'attach bottle photo'}
+                {isEdit || isCopy ? 'replace photo' : 'attach bottle photo'}
               </span>
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handlePhoto} />
             </label>
@@ -145,15 +207,13 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
           </div>
         </div>
 
-        {/* Stars */}
-        <div className="field">
-          <div className="fl">score</div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {[1, 2, 3, 4, 5].map(n => (
-              <button key={n} type="button" onClick={() => setScore(n === score ? 0 : n)}
-                style={{ fontSize: 24, background: 'none', border: 'none', cursor: 'pointer', color: n <= score ? 'var(--accent)' : 'var(--fg-faint)', lineHeight: 1 }}>★</button>
-            ))}
-          </div>
+        {/* Score slider — drag or tap, snaps to 0.25.
+            Wrapped in a panel so the visual width matches the rest of
+            the form (the inputs above/below sit inside `field` blocks,
+            but a slider full-width inside a `field` looked stretched). */}
+        <div className="panel">
+          <div className="panel-hdr">score</div>
+          <ScoreSlider value={score} onChange={setScore} />
         </div>
 
         {/* Flavour chips (only if type selected) */}
@@ -198,10 +258,26 @@ export function CheckinModal({ onClose, onPosted, editCheckin, onDelete }: Props
         )}
 
         {/* Location toggle */}
-        <button type="button" className="btn-s" onClick={() => setShowLocation(!showLocation)} style={{ marginBottom: 10 }}>
-          📍 {showLocation ? 'hide location' : 'add location'}
-        </button>
-        {showLocation && <LocationPicker value={location} onChange={setLocation} />}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="btn-s" onClick={() => setShowLocation(!showLocation)}>
+            📍 {showLocation ? 'hide location' : 'add location'}
+          </button>
+          {isCopy && copyFromCheckin?.venueName && (
+            <button type="button" className="btn-s"
+              onClick={() => {
+                setLocation({
+                  venueName: copyFromCheckin.venueName || undefined,
+                  city: copyFromCheckin.city || undefined,
+                  country: copyFromCheckin.country || undefined,
+                })
+                setShowLocation(true)
+                setLocationVersion(v => v + 1)
+              }}>
+              copy from original
+            </button>
+          )}
+        </div>
+        {showLocation && <LocationPicker key={locationVersion} value={location} onChange={setLocation} />}
 
         {/* Privacy */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg3)', marginTop: 10, cursor: 'pointer' }}

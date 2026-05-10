@@ -1,8 +1,9 @@
+/* @import must precede all other rules per CSS spec (Turbopack enforces strictly). */
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
 
 /* ── Original Verre design system ────────── */
 
@@ -160,6 +161,26 @@
 }
 .chip[data-sel]{border-color:var(--accent);background:rgba(200,150,60,0.1);color:var(--accent);}
 
+/* Segmented control — tab strip / direction toggle. Tracks .chip styling but
+   stretches via flex:1 by default and uses mono caps to read as nav. */
+.seg{display:flex;gap:6px;}
+.seg-item {
+  flex:1;padding:10px 8px;border-radius:10px;cursor:pointer;
+  border:1px solid var(--border);background:var(--bg3);
+  font-family:var(--mono);font-size:12px;font-weight:700;letter-spacing:0.04em;
+  color:var(--fg-dim);transition:border-color .15s,color .15s,background .15s;
+}
+.seg-item[data-active]{border-color:rgba(200,150,60,0.4);background:rgba(200,150,60,0.12);color:var(--accent);}
+
+/* Filter pill — compact 3-way toggle inside a panel. */
+.pill-row{display:flex;gap:4px;padding:3px;background:var(--bg3);border-radius:999px;border:1px solid var(--border);}
+.pill {
+  padding:6px 12px;border-radius:999px;cursor:pointer;border:none;background:transparent;
+  font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.04em;
+  color:var(--fg-dim);transition:background .15s,color .15s;
+}
+.pill[data-active]{background:var(--accent);color:var(--bg);}
+
 /* ── Dark theme (default) ─────────────────── */
 :root {
   --bg: #0E0E0C; --bg2: #141410; --bg3: #1A1A16; --bg4: #202019;
@@ -238,9 +259,16 @@ body {
 .me-nav-link:hover { background: var(--bg3); color: var(--fg); }
 .me-bottom-nav { display: none; }
 
+/* Hide on narrow viewports — used to drop secondary labels next to
+   icon-only affordances (e.g. the "settings" word next to the gear in
+   the profile-header button). The icon stays visible; only the text
+   collapses. */
+.hide-narrow { display: inline; }
+
 @media (max-width: 639px) {
   .me-sidebar { display: none !important; }
   .me-bottom-nav { display: block; }
+  .hide-narrow { display: none !important; }
 
   /* iOS auto-zooms when an input's font-size is below 16px. The .fi
      class and several other inputs render at 13px on desktop for

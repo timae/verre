@@ -1,51 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { prisma } from '@/lib/prisma'
-import { getLevel } from '@/lib/badges'
+import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { parsePathId } from '@/lib/parsePathId'
+import { checkRate } from '@/lib/rateLimit'
+import { loadProfile } from '@/lib/profileLoad'
 
-export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
   const { id } = await params
-  const userId = Number(id)
+  const userId = parsePathId(id)
+  if (userId === null) {
+    return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  }
 
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      id: true, name: true, xp: true,
-      lifetimeRatings: true, lifetimeSessionsJoined: true,
-      _count: { select: { earnedBadges: true, checkins: true, followers: true, following: true } },
-    },
-  })
-  if (!user) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Public, anonymous-readable. Rate-limited per-IP to prevent
+  // enumeration + DB-load amplification.
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
+  const rl = await checkRate(`rl:profile:${ip}:1m`, 60, 60)
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
-  const level = getLevel(user.xp)
-  const isFollowing = session?.user
-    ? !!(await prisma.follow.findUnique({
-        where: { followerId_followingId: { followerId: Number(session.user.id), followingId: userId } },
-      }))
-    : false
+  const viewerId = session?.user ? Number(session.user.id) : null
+  const gate = await resolveProfileViewer(userId, viewerId)
+  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
 
-  const recentCheckins = await prisma.checkin.findMany({
-    where: { userId, isPublic: true },
-    orderBy: { createdAt: 'desc' },
-    take: 6,
-    include: { _count: { select: { likes: true } } },
-  })
-
-  return NextResponse.json({
-    id: user.id,
-    name: user.name,
-    xp: user.xp,
-    level,
-    stats: {
-      ratings: user.lifetimeRatings,
-      sessions: user.lifetimeSessionsJoined,
-      badges: user._count.earnedBadges,
-      checkins: user._count.checkins,
-      followers: user._count.followers,
-      following: user._count.following,
-    },
-    isFollowing,
-    recentCheckins,
-  })
+  const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
+  if (!profile) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  return NextResponse.json(profile)
 }

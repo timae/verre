@@ -48,17 +48,16 @@ interface Props {
 //   - Portal escape.
 //   - Backdrop click-to-close (only when the click target is the
 //     backdrop itself, not bubbled from inside).
-//   - Escape-key-to-close.
+//   - Escape-key-to-close (only the topmost modal in the stack).
 //   - The base "sheet" styling: dark blurred backdrop, sheet anchored
-//     to the bottom of the viewport with rounded top corners and a
-//     thin grab handle, scroll handled on the backdrop so tall
-//     content doesn't get cropped on short viewports.
+//     to the bottom of the viewport with rounded top corners; scroll
+//     handled on the backdrop so tall content doesn't get cropped on
+//     short viewports.
 //
 // What the caller owns:
 //   - The contents (forms, content, buttons).
-//   - Sheet-bar visibility (call sites add their own `<div className="sheet-bar" />`
-//     if they want one — kept here as a caller responsibility for now
-//     since not every modal needs it).
+//   - A visible close affordance (top-right `btn-s` "close" button is
+//     the convention — see SessionPanel for the canonical example).
 export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight, align = 'flex-end' }: Props) {
   // Stable token for this Modal instance — used to identify ourselves in
   // the open-modal stack so we only respond to Escape when topmost.

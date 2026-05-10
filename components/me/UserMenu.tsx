@@ -5,12 +5,13 @@ import Link from 'next/link'
 import { clearSessionNames } from '@/lib/clientStorage'
 
 interface Props {
+  myId: number
   name: string
   email: string
   pro: boolean
 }
 
-export function UserMenu({ name, email, pro }: Props) {
+export function UserMenu({ myId, name, email, pro }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -45,7 +46,7 @@ export function UserMenu({ name, email, pro }: Props) {
 
           {/* Links */}
           {[
-            { href: '/me/profile', label: '◉  Profile & settings' },
+            { href: `/u/${myId}`,  label: '◉  Profile' },
             { href: '/me/badges',  label: '🏅  Badges & XP' },
             { href: '/me/history', label: '◷  Tasting history' },
           ].map(({ href, label }) => (

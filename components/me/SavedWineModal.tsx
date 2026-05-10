@@ -8,6 +8,7 @@ import { detectFL, FL } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
+import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@/lib/sessionCode'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
@@ -24,8 +25,10 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={560} maxHeight="90vh">
-        <div className="sheet-bar" />
-
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>saved wine</div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+        </div>
         {wine.image_url && (
           <img src={wine.image_url} alt={wine.name} onClick={()=>openLightbox(wine.image_url!,wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:12,marginBottom:14,cursor:'zoom-in'}} />
         )}
@@ -44,10 +47,8 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           <>
             <div className="panel">
               <div className="panel-hdr">your score</div>
-              <div style={{display:'flex',justifyContent:'center',gap:8}}>
-                {[1,2,3,4,5].map(n => (
-                  <span key={n} style={{fontSize:24,color:n<=rating.score?'var(--accent)':'var(--fg-faint)'}}>★</span>
-                ))}
+              <div style={{display:'flex',justifyContent:'center'}}>
+                <StarRating value={rating.score} size="detail" />
               </div>
             </div>
 
@@ -78,7 +79,6 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           </div>
         )}
 
-        <button className="btn-g" onClick={onClose}>close</button>
         {onRemove && (
           <ConfirmDeleteButton
             label="⌫ remove from saved"

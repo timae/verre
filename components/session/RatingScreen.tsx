@@ -9,6 +9,7 @@ import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
+import { ScoreSlider } from '@/components/ui/ScoreSlider'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
 
@@ -53,7 +54,6 @@ export function RatingScreen({ wineId, onClose }: Props) {
 
   if (!wine) return (
     <Modal onClose={onClose} maxWidth={400}>
-      <div className="sheet-bar" />
       <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
       <button className="btn-g" onClick={onClose}>close</button>
     </Modal>
@@ -131,7 +131,6 @@ export function RatingScreen({ wineId, onClose }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={580} maxHeight="90vh">
-      <div className="sheet-bar" />
       {/* Title row */}
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
         <div style={{flex:1,minWidth:0}}>
@@ -151,20 +150,17 @@ export function RatingScreen({ wineId, onClose }: Props) {
           )}
         </div>
         <span style={{fontSize:22,flexShrink:0}}>{isRedacted ? '🙈' : (ICO[wine.type] || '🍷')}</span>
+        <button className="btn-s" onClick={onClose} style={{fontSize:9,flexShrink:0}}>close</button>
       </div>
 
       {!isRedacted && wine.imageUrl && (
         <img src={wine.imageUrl} alt={wine.name} onClick={() => openLightbox(wine.imageUrl!, wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10,cursor:'zoom-in'}} />
       )}
 
-      {/* Stars */}
+      {/* Score slider — drag or tap, snaps to 0.25 */}
       <div className="panel">
-        <div className="panel-hdr">overall score</div>
-        <div style={{display:'flex',justifyContent:'center',gap:12}}>
-          {[1,2,3,4,5].map(n => (
-            <button key={n} onClick={() => setScore(n === score ? 0 : n)} style={{fontSize:28,background:'none',border:'none',cursor:'pointer',color:n<=score?'var(--accent)':'var(--fg-faint)',transition:'transform .1s',lineHeight:1}}>★</button>
-          ))}
-        </div>
+        <div className="panel-hdr">score</div>
+        <ScoreSlider value={score} onChange={setScore} />
       </div>
 
       {/* Flavours */}

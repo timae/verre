@@ -44,11 +44,11 @@ export async function ensureBadgesSeedOnce() {
 
 // ── Stats ─────────────────────────────────────────────────────
 //
-// Mixes O(1) snapshot reads from `users` (counters that drive badges and
-// don't tolerate going down) with live aggregations for the per-style/grape
-// counts and averages (only rendered on /me/profile, low frequency, and
-// not used to award badges). The hot path — every rate POST — only reads
-// the snapshot row and one count of bookmarks/HoF.
+// Mixes O(1) snapshot reads from `users` (monotonic counters that drive
+// badge progression — `lifetimeRatings`, `lifetimeFiveStar`, …) with
+// live aggregations against `ratings` for per-style/grape badge checks
+// that need the actual current dataset. Called from the badge-evaluation
+// hot path on every rate/host/join action — keep cheap.
 export async function getUserStats(userId: number): Promise<UserStats> {
   // Snapshot — single primary-key lookup.
   const snap = await prisma.user.findUnique({
@@ -62,10 +62,10 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     },
   })
 
-  // Live — rendered on /me/profile only. Aggregates against ratings table.
-  // Acceptable because /me/profile loads are infrequent compared to rate
-  // POSTs. If profile rendering shows up in profiling later, snapshot
-  // these too.
+  // Live aggregate — needed because per-style and per-grape badge checks
+  // operate on the current ratings dataset (snapshot counters are
+  // total-count-only, not faceted). `@@index([userId])` on `Rating`
+  // keeps this fast on the rate-POST hot path.
   const [main] = await prisma.$queryRaw<[{
     avg_score:number|null; avg_tannin:number|null; avg_acid:number|null
     avg_oak:number|null; avg_floral:number|null; avg_earth:number|null; avg_fruit:number|null

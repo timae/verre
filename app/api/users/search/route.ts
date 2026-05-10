@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
   if (q.length < 2) return NextResponse.json([])
 
-  // Case-insensitive prefix search; NFKC normalised at write time
+  // Case-insensitive substring search; NFKC normalised at write time
   const users = await prisma.user.findMany({
     where: { name: { contains: q, mode: 'insensitive' } },
     select: { id: true, name: true, xp: true, _count: { select: { earnedBadges: true } } },

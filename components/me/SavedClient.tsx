@@ -6,6 +6,7 @@ import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@/lib/sessionCode'
+import { StarRating } from '@/components/ui/StarRating'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
@@ -51,12 +52,11 @@ export function SavedClient() {
                   <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {formatCode(b.session_code)}</p>
                 )}
               </div>
-              {rating && (
-                <div style={{flexShrink:0,textAlign:'right'}}>
-                  <span style={{fontSize:20,fontWeight:800,lineHeight:1,color:'var(--accent)'}}>{rating.score}</span>
-                  <span style={{fontSize:10,color:'var(--fg-dim)'}}>/5</span>
+              {rating?.score ? (
+                <div style={{flexShrink:0}}>
+                  <StarRating value={rating.score} />
                 </div>
-              )}
+              ) : null}
             </button>
           )
         })}

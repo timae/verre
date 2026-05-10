@@ -1,19 +1,12 @@
-import { ProfileClient } from '@/components/me/ProfileClient'
-import { DashboardSettings } from '@/components/me/DashboardSettings'
-import { AccountSettings } from '@/components/me/AccountSettings'
+import { redirect } from 'next/navigation'
+import { auth } from '@/auth'
 
-export default function ProfilePage() {
-  return (
-    <div>
-      <h1 style={{fontSize:24,fontWeight:700,color:'#F0E3C6',marginBottom:20}}>Profile & Settings</h1>
-      <ProfileClient />
-      <div className="panel" style={{marginTop:16}}>
-        <div className="panel-hdr">account</div>
-        <AccountSettings />
-      </div>
-      <div className="panel" style={{marginTop:16}}>
-        <DashboardSettings />
-      </div>
-    </div>
-  )
+// Legacy route. /me/profile no longer exists as its own surface — the
+// public profile at /u/<id> is the unified view, with a settings button
+// for the owner. This page is kept as a redirect so old bookmarks,
+// cached PWA paths, and shared links don't 404.
+export default async function MeProfileLegacyRedirect() {
+  const session = await auth()
+  if (!session?.user) redirect('/login')
+  redirect(`/u/${session.user.id}`)
 }

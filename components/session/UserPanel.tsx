@@ -53,9 +53,11 @@ export function UserPanel({ onClose }: Props) {
 
   return (
     <Modal onClose={onClose} maxWidth={600} minHeight="55vh" maxHeight="90vh">
-      <div className="sheet-bar" />
-        <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:18}}>
-          {displayName || 'you'}
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
+          <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>
+            {displayName || 'you'}
+          </div>
+          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
         </div>
 
         {/* Session identity */}
@@ -151,8 +153,6 @@ export function UserPanel({ onClose }: Props) {
             {tab === 'settings' && <AccountSettings />}
           </div>
         )}
-
-        <button className="btn-p" onClick={onClose} style={{marginTop:12,marginBottom:0}}>→ close</button>
     </Modal>
   )
 }

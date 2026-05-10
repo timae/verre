@@ -44,8 +44,17 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete, hint
   )
 }
 
-export function AccountSettings() {
-  const { data: authSession } = useSession()
+// `onSaved` fires after a successful account update — lets a parent
+// (e.g. the settings modal) close itself and refetch its data. Not
+// called for password-only changes since those don't change anything
+// the parent renders, but it's harmless if a caller still acts on
+// every save — the post-save state is the same.
+interface Props {
+  onSaved?: () => void
+}
+
+export function AccountSettings({ onSaved }: Props = {}) {
+  const { data: authSession, update } = useSession()
   const user = authSession?.user as { name: string; email: string } | undefined
 
   const [name,      setName]      = useState(user?.name  || '')
@@ -84,6 +93,13 @@ export function AccountSettings() {
     if (res.ok) {
       setSuccess('changes saved')
       setCurrentPw(''); setNewPw(''); setConfirmPw('')
+      // Refresh the NextAuth JWT so other consumers of `useSession` (e.g.
+      // UserMenu, ProfileTabs deeper in the tree) see the new display
+      // name without a page reload. Then signal the parent — typically a
+      // settings modal that closes itself and triggers `router.refresh()`
+      // to re-run the SSR profile page.
+      if (body.name || body.email) await update()
+      onSaved?.()
     } else {
       const d = await res.json(); setError(d.error || 'update failed')
     }

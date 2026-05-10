@@ -6,10 +6,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 docker run -d -p 6379:6379 redis:7-alpine   # Redis
+docker run -d --name verre-minio \           # S3 (minio)
+  -p 9000:9000 -p 9001:9001 \
+  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  -v verre-minio-data:/data \
+  minio/minio:latest server /data --console-address ":9001"
+# First-time bucket creation + public-read policy (so <img src> from
+# the browser can fetch uploaded objects):
+docker run --rm --network host \
+  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
+  s3 mb s3://verre-local
+docker run --rm --network host \
+  -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin \
+  amazon/aws-cli:latest --endpoint-url http://localhost:9000 \
+  s3api put-bucket-policy --bucket verre-local --policy '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::verre-local/*"]}]}'
 npm install
 npx prisma generate
 npm run dev                                  # → http://localhost:3000
 ```
+
+Local `.env` for the minio bucket:
+```
+S3_ENDPOINT=http://localhost:9000
+S3_BUCKET=verre-local
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_REGION=us-east-1
+```
+
+To test from a phone on the LAN, replace `localhost:9000` with your host's LAN IP (e.g. `http://192.168.1.42:9000`) in BOTH `S3_ENDPOINT` and the `<img src>` it produces — the upload flow stores the endpoint as a literal prefix in `users.image_url`. Existing rows uploaded under one address won't resolve from another, so wiping the bucket + clearing `users.image_url` is the simplest reset when switching networks.
+
+To wipe local upload state: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`. Re-create the bucket per the steps above.
 
 Type-check + lint:
 ```bash
@@ -114,6 +142,34 @@ Brief the reviewer with specific concerns to look for (parameter validation, edg
 
 **Lifetime counter snapshots on `users`:** the rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.) on `users` rows. Counters never decrement — protects badge progression from rating deletions and gives O(1) reads on the badge hot path.
 
+### Score system
+
+Scores are decimal `0..5` in `0.25` steps (quarter-stars). `0` means "not rated" — empty state. Anything stored is `> 0`.
+
+**Storage.** Both `ratings.score` (in-session) and `checkins.score` (standalone) are `Decimal(3,2)` in Postgres. The same value lives transiently in Redis as a JSON number under `s:{CODE}:r:{IDENTITYID}:{WINEID}` while a session is live, then gets archived to the relational column on commit.
+
+**Validation.** A value passes if `Number.isFinite(v) && v >= 0 && v <= 5 && Number.isInteger(v * 4)` — the `× 4` integer check accepts dyadic fractions and rejects 0.1, 0.3, 1/3, etc. Apply this at every write boundary: `/api/session/<code>/rate`, `/api/checkins` POST, `/api/checkins/<id>` PATCH. Reject with `400` if it fails; never silently round.
+
+**Wire format.** Prisma's runtime `Decimal` (decimal.js) serializes to a JSON **string** (`"4.25"`), not a number. Every API response that surfaces a score must coerce via `Number()` before sending — search for `score: c.score == null ? null : Number(c.score)` or equivalent at the route boundary. Forgetting this ships strings to the client where number arithmetic silently breaks (concatenation instead of addition, `>` comparisons that look right for single digits but fail at 10+).
+
+**Display.** Always go through `<StarRating>` or `formatScore(v)` (see Shared visual primitives) — those encode the locked display rule (`★ 4.0` / `★ 4.5` / `★ 4.25`, no `/5`). Never compose `★ ${v}` inline.
+
+**Input.** Always go through `<ScoreSlider>` for write surfaces. Don't reintroduce a 5-button row, a native `<input type="range">`, or any other control — the slider is the single source of touch + keyboard + ARIA correctness.
+
+**Hall of Fame trigger.** A row is created when `score >= 5` on commit (the only way to hit it post-decimal is exactly `5`, since the snap caps there). The check is on the canonical numeric value, not on a string compare — relevant if you touch the rate POST handler.
+
+### User avatars
+
+Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/u_<userId>_<timestamp>.<ext>`; the URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
+
+**Edit endpoint.** `POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth + 10/h per-user rate limit. POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. On replace, the prior URL is reclaimed from S3 fire-and-forget after the new upload + DB update succeed. On account-delete, `lib/accountDelete.ts` reclaims the avatar alongside check-in and wine images.
+
+**JPEG metadata strip.** `lib/s3.ts:stripJpegMetadata` is a pure-JS byte walker that drops APP0..APP15 and COM segments before the bytes hit S3 — primarily to remove EXIF GPS coordinates from mobile-camera photos. Runs for `image/jpeg` only. iOS Safari converts HEIC → JPEG on upload, so the JPEG-only coverage handles nearly all real upload paths. PNG/WebP/GIF metadata is not stripped (rare for camera output, no GPS surface). Pre-allocated `Buffer + body.copy` — push-spread on a 2MB SOS payload would crash V8's argument-stack limit.
+
+**Render path.** `loadProfile` returns `imageUrl: string | null` to every consumer (`/api/users/<id>` route + SSR `/u/<id>`); `/api/feed` selects `user.imageUrl` for check-in authors and badge users; `lib/profilePeople.ts` selects `image_url` for followers/following lists. The `<Avatar>` primitive renders the URL as `<img src>` with `objectFit: cover` + `borderRadius: 50%`, falling back to an initial-letter circle on null. `<EditableAvatar>` is the owner-side wrapper (tap opens AvatarEditor; on save, optimistic data-URL render + `router.refresh()` + `queryClient.invalidateQueries(['user-profile', userId])` for in-tasting cache); `<ZoomableAvatar>` is the non-owner wrapper (tap opens the full-screen lightbox).
+
+**Editor UX.** `components/profile/AvatarEditor.tsx` is a `<Modal>` with file picker → `react-easy-crop` (round mask, square aspect, 1×–4× zoom slider, drag to reposition) → canvas crop to 512×512 JPEG @ 0.85 quality → POST. The canvas re-encode incidentally strips metadata (defense-in-depth alongside the server-side strip). Remove uses `<ConfirmDeleteButton>` with `btn-del` styling. Picker accepts `image/jpeg|png|webp` only — HEIC was dropped because non-Safari browsers can't decode it for the cropper.
+
 ### Session codes
 
 Two valid lengths coexist: **4-char** (legacy bare form, e.g. `B369`) and **8-char canonical** (hyphenated for display: `XYZW-1234`). Both draw from the **Crockford base32 alphabet** — `0-9 A-Z` minus `I L O U` (32 chars, case-insensitive, profanity-resistant by removing the U). Existing 4-char rows happen to use the hex subset (legacy `genCode`), but the validators accept any Crockford char in either length — `genCode` only emits 8-char today, and any short codes that appear later would draw from the full 32-char alphabet.
@@ -189,6 +245,10 @@ A separate logged-in surface around individual users — sessions are still the 
 
 **S3 reclaim on edit/delete.** Check-in images live at `wines/ci_<userId>_<keyId>.<ext>` (POST keys by timestamp, PATCH keys by check-in id, so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
+**"Had a sip" copy flow.** A logged-in viewer who **follows** the source author can clone a public check-in via the `+ had a sip` button in the same slot the author's `edit` button occupies (in feed and on `/u/<id>`). `<CheckinModal>` opens in `copyFromCheckin` mode: wine identity (name, producer, vintage, grape, type) and the source's image are prefilled; score, flavours, notes are empty for the copier to fill. If the copier and source are **mutual** follows, the source author is auto-tagged (server's existing mutual-follow tag filter is the trust anchor; the UI just prefills the chip when the relationship qualifies). Venue: empty by default, with a "copy from original" button beside the location toggle that copies `venueName/city/country` only (lat/lng are deliberately not on the public wire). **Exception**: if the viewer was tagged on the source check-in (which implies they were there with the author), the venue group auto-fills on mount — they were physically present, so re-typing the venue is friction. `lat/lng` still don't transfer; if they want a map pin they re-pick. The client posts `copyFromCheckinId: <number>`; server resolves the row and rejects unless: source `isPublic`, source author ≠ caller (no self-copy), and `follows(follower=caller, following=source.userId)` exists. Then it runs an S3 `CopyObjectCommand` from the source's stored `imageUrl` into a fresh `wines/ci_<copierId>_<timestamp>.<ext>` key. The image URL is never trusted from the client — the wire field is the source row's id, not its URL. Each resulting check-in fully owns its image bytes (no refcount, no shared ownership) so existing `reclaimImage` paths stay correct: deleting the source leaves copiers' rows and bytes intact, and vice versa. **Privacy caveat (open):** the no-refcount design means a source author cannot recall image bytes once cloned; this needs to be reflected in the privacy policy or addressed via a per-source `allowCopy` flag — not yet decided.
+
+The feed payload includes `viewerFollowsAuthor: boolean` per check-in (`/api/feed` fetches the viewer's `follows` rows for the page's authors as a Set) so the UI can gate the button without a per-row roundtrip; the profile page passes its already-computed `isFollowing` down to `ProfileCheckins`.
+
 **Places search** (`/api/places`) is a thin adapter: Google Places when `GOOGLE_PLACES_API_KEY` is set, OSM Overpass + Nominatim fallback otherwise. Both upstreams parameterised via `fetchJson` helper that throws labelled errors on non-OK / non-JSON responses (so transient outages surface in logs instead of a generic SyntaxError).
 
 **Public surface.** Profiles at `/u/<id>` are public reads; viewer's `isFollowing` flag populated when authed. `/api/users/search` is anonymous prefix lookup for follow/tag discovery — never participates in authorization (see the Auth section's display-name rule).
@@ -226,6 +286,7 @@ Limits in production:
 | Login (NextAuth `authorize()`) | 10 fails/min/email + 20 fails/hour/email + 100 fails/10min/IP | Brute-force on stolen email knowledge. Counters increment on bcrypt failure only. |
 | `/api/auth/register` | 100/min/IP | Mass-signup spam. |
 | `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
+| `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 
@@ -281,6 +342,8 @@ Anything else falls through to `console.error(error)` with a full stack so genui
 | `/api/me/ratings` | GET | cookie | implicit |
 | `/api/me/account` | PATCH | cookie | edits own row only |
 | `/api/me/account` | DELETE | cookie + password re-auth | tombstones references, drops user row, scrubs Redis |
+| `/api/me/avatar` | POST | cookie | upload/replace own avatar; 10/h rate-limit; reclaims old S3 |
+| `/api/me/avatar` | DELETE | cookie | remove own avatar; reclaims S3 |
 | `/api/hof` | GET | none | public leaderboard |
 | `/api/session` | POST | none (anyone can host) | blind requires pro; lifespan>48h requires pro |
 | `/api/session/join` | POST | none (anyone with the code) | by design |
@@ -304,7 +367,7 @@ Anything else falls through to `console.error(error)` with a full stack so genui
 | `/api/me/bookmarks/<wineId>` | DELETE | cookie | session-agnostic unbookmark; works on orphaned wines |
 | `/api/me/friends` | GET | cookie | mutual follows of the calling user |
 | `/api/feed` | GET | cookie | social feed (network-scoped: explicit follows + tasting buddies) |
-| `/api/checkins` | POST | cookie | create check-in; rate-limited 100/h shared with PATCH; mutual-follow tags verified server-side |
+| `/api/checkins` | POST | cookie | create check-in; rate-limited 100/h shared with PATCH; mutual-follow tags verified server-side; optional `copyFromCheckinId` clones a source's image bytes (requires source `isPublic`, source author ≠ caller, and caller→source follow) |
 | `/api/checkins/<id>` | PATCH | cookie + owner | edit own check-in; image replace reclaims old S3; tags re-validated against current mutuals |
 | `/api/checkins/<id>` | DELETE | cookie + owner | delete own check-in; reclaims S3 image |
 | `/api/checkins/<id>/like` | POST/DELETE | cookie | like/unlike a check-in |
@@ -352,6 +415,9 @@ Primitives in place today:
 - **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
 - **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
 - **`<FlavorChips>`** (`components/rate/FlavorChips.tsx`) — canonical input surface for setting flavour intensity (none → intense, 0–5). Used in RatingScreen and CheckinModal. Tap-or-drag pill chips with a separate × clear button per row; the `INTENSITY` label array is shared with `<IntensityHelp>` (`components/rate/IntensityHelp.tsx`), the (i)-popover that explains the scale, so chip captions and help text can't drift.
+- **`<StarRating>`** (`components/ui/StarRating.tsx`) + **`formatScore`** (`lib/formatScore.ts`) — canonical *read-side* score rendering. The component renders `★ <num>` in two size tiers (`compact` / `detail`); `formatScore(v)` is the same logic exported for non-component call sites (compare-page chips, history sublist rows where the full primitive would dominate the surrounding row). Use one of these on every surface that displays a score — never re-implement `★ ${v}` inline. Display rule (locked): single star + number, no `/5` denominator; whole numbers show `.0` (`4.0`), half-steps trim trailing zero (`4.5`), quarters keep both decimals (`4.25`); empty state (null/undefined/0/NaN) renders nothing.
+- **`<ScoreSlider>`** (`components/ui/ScoreSlider.tsx`) — canonical *write-side* score input. Touch-and-drag slider (0..5, snaps to 0.25), tabular-nums + `.toFixed(2)` for stable digits during drag, full keyboard support via `role="slider"` + arrow/Page/Home/End handlers. Used in RatingScreen and CheckinModal. Replaces the old 5-button score row; if a third score-entry surface appears, route it through this primitive too.
+- **`<Avatar>`** (`components/profile/Avatar.tsx`) — canonical user-avatar circle. Renders `<img>` when `imageUrl` is set, falls back to the user's initial letter on an accent-tinted background. Single `size` prop (pixels). Use this everywhere a user circle appears (ProfileHeader, ProfilePreviewInline, CheckinCard author byline, ProfilePanelPeople rows, AvatarEditor empty state). Two thin client wrappers add behavior: `<EditableAvatar>` (own avatar — tap opens AvatarEditor with optimistic UI + TanStack invalidation on save), `<ZoomableAvatar>` (other users — tap opens the full-screen lightbox).
 
 Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
 

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
 import { formatCode, sessionPath } from '@/lib/sessionCode'
+import { formatScore } from '@/lib/formatScore'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
@@ -92,7 +93,9 @@ export function HistoryClient() {
                   {wines.slice(0, 4).map((r, i) => (
                     <div key={i} className="flex justify-between text-xs text-fg-dim">
                       <span className="truncate">{r.wine_name}</span>
-                      <span className="text-accent ml-2 flex-shrink-0">{r.score}★</span>
+                      {r.score ? (
+                        <span className="text-accent ml-2 flex-shrink-0">★ {formatScore(r.score)}</span>
+                      ) : null}
                     </div>
                   ))}
                 </div>

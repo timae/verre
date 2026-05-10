@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES } from '@/lib/badges'
 import { ensureBadgesSeedOnce, checkAndAwardBadges } from '@/lib/badgeService'
+import { isSameOrigin } from '@/lib/csrf'
 
 // GET — return all badges with earned status + XP
 export async function GET() {
@@ -37,7 +38,8 @@ export async function GET() {
 }
 
 // POST — manually trigger badge check (e.g. after joining a session)
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const { action } = await req.json().catch(() => ({ action: 'join' }))
@@ -51,7 +53,8 @@ export async function POST(req: Request) {
 }
 
 // PATCH — mark all unseen badges as seen
-export async function PATCH() {
+export async function PATCH(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   await prisma.userBadge.updateMany({

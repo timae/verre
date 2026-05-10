@@ -23,13 +23,24 @@ export function FollowButton({ userId, initialFollowing, onToggle }: Props) {
     <button
       onClick={toggle}
       disabled={loading}
-      className={following ? 'btn-g' : 'btn-s'}
+      className="btn-s"
       style={{
-        width: 'auto', minWidth: 110, marginTop: 0, padding: '10px 14px',
+        width: 'auto', marginTop: 0, padding: '10px 14px',
+        position: 'relative',
+        textAlign: 'center',
+        // Accent fill differentiates "do this" (follow) from "done"
+        // (following) without changing typography or shape.
         ...(following ? {} : { background: 'rgba(200,150,60,0.1)', borderColor: 'rgba(200,150,60,0.4)', color: 'var(--accent)' }),
       }}
     >
-      {loading ? '…' : following ? 'following' : '+ follow'}
+      {/* Invisible width-anchor (longest label) sets the button's
+          intrinsic width; visible label is absolutely positioned on
+          top so the button doesn't reflow across loading/follow/
+          following transitions. */}
+      <span aria-hidden="true" style={{ visibility: 'hidden' }}>following</span>
+      <span style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {loading ? '…' : following ? 'following' : '+ follow'}
+      </span>
     </button>
   )
 }

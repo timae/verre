@@ -4,6 +4,7 @@ import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@/lib/sessionCode'
 import { validateDisplayName, disambiguateDisplayName } from '@/lib/displayName'
 import { checkRate, resetRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { isSameOrigin } from '@/lib/csrf'
 import {
   newAnonIdentityId,
   newAnonToken,
@@ -13,6 +14,7 @@ import {
 } from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
 
   // Rate limit invalid session-code attempts: 30 per minute per IP.
@@ -32,8 +34,10 @@ export async function POST(req: NextRequest) {
 
   // Public field is `displayName` — see CLAUDE.md Auth section, names
   // are presentation-only and there is no concept of a username.
-  const { code, displayName: rawDisplayName } = await req.json()
-  if (!code) return NextResponse.json({ error: 'code required' }, { status: 400 })
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { code, displayName: rawDisplayName } = body as Record<string, unknown>
+  if (!code || typeof code !== 'string') return NextResponse.json({ error: 'code required' }, { status: 400 })
 
   let displayName: string
   try { displayName = validateDisplayName(rawDisplayName) }

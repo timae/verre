@@ -5,28 +5,54 @@ import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/s
 import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, authInvalid } from '@/lib/identity'
+import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+import { isSameOrigin } from '@/lib/csrf'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
-  const { wineId, score, flavors, notes } = await req.json()
-
-  if (!wineId) return NextResponse.json({ error: 'wineId required' }, { status: 400 })
+  // Reject malformed bodies up front so a stray empty/garbage POST
+  // doesn't produce a 500. The validators below also reject negatives,
+  // floats, strings, arrays and objects masquerading as numbers — the
+  // previous `score || 0` fallback let any truthy value land in Redis.
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { wineId, score, flavors, notes } = body
+  // wineId is a millisecond-timestamp string in current code (~13 chars
+  // numeric). Strict allow-list: digits, letters, underscore, dash —
+  // never colons, glob chars, newlines, or quotes that could collide
+  // with Redis key separators or confuse downstream tooling. Cap at 32
+  // chars to leave headroom while bounding key size.
+  if (!wineId || typeof wineId !== 'string' || wineId.length > 32 || !/^[A-Za-z0-9_-]+$/.test(wineId)) {
+    return NextResponse.json({ error: 'wineId required' }, { status: 400 })
+  }
+  const sc = validateScore(score)
+  if (sc.error) return NextResponse.json({ error: sc.error }, { status: 400 })
+  const fl = validateFlavors(flavors)
+  if (fl.error) return NextResponse.json({ error: fl.error }, { status: 400 })
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return NextResponse.json({ error: 'notes must be a string' }, { status: 400 })
+  }
+  if (typeof notes === 'string' && notes.length > 4000) {
+    return NextResponse.json({ error: 'notes too long' }, { status: 400 })
+  }
 
   // Identity comes from auth() or x-vr-anon-token. Never from the request
   // body — the legacy body.userName fallback was removed in cleanup.
   const identity = await resolveIdentity(c, req, session)
   if (!identity) return authInvalid()
 
-  const ratingScore = score || 0
+  const ratingScore = sc.value ?? 0
+  const validFlavors = fl.value
   // Rating is keyed by identity id, never by display name. Two participants
   // sharing a display name (legitimately via collision, or accidentally via
   // a client-side race) cannot overwrite each other's ratings.
   await redis.set(
     k.rating(c, identity.id, wineId),
-    JSON.stringify({ score: ratingScore, flavors: flavors || {}, notes: notes || '', at: Date.now() }),
+    JSON.stringify({ score: ratingScore, flavors: validFlavors, notes: notes || '', at: Date.now() }),
     { EX: TTL },
   )
 
@@ -55,20 +81,23 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           where: { wineId_userId: { wineId, userId } },
           create: {
             wineId, userId, raterName: identity.displayName,
-            score: ratingScore, flavors: flavors || {}, notes: notes || null, ratedAt: new Date(),
+            score: ratingScore, flavors: validFlavors, notes: notes || null, ratedAt: new Date(),
           },
           update: {
             raterName: identity.displayName,
-            score: ratingScore, flavors: flavors || {}, notes: notes || null, ratedAt: new Date(),
+            score: ratingScore, flavors: validFlavors, notes: notes || null, ratedAt: new Date(),
           },
         })
 
         // Lifetime counter updates. Done as a single SQL UPDATE with
         // GREATEST() / conditional increments so we never double-count
         // (e.g. re-rating to 5★ after rating to 5★ doesn't bump again).
+        // Prisma surfaces Decimal columns as runtime Decimal objects;
+        // coerce via Number() (or toNumber()) before strict equality.
         const isNew = !prior
-        const newFiveStar = ratingScore === 5 && (prior?.score !== 5)
-        const newOneStar  = ratingScore === 1 && (prior?.score !== 1)
+        const priorScore = prior?.score == null ? null : Number(prior.score)
+        const newFiveStar = ratingScore === 5 && priorScore !== 5
+        const newOneStar  = ratingScore === 1 && priorScore !== 1
         const newNote     = wroteNote && (!prior || (prior.notes || '').length <= 5)
         const newPhoto    = isNew && !!(wine.imageUrl || wine.image)
 

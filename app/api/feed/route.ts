@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { BADGE_MAP } from '@/lib/badges'
+import { decimalToNumber } from '@/lib/decimal'
 
 const PAGE = 20
 
@@ -18,8 +19,16 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'invalid session' }, { status: 401 })
   }
 
+  // cursor must parse as a finite Date; bad input → 400 not 500.
   const cursorParam = req.nextUrl.searchParams.get('cursor')
-  const cursor = cursorParam ? new Date(cursorParam) : new Date()
+  let cursor: Date
+  if (cursorParam) {
+    const d = new Date(cursorParam)
+    if (Number.isNaN(d.getTime())) return NextResponse.json({ error: 'invalid cursor' }, { status: 400 })
+    cursor = d
+  } else {
+    cursor = new Date()
+  }
 
   // My network: explicit follows + tasting buddies (shared sessions). The
   // ${userId} interpolations below are parameterized by Prisma's tagged
@@ -43,7 +52,7 @@ export async function GET(req: NextRequest) {
   const checkins = await prisma.checkin.findMany({
     where: { userId: { in: networkIds }, isPublic: true, createdAt: { lt: cursor } },
     include: {
-      user: { select: { id: true, name: true, xp: true } },
+      user: { select: { id: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
       tags: { include: { user: { select: { id: true, name: true } } } },
     },
@@ -59,11 +68,19 @@ export async function GET(req: NextRequest) {
     })).map(l => l.checkinId)
   )
 
+  // Set of viewer-follows-author — gates the "had a sip" button per row.
+  const myFollowing = new Set(
+    (await prisma.follow.findMany({
+      where: { followerId: userId, followingId: { in: checkins.map(c => c.user.id) } },
+      select: { followingId: true },
+    })).map(f => f.followingId)
+  )
+
   // Badge unlocks (last 30 days)
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
   const badges = await prisma.userBadge.findMany({
     where: { userId: { in: networkIds }, earnedAt: { lt: cursor, gt: thirtyDaysAgo } },
-    include: { user: { select: { id: true, name: true } } },
+    include: { user: { select: { id: true, name: true, imageUrl: true } } },
     orderBy: { earnedAt: 'desc' },
     take: PAGE,
   })
@@ -76,10 +93,11 @@ export async function GET(req: NextRequest) {
       author: c.user,
       checkin: {
         id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
-        grape: c.grape, type: c.type, score: c.score, notes: c.notes, imageUrl: c.imageUrl,
+        grape: c.grape, type: c.type, score: decimalToNumber(c.score), notes: c.notes, imageUrl: c.imageUrl,
         venueName: c.venueName, city: c.city, country: c.country,
         flavors: c.flavors, likeCount: c._count.likes, createdAt: c.createdAt,
         tags: c.tags?.map(t => t.user) ?? [], liked: myLikes.has(c.id),
+        viewerFollowsAuthor: myFollowing.has(c.user.id),
       },
     })),
     ...badges.map(b => ({

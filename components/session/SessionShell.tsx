@@ -17,13 +17,26 @@ import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionC
 // projected from `data[myId].ratings` in SessionShell.
 export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
 
+type Participant = { id: string; displayName: string }
+
 type SessionCtx = {
   code: string; displayName: string; myId: string; isHost: boolean
-  sessionMeta: { host: string; name: string; hostUserId: number | null; hostIdentityId?: string; blind?: boolean } | null
+  sessionMeta: {
+    host: string; name: string
+    hostUserId: number | null
+    hostIdentityId?: string
+    blind?: boolean
+    participants: Participant[]
+    coHostIds: string[]
+  } | null
   wines: WineMeta[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
   isBlind: boolean
+  // True before the first wines fetch settles. Distinguishes "loading
+  // the wine list" from "host hasn't added any yet" — visually
+  // identical otherwise, but the message should differ.
+  winesLoading: boolean
 }
 const Ctx = createContext<SessionCtx | null>(null)
 export const useSession = () => {
@@ -110,14 +123,17 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const [visitResolved, setVisitResolved] = useState(false)
   const readyToFetch = !isLoggedIn || visitResolved
 
+  // Polled every 5s so participant joins/leaves and cohost role changes
+  // surface in the UI without a manual reload. Same cadence as wines /
+  // ratings so the whole session view stays consistent.
   const { data: metaData } = useQuery({
     queryKey: ['session-meta', C],
     queryFn: () => sessionFetch(C, `/api/session/${C}`).then(r => r.ok ? r.json() : null),
-    staleTime: 30_000,
+    refetchInterval: 5000,
     enabled: readyToFetch,
   })
 
-  const { data: winesData = [], refetch: refetchWines } = useQuery<WineMeta[]>({
+  const { data: winesData = [], refetch: refetchWines, isPending: winesPending } = useQuery<WineMeta[]>({
     queryKey: ['wines', C, myId],
     queryFn: async () => {
       const r = await sessionFetch(C, `/api/session/${C}/wines`)
@@ -200,6 +216,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     code: C, displayName, myId, isHost: !!isHost,
     sessionMeta: metaData || null,
     wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
+    // Loading is true until the first fetch resolves; the gate
+    // (`enabled: readyToFetch`) keeps it pending while we resolve
+    // the identity, which is exactly the period a user sees a
+    // session URL with no wines yet rendered.
+    winesLoading: winesPending,
   }
 
   const navItems = [
