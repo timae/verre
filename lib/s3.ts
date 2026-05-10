@@ -53,7 +53,73 @@ function magicMatches(mime: string, body: Buffer): boolean {
   return true
 }
 
-export const uploadImage = async (wineId: string, dataUrl: string): Promise<string> => {
+// JPEG metadata strip — drops APP0..APP15 segments (FFE0..FFEF). APP1
+// is where EXIF lives, including GPS coordinates from mobile cameras;
+// APP13 carries Photoshop IPTC. Image data (SOF/SOS/DQT/DHT/etc.) is
+// preserved untouched. Pure byte-pattern operation, no decode/re-encode.
+//
+// Why JPEG-only: iOS Safari converts HEIC → JPEG on upload; Android
+// camera defaults are JPEG; nearly all mobile-camera GPS leaks travel
+// in JPEG APP1. PNG/WebP/GIF rarely carry sensitive metadata from
+// device cameras and would need format-specific parsers. If a future
+// upload path (Capacitor camera plugin, custom client) ever emits
+// HEIC/PNG/WebP with EXIF, we'll need to expand this.
+function stripJpegMetadata(body: Buffer): Buffer {
+  // SOI must be 0xFFD8.
+  if (body.length < 4 || body[0] !== 0xff || body[1] !== 0xd8) return body
+  // Output buffer can never grow larger than input (we only ever drop
+  // segments). Pre-allocate and track write offset — `Buffer.copy` is
+  // O(n) memcpy. Per-byte `push(...subarray)` would blow V8's argument
+  // stack on a 2MB SOS payload.
+  const out = Buffer.alloc(body.length)
+  let w = 0
+  out[w++] = 0xff
+  out[w++] = 0xd8
+  let i = 2
+  while (i < body.length) {
+    if (body[i] !== 0xff) { out[w++] = body[i]; i++; continue }
+    // Skip fill bytes (FF FF ...).
+    let m = i + 1
+    while (m < body.length && body[m] === 0xff) m++
+    if (m >= body.length) break
+    const marker = body[m]
+    // SOS (0xDA) starts compressed image data — copy to EOI without
+    // further parsing.
+    if (marker === 0xda) {
+      const copied = body.copy(out, w, i, body.length)
+      w += copied
+      i = body.length
+      break
+    }
+    // Standalone markers (no length): SOI(D8), EOI(D9), RST0..7(D0-D7).
+    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+      out[w++] = 0xff
+      out[w++] = marker
+      i = m + 1
+      continue
+    }
+    // All other markers carry a 2-byte length immediately after the marker.
+    if (m + 2 >= body.length) break
+    const segLen = (body[m + 1] << 8) | body[m + 2]
+    if (segLen < 2) break
+    const segEnd = m + 1 + segLen
+    if (segEnd > body.length) break
+    // Drop APP0..APP15 (E0..EF) and COM (FE). Keep everything else.
+    const drop = (marker >= 0xe0 && marker <= 0xef) || marker === 0xfe
+    if (!drop) {
+      const copied = body.copy(out, w, i, segEnd)
+      w += copied
+    }
+    i = segEnd
+  }
+  return out.subarray(0, w)
+}
+
+// `keyBase` is the bucket-relative key without extension. Caller picks
+// the prefix and uniqueness scheme — wines keyed by id (stable),
+// avatars and check-ins keyed by id + timestamp (so replacement leaves
+// the prior bytes addressable for reclaim).
+export const uploadImage = async (keyBase: string, dataUrl: string): Promise<string> => {
   if (!s3 || !BUCKET) return ''
   // Strict data-URL match. Rejects `data:image/svg+xml`, anything not
   // base64-encoded, and obviously-garbage prefixes.
@@ -67,8 +133,11 @@ export const uploadImage = async (wineId: string, dataUrl: string): Promise<stri
   // Magic-byte check defends against polyglots — a PHP shell, ZIP, or
   // JS payload claiming Content-Type: image/png would fail here.
   if (!magicMatches(mime, body)) return ''
+  // Strip JPEG metadata (APP segments + comments) so EXIF GPS from
+  // mobile cameras doesn't end up in publicly-readable S3 objects.
+  if (mime === 'image/jpeg') body = stripJpegMetadata(body)
   const ext = mime.split('/')[1] || 'jpg'
-  const key = `wines/${wineId}.${ext}`
+  const key = `${keyBase}.${ext}`
   const upload = new Upload({
     client: s3,
     params: { Bucket: BUCKET, Key: key, Body: body, ContentType: mime },

@@ -198,6 +198,10 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     where: { imageUrl: { not: null }, session: { hostUserId: userId } },
     select: { imageUrl: true },
   })
+  const userRow = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { imageUrl: true },
+  })
 
   await prisma.$transaction(async (tx) => {
     // UPDATE before DELETE because ratings/hof/sessions FK constraints are
@@ -212,6 +216,7 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
 
   for (const c of checkinImages) reclaimImage(c.imageUrl)
   for (const w of hostedWineImages) reclaimImage(w.imageUrl)
+  if (userRow?.imageUrl) reclaimImage(userRow.imageUrl)
 
   return applyRedisCleanup(userId)
 }

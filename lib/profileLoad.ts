@@ -31,6 +31,7 @@ export type LoadedProfile = {
   id: number
   name: string
   xp: number
+  imageUrl: string | null
   level: ReturnType<typeof getLevel>
   stats: {
     ratings: number
@@ -59,7 +60,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      id: true, name: true, xp: true,
+      id: true, name: true, xp: true, imageUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
       _count: { select: { earnedBadges: true, checkins: { where: { isPublic: true } }, followers: true, following: true } },
     },
@@ -103,6 +104,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     id: user.id,
     name: user.name,
     xp: user.xp,
+    imageUrl: user.imageUrl,
     level: getLevel(user.xp),
     stats: {
       ratings: user.lifetimeRatings,

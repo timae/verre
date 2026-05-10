@@ -32,6 +32,7 @@ model User {
   lifetimePhotosAdded       Int             @default(0) @map("lifetime_photos_added")
   lifetimeConsecutiveMonths Int             @default(0) @map("lifetime_consecutive_months")
   firstRatedAt              DateTime?       @map("first_rated_at") @db.Timestamp(6)
+  imageUrl                  String?         @map("image_url") @db.VarChar(512)
   bookmarks                 Bookmark[]
   hofEntries                HallOfFame[]
   ratings                   Rating[]

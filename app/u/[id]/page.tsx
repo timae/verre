@@ -38,6 +38,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
           userId={profile.id}
           userName={profile.name}
           userXp={profile.xp}
+          userImageUrl={profile.imageUrl}
           myId={myId}
           isFollowing={profile.isFollowing}
         />

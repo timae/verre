@@ -97,8 +97,8 @@ export async function POST(req: NextRequest) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    const tempId = `ci_${userId}_${Date.now()}`
-    imageUrl = await uploadImage(tempId, imageData).catch(() => null)
+    const keyBase = `wines/ci_${userId}_${Date.now()}`
+    imageUrl = await uploadImage(keyBase, imageData).catch(() => null)
   } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
     // "had a sip" flow: resolve the source row server-side, verify the
     // caller is allowed to copy it, then clone the bytes. The client never

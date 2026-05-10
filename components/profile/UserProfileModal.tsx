@@ -56,6 +56,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
             userId={data.id}
             userName={data.name}
             userXp={data.xp}
+            userImageUrl={data.imageUrl}
             myId={myId}
             isFollowing={data.isFollowing}
           />

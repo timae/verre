@@ -98,8 +98,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    const tempId = `ci_${checkin.userId}_${checkin.id}`
-    const newUrl = await uploadImage(tempId, imageData).catch(() => null)
+    const keyBase = `wines/ci_${checkin.userId}_${checkin.id}`
+    const newUrl = await uploadImage(keyBase, imageData).catch(() => null)
     if (newUrl) {
       // Replace successful — reclaim the old object if it was different
       // (POST keys by timestamp, PATCH keys by checkin id, so the URL

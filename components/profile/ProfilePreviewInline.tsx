@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { FollowButton } from '@/components/social/FollowButton'
 import { UserProfileModal } from './UserProfileModal'
 import { AccountSettingsModal } from '@/components/me/AccountSettingsModal'
+import { Avatar } from './Avatar'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
@@ -59,17 +60,15 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
             {/* aspect-ratio:1 + alignSelf:stretch makes the circle's
                 height span name-row → visit-profile-row, and width
                 follows that height so it stays a circle. */}
-            <div style={{
-              alignSelf: 'stretch', aspectRatio: '1 / 1',
-              borderRadius: '50%',
-              background: 'rgba(200,150,60,0.2)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontWeight: 700, color: 'var(--accent)',
-              flexShrink: 0,
-              fontSize: 'clamp(20px, 4vw, 32px)',
-            }}>
-              {data.name[0]?.toUpperCase() ?? '?'}
-            </div>
+            <Avatar
+              name={data.name}
+              imageUrl={data.imageUrl}
+              style={{
+                alignSelf: 'stretch',
+                aspectRatio: '1 / 1',
+                fontSize: 'clamp(20px, 4vw, 32px)',
+              }}
+            />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ flex: 1, minWidth: 0, fontWeight: 700, fontSize: 13, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

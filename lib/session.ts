@@ -137,7 +137,7 @@ export async function addWineToSession(
   if (image && image.startsWith('data:image/')) {
     try {
       const id = existing?.id || Date.now().toString()
-      const url = await uploadImage(id, image)
+      const url = await uploadImage(`wines/${id}`, image)
       if (url) {
         if (existing?.imageUrl && existing.imageUrl !== url) {
           reclaimImage(existing.imageUrl)
