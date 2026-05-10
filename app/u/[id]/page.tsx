@@ -1,10 +1,8 @@
 import { auth } from '@/auth'
 import { notFound } from 'next/navigation'
 import { prisma } from '@/lib/prisma'
-import { getLevel } from '@/lib/badges'
 import { ProfileTabs } from '@/components/profile/ProfileTabs'
-import { FollowButton } from '@/components/social/FollowButton'
-import { ProfileSettingsButton } from '@/components/profile/ProfileSettingsButton'
+import { ProfileHeader } from '@/components/profile/ProfileHeader'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { getProfileFlavor } from '@/lib/profileFlavor'
 import { parsePathId } from '@/lib/parsePathId'
@@ -70,10 +68,6 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     ? flavorFull
     : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
-  const level = getLevel(user.xp)
-  const nextXP = level.nextXP
-  const progress = nextXP ? ((user.xp - level.minXP) / (nextXP - level.minXP)) * 100 : 100
-
   // Profile content. Logged-in viewers get the `/me/*` chrome (sidebar
   // + bottom nav + UserMenu) so navigation stays consistent when
   // bouncing between /me/feed and /u/<id>. Anonymous viewers get a
@@ -82,26 +76,13 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   // so it slots into either path without double-padding.
   const profileBody = (
     <>
-        {/* Profile header — server-rendered; stays put across tab switches. */}
-        <div className="panel" style={{ marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 14 }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'rgba(200,150,60,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 700, color: 'var(--accent)', flexShrink: 0 }}>
-              {user.name[0].toUpperCase()}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{user.name}</h1>
-              <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{level.icon} {level.name} · {user.xp.toLocaleString()} XP</div>
-              <div style={{ height: 3, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${Math.min(100, progress)}%`, background: 'var(--accent)', borderRadius: 2 }} />
-              </div>
-            </div>
-            {myId === userId ? (
-              <ProfileSettingsButton />
-            ) : myId ? (
-              <FollowButton userId={userId} initialFollowing={isFollowing} />
-            ) : null}
-          </div>
-        </div>
+        <ProfileHeader
+          userId={userId}
+          userName={user.name}
+          userXp={user.xp}
+          myId={myId}
+          isFollowing={isFollowing}
+        />
 
         <ProfileTabs
           profileUserId={userId}
