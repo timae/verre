@@ -283,7 +283,8 @@ Limits in production:
 | `/api/auth/register` | 100/min/IP | Mass-signup spam. |
 | `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
 | `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
-| `/api/me/visibility` PATCH | 30/hour/user | Stolen cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility`. |
+| `/api/me/visibility` GET + PATCH | 60/min/user (route-level, distinct counters for GET and PATCH) | Read-side noise + general burst protection. |
+| `/api/me/visibility` PATCH (inner) | 30/hour/user, increments only on actual change | Stolen cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-checkRate-on-change so no-op submits don't burn slots. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 
