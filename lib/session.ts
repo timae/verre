@@ -44,6 +44,11 @@ export type WineMeta = {
   image: string
   imageUrl: string
   revealedAt?: string | null
+  // Identity-id of the participant who added this wine. Used by kick/ban
+  // to identify which wines a host can choose to orphan. Optional for
+  // backward compat with pre-feature wine rows; new wines always populate
+  // it from the server-resolved identity at POST time.
+  addedByIdentityId?: string
 }
 
 export type RatingMeta = {
@@ -89,13 +94,29 @@ export async function getWines(code: string): Promise<WineMeta[]> {
 // Host check by stable identity id. Returns true for the strict host AND
 // for any cohost — both are allowed to do host-equivalent actions like
 // editing wines and settings. Strict-host-only actions (cohost role
-// assignment, session delete) check hostIdentityId / hostUserId directly.
+// assignment, session delete, banning a cohost) check via `isStrictHost`.
 export function isHostByIdentity(meta: SessionMeta, identity: Identity | null): boolean {
   if (!identity) return false
   if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
   if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
   if (meta.coHostIds?.includes(identity.id)) return true
   return false
+}
+
+// Strict-host check: only the original session host, never a cohost.
+// Used for actions that mutate role/membership semantics — cohost
+// promote/demote, session delete, banning a cohost.
+export function isStrictHost(meta: SessionMeta, identity: Identity | null): boolean {
+  if (!identity) return false
+  if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
+  if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
+  return false
+}
+
+// Check whether a session-scoped identity-id refers to a cohost. Used
+// by ban/kick targeting rules to enforce "cohosts can't ban cohosts."
+export function isCohostId(meta: SessionMeta, identityId: string): boolean {
+  return !!meta.coHostIds?.includes(identityId)
 }
 
 
@@ -117,6 +138,7 @@ export async function addWineToSession(
   code: string,
   body: Partial<WineMeta>,
   existing?: WineMeta,
+  addedByIdentityId?: string,
 ): Promise<WineMeta | { error: string }> {
   const name = clean(body.name)
   const type = String(body.type || '').trim()
@@ -157,6 +179,9 @@ export async function addWineToSession(
     type,
     image,
     imageUrl,
+    // Preserve on edit; populate on create. Edits never overwrite the
+    // original adder — `existing.addedByIdentityId` wins.
+    addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
   }
 }
 
@@ -188,6 +213,7 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       grape: wine.grape || null,
       style: wine.type || null,
       imageUrl: wine.imageUrl || null,
+      addedByIdentityId: wine.addedByIdentityId ?? null,
     },
     update: {
       name: wine.name,
@@ -196,6 +222,9 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       grape: wine.grape || null,
       style: wine.type || null,
       imageUrl: wine.imageUrl || undefined,
+      // Don't overwrite provenance on edit — the original adder is the
+      // authoritative anchor. If the row was created pre-feature with
+      // addedByIdentityId=NULL we leave it NULL (no way to back-attribute).
     },
   })
 }

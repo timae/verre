@@ -4,7 +4,7 @@ import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import type { WineMeta, SessionMeta } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
+import { resolveIdentity, requireParticipant, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -38,8 +38,10 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
 
-  const identity = await requireParticipant(c, req, session)
-  if (!identity) return authInvalid('not a participant')
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid('not a participant')
+  const identity = p.identity
 
   const wines = await getWines(c)
   const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null
@@ -51,13 +53,24 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     if (Date.now() < revealAt) return NextResponse.json([])
   }
 
+  // Wire payload strips `addedByIdentityId` — it's host-internal
+  // provenance (used by ban-with-delete-wines to identify which wines to
+  // orphan) and shouldn't leak to participants. Anon ids would correlate
+  // across multiple wines from the same author, which the ban UI does
+  // server-side and clients have no need for.
+  const onWire = (w: typeof wines[number]) => {
+    const { addedByIdentityId: _unused, ...rest } = w
+    void _unused
+    return rest
+  }
+
   if (meta?.blind && !isUserHost) {
     return NextResponse.json(wines.map((w, i) =>
-      w.revealedAt ? w : redactWine(w, i)
+      onWire(w.revealedAt ? w : redactWine(w, i))
     ))
   }
 
-  return NextResponse.json(wines)
+  return NextResponse.json(wines.map(onWire))
 }
 
 export async function POST(req: NextRequest, { params }: Ctx) {
@@ -71,14 +84,20 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  const identity = await resolveIdentity(c, req, session)
-  if (!identity) return authInvalid()
+  // Banned cohosts must not be able to write wines until they next poll
+  // and bounce. participantOrBanned does the same check that GET uses.
+  const pp = await participantOrBanned(c, req, session)
+  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
+  if (pp.status === 'invalid') return authInvalid()
+  const identity = pp.identity
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can add wines' }, { status: 403 })
   }
 
   const wines = await getWines(c)
-  const result = await addWineToSession(c, body)
+  // Pass the adder's identity so the wine record carries provenance
+  // (used by ban-with-delete-wines to identify which wines to orphan).
+  const result = await addWineToSession(c, body, undefined, identity.id)
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   wines.push(result)
@@ -89,7 +108,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     const inserted = wines.pop()!
     wines.splice(pos - 1, 0, inserted)
   }
-  await redis.set(k.wines(c), JSON.stringify(wines), { EX: TTL })
+  await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
   await touchWithMeta(c)
 
   if (session?.user) {

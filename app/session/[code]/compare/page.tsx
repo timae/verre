@@ -22,7 +22,7 @@ type RaterEntry = { user: string; score: number }
 function RaterChip({ user, score }: RaterEntry) {
   return (
     <span style={{fontSize:10,background:'var(--bg3)',border:'1px solid var(--border)',padding:'2px 8px',borderRadius:3,color:'var(--fg-dim)',fontFamily:'var(--mono)',whiteSpace:'nowrap'}}>
-      {user} <span style={{color:'var(--accent)'}}>★ {formatScore(score)}</span>
+      {user} <span style={{color:'var(--accent)'}}><span style={{fontFamily:'-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif'}}>★</span> {formatScore(score)}</span>
     </span>
   )
 }
@@ -115,6 +115,11 @@ export default function ComparePage() {
 
   // Build the rater list from the id-keyed allRatings shape. Each entry is
   // { id, displayName, ratings } — id drives state, displayName drives UI.
+  //
+  // No block-pair filter on Compare. Filtering by absence is itself a
+  // leak: the blocked side would see the blocker's column missing and
+  // infer the block. Show every rater under their plain display name —
+  // Compare has no profile-link or avatar surfaces to strip anyway.
   type Rater = { id: string; displayName: string; ratings: Record<string, RatingMeta> }
   const ratersWithRatings: Rater[] = Object.entries(allRatings)
     .filter(([, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0)
@@ -208,7 +213,9 @@ export default function ComparePage() {
             ? (allWineRatings.reduce((s, r) => s + (r.rating.score || 0), 0) / allWineRatings.length).toFixed(1)
             : '—'
 
-          const singleRating = activeUserId ? allRatings[activeUserId]?.ratings[wine.id] : null
+          const singleRating = activeUserId
+            ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
+            : null
           const fl = singleRating?.flavors
             ? detectFL(singleRating.flavors as Record<string, number>)
             : getFL(wine.type)
@@ -270,7 +277,7 @@ export default function ComparePage() {
                     <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
-                      no rating from {(activeUserId && allRatings[activeUserId]?.displayName) || 'this user'}
+                      no rating from {(activeUserId && ratersWithRatings.find(r => r.id === activeUserId)?.displayName) || 'this user'}
                     </div>
                   )}
                 </div>

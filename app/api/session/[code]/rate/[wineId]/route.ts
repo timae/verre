@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, authInvalid } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 import { getWines } from '@/lib/session'
 
@@ -14,8 +14,10 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await auth()
 
-  const identity = await resolveIdentity(c, req, session)
-  if (!identity) return authInvalid()
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid()
+  const identity = p.identity
 
   await redis.del(k.rating(c, identity.id, wineId))
   await touchWithMeta(c)

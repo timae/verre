@@ -28,7 +28,7 @@ export function SavedClient() {
 
   if (isLoading) return <p style={{color:'var(--fg-dim)',fontSize:13}}>Loading…</p>
   if (!bookmarks.length) return (
-    <p style={{color:'var(--fg-dim)',fontSize:13,padding:'32px 0'}}>No saved wines yet — tap ☆ on any wine detail to save it.</p>
+    <p style={{color:'var(--fg-dim)',fontSize:13,padding:'32px 0',textAlign:'center'}}>No saved wines yet — tap ☆ on any wine detail to save it.</p>
   )
 
   return (

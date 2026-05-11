@@ -3,11 +3,12 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
+import { resolveIdentity, requireParticipant, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { type SessionMeta } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
+import { blockPairIds } from '@/lib/userBlock'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -46,15 +47,64 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   const session = await auth()
-  const caller = await requireParticipant(c, req, session)
-  if (!caller) return authInvalid('not a participant')
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid('not a participant')
+  const caller = p.identity
 
   // Participants come from the identities map (id-keyed, the authoritative
   // source). The legacy `users` set is no longer written to.
   const idsByName = await redis.hGetAll(k.identities(c))
   const participants = Object.entries(idsByName).map(([id, displayName]) => ({ id, displayName }))
   const ttlSeconds = await redis.ttl(k.meta(c))
-  return NextResponse.json({ ...JSON.parse(raw), code: c, participants, ttlSeconds })
+
+  // Viewer's block-pair set, scoped to identity-ids of participants in
+  // this session. Sent to the client so the participants list and
+  // Compare screen can apply the block render rules (anon-style for
+  // blocker-as-host, 🚫 prefix for blocked-as-host, hide non-host
+  // participants in either direction). Only logged-in viewers have a
+  // block-pair set — anon viewers never appear in user_blocks.
+  //
+  // SECURITY: these arrays carry the viewer's block-pair list (scoped
+  // to this session). They MUST NOT be logged, mirrored to analytics,
+  // or stored in any shared cache. The Cache-Control header below
+  // forces a private no-store on the whole response for this reason.
+  const viewerBlocksOut: string[] = []
+  const viewerBlocksIn: string[] = []
+  if (session?.user) {
+    const userId = Number(session.user.id)
+    if (Number.isInteger(userId) && userId > 0) {
+      const pairs = await blockPairIds(userId)
+      // Translate user-ids to identity-ids; only logged-in participants
+      // (u:<id>) participate in blocks. Filter to participants actually
+      // in this session so the client's render filter doesn't have to.
+      const participantUserIds = new Set<number>()
+      for (const id of Object.keys(idsByName)) {
+        if (id.startsWith('u:')) {
+          const n = Number(id.slice(2))
+          if (Number.isInteger(n)) participantUserIds.add(n)
+        }
+      }
+      for (const uid of pairs.blockedByMe) {
+        if (participantUserIds.has(uid)) viewerBlocksOut.push(`u:${uid}`)
+      }
+      for (const uid of pairs.blockingMe) {
+        if (participantUserIds.has(uid)) viewerBlocksIn.push(`u:${uid}`)
+      }
+    }
+  }
+
+  return NextResponse.json(
+    {
+      ...JSON.parse(raw),
+      code: c,
+      participants,
+      ttlSeconds,
+      viewerBlocksOut,
+      viewerBlocksIn,
+    },
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -168,7 +218,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     } catch (err) { console.error('prev-host downgrade failed:', err) }
   }
 
-  await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
+  // KEEPTTL preserves the session's existing TTL (which may be 72h / 1w /
+  // unlimited for pro hosts). Hardcoding `EX: 48*3600` would silently
+  // downgrade any longer lifespan on every role toggle.
+  await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
   return NextResponse.json({ ok: true, meta })
 }
 

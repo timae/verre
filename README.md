@@ -20,9 +20,12 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Co-host roles to delegate wine management
 - Hide the wine lineup before the tasting starts
 - Hosts can permanently delete a session and its data; bookmarked wines stay saved
+- Hosts can kick or ban participants from a tasting (with optional wine removal); banned users can't rejoin
 - Social feed: log standalone check-ins (with photo, location, tagged friends), follow other users, like and discover what your tasting network is drinking
 - Public profiles at `/u/<id>` showing recent check-ins and stats
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
+- Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension
+- Mute (quietly hide someone's content from your feed) and Block (full break — bidirectional invisibility outside shared sessions, render-only inside)
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -160,6 +163,13 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | DELETE | /api/me/account | Delete own account (password re-auth required) |
 | POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
+| GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |
+| PATCH | /api/me/visibility | Update own profile-visibility (body: `{visibility, fofEnabled}`); 30/h |
+| POST | /api/me/mutes/:id | Mute user `:id`; 60/h shared with DELETE |
+| DELETE | /api/me/mutes/:id | Unmute user `:id`; idempotent |
+| GET | /api/me/blocks | List of users I've blocked (for the settings UI); newest-first |
+| POST | /api/me/blocks/:id | Block user `:id`; 30/h |
+| DELETE | /api/me/blocks/:id | Unblock user `:id`; uncapped (recovery path) |
 
 **Sessions**
 
@@ -171,8 +181,14 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | PATCH | /api/session/:code | Cohost role assignment (host-only) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
+| POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
 | PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
+| GET | /api/session/:code/bans | List banned identities (host + cohost) |
+| POST | /api/session/:code/bans | Kick or ban a participant (body: `{identityId, mode: 'kick'\|'ban', deleteAddedWines?}`). Strict-host required when target is a cohost |
+| DELETE | /api/session/:code/bans/:identityId | Unban (host + cohost); shares 60/10min rate limit with POST |
+| GET | /api/session/:code/bans/preview/:identityId | Preview before kick/ban (host + cohost) |
+| GET | /api/session/:code/removed-state | Caller's own removed-state, used by the `?removed=1` bounce screen |
 
 **Wines**
 
@@ -201,7 +217,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
-| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, isPublic?, taggedUserIds?}`) |
+| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`). Visibility is governed by the author's profile-visibility tier — no per-check-in toggle. |
 | PATCH | /api/checkins/:id | Edit own check-in; image replace reclaims old S3 |
 | DELETE | /api/checkins/:id | Delete own check-in; reclaims S3 image |
 | POST/DELETE | /api/checkins/:id/like | Like / unlike a check-in |
@@ -214,7 +230,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /api/users/search | Display-name prefix lookup (rate-limited) |
+| GET | /api/users/search | Display-name substring lookup (auth required, rate-limited; results filtered by profile visibility) |
 | POST | /api/places | Venue search adapter — Google Places (with key) or OSM (without) |
 
 **Public**

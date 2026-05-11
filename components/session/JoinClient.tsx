@@ -54,6 +54,14 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     setLoading(false)
     if (!res.ok) {
       const data = await res.json().catch(() => ({}))
+      // Banned users hitting the join form directly (e.g., bookmarked
+      // join URL after a ban) get a 403 banned response. Bounce them to
+      // the full RemovedView screen instead of showing the small inline
+      // "banned" error.
+      if (res.status === 403 && data.error === 'banned') {
+        window.location.href = `${joinPath(code)}?removed=1`
+        return
+      }
       setError(data.error || 'Could not join — session may have expired')
       return
     }

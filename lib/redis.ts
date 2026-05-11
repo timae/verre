@@ -31,6 +31,17 @@ export const k = {
   // current display name; tokens maps an anon token to its identity id.
   identities: (c: string) => `s:${c}:identities`,
   tokens:     (c: string) => `s:${c}:tokens`,
+  // Banned identity-ids for this session. Set membership; SISMEMBER on
+  // every requireParticipant + join attempt. Expires with the session TTL.
+  bans:       (c: string) => `s:${c}:bans`,
+  // Kicked-but-not-banned identity-ids. Tracked so the bounce-screen on
+  // /join can identify a freshly-kicked user (kick-keep removes them
+  // from identities, so the only other anchor for "you were removed"
+  // would be lost). Removed when the user re-joins or chooses Delete.
+  kicked:     (c: string) => `s:${c}:kicked`,
+  // Short-lived advisory lock taken during a kick/ban wipe so concurrent
+  // host actions don't clobber the wines JSON write-back.
+  banLock:    (c: string) => `s:${c}:lock:ban`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h
@@ -52,4 +63,45 @@ export async function touchWithMeta(code: string) {
   const ttl = lifespanTTL(meta.lifespan)
   const keys = await redis.keys(`s:${code}:*`)
   for (const key of keys) await redis.expire(key, ttl)
+}
+
+// Non-blocking key enumeration via SCAN. KEYS holds the server thread for
+// the duration of the scan over the whole keyspace — fine when the DB
+// is small but blocks production-sized Redis. New callers should use
+// scanKeys; old callers stay on `redis.keys` until each is converted.
+//
+// Deduplicates: SCAN can return the same key across iterations under
+// keyspace mutation. Callers consuming the result as a count or a Set
+// of keys expect uniqueness.
+//
+// Throws on maxIterations overflow: silent partial returns would let
+// downstream callers (delete-set, count display) make wrong decisions
+// without knowing the result was truncated. If hitting the cap is
+// expected for a particular pattern, the caller should pass a larger
+// maxIterations explicitly.
+export async function scanKeys(pattern: string, opts: { count?: number; maxIterations?: number } = {}): Promise<string[]> {
+  const count = opts.count ?? 100
+  const maxIter = opts.maxIterations ?? 1000
+  const seen = new Set<string>()
+  let cursor = 0
+  for (let i = 0; i < maxIter; i++) {
+    const res = await redis.scan(cursor, { MATCH: pattern, COUNT: count })
+    for (const key of res.keys) seen.add(key)
+    cursor = res.cursor
+    if (cursor === 0) return [...seen]
+  }
+  throw new Error(`scanKeys overflow: pattern=${pattern} hit ${maxIter} iterations without completing`)
+}
+
+// Yes/no variant — returns on the first matching key. Cheaper than
+// scanKeys when the caller only needs existence.
+export async function hasKey(pattern: string): Promise<boolean> {
+  let cursor = 0
+  for (let i = 0; i < 1000; i++) {
+    const res = await redis.scan(cursor, { MATCH: pattern, COUNT: 50 })
+    if (res.keys.length > 0) return true
+    cursor = res.cursor
+    if (cursor === 0) return false
+  }
+  return false
 }

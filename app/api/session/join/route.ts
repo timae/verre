@@ -48,19 +48,32 @@ export async function POST(req: NextRequest) {
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'session not found' }, { status: 404 })
 
-  // Valid code — reset the limiter so legitimate users with a typo streak
-  // don't carry the count forward.
-  await resetRate(rlKey)
-
   // Logged-in users have a stable identity-id (`u:<userId>`). If they're
   // already registered for this session, reuse their stored displayName so
   // repeated join calls (back/forward, refresh, etc.) don't accumulate
   // emoji suffixes. Anonymous joiners always get a fresh identity — each
   // browser session is a new participant from the server's point of view.
+  //
+  // Banned check: logged-in user's stable identity gets blocked here.
+  // Anon users always mint a fresh id on join, so the bans Set can't
+  // catch a determined re-joiner who cleared localStorage — documented
+  // weakness, not a defect.
+  //
+  // resetRate happens AFTER the ban check and only on success — the ban
+  // path keeps consuming the rate-limit budget so an attacker can't
+  // fast-probe `u:<n>` ids for banned-status via response timing.
   let anonToken: string | null = null
   let identityId: string
   if (session?.user?.id) {
     identityId = userIdentityId(session.user.id)
+    if (await redis.sIsMember(k.bans(c), identityId)) {
+      // The literal error string 'banned' is part of the client contract:
+      // components/session/JoinClient.tsx matches on `data.error ===
+      // 'banned'` to redirect manual-rejoin attempts to the full
+      // RemovedView (?removed=1) instead of showing a small inline error.
+      // If you change this string, update JoinClient too.
+      return NextResponse.json({ error: 'banned' }, { status: 403 })
+    }
     const registered = await redis.hGet(k.identities(c), identityId)
     if (registered) {
       displayName = registered
@@ -68,6 +81,8 @@ export async function POST(req: NextRequest) {
       displayName = await disambiguateDisplayName(c, displayName)
       await recordIdentity(c, { id: identityId, displayName, kind: 'user' })
     }
+    // Clear any prior kicked-marker so this rejoin starts clean.
+    await redis.sRem(k.kicked(c), identityId)
   } else {
     displayName = await disambiguateDisplayName(c, displayName)
     identityId = newAnonIdentityId()
@@ -77,6 +92,10 @@ export async function POST(req: NextRequest) {
   }
 
   await touchWithMeta(c)
+  // Reset the join rate-limit only on a successful join — a typo streak
+  // doesn't accumulate against legitimate users, but ban-rejections
+  // continue to count so banned-id probing is rate-limited.
+  await resetRate(rlKey)
 
   return NextResponse.json({
     ...JSON.parse(raw),

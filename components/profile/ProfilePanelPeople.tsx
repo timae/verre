@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getLevel } from '@/lib/badges'
 import { FollowButton } from '@/components/social/FollowButton'
 import { Avatar } from './Avatar'
@@ -26,6 +26,7 @@ interface Props {
 }
 
 export function ProfilePanelPeople({ profileUserId, myId }: Props) {
+  const qc = useQueryClient()
   const [direction, setDirection] = useState<Direction>('followers')
   const [mutual, setMutual] = useState<MutualFilter>('all')
   const [qInput, setQInput] = useState('')
@@ -104,14 +105,30 @@ export function ProfilePanelPeople({ profileUserId, myId }: Props) {
               {q ? 'No matches.' : EMPTY_COPY[direction][mutual]}
             </p>
           )}
-          {users.map(u => <PersonRow key={u.id} row={u} myId={myId} direction={direction} />)}
+          {users.map(u => (
+            <PersonRow
+              key={u.id}
+              row={u}
+              myId={myId}
+              direction={direction}
+              onFollowToggle={() => {
+                // Invalidate all profile-people queries for THIS profile —
+                // any active mutual-filter view (mutual/non/all) may need
+                // to reclassify rows when an edge flips. Also invalidate
+                // the user-profile cache for the toggled user so any
+                // inline preview / modal of theirs refreshes the gate.
+                qc.invalidateQueries({ queryKey: ['profile-people', profileUserId] })
+                qc.invalidateQueries({ queryKey: ['user-profile', u.id] })
+              }}
+            />
+          ))}
         </>
       )}
     </div>
   )
 }
 
-function PersonRow({ row, myId, direction }: { row: PersonRow; myId: number | null; direction: Direction }) {
+function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; myId: number | null; direction: Direction; onFollowToggle?: () => void }) {
   const level = getLevel(row.xp)
   const showFollowsYou = direction === 'followers' && myId !== null && row.profileFollowsThem === false && row.id !== myId
   const isMe = myId !== null && myId === row.id
@@ -135,7 +152,7 @@ function PersonRow({ row, myId, direction }: { row: PersonRow; myId: number | nu
         </div>
       </Link>
       {myId !== null && !isMe && (
-        <FollowButton userId={row.id} initialFollowing={row.isFollowing} />
+        <FollowButton userId={row.id} initialFollowing={row.isFollowing} onToggle={onFollowToggle} />
       )}
     </div>
   )

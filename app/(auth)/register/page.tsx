@@ -16,6 +16,9 @@ export default async function RegisterPage({ searchParams }: { searchParams: Pro
         <div className="lobby-card lobby-form" style={{padding:22}}>
           <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Free, always</div>
           <RegisterForm redirectTo={redirectTo} formToken={formToken} />
+          <p style={{fontSize:10,color:'var(--fg-dim)',marginTop:14,lineHeight:1.5}}>
+            By default your profile is visible to other Verre users. You can change who sees your check-ins in Settings.
+          </p>
         </div>
       </div>
     </div>

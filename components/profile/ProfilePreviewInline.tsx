@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { FollowButton } from '@/components/social/FollowButton'
 import { UserProfileModal } from './UserProfileModal'
 import { AccountSettingsModal } from '@/components/me/AccountSettingsModal'
@@ -14,14 +14,36 @@ interface Props {
   myId: number | null
 }
 
+// /api/users/[id] returns three shapes:
+//   - blocked-by-me: `{id, name, blocked: true}` — viewer blocked target
+//   - tier-gated:    `{id, name, gated: true, isFollowing}`
+//   - full payload:  LoadedProfile + `viewerMutes`
+// Discriminate before reading content fields, otherwise `data.level.icon`
+// / `data.xp.toLocaleString()` throw. The full payload also includes
+// `viewerMutes` (handled in the modal, not surfaced here — the inline
+// preview doesn't render a mute button).
+type ProfileResponse =
+  | (LoadedProfile & { viewerMutes?: boolean })
+  | { id: number; name: string; gated: true; isFollowing: boolean }
+  | { id: number; name: string; blocked: true }
+
+function isBlocked(p: ProfileResponse): p is { id: number; name: string; blocked: true } {
+  return (p as { blocked?: boolean }).blocked === true
+}
+
+function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
+  return (p as { gated?: boolean }).gated === true
+}
+
 export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: Props) {
+  const qc = useQueryClient()
   const [openProfile, setOpenProfile] = useState(false)
   const [openSettings, setOpenSettings] = useState(false)
 
   // Plain fetch (not authedFetch) — /api/users/<id> is anon-readable
   // and an anon viewer in a session must not be redirected to /login
   // if the call ever 401s. Shared cache key with UserProfileModal.
-  const { data, isError } = useQuery<LoadedProfile>({
+  const { data, isError } = useQuery<ProfileResponse>({
     queryKey: ['user-profile', userId],
     queryFn: () => fetch(`/api/users/${userId}`).then(r => {
       if (!r.ok) throw new Error(`status ${r.status}`)
@@ -29,6 +51,14 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
     }),
     staleTime: 30_000,
   })
+
+  // A follow-toggle on this user can flip their gate (`public-followers`
+  // becomes visible; `public-mutual` becomes visible if the reverse edge
+  // already exists). Invalidate so the preview AND the modal (shared
+  // query key) refetch the gate state before any further interaction.
+  function onFollowToggle() {
+    qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+  }
 
   return (
     <>
@@ -55,7 +85,70 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
           </div>
         )}
 
-        {data && (
+        {data && isBlocked(data) && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <Avatar name={data.name} imageUrl={null} size={96} />
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {data.name}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>blocked</div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                {/* Inline unblock — viewer reached this preview by clicking
+                    a blocked-pair participant row. Surfaces the unblock
+                    affordance directly so the flow doesn't require
+                    navigating to settings. Invalidates queries so the
+                    next session-meta + user-profile polls reflect the
+                    new state. */}
+                <button
+                  className="btn-s"
+                  onClick={async () => {
+                    const res = await fetch(`/api/me/blocks/${data.id}`, { method: 'DELETE' })
+                    if (res.ok) {
+                      qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+                      qc.invalidateQueries({ queryKey: ['feed'] })
+                      // session-meta is fetched via a different key shape per route;
+                      // a generic invalidation hits any active session meta query.
+                      qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-meta' })
+                    }
+                  }}
+                  style={{
+                    background: 'rgba(184,64,64,0.08)',
+                    borderColor: 'rgba(184,64,64,0.4)',
+                    color: 'rgba(184,64,64,0.95)',
+                  }}
+                >
+                  unblock
+                </button>
+                <button className="btn-s" onClick={() => setOpenProfile(true)}>
+                  visit profile
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {data && !isBlocked(data) && isGated(data) && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <Avatar name={data.name} imageUrl={null} size={96} />
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, minWidth: 0, fontWeight: 700, fontSize: 13, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {data.name}
+                </div>
+                {viewerLoggedIn && !isSelf ? (
+                  <FollowButton userId={data.id} initialFollowing={data.isFollowing} onToggle={onFollowToggle} />
+                ) : null}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>private profile</div>
+              <button className="btn-s" onClick={() => setOpenProfile(true)} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
+                visit profile
+              </button>
+            </div>
+          </div>
+        )}
+
+        {data && !isBlocked(data) && !isGated(data) && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
             {/* Fixed size — earlier "stretch to right-column height"
                 burst out of the panel when an image rendered. 96px
@@ -71,7 +164,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
                     settings
                   </button>
                 ) : viewerLoggedIn ? (
-                  <FollowButton userId={data.id} initialFollowing={data.isFollowing} />
+                  <FollowButton userId={data.id} initialFollowing={data.isFollowing} onToggle={onFollowToggle} />
                 ) : null}
               </div>
               <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>

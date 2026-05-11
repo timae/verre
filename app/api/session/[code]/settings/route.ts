@@ -4,7 +4,7 @@ import { redis, k, lifespanTTL } from '@/lib/redis'
 import { getSessionMeta, isHostByIdentity } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, authInvalid } from '@/lib/identity'
+import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -18,8 +18,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const identity = await resolveIdentity(c, req, session)
-  if (!identity) return authInvalid()
+  const pp = await participantOrBanned(c, req, session)
+  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
+  if (pp.status === 'invalid') return authInvalid()
+  const identity = pp.identity
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can change session settings' }, { status: 403 })
   }

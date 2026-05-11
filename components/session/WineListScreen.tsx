@@ -212,7 +212,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
             {isBlind && !sessionMeta?.name && <div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'3px 8px',borderRadius:3,marginBottom:8}}>🙈 Blind tasting</div>}
             <div className="subhead" style={{margin:0}}>
               <div className="subhead-title">Wine list</div>
-              <div className="subhead-copy">{lineupHidden ? '??' : wines.length} bottle{!lineupHidden && wines.length !== 1 ? 's' : lineupHidden ? 's' : ''}</div>
+              <div className="subhead-copy">{lineupHidden || (winesLoading && wines.length === 0) ? '??' : wines.length} bottle{(lineupHidden || (winesLoading && wines.length === 0)) ? 's' : wines.length !== 1 ? 's' : ''}</div>
             </div>
           </div>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>

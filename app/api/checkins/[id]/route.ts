@@ -61,7 +61,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, notes,
-    imageData, venueName, city, country, lat, lng, isPublic, taggedUserIds } = body
+    imageData, venueName, city, country, lat, lng, taggedUserIds } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   // Caps match prisma column widths so over-sized input lands as 400
@@ -123,11 +123,18 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (taggedUserIds.length === 0) {
       validTagIds = []
     } else {
+      // Block-pair exclusion: tags between block-pair members shouldn't
+      // be written (matches the POST shape).
       const mutuals = await prisma.$queryRaw<{ id: number }[]>`
         SELECT f1.following_id AS id
         FROM follows f1
         JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
         WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
+               OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
+          )
       `
       validTagIds = mutuals.map(m => m.id)
     }
@@ -153,7 +160,6 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         country:   country   !== undefined ? (scrub(country)?.slice(0,2).toUpperCase() || null) : checkin.country,
         lat:       lat       !== undefined ? (lat               ?? null) : checkin.lat,
         lng:       lng       !== undefined ? (lng               ?? null) : checkin.lng,
-        isPublic:  isPublic  !== undefined ? isPublic           : checkin.isPublic,
       },
     })
 

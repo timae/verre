@@ -109,6 +109,8 @@ Brief the reviewer with specific concerns to look for (parameter validation, edg
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
 - `s:{CODE}:tokens` — hash of anon-token → identity-id (used by the resolver)
 
+**TTL rule for meta and wines writes.** All writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create MUST use `{ KEEPTTL: true }` so the session's lifespan (default 48h, pro 72h/1w/unlimited) isn't reset by routine edits. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session on every role-toggle, name change, or wipe. `lib/redis.ts` also provides `scanKeys` and `hasKey` SCAN-based helpers — prefer these for new code instead of `redis.keys`, which blocks the Redis event loop.
+
 **Postgres archival is incremental:** data flows from Redis → Postgres only when a logged-in user commits a rating (`POST /api/session/:code/rate`) or joins a session (`POST /api/session/:code/visit`). Anonymous sessions stay Redis-only for 48h then expire.
 
 **Lifetime counter snapshots on `users`:** the rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.) on `users` rows. Counters never decrement — protects badge progression from rating deletions and gives O(1) reads on the badge hot path.
@@ -196,6 +198,56 @@ The full Postgres cleanup runs in a `prisma.$transaction` so any failure rolls b
 
 **Participants in the deleted session** get bounced when their next polled wines GET returns 404. SessionShell clears local cache for that code and redirects to `/join/<code>`, which renders the "session not found" page.
 
+### Kick / ban (host moderation)
+
+Host moderation primitive scoped per-session. Distinct from the user-level [Block](#mute-`user_mutes`) primitive — block is bilateral and lives outside sessions; kick/ban is unilateral host action on session participants.
+
+**Schema (Redis only).** No Postgres changes for the gate itself.
+- `s:<C>:bans` — Set of banned identity-ids. SISMEMBER on every `requireParticipant` + `POST /api/session/join`. Expires with the session lifespan.
+- `s:<C>:kicked` — Set of kicked-but-not-banned identity-ids. Marker only — not an authorization gate; lets `/join/<C>?removed=1` identify a kicked user whose identity-hash entry was stripped, so the bounce screen can offer the right Keep/Delete prompt. Cleared on rejoin OR on `/leave?cleanup=full`.
+- `s:<C>:lock:ban` — short-TTL advisory lock taken during a wipe so the wines JSON write-back doesn't race a concurrent host action.
+
+**Schema (Postgres).** `wines.added_by_identity_id VARCHAR(64)` (nullable) — records who added each wine. Populated on wine POST from the resolved identity; preserved on edit. Existing pre-feature rows stay NULL and never match a "delete their wines" filter. Indexed on `(session_id, added_by_identity_id)`.
+
+**Two-flavor removal: kick vs ban.**
+
+- **Kick** (`mode: 'kick'`) — strip the participant from identities + cohost list, drop their `session_members.role` to `taster`. Their ratings, hall_of_fame, bookmarks, session_members row all **stay**. Add to `s:<C>:kicked` so the bounce can identify them. They can rejoin (kicked is not an authorization gate). On the bounce screen they choose Keep (no-op) or Delete (`POST /leave?cleanup=full`, runs the `kick-delete` wipe path).
+- **Ban** (`mode: 'ban'`) — same strip as kick PLUS delete their ratings, hall_of_fame, bookmarks (for wines in this session), session_members row in one Postgres transaction. Add to `s:<C>:bans`. They cannot rejoin. Anon tokens are kept on ban so a logged-in user reusing their cookie is recognised on the next request and bounced; anon users who clear localStorage and rejoin with a fresh `a:<uuid>` get through (documented weakness — no anti-fingerprint or auth-required setting yet).
+
+**Wine-orphan toggle (`deleteAddedWines`).** Applies to both kick and ban — the host owns the call regardless of mode. Wines added by the target get `session_id = NULL` (orphaned, not hard-deleted), so third-party bookmarks survive in `/me/saved`. The wine record itself stays so other tasters who rated/bookmarked it keep their references; the live session's wines JSON gets the wine filtered out so the live tasting doesn't keep showing it.
+
+**Authorization (`POST /bans`, `DELETE /bans/:identityId`).**
+- Strict host: can kick/ban anyone except self.
+- Cohost: can kick/ban regular tasters only. Banning a cohost requires **strict host** (matches the existing cohost-role-assignment rule — banning a cohost is an implicit demotion).
+- Self-target: rejected 400.
+- Targeting the strict host: rejected 400.
+
+**Rate limit:** 60 actions / 10 min / caller, shared between POST `/bans` (kick or ban) and DELETE `/bans/:identityId` (unban). DELETE intentionally shares the budget (unlike block DELETE which is uncapped) — moderation is bounded both ways.
+
+**Bounce protocol (`X-Vr-Auth: removed`).** New header distinct from `invalid`. Existing `invalid` clears local state on the client (`vr_anon_*`, `vr_name_*`, `vr_id_*`) and bounces to `/join/<C>`. The new `removed` header **preserves local state** and bounces to `/join/<C>?removed=1` so the page can identify the user via the preserved token + cookie and render the right copy (`<RemovedView>`). Both polled GETs (`/api/session/<C>`, `/wines`, `/ratings`) AND state-changing endpoints (`/rate` POST/DELETE, `/wines` POST + `/wines/<id>` PATCH/DELETE, `/wines/reorder`, `/wines/<id>/reveal`, `/wines/{reveal,hide}-all`, `/settings`, `/name`) emit `removed` for banned/kicked callers — without this, a banned user could keep writing data until their next poll. `lib/identity.ts` `participantOrBanned()` is the resolver returning `'ok' | 'banned' | 'kicked' | 'invalid'`; `authRemoved()` builds the response. **`/visit` also consults bans + kicked** so a removed user opening the session URL can't re-admit themselves via the identities-hash write that visit otherwise performs.
+
+**Removed-bounce client behaviour.** `<RemovedView>` strips the `?removed=1` query param on mount via `window.history.replaceState` (NOT `router.replace` — that triggers a Next.js navigation which re-runs the SSR page, sees no `removed=1`, and falls through to `<JoinClient>` instead of staying on the prompt). The URL bar updates without a re-render. The "back to home" button branches on `isLoggedIn` (passed in from the SSR page): logged-in → `/me`, anon → `/`. `<JoinClient>` (the regular invite form) also catches `403 {error: 'banned'}` from manual rejoin attempts and redirects to `?removed=1` so the user lands on the full RemovedView rather than seeing a small inline "banned" message.
+
+**Order of operations (ban wipe).**
+1. `SADD bans` — smallest Redis op, idempotent. Bans-Set membership alone is the authoritative gate, so even on partial failure the user can't rejoin.
+2. `SADD kicked` (for both kick variants).
+3. `prisma.$transaction`: delete user's ratings + hof + bookmarks (for wines in this session) + session_members. If `deleteAddedWines`: orphan their wines.
+4. Redis cleanup (idempotent): delete per-rating keys, drop from identities, strip from coHostIds, filter wines JSON.
+
+The full wipe runs under `s:<C>:lock:ban` (`SET NX EX 10`) so two concurrent host actions on the same session don't clobber each other's wines JSON write-back.
+
+**API surface.**
+- `GET /api/session/<C>/bans` — host or cohost. Lists banned identities.
+- `POST /api/session/<C>/bans` — host or cohost. Body `{identityId, mode: 'kick'|'ban', deleteAddedWines?: boolean}`. Strict-host required when targeting a cohost.
+- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. Lifts the ban-Set entry; data is already gone (deleted at ban time) and not restored.
+- `GET /api/session/<C>/bans/preview/:identityId` — host or cohost. Returns `{identityId, displayName, ratingCount, addedWines}` for the host-side modal.
+- `GET /api/session/<C>/removed-state` — caller's own state. Returns `{state: 'banned'|'kicked'|'none', identityId?, hasRatings?}`. Used by `<RemovedView>` on the `/join/<C>?removed=1` bounce screen.
+- `POST /api/session/<C>/leave?cleanup={keep|full}` — kicked-user self-service. `keep` is a no-op (default). `full` runs the `kick-delete` wipe (ratings + hof + bookmarks + session_members). Authorization: caller must be in `bans` or NOT in identities (active participants can't use this path).
+
+**Ghost-rater UX note.** Kick-keep strips the identity from `s:<C>:identities` but leaves ratings + hof + session_members. Compare screens (which iterate over Redis rating keys) still show those ratings; the rater's display name is rendered as-is. This is a deliberate side effect of "Keep means keep" — the kicked user wanted their data preserved. If they later choose Delete (via `/leave?cleanup=full`), everything goes.
+
+**`docs/kick-ban.md`** holds the user-facing version.
+
 ### Social feed
 
 A separate logged-in surface around individual users — sessions are still the primary tasting context, the feed is *what someone has been drinking* outside or alongside sessions.
@@ -242,6 +294,85 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 
 **Permission-denied vs auth-invalid:** the server returns 401 + `X-Vr-Auth: invalid` only when identity itself failed to resolve. Permission-denied 403s ("only the host can…", "pro required") return bare 403 without the header. The `lib/sessionFetch.ts` client-side wrapper only clears local state and bounces to `/join/<code>` on the auth-invalid header — permission denials are surfaced inline.
 
+### Profile visibility
+
+Per-user setting controlling who can read profile content (`/u/<id>` page, `/api/users/<id>` and sub-routes, feed entries authored by this user, check-in like POSTs). Stored on `users` as two columns:
+
+- `profile_visibility VARCHAR(32)` — one of `public-internet` / `public-users` / `public-followers` / `public-mutual`. CHECK constraint hand-added in the migration; **the TypeScript union in `lib/profileVisibility.ts` is the authoritative source of truth**, the CHECK is belt-and-suspenders.
+- `visibility_fof BOOLEAN` — when true, friend-of-follower (depth 1: viewer→intermediary→profile) is also admitted. Only meaningful for `public-followers` and `public-mutual`; `public-internet` and `public-users` already admit anyone qualifying via FoF.
+
+**Tier semantics (locked):**
+- `public-internet` — anyone, no auth required. Profile + check-ins indexable by search engines.
+- `public-users` — any logged-in Verre user. **Default for new signups.**
+- `public-followers` — only people who follow the profile owner (asymmetric: owner doesn't have to follow back).
+- `public-mutual` — only mutual follows (both directions of `follows`).
+
+**Default migration (existing users):** the privacy-tiers migration `UPDATE`s pre-existing rows to `public-internet` to preserve their de-facto state, and only NEW rows hit the column default `public-users`. Don't change this without surfacing the retroactive-tightening question to the user — silent default changes break shared profile URLs.
+
+**Authorization chokepoints — never bypass:**
+- `lib/profileVisibility.ts` `resolveProfileViewer(profileId, viewerId)` — single-profile gate. Returns `{status:'gone'}` when the profile shouldn't be observable; map to 404 (not 403, not 401) so the caller can't distinguish "no such user" from "exists but tier denies you" — that's the leak prevention.
+- `viewerCanSeeAuthor(viewerId, authorId)` — per-pair gate for non-feed call sites (single check-in, like POST, etc.).
+- `batchLoadVisibilities(ids)` + `resolveProfileViewerBulk(ids, viewerId)` + `viewerFofAuthorSet(viewerId, ids)` — batch path used by feed and search to avoid N+1 lookups.
+- `setProfileVisibility(userId, tier, fof)` — the only sanctioned write path. Validates the union, enforces a 30/hour/user rate limit, writes user row + `profile_visibility_log` audit row in one transaction. Bypassing this and writing the column directly skips the audit trail.
+
+**HoF stays public regardless of tier (deliberate decision):** `/hof` displays rater display names with no clickable user link; the leaderboard is treated as a deliberately public surface. This means a `public-mutual` user with a 5★ rating still has their name visible on `/hof`. If product later wants HoF to honour the tier, that's a localized change — see `app/hof/page.tsx`. The leak is documented and accepted, not an oversight.
+
+**Session compare views are NOT gated by profile visibility.** Trust model: session participation > profile tier. If you joined a session together, you see each other's ratings and display names — `profile_visibility` only governs *outside-session* surfaces. Don't try to gate session ratings by profile_visibility; you'll break the compare screen.
+
+**Tag display follows the check-in author's tier**, not the tagged user's. A user tagged in someone else's check-in appears according to that check-in's visibility — being tagged is a presentation surface the tagged user consented to via mutual-follow at creation time. Edit-time mutual-follow re-validation already drops a tag if the relationship has been broken since.
+
+**Audit log (`profile_visibility_log`):** internal-only, no API surface, no UI. One row per change (tier or fof), plus an initial signup row with `from_tier=NULL` for forensic completeness. Cascade rule is `ON DELETE SET NULL` — the trail survives account deletion (tombstone pattern) so post-mortem queries can still reconstruct timelines for deleted users.
+
+### Mute (`user_mutes`)
+
+Per-pair soft-hide: A mutes B → A no longer sees B's content in A's feed. B is unaware. Independent of follow state, profile visibility, search, direct profile reads, likes, tags, and sessions — feed-only filter.
+
+- `user_mutes(muter_id, muted_id, created_at)`, composite PK, CHECK forbidding self-mute, FK CASCADE both sides. No data on the row beyond the edge itself.
+- `lib/userMute.ts` is the single sanctioned write path. `setMute` is rate-limited 60/h/user (shared POST + DELETE). FK violation on a non-existent target is swallowed to return uniform success — closes the user-id enumeration oracle.
+- `/api/feed` Promise.all-batches `mutedUserIds(viewerId)` alongside the visibility check; the mute set is subtracted from `allowedNetworkIds` before the cursor query. Mute composes with the visibility tier filter — both must pass.
+- `viewerMutes` flag is surfaced in `/api/users/[id]` full payload + the SSR `/u/[id]` render. Only meaningful on the non-shell / non-blocked view. The mute toggle in the UI lives behind the 3-dot menu on `ProfileHeader` (alongside Block).
+- TanStack Query invalidation on toggle: `['user-profile', userId]` (refresh viewerMutes flag), `['feed']` (refresh feed filter). Wired in `UserProfileModal` / `ProfilePreviewInline` / the `ProfileActionsMenu` consumer chain.
+
+### Profile blocking (`user_blocks`)
+
+Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invisibility — A blocks B → they vanish from each other's feed, search, profile reads, follower/following lists and counts, likes, tags, "had a sip" flow. Inside shared sessions, block goes render-only (locked design — block is a UI primitive, not a secrecy mechanism inside a shared tasting).
+
+**Schema.** `user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair. Unblock restores visibility everywhere.
+
+**Authorization chokepoints (`lib/userBlock.ts`):**
+- `anyBlockBetween(a, b)` — OR'd both directions. Fast-path primitive used by `viewerCanSeeAuthor` to short-circuit visibility resolution.
+- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked).
+- `blockPairIds(userId)` — `{ blockedByMe, blockingMe }` Sets, capped at 1000 per direction. Hot-path filter set for feed, search, in-session participant matrix.
+- `setBlock(blockerId, blockedId, mute)` — single sanctioned write path. POST rate-limited 30/h/user; DELETE intentionally uncapped (recovery from a stolen-cookie burst must always work). FK violation swallowed.
+
+**Resolver tri/quad-state.** `resolveProfileViewer` now returns `'ok' | 'shell' | 'blocked-by-me' | 'gone'`. The block check runs **before** the visibility tier — block is the strictest primitive. `authorBlocksViewer` collapses to `'gone'` so the blocked viewer can't distinguish "I was blocked" from "user doesn't exist." Sub-routes (`/followers`, `/following`, `/badges`) gate on `status === 'ok'` so any non-ok state → 404.
+
+**Mutual-block resolver behaviour.** When A and B have blocked each other, both directions of the check fire and `authorBlocksViewer` is evaluated first in the route, so **both sides resolve to `'gone'` (404)** — neither party gets the `'blocked-by-me'` stripped view on `/u/<id>`. Locked intent: mutual block treats the other as "anon-equivalent" everywhere, including profile reads, mirroring the in-session participants matrix where mutual rows render anon-style with no `[blocked]` marker on either side. The blocker reaches unblock via **Settings → Blocked users**, which is always available regardless of resolver state.
+
+**Counts are globally subtracted, not per-viewer.** Locked design ("Instagram-style"):
+- Like counts: a like by user X on a check-in by author Y is invisible to ALL viewers once a block exists between X and Y. Implemented via a batched `COUNT(DISTINCT cl.user_id)` SQL query that handles mutual A↔B blocks correctly.
+- Follower / following counts: same — block-pair edges drop from the count shown to every viewer.
+- Tag rendering: block-pair tags hidden from everyone (feed uses an `authorId:tagUserId` lookup set; profileLoad uses an owner-anchored set).
+
+The single underlying rule: counts and renders depend on the **author** (or check-in owner), not the viewer. A SET-based deduplication in `lib/profileLoad.ts` prevents mutual-block from double-counting.
+
+**Inside-session rules (render-only).** Locked matrix in the participants list (`SessionPanel`) — no row is ever hidden:
+- Third party → both shown normally.
+- Blocker viewing blocked (any tier: host, cohost, non-host) → `[blocked] {name}` + role badge, clickable to open `ProfilePreviewInline` with inline unblock.
+- Blocked viewing blocker (any tier) → anon-style: plain name + role badge if any, no bold, no avatar, no link.
+- Mutual block (A blocks B and B blocks A) → anon-style with **no `[blocked]` prefix** on either side. Both sides treat the other as an anon participant; unblock is reachable from the other user's `/u/<id>` page or settings → Blocked users. The prefix is suppressed because surfacing it on mutual would signal "this identifiable person blocked you back."
+- Cohost role-toggle (`make co-host` / `remove role`) stays available to the host on block-pair rows. Block is a UI primitive, not a moderation one — kick/ban is the separate moderation primitive (see Kick/ban section).
+
+Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
+
+`/api/session/[code]` GET adds `viewerBlocksOut` + `viewerBlocksIn` arrays (identity-ids, scoped to in-session participants only — never the viewer's full block list). Anon viewers get empty arrays. Response has `Cache-Control: private, no-store` since it varies by viewer.
+
+**Follow endpoint scenarios:** 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.
+
+**SECURITY: don't log `viewerBlocksOut`/`viewerBlocksIn`.** These arrays carry the viewer's block-pair list scoped to a session. They must not be mirrored to analytics, stored in shared cache, or persisted outside the response.
+
+**Out of scope (separate primitive):** kick / ban — see the "Kick / ban (host moderation)" section above. Different intent, different scope. The two never interact.
+
 ### Rate limiting
 
 Redis-backed limiters via `lib/rateLimit.ts`. Use `peekRate` / `peekRates` to check without incrementing (login does this so successful logins don't count); `checkRate` / `checkRates` to check + increment atomically. `formatWait(seconds)` produces the humanized "in 3 minutes" / "in 45 seconds" string surfaced in 429 responses.
@@ -254,6 +385,11 @@ Limits in production:
 | `/api/auth/register` | 100/min/IP | Mass-signup spam. |
 | `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
 | `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
+| `/api/me/visibility` GET + PATCH | 60/min/user (route-level, distinct counters for GET and PATCH) | Read-side noise + general burst protection. |
+| `/api/me/visibility` PATCH (inner) | 30/hour/user, increments only on actual change | Stolen cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-checkRate-on-change so no-op submits don't burn slots. |
+| `/api/me/mutes/:id` POST + DELETE | 60/hour/user (shared) | Stolen cookie thrashing the table or generating noise. |
+| `/api/me/blocks/:id` POST | 30/hour/user | Stolen cookie burst-blocking. |
+| `/api/me/blocks/:id` DELETE | uncapped | Recovery path must remain open against a burst-block attack. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 

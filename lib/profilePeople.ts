@@ -21,27 +21,34 @@ export async function listProfilePeople(
   params: Promise<{ id: string }>,
   direction: 'followers' | 'following',
 ) {
+  // Every return path carries `private, no-store` — the 404 branch in
+  // particular varies by viewer (tier-denied vs not-exists), so a shared
+  // cache must never serve one viewer's response to another.
+  const noStore = { 'Cache-Control': 'private, no-store' }
   const session = await auth()
-  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401, headers: noStore })
   const viewerId = Number(session.user.id)
 
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const rl = await checkRate(`rl:profile-people:${ip}:1m`, 60, 60)
-  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const { id } = await params
   const profileId = Number(id)
   if (!Number.isInteger(profileId) || profileId < 1) {
-    return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
   const gate = await resolveProfileViewer(profileId, viewerId)
-  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // 'shell' = profile exists but viewer can't see content — followers/
+  // following list is content, so 404 (same shape as the doesn't-exist
+  // path so a tier-denied viewer can't distinguish).
+  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
 
   const url = req.nextUrl
   const mutual = url.searchParams.get('mutual')
   const q = (url.searchParams.get('q') || '').trim().slice(0, 64)
-  if (q && q.length < SEARCH_MIN) return NextResponse.json({ users: [], nextCursor: null })
+  if (q && q.length < SEARCH_MIN) return NextResponse.json({ users: [], nextCursor: null }, { headers: noStore })
   const cursor = url.searchParams.get('cursor')
   const cursorId = cursor && Number.isInteger(Number(cursor)) ? Number(cursor) : null
 
@@ -65,6 +72,20 @@ export async function listProfilePeople(
   const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
   const cursorClause = cursorId ? Prisma.sql`AND u.id < ${cursorId}` : Prisma.empty
 
+  // Block-pair filter: drop rows where the listed user has a block-pair
+  // with the profile owner (either direction). Globally symmetric — the
+  // same list is returned to any viewer, and the row-count matches the
+  // adjusted follower/following stats in loadProfile.
+  //
+  // Done as a NOT EXISTS so block-pair size doesn't materialise into an
+  // IN list (a power user with thousands of blocks would otherwise inject
+  // a huge array here).
+  const blockClause = Prisma.sql`AND NOT EXISTS (
+    SELECT 1 FROM user_blocks b
+    WHERE (b.blocker_id = ${profileId} AND b.blocked_id = ${otherCol})
+       OR (b.blocker_id = ${otherCol} AND b.blocked_id = ${profileId})
+  )`
+
   const rows = await prisma.$queryRaw<{ id: number; name: string; xp: number; image_url: string | null }[]>`
     SELECT u.id, u.name, u.xp, u.image_url
     FROM follows f
@@ -73,6 +94,7 @@ export async function listProfilePeople(
       ${mutualClause}
       ${qClause}
       ${cursorClause}
+      ${blockClause}
     ORDER BY u.id DESC
     LIMIT ${PAGE + 1}
   `
@@ -103,15 +125,20 @@ export async function listProfilePeople(
       )
     : null
 
-  return NextResponse.json({
-    users: slice.map(r => ({
-      id: r.id,
-      name: r.name,
-      xp: r.xp,
-      imageUrl: r.image_url,
-      isFollowing: myFollowing.has(r.id),
-      profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
-    })),
-    nextCursor,
-  })
+  // Response varies by viewer (isFollowing per row). private no-store
+  // so a CDN can't serve one viewer's list to another.
+  return NextResponse.json(
+    {
+      users: slice.map(r => ({
+        id: r.id,
+        name: r.name,
+        xp: r.xp,
+        imageUrl: r.image_url,
+        isFollowing: myFollowing.has(r.id),
+        profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
+      })),
+      nextCursor,
+    },
+    { headers: noStore },
+  )
 }
