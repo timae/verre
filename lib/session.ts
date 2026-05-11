@@ -44,11 +44,49 @@ export type WineMeta = {
   image: string
   imageUrl: string
   revealedAt?: string | null
-  // Identity-id of the participant who added this wine. Used by kick/ban
-  // to identify which wines a host can choose to orphan. Optional for
-  // backward compat with pre-feature wine rows; new wines always populate
-  // it from the server-resolved identity at POST time.
+  // Identity-id of the participant who added this wine. Used by two
+  // independent flows: (1) kick/ban to identify which wines a host can
+  // choose to orphan; (2) the provider role, which can edit/delete only
+  // wines they added (matched via this field). Optional for backward
+  // compat with pre-feature wine rows — those NULL rows never match a
+  // ban-target filter and a provider's own-wine check rejects them
+  // because `undefined !== provider.id`. The provenance anchor is
+  // independent of the role grant: a former provider who got demoted
+  // still has `addedByIdentityId` on their wines, but loses edit power
+  // until re-promoted.
+  //
+  // Server-only — the wines GET wire payload strips this field and
+  // replaces it with a per-caller `isMine` boolean so anon-id
+  // correlation across multiple wines stays server-internal.
   addedByIdentityId?: string
+}
+
+// Wire shape produced by `wineToWire` — same as `WineMeta` minus
+// the server-only `addedByIdentityId` field, plus two wire-only flags:
+// `isMine: boolean` (synthesized per-caller at response time) and
+// `_blind?: boolean` (set by the blind-redaction path in the wines GET
+// when a wine is hidden from the caller). Neither lives on
+// `WineMeta`: they're never stored in Redis or Postgres, only emitted
+// on the wire, so keeping them off the storage type prevents
+// accidental reads that would always be undefined.
+export type WireWine = Omit<WineMeta, 'addedByIdentityId'> & {
+  isMine: boolean
+  _blind?: boolean
+}
+
+// Project a `WineMeta` to its wire shape: strip `addedByIdentityId`
+// and synthesize `isMine` for the caller. This is the SINGLE
+// sanctioned transform — every endpoint that returns wines must
+// route through here. Skipping it leaks anon-id correlation across
+// wines from the same adder, which the wire-strip is specifically
+// designed to prevent.
+//
+// `callerId` is the caller's identity-id (`u:<userId>` or `a:<uuid>`).
+// For server actions where the caller is by definition the adder
+// (e.g. wine POST), pass the same id — `isMine` resolves to true.
+export function wineToWire(w: WineMeta, callerId: string): WireWine {
+  const { addedByIdentityId: provenance, ...rest } = w
+  return { ...rest, isMine: !!provenance && provenance === callerId }
 }
 
 export type RatingMeta = {
@@ -69,6 +107,11 @@ export type SessionMeta = {
   blind?: boolean
   lifespan?: string
   coHostIds?: string[]
+  // Provider role: can add wines and edit/delete the wines they added,
+  // but has no other host powers (no settings, no reorder, no reveal,
+  // no moderation). Mutually exclusive with cohost. Trust anchor lives
+  // here in Redis; mirrored to session_members.role on Postgres.
+  providerIds?: string[]
   address?: string
   dateFrom?: string | null
   dateTo?: string | null
@@ -119,6 +162,19 @@ export function isCohostId(meta: SessionMeta, identityId: string): boolean {
   return !!meta.coHostIds?.includes(identityId)
 }
 
+// Provider check by stable identity id. NOT a superset of host/cohost —
+// providers are their own tier with narrowly scoped wine-CRUD powers
+// limited to wines they added themselves (matched via the wine's
+// `addedByIdentityId` field). Note: the provenance anchor
+// `wines.addedByIdentityId` is independent of role grant — a user who
+// added wines as a provider and later got demoted to taster keeps the
+// provenance, but loses edit power until re-promoted.
+//
+// Signature mirrors isCohostId — takes an identityId string for use at
+// any call site where the full Identity object isn't on hand.
+export function isProviderById(meta: SessionMeta, identityId: string): boolean {
+  return !!meta.providerIds?.includes(identityId)
+}
 
 export function sanitizeImage(value: unknown): string {
   if (!value || typeof value !== 'string') return ''

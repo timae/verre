@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
+import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ code: string }> }

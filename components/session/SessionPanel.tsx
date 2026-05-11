@@ -12,6 +12,7 @@ import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 import { ParticipantActionsMenu } from './ParticipantActionsMenu'
 import { BanPreviewModal } from './BanPreviewModal'
 import { BannedUsersSection } from './BannedUsersSection'
+import { SetRoleButton } from './SetRoleButton'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -96,6 +97,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   // changes appear without a manual reload.
   const participants = sessionMeta?.participants ?? []
   const coHostIds = sessionMeta?.coHostIds ?? []
+  const providerIds = sessionMeta?.providerIds ?? []
   const [expandedId,    setExpandedId]    = useState<string | null>(null)
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
@@ -112,16 +114,15 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   // isStrictHost: true only for the actual session host, NOT co-hosts.
   // Used for actions that we restrict to the host alone (currently:
   // delete-session). isHost from context is true for cohosts too.
-  const sm = sessionMeta as typeof sessionMeta & { hostIdentityId?: string; coHostIds?: string[] }
   const isStrictHost = !!(myId && (
-    (sm?.hostIdentityId && myId === sm.hostIdentityId) ||
-    (sm?.hostUserId && myId === `u:${sm.hostUserId}`)
+    (sessionMeta?.hostIdentityId && myId === sessionMeta.hostIdentityId) ||
+    (sessionMeta?.hostUserId && myId === `u:${sessionMeta.hostUserId}`)
   ))
   // Mirror the server's softened check (see app/api/session/[code]/route.ts).
   // The literal '[deleted]' is also used by lib/accountDelete on the server;
   // duplicated here to avoid pulling server-only deps into the client bundle.
-  const hostIsGone = !!(sm && !sm.hostIdentityId && !sm.hostUserId && sm.host === '[deleted]')
-  const isCohost = !!(myId && sm?.coHostIds?.includes(myId))
+  const hostIsGone = !!(sessionMeta && !sessionMeta.hostIdentityId && !sessionMeta.hostUserId && sessionMeta.host === '[deleted]')
+  const isCohost = !!(myId && sessionMeta?.coHostIds?.includes(myId))
   const canDeleteSession = isStrictHost || (hostIsGone && isCohost)
 
   async function deleteSession() {
@@ -190,21 +191,12 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setCopied(true); setTimeout(() => setCopied(false), 2000)
   }
 
-  async function toggleCoHost(targetId: string) {
-    const isCo = coHostIds.includes(targetId)
-    const res = await sessionFetch(code, `/api/session/${code}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ targetId, action: isCo ? 'remove-cohost' : 'add-cohost' }),
-    })
-    if (!res.ok) return
-    // Patch the cached meta from the PATCH response so the actor sees
-    // the new role instantly. Other participants pick it up on their
-    // own next poll tick.
-    const { meta } = await res.json()
-    queryClient.setQueryData(['session-meta', code], (prev: unknown) => ({
-      ...(prev as object),
-      coHostIds: meta.coHostIds || [],
-    }))
+  // Invalidate the cached session meta after a role change so the
+  // actor sees the new role instantly. Other participants pick it up
+  // on their own next poll tick.
+  function onRoleChanged() {
+    queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
+    refresh()
   }
 
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
@@ -312,7 +304,13 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                       return sorted.map(p => {
                         const isThisHost = isHostId(p.id)
                         const isCo = coHostIds.includes(p.id)
+                        const isProv = providerIds.includes(p.id)
                         const isMe = p.id === myId
+                        // Resolve the target's current role for the SetRoleButton
+                        // picker, which omits the current role from the option
+                        // list (no point offering "set to what they already are").
+                        const targetCurrentRole: 'taster' | 'co_host' | 'provider' =
+                          isCo ? 'co_host' : isProv ? 'provider' : 'taster'
                         // Block-pair render flags.
                         //   blockedByMe: viewer is the blocker side.
                         //   blockingMe:  viewer is the blocked side.
@@ -361,19 +359,20 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                               </span>
                               {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
                               {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
-                              {/* Cohost role-toggle stays available on block-pair
-                                  rows so a host can elect / demote a blocked or
-                                  blocking participant. The anon-style render on
-                                  the blocked side doesn't change moderation
-                                  affordances — block is a UI primitive, not a
-                                  moderation primitive. Strict-host gating
-                                  happens server-side; visually we still show
-                                  the button to cohosts but their click 403s. */}
-                              {isHost && !isThisHost && !isMe && isStrictHost && (
-                                <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}}
-                                  onClick={e => { e.stopPropagation(); toggleCoHost(p.id) }}>
-                                  {isCo ? 'remove role' : 'make co-host'}
-                                </button>
+                              {isProv && !isThisHost && !isCo && <span style={{fontSize:9,color:'rgba(120,180,220,0.95)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(120,180,220,0.35)',padding:'1px 5px',borderRadius:2}}>provider</span>}
+                              {/* Set/Change role — host or cohost can promote/
+                                  demote per the locked transition rule. Strict-
+                                  host sees Co-host as an option; cohost-only
+                                  viewers see Taster + Provider. The picker
+                                  itself enforces both ends of the rule. */}
+                              {isHost && !isThisHost && !isMe && !(isCo && !isStrictHost) && (
+                                <SetRoleButton
+                                  code={code}
+                                  identityId={p.id}
+                                  currentRole={targetCurrentRole}
+                                  viewerIsStrictHost={isStrictHost}
+                                  onChanged={onRoleChanged}
+                                />
                               )}
                               {/* Kick/Ban menu. Cohosts can target regular
                                   participants only; strict-host can target
@@ -409,10 +408,14 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               </div>
             )}
 
-            {/* Banned users (host + cohost only). Collapsible, sits
-                directly below the participants list so a moderator can
-                glance at who's locked out without going into settings. */}
-            {isHost && <BannedUsersSection code={code} />}
+            {/* Banned users (host + cohost only). Only rendered when at
+                least one ban exists — banCount rides on the polled
+                session GET so cross-host bans propagate without a page
+                reload. Visual style mirrors the PARTICIPANTS row
+                above. */}
+            {isHost && (sessionMeta?.banCount ?? 0) > 0 && (
+              <BannedUsersSection code={code} count={sessionMeta?.banCount ?? 0} />
+            )}
 
             {/* Share link */}
             <div style={{marginBottom:16}}>

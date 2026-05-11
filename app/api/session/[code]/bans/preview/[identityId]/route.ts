@@ -58,29 +58,44 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   }
 
-  // Rating count: count rating keys in Redis for this participant via
-  // SCAN. Same prefix shape as everywhere else: s:<C>:r:<identityId>:<wineId>.
-  const ratingKeys = await scanKeys(`s:${c}:r:${targetId}:*`)
-  const ratingCount = ratingKeys.length
+  // Rating count, wines, and displayName all fire in parallel — none of
+  // them depend on each other.
+  //
+  // Rating count via SCAN over `s:<C>:r:<identityId>:*` — Redis is
+  // authoritative for live-session rating state (Postgres rows exist
+  // only for logged-in users and only after the rate POST, so it's not
+  // a complete source). On a quiet Redis the SCAN is sub-10ms; on a
+  // very busy instance the iteration cost grows with total keyspace,
+  // but the cost is mitigated here by issuing it in parallel with the
+  // other reads.
+  const ratingCountP = scanKeys(`s:${c}:r:${targetId}:*`).then(keys => keys.length)
 
   // Wines the target added — read from Redis (live state); the Postgres
   // row may not exist yet for sessions still in their first 48h.
-  const wines = await getWines(c)
-  const addedWines = wines
-    .filter(w => w.addedByIdentityId === targetId)
-    .map(w => ({ id: w.id, name: w.name, vintage: w.vintage, producer: w.producer }))
+  const winesP = getWines(c)
 
   // Display name for the modal header. Pull from identities hash if
   // still present; fall back to the Postgres users row for logged-in
   // identities (post-ban kick-keep already cleared the hash entry).
-  let displayName = await redis.hGet(k.identities(c), targetId) ?? null
-  if (!displayName && targetId.startsWith('u:')) {
-    const u = await prisma.user.findUnique({
-      where: { id: Number(targetId.slice(2)) },
-      select: { name: true },
-    })
-    displayName = u?.name ?? null
-  }
+  const displayNameP: Promise<string | null> = (async () => {
+    const fromHash = await redis.hGet(k.identities(c), targetId)
+    if (fromHash) return fromHash
+    if (targetId.startsWith('u:')) {
+      const u = await prisma.user.findUnique({
+        where: { id: Number(targetId.slice(2)) },
+        select: { name: true },
+      })
+      return u?.name ?? null
+    }
+    return null
+  })()
+
+  const [ratingCount, wines, displayName] = await Promise.all([
+    ratingCountP, winesP, displayNameP,
+  ])
+  const addedWines = wines
+    .filter(w => w.addedByIdentityId === targetId)
+    .map(w => ({ id: w.id, name: w.name, vintage: w.vintage, producer: w.producer }))
 
   return NextResponse.json(
     { identityId: targetId, displayName, ratingCount, addedWines },

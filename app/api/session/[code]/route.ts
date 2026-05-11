@@ -3,8 +3,9 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, requireParticipant, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
-import { type SessionMeta } from '@/lib/session'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { type SessionMeta, isHostByIdentity } from '@/lib/session'
+import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { normalizeCode } from '@/lib/sessionCode'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
@@ -58,6 +59,18 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const participants = Object.entries(idsByName).map(([id, displayName]) => ({ id, displayName }))
   const ttlSeconds = await redis.ttl(k.meta(c))
 
+  // Ban count: only sent to host/cohost callers (others have no UI for
+  // it). Drives the conditional render of the BannedUsersSection on the
+  // client — section appears the moment a ban exists, disappears when
+  // the last unban happens. Polled via the existing 5s session GET
+  // refetch, so cross-host ban events propagate without a dedicated
+  // socket. Free for non-pro sessions (default 48h TTL); also works for
+  // pro lifespans (72h/1w/unlimited) — the polling cadence is
+  // client-side and independent of session TTL.
+  const meta = JSON.parse(raw) as SessionMeta
+  const isHost = isHostByIdentity(meta, caller)
+  const banCount = isHost ? await redis.sCard(k.bans(c)) : 0
+
   // Viewer's block-pair set, scoped to identity-ids of participants in
   // this session. Sent to the client so the participants list and
   // Compare screen can apply the block render rules (anon-style for
@@ -96,12 +109,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
 
   return NextResponse.json(
     {
-      ...JSON.parse(raw),
+      ...meta,
       code: c,
       participants,
       ttlSeconds,
       viewerBlocksOut,
       viewerBlocksIn,
+      banCount,
     },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
@@ -115,114 +129,160 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const session = await auth()
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { targetId: targetIdFromBody, targetUser, action } = body as Record<string, unknown>
+  const { targetId: targetIdFromBody, action, role: roleFromBody } = body as Record<string, unknown>
 
-  const raw = await redis.get(k.meta(c))
-  if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const meta = JSON.parse(raw) as SessionMeta
+  // Banned/kicked callers get the `removed` bounce header (same as the
+  // polled GETs and wine routes) so their client reroutes to
+  // /join/<C>?removed=1 instead of seeing a bare 403.
+  const pp = await participantOrBanned(c, req, session)
+  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
+  if (pp.status === 'invalid') return authInvalid()
+  const callerIdentity = pp.identity
 
-  // Authorize the caller as the *current host* — strictly. Co-hosts can do
-  // wine and settings work via isHostByIdentity, but role assignment is
-  // intentionally host-only to avoid privilege-escalation chains (cohost A
-  // promoting cohost B, etc.). Match against hostIdentityId, falling back
-  // to hostUserId for sessions whose meta predates the identityId field.
-  const callerIdentity = await resolveIdentity(c, req, session)
-  if (!callerIdentity) return authInvalid()
-  const callerIsHost = (
-    (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
-    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
-  )
-  if (!callerIsHost) {
-    return NextResponse.json({ error: 'only the host can assign roles' }, { status: 403 })
+  // Serialize meta read-modify-write against concurrent role mutations
+  // and kick/ban operations (which also mutate coHostIds/providerIds via
+  // sessionWipe). Without the lock two strict-host calls could each read
+  // the same starting meta, derive divergent coHostIds/providerIds sets,
+  // and the later write would silently clobber the earlier.
+  if (!(await acquireBanLock(c))) {
+    return NextResponse.json(
+      { error: 'busy, try again' },
+      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '1' } },
+    )
   }
+  try {
+    const raw = await redis.get(k.meta(c))
+    if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    const meta = JSON.parse(raw) as SessionMeta
 
-  // Resolve the target by id (preferred) or by name. Both must resolve to
-  // an identities-map entry — the trust source. targetName is only used to
-  // populate meta.host on transfer-host (display label).
-  const idsByName = await redis.hGetAll(k.identities(c))
-  let targetId: string | null = null
-  let targetName: string = ''
-  if (typeof targetIdFromBody === 'string' && targetIdFromBody) {
-    const registered = idsByName[targetIdFromBody]
-    if (registered) {
+    // Coarse moderator gate inside the lock — fresh meta is the
+    // authoritative view of cohost membership. Closes the enumeration
+    // oracle that would otherwise let a non-participant probe `targetId:
+    // u:<n>` and distinguish session members (400 unknown-target) from
+    // non-members (403). Action-specific strict-host gates run below.
+    const strictHostNow = !!(
+      (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
+      (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
+    )
+    const cohostNow = !!meta.coHostIds?.includes(callerIdentity.id)
+    if (!strictHostNow && !cohostNow) {
+      return NextResponse.json({ error: 'only the host or a co-host can assign roles' }, { status: 403 })
+    }
+
+    // Action-specific strict-host pre-check BEFORE target resolution.
+    // Closes an enumeration oracle a cohost could otherwise use to probe
+    // `targetId: u:<n>` and tell from the response code (400
+    // unknown-target vs 403 wrong-role) whether the user is in the
+    // session: for actions that are strict-host-only regardless of the
+    // target's identity, the answer must be 403 either way. Cohost
+    // attempting to demote another cohost (touchesCohost on set-role
+    // with newRole=taster|provider) still requires target resolution,
+    // but the blast radius is contained — cohosts already see the
+    // session identities map.
+    if (action === 'set-role' && roleFromBody === 'co_host' && !strictHostNow) {
+      return NextResponse.json({ error: 'only the host can assign or remove the co-host role' }, { status: 403 })
+    }
+
+    // Resolve the target by id — must be an identities-map entry, the
+    // trust source. Display-name lookup (`targetUser`) was removed
+    // because names are presentation-only per CLAUDE.md.
+    const idsByName = await redis.hGetAll(k.identities(c))
+    // Guard against prototype property names (`__proto__`, `constructor`,
+    // `toString`) — without hasOwnProperty, those would resolve to
+    // Object.prototype members (truthy), letting a host plant junk
+    // identity-ids into coHostIds/providerIds via a crafted body.
+    let targetId: string | null = null
+    if (
+      typeof targetIdFromBody === 'string' &&
+      targetIdFromBody &&
+      Object.hasOwn(idsByName, targetIdFromBody)
+    ) {
       targetId = targetIdFromBody
-      targetName = registered
     }
-  }
-  if (!targetId && typeof targetUser === 'string' && targetUser) {
-    const found = Object.entries(idsByName).find(([, name]) => name === targetUser)
-    if (found) {
-      targetId = found[0]
-      targetName = found[1]
+    if (!targetId) {
+      return NextResponse.json({ error: 'targetId required' }, { status: 400 })
     }
-  }
-  if (!targetId || !targetName) {
-    return NextResponse.json({ error: 'targetId or targetUser required' }, { status: 400 })
-  }
 
-  // Reject unknown actions loudly. Without this guard a typo (e.g.
-  // "addCohost" instead of "add-cohost") falls through to the no-op
-  // path and returns 200 with the unchanged meta — so the caller
-  // thinks the change took effect when nothing happened.
-  if (action !== 'add-cohost' && action !== 'remove-cohost' && action !== 'transfer-host') {
-    return NextResponse.json({ error: 'unknown action' }, { status: 400 })
-  }
+    // Self-target rejected for all role mutations.
+    if (targetId === callerIdentity.id) {
+      return NextResponse.json({ error: 'cannot change your own role' }, { status: 400 })
+    }
+    // Strict host cannot be re-roled — would orphan the session. The
+    // only path that moves the host slot is account-deletion (which
+    // tombstones host fields and softens the strict-host check so
+    // cohosts inherit delete rights via `lib/accountDelete.ts`).
+    const targetIsStrictHost = (
+      (meta.hostIdentityId && targetId === meta.hostIdentityId) ||
+      (meta.hostUserId && targetId === `u:${meta.hostUserId}`)
+    )
 
-  const coHostIds: string[] = meta.coHostIds || []
+    // Only `set-role` is supported — `transfer-host` was removed
+    // because no UI calls it and the host-handoff case is covered by
+    // account-deletion's tombstone mechanism.
+    if (action !== 'set-role') {
+      return NextResponse.json({ error: 'unknown action' }, { status: 400 })
+    }
+    if (targetIsStrictHost) {
+      return NextResponse.json({ error: 'cannot change the host\'s role' }, { status: 400 })
+    }
+    if (roleFromBody !== 'taster' && roleFromBody !== 'co_host' && roleFromBody !== 'provider') {
+      return NextResponse.json({ error: 'role must be taster, co_host, or provider' }, { status: 400 })
+    }
+    const newRole = roleFromBody as 'taster' | 'co_host' | 'provider'
+    const currentRole: 'taster' | 'co_host' | 'provider' =
+      meta.coHostIds?.includes(targetId) ? 'co_host'
+      : meta.providerIds?.includes(targetId) ? 'provider'
+      : 'taster'
+    if (currentRole === newRole) {
+      return NextResponse.json(
+        { ok: true, meta },
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      )
+    }
+    // Locked transition rule: any role mutation that adds or removes the
+    // cohost designation requires strict-host. Demoting a cohost to taster
+    // or provider still requires target resolution (the residual leak:
+    // bad-target → 400, real-cohost-target → 403 — accepted because
+    // cohosts already see the identities map via the session GET).
+    const touchesCohost = newRole === 'co_host' || currentRole === 'co_host'
+    if (touchesCohost && !strictHostNow) {
+      return NextResponse.json({ error: 'only the host can assign or remove the co-host role' }, { status: 403 })
+    }
 
-  if (action === 'add-cohost') {
-    if (!coHostIds.includes(targetId)) coHostIds.push(targetId)
-  } else if (action === 'remove-cohost') {
-    const idx = coHostIds.indexOf(targetId); if (idx !== -1) coHostIds.splice(idx, 1)
-  } else if (action === 'transfer-host') {
-    // Old host becomes co-host. The new host's identity-id is the trust
-    // anchor; hostUserId stays for logged-in compatibility, host (display
-    // name) is just a label.
-    meta.host = targetName
-    meta.hostUserId = targetId.startsWith('u:') ? Number(targetId.slice(2)) : null
-    meta.hostIdentityId = targetId
-    meta.coHostIds = [callerIdentity.id]
-  }
+    // Apply role change to meta. coHostIds and providerIds are mutually
+    // exclusive — strip from both first, then add to the destination
+    // list (if any).
+    meta.coHostIds = (meta.coHostIds ?? []).filter(id => id !== targetId)
+    meta.providerIds = (meta.providerIds ?? []).filter(id => id !== targetId)
+    if (newRole === 'co_host') meta.coHostIds.push(targetId)
+    else if (newRole === 'provider') meta.providerIds.push(targetId)
 
-  if (action !== 'transfer-host') {
-    meta.coHostIds = coHostIds
-  }
+    // Mirror to Postgres session_members.role for logged-in targets.
+    if (targetId.startsWith('u:')) {
+      const targetUserId = Number(targetId.slice(2))
+      try {
+        await prisma.sessionMember.upsert({
+          where: { userId_sessionCode: { userId: targetUserId, sessionCode: c } },
+          create: { userId: targetUserId, sessionCode: c, role: newRole },
+          update: { role: newRole },
+        })
+      } catch (err) { console.error('set-role mirror failed:', err) }
+    }
 
-  // Mirror the role into Postgres for any logged-in target user. Upsert (not
-  // update) so a promotion that happens before the target's first /visit
-  // still lands cleanly — without this, Prisma logs P2025 and the role
-  // defaults to 'taster' until the target visits.
-  if (targetId.startsWith('u:')) {
-    const targetUserId = Number(targetId.slice(2))
-    let role: 'host' | 'co_host' | 'taster' = 'taster'
-    if (action === 'transfer-host') role = 'host'
-    else if (action === 'add-cohost') role = 'co_host'
-    else if (action === 'remove-cohost') role = 'taster'
-    try {
-      await prisma.sessionMember.upsert({
-        where: { userId_sessionCode: { userId: targetUserId, sessionCode: c } },
-        create: { userId: targetUserId, sessionCode: c, role },
-        update: { role },
-      })
-    } catch (err) { console.error('cohost role mirror failed:', err) }
+    // KEEPTTL preserves the session's existing TTL (which may be 72h / 1w /
+    // unlimited for pro hosts). Hardcoding an EX value would silently
+    // downgrade any longer lifespan on every role toggle.
+    await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
+    return NextResponse.json(
+      { ok: true, meta },
+      // Response carries coHostIds/providerIds which vary per-session
+      // and arrive in the meta envelope. Match the GET cache posture so
+      // intermediaries don't ever serve a stale role-mutation result.
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    )
+  } finally {
+    await releaseBanLock(c)
   }
-  // If we just demoted the previous host on transfer, downgrade them too.
-  if (action === 'transfer-host' && callerIdentity.id.startsWith('u:')) {
-    const prevHostUserId = Number(callerIdentity.id.slice(2))
-    try {
-      await prisma.sessionMember.upsert({
-        where: { userId_sessionCode: { userId: prevHostUserId, sessionCode: c } },
-        create: { userId: prevHostUserId, sessionCode: c, role: 'co_host' },
-        update: { role: 'co_host' },
-      })
-    } catch (err) { console.error('prev-host downgrade failed:', err) }
-  }
-
-  // KEEPTTL preserves the session's existing TTL (which may be 72h / 1w /
-  // unlimited for pro hosts). Hardcoding `EX: 48*3600` would silently
-  // downgrade any longer lifespan on every role toggle.
-  await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
-  return NextResponse.json({ ok: true, meta })
 }
 
 // DELETE permanently removes a session and most of its data. Host-only
@@ -250,8 +310,14 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const meta = JSON.parse(raw) as SessionMeta
 
-  const callerIdentity = await resolveIdentity(c, req, session)
-  if (!callerIdentity) return authInvalid()
+  // Banned/kicked callers get the `removed` bounce header (same protocol
+  // as the polled GETs and wine routes). Without this a banned host
+  // (impossible today, but defense-in-depth) or a banned cohost trying
+  // to delete the session would see a bare 403 instead of bouncing.
+  const pp = await participantOrBanned(c, req, session)
+  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
+  if (pp.status === 'invalid') return authInvalid()
+  const callerIdentity = pp.identity
   const callerIsHost = (
     (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
     (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)

@@ -91,7 +91,6 @@ function useIsNarrow(): boolean {
 
 export default function ComparePage() {
   const { wines, allRatings, myId, isBlind, isHost, sessionMeta } = useSession()
-  type BlindWine = typeof wines[0] & { _blind?: boolean }
   // viewUser holds an identity id (e.g. "u:42", "a:<uuid>") or one of the
   // sentinels "__me" / "__all". Storing the id rather than the display name
   // means the filter survives a participant being renamed mid-session and
@@ -195,8 +194,7 @@ export default function ComparePage() {
       {/* Wine cards */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:12}}>
         {ratedWines.map((wine, wineIdx) => {
-          const bw = wine as BlindWine
-          const isRedacted = isBlind && bw._blind && !wine.revealedAt
+          const isRedacted = isBlind && wine._blind && !wine.revealedAt
           const wasRevealed = isBlind && wine.revealedAt
           // For each rater that rated *this* wine: pull their rating, attach a
           // chart color, and remember their displayName for legends and chips.

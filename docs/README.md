@@ -11,6 +11,7 @@ Short pages on how some of the trickier features work. If you're after the engin
 ## Hosting
 
 - [Kick and ban](./kick-ban.md) — remove someone from a tasting you host
+- [Provider role](./provider-role.md) — let someone add wines without giving them full host powers
 
 ## Admin stuff
 

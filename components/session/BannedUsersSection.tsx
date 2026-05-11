@@ -4,6 +4,10 @@ import { sessionFetch } from '@/lib/sessionFetch'
 
 interface Props {
   code: string
+  // banCount from the polled session GET. Drives the refetch on
+  // cross-host ban events: when count changes, re-read the list. Parent
+  // gates render on count > 0 so this component never sees count === 0.
+  count: number
 }
 
 interface BanRow {
@@ -12,12 +16,12 @@ interface BanRow {
   imageUrl: string | null
 }
 
-// Collapsible "Banned users" section in the session settings tab. Host
-// and cohost can read + unban. Empty state is just an empty list (we
-// still render the collapsible header so the affordance is visible when
-// the host first wants to use it). Unban is uncapped on the server, so
-// the client doesn't need to debounce.
-export function BannedUsersSection({ code }: Props) {
+// Collapsible "banned users" row in the session overview panel. Host
+// and cohost can read + unban. Visual style mirrors the participants
+// row above: bare collapsible header with chevron, no card chrome.
+// Only the parent renders this when bans exist, so the empty-state
+// branch is gone.
+export function BannedUsersSection({ code, count }: Props) {
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<BanRow[] | null>(null)
   const [working, setWorking] = useState<string | null>(null)
@@ -36,12 +40,12 @@ export function BannedUsersSection({ code }: Props) {
     }
   }
 
-  // Lazy-load: only fetch when the section is first expanded. Keeps the
-  // settings tab fast when nobody's banned.
+  // Lazy-load when first expanded, and refetch when `count` changes so
+  // an open list updates in-place after a cross-host ban/unban.
   useEffect(() => {
-    if (open && rows === null) refresh()
+    if (open) refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, count])
 
   async function unban(identityId: string) {
     if (working !== null) return
@@ -65,53 +69,56 @@ export function BannedUsersSection({ code }: Props) {
   }
 
   return (
-    <div style={{ marginTop: 16, padding: 12, border: '1px solid var(--border)', borderRadius: 8, background: 'var(--bg3)' }}>
+    <div>
       <button
         onClick={() => setOpen(v => !v)}
         style={{
           width: '100%',
-          background: 'none',
-          border: 'none',
-          cursor: 'pointer',
-          padding: 0,
-          textAlign: 'left',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          padding: '10px 0',
+          background: 'none',
+          border: 'none',
+          borderTop: '1px solid var(--border)',
+          cursor: 'pointer',
+          color: 'var(--fg-dim)',
+          fontFamily: 'var(--mono)',
+          fontSize: 11,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          marginBottom: open ? 12 : 0,
         }}
       >
-        <span style={{ fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--fg-dim)', fontFamily: 'var(--mono)' }}>
-          banned users {rows ? `(${rows.length})` : ''}
-        </span>
-        <span style={{ color: 'var(--fg-dim)', fontSize: 12 }}>{open ? '▾' : '▸'}</span>
+        <span>banned users ({count})</span>
+        <span style={{ fontSize: 11, color: 'var(--fg-faint)' }}>{open ? '▾' : '▸'}</span>
       </button>
-
       {open && (
-        <div style={{ marginTop: 10 }}>
-          {rows === null && (
-            <p style={{ fontSize: 11, color: 'var(--fg-dim)' }}>// loading…</p>
-          )}
-          {rows && rows.length === 0 && (
-            <p style={{ fontSize: 11, color: 'var(--fg-dim)' }}>Nobody is banned from this tasting.</p>
-          )}
-          {rows && rows.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {rows.map(r => (
-                <div key={r.identityId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', borderRadius: 6, background: 'var(--bg2)' }}>
-                  <span style={{ flex: 1, fontSize: 12, fontWeight: 700 }}>{r.displayName}</span>
-                  <button
-                    className="btn-s"
-                    onClick={() => unban(r.identityId)}
-                    disabled={working === r.identityId}
-                    style={{ fontSize: 9, padding: '3px 8px' }}
-                  >
-                    {working === r.identityId ? '…' : 'unban'}
-                  </button>
-                </div>
-              ))}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
+          {rows === null ? (
+            <span style={{ fontSize: 11, color: 'var(--fg-dim)', padding: '4px 0' }}>// loading…</span>
+          ) : rows.map(r => (
+            <div
+              key={r.identityId}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '4px 0',
+              }}
+            >
+              <span style={{ flex: 1, fontSize: 11, color: 'var(--fg)' }}>{r.displayName}</span>
+              <button
+                className="btn-s"
+                onClick={() => unban(r.identityId)}
+                disabled={working === r.identityId}
+                style={{ fontSize: 9, padding: '3px 8px' }}
+              >
+                {working === r.identityId ? '…' : 'unban'}
+              </button>
             </div>
-          )}
-          {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
+          ))}
+          {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 4 }}>{error}</p>}
         </div>
       )}
     </div>

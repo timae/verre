@@ -8,7 +8,7 @@ import { LineupLocked } from './LineupLocked'
 import { RatingScreen } from './RatingScreen'
 import { useState, useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
-import type { WineMeta } from '@/lib/session'
+import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { sessionPath } from '@/lib/sessionCode'
 import {
@@ -45,7 +45,7 @@ function formatDate(dt: string) {
 interface Props { initialRateWineId?: string }
 
 export function WineListScreen({ initialRateWineId }: Props = {}) {
-  const { wines, myRatings, isHost, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
+  const { wines, myRatings, isHost, isProvider, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
   const [showAdd, setShowAdd] = useState(false)
   const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()
@@ -221,7 +221,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                 ? <button className="btn-s" onClick={hideAll}>hide all</button>
                 : <button className="btn-s" onClick={revealAll}>reveal all</button>
             )}
-            {isHost && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
+            {(isHost || isProvider) && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
           </div>
         </div>
 
@@ -232,7 +232,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
             {winesLoading
               ? 'Loading wines…'
-              : isHost
+              : (isHost || isProvider)
                 ? 'Add the first wine to get started.'
                 : 'No wines yet — the host hasn\'t added any.'}
           </div>
@@ -245,7 +245,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                 {displayWines.map((wine, idx) => (
                   <WineRow
                     key={wine.id}
-                    wine={wine as WineMeta & { _blind?: boolean }}
+                    wine={wine}
                     idx={idx}
                     isBlind={isBlind}
                     isHost={isHost}
@@ -288,7 +288,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
 function WineRow({
   wine, idx, isBlind, isHost, rating, onClick, onReveal, onHide,
 }: {
-  wine: WineMeta & { _blind?: boolean }
+  wine: WireWine
   idx: number
   isBlind: boolean
   isHost: boolean

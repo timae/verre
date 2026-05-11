@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertWine } from '@/lib/session'
+import { redis, k, touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertWine, wineToWire } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
@@ -25,13 +25,20 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
-  if (!isHostByIdentity(meta, identity)) {
-    return NextResponse.json({ error: 'only the host can edit wines' }, { status: 403 })
-  }
 
   const wines = await getWines(c)
   const idx = wines.findIndex(w => w.id === wineId)
   if (idx === -1) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+
+  // Hosts (including cohosts) can edit any wine. Providers can edit
+  // only the wines they themselves added — matched via the wine's
+  // `addedByIdentityId`. Wines from before the provider feature have
+  // NULL provenance and aren't editable by providers.
+  const isHost = isHostByIdentity(meta, identity)
+  const isOwnAsProvider = isProviderById(meta, identity.id) && wines[idx].addedByIdentityId === identity.id
+  if (!isHost && !isOwnAsProvider) {
+    return NextResponse.json({ error: 'only the host or the provider who added this wine can edit it' }, { status: 403 })
+  }
 
   const result = await addWineToSession(c, body, wines[idx])
   if ('error' in result) return NextResponse.json(result, { status: 400 })
@@ -44,7 +51,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     try { await pgUpsertWine(c, result) } catch {}
   }
 
-  return NextResponse.json(result)
+  // Same wire shape as GET so a client storing this response back into
+  // its wines cache doesn't see a different shape than the polling GET
+  // would produce.
+  return NextResponse.json(wineToWire(result, identity.id))
 }
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {
@@ -60,11 +70,18 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
-  if (!isHostByIdentity(meta, identity)) {
-    return NextResponse.json({ error: 'only the host can delete wines' }, { status: 403 })
-  }
 
   const wines = await getWines(c)
+  const targetWine = wines.find(w => w.id === wineId)
+  if (!targetWine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+
+  // Same provider/host rules as PATCH.
+  const isHost = isHostByIdentity(meta, identity)
+  const isOwnAsProvider = isProviderById(meta, identity.id) && targetWine.addedByIdentityId === identity.id
+  if (!isHost && !isOwnAsProvider) {
+    return NextResponse.json({ error: 'only the host or the provider who added this wine can delete it' }, { status: 403 })
+  }
+
   const updated = wines.filter(w => w.id !== wineId)
   await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
   const ratingKeys = await redis.keys(`s:${c}:r:*:${wineId}`)

@@ -1,7 +1,7 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { useState } from 'react'
-import type { WineMeta } from '@/lib/session'
+import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { Modal } from '@/components/ui/Modal'
 
@@ -22,7 +22,7 @@ interface Props {
   code: string
   onClose: () => void
   onSaved: () => void
-  editWine?: WineMeta // if set, we're editing
+  editWine?: WireWine // if set, we're editing
   winesCount?: number // number of wines already in the list, used for position picker
 }
 
