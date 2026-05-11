@@ -3,7 +3,7 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, requireParticipant, authInvalid } from '@/lib/identity'
+import { resolveIdentity, requireParticipant, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { type SessionMeta } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
@@ -47,8 +47,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   const session = await auth()
-  const caller = await requireParticipant(c, req, session)
-  if (!caller) return authInvalid('not a participant')
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid('not a participant')
+  const caller = p.identity
 
   // Participants come from the identities map (id-keyed, the authoritative
   // source). The legacy `users` set is no longer written to.
@@ -216,7 +218,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     } catch (err) { console.error('prev-host downgrade failed:', err) }
   }
 
-  await redis.set(k.meta(c), JSON.stringify(meta), { EX: 48 * 3600 })
+  // KEEPTTL preserves the session's existing TTL (which may be 72h / 1w /
+  // unlimited for pro hosts). Hardcoding `EX: 48*3600` would silently
+  // downgrade any longer lifespan on every role toggle.
+  await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
   return NextResponse.json({ ok: true, meta })
 }
 

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
 import { normalizeCode } from '@/lib/sessionCode'
-import { requireParticipant, authInvalid } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 
 // Returns ratings for this session, id-keyed. Shape:
 //   { "u:42": { displayName: "Sam 🍅", ratings: { "<wineId>": {...} } }, ... }
@@ -34,8 +34,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
     return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   }
 
-  const caller = await requireParticipant(c, req, session)
-  if (!caller) return authInvalid('not a participant')
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid('not a participant')
+  const caller = p.identity
 
   const prefix = `s:${c}:r:`
   const keys = await redis.keys(`${prefix}*`)

@@ -4,7 +4,7 @@ import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
-import { resolveIdentity, authInvalid } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 import { isSameOrigin } from '@/lib/csrf'
 
@@ -41,9 +41,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   }
 
   // Identity comes from auth() or x-vr-anon-token. Never from the request
-  // body — the legacy body.userName fallback was removed in cleanup.
-  const identity = await resolveIdentity(c, req, session)
-  if (!identity) return authInvalid()
+  // body. Also gates against ban/kick — a banned cookie can't keep
+  // writing ratings until the host notices.
+  const p = await participantOrBanned(c, req, session)
+  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
+  if (p.status === 'invalid') return authInvalid()
+  const identity = p.identity
 
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value

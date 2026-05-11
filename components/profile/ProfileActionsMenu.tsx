@@ -71,14 +71,17 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
       setMuteArmed(false)
       setBlockArmed(false)
     }
-    const onClick = (e: MouseEvent) => {
+    const onPointer = (e: PointerEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) dismiss()
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
-    document.addEventListener('mousedown', onClick)
+    // pointerdown unifies mouse + touch + pen — older iOS Safari with
+    // mousedown-only listeners would skip the dismiss on first touch
+    // outside the menu, leaving it stuck open.
+    document.addEventListener('pointerdown', onPointer)
     document.addEventListener('keydown', onKey)
     return () => {
-      document.removeEventListener('mousedown', onClick)
+      document.removeEventListener('pointerdown', onPointer)
       document.removeEventListener('keydown', onKey)
     }
   }, [open])

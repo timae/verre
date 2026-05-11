@@ -36,31 +36,42 @@ export function clearAnonToken(code: string): void {
 // Fetch a session-context endpoint, attaching the anon token header when one
 // is stored locally for this session code.
 //
-// On responses carrying X-Vr-Auth: invalid, drop the stored token and
-// display name and bounce the user to the join page. The header is set by
-// the server only when the rejection was about identity itself (no token,
-// expired token, kicked, not a participant). Permission-denied 403s
-// ("only the host can do X", "pro required for blind tasting") do not
-// carry the header — those are surfaced to the caller as a normal failed
-// response so the UI can show an error without booting the user out.
+// Two auth-rejection signals from the server:
+//
+//   X-Vr-Auth: invalid → the caller has no valid identity for this session
+//     (no token, expired cookie, deleted account, never joined). Clear
+//     local state and bounce to /join — they need to re-enter their name.
+//
+//   X-Vr-Auth: removed → the caller WAS a participant but got kicked or
+//     banned. PRESERVE local state so the /join page can re-identify them
+//     via the preserved anon token / id and render "You were removed"
+//     with the right next step (Keep/Delete data for kick, or "you were
+//     banned" for ban). The token doesn't grant access anymore — the
+//     server's participantOrBanned check rejects it — but it keeps the
+//     identification anchor for the bounce screen.
+//
+// Permission-denied 403s ("only the host can do X", "pro required") don't
+// carry either header — those surface as normal failed responses so the
+// UI shows an error without booting the user out.
 export async function sessionFetch(code: string, url: string, init?: RequestInit): Promise<Response> {
   const C = canonical(code)
   const headers = new Headers(init?.headers)
   const token = getAnonToken(code)
   if (token) headers.set('x-vr-anon-token', token)
   const res = await fetch(url, { ...init, headers })
-  // Auth-invalid means the server can't tie the caller to a participant in
-  // this session (no auth, expired cookie, deleted account, kicked, anon
-  // token lapsed). Always clear local cache and bounce to /join. The shell
-  // gates session-scoped GETs on `visitResolved`, so we no longer need to
-  // tolerate a "join race" 401 during initial load.
-  if (res.headers.get('X-Vr-Auth') === 'invalid') {
+  const authHeader = res.headers.get('X-Vr-Auth')
+  if (authHeader === 'invalid') {
     clearAnonToken(code)
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(NAME_KEY(code))
       localStorage.removeItem(`vr_id_${C}`)
     }
     if (typeof window !== 'undefined') window.location.href = joinPath(C)
+  } else if (authHeader === 'removed') {
+    // Keep local state so /join can identify the removed user. The
+    // ?removed=1 hint tells the page to look up the bans / identities
+    // state and render the appropriate copy.
+    if (typeof window !== 'undefined') window.location.href = joinPath(C) + '?removed=1'
   }
   return res
 }

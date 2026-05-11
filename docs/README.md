@@ -8,6 +8,10 @@ Short pages on how some of the trickier features work. If you're after the engin
 - [Mute](./mute.md) — quietly hide someone's posts from your feed
 - [Block](./block.md) — a harder break with another user
 
+## Hosting
+
+- [Kick and ban](./kick-ban.md) — remove someone from a tasting you host
+
 ## Admin stuff
 
 Nothing here yet. This is where troubleshooting and recovery notes will land when there's something worth writing down.

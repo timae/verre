@@ -4,7 +4,7 @@ import { redis, k, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
-import { userIdentityId, recordIdentity } from '@/lib/identity'
+import { userIdentityId, recordIdentity, authRemoved } from '@/lib/identity'
 import { disambiguateDisplayName } from '@/lib/displayName'
 import { isSameOrigin } from '@/lib/csrf'
 
@@ -26,6 +26,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // displayName instead of name-matching against the users set (which is
   // lossy for display-name collisions).
   const id = userIdentityId(session.user.id)
+
+  // Ban / kick gate. Without this, a banned-or-kicked user opening the
+  // session URL would have SessionShell call /visit on mount and we'd
+  // re-add them to identities — effectively undoing the moderation. The
+  // 401+X-Vr-Auth: removed response triggers sessionFetch to redirect
+  // to /join/<C>?removed=1 where RemovedView takes over.
+  if (await redis.sIsMember(k.bans(c), id)) {
+    return authRemoved('removed from session')
+  }
+  if (await redis.sIsMember(k.kicked(c), id)) {
+    return authRemoved('removed from session')
+  }
   let displayName = session.user.name || ''
   if (displayName) {
     try {

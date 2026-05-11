@@ -109,6 +109,8 @@ Brief the reviewer with specific concerns to look for (parameter validation, edg
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
 - `s:{CODE}:tokens` — hash of anon-token → identity-id (used by the resolver)
 
+**TTL rule for meta and wines writes.** All writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create MUST use `{ KEEPTTL: true }` so the session's lifespan (default 48h, pro 72h/1w/unlimited) isn't reset by routine edits. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session on every role-toggle, name change, or wipe. `lib/redis.ts` also provides `scanKeys` and `hasKey` SCAN-based helpers — prefer these for new code instead of `redis.keys`, which blocks the Redis event loop.
+
 **Postgres archival is incremental:** data flows from Redis → Postgres only when a logged-in user commits a rating (`POST /api/session/:code/rate`) or joins a session (`POST /api/session/:code/visit`). Anonymous sessions stay Redis-only for 48h then expire.
 
 **Lifetime counter snapshots on `users`:** the rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.) on `users` rows. Counters never decrement — protects badge progression from rating deletions and gives O(1) reads on the badge hot path.
@@ -195,6 +197,56 @@ The wine rows themselves are kept (`session_id` set to NULL via the `ON DELETE S
 The full Postgres cleanup runs in a `prisma.$transaction` so any failure rolls back; Redis wipe (`s:<code>:*`) runs after.
 
 **Participants in the deleted session** get bounced when their next polled wines GET returns 404. SessionShell clears local cache for that code and redirects to `/join/<code>`, which renders the "session not found" page.
+
+### Kick / ban (host moderation)
+
+Host moderation primitive scoped per-session. Distinct from the user-level [Block](#mute-`user_mutes`) primitive — block is bilateral and lives outside sessions; kick/ban is unilateral host action on session participants.
+
+**Schema (Redis only).** No Postgres changes for the gate itself.
+- `s:<C>:bans` — Set of banned identity-ids. SISMEMBER on every `requireParticipant` + `POST /api/session/join`. Expires with the session lifespan.
+- `s:<C>:kicked` — Set of kicked-but-not-banned identity-ids. Marker only — not an authorization gate; lets `/join/<C>?removed=1` identify a kicked user whose identity-hash entry was stripped, so the bounce screen can offer the right Keep/Delete prompt. Cleared on rejoin OR on `/leave?cleanup=full`.
+- `s:<C>:lock:ban` — short-TTL advisory lock taken during a wipe so the wines JSON write-back doesn't race a concurrent host action.
+
+**Schema (Postgres).** `wines.added_by_identity_id VARCHAR(64)` (nullable) — records who added each wine. Populated on wine POST from the resolved identity; preserved on edit. Existing pre-feature rows stay NULL and never match a "delete their wines" filter. Indexed on `(session_id, added_by_identity_id)`.
+
+**Two-flavor removal: kick vs ban.**
+
+- **Kick** (`mode: 'kick'`) — strip the participant from identities + cohost list, drop their `session_members.role` to `taster`. Their ratings, hall_of_fame, bookmarks, session_members row all **stay**. Add to `s:<C>:kicked` so the bounce can identify them. They can rejoin (kicked is not an authorization gate). On the bounce screen they choose Keep (no-op) or Delete (`POST /leave?cleanup=full`, runs the `kick-delete` wipe path).
+- **Ban** (`mode: 'ban'`) — same strip as kick PLUS delete their ratings, hall_of_fame, bookmarks (for wines in this session), session_members row in one Postgres transaction. Add to `s:<C>:bans`. They cannot rejoin. Anon tokens are kept on ban so a logged-in user reusing their cookie is recognised on the next request and bounced; anon users who clear localStorage and rejoin with a fresh `a:<uuid>` get through (documented weakness — no anti-fingerprint or auth-required setting yet).
+
+**Wine-orphan toggle (`deleteAddedWines`).** Applies to both kick and ban — the host owns the call regardless of mode. Wines added by the target get `session_id = NULL` (orphaned, not hard-deleted), so third-party bookmarks survive in `/me/saved`. The wine record itself stays so other tasters who rated/bookmarked it keep their references; the live session's wines JSON gets the wine filtered out so the live tasting doesn't keep showing it.
+
+**Authorization (`POST /bans`, `DELETE /bans/:identityId`).**
+- Strict host: can kick/ban anyone except self.
+- Cohost: can kick/ban regular tasters only. Banning a cohost requires **strict host** (matches the existing cohost-role-assignment rule — banning a cohost is an implicit demotion).
+- Self-target: rejected 400.
+- Targeting the strict host: rejected 400.
+
+**Rate limit:** 60 actions / 10 min / caller, shared between POST `/bans` (kick or ban) and DELETE `/bans/:identityId` (unban). DELETE intentionally shares the budget (unlike block DELETE which is uncapped) — moderation is bounded both ways.
+
+**Bounce protocol (`X-Vr-Auth: removed`).** New header distinct from `invalid`. Existing `invalid` clears local state on the client (`vr_anon_*`, `vr_name_*`, `vr_id_*`) and bounces to `/join/<C>`. The new `removed` header **preserves local state** and bounces to `/join/<C>?removed=1` so the page can identify the user via the preserved token + cookie and render the right copy (`<RemovedView>`). Both polled GETs (`/api/session/<C>`, `/wines`, `/ratings`) AND state-changing endpoints (`/rate` POST/DELETE, `/wines` POST + `/wines/<id>` PATCH/DELETE, `/wines/reorder`, `/wines/<id>/reveal`, `/wines/{reveal,hide}-all`, `/settings`, `/name`) emit `removed` for banned/kicked callers — without this, a banned user could keep writing data until their next poll. `lib/identity.ts` `participantOrBanned()` is the resolver returning `'ok' | 'banned' | 'kicked' | 'invalid'`; `authRemoved()` builds the response. **`/visit` also consults bans + kicked** so a removed user opening the session URL can't re-admit themselves via the identities-hash write that visit otherwise performs.
+
+**Removed-bounce client behaviour.** `<RemovedView>` strips the `?removed=1` query param on mount via `window.history.replaceState` (NOT `router.replace` — that triggers a Next.js navigation which re-runs the SSR page, sees no `removed=1`, and falls through to `<JoinClient>` instead of staying on the prompt). The URL bar updates without a re-render. The "back to home" button branches on `isLoggedIn` (passed in from the SSR page): logged-in → `/me`, anon → `/`. `<JoinClient>` (the regular invite form) also catches `403 {error: 'banned'}` from manual rejoin attempts and redirects to `?removed=1` so the user lands on the full RemovedView rather than seeing a small inline "banned" message.
+
+**Order of operations (ban wipe).**
+1. `SADD bans` — smallest Redis op, idempotent. Bans-Set membership alone is the authoritative gate, so even on partial failure the user can't rejoin.
+2. `SADD kicked` (for both kick variants).
+3. `prisma.$transaction`: delete user's ratings + hof + bookmarks (for wines in this session) + session_members. If `deleteAddedWines`: orphan their wines.
+4. Redis cleanup (idempotent): delete per-rating keys, drop from identities, strip from coHostIds, filter wines JSON.
+
+The full wipe runs under `s:<C>:lock:ban` (`SET NX EX 10`) so two concurrent host actions on the same session don't clobber each other's wines JSON write-back.
+
+**API surface.**
+- `GET /api/session/<C>/bans` — host or cohost. Lists banned identities.
+- `POST /api/session/<C>/bans` — host or cohost. Body `{identityId, mode: 'kick'|'ban', deleteAddedWines?: boolean}`. Strict-host required when targeting a cohost.
+- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. Lifts the ban-Set entry; data is already gone (deleted at ban time) and not restored.
+- `GET /api/session/<C>/bans/preview/:identityId` — host or cohost. Returns `{identityId, displayName, ratingCount, addedWines}` for the host-side modal.
+- `GET /api/session/<C>/removed-state` — caller's own state. Returns `{state: 'banned'|'kicked'|'none', identityId?, hasRatings?}`. Used by `<RemovedView>` on the `/join/<C>?removed=1` bounce screen.
+- `POST /api/session/<C>/leave?cleanup={keep|full}` — kicked-user self-service. `keep` is a no-op (default). `full` runs the `kick-delete` wipe (ratings + hof + bookmarks + session_members). Authorization: caller must be in `bans` or NOT in identities (active participants can't use this path).
+
+**Ghost-rater UX note.** Kick-keep strips the identity from `s:<C>:identities` but leaves ratings + hof + session_members. Compare screens (which iterate over Redis rating keys) still show those ratings; the rater's display name is rendered as-is. This is a deliberate side effect of "Keep means keep" — the kicked user wanted their data preserved. If they later choose Delete (via `/leave?cleanup=full`), everything goes.
+
+**`docs/kick-ban.md`** holds the user-facing version.
 
 ### Social feed
 
@@ -309,7 +361,7 @@ The single underlying rule: counts and renders depend on the **author** (or chec
 - Blocker viewing blocked (any tier: host, cohost, non-host) → `[blocked] {name}` + role badge, clickable to open `ProfilePreviewInline` with inline unblock.
 - Blocked viewing blocker (any tier) → anon-style: plain name + role badge if any, no bold, no avatar, no link.
 - Mutual block (A blocks B and B blocks A) → anon-style with **no `[blocked]` prefix** on either side. Both sides treat the other as an anon participant; unblock is reachable from the other user's `/u/<id>` page or settings → Blocked users. The prefix is suppressed because surfacing it on mutual would signal "this identifiable person blocked you back."
-- Cohost role-toggle (`make co-host` / `remove role`) stays available to the host on block-pair rows. Block is a UI primitive, not a moderation one — kick/ban is a separate planned primitive.
+- Cohost role-toggle (`make co-host` / `remove role`) stays available to the host on block-pair rows. Block is a UI primitive, not a moderation one — kick/ban is the separate moderation primitive (see Kick/ban section).
 
 Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
 
@@ -319,7 +371,7 @@ Compare screen does **not** filter block-pair raters. Filtering by absence would
 
 **SECURITY: don't log `viewerBlocksOut`/`viewerBlocksIn`.** These arrays carry the viewer's block-pair list scoped to a session. They must not be mirrored to analytics, stored in shared cache, or persisted outside the response.
 
-**Out of scope (separate primitive, planned):** kick / ban (host moderation per session) — different intent, different scope. The two never interact.
+**Out of scope (separate primitive):** kick / ban — see the "Kick / ban (host moderation)" section above. Different intent, different scope. The two never interact.
 
 ### Rate limiting
 

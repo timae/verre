@@ -1,12 +1,20 @@
 import { redirect } from 'next/navigation'
 import { auth } from '@/auth'
 import { JoinClient } from '@/components/session/JoinClient'
+import { RemovedView } from '@/components/session/RemovedView'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { normalizeCode, sessionPath } from '@/lib/sessionCode'
+import { normalizeCode, sessionPath, formatCode } from '@/lib/sessionCode'
 
-export default async function JoinPage({ params }: { params: Promise<{ code: string }> }) {
+export default async function JoinPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ code: string }>
+  searchParams: Promise<{ removed?: string }>
+}) {
   const { code } = await params
+  const { removed } = await searchParams
   // Invalid code (malformed Crockford or wrong length) → render the styled
   // "session not found" panel rather than Next's default 404 page. Pass the
   // raw input through to the client for display.
@@ -20,6 +28,17 @@ export default async function JoinPage({ params }: { params: Promise<{ code: str
       const raw = await redis.get(k.meta(C))
       if (raw) sessionMeta = JSON.parse(raw)
     } catch {}
+  }
+
+  // Removed-bounce path. The session-fetch helper redirects here with
+  // ?removed=1 after a 401+X-Vr-Auth: removed. Skip the regular join flow
+  // and render the kicked/banned screen — RemovedView pings the server
+  // to figure out which. The `isLoggedIn` prop drives the final
+  // destination: logged-in → /me (their dashboard); anon → / (the
+  // lobby). The Keep/Delete prompts live in RemovedView, not here.
+  if (removed === '1' && C && sessionMeta) {
+    const label = sessionMeta.name || `Session ${formatCode(C)}`
+    return <RemovedView code={C} sessionLabel={label} isLoggedIn={!!session?.user} />
   }
 
   // If a logged-in user has already joined this session, skip the invite

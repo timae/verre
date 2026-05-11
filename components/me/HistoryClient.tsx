@@ -14,6 +14,12 @@ type Session = {
 
 function formatTTL(seconds: number, lifespan: string | null): string {
   if (lifespan === 'unlimited') return '∞ unlimited'
+  // Redis TTL semantics: -2 = key doesn't exist (session expired or
+  // deleted), -1 = key exists with no TTL set (still active, just no
+  // expiration). Only -2 (or any negative we haven't accounted for) is
+  // "expired"; -1 = treat as active.
+  if (seconds === -2) return 'expired'
+  if (seconds === -1) return 'active'
   if (seconds <= 0) return 'expired'
   const days  = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
@@ -46,7 +52,7 @@ export function HistoryClient() {
 
   if (isLoading) return <p className="text-fg-dim text-sm">Loading…</p>
   if (!sessions.length) return (
-    <p className="text-fg-dim text-sm py-8">No tasting history yet. Join a session to begin.</p>
+    <p className="text-fg-dim text-sm py-8 text-center">No tasting history yet. Join a session to begin.</p>
   )
 
   return (
@@ -57,7 +63,9 @@ export function HistoryClient() {
           const date = s.date_from
             ? new Date(s.date_from).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
             : new Date(s.joined_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
-          const active = s.lifespan === 'unlimited' || s.ttl_seconds > 0
+          // -1 = no TTL set (still active); -2 = key absent (expired);
+          // anything else <= 0 also treated as expired defensively.
+          const active = s.lifespan === 'unlimited' || s.ttl_seconds > 0 || s.ttl_seconds === -1
           const ttlLabel = formatTTL(s.ttl_seconds, s.lifespan)
           const wines = ratingsByCode[s.code] || []
 

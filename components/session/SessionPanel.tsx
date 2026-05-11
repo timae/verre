@@ -9,6 +9,9 @@ import { LifespanSelector } from './LifespanSelector'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { formatCode, joinPath } from '@/lib/sessionCode'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
+import { ParticipantActionsMenu } from './ParticipantActionsMenu'
+import { BanPreviewModal } from './BanPreviewModal'
+import { BannedUsersSection } from './BannedUsersSection'
 
 interface Props { onClose: () => void; onLeave: () => void }
 
@@ -101,6 +104,10 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting,      setDeleting]      = useState(false)
   const [deleteError,   setDeleteError]   = useState('')
+  // Modal state for the host's kick/ban flow. `null` = closed.
+  const [removeTarget, setRemoveTarget] = useState<
+    { identityId: string; displayName: string; mode: 'kick' | 'ban' } | null
+  >(null)
 
   // isStrictHost: true only for the actual session host, NOT co-hosts.
   // Used for actions that we restrict to the host alone (currently:
@@ -359,12 +366,30 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                                   blocking participant. The anon-style render on
                                   the blocked side doesn't change moderation
                                   affordances — block is a UI primitive, not a
-                                  moderation primitive. */}
-                              {isHost && !isThisHost && !isMe && (
+                                  moderation primitive. Strict-host gating
+                                  happens server-side; visually we still show
+                                  the button to cohosts but their click 403s. */}
+                              {isHost && !isThisHost && !isMe && isStrictHost && (
                                 <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}}
                                   onClick={e => { e.stopPropagation(); toggleCoHost(p.id) }}>
                                   {isCo ? 'remove role' : 'make co-host'}
                                 </button>
+                              )}
+                              {/* Kick/Ban menu. Cohosts can target regular
+                                  participants only; strict-host can target
+                                  cohosts too. Hide the menu when a cohost is
+                                  looking at another cohost — the server
+                                  would 403 anyway and the empty menu is
+                                  confusing. */}
+                              {isHost && !isThisHost && !isMe && (
+                                <ParticipantActionsMenu
+                                  identityId={p.id}
+                                  displayName={p.displayName}
+                                  targetIsCohost={isCo}
+                                  viewerIsStrictHost={isStrictHost}
+                                  onPickKick={(id, name) => setRemoveTarget({ identityId: id, displayName: name, mode: 'kick' })}
+                                  onPickBan={(id, name) => setRemoveTarget({ identityId: id, displayName: name, mode: 'ban' })}
+                                />
                               )}
                             </div>
                             {isExpanded && profileUserId !== null && (
@@ -383,6 +408,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 )}
               </div>
             )}
+
+            {/* Banned users (host + cohost only). Collapsible, sits
+                directly below the participants list so a moderator can
+                glance at who's locked out without going into settings. */}
+            {isHost && <BannedUsersSection code={code} />}
 
             {/* Share link */}
             <div style={{marginBottom:16}}>
@@ -560,6 +590,27 @@ export function SessionPanel({ onClose, onLeave }: Props) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Kick/Ban preview modal. Renders when the host picks an action
+          from a participant row's ⋯ menu. Closes after a successful
+          ban/kick; we invalidate session-meta so the participants list
+          re-fetches with the now-absent target. */}
+      {removeTarget && (
+        <BanPreviewModal
+          code={code}
+          identityId={removeTarget.identityId}
+          displayName={removeTarget.displayName}
+          mode={removeTarget.mode}
+          onClose={() => setRemoveTarget(null)}
+          onConfirmed={() => {
+            setRemoveTarget(null)
+            queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
+            queryClient.invalidateQueries({ queryKey: ['wines', code] })
+            queryClient.invalidateQueries({ queryKey: ['ratings', code] })
+            refresh()
+          }}
+        />
       )}
     </Modal>
   )

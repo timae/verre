@@ -162,10 +162,16 @@ model Wine {
   purchaseUrl String?    @map("purchase_url")
   revealedAt  DateTime?  @map("revealed_at") @db.Timestamptz(6)
   createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Identity-id of the user or anon who added this wine. Used by kick/ban
+  // to identify which wines a host can choose to orphan when removing a
+  // participant. Nullable for existing rows (provenance unknown) — those
+  // never match a ban-target filter and stay untouched.
+  addedByIdentityId String?    @map("added_by_identity_id") @db.VarChar(64)
   bookmarks   Bookmark[]
   ratings     Rating[]
   session     Session?   @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
 
+  @@index([sessionId, addedByIdentityId])
   @@map("wines")
 }
 
