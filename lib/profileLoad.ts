@@ -53,16 +53,17 @@ interface Args {
 }
 
 export async function loadProfile({ userId, viewerId, isFollowing }: Args): Promise<LoadedProfile | null> {
-  // checkins count is public-only — matches what the SSR /u/<id>
-  // page already exposed and what the visible feed list shows.
-  // Owners see a smaller number than `lifetimeRatings` if they have
-  // private check-ins.
+  // After dropping checkins.is_public, every check-in is governed by
+  // the author's profile-visibility tier — there's no per-row public/
+  // private flag anymore. The count below now matches the author's
+  // total check-ins; callers route `gate.status === 'gone'` to 404 and
+  // `'shell'` to ProfileShell, so only `'ok'` reaches this loader.
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
       id: true, name: true, xp: true, imageUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
-      _count: { select: { earnedBadges: true, checkins: { where: { isPublic: true } }, followers: true, following: true } },
+      _count: { select: { earnedBadges: true, checkins: true, followers: true, following: true } },
     },
   })
   if (!user) return null
@@ -76,9 +77,10 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     ? flavorFull
     : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
-  // Explicit select — never ship lat/lng on the public wire.
+  // Explicit select — never ship lat/lng on the public wire. No
+  // per-row visibility filter; the upstream profile gate handled it.
   const recentCheckins = await prisma.checkin.findMany({
-    where: { userId, isPublic: true },
+    where: { userId },
     orderBy: { createdAt: 'desc' },
     take: 10,
     select: {

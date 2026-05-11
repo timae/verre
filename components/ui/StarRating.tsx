@@ -24,13 +24,14 @@ interface Props {
 export function StarRating({ value, size = 'compact' }: Props) {
   if (value == null || !Number.isFinite(value) || value <= 0) return null
   const fontSize = size === 'detail' ? 28 : 22
-  // Star glyph rendered slightly larger than the number (≈1.1×) — it's
-  // the anchor of the read; the number is the precision detail. The
-  // ratio is proportional so any future size tier stays balanced.
-  const starSize = Math.round(fontSize * 1.1)
   return (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, lineHeight: 1, color: 'var(--accent)', fontWeight: 800 }}>
-      <span style={{ fontSize: starSize, lineHeight: 1 }}>★</span>
+      {/* Explicit text-font stack forces Chromium/Brave to use a system
+          text font instead of falling back to a color-emoji font for ★.
+          Same fontSize then renders at the same visual size across
+          Firefox + Chromium. The list intentionally excludes emoji
+          fonts so the picker can never land on one. */}
+      <span style={{ fontSize, lineHeight: 1, fontFamily: '-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif' }}>★</span>
       <span style={{ fontSize, lineHeight: 1 }}>{formatScore(value)}</span>
     </span>
   )

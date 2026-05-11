@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
+import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -14,6 +15,20 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const userId = Number(session.user.id)
   const checkinId = parsePathId((await params).id)
   if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+
+  // Visibility gate runs BEFORE rate-limit increment so an attacker
+  // hammering hidden ids can't drain the legitimate user's 120/h budget.
+  // Returns 404 for non-permitted access so the like endpoint doesn't
+  // leak existence of a check-in the viewer's tier excludes them from
+  // seeing.
+  const target = await prisma.checkin.findUnique({
+    where: { id: checkinId },
+    select: { userId: true },
+  })
+  if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!(await viewerCanSeeAuthor(userId, target.userId))) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
 
   const rl = await checkRate(`rl:like:${userId}:1h`, 120, 3600)
   if (!rl.allowed) return NextResponse.json({ error: 'Too many likes.' }, { status: 429 })
@@ -34,6 +49,21 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const userId = Number(session.user.id)
   const checkinId = parsePathId((await params).id)
   if (checkinId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+
+  // Same gate as POST. Counts are public to anyone who can see the
+  // check-in, but a viewer who can't see the check-in shouldn't be able
+  // to confirm it exists / read its like count via DELETE either.
+  // Returns 404 (matching POST) so the endpoint shape doesn't leak the
+  // existence of tier-hidden rows.
+  const target = await prisma.checkin.findUnique({
+    where: { id: checkinId },
+    select: { userId: true },
+  })
+  if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!(await viewerCanSeeAuthor(userId, target.userId))) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  }
+
   await prisma.checkinLike.deleteMany({ where: { userId, checkinId } })
   const count = await prisma.checkinLike.count({ where: { checkinId } })
   return NextResponse.json({ liked: false, count })

@@ -36,7 +36,10 @@ export async function listProfilePeople(
   }
 
   const gate = await resolveProfileViewer(profileId, viewerId)
-  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // 'shell' = profile exists but viewer can't see content — followers/
+  // following list is content, so 404 (same shape as the doesn't-exist
+  // path so a tier-denied viewer can't distinguish).
+  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   const url = req.nextUrl
   const mutual = url.searchParams.get('mutual')

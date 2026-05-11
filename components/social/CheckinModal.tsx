@@ -19,7 +19,7 @@ type EditCheckin = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
   grape?: string|null; type?: string|null; score?: number|null; flavors?: Record<string,number>|null
   notes?: string|null; imageUrl?: string|null; venueName?: string|null; city?: string|null
-  country?: string|null; lat?: number|null; lng?: number|null; isPublic?: boolean
+  country?: string|null; lat?: number|null; lng?: number|null
   tags?: { id: number; name: string }[]
 }
 
@@ -66,7 +66,6 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     lat: editCheckin?.lat || undefined,
     lng: editCheckin?.lng || undefined,
   })
-  const [isPublic, setIsPublic] = useState(editCheckin?.isPublic !== false)
   const [showLocation, setShowLocation] = useState(false)
   // Bump to force-remount LocationPicker — its internal query state is seeded
   // from props on mount, so wholesale replacements (copy-from-original) need
@@ -146,7 +145,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
         score: score || null, flavors, notes,
         imageData: imageData === '__remove__' ? null : (imageData || undefined),
         copyFromCheckinId,
-        isPublic, ...location,
+        ...location,
         taggedUserIds: taggedIds,
       }),
     })
@@ -278,18 +277,6 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           )}
         </div>
         {showLocation && <LocationPicker key={locationVersion} value={location} onChange={setLocation} />}
-
-        {/* Privacy */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg3)', marginTop: 10, cursor: 'pointer' }}
-          onClick={() => setIsPublic(!isPublic)}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700 }}>{isPublic ? '🌍 Public' : '🔒 Private'}</div>
-            <div style={{ fontSize: 10, color: 'var(--fg-dim)', marginTop: 2 }}>{isPublic ? 'Visible in your feed and profile' : 'Only visible to you'}</div>
-          </div>
-          <div style={{ width: 36, height: 20, borderRadius: 10, background: isPublic ? 'var(--accent)' : 'var(--bg4)', border: '1px solid var(--border2)', position: 'relative', flexShrink: 0 }}>
-            <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: isPublic ? 18 : 2, transition: 'left .2s' }} />
-          </div>
-        </div>
 
         {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
         <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>

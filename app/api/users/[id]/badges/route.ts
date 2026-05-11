@@ -26,7 +26,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   const gate = await resolveProfileViewer(profileId, viewerId)
-  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Badges are gated content — only 'ok' qualifies; 'shell' and 'gone'
+  // both surface as 404.
+  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   const earned = await prisma.userBadge.findMany({
     where: { userId: profileId },

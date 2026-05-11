@@ -242,6 +242,35 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 
 **Permission-denied vs auth-invalid:** the server returns 401 + `X-Vr-Auth: invalid` only when identity itself failed to resolve. Permission-denied 403s ("only the host can…", "pro required") return bare 403 without the header. The `lib/sessionFetch.ts` client-side wrapper only clears local state and bounces to `/join/<code>` on the auth-invalid header — permission denials are surfaced inline.
 
+### Profile visibility
+
+Per-user setting controlling who can read profile content (`/u/<id>` page, `/api/users/<id>` and sub-routes, feed entries authored by this user, check-in like POSTs). Stored on `users` as two columns:
+
+- `profile_visibility VARCHAR(32)` — one of `public-internet` / `public-users` / `public-followers` / `public-mutual`. CHECK constraint hand-added in the migration; **the TypeScript union in `lib/profileVisibility.ts` is the authoritative source of truth**, the CHECK is belt-and-suspenders.
+- `visibility_fof BOOLEAN` — when true, friend-of-follower (depth 1: viewer→intermediary→profile) is also admitted. Only meaningful for `public-followers` and `public-mutual`; `public-internet` and `public-users` already admit anyone qualifying via FoF.
+
+**Tier semantics (locked):**
+- `public-internet` — anyone, no auth required. Profile + check-ins indexable by search engines.
+- `public-users` — any logged-in Verre user. **Default for new signups.**
+- `public-followers` — only people who follow the profile owner (asymmetric: owner doesn't have to follow back).
+- `public-mutual` — only mutual follows (both directions of `follows`).
+
+**Default migration (existing users):** the privacy-tiers migration `UPDATE`s pre-existing rows to `public-internet` to preserve their de-facto state, and only NEW rows hit the column default `public-users`. Don't change this without surfacing the retroactive-tightening question to the user — silent default changes break shared profile URLs.
+
+**Authorization chokepoints — never bypass:**
+- `lib/profileVisibility.ts` `resolveProfileViewer(profileId, viewerId)` — single-profile gate. Returns `{status:'gone'}` when the profile shouldn't be observable; map to 404 (not 403, not 401) so the caller can't distinguish "no such user" from "exists but tier denies you" — that's the leak prevention.
+- `viewerCanSeeAuthor(viewerId, authorId)` — per-pair gate for non-feed call sites (single check-in, like POST, etc.).
+- `batchLoadVisibilities(ids)` + `resolveProfileViewerBulk(ids, viewerId)` + `viewerFofAuthorSet(viewerId, ids)` — batch path used by feed and search to avoid N+1 lookups.
+- `setProfileVisibility(userId, tier, fof)` — the only sanctioned write path. Validates the union, enforces a 30/hour/user rate limit, writes user row + `profile_visibility_log` audit row in one transaction. Bypassing this and writing the column directly skips the audit trail.
+
+**HoF stays public regardless of tier (deliberate decision):** `/hof` displays rater display names with no clickable user link; the leaderboard is treated as a deliberately public surface. This means a `public-mutual` user with a 5★ rating still has their name visible on `/hof`. If product later wants HoF to honour the tier, that's a localized change — see `app/hof/page.tsx`. The leak is documented and accepted, not an oversight.
+
+**Session compare views are NOT gated by profile visibility.** Trust model: session participation > profile tier. If you joined a session together, you see each other's ratings and display names — `profile_visibility` only governs *outside-session* surfaces. Don't try to gate session ratings by profile_visibility; you'll break the compare screen.
+
+**Tag display follows the check-in author's tier**, not the tagged user's. A user tagged in someone else's check-in appears according to that check-in's visibility — being tagged is a presentation surface the tagged user consented to via mutual-follow at creation time. Edit-time mutual-follow re-validation already drops a tag if the relationship has been broken since.
+
+**Audit log (`profile_visibility_log`):** internal-only, no API surface, no UI. One row per change (tier or fof), plus an initial signup row with `from_tier=NULL` for forensic completeness. Cascade rule is `ON DELETE SET NULL` — the trail survives account deletion (tombstone pattern) so post-mortem queries can still reconstruct timelines for deleted users.
+
 ### Rate limiting
 
 Redis-backed limiters via `lib/rateLimit.ts`. Use `peekRate` / `peekRates` to check without incrementing (login does this so successful logins don't count); `checkRate` / `checkRates` to check + increment atomically. `formatWait(seconds)` produces the humanized "in 3 minutes" / "in 45 seconds" string surfaced in 429 responses.
@@ -254,6 +283,7 @@ Limits in production:
 | `/api/auth/register` | 100/min/IP | Mass-signup spam. |
 | `/api/me/account` PATCH + DELETE | 20/hour/user (shared counter) | Brute-force the password re-auth check from a stolen session cookie. PATCH and DELETE share the counter so an attacker doesn't get 20+20. |
 | `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
+| `/api/me/visibility` PATCH | 30/hour/user | Stolen cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility`. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 

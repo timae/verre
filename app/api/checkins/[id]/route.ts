@@ -61,7 +61,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, notes,
-    imageData, venueName, city, country, lat, lng, isPublic, taggedUserIds } = body
+    imageData, venueName, city, country, lat, lng, taggedUserIds } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   // Caps match prisma column widths so over-sized input lands as 400
@@ -153,7 +153,6 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         country:   country   !== undefined ? (scrub(country)?.slice(0,2).toUpperCase() || null) : checkin.country,
         lat:       lat       !== undefined ? (lat               ?? null) : checkin.lat,
         lng:       lng       !== undefined ? (lng               ?? null) : checkin.lng,
-        isPublic:  isPublic  !== undefined ? isPublic           : checkin.isPublic,
       },
     })
 

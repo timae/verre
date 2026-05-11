@@ -94,7 +94,7 @@ export function HistoryClient() {
                     <div key={i} className="flex justify-between text-xs text-fg-dim">
                       <span className="truncate">{r.wine_name}</span>
                       {r.score ? (
-                        <span className="text-accent ml-2 flex-shrink-0">★ {formatScore(r.score)}</span>
+                        <span className="text-accent ml-2 flex-shrink-0"><span style={{fontFamily:'-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif'}}>★</span> {formatScore(r.score)}</span>
                       ) : null}
                     </div>
                   ))}

@@ -51,7 +51,8 @@ export function ScoreSlider({ value, onChange }: Props) {
         color: rated ? 'var(--accent)' : 'var(--fg-faint)',
         fontWeight: 800, fontSize: 26, lineHeight: 1,
       }}>
-        <span>★</span>
+        {/* Explicit text-font stack — see StarRating. */}
+        <span style={{ fontFamily: '-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif' }}>★</span>
         {/* tabular-nums + always 2 decimals = no width churn during drag. */}
         <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value.toFixed(2)}</span>
       </div>

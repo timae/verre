@@ -11,9 +11,18 @@ interface Props {
   userImageUrl?: string | null
   myId: number | null
   isFollowing: boolean
+  // Optional. Passed by callers in a client-cached context (e.g.
+  // UserProfileModal) so a follow-toggle invalidates the cached
+  // profile payload; the gate may flip when the viewer becomes a
+  // follower or stops being one. SSR /u/[id] usage doesn't need it
+  // — the page is server-rendered and the next nav refetches.
+  // The FollowButton's onToggle is (following: boolean) => void;
+  // we ignore the param because the invalidation doesn't branch on
+  // direction.
+  onFollowToggle?: () => void
 }
 
-export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing }: Props) {
+export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing, onFollowToggle }: Props) {
   const level = getLevel(userXp)
   const nextXP = level.nextXP
   const progress = nextXP ? ((userXp - level.minXP) / (nextXP - level.minXP)) * 100 : 100
@@ -36,7 +45,7 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
         {isOwner ? (
           <ProfileSettingsButton />
         ) : myId ? (
-          <FollowButton userId={userId} initialFollowing={isFollowing} />
+          <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={onFollowToggle} />
         ) : null}
       </div>
     </div>

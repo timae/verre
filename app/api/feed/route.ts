@@ -3,6 +3,12 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { BADGE_MAP } from '@/lib/badges'
 import { decimalToNumber } from '@/lib/decimal'
+import {
+  batchLoadVisibilities,
+  resolveProfileViewerBulk,
+  viewerFofAuthorSet,
+  canViewProfile,
+} from '@/lib/profileVisibility'
 
 const PAGE = 20
 
@@ -48,9 +54,40 @@ export async function GET(req: NextRequest) {
   const networkIds = network.map(r => r.user_id)
   if (!networkIds.length) return NextResponse.json({ items: [], nextCursor: null })
 
+  // Visibility pre-filter: trim networkIds down to authors the viewer can
+  // actually see per their profile-visibility tier. Done up front so the
+  // cursor reflects visible count, not raw count — otherwise a page of 20
+  // could collapse to a handful of rows after post-filtering.
+  // Batched: one query for visibilities, one for follows-out, one for
+  // follows-in, optionally one for FoF reachability. Cost is O(networkSize)
+  // not O(rowsPerPage), and constant in number of roundtrips.
+  const visMap = await batchLoadVisibilities(networkIds)
+  const viewerMap = await resolveProfileViewerBulk(networkIds, userId)
+  const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
+  const fofSet = fofCandidates.length > 0
+    ? await viewerFofAuthorSet(userId, fofCandidates)
+    : new Set<number>()
+  const allowedNetworkIds = networkIds.filter(authorId => {
+    // Self-visibility: viewer always sees their own content.
+    if (authorId === userId) return true
+    const settings = visMap.get(authorId)
+    if (!settings) return false
+    const base = viewerMap.get(authorId) ?? { id: userId, followsProfile: false, profileFollowsViewer: false }
+    // Clone so we never mutate the shared map values; isFofOfProfile is
+    // a per-call hint, not state to carry on the underlying ProfileViewer.
+    const viewer = {
+      id: base.id ?? userId,
+      followsProfile: base.followsProfile,
+      profileFollowsViewer: base.profileFollowsViewer,
+      isFofOfProfile: settings.fofEnabled ? fofSet.has(authorId) : undefined,
+    }
+    return canViewProfile(settings.visibility, viewer, settings.fofEnabled)
+  })
+  if (!allowedNetworkIds.length) return NextResponse.json({ items: [], nextCursor: null })
+
   // Checkins
   const checkins = await prisma.checkin.findMany({
-    where: { userId: { in: networkIds }, isPublic: true, createdAt: { lt: cursor } },
+    where: { userId: { in: allowedNetworkIds }, createdAt: { lt: cursor } },
     include: {
       user: { select: { id: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
@@ -76,10 +113,12 @@ export async function GET(req: NextRequest) {
     })).map(f => f.followingId)
   )
 
-  // Badge unlocks (last 30 days)
+  // Badge unlocks (last 30 days). Same allowed-author filter — a badge
+  // unlock is metadata about a user, so a `public-mutual` profile's badge
+  // shouldn't show up in a non-mutual's feed.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
   const badges = await prisma.userBadge.findMany({
-    where: { userId: { in: networkIds }, earnedAt: { lt: cursor, gt: thirtyDaysAgo } },
+    where: { userId: { in: allowedNetworkIds }, earnedAt: { lt: cursor, gt: thirtyDaysAgo } },
     include: { user: { select: { id: true, name: true, imageUrl: true } } },
     orderBy: { earnedAt: 'desc' },
     take: PAGE,

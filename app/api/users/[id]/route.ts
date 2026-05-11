@@ -4,6 +4,7 @@ import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
 import { checkRate } from '@/lib/rateLimit'
 import { loadProfile } from '@/lib/profileLoad'
+import { prisma } from '@/lib/prisma'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth()
@@ -22,6 +23,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const viewerId = session?.user ? Number(session.user.id) : null
   const gate = await resolveProfileViewer(userId, viewerId)
   if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  // Tier-gated: shell payload only. Display name + id + isFollowing —
+  // never the avatar, XP, badges, check-ins, or social-graph data. The
+  // shell tells the viewer "this user exists, here's the follow button"
+  // without leaking content.
+  if (gate.status === 'shell') {
+    const isFollowing = viewerId
+      ? !!(await prisma.follow.findUnique({
+          where: { followerId_followingId: { followerId: viewerId, followingId: userId } },
+          select: { followerId: true },
+        }))
+      : false
+    return NextResponse.json({ id: userId, name: gate.name, gated: true, isFollowing })
+  }
 
   const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
   if (!profile) return NextResponse.json({ error: 'not found' }, { status: 404 })

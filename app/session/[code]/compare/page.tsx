@@ -22,7 +22,7 @@ type RaterEntry = { user: string; score: number }
 function RaterChip({ user, score }: RaterEntry) {
   return (
     <span style={{fontSize:10,background:'var(--bg3)',border:'1px solid var(--border)',padding:'2px 8px',borderRadius:3,color:'var(--fg-dim)',fontFamily:'var(--mono)',whiteSpace:'nowrap'}}>
-      {user} <span style={{color:'var(--accent)'}}>★ {formatScore(score)}</span>
+      {user} <span style={{color:'var(--accent)'}}><span style={{fontFamily:'-apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif'}}>★</span> {formatScore(score)}</span>
     </span>
   )
 }

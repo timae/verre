@@ -23,6 +23,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Social feed: log standalone check-ins (with photo, location, tagged friends), follow other users, like and discover what your tasting network is drinking
 - Public profiles at `/u/<id>` showing recent check-ins and stats
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
+- Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -160,6 +161,8 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | DELETE | /api/me/account | Delete own account (password re-auth required) |
 | POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
+| GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |
+| PATCH | /api/me/visibility | Update own profile-visibility (body: `{visibility, fofEnabled}`); 30/h |
 
 **Sessions**
 
@@ -201,7 +204,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
-| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, isPublic?, taggedUserIds?}`) |
+| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`). Visibility is governed by the author's profile-visibility tier — no per-check-in toggle. |
 | PATCH | /api/checkins/:id | Edit own check-in; image replace reclaims old S3 |
 | DELETE | /api/checkins/:id | Delete own check-in; reclaims S3 image |
 | POST/DELETE | /api/checkins/:id/like | Like / unlike a check-in |
@@ -214,7 +217,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /api/users/search | Display-name prefix lookup (rate-limited) |
+| GET | /api/users/search | Display-name substring lookup (auth required, rate-limited; results filtered by profile visibility) |
 | POST | /api/places | Venue search adapter — Google Places (with key) or OSM (without) |
 
 **Public**

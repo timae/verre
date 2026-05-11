@@ -8,6 +8,7 @@ import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { decimalToNumber } from '@/lib/decimal'
+import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
 // 15.5 / webpack 5.98 bundling bug (see lib/accountDelete.ts for the same
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, isPublic, taggedUserIds = [] } = body
+  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [] } = body
   // Scrub control chars first so a payload of pure NULL bytes doesn't
   // pass the non-empty check below.
   const wineName = scrub(rawWineName)
@@ -103,26 +104,43 @@ export async function POST(req: NextRequest) {
     // "had a sip" flow: resolve the source row server-side, verify the
     // caller is allowed to copy it, then clone the bytes. The client never
     // gets to point at an arbitrary S3 URL.
+    //
+    // Two gates, both required: (a) viewer can see the author's content
+    // per their profile-visibility tier — copying content the viewer
+    // shouldn't see at all is the obvious leak. (b) viewer follows the
+    // author — the explicit consent gate, beyond visibility, since
+    // copying a bottle photo is a stronger relationship than just
+    // browsing.
+    //
+    // All negative branches collapse to a single generic 400 message so
+    // the endpoint can't be used to enumerate per-id existence /
+    // ownership / follow-state. Distinct messages would let any authed
+    // user probe ids and learn which ones exist, who owns them, and who
+    // they follow.
+    const COPY_ERROR = 'This check-in cannot be copied right now.'
     const source = await prisma.checkin.findUnique({
       where: { id: copyFromCheckinId },
-      select: { imageUrl: true, isPublic: true, userId: true },
+      select: { imageUrl: true, userId: true },
     })
-    if (!source || !source.isPublic) {
-      return NextResponse.json({ error: 'Source check-in is no longer available.' }, { status: 400 })
+    if (!source) {
+      return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     if (source.userId === userId) {
-      return NextResponse.json({ error: 'Cannot copy your own check-in.' }, { status: 400 })
+      return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
+    }
+    if (!(await viewerCanSeeAuthor(userId, source.userId))) {
+      return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     const follows = await prisma.follow.findUnique({
       where: { followerId_followingId: { followerId: userId, followingId: source.userId } },
       select: { followerId: true },
     })
     if (!follows) {
-      return NextResponse.json({ error: 'Follow this user to copy their check-ins.' }, { status: 403 })
+      return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     if (source.imageUrl) {
       imageUrl = await copyImageFromCheckin(source.imageUrl, userId)
-      if (!imageUrl) return NextResponse.json({ error: 'Source image is no longer available. Replace or remove it before posting.' }, { status: 400 })
+      if (!imageUrl) return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
   }
 
@@ -145,7 +163,6 @@ export async function POST(req: NextRequest) {
       country: scrub(country)?.slice(0, 2).toUpperCase() || null,
       lat: lat ?? null,
       lng: lng ?? null,
-      isPublic: isPublic !== false,
     },
   })
 

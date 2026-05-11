@@ -1,7 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { clearSessionNames } from '@/lib/clientStorage'
+import { TIER_LABELS, TIER_ORDER, type ProfileVisibility } from '@/lib/profileVisibilityShared'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -125,7 +126,107 @@ export function AccountSettings({ onSaved }: Props = {}) {
       {success && <p style={{color:'var(--accent2)',fontSize:11,marginBottom:8}}>✓ {success}</p>}
       <button className="btn-p" onClick={saveAccount} disabled={saving}>{saving ? 'saving…' : '→ save changes'}</button>
 
+      <ProfileVisibilitySection />
       <DangerZone email={user.email} />
+    </div>
+  )
+}
+
+function ProfileVisibilitySection() {
+  const [tier, setTier] = useState<ProfileVisibility | null>(null)
+  const [fofEnabled, setFofEnabled] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/me/visibility')
+      .then(r => r.json())
+      .then((d: { visibility: ProfileVisibility; fofEnabled: boolean }) => {
+        if (cancelled) return
+        setTier(d.visibility)
+        setFofEnabled(d.fofEnabled)
+        setLoading(false)
+      })
+      .catch(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  async function save(newTier: ProfileVisibility, newFof: boolean) {
+    setSaving(true); setError(''); setSuccess('')
+    // FoF is meaningless on public tiers — coerce to false on the wire so
+    // the stored bit matches what the UI shows. Without this, a user who
+    // turns FoF on at `public-mutual` then drops to `public-users` would
+    // carry FoF=true silently in the DB.
+    const wireFof = (newTier === 'public-internet' || newTier === 'public-users') ? false : newFof
+    const res = await fetch('/api/me/visibility', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ visibility: newTier, fofEnabled: wireFof }),
+    })
+    setSaving(false)
+    if (res.status === 401) { window.location.href = '/login'; return }
+    if (res.ok) {
+      setTier(newTier); setFofEnabled(wireFof); setSuccess('saved')
+      setTimeout(() => setSuccess(''), 2000)
+    } else {
+      const d = await res.json().catch(() => ({}))
+      setError(d.error || 'failed to save')
+    }
+  }
+
+  // FoF only meaningful for follower/mutual tiers — broader tiers already
+  // admit anyone who'd qualify via the indirect chain.
+  const fofRelevant = tier === 'public-followers' || tier === 'public-mutual'
+
+  return (
+    <div style={{marginTop:32,paddingTop:20,borderTop:'1px solid var(--border)'}}>
+      <div style={{fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:10}}>profile visibility</div>
+      {loading ? (
+        <div style={{fontSize:11,color:'var(--fg-dim)'}}>loading…</div>
+      ) : tier === null ? (
+        <div style={{fontSize:11,color:'#e07070'}}>could not load settings</div>
+      ) : (
+        <>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {TIER_ORDER.map(t => {
+              const sel = t === tier
+              return (
+                <button key={t} type="button" disabled={saving}
+                  onClick={() => save(t, fofEnabled)}
+                  style={{
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: 6,
+                    border: `1px solid ${sel ? 'var(--accent)' : 'var(--border)'}`,
+                    background: sel ? 'rgba(200,150,60,0.08)' : 'var(--bg3)',
+                    cursor: saving ? 'wait' : 'pointer',
+                    color: 'var(--fg)',
+                    fontFamily: 'var(--mono)',
+                  }}>
+                  <div style={{fontSize:11,fontWeight:700,letterSpacing:'0.04em'}}>{sel ? '● ' : '○ '}{TIER_LABELS[t].title}</div>
+                  <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2,marginLeft:14}}>{TIER_LABELS[t].sub}</div>
+                </button>
+              )
+            })}
+          </div>
+          {fofRelevant && (
+            <div style={{marginTop:14,padding:'10px 12px',borderRadius:6,border:'1px solid var(--border)',background:'var(--bg3)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,cursor:saving?'wait':'pointer'}}
+              onClick={() => !saving && save(tier, !fofEnabled)}>
+              <div>
+                <div style={{fontSize:11,fontWeight:700}}>Friends of friends</div>
+                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>also let people one connection away through someone I trust</div>
+              </div>
+              <div style={{ width: 36, height: 20, borderRadius: 10, background: fofEnabled ? 'var(--accent)' : 'var(--bg4)', border: '1px solid var(--border2)', position: 'relative', flexShrink: 0 }}>
+                <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: fofEnabled ? 18 : 2, transition: 'left .2s' }} />
+              </div>
+            </div>
+          )}
+          {error   && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+          {success && <p style={{color:'var(--accent2)',fontSize:11,marginTop:8}}>✓ {success}</p>}
+        </>
+      )}
     </div>
   )
 }

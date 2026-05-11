@@ -1,8 +1,9 @@
 'use client'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/ui/Modal'
 import { ProfileHeader } from './ProfileHeader'
 import { ProfileTabs } from './ProfileTabs'
+import { ProfileShell } from './ProfileShell'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
@@ -11,15 +12,30 @@ interface Props {
   onClose: () => void
 }
 
+// /api/users/[id] returns a shell shape `{id, name, gated, isFollowing}`
+// when the viewer's tier is denied. Discriminate before reading content
+// fields, otherwise `data.level.icon` etc. throw.
+type ProfileResponse = LoadedProfile | {
+  id: number
+  name: string
+  gated: true
+  isFollowing: boolean
+}
+
+function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
+  return (p as { gated?: boolean }).gated === true
+}
+
 // In-tasting profile viewer. Shows the same header + tabs that /u/[id]
 // renders, fetched client-side via /api/users/<id> so the user stays
 // in their session context. Render code is shared with the route
 // (ProfileHeader + ProfileTabs); only the data-fetch path differs.
 export function UserProfileModal({ userId, myId, onClose }: Props) {
+  const qc = useQueryClient()
   // Same cache key as ProfilePreviewInline — they hit the same
   // endpoint and the modal's payload is a superset of the preview's.
   // Second open after a preview is instant from cache.
-  const { data, isError } = useQuery<LoadedProfile>({
+  const { data, isError } = useQuery<ProfileResponse>({
     queryKey: ['user-profile', userId],
     queryFn: () => fetch(`/api/users/${userId}`).then(r => {
       if (!r.ok) throw new Error(`status ${r.status}`)
@@ -27,6 +43,13 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
     }),
     staleTime: 30_000,
   })
+
+  // A follow-toggle inside the modal may flip the gate (shell → full or
+  // vice-versa). Invalidate so the modal — and any other surface sharing
+  // this query key (ProfilePreviewInline) — refetches.
+  function onFollowToggle() {
+    qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+  }
 
   return (
     <Modal onClose={onClose} maxWidth={860} maxHeight="90vh">
@@ -50,7 +73,17 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
         </div>
       )}
 
-      {data && (
+      {data && isGated(data) && (
+        <ProfileShell
+          userId={data.id}
+          userName={data.name}
+          myId={myId}
+          isFollowing={data.isFollowing}
+          onFollowToggle={onFollowToggle}
+        />
+      )}
+
+      {data && !isGated(data) && (
         <>
           <ProfileHeader
             userId={data.id}
@@ -59,6 +92,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
             userImageUrl={data.imageUrl}
             myId={myId}
             isFollowing={data.isFollowing}
+            onFollowToggle={onFollowToggle}
           />
           <ProfileTabs
             profileUserId={data.id}

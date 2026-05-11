@@ -52,11 +52,25 @@ export async function POST(req: NextRequest) {
   const { email, password } = parsed.data
   try {
     const hash = await bcrypt.hash(password, 12)
-    const user = await prisma.user.create({
-      data: { name, email: email.toLowerCase(), passwordHash: hash },
-      select: { id: true, name: true, email: true, role: true, pro: true },
+    // User row + initial visibility audit log row in one transaction so a
+    // partial failure can't leave a user without an audit history. The
+    // signup row uses fromTier=NULL/fromFof=NULL — that's the convention
+    // distinguishing initial-state from user-driven changes.
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: { name, email: email.toLowerCase(), passwordHash: hash },
+        select: { id: true, name: true, email: true, role: true, pro: true, profileVisibility: true, visibilityFof: true },
+      })
+      await tx.profileVisibilityLog.create({
+        data: {
+          userId: created.id,
+          toTier: created.profileVisibility,
+          toFof: created.visibilityFof,
+        },
+      })
+      return created
     })
-    return NextResponse.json({ user })
+    return NextResponse.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, pro: user.pro } })
   } catch (err: unknown) {
     if ((err as { code?: string }).code === 'P2002') {
       return NextResponse.json({ error: 'email already registered' }, { status: 409 })

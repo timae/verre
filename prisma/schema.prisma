@@ -1,51 +1,84 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pg_trgm]
 }
 
 model User {
-  id                        Int             @id @default(autoincrement())
-  name                      String          @db.VarChar(64)
-  email                     String          @unique @db.VarChar(255)
-  passwordHash              String          @map("password_hash") @db.VarChar(255)
-  role                      String          @default("taster") @db.VarChar(16)
-  pro                       Boolean         @default(false)
-  createdAt                 DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  id                        Int                    @id @default(autoincrement())
+  name                      String                 @db.VarChar(64)
+  email                     String                 @unique @db.VarChar(255)
+  passwordHash              String                 @map("password_hash") @db.VarChar(255)
+  role                      String                 @default("taster") @db.VarChar(16)
+  pro                       Boolean                @default(false)
+  createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
   // XP from rating wines, hosting sessions, etc. — separate from lifetime_*
   // because XP is a sum of weighted action points, not a count of actions.
-  xp                        Int             @default(0)
-  tokenVersion              Int             @default(0) @map("token_version")
+  xp                        Int                    @default(0)
+  tokenVersion              Int                    @default(0) @map("token_version")
   // Snapshot counters — monotonic, never decrement. Drive badge progression
   // and shield user achievement state from rating deletions (e.g. when a
   // host deletes a session that contained the user's ratings).
-  lifetimeRatings           Int             @default(0) @map("lifetime_ratings")
-  lifetimeFiveStar          Int             @default(0) @map("lifetime_five_star")
-  lifetimeOneStar           Int             @default(0) @map("lifetime_one_star")
-  lifetimeNotesWritten      Int             @default(0) @map("lifetime_notes_written")
-  lifetimeMaxNoteLength     Int             @default(0) @map("lifetime_max_note_len")
-  lifetimeSessionsJoined    Int             @default(0) @map("lifetime_sessions_joined")
-  lifetimeSessionsHosted    Int             @default(0) @map("lifetime_sessions_hosted")
-  lifetimePhotosAdded       Int             @default(0) @map("lifetime_photos_added")
-  lifetimeConsecutiveMonths Int             @default(0) @map("lifetime_consecutive_months")
-  firstRatedAt              DateTime?       @map("first_rated_at") @db.Timestamp(6)
-  imageUrl                  String?         @map("image_url") @db.VarChar(512)
+  lifetimeRatings           Int                    @default(0) @map("lifetime_ratings")
+  lifetimeFiveStar          Int                    @default(0) @map("lifetime_five_star")
+  lifetimeOneStar           Int                    @default(0) @map("lifetime_one_star")
+  lifetimeNotesWritten      Int                    @default(0) @map("lifetime_notes_written")
+  lifetimeMaxNoteLength     Int                    @default(0) @map("lifetime_max_note_len")
+  lifetimeSessionsJoined    Int                    @default(0) @map("lifetime_sessions_joined")
+  lifetimeSessionsHosted    Int                    @default(0) @map("lifetime_sessions_hosted")
+  lifetimePhotosAdded       Int                    @default(0) @map("lifetime_photos_added")
+  lifetimeConsecutiveMonths Int                    @default(0) @map("lifetime_consecutive_months")
+  firstRatedAt              DateTime?              @map("first_rated_at") @db.Timestamp(6)
+  imageUrl                  String?                @map("image_url") @db.VarChar(512)
+  // Profile visibility — see lib/profileVisibility.ts. Stored as VARCHAR(32)
+  // (not a Postgres enum) so a future tier ('private', etc.) is a code-only
+  // change. A CHECK constraint is hand-added in the migration; the lib-side
+  // union type in ProfileVisibility is the authoritative source of truth.
+  profileVisibility         String                 @default("public-users") @map("profile_visibility") @db.VarChar(32)
+  visibilityFof             Boolean                @default(false) @map("visibility_fof")
   bookmarks                 Bookmark[]
   hofEntries                HallOfFame[]
   ratings                   Rating[]
   members                   SessionMember[]
   hostedSessions            Session[]
   earnedBadges              UserBadge[]
-  followers                 Follow[]       @relation("UserFollowing")
-  following                 Follow[]       @relation("UserFollowers")
+  followers                 Follow[]               @relation("UserFollowing")
+  following                 Follow[]               @relation("UserFollowers")
   checkins                  Checkin[]
   checkinLikes              CheckinLike[]
   checkinTags               CheckinTag[]
+  visibilityLog             ProfileVisibilityLog[]
 
+  // pg_trgm GIN index for fast substring search in /api/users/search.
+  // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
+  // index-eligible; without it the index would only support the default
+  // tsvector lookups.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("users")
+}
+
+// Audit trail of every profile_visibility / visibility_fof change. Internal
+// only — no API surface, no UI. Forensic safety net for dispute resolution
+// ("my profile was public yesterday") and incident response. Tombstones on
+// user delete (user_id → NULL) so the audit trail survives account
+// deletion; rows themselves are never auto-purged.
+model ProfileVisibilityLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  fromTier  String?  @map("from_tier") @db.VarChar(32)
+  toTier    String   @map("to_tier") @db.VarChar(32)
+  fromFof   Boolean? @map("from_fof")
+  toFof     Boolean? @map("to_fof")
+  changedAt DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+
+  @@index([userId, changedAt])
+  @@map("profile_visibility_log")
 }
 
 model Session {
@@ -197,8 +230,8 @@ model Follow {
   followerId  Int      @map("follower_id")
   followingId Int      @map("following_id")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  follower    User     @relation("UserFollowers",  fields: [followerId],  references: [id], onDelete: Cascade)
-  following   User     @relation("UserFollowing",  fields: [followingId], references: [id], onDelete: Cascade)
+  follower    User     @relation("UserFollowers", fields: [followerId], references: [id], onDelete: Cascade)
+  following   User     @relation("UserFollowing", fields: [followingId], references: [id], onDelete: Cascade)
 
   @@id([followerId, followingId])
   @@index([followingId])
@@ -207,28 +240,27 @@ model Follow {
 
 // Standalone wine check-ins — log a bottle outside a session.
 model Checkin {
-  id        Int      @id @default(autoincrement())
-  userId    Int      @map("user_id")
-  wineName  String   @map("wine_name") @db.VarChar(255)
-  producer  String?  @db.VarChar(255)
-  vintage   String?  @db.Char(4)
-  grape     String?  @db.VarChar(255)
-  type      String?  @db.VarChar(16)
+  id        Int           @id @default(autoincrement())
+  userId    Int           @map("user_id")
+  wineName  String        @map("wine_name") @db.VarChar(255)
+  producer  String?       @db.VarChar(255)
+  vintage   String?       @db.Char(4)
+  grape     String?       @db.VarChar(255)
+  type      String?       @db.VarChar(16)
   // Quarter-stars: 0.00 through 5.00 in 0.25 steps; null when the
   // user hasn't rated this check-in yet (the check-in row exists for
   // the wine identity + flavors + notes alone).
-  score     Decimal? @db.Decimal(3, 2)
-  flavors   Json     @default("{}")
+  score     Decimal?      @db.Decimal(3, 2)
+  flavors   Json          @default("{}")
   notes     String?
-  imageUrl  String?  @map("image_url")
-  venueName String?  @map("venue_name") @db.VarChar(255)
-  city      String?  @db.VarChar(100)
-  country   String?  @db.Char(2)
-  lat       Decimal? @db.Decimal(9, 6)
-  lng       Decimal? @db.Decimal(9, 6)
-  isPublic  Boolean  @default(true) @map("is_public")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  imageUrl  String?       @map("image_url")
+  venueName String?       @map("venue_name") @db.VarChar(255)
+  city      String?       @db.VarChar(100)
+  country   String?       @db.Char(2)
+  lat       Decimal?      @db.Decimal(9, 6)
+  lng       Decimal?      @db.Decimal(9, 6)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   likes     CheckinLike[]
   tags      CheckinTag[]
 
@@ -236,12 +268,11 @@ model Checkin {
   @@map("checkins")
 }
 
-
 model CheckinTag {
-  checkinId  Int     @map("checkin_id")
-  userId     Int     @map("user_id")
-  checkin    Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
-  user       User    @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  checkinId Int     @map("checkin_id")
+  userId    Int     @map("user_id")
+  checkin   Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@id([checkinId, userId])
   @@index([userId])
@@ -252,7 +283,7 @@ model CheckinLike {
   userId    Int      @map("user_id")
   checkinId Int      @map("checkin_id")
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  user      User     @relation(fields: [userId],    references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   checkin   Checkin  @relation(fields: [checkinId], references: [id], onDelete: Cascade)
 
   @@id([userId, checkinId])
