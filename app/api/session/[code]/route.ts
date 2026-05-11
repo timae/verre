@@ -131,15 +131,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { targetId: targetIdFromBody, action, role: roleFromBody } = body as Record<string, unknown>
 
-  // Pre-lock auth + coarse gate. We read meta once here, but only for the
-  // moderation check — the authoritative read happens inside the lock
-  // below so a concurrent role mutation can't slip in between observation
-  // and write. This pre-read can fast-fail non-moderators without
-  // contending on the lock.
-  const rawPre = await redis.get(k.meta(c))
-  if (!rawPre) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const metaPre = JSON.parse(rawPre) as SessionMeta
-
   // Banned/kicked callers get the `removed` bounce header (same as the
   // polled GETs and wine routes) so their client reroutes to
   // /join/<C>?removed=1 instead of seeing a bare 403.
@@ -147,44 +138,28 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const callerIdentity = pp.identity
-  const callerIsStrictHost = !!(
-    (metaPre.hostIdentityId && callerIdentity.id === metaPre.hostIdentityId) ||
-    (metaPre.hostUserId && callerIdentity.id === `u:${metaPre.hostUserId}`)
-  )
-  const callerIsCohost = !!metaPre.coHostIds?.includes(callerIdentity.id)
-  const callerCanModerate = callerIsStrictHost || callerIsCohost
-
-  // Coarse gate before any target resolution: callers that have NO
-  // moderation power at all are rejected with a uniform 403, regardless
-  // of action or target. Without this the route would leak session
-  // membership: a logged-in non-participant could probe `targetId: u:<n>`
-  // and tell from the response code (400 unknown-target vs 403
-  // can't-do-this) whether the user is in the session. Action-specific
-  // gates (strict-host-only for transitions touching the cohost slot)
-  // still run later inside the lock.
-  if (!callerCanModerate) {
-    return NextResponse.json({ error: 'only the host or a co-host can assign roles' }, { status: 403 })
-  }
 
   // Serialize meta read-modify-write against concurrent role mutations
   // and kick/ban operations (which also mutate coHostIds/providerIds via
   // sessionWipe). Without the lock two strict-host calls could each read
   // the same starting meta, derive divergent coHostIds/providerIds sets,
-  // and the later write would silently clobber the earlier. The lock
-  // also serializes against the kick/ban wipe path which mutates the
-  // same lists.
+  // and the later write would silently clobber the earlier.
   if (!(await acquireBanLock(c))) {
-    return NextResponse.json({ error: 'busy, try again' }, { status: 429 })
+    return NextResponse.json(
+      { error: 'busy, try again' },
+      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '1' } },
+    )
   }
   try {
-    // Re-read meta INSIDE the lock — the pre-lock copy may be stale by now.
     const raw = await redis.get(k.meta(c))
     if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
     const meta = JSON.parse(raw) as SessionMeta
 
-    // Recompute strict-host on the fresh meta — host could have been
-    // transferred in between the pre-lock check and now. Cohost check
-    // similarly: a concurrent action may have stripped the caller.
+    // Coarse moderator gate inside the lock — fresh meta is the
+    // authoritative view of cohost membership. Closes the enumeration
+    // oracle that would otherwise let a non-participant probe `targetId:
+    // u:<n>` and distinguish session members (400 unknown-target) from
+    // non-members (403). Action-specific strict-host gates run below.
     const strictHostNow = !!(
       (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
       (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)

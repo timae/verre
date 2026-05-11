@@ -176,20 +176,6 @@ export function isProviderById(meta: SessionMeta, identityId: string): boolean {
   return !!meta.providerIds?.includes(identityId)
 }
 
-// Returns the participant's session-scoped role for use in
-// authorization branches and UI badges. Order of resolution mirrors the
-// trust hierarchy: strict-host > cohost > provider > taster.
-export type SessionRole = 'host' | 'co_host' | 'provider' | 'taster'
-
-export function sessionRoleByIdentity(meta: SessionMeta, identityId: string): SessionRole {
-  if (meta.hostIdentityId && identityId === meta.hostIdentityId) return 'host'
-  if (meta.hostUserId && identityId === userIdentityId(meta.hostUserId)) return 'host'
-  if (meta.coHostIds?.includes(identityId)) return 'co_host'
-  if (meta.providerIds?.includes(identityId)) return 'provider'
-  return 'taster'
-}
-
-
 export function sanitizeImage(value: unknown): string {
   if (!value || typeof value !== 'string') return ''
   if (!value.startsWith('data:image/')) return ''
