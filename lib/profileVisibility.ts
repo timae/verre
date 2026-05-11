@@ -116,14 +116,24 @@ export async function resolveProfileViewer(
     console.error('[profileVisibility] corrupt enum value', { profileId, value: row.profileVisibility })
     return { status: 'shell', name: row.name }
   }
-  if (row.profileVisibility === 'public-internet') {
-    return {
-      status: 'ok',
-      viewer: { id: viewerId, followsProfile: false, profileFollowsViewer: false },
+  if (viewerId === null) {
+    // Anonymous viewer: no follow edges to resolve. Public-internet tier
+    // returns ok with stub follow flags; stricter tiers fall through to
+    // the shell.
+    if (row.profileVisibility === 'public-internet') {
+      return {
+        status: 'ok',
+        viewer: { id: null, followsProfile: false, profileFollowsViewer: false },
+      }
     }
+    return { status: 'shell', name: row.name }
   }
-  if (viewerId === null) return { status: 'shell', name: row.name }
 
+  // Logged-in non-self viewer: always resolve the follow edges, even for
+  // public-internet tier. Downstream callers use `viewer.followsProfile`
+  // to render the FollowButton state correctly. Skipping the lookup
+  // for public-internet would short-circuit `isFollowing=false` and
+  // cause the button to render "+ follow" for users who already follow.
   const [followsProfile, profileFollowsViewer] = await Promise.all([
     prisma.follow.findUnique({
       where: { followerId_followingId: { followerId: viewerId, followingId: profileId } },
@@ -132,6 +142,13 @@ export async function resolveProfileViewer(
       where: { followerId_followingId: { followerId: profileId, followingId: viewerId } },
     }).then(r => !!r),
   ])
+
+  if (row.profileVisibility === 'public-internet') {
+    return {
+      status: 'ok',
+      viewer: { id: viewerId, followsProfile, profileFollowsViewer },
+    }
+  }
 
   // FoF rescue: only worth a query when the direct edges don't already
   // qualify the viewer under the tier. For `public-followers` direct =
