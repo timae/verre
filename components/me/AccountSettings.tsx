@@ -127,7 +127,83 @@ export function AccountSettings({ onSaved }: Props = {}) {
       <button className="btn-p" onClick={saveAccount} disabled={saving}>{saving ? 'saving…' : '→ save changes'}</button>
 
       <ProfileVisibilitySection />
+      <BlockedUsersSection />
       <DangerZone email={user.email} />
+    </div>
+  )
+}
+
+// Lists the users this account has blocked, with an unblock affordance
+// per row. Read-only otherwise; new blocks happen via the 3-dot menu on
+// profile headers. Newest-first; capped at the same BLOCK_PAIR_CAP that
+// powers the runtime filter (1000) — beyond that, the count itself is
+// abuse-scenario territory.
+function BlockedUsersSection() {
+  type Row = { id: number; name: string; imageUrl: string | null; createdAt: string }
+  const [rows, setRows] = useState<Row[] | null>(null)
+  const [error, setError] = useState('')
+  const [working, setWorking] = useState<number | null>(null)
+
+  async function refresh() {
+    setError('')
+    try {
+      const res = await fetch('/api/me/blocks')
+      if (!res.ok) { setRows([]); setError('Could not load blocked users.'); return }
+      const data = await res.json()
+      setRows(data.blocks ?? [])
+    } catch {
+      setRows([])
+      setError('Could not load blocked users.')
+    }
+  }
+  // Fire once on mount. `refresh` is a fresh closure each render and we
+  // don't want it as a dep — adding it would loop or require useCallback
+  // boilerplate that buys nothing for this single-mount fetch.
+  useEffect(() => { refresh() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function unblock(id: number) {
+    if (working !== null) return
+    setWorking(id)
+    const res = await fetch(`/api/me/blocks/${id}`, { method: 'DELETE' })
+    setWorking(null)
+    if (res.ok) refresh()
+    else setError('Could not unblock.')
+  }
+
+  return (
+    <div style={{marginTop:32,paddingTop:20,borderTop:'1px solid var(--border)'}}>
+      <div style={{fontSize:9,color:'var(--fg-faint)',letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:10}}>blocked users</div>
+      {rows === null && <div style={{fontSize:11,color:'var(--fg-dim)'}}>loading…</div>}
+      {rows !== null && rows.length === 0 && (
+        <div style={{fontSize:11,color:'var(--fg-dim)'}}>You haven&rsquo;t blocked anyone.</div>
+      )}
+      {rows !== null && rows.length > 0 && (
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {rows.map(r => (
+            <div key={r.id} style={{
+              display:'flex',alignItems:'center',gap:10,padding:'8px 12px',
+              borderRadius:6,border:'1px solid var(--border)',background:'var(--bg3)',
+            }}>
+              <div style={{flex:1,minWidth:0,fontSize:12,fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                {r.name}
+              </div>
+              <button
+                onClick={() => unblock(r.id)}
+                disabled={working === r.id}
+                className="btn-s"
+                style={{
+                  background:'rgba(184,64,64,0.08)',
+                  borderColor:'rgba(184,64,64,0.4)',
+                  color:'rgba(184,64,64,0.95)',
+                }}
+              >
+                {working === r.id ? '…' : 'unblock'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
     </div>
   )
 }

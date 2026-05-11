@@ -21,30 +21,34 @@ export async function listProfilePeople(
   params: Promise<{ id: string }>,
   direction: 'followers' | 'following',
 ) {
+  // Every return path carries `private, no-store` — the 404 branch in
+  // particular varies by viewer (tier-denied vs not-exists), so a shared
+  // cache must never serve one viewer's response to another.
+  const noStore = { 'Cache-Control': 'private, no-store' }
   const session = await auth()
-  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401, headers: noStore })
   const viewerId = Number(session.user.id)
 
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const rl = await checkRate(`rl:profile-people:${ip}:1m`, 60, 60)
-  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const { id } = await params
   const profileId = Number(id)
   if (!Number.isInteger(profileId) || profileId < 1) {
-    return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
   const gate = await resolveProfileViewer(profileId, viewerId)
   // 'shell' = profile exists but viewer can't see content — followers/
   // following list is content, so 404 (same shape as the doesn't-exist
   // path so a tier-denied viewer can't distinguish).
-  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
 
   const url = req.nextUrl
   const mutual = url.searchParams.get('mutual')
   const q = (url.searchParams.get('q') || '').trim().slice(0, 64)
-  if (q && q.length < SEARCH_MIN) return NextResponse.json({ users: [], nextCursor: null })
+  if (q && q.length < SEARCH_MIN) return NextResponse.json({ users: [], nextCursor: null }, { headers: noStore })
   const cursor = url.searchParams.get('cursor')
   const cursorId = cursor && Number.isInteger(Number(cursor)) ? Number(cursor) : null
 
@@ -135,6 +139,6 @@ export async function listProfilePeople(
       })),
       nextCursor,
     },
-    { headers: { 'Cache-Control': 'private, no-store' } },
+    { headers: noStore },
   )
 }

@@ -272,129 +272,113 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 </button>
                 {showParticipants && (
                   <div style={{display:'flex',flexDirection:'column',gap:4,marginBottom:12}}>
-                    {/* Sort: me → host → co-hosts → everyone else, so a
-                        participant scanning the list finds themselves
-                        first, then the people running the session. The
-                        server's join order breaks ties within each tier.
-                        Block-pair filter applies after sort. */}
                     {(() => {
+                      // Hoist the meta cast + derived block sets once so the
+                      // per-row render below reads from stable refs.
                       const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string; viewerBlocksOut?: string[]; viewerBlocksIn?: string[] } | null
                       const blocksOut = new Set(meta?.viewerBlocksOut ?? [])
                       const blocksIn = new Set(meta?.viewerBlocksIn ?? [])
                       const isHostId = (id: string) =>
                         !!(meta?.hostIdentityId && id === meta.hostIdentityId)
                         || !!(meta?.hostUserId && id === `u:${meta.hostUserId}`)
+                      // Sort: me → host → co-hosts → everyone else, so a
+                      // participant scanning the list finds themselves first,
+                      // then the people running the session. Server join order
+                      // breaks ties within each tier.
                       const tier = (id: string) => {
                         if (id === myId) return 0
                         if (isHostId(id)) return 1
                         if (coHostIds.includes(id)) return 2
                         return 3
                       }
-                      // Block-pair render matrix:
-                      //   - Third-party (no block-pair): show normally.
-                      //   - Blocker viewing blocked host: show "[blocked]"
-                      //     + clickable (unblock affordance).
-                      //   - Blocker viewing blocked non-host: hide entirely.
-                      //   - Blocked viewing blocker host: anon-style — plain
-                      //     name, no bold, no avatar, no link. Looks like
-                      //     a real anon participant.
-                      //   - Blocked viewing blocker non-host: hide entirely.
-                      // Implemented at the filter step so non-host block-pair
-                      // participants drop out before rendering; rendering
-                      // logic below handles the host cases via flags.
-                      return [...participants]
-                        .filter(p => {
-                          const isPairOther = blocksOut.has(p.id) || blocksIn.has(p.id)
-                          if (!isPairOther) return true
-                          // Host row stays visible (either as "[blocked]" or
-                          // as anon-style depending on direction); non-host
-                          // block-pair drops out.
-                          return isHostId(p.id)
-                        })
-                        .sort((a, b) => tier(a.id) - tier(b.id))
-                    })().map(p => {
-                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string; viewerBlocksOut?: string[]; viewerBlocksIn?: string[] } | null
-                      const isThisHost = !!(meta?.hostIdentityId && p.id === meta.hostIdentityId)
-                        || !!(meta?.hostUserId && p.id === `u:${meta.hostUserId}`)
-                      const isCo = coHostIds.includes(p.id)
-                      const isMe = p.id === myId
-                      // Block-pair render flags. Always a host (non-host
-                      // pair participants were filtered out above).
-                      //   blockedByMe: viewer is the blocker → render
-                      //                "[blocked]" prefix, clickable to
-                      //                unblock.
-                      //   blockingMe:  viewer is the blocked → anon-style
-                      //                (plain weight, no preview).
-                      const blocksOut = new Set(meta?.viewerBlocksOut ?? [])
-                      const blocksIn = new Set(meta?.viewerBlocksIn ?? [])
-                      const blockedByMe = blocksOut.has(p.id)
-                      const blockingMe = blocksIn.has(p.id)
-                      // `u:<userId>` = logged-in account, `a:<uuid>` = anon.
-                      // Only logged-in rows are clickable + bold UNLESS the
-                      // viewer is on the blocked side of a block-pair, in
-                      // which case the blocker is rendered anon-style.
-                      const isLoggedIn = p.id.startsWith('u:')
-                      const isExpanded = expandedId === p.id
-                      // Block-aware clickability:
-                      //   blockedByMe: clickable so the blocker can open the
-                      //     preview (which contains the unblock affordance).
-                      //     Wins on mutual block — the unblock path must
-                      //     stay reachable.
-                      //   blockingMe (without blockedByMe): NOT clickable
-                      //     (anon-style; the blocker should appear like a
-                      //     real anon).
-                      //   default: clickable iff logged-in.
-                      const isClickable = (blockingMe && !blockedByMe) ? false : isLoggedIn
-                      const profileUserId = isLoggedIn ? Number(p.id.slice(2)) : null
-                      const onRowClick = () => {
-                        if (!isClickable) return
-                        setExpandedId(isExpanded ? null : p.id)
-                      }
-                      // Display weight: bold for normal logged-in, plain
-                      // for anon AND for the blocked-side anon-style.
-                      const isBold = isLoggedIn && !blockingMe
-                      return (
-                        <div key={p.id}>
-                          <div style={{
-                            display:'flex',alignItems:'center',gap:8,
-                            padding:'6px 8px',
-                            borderBottom: isExpanded ? 'none' : '1px solid var(--bg3)',
-                            borderRadius: isMe ? 6 : 0,
-                            background: isMe ? 'rgba(200,150,60,0.08)' : 'transparent',
-                            cursor: isClickable ? 'pointer' : 'default',
-                          }} onClick={onRowClick}>
-                            <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
-                            <span style={{flex:1,fontSize:11,fontWeight: isBold ? 700 : 400}}>
-                              {blockedByMe && <span style={{marginRight:4}} title="blocked">🚫</span>}
-                              {p.displayName}
-                              {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
-                            </span>
-                            {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
-                            {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
-                            {/* The cohost-toggle button is hidden when the
-                                target is block-paired with the viewer: the
-                                anon-style render means the blocker shouldn't
-                                appear as a moderation candidate, and the
-                                blocker shouldn't promote someone they've
-                                hidden. */}
-                            {isHost && !isThisHost && !isMe && !blockedByMe && !blockingMe && (
-                              <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}}
-                                onClick={e => { e.stopPropagation(); toggleCoHost(p.id) }}>
-                                {isCo ? 'remove role' : 'make co-host'}
-                              </button>
+                      // Block-pair render matrix (no row is hidden):
+                      //   - Third-party: shown normally.
+                      //   - Blocker viewing blocked (any tier): "[blocked]
+                      //     {name}" + role badge, clickable to unblock.
+                      //   - Blocked viewing blocker (any tier): anon-style
+                      //     — plain name + role badge, no bold, no link.
+                      //   - Mutual block: anon-style, no "[blocked]" prefix.
+                      //     Treated as anon so neither side surfaces "this
+                      //     identifiable person is here." Unblock reachable
+                      //     from the other user's /u/<id> page or settings.
+                      const sorted = [...participants].sort((a, b) => tier(a.id) - tier(b.id))
+                      return sorted.map(p => {
+                        const isThisHost = isHostId(p.id)
+                        const isCo = coHostIds.includes(p.id)
+                        const isMe = p.id === myId
+                        // Block-pair render flags.
+                        //   blockedByMe: viewer is the blocker side.
+                        //   blockingMe:  viewer is the blocked side.
+                        const blockedByMe = blocksOut.has(p.id)
+                        const blockingMe = blocksIn.has(p.id)
+                        // `u:<userId>` = logged-in account, `a:<uuid>` = anon.
+                        const isLoggedIn = p.id.startsWith('u:')
+                        // Clickable when the row isn't anon-styled AND is a
+                        // logged-in account. blockingMe covers both one-way
+                        // blocked and mutual block (anon-style in both cases).
+                        // blockedByMe alone (one-way blocker) stays clickable
+                        // so the blocker can open the inline preview + unblock.
+                        const isClickable = !blockingMe && isLoggedIn
+                        // Defensive: if a mid-session block flip drops a row
+                        // out of clickability, collapse any open preview on
+                        // that row so it doesn't lock open.
+                        const isExpanded = isClickable && expandedId === p.id
+                        const profileUserId = isLoggedIn ? Number(p.id.slice(2)) : null
+                        const onRowClick = () => {
+                          if (!isClickable) return
+                          setExpandedId(isExpanded ? null : p.id)
+                        }
+                        // Bold only on a normal logged-in row — drop bold on
+                        // any block-pair render (anon-style on the blocked
+                        // side, [blocked]+plain on the blocker side, anon on
+                        // mutual).
+                        const isBold = isLoggedIn && !blockedByMe && !blockingMe
+                        // [blocked] prefix only on one-way blocker-side. On
+                        // mutual, the row is anon — no prefix, no signal.
+                        const showBlockedPrefix = blockedByMe && !blockingMe
+                        return (
+                          <div key={p.id}>
+                            <div style={{
+                              display:'flex',alignItems:'center',gap:8,
+                              padding:'6px 8px',
+                              borderBottom: isExpanded ? 'none' : '1px solid var(--bg3)',
+                              borderRadius: isMe ? 6 : 0,
+                              background: isMe ? 'rgba(200,150,60,0.08)' : 'transparent',
+                              cursor: isClickable ? 'pointer' : 'default',
+                            }} onClick={onRowClick}>
+                              <span style={{color:'var(--accent2)',fontSize:10}}>→</span>
+                              <span style={{flex:1,fontSize:11,fontWeight: isBold || showBlockedPrefix ? 700 : 400}}>
+                                {showBlockedPrefix && <span style={{color:'rgba(184,64,64,0.95)',fontWeight:400,marginRight:4,fontFamily:'var(--mono)'}}>[blocked]</span>}
+                                {p.displayName}
+                                {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
+                              </span>
+                              {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
+                              {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
+                              {/* Cohost role-toggle stays available on block-pair
+                                  rows so a host can elect / demote a blocked or
+                                  blocking participant. The anon-style render on
+                                  the blocked side doesn't change moderation
+                                  affordances — block is a UI primitive, not a
+                                  moderation primitive. */}
+                              {isHost && !isThisHost && !isMe && (
+                                <button className="btn-s" style={{fontSize:9,padding:'3px 8px'}}
+                                  onClick={e => { e.stopPropagation(); toggleCoHost(p.id) }}>
+                                  {isCo ? 'remove role' : 'make co-host'}
+                                </button>
+                              )}
+                            </div>
+                            {isExpanded && profileUserId !== null && (
+                              <ProfilePreviewInline
+                                userId={profileUserId}
+                                isSelf={isMe}
+                                viewerLoggedIn={!!myId && myId.startsWith('u:')}
+                                myId={myId && myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+                              />
                             )}
                           </div>
-                          {isExpanded && profileUserId !== null && (
-                            <ProfilePreviewInline
-                              userId={profileUserId}
-                              isSelf={isMe}
-                              viewerLoggedIn={!!myId && myId.startsWith('u:')}
-                              myId={myId && myId.startsWith('u:') ? Number(myId.slice(2)) : null}
-                            />
-                          )}
-                        </div>
-                      )
-                    })}
+                        )
+                      })
+                    })()}
                   </div>
                 )}
               </div>

@@ -19,16 +19,19 @@ import { requireParticipant, authInvalid } from '@/lib/identity'
 // accepted asymmetry — Verre's block primitive is a UI filter, not a
 // secrecy mechanism inside a shared tasting.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
+  // Every return path carries `private, no-store` — the payload contains
+  // session-scoped display names and the participant gate varies by viewer.
+  const noStore = { 'Cache-Control': 'private, no-store' }
   const { code } = await params
   const c = normalizeCode(code)
-  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   const session = await auth()
 
   // Session-existence check before participant check. 404 on a deleted /
   // never-existed session lets the client distinguish "go home" from
   // "your token is bad, retry join" (401 + x-vr-auth: invalid).
   if (!(await redis.exists(k.meta(c)))) {
-    return NextResponse.json({ error: 'not found' }, { status: 404 })
+    return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   }
 
   const caller = await requireParticipant(c, req, session)
@@ -62,5 +65,5 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
     result[identityId].ratings[wineId] = JSON.parse(val)
   }
 
-  return NextResponse.json(result)
+  return NextResponse.json(result, { headers: noStore })
 }

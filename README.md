@@ -24,6 +24,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Public profiles at `/u/<id>` showing recent check-ins and stats
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
 - Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension
+- Mute (quietly hide someone's content from your feed) and Block (full break — bidirectional invisibility outside shared sessions, render-only inside)
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -163,6 +164,11 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
 | GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |
 | PATCH | /api/me/visibility | Update own profile-visibility (body: `{visibility, fofEnabled}`); 30/h |
+| POST | /api/me/mutes/:id | Mute user `:id`; 60/h shared with DELETE |
+| DELETE | /api/me/mutes/:id | Unmute user `:id`; idempotent |
+| GET | /api/me/blocks | List of users I've blocked (for the settings UI); newest-first |
+| POST | /api/me/blocks/:id | Block user `:id`; 30/h |
+| DELETE | /api/me/blocks/:id | Unblock user `:id`; uncapped (recovery path) |
 
 **Sessions**
 

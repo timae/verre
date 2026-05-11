@@ -108,6 +108,6 @@ export async function recordAnonToken(code: string, token: string, id: string): 
 export function authInvalid(error = 'identity required', status = 401): NextResponse {
   return NextResponse.json({ error }, {
     status,
-    headers: { 'X-Vr-Auth': 'invalid' },
+    headers: { 'X-Vr-Auth': 'invalid', 'Cache-Control': 'private, no-store' },
   })
 }

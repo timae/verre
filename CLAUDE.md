@@ -271,6 +271,56 @@ Per-user setting controlling who can read profile content (`/u/<id>` page, `/api
 
 **Audit log (`profile_visibility_log`):** internal-only, no API surface, no UI. One row per change (tier or fof), plus an initial signup row with `from_tier=NULL` for forensic completeness. Cascade rule is `ON DELETE SET NULL` — the trail survives account deletion (tombstone pattern) so post-mortem queries can still reconstruct timelines for deleted users.
 
+### Mute (`user_mutes`)
+
+Per-pair soft-hide: A mutes B → A no longer sees B's content in A's feed. B is unaware. Independent of follow state, profile visibility, search, direct profile reads, likes, tags, and sessions — feed-only filter.
+
+- `user_mutes(muter_id, muted_id, created_at)`, composite PK, CHECK forbidding self-mute, FK CASCADE both sides. No data on the row beyond the edge itself.
+- `lib/userMute.ts` is the single sanctioned write path. `setMute` is rate-limited 60/h/user (shared POST + DELETE). FK violation on a non-existent target is swallowed to return uniform success — closes the user-id enumeration oracle.
+- `/api/feed` Promise.all-batches `mutedUserIds(viewerId)` alongside the visibility check; the mute set is subtracted from `allowedNetworkIds` before the cursor query. Mute composes with the visibility tier filter — both must pass.
+- `viewerMutes` flag is surfaced in `/api/users/[id]` full payload + the SSR `/u/[id]` render. Only meaningful on the non-shell / non-blocked view. The mute toggle in the UI lives behind the 3-dot menu on `ProfileHeader` (alongside Block).
+- TanStack Query invalidation on toggle: `['user-profile', userId]` (refresh viewerMutes flag), `['feed']` (refresh feed filter). Wired in `UserProfileModal` / `ProfilePreviewInline` / the `ProfileActionsMenu` consumer chain.
+
+### Profile blocking (`user_blocks`)
+
+Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invisibility — A blocks B → they vanish from each other's feed, search, profile reads, follower/following lists and counts, likes, tags, "had a sip" flow. Inside shared sessions, block goes render-only (locked design — block is a UI primitive, not a secrecy mechanism inside a shared tasting).
+
+**Schema.** `user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair. Unblock restores visibility everywhere.
+
+**Authorization chokepoints (`lib/userBlock.ts`):**
+- `anyBlockBetween(a, b)` — OR'd both directions. Fast-path primitive used by `viewerCanSeeAuthor` to short-circuit visibility resolution.
+- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked).
+- `blockPairIds(userId)` — `{ blockedByMe, blockingMe }` Sets, capped at 1000 per direction. Hot-path filter set for feed, search, in-session participant matrix.
+- `setBlock(blockerId, blockedId, mute)` — single sanctioned write path. POST rate-limited 30/h/user; DELETE intentionally uncapped (recovery from a stolen-cookie burst must always work). FK violation swallowed.
+
+**Resolver tri/quad-state.** `resolveProfileViewer` now returns `'ok' | 'shell' | 'blocked-by-me' | 'gone'`. The block check runs **before** the visibility tier — block is the strictest primitive. `authorBlocksViewer` collapses to `'gone'` so the blocked viewer can't distinguish "I was blocked" from "user doesn't exist." Sub-routes (`/followers`, `/following`, `/badges`) gate on `status === 'ok'` so any non-ok state → 404.
+
+**Mutual-block resolver behaviour.** When A and B have blocked each other, both directions of the check fire and `authorBlocksViewer` is evaluated first in the route, so **both sides resolve to `'gone'` (404)** — neither party gets the `'blocked-by-me'` stripped view on `/u/<id>`. Locked intent: mutual block treats the other as "anon-equivalent" everywhere, including profile reads, mirroring the in-session participants matrix where mutual rows render anon-style with no `[blocked]` marker on either side. The blocker reaches unblock via **Settings → Blocked users**, which is always available regardless of resolver state.
+
+**Counts are globally subtracted, not per-viewer.** Locked design ("Instagram-style"):
+- Like counts: a like by user X on a check-in by author Y is invisible to ALL viewers once a block exists between X and Y. Implemented via a batched `COUNT(DISTINCT cl.user_id)` SQL query that handles mutual A↔B blocks correctly.
+- Follower / following counts: same — block-pair edges drop from the count shown to every viewer.
+- Tag rendering: block-pair tags hidden from everyone (feed uses an `authorId:tagUserId` lookup set; profileLoad uses an owner-anchored set).
+
+The single underlying rule: counts and renders depend on the **author** (or check-in owner), not the viewer. A SET-based deduplication in `lib/profileLoad.ts` prevents mutual-block from double-counting.
+
+**Inside-session rules (render-only).** Locked matrix in the participants list (`SessionPanel`) — no row is ever hidden:
+- Third party → both shown normally.
+- Blocker viewing blocked (any tier: host, cohost, non-host) → `[blocked] {name}` + role badge, clickable to open `ProfilePreviewInline` with inline unblock.
+- Blocked viewing blocker (any tier) → anon-style: plain name + role badge if any, no bold, no avatar, no link.
+- Mutual block (A blocks B and B blocks A) → anon-style with **no `[blocked]` prefix** on either side. Both sides treat the other as an anon participant; unblock is reachable from the other user's `/u/<id>` page or settings → Blocked users. The prefix is suppressed because surfacing it on mutual would signal "this identifiable person blocked you back."
+- Cohost role-toggle (`make co-host` / `remove role`) stays available to the host on block-pair rows. Block is a UI primitive, not a moderation one — kick/ban is a separate planned primitive.
+
+Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
+
+`/api/session/[code]` GET adds `viewerBlocksOut` + `viewerBlocksIn` arrays (identity-ids, scoped to in-session participants only — never the viewer's full block list). Anon viewers get empty arrays. Response has `Cache-Control: private, no-store` since it varies by viewer.
+
+**Follow endpoint scenarios:** 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.
+
+**SECURITY: don't log `viewerBlocksOut`/`viewerBlocksIn`.** These arrays carry the viewer's block-pair list scoped to a session. They must not be mirrored to analytics, stored in shared cache, or persisted outside the response.
+
+**Out of scope (separate primitive, planned):** kick / ban (host moderation per session) — different intent, different scope. The two never interact.
+
 ### Rate limiting
 
 Redis-backed limiters via `lib/rateLimit.ts`. Use `peekRate` / `peekRates` to check without incrementing (login does this so successful logins don't count); `checkRate` / `checkRates` to check + increment atomically. `formatWait(seconds)` produces the humanized "in 3 minutes" / "in 45 seconds" string surfaced in 429 responses.
@@ -285,6 +335,9 @@ Limits in production:
 | `/api/me/avatar` POST + DELETE | 10/hour/user | Storage abuse from a stolen session cookie — bounded by 10 uploads/hour, each replacing the prior. |
 | `/api/me/visibility` GET + PATCH | 60/min/user (route-level, distinct counters for GET and PATCH) | Read-side noise + general burst protection. |
 | `/api/me/visibility` PATCH (inner) | 30/hour/user, increments only on actual change | Stolen cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-checkRate-on-change so no-op submits don't burn slots. |
+| `/api/me/mutes/:id` POST + DELETE | 60/hour/user (shared) | Stolen cookie thrashing the table or generating noise. |
+| `/api/me/blocks/:id` POST | 30/hour/user | Stolen cookie burst-blocking. |
+| `/api/me/blocks/:id` DELETE | uncapped | Recovery path must remain open against a burst-block attack. |
 | `/api/session` POST | 10/10min/user (logged-in) or /IP (anon) | Code-space exhaustion. |
 | `/api/session/join` POST | 30 invalid attempts/min/IP, counter cleared on valid code | Code-guessing. |
 

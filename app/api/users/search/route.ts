@@ -37,7 +37,12 @@ export async function GET(req: NextRequest) {
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
 
   const q = req.nextUrl.searchParams.get('q')?.trim() ?? ''
-  if (q.length < 2) return NextResponse.json([])
+  // Cache-Control on every return path. Search is viewer-dependent
+  // (block-pair filter, isFollowing, tier-gate decisions vary by viewer).
+  // Empty responses share the same posture so a CDN can't cache them
+  // cross-viewer.
+  const noStore = { 'Cache-Control': 'private, no-store' }
+  if (q.length < 2) return NextResponse.json([], { headers: noStore })
 
   // Substring search; the pg_trgm GIN index on users.name (added in the
   // privacy-tiers migration) makes this scale.
@@ -48,7 +53,7 @@ export async function GET(req: NextRequest) {
     orderBy: { name: 'asc' },
   })
 
-  if (candidates.length === 0) return NextResponse.json([])
+  if (candidates.length === 0) return NextResponse.json([], { headers: noStore })
 
   const candidateIds = candidates.map(c => c.id)
   const [visMap, viewerMap, myFollowing, blockPairs] = await Promise.all([
@@ -72,7 +77,7 @@ export async function GET(req: NextRequest) {
   const visibleCandidates = candidates.filter(c =>
     !blockPairs.blockedByMe.has(c.id) && !blockPairs.blockingMe.has(c.id)
   )
-  if (visibleCandidates.length === 0) return NextResponse.json([])
+  if (visibleCandidates.length === 0) return NextResponse.json([], { headers: noStore })
 
   const result = visibleCandidates.map(c => {
     const isFollowing = followingSet.has(c.id)
@@ -99,8 +104,5 @@ export async function GET(req: NextRequest) {
     return { id: c.id, name: c.name, gated: true, isFollowing }
   })
 
-  // Response varies by viewer (isFollowing per row, tier-gate stub vs
-  // full payload, block-pair drop). private no-store so a CDN can't
-  // serve one viewer's results to another.
-  return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+  return NextResponse.json(result, { headers: noStore })
 }

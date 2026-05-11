@@ -116,21 +116,13 @@ export default function ComparePage() {
   // Build the rater list from the id-keyed allRatings shape. Each entry is
   // { id, displayName, ratings } — id drives state, displayName drives UI.
   //
-  // Block-pair filter: rating rows from block-pair members are hidden
-  // entirely (both directions). Locked design — Compare is the one
-  // surface where block goes beyond render-style: row drops out, not
-  // anon-style render. Participants list keeps a host row visible for
-  // unblock affordance, but Compare's per-rating layout would surface
-  // tasting notes / flavor profile (high-cardinality identity tells)
-  // even with anon-style, so we drop the row.
-  const blockMeta = sessionMeta as (typeof sessionMeta & { viewerBlocksOut?: string[]; viewerBlocksIn?: string[] }) | null
-  const compareBlocked = new Set([
-    ...(blockMeta?.viewerBlocksOut ?? []),
-    ...(blockMeta?.viewerBlocksIn ?? []),
-  ])
+  // No block-pair filter on Compare. Filtering by absence is itself a
+  // leak: the blocked side would see the blocker's column missing and
+  // infer the block. Show every rater under their plain display name —
+  // Compare has no profile-link or avatar surfaces to strip anyway.
   type Rater = { id: string; displayName: string; ratings: Record<string, RatingMeta> }
   const ratersWithRatings: Rater[] = Object.entries(allRatings)
-    .filter(([id, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0 && !compareBlocked.has(id))
+    .filter(([, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0)
     .map(([id, bucket]) => ({ id, displayName: bucket.displayName, ratings: bucket.ratings }))
 
   const ratedWines = wines.filter(w => ratersWithRatings.some(r => r.ratings[w.id]?.score))
@@ -221,10 +213,6 @@ export default function ComparePage() {
             ? (allWineRatings.reduce((s, r) => s + (r.rating.score || 0), 0) / allWineRatings.length).toFixed(1)
             : '—'
 
-          // Look up via `ratersWithRatings` (block-filtered) rather than
-          // `allRatings` directly so a freshly-blocked rater whose id is
-          // still in `viewUser` state can't bypass the filter and leak
-          // their rating + notes.
           const singleRating = activeUserId
             ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
             : null

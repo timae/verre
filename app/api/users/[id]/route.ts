@@ -8,22 +8,29 @@ import { isMuted } from '@/lib/userMute'
 import { prisma } from '@/lib/prisma'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Every return path carries `private, no-store`. The 200/404 split is
+  // viewer-dependent (gate state), so a shared cache must never serve
+  // one viewer's response to another.
+  const noStore = { 'Cache-Control': 'private, no-store' }
   const session = await auth()
   const { id } = await params
   const userId = parsePathId(id)
   if (userId === null) {
-    return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+    return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
   // Public, anonymous-readable. Rate-limited per-IP to prevent
   // enumeration + DB-load amplification.
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const rl = await checkRate(`rl:profile:${ip}:1m`, 60, 60)
-  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const viewerId = session?.user ? Number(session.user.id) : null
   const gate = await resolveProfileViewer(userId, viewerId)
-  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (gate.status === 'gone') return NextResponse.json(
+    { error: 'not found' },
+    { status: 404, headers: noStore },
+  )
 
   // Blocker-side stripped view: viewer blocked this profile. Render the
   // name (so they recognise who they blocked) but nothing else — no
@@ -34,7 +41,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (gate.status === 'blocked-by-me') {
     return NextResponse.json(
       { id: userId, name: gate.name, blocked: true },
-      { headers: { 'Cache-Control': 'private, no-store' } },
+      { headers: noStore },
     )
   }
 
@@ -51,12 +58,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       : false
     return NextResponse.json(
       { id: userId, name: gate.name, gated: true, isFollowing },
-      { headers: { 'Cache-Control': 'private, no-store' } },
+      { headers: noStore },
     )
   }
 
   const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
-  if (!profile) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (!profile) return NextResponse.json(
+    { error: 'not found' },
+    { status: 404, headers: noStore },
+  )
   // viewerMutes is included only in the full payload (not the shell).
   // Per product decision: the mute button only appears on the full
   // profile view, where the viewer has chosen to look at content.
@@ -68,6 +78,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // CDN can't serve one viewer's payload to another.
   return NextResponse.json(
     { ...profile, viewerMutes },
-    { headers: { 'Cache-Control': 'private, no-store' } },
+    { headers: noStore },
   )
 }

@@ -68,6 +68,17 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
     qc.invalidateQueries({ queryKey: ['feed'] })
   }
 
+  // A block toggle reshapes every viewer surface: profile (gate flips
+  // to blocked-by-me or back), feed (block-pair authors filtered),
+  // followers/following lists (block-pair rows + count drop), session
+  // meta (viewerBlocksOut/In). Invalidate the lot.
+  function onBlockToggle() {
+    qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+    qc.invalidateQueries({ queryKey: ['feed'] })
+    qc.invalidateQueries({ queryKey: ['profile-people'] })
+    qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-meta' })
+  }
+
   return (
     <Modal onClose={onClose} maxWidth={860} maxHeight="90vh">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -120,6 +131,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
             viewerMutes={data.viewerMutes}
             onFollowToggle={onFollowToggle}
             onMuteToggle={onMuteToggle}
+            onBlockToggle={onBlockToggle}
           />
           <ProfileTabs
             profileUserId={data.id}

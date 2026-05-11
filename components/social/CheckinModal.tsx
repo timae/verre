@@ -104,13 +104,9 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Reset flavors when the user picks a different type (the dimensions change).
-  // Skip the very first run so editing a check-in keeps its stored flavors.
-  const firstTypeChange = useRef(true)
-  useEffect(() => {
-    if (firstTypeChange.current) { firstTypeChange.current = false; return }
-    setFlavors(fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
-  }, [type])
+  // Type-change flavor reset lives in the chip's onClick. An effect on
+  // [type] would also fire on mount, and StrictMode's double-invoke
+  // wipes the initial flavors of an edited check-in.
 
   async function handlePhoto(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return
@@ -199,7 +195,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
           <div className="fl">type</div>
           <div className="chips">
             {TYPES.map(t => (
-              <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => setType(t.k)}>
+              <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => {
+                if (t.k === type) return
+                setType(t.k)
+                setFlavors(getFL(t.k).reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
+              }}>
                 <span>{t.ico}</span>{t.l}
               </div>
             ))}
