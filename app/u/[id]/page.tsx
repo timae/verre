@@ -4,6 +4,7 @@ import { notFound } from 'next/navigation'
 import { ProfileTabs } from '@/components/profile/ProfileTabs'
 import { ProfileHeader } from '@/components/profile/ProfileHeader'
 import { ProfileShell } from '@/components/profile/ProfileShell'
+import { ProfileBlockedView } from '@/components/profile/ProfileBlockedView'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { loadProfile } from '@/lib/profileLoad'
 import { isMuted } from '@/lib/userMute'
@@ -38,8 +39,16 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   // button. The user is findable but their content (XP, badges, check-ins,
   // social graph) stays hidden until the gate flips. Avatar is part of
   // the gated content — never include the imageUrl in the shell.
+  //
+  // Blocker-side viewers see the ProfileBlockedView: name + dummy avatar
+  // + unblock button only. No follow button, no XP, no content. The
+  // blocked-side equivalent is 'gone' → 404 (handled above).
   let profileBody: React.ReactNode
-  if (gate.status === 'shell') {
+  if (gate.status === 'blocked-by-me') {
+    profileBody = (
+      <ProfileBlockedView userId={userId} userName={gate.name} myId={myId} />
+    )
+  } else if (gate.status === 'shell') {
     // Hydrate `isFollowing` so the follow button reflects current state
     // for logged-in viewers. The follow lookup is the only DB call here
     // — name comes from the gate result.

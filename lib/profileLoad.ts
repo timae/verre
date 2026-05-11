@@ -68,6 +68,33 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   })
   if (!user) return null
 
+  // Block-pair counts: subtract any follower/following edge where the
+  // other end is in a block-pair with the profile owner. Locked design:
+  // counts drop globally on block (Instagram-style); same number shown
+  // to every viewer.
+  //
+  // Implementation: first resolve the SET of block-pair partner ids
+  // (deduplicated via Set so a mutual A↔B block — two user_blocks rows
+  // for the same pair — only counts once). Then count intersecting
+  // follow edges via a simple `IN (...)`. Earlier "joined count" shape
+  // double-counted mutual block-pairs.
+  const blockPartnerRows = await prisma.userBlock.findMany({
+    where: { OR: [{ blockerId: userId }, { blockedId: userId }] },
+    select: { blockerId: true, blockedId: true },
+  })
+  const blockPartnerIds = new Set<number>()
+  for (const r of blockPartnerRows) {
+    blockPartnerIds.add(r.blockerId === userId ? r.blockedId : r.blockerId)
+  }
+  const [followersBlockedCount, followingBlockedCount] = blockPartnerIds.size > 0
+    ? await Promise.all([
+        prisma.follow.count({ where: { followingId: userId, followerId: { in: [...blockPartnerIds] } } }),
+        prisma.follow.count({ where: { followerId: userId, followingId: { in: [...blockPartnerIds] } } }),
+      ])
+    : [0, 0]
+  const adjustedFollowers = Math.max(0, user._count.followers - followersBlockedCount)
+  const adjustedFollowing = Math.max(0, user._count.following - followingBlockedCount)
+
   const flavorFull = await getProfileFlavor(userId)
   // For non-owners we redact `activeRatings` because that exact count
   // combined with the public `lifetimeRatings` would let any visitor
@@ -102,6 +129,47 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       )
     : new Set<number>()
 
+  // Block-pair like adjustment for the profile's own check-ins. Same
+  // global symmetric rule as feed: a like by user X on a check-in by
+  // user Y is invisible to every viewer once X↔Y has a block.
+  //
+  // COUNT(DISTINCT cl.user_id) protects against a mutual A↔B block
+  // (two rows in user_blocks for the same pair) double-counting the
+  // single like row.
+  const profileCheckinIds = recentCheckins.map(c => c.id)
+  const profileBlockHiddenLikes = new Map<number, number>()
+  if (profileCheckinIds.length > 0) {
+    const rows = await prisma.$queryRaw<{ checkin_id: number; n: bigint }[]>`
+      SELECT cl.checkin_id AS checkin_id, COUNT(DISTINCT cl.user_id)::bigint AS n
+      FROM checkin_likes cl
+      JOIN user_blocks b
+        ON (b.blocker_id = cl.user_id AND b.blocked_id = ${userId}::integer)
+        OR (b.blocker_id = ${userId}::integer AND b.blocked_id = cl.user_id)
+      WHERE cl.checkin_id = ANY(${profileCheckinIds}::int[])
+      GROUP BY cl.checkin_id
+    `
+    for (const r of rows) profileBlockHiddenLikes.set(r.checkin_id, Number(r.n))
+  }
+
+  // Block-pair tag filter on the profile's own check-ins. Tag rendering
+  // drops block-pair tags from every viewer's view of the profile.
+  // The "other side" of each block-pair row (not the profile owner) is
+  // the user id to filter out of the tag list.
+  const tagUserIds = recentCheckins.flatMap(c => c.tags.map(t => t.user.id))
+  const blockedTagUserIds = tagUserIds.length > 0
+    ? new Set(
+        (await prisma.userBlock.findMany({
+          where: {
+            OR: [
+              { blockerId: userId, blockedId: { in: tagUserIds } },
+              { blockedId: userId, blockerId: { in: tagUserIds } },
+            ],
+          },
+          select: { blockerId: true, blockedId: true },
+        })).map(b => b.blockerId === userId ? b.blockedId : b.blockerId)
+      )
+    : new Set<number>()
+
   return {
     id: user.id,
     name: user.name,
@@ -113,8 +181,8 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       sessions: user.lifetimeSessionsJoined,
       badges: user._count.earnedBadges,
       checkins: user._count.checkins,
-      followers: user._count.followers,
-      following: user._count.following,
+      followers: adjustedFollowers,
+      following: adjustedFollowing,
     },
     flavor,
     isFollowing,
@@ -133,9 +201,9 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       city: c.city,
       country: c.country,
       createdAt: c.createdAt,
-      likeCount: c._count.likes,
+      likeCount: Math.max(0, c._count.likes - (profileBlockHiddenLikes.get(c.id) ?? 0)),
       liked: likedSet.has(c.id),
-      tags: c.tags?.map(t => t.user) ?? [],
+      tags: (c.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
     })),
   }
 }

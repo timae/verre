@@ -4,6 +4,7 @@ import { Modal } from '@/components/ui/Modal'
 import { ProfileHeader } from './ProfileHeader'
 import { ProfileTabs } from './ProfileTabs'
 import { ProfileShell } from './ProfileShell'
+import { ProfileBlockedView } from './ProfileBlockedView'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
@@ -12,15 +13,21 @@ interface Props {
   onClose: () => void
 }
 
-// /api/users/[id] returns a shell shape `{id, name, gated, isFollowing}`
-// when the viewer's tier is denied, otherwise the full LoadedProfile +
-// a top-level `viewerMutes` flag. Discriminate before reading content
-// fields, otherwise `data.level.icon` etc. throw.
-type ProfileResponse = (LoadedProfile & { viewerMutes?: boolean }) | {
-  id: number
-  name: string
-  gated: true
-  isFollowing: boolean
+// /api/users/[id] returns three shapes:
+//   - blocked-by-me: `{id, name, blocked: true}` — viewer blocked target
+//   - tier-gated:    `{id, name, gated: true, isFollowing}` — viewer can't see content per tier
+//   - full payload:  LoadedProfile + `viewerMutes`
+// Discriminate before reading content fields, otherwise `data.level.icon`
+// etc. throw. (Blocked-side viewers — author blocked viewer — see 404
+// from the server, so the modal never opens for them; no client branch
+// needed for that direction.)
+type ProfileResponse =
+  | (LoadedProfile & { viewerMutes?: boolean })
+  | { id: number; name: string; gated: true; isFollowing: boolean }
+  | { id: number; name: string; blocked: true }
+
+function isBlocked(p: ProfileResponse): p is { id: number; name: string; blocked: true } {
+  return (p as { blocked?: boolean }).blocked === true
 }
 
 function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
@@ -83,7 +90,15 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
         </div>
       )}
 
-      {data && isGated(data) && (
+      {data && isBlocked(data) && (
+        <ProfileBlockedView
+          userId={data.id}
+          userName={data.name}
+          myId={myId}
+        />
+      )}
+
+      {data && !isBlocked(data) && isGated(data) && (
         <ProfileShell
           userId={data.id}
           userName={data.name}
@@ -93,7 +108,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
         />
       )}
 
-      {data && !isGated(data) && (
+      {data && !isBlocked(data) && !isGated(data) && (
         <>
           <ProfileHeader
             userId={data.id}

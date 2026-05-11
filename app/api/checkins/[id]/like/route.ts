@@ -8,6 +8,25 @@ import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
 
 type Ctx = { params: Promise<{ id: string }> }
 
+// Block-pair-adjusted like count for one check-in. Match the global
+// rule applied in feed + profileLoad: a like by user X on a check-in
+// by author Y is invisible to ALL viewers once X↔Y has a block in
+// either direction. Returning the unadjusted count would let the
+// like client display a number that disagrees with the feed/profile
+// render of the same check-in.
+async function blockAdjustedLikeCount(checkinId: number, authorId: number): Promise<number> {
+  const total = await prisma.checkinLike.count({ where: { checkinId } })
+  const hidden = await prisma.$queryRaw<{ n: bigint }[]>`
+    SELECT COUNT(DISTINCT cl.user_id)::bigint AS n
+    FROM checkin_likes cl
+    JOIN user_blocks b
+      ON (b.blocker_id = cl.user_id AND b.blocked_id = ${authorId}::integer)
+      OR (b.blocker_id = ${authorId}::integer AND b.blocked_id = cl.user_id)
+    WHERE cl.checkin_id = ${checkinId}::integer
+  `
+  return Math.max(0, total - Number(hidden[0]?.n ?? 0))
+}
+
 export async function POST(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await auth()
@@ -38,7 +57,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     create: { userId, checkinId },
     update: {},
   })
-  const count = await prisma.checkinLike.count({ where: { checkinId } })
+  const count = await blockAdjustedLikeCount(checkinId, target.userId)
   return NextResponse.json({ liked: true, count })
 }
 
@@ -65,6 +84,6 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   }
 
   await prisma.checkinLike.deleteMany({ where: { userId, checkinId } })
-  const count = await prisma.checkinLike.count({ where: { checkinId } })
+  const count = await blockAdjustedLikeCount(checkinId, target.userId)
   return NextResponse.json({ liked: false, count })
 }

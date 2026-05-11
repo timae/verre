@@ -68,6 +68,20 @@ export async function listProfilePeople(
   const qClause = q ? Prisma.sql`AND u.name ILIKE ${'%' + qEscaped + '%'}` : Prisma.empty
   const cursorClause = cursorId ? Prisma.sql`AND u.id < ${cursorId}` : Prisma.empty
 
+  // Block-pair filter: drop rows where the listed user has a block-pair
+  // with the profile owner (either direction). Globally symmetric — the
+  // same list is returned to any viewer, and the row-count matches the
+  // adjusted follower/following stats in loadProfile.
+  //
+  // Done as a NOT EXISTS so block-pair size doesn't materialise into an
+  // IN list (a power user with thousands of blocks would otherwise inject
+  // a huge array here).
+  const blockClause = Prisma.sql`AND NOT EXISTS (
+    SELECT 1 FROM user_blocks b
+    WHERE (b.blocker_id = ${profileId} AND b.blocked_id = ${otherCol})
+       OR (b.blocker_id = ${otherCol} AND b.blocked_id = ${profileId})
+  )`
+
   const rows = await prisma.$queryRaw<{ id: number; name: string; xp: number; image_url: string | null }[]>`
     SELECT u.id, u.name, u.xp, u.image_url
     FROM follows f
@@ -76,6 +90,7 @@ export async function listProfilePeople(
       ${mutualClause}
       ${qClause}
       ${cursorClause}
+      ${blockClause}
     ORDER BY u.id DESC
     LIMIT ${PAGE + 1}
   `
@@ -106,15 +121,20 @@ export async function listProfilePeople(
       )
     : null
 
-  return NextResponse.json({
-    users: slice.map(r => ({
-      id: r.id,
-      name: r.name,
-      xp: r.xp,
-      imageUrl: r.image_url,
-      isFollowing: myFollowing.has(r.id),
-      profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
-    })),
-    nextCursor,
-  })
+  // Response varies by viewer (isFollowing per row). private no-store
+  // so a CDN can't serve one viewer's list to another.
+  return NextResponse.json(
+    {
+      users: slice.map(r => ({
+        id: r.id,
+        name: r.name,
+        xp: r.xp,
+        imageUrl: r.image_url,
+        isFollowing: myFollowing.has(r.id),
+        profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
+      })),
+      nextCursor,
+    },
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }

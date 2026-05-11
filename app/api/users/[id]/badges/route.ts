@@ -37,11 +37,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   })
   const earnedMap = Object.fromEntries(earned.map(e => [e.badgeId, e]))
 
-  return NextResponse.json({
-    badges: ALL_BADGES.map(b => ({
-      ...b,
-      earned: !!earnedMap[b.id],
-      earned_at: earnedMap[b.id]?.earnedAt || null,
-    })),
-  })
+  // Whether the route returns 200 or 404 depends on the viewer's block
+  // and visibility-tier state vs the target. private no-store so a CDN
+  // can't serve one viewer's response (200 or 404) to another.
+  return NextResponse.json(
+    {
+      badges: ALL_BADGES.map(b => ({
+        ...b,
+        earned: !!earnedMap[b.id],
+        earned_at: earnedMap[b.id]?.earnedAt || null,
+      })),
+    },
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }

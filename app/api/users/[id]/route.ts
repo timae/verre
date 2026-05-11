@@ -25,6 +25,19 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const gate = await resolveProfileViewer(userId, viewerId)
   if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
 
+  // Blocker-side stripped view: viewer blocked this profile. Render the
+  // name (so they recognise who they blocked) but nothing else — no
+  // imageUrl, no XP, no check-ins, no isFollowing affordance. Only an
+  // unblock button surfaces on the frontend via the `blocked: true`
+  // discriminator. Cache-Control private so a CDN can't serve another
+  // viewer the same response.
+  if (gate.status === 'blocked-by-me') {
+    return NextResponse.json(
+      { id: userId, name: gate.name, blocked: true },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    )
+  }
+
   // Tier-gated: shell payload only. Display name + id + isFollowing —
   // never the avatar, XP, badges, check-ins, or social-graph data. The
   // shell tells the viewer "this user exists, here's the follow button"
@@ -36,7 +49,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
           select: { followerId: true },
         }))
       : false
-    return NextResponse.json({ id: userId, name: gate.name, gated: true, isFollowing })
+    return NextResponse.json(
+      { id: userId, name: gate.name, gated: true, isFollowing },
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    )
   }
 
   const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
@@ -47,5 +63,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const viewerMutes = viewerId !== null && viewerId !== userId
     ? await isMuted(viewerId, userId)
     : false
-  return NextResponse.json({ ...profile, viewerMutes })
+  // Response varies by viewer (viewerMutes, isFollowing, viewer-dependent
+  // counts after block-pair adjustment). Force `private, no-store` so a
+  // CDN can't serve one viewer's payload to another.
+  return NextResponse.json(
+    { ...profile, viewerMutes },
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }

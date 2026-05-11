@@ -166,13 +166,21 @@ export async function POST(req: NextRequest) {
     },
   })
 
-  // Save tags — only mutual follows (verify server-side)
+  // Save tags — only mutual follows (verify server-side). Block-pair
+  // members are excluded from the write: tagging a user the author
+  // block-pairs with shouldn't persist a row that the render-time
+  // filter would then hide globally anyway.
   if (Array.isArray(taggedUserIds) && taggedUserIds.length > 0) {
     const mutuals = await prisma.$queryRaw<{ id: number }[]>`
       SELECT f1.following_id AS id
       FROM follows f1
       JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
       WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+        AND NOT EXISTS (
+          SELECT 1 FROM user_blocks b
+          WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
+             OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
+        )
     `
     const validIds = mutuals.map(m => m.id)
     if (validIds.length > 0) {

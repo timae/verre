@@ -14,17 +14,21 @@ interface Props {
   myId: number | null
 }
 
-// /api/users/[id] returns a shell payload `{id, name, gated, isFollowing}`
-// when the viewer's tier doesn't qualify them to see the profile owner's
-// content. Discriminate on `gated` before reading any content fields,
-// otherwise `data.level.icon` / `data.xp.toLocaleString()` throw. The
-// full payload also includes `viewerMutes` (handled in the modal, not
-// surfaced here — the inline preview doesn't render a mute button).
-type ProfileResponse = (LoadedProfile & { viewerMutes?: boolean }) | {
-  id: number
-  name: string
-  gated: true
-  isFollowing: boolean
+// /api/users/[id] returns three shapes:
+//   - blocked-by-me: `{id, name, blocked: true}` — viewer blocked target
+//   - tier-gated:    `{id, name, gated: true, isFollowing}`
+//   - full payload:  LoadedProfile + `viewerMutes`
+// Discriminate before reading content fields, otherwise `data.level.icon`
+// / `data.xp.toLocaleString()` throw. The full payload also includes
+// `viewerMutes` (handled in the modal, not surfaced here — the inline
+// preview doesn't render a mute button).
+type ProfileResponse =
+  | (LoadedProfile & { viewerMutes?: boolean })
+  | { id: number; name: string; gated: true; isFollowing: boolean }
+  | { id: number; name: string; blocked: true }
+
+function isBlocked(p: ProfileResponse): p is { id: number; name: string; blocked: true } {
+  return (p as { blocked?: boolean }).blocked === true
 }
 
 function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
@@ -81,7 +85,22 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
           </div>
         )}
 
-        {data && isGated(data) && (
+        {data && isBlocked(data) && (
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+            <Avatar name={data.name} imageUrl={null} size={96} />
+            <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <div style={{ fontWeight: 700, fontSize: 13, lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {data.name}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>blocked</div>
+              <button className="btn-s" onClick={() => setOpenProfile(true)} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
+                visit profile
+              </button>
+            </div>
+          </div>
+        )}
+
+        {data && !isBlocked(data) && isGated(data) && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
             <Avatar name={data.name} imageUrl={null} size={96} />
             <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -101,7 +120,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
           </div>
         )}
 
-        {data && !isGated(data) && (
+        {data && !isBlocked(data) && !isGated(data) && (
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
             {/* Fixed size — earlier "stretch to right-column height"
                 burst out of the panel when an image rendered. 96px

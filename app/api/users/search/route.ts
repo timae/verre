@@ -8,6 +8,7 @@ import {
   viewerFofAuthorSet,
   canViewProfile,
 } from '@/lib/profileVisibility'
+import { blockPairIds } from '@/lib/userBlock'
 
 // Discovery lookup — finds users by display-name substring so they can
 // be followed/tagged. Display names are presentation-only (see CLAUDE.md
@@ -50,13 +51,14 @@ export async function GET(req: NextRequest) {
   if (candidates.length === 0) return NextResponse.json([])
 
   const candidateIds = candidates.map(c => c.id)
-  const [visMap, viewerMap, myFollowing] = await Promise.all([
+  const [visMap, viewerMap, myFollowing, blockPairs] = await Promise.all([
     batchLoadVisibilities(candidateIds),
     resolveProfileViewerBulk(candidateIds, viewerId),
     prisma.follow.findMany({
       where: { followerId: viewerId, followingId: { in: candidateIds } },
       select: { followingId: true },
     }),
+    blockPairIds(viewerId),
   ])
   const followingSet = new Set(myFollowing.map(f => f.followingId))
   const fofCandidates = candidateIds.filter(id => visMap.get(id)?.fofEnabled === true)
@@ -64,7 +66,15 @@ export async function GET(req: NextRequest) {
     ? await viewerFofAuthorSet(viewerId, fofCandidates)
     : new Set<number>()
 
-  const result = candidates.map(c => {
+  // Block-pair candidates are dropped entirely (no stub). Both directions
+  // — anyone the viewer blocked AND anyone who blocked the viewer.
+  // Locked design: no surface in search reveals block-pair existence.
+  const visibleCandidates = candidates.filter(c =>
+    !blockPairs.blockedByMe.has(c.id) && !blockPairs.blockingMe.has(c.id)
+  )
+  if (visibleCandidates.length === 0) return NextResponse.json([])
+
+  const result = visibleCandidates.map(c => {
     const isFollowing = followingSet.has(c.id)
     if (c.id === viewerId) {
       // Self always sees full content for self.
@@ -89,5 +99,8 @@ export async function GET(req: NextRequest) {
     return { id: c.id, name: c.name, gated: true, isFollowing }
   })
 
-  return NextResponse.json(result)
+  // Response varies by viewer (isFollowing per row, tier-gate stub vs
+  // full payload, block-pair drop). private no-store so a CDN can't
+  // serve one viewer's results to another.
+  return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
 }

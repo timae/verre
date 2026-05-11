@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
+import { viewerBlocksAuthor, authorBlocksViewer } from '@/lib/userBlock'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -29,6 +30,26 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   const rl = await checkRate(`rl:follow:${followerId}:1h`, 60, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many follows. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+
+  // Block check — scenario 12a vs 12b:
+  //   12a: viewer blocked target → reject with explicit message (the
+  //        viewer knows they blocked, no leak).
+  //   12b: target blocked viewer → uniform 200 silent no-op. Matches
+  //        the non-existent-target shape so the blocked side can't
+  //        infer the block via response code.
+  // Both checks run in parallel — they're independent queries. Priority
+  // on conflict: 12b wins (silent 200) so the blocker-side reject
+  // doesn't surface when there's a reverse-direction block to mask.
+  const [blockedByAuthor, viewerBlocked] = await Promise.all([
+    authorBlocksViewer(followerId, followingId),
+    viewerBlocksAuthor(followerId, followingId),
+  ])
+  if (blockedByAuthor) {
+    return NextResponse.json({ following: true })
+  }
+  if (viewerBlocked) {
+    return NextResponse.json({ error: 'you blocked this user' }, { status: 400 })
+  }
 
   // Catch FK violation (target user doesn't exist) and surface the same
   // {following: true} shape a real target produces. Without this, the

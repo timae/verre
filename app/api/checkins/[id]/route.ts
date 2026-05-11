@@ -123,11 +123,18 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (taggedUserIds.length === 0) {
       validTagIds = []
     } else {
+      // Block-pair exclusion: tags between block-pair members shouldn't
+      // be written (matches the POST shape).
       const mutuals = await prisma.$queryRaw<{ id: number }[]>`
         SELECT f1.following_id AS id
         FROM follows f1
         JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
         WHERE f1.follower_id = ${userId} AND f1.following_id = ANY(${taggedUserIds}::integer[])
+          AND NOT EXISTS (
+            SELECT 1 FROM user_blocks b
+            WHERE (b.blocker_id = ${userId} AND b.blocked_id = f1.following_id)
+               OR (b.blocker_id = f1.following_id AND b.blocked_id = ${userId})
+          )
       `
       validTagIds = mutuals.map(m => m.id)
     }

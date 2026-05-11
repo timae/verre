@@ -28,6 +28,7 @@ import {
   type ProfileVisibility,
   isProfileVisibility,
 } from '@/lib/profileVisibilityShared'
+import { viewerBlocksAuthor, authorBlocksViewer, anyBlockBetween } from '@/lib/userBlock'
 
 // Re-export client-safe primitives so server callers keep importing from
 // one place. The actual definitions live in `lib/profileVisibilityShared.ts`
@@ -88,6 +89,7 @@ export function canViewProfile(
 export type ProfileGateResult =
   | { status: 'ok'; viewer: ProfileViewer }
   | { status: 'shell'; name: string }
+  | { status: 'blocked-by-me'; name: string }
   | { status: 'gone' }
 
 export async function resolveProfileViewer(
@@ -108,6 +110,18 @@ export async function resolveProfileViewer(
       status: 'ok',
       viewer: { id: viewerId, followsProfile: false, profileFollowsViewer: false },
     }
+  }
+  // Block check runs BEFORE the visibility tier. Block is the strictest
+  // primitive — outside-session invisibility supersedes the tier.
+  //   - authorBlocksViewer → viewer is the blocked side → collapse to
+  //     'gone' (404). They can't tell they're blocked vs the user not
+  //     existing.
+  //   - viewerBlocksAuthor → viewer is the blocker → 'blocked-by-me'
+  //     so the caller can render the stripped "Blocked" view with an
+  //     unblock affordance.
+  if (viewerId !== null) {
+    if (await authorBlocksViewer(viewerId, profileId)) return { status: 'gone' }
+    if (await viewerBlocksAuthor(viewerId, profileId)) return { status: 'blocked-by-me', name: row.name }
   }
   if (!isProfileVisibility(row.profileVisibility)) {
     // CHECK constraint should make this unreachable; if a bad value
@@ -290,6 +304,9 @@ export async function viewerCanSeeAuthor(
   authorId: number,
 ): Promise<boolean> {
   if (viewerId !== null && viewerId === authorId) return true
+  // Block fast-path: short-circuit before any tier or follow lookups.
+  // Either direction of block-pair blocks content visibility entirely.
+  if (viewerId !== null && await anyBlockBetween(viewerId, authorId)) return false
   const settings = await loadVisibility(authorId)
   if (!settings) return false
   if (settings.visibility === 'public-internet') return true
