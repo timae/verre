@@ -13,9 +13,10 @@ interface Props {
 }
 
 // /api/users/[id] returns a shell shape `{id, name, gated, isFollowing}`
-// when the viewer's tier is denied. Discriminate before reading content
+// when the viewer's tier is denied, otherwise the full LoadedProfile +
+// a top-level `viewerMutes` flag. Discriminate before reading content
 // fields, otherwise `data.level.icon` etc. throw.
-type ProfileResponse = LoadedProfile | {
+type ProfileResponse = (LoadedProfile & { viewerMutes?: boolean }) | {
   id: number
   name: string
   gated: true
@@ -49,6 +50,15 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
   // this query key (ProfilePreviewInline) — refetches.
   function onFollowToggle() {
     qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+  }
+
+  // A mute-toggle changes whether this user's content surfaces in the
+  // viewer's feed. Invalidate both the profile payload (so viewerMutes
+  // is fresh on next render) and any feed query so the muted user's
+  // posts disappear (or reappear).
+  function onMuteToggle() {
+    qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+    qc.invalidateQueries({ queryKey: ['feed'] })
   }
 
   return (
@@ -92,7 +102,9 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
             userImageUrl={data.imageUrl}
             myId={myId}
             isFollowing={data.isFollowing}
+            viewerMutes={data.viewerMutes}
             onFollowToggle={onFollowToggle}
+            onMuteToggle={onMuteToggle}
           />
           <ProfileTabs
             profileUserId={data.id}

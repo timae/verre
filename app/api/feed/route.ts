@@ -9,6 +9,7 @@ import {
   viewerFofAuthorSet,
   canViewProfile,
 } from '@/lib/profileVisibility'
+import { mutedUserIds } from '@/lib/userMute'
 
 const PAGE = 20
 
@@ -61,15 +62,26 @@ export async function GET(req: NextRequest) {
   // Batched: one query for visibilities, one for follows-out, one for
   // follows-in, optionally one for FoF reachability. Cost is O(networkSize)
   // not O(rowsPerPage), and constant in number of roundtrips.
-  const visMap = await batchLoadVisibilities(networkIds)
-  const viewerMap = await resolveProfileViewerBulk(networkIds, userId)
+  //
+  // Mute filter: applied in the same pass. The viewer's mute set is
+  // independent of tier — a `public-internet` user the viewer muted
+  // gets filtered out the same as a `public-mutual` user they aren't
+  // allowed to see. Composed multiplicatively: both checks must pass.
+  const [visMap, viewerMap, muteSet] = await Promise.all([
+    batchLoadVisibilities(networkIds),
+    resolveProfileViewerBulk(networkIds, userId),
+    mutedUserIds(userId),
+  ])
   const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
   const fofSet = fofCandidates.length > 0
     ? await viewerFofAuthorSet(userId, fofCandidates)
     : new Set<number>()
   const allowedNetworkIds = networkIds.filter(authorId => {
-    // Self-visibility: viewer always sees their own content.
+    // Self-visibility: viewer always sees their own content. (Self-mute
+    // is rejected at the API + DB level, so muteSet never contains the
+    // viewer.)
     if (authorId === userId) return true
+    if (muteSet.has(authorId)) return false
     const settings = visMap.get(authorId)
     if (!settings) return false
     const base = viewerMap.get(authorId) ?? { id: userId, followsProfile: false, profileFollowsViewer: false }

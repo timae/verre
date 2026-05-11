@@ -6,6 +6,7 @@ import { ProfileHeader } from '@/components/profile/ProfileHeader'
 import { ProfileShell } from '@/components/profile/ProfileShell'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { loadProfile } from '@/lib/profileLoad'
+import { isMuted } from '@/lib/userMute'
 import { parsePathId } from '@/lib/parsePathId'
 import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
@@ -61,6 +62,9 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     // shape. SSR calls Prisma directly; the API call goes over the wire.
     const profile = await loadProfile({ userId, viewerId: myId, isFollowing: gate.viewer.followsProfile })
     if (!profile) notFound()
+    const viewerMutes = myId !== null && myId !== userId
+      ? await isMuted(myId, userId)
+      : false
     profileBody = (
       <>
           <ProfileHeader
@@ -70,6 +74,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
             userImageUrl={profile.imageUrl}
             myId={myId}
             isFollowing={profile.isFollowing}
+            viewerMutes={viewerMutes}
           />
 
           <ProfileTabs

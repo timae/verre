@@ -1,6 +1,7 @@
 import { getLevel } from '@/lib/badges'
 import { ProfileSettingsButton } from './ProfileSettingsButton'
 import { FollowButton } from '@/components/social/FollowButton'
+import { MuteButton } from '@/components/social/MuteButton'
 import { EditableAvatar } from './EditableAvatar'
 import { ZoomableAvatar } from './ZoomableAvatar'
 
@@ -11,6 +12,9 @@ interface Props {
   userImageUrl?: string | null
   myId: number | null
   isFollowing: boolean
+  // Whether the viewer has muted this profile. Only meaningful on the
+  // full (non-shell) view since the mute button is hidden on the shell.
+  viewerMutes?: boolean
   // Optional. Passed by callers in a client-cached context (e.g.
   // UserProfileModal) so a follow-toggle invalidates the cached
   // profile payload; the gate may flip when the viewer becomes a
@@ -20,9 +24,13 @@ interface Props {
   // we ignore the param because the invalidation doesn't branch on
   // direction.
   onFollowToggle?: () => void
+  // Same shape, but for the mute toggle. The feed query cache should
+  // invalidate when mute state changes so the muted user's content
+  // disappears (or reappears) from the feed without a page reload.
+  onMuteToggle?: () => void
 }
 
-export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing, onFollowToggle }: Props) {
+export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing, viewerMutes, onFollowToggle, onMuteToggle }: Props) {
   const level = getLevel(userXp)
   const nextXP = level.nextXP
   const progress = nextXP ? ((userXp - level.minXP) / (nextXP - level.minXP)) * 100 : 100
@@ -45,7 +53,10 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
         {isOwner ? (
           <ProfileSettingsButton />
         ) : myId ? (
-          <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={onFollowToggle} />
+          <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+            <MuteButton userId={userId} initialMuted={!!viewerMutes} onToggle={onMuteToggle} />
+            <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={onFollowToggle} />
+          </div>
         ) : null}
       </div>
     </div>

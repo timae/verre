@@ -17,8 +17,10 @@ interface Props {
 // /api/users/[id] returns a shell payload `{id, name, gated, isFollowing}`
 // when the viewer's tier doesn't qualify them to see the profile owner's
 // content. Discriminate on `gated` before reading any content fields,
-// otherwise `data.level.icon` / `data.xp.toLocaleString()` throw.
-type ProfileResponse = LoadedProfile | {
+// otherwise `data.level.icon` / `data.xp.toLocaleString()` throw. The
+// full payload also includes `viewerMutes` (handled in the modal, not
+// surfaced here — the inline preview doesn't render a mute button).
+type ProfileResponse = (LoadedProfile & { viewerMutes?: boolean }) | {
   id: number
   name: string
   gated: true

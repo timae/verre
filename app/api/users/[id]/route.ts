@@ -4,6 +4,7 @@ import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
 import { checkRate } from '@/lib/rateLimit'
 import { loadProfile } from '@/lib/profileLoad'
+import { isMuted } from '@/lib/userMute'
 import { prisma } from '@/lib/prisma'
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -40,5 +41,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
   const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
   if (!profile) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  return NextResponse.json(profile)
+  // viewerMutes is included only in the full payload (not the shell).
+  // Per product decision: the mute button only appears on the full
+  // profile view, where the viewer has chosen to look at content.
+  const viewerMutes = viewerId !== null && viewerId !== userId
+    ? await isMuted(viewerId, userId)
+    : false
+  return NextResponse.json({ ...profile, viewerMutes })
 }
