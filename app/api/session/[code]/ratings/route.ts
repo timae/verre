@@ -10,6 +10,14 @@ import { requireParticipant, authInvalid } from '@/lib/identity'
 // Caller must be a registered participant of this session (auth cookie or
 // valid anon token, plus an entry in the identities map). Non-participants
 // who happen to know the session code are rejected.
+//
+// Block filter is COSMETIC (client-side only) for ratings. The locked
+// design treats in-session participation like participant-list rendering:
+// the data is shared session-context, the block filter is render-style.
+// Compare client-side hides block-pair rater chips from the UI; the raw
+// wire payload still contains them (visible in DevTools). This is the
+// accepted asymmetry — Verre's block primitive is a UI filter, not a
+// secrecy mechanism inside a shared tasting.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const { code } = await params
   const c = normalizeCode(code)

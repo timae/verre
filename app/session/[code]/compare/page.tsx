@@ -115,9 +115,22 @@ export default function ComparePage() {
 
   // Build the rater list from the id-keyed allRatings shape. Each entry is
   // { id, displayName, ratings } — id drives state, displayName drives UI.
+  //
+  // Block-pair filter: rating rows from block-pair members are hidden
+  // entirely (both directions). Locked design — Compare is the one
+  // surface where block goes beyond render-style: row drops out, not
+  // anon-style render. Participants list keeps a host row visible for
+  // unblock affordance, but Compare's per-rating layout would surface
+  // tasting notes / flavor profile (high-cardinality identity tells)
+  // even with anon-style, so we drop the row.
+  const blockMeta = sessionMeta as (typeof sessionMeta & { viewerBlocksOut?: string[]; viewerBlocksIn?: string[] }) | null
+  const compareBlocked = new Set([
+    ...(blockMeta?.viewerBlocksOut ?? []),
+    ...(blockMeta?.viewerBlocksIn ?? []),
+  ])
   type Rater = { id: string; displayName: string; ratings: Record<string, RatingMeta> }
   const ratersWithRatings: Rater[] = Object.entries(allRatings)
-    .filter(([, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0)
+    .filter(([id, bucket]) => bucket && Object.keys(bucket.ratings || {}).length > 0 && !compareBlocked.has(id))
     .map(([id, bucket]) => ({ id, displayName: bucket.displayName, ratings: bucket.ratings }))
 
   const ratedWines = wines.filter(w => ratersWithRatings.some(r => r.ratings[w.id]?.score))
@@ -208,7 +221,13 @@ export default function ComparePage() {
             ? (allWineRatings.reduce((s, r) => s + (r.rating.score || 0), 0) / allWineRatings.length).toFixed(1)
             : '—'
 
-          const singleRating = activeUserId ? allRatings[activeUserId]?.ratings[wine.id] : null
+          // Look up via `ratersWithRatings` (block-filtered) rather than
+          // `allRatings` directly so a freshly-blocked rater whose id is
+          // still in `viewUser` state can't bypass the filter and leak
+          // their rating + notes.
+          const singleRating = activeUserId
+            ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
+            : null
           const fl = singleRating?.flavors
             ? detectFL(singleRating.flavors as Record<string, number>)
             : getFL(wine.type)
@@ -270,7 +289,7 @@ export default function ComparePage() {
                     <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
-                      no rating from {(activeUserId && allRatings[activeUserId]?.displayName) || 'this user'}
+                      no rating from {(activeUserId && ratersWithRatings.find(r => r.id === activeUserId)?.displayName) || 'this user'}
                     </div>
                   )}
                 </div>

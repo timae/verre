@@ -93,9 +93,37 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
                 {data.name}
               </div>
               <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>blocked</div>
-              <button className="btn-s" onClick={() => setOpenProfile(true)} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
-                visit profile
-              </button>
+              <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                {/* Inline unblock — viewer reached this preview by clicking
+                    a blocked-pair participant row. Surfaces the unblock
+                    affordance directly so the flow doesn't require
+                    navigating to settings. Invalidates queries so the
+                    next session-meta + user-profile polls reflect the
+                    new state. */}
+                <button
+                  className="btn-s"
+                  onClick={async () => {
+                    const res = await fetch(`/api/me/blocks/${data.id}`, { method: 'DELETE' })
+                    if (res.ok) {
+                      qc.invalidateQueries({ queryKey: ['user-profile', userId] })
+                      qc.invalidateQueries({ queryKey: ['feed'] })
+                      // session-meta is fetched via a different key shape per route;
+                      // a generic invalidation hits any active session meta query.
+                      qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-meta' })
+                    }
+                  }}
+                  style={{
+                    background: 'rgba(184,64,64,0.08)',
+                    borderColor: 'rgba(184,64,64,0.4)',
+                    color: 'rgba(184,64,64,0.95)',
+                  }}
+                >
+                  unblock
+                </button>
+                <button className="btn-s" onClick={() => setOpenProfile(true)}>
+                  visit profile
+                </button>
+              </div>
             </div>
           </div>
         )}
