@@ -54,9 +54,16 @@ export async function listBans(code: string): Promise<
   })
 }
 
-// Acquire the per-session ban lock. Returns true on success. The lock has
-// a short TTL so a crashed handler doesn't block forever. Callers should
+// Acquire the per-session meta-mutation lock. Returns true on success.
+// Short TTL so a crashed handler doesn't block forever. Callers should
 // SET NX + EX, then release on success/failure.
+//
+// Originally introduced for kick/ban to serialize the wines JSON write-back
+// (hence the `lock:ban` key name kept for continuity), it now also guards
+// the `set-role` read-modify-write on `s:<C>:meta` in
+// `app/api/session/[code]/route.ts`. Two concurrent strict-host actions
+// without the lock could each read the same starting meta, build divergent
+// coHostIds/providerIds sets, and silently drop one of the writes.
 const BAN_LOCK_TTL_SECONDS = 10
 
 export async function acquireBanLock(code: string): Promise<boolean> {

@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine } from '@/lib/session'
-import type { WineMeta, SessionMeta } from '@/lib/session'
+import { redis, k, touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire } from '@/lib/session'
+import type { WineMeta, WireWine } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, requireParticipant, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ code: string }> }
 
-function redactWine(wine: WineMeta, index: number): WineMeta {
+// Produce a redacted WireWine directly — wines that hit this path are by
+// definition not the caller's own (the provider-bypass at the call site
+// filters those out), so isMine is always false. Returning WireWine
+// straight skips a second pass through `wineToWire`.
+function redactWine(wine: WineMeta, index: number): WireWine {
+  const { addedByIdentityId: _provenance, ...rest } = wine
   return {
-    ...wine,
+    ...rest,
     name: `Wine ${index + 1}`,
     producer: '',
     vintage: '',
@@ -19,8 +24,9 @@ function redactWine(wine: WineMeta, index: number): WineMeta {
     type: 'red',   // keep as red for FL purposes but will show mystery icon
     image: '',
     imageUrl: '',
-    _blind: true,  // flag for client
-  } as WineMeta & { _blind: boolean }
+    isMine: false,
+    _blind: true,
+  }
 }
 
 export async function GET(req: NextRequest, { params }: Ctx) {
@@ -44,33 +50,42 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const identity = p.identity
 
   const wines = await getWines(c)
-  const meta = await getSessionMeta(c) as (SessionMeta & { blind?: boolean; hideLineup?: boolean; hideLineupMinutesBefore?: number }) | null
-  const isUserHost = isHostByIdentity(meta as SessionMeta, identity)
+  const meta = await getSessionMeta(c)
+  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const isUserHost = isHostByIdentity(meta, identity)
 
   // Lineup hidden until X minutes before start
-  if (meta?.hideLineup && meta.dateFrom && !isUserHost) {
+  if (meta.hideLineup && meta.dateFrom && !isUserHost) {
     const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
     if (Date.now() < revealAt) return NextResponse.json([])
   }
 
-  // Wire payload strips `addedByIdentityId` — it's host-internal
-  // provenance (used by ban-with-delete-wines to identify which wines to
-  // orphan) and shouldn't leak to participants. Anon ids would correlate
-  // across multiple wines from the same author, which the ban UI does
-  // server-side and clients have no need for.
-  const onWire = (w: typeof wines[number]) => {
-    const { addedByIdentityId: _unused, ...rest } = w
-    void _unused
-    return rest
+  if (meta.blind && !isUserHost) {
+    // Per-wine redaction: a wine is shown un-redacted if it's revealed
+    // OR if the caller is the provider who added it (providers see
+    // their own wines un-redacted while still being blind to other
+    // tasters' contributions). Pre-feature wines have NULL
+    // `addedByIdentityId` and never match the provider exception —
+    // they redact like any other wine the caller didn't add.
+    return NextResponse.json(
+      wines.map((w, i) => {
+        const ownsThisWine = !!w.addedByIdentityId && w.addedByIdentityId === identity.id
+        const showFull = w.revealedAt || ownsThisWine
+        return showFull ? wineToWire(w, identity.id) : redactWine(w, i)
+      }),
+      // Response varies per viewer (provider sees own un-redacted; the
+      // isMine flag is per-caller). Force private, no-store so no
+      // intermediary cache can serve one viewer's payload to another.
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    )
   }
 
-  if (meta?.blind && !isUserHost) {
-    return NextResponse.json(wines.map((w, i) =>
-      onWire(w.revealedAt ? w : redactWine(w, i))
-    ))
-  }
-
-  return NextResponse.json(wines.map(onWire))
+  return NextResponse.json(
+    wines.map(w => wineToWire(w, identity.id)),
+    // Non-blind path: isMine still varies per viewer, so same cache
+    // posture applies.
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }
 
 export async function POST(req: NextRequest, { params }: Ctx) {
@@ -90,8 +105,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
-  if (!isHostByIdentity(meta, identity)) {
-    return NextResponse.json({ error: 'only the host can add wines' }, { status: 403 })
+  // Hosts, cohosts, and providers can all add wines. Providers can only
+  // edit/delete the wines they added (gated in the [wineId] route by
+  // matching `addedByIdentityId` to the caller).
+  if (!isHostByIdentity(meta, identity) && !isProviderById(meta, identity.id)) {
+    return NextResponse.json({ error: 'only the host or a provider can add wines' }, { status: 403 })
   }
 
   const wines = await getWines(c)
@@ -103,10 +121,16 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   wines.push(result)
   // Optional one-shot insert position (1-indexed). Out-of-range silently
   // falls through to "append at end" — frontend validates the range.
-  const pos = Number(body.position)
-  if (Number.isInteger(pos) && pos >= 1 && pos < wines.length) {
-    const inserted = wines.pop()!
-    wines.splice(pos - 1, 0, inserted)
+  // Host-only: the standalone reorder endpoint is host-only, and we don't
+  // want providers driving a partial reorder via the POST back door
+  // (they're documented as unable to reorder wines). Ignored for
+  // non-host callers — appends at end.
+  if (isHostByIdentity(meta, identity)) {
+    const pos = Number(body.position)
+    if (Number.isInteger(pos) && pos >= 1 && pos < wines.length) {
+      const inserted = wines.pop()!
+      wines.splice(pos - 1, 0, inserted)
+    }
   }
   await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
   await touchWithMeta(c)
@@ -118,5 +142,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     } catch {}
   }
 
-  return NextResponse.json(result)
+  // Same wire shape as GET — clients that store POST responses back
+  // into their wines list shouldn't see a different shape than the
+  // polling GET. The caller is the wine's adder, so isMine is always
+  // true here (wineToWire computes it from the just-written provenance).
+  return NextResponse.json(wineToWire(result, identity.id))
 }

@@ -118,14 +118,23 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
   // with its TTL.
   await redis.hDel(k.identities(code), identityId)
 
-  // Strip from cohort list in meta. Use KEEPTTL so a session with a
-  // remaining lifespan (default 48h, or pro 72h/1w/unlimited) doesn't
-  // get its TTL clobbered to "no expiration" by the SET.
+  // Strip from cohort + provider lists in meta. Use KEEPTTL so a session
+  // with a remaining lifespan (default 48h, or pro 72h/1w/unlimited)
+  // doesn't get its TTL clobbered to "no expiration" by the SET.
+  // Both lists checked in one read/write to avoid a second meta round-trip.
   const rawMeta = await redis.get(k.meta(code))
   if (rawMeta) {
     const meta = JSON.parse(rawMeta)
+    let changed = false
     if (Array.isArray(meta.coHostIds) && meta.coHostIds.includes(identityId)) {
       meta.coHostIds = meta.coHostIds.filter((id: string) => id !== identityId)
+      changed = true
+    }
+    if (Array.isArray(meta.providerIds) && meta.providerIds.includes(identityId)) {
+      meta.providerIds = meta.providerIds.filter((id: string) => id !== identityId)
+      changed = true
+    }
+    if (changed) {
       await redis.set(k.meta(code), JSON.stringify(meta), { KEEPTTL: true })
     }
   }

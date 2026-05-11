@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { redis, k, touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity, getSessionMeta, getWines, wineToWire } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
-import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -39,5 +39,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const reordered = orderedIds.map(id => byId.get(id)!)
   await redis.set(k.wines(c), JSON.stringify(reordered), { KEEPTTL: true })
   await touchWithMeta(c)
-  return NextResponse.json(reordered)
+  // Same wire shape as the wines GET — strip `addedByIdentityId` and
+  // synthesize `isMine`. Without this, the reorder response would leak
+  // provenance the GET pipeline carefully keeps server-internal.
+  return NextResponse.json(
+    reordered.map(w => wineToWire(w, identity.id)),
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
 }

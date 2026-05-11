@@ -17,7 +17,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Earn badges and XP across all your tastings
 - Hall of Fame for every 5★ rating
 - Blind tasting mode for hosts (pro)
-- Co-host roles to delegate wine management
+- Co-host roles to delegate wine management; Provider role for someone bringing their own bottles without full host powers
 - Hide the wine lineup before the tasting starts
 - Hosts can permanently delete a session and its data; bookmarked wines stay saved
 - Hosts can kick or ban participants from a tasting (with optional wine removal); banned users can't rejoin
@@ -178,7 +178,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?}`) → `{code, id, displayName, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
-| PATCH | /api/session/:code | Cohost role assignment (host-only) |
+| PATCH | /api/session/:code | Role assignment via `action: 'set-role'` (host or cohost, with strict-host required for transitions touching `co_host`) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
@@ -195,9 +195,9 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/session/:code/wines | Wine list (participant-gated; redacts blind wines for non-hosts) |
-| POST | /api/session/:code/wines | Add wine (host-only) |
-| PATCH | /api/session/:code/wines/:wineId | Edit wine metadata or bottle photo (host-only) |
-| DELETE | /api/session/:code/wines/:wineId | Delete wine (host-only) |
+| POST | /api/session/:code/wines | Add wine (host or provider) |
+| PATCH | /api/session/:code/wines/:wineId | Edit wine metadata or bottle photo (host or provider-of-own-wine) |
+| DELETE | /api/session/:code/wines/:wineId | Delete wine (host or provider-of-own-wine) |
 | POST | /api/session/:code/wines/reorder | Reorder wines (host-only; body: `{orderedIds}`) |
 | POST/DELETE | /api/session/:code/wines/:wineId/reveal | Reveal/hide a single blind wine (host-only) |
 | POST | /api/session/:code/wines/reveal-all | Reveal every blind wine (host-only) |

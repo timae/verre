@@ -5,7 +5,6 @@ import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { getFL, detectFL, FL } from '@/lib/flavours'
-import type { WineMeta } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
@@ -17,11 +16,16 @@ interface Props { wineId: string; onClose: () => void }
 const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 export function RatingScreen({ wineId, onClose }: Props) {
-  const { wines, myRatings, code, refresh, isHost, bookmarkedIds, isBlind } = useSession()
+  const { wines, myRatings, code, refresh, isHost, isProvider, bookmarkedIds, isBlind } = useSession()
 
   const wine = wines.find(w => w.id === wineId)
-  const w = wine as (WineMeta & { _blind?: boolean }) | undefined
-  const isRedacted = isBlind && w?._blind && !wine?.revealedAt
+  const isRedacted = isBlind && wine?._blind && !wine?.revealedAt
+  // Provider can edit/delete only the wines they added themselves.
+  // The `isMine` flag is set per-caller by the wines GET wire layer
+  // (the raw `addedByIdentityId` provenance never leaves the server).
+  // Host (including cohosts) can edit/delete any wine. Host also gets
+  // move/reorder; providers do not.
+  const canEditThisWine = isHost || (isProvider && !!wine?.isMine)
   const existing = myRatings[wineId]
   const fl = existing?.flavors && Object.keys(existing.flavors).length
     ? detectFL(existing.flavors as Record<string, number>)
@@ -180,31 +184,37 @@ export function RatingScreen({ wineId, onClose }: Props) {
         />
       </div>
 
-      {/* Host actions */}
-      {isHost && (
+      {/* Wine-edit actions. Edit (always for host/cohost; for providers
+          only on their own wines via canEditThisWine). Move/reorder is
+          host-tier only — providers can't reorder. */}
+      {canEditThisWine && (
         <>
           <div style={{display:'flex',gap:6,marginTop:10,flexWrap:'wrap',alignItems:'stretch'}}>
             <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => setShowEdit(true)}>edit wine</button>
-            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(-1)}>move earlier</button>
-            <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(1)}>move later</button>
-            <div className="btn-s" style={{flex:1,padding:'4px 8px',display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'default'}}>
-              <span style={{whiteSpace:'nowrap'}}>move to:</span>
-              <input
-                type="text" inputMode="numeric" pattern="[0-9]*"
-                value={movePos}
-                onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError(''); setMoveSuccess('') }}
-                onKeyDown={e => e.key === 'Enter' && moveToPosition()}
-                onBlur={() => { if (movePos && !moveSuccess) moveToPosition() }}
-                placeholder="#"
-                style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',
-                  background: moveSuccess ? 'rgba(143,184,122,0.12)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${moveSuccess ? 'rgba(143,184,122,0.5)' : 'rgba(255,255,255,0.08)'}`,
-                  borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none',transition:'background .25s, border-color .25s'}}
-              />
-            </div>
+            {isHost && (
+              <>
+                <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(-1)}>move earlier</button>
+                <button className="btn-s" style={{flex:1,padding:'10px 8px'}} onClick={() => moveWine(1)}>move later</button>
+                <div className="btn-s" style={{flex:1,padding:'4px 8px',display:'flex',alignItems:'center',justifyContent:'center',gap:6,cursor:'default'}}>
+                  <span style={{whiteSpace:'nowrap'}}>move to:</span>
+                  <input
+                    type="text" inputMode="numeric" pattern="[0-9]*"
+                    value={movePos}
+                    onChange={e => { setMovePos(e.target.value.replace(/\D/g,'')); setMoveError(''); setMoveSuccess('') }}
+                    onKeyDown={e => e.key === 'Enter' && moveToPosition()}
+                    onBlur={() => { if (movePos && !moveSuccess) moveToPosition() }}
+                    placeholder="#"
+                    style={{width:60,fontFamily:'var(--mono)',fontSize:12,textAlign:'center',
+                      background: moveSuccess ? 'rgba(143,184,122,0.12)' : 'rgba(255,255,255,0.04)',
+                      border: `1px solid ${moveSuccess ? 'rgba(143,184,122,0.5)' : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius:6,color:'var(--fg)',padding:'4px 6px',outline:'none',transition:'background .25s, border-color .25s'}}
+                  />
+                </div>
+              </>
+            )}
           </div>
-          {moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}
-          {moveSuccess && <p style={{color:'var(--accent2)',fontSize:11,marginTop:6}}>✓ {moveSuccess}</p>}
+          {isHost && moveError && <p style={{color:'#e07070',fontSize:11,marginTop:6}}>{moveError}</p>}
+          {isHost && moveSuccess && <p style={{color:'var(--accent2)',fontSize:11,marginTop:6}}>✓ {moveSuccess}</p>}
         </>
       )}
 
@@ -214,7 +224,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
       </button>
       <button className="btn-g" onClick={() => onClose()}>cancel</button>
       {existing && <ConfirmDeleteButton className="btn-g" label="⌫ reset my rating" confirmLabel="tap again to reset" onConfirm={resetRating} />}
-      {isHost && <ConfirmDeleteButton label="⌫ delete this wine" confirmLabel="tap again to delete" onConfirm={deleteWine} />}
+      {canEditThisWine && <ConfirmDeleteButton label="⌫ delete this wine" confirmLabel="tap again to delete" onConfirm={deleteWine} />}
 
       {showEdit && wine && (
         <AddWineModal

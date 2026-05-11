@@ -3,7 +3,7 @@ import { use, createContext, useContext, useState, useEffect, useCallback } from
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
-import type { WineMeta, RatingMeta } from '@/lib/session'
+import type { WireWine, RatingMeta } from '@/lib/session'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { SessionPanel } from './SessionPanel'
 import { UserPanel } from './UserPanel'
@@ -21,6 +21,12 @@ type Participant = { id: string; displayName: string }
 
 type SessionCtx = {
   code: string; displayName: string; myId: string; isHost: boolean
+  // Provider flag — distinct from isHost. True when the viewer is in
+  // meta.providerIds. Providers can add wines and edit/delete only the
+  // ones they added themselves (matched server-side via the wine's
+  // `addedByIdentityId`). Use this to gate wine-row affordances on the
+  // provider's own rows without conflating with host powers.
+  isProvider: boolean
   sessionMeta: {
     host: string; name: string
     hostUserId: number | null
@@ -28,8 +34,14 @@ type SessionCtx = {
     blind?: boolean
     participants: Participant[]
     coHostIds: string[]
+    providerIds?: string[]
+    // Number of banned identities for this session. Only populated for
+    // host/cohost viewers (others always see 0). Used to conditionally
+    // render the BannedUsersSection — appears when >0, hidden when 0,
+    // updates via the polled session GET so cross-host bans propagate.
+    banCount?: number
   } | null
-  wines: WineMeta[]; allRatings: RatingsByIdentity
+  wines: WireWine[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
   isBlind: boolean
@@ -59,14 +71,20 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const { data: authSession } = useAuthSession()
   const nameFromUrl = searchParams.get('name') || ''
   const idFromUrl   = searchParams.get('id')   || ''
-  const [storedName, setStoredName] = useState(() => {
-    if (typeof window === 'undefined') return nameFromUrl
-    return localStorage.getItem(`vr_name_${C}`) || nameFromUrl
-  })
-  const [storedId, setStoredId] = useState(() => {
-    if (typeof window === 'undefined') return idFromUrl
-    return localStorage.getItem(`vr_id_${C}`) || idFromUrl
-  })
+  // Initialize state from URL params only — NOT from localStorage. SSR
+  // can't read localStorage, so reading it in the useState initializer
+  // produces a server tree that says "no stored name" and a client tree
+  // that has the name, causing a hydration mismatch. The mount effect
+  // below reads localStorage post-hydration and updates state, costing
+  // one frame where the shell shows "anon" before snapping to the real
+  // name.
+  const [storedName, setStoredName] = useState(nameFromUrl)
+  const [storedId, setStoredId] = useState(idFromUrl)
+  // True after the first post-mount effect runs. Used by the redirect-
+  // to-/join gate below to avoid bouncing an anon participant in the
+  // single frame between SSR (no localStorage) and the localStorage
+  // hydration completing.
+  const [hydrated, setHydrated] = useState(false)
   useEffect(() => {
     // Bootstrap params (`name`, `id`, `host`) are presentation-only — captured
     // synchronously into useState initializers (above for name/id, below for
@@ -78,11 +96,19 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       localStorage.setItem(`vr_name_${C}`, nameFromUrl)
       setStoredName(nameFromUrl)
       urlChanged = true
+    } else {
+      // No URL param — hydrate from localStorage if available. Runs once
+      // post-mount so SSR and first client render match.
+      const fromLs = localStorage.getItem(`vr_name_${C}`)
+      if (fromLs) setStoredName(fromLs)
     }
     if (idFromUrl) {
       localStorage.setItem(`vr_id_${C}`, idFromUrl)
       setStoredId(idFromUrl)
       urlChanged = true
+    } else {
+      const fromLs = localStorage.getItem(`vr_id_${C}`)
+      if (fromLs) setStoredId(fromLs)
     }
     if (searchParams.get('host')) urlChanged = true
     if (urlChanged) {
@@ -94,6 +120,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       const newUrl = p.toString() ? `${base}?${p.toString()}` : base
       router.replace(newUrl)
     }
+    setHydrated(true)
   }, [C])
   const displayName = storedName || authSession?.user?.name || ''
   // Identity id falls back to a derived id for logged-in users so they can
@@ -107,8 +134,13 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const [showUserPanel,    setShowUserPanel]    = useState(false)
 
   useEffect(() => {
-    if (needsName) router.replace(joinPath(C))
-  }, [needsName, C])
+    // Gate on `hydrated` so the redirect doesn't fire in the first-render
+    // frame before localStorage has been read. An anon participant has
+    // their displayName in localStorage only — without the gate, they'd
+    // briefly satisfy `needsName=true` on first render and get bounced
+    // to /join before the hydration effect could populate storedName.
+    if (hydrated && needsName) router.replace(joinPath(C))
+  }, [hydrated, needsName, C])
 
   // Logged-in users hit /session/<code> with an auth cookie but may not yet
   // have an identities-map entry until the visit endpoint runs and registers
@@ -133,7 +165,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     enabled: readyToFetch,
   })
 
-  const { data: winesData = [], refetch: refetchWines, isPending: winesPending } = useQuery<WineMeta[]>({
+  const { data: winesData = [], refetch: refetchWines, isPending: winesPending } = useQuery<WireWine[]>({
     queryKey: ['wines', C, myId],
     queryFn: async () => {
       const r = await sessionFetch(C, `/api/session/${C}/wines`)
@@ -185,11 +217,17 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         // lookups use the canonical form. Anon users hit the early-return
         // branch on the server (no body), so data has no displayName/id —
         // the join response already populated localStorage for them.
-        if (data?.displayName && data.displayName !== storedName) {
+        // Unconditional write — React setState bails out on === values,
+        // and overwriting localStorage with the same string is a no-op.
+        // Avoiding the comparison sidesteps the stale-closure trap (the
+        // effect dep array is [C], so `storedName`/`storedId` would be
+        // captured at attach time and could miss a post-mount hydration
+        // update).
+        if (data?.displayName) {
           localStorage.setItem(`vr_name_${C}`, data.displayName)
           setStoredName(data.displayName)
         }
-        if (data?.id && data.id !== storedId) {
+        if (data?.id) {
           localStorage.setItem(`vr_id_${C}`, data.id)
           setStoredId(data.id)
         }
@@ -209,11 +247,16 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     !!(hostIdentityId && myId === hostIdentityId) ||
     !!(hostUserId && myId === `u:${hostUserId}`)
   const isHost = isHostState || isHostById || isCoHost
+  // Provider check — distinct from isHost. Providers can add wines and
+  // edit/delete only their own. Mutually exclusive with cohost in the
+  // server-side role model, but mirroring the flag separately here so
+  // the UI can branch on "host vs provider" without re-checking lists.
+  const isProvider = !!(metaData?.providerIds && myId && metaData.providerIds.includes(myId))
   const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 
   const isBlind = !!(metaData?.blind)
   const ctx: SessionCtx = {
-    code: C, displayName, myId, isHost: !!isHost,
+    code: C, displayName, myId, isHost: !!isHost, isProvider,
     sessionMeta: metaData || null,
     wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
     // Loading is true until the first fetch resolves; the gate
