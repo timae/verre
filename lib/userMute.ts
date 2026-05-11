@@ -53,11 +53,18 @@ export async function setMute(
   if (mute) {
     // Upsert keeps it idempotent — re-muting doesn't bump createdAt
     // (update {} is a no-op).
-    await prisma.userMute.upsert({
-      where: { muterId_mutedId: { muterId, mutedId } },
-      create: { muterId, mutedId },
-      update: {},
-    })
+    try {
+      await prisma.userMute.upsert({
+        where: { muterId_mutedId: { muterId, mutedId } },
+        create: { muterId, mutedId },
+        update: {},
+      })
+    } catch (err: unknown) {
+      // FK violation = target user doesn't exist. Swallow and return
+      // uniform success so the endpoint can't be used to enumerate the
+      // user-id space. Mirrors the follow POST + block POST pattern.
+      if ((err as { code?: string }).code !== 'P2003') throw err
+    }
   } else {
     // deleteMany so a missing row doesn't throw — matches the
     // unfollow shape.

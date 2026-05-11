@@ -55,6 +55,8 @@ model User {
   visibilityLog             ProfileVisibilityLog[]
   mutes                     UserMute[]             @relation("UserMuter")
   mutedBy                   UserMute[]             @relation("UserMuted")
+  blocks                    UserBlock[]            @relation("UserBlocker")
+  blockedBy                 UserBlock[]            @relation("UserBlocked")
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -96,6 +98,31 @@ model UserMute {
   @@id([muterId, mutedId])
   @@index([mutedId])
   @@map("user_mutes")
+}
+
+// Per-pair block. Stronger than mute: A blocks B → bidirectional
+// invisibility OUTSIDE shared sessions. Profile reads, feed, search,
+// follower/following lists & counts, like counts, tag rendering all
+// hide the pair edge globally for everyone (Instagram-style). INSIDE
+// a shared session the block goes dormant: render-style only, no
+// row hiding, no identity-map mutation. Outside-session links from
+// session contexts (e.g. tapping a participant's name → /u/<id>) hit
+// the outside-session gate again.
+//
+// Block is non-destructive: follows, mutes, likes, tags between the
+// pair stay in DB. Unblock restores visibility everywhere.
+//
+// Separate from Kick/Ban (per-session moderation primitive).
+model UserBlock {
+  blockerId Int      @map("blocker_id")
+  blockedId Int      @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  blocker   User     @relation("UserBlocker", fields: [blockerId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  blocked   User     @relation("UserBlocked", fields: [blockedId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([blockerId, blockedId])
+  @@index([blockedId])
+  @@map("user_blocks")
 }
 
 model Session {
