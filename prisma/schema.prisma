@@ -159,7 +159,7 @@ model Wine {
   category    String     @default("wine") @db.VarChar(32)
   style       String?    @db.VarChar(64)
   imageUrl    String?    @map("image_url")
-  purchaseUrl String?    @map("purchase_url")
+  purchaseUrl String?    @map("purchase_url") @db.VarChar(1000)
   description String?    @db.VarChar(1000)
   region      String?    @db.VarChar(255)
   country     String?    @db.VarChar(2)

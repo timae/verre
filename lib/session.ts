@@ -5,6 +5,7 @@ import { uploadImage } from '@/lib/s3'
 import { scrub } from '@/lib/textSafe'
 import type { Identity } from '@/lib/identity'
 import { userIdentityId } from '@/lib/identity'
+import { COUNTRY_CODES } from '@/lib/countries'
 
 // Inlined S3 reclaim — see app/api/checkins/[id]/route.ts for the same
 // helper and the bundler-bug rationale.
@@ -196,15 +197,29 @@ function clean(v: unknown): string {
 }
 
 // Defang URL inputs at the write boundary: only allow http(s) schemes
-// through; everything else (`javascript:`, `data:`, `vbscript:`, etc.)
-// collapses to `''`. Empty input stays empty. This protects any future
-// render path (or third-party consumer like /api/me/bookmarks which
-// already surfaces purchase_url) from being tricked into clickable
-// scheme-injection links.
+// through with no embedded whitespace (\n, \t, etc. that `scrub` permits
+// elsewhere). Everything else — `javascript:`, `data:`, `vbscript:`,
+// URLs with embedded newlines — collapses to `''`. Empty input stays
+// empty. This protects any future render path (or third-party consumer
+// like /api/me/bookmarks which already surfaces purchase_url) from
+// being tricked into clickable scheme-injection links.
 function cleanUrl(v: unknown): string {
   const s = clean(v)
   if (!s) return ''
-  return /^https?:\/\//i.test(s) ? s : ''
+  return /^https?:\/\/\S+$/i.test(s) ? s : ''
+}
+
+// ISO 3166-1 alpha-2 allow-list. Normalize and validate at the write
+// boundary so garbage codes (`XX`, `12`, single chars from typos) never
+// reach Postgres. Invalid input collapses to `''`. The dropdown picker
+// in the UI only offers valid codes, so this is defense-in-depth.
+//
+// Requires the cleaned input to be exactly 2 chars before lookup, so a
+// 3-char typo like `'usa'` doesn't silently truncate to `'US'` and pass.
+function cleanCountry(v: unknown): string {
+  const s = clean(v).toUpperCase()
+  if (s.length !== 2) return ''
+  return COUNTRY_CODES.has(s) ? s : ''
 }
 
 export async function addWineToSession(
@@ -254,9 +269,9 @@ export async function addWineToSession(
     imageUrl,
     description: clean(body.description).slice(0, 1000),
     region: clean(body.region).slice(0, 255),
-    // ISO 3166-1 alpha-2: 2-char uppercase. Column is VARCHAR(2) so
-    // anything longer would be rejected by Postgres.
-    country: clean(body.country).slice(0, 2).toUpperCase(),
+    // ISO 3166-1 alpha-2 allow-listed via `cleanCountry`. Invalid codes
+    // (typos, garbage) collapse to `''`.
+    country: cleanCountry(body.country),
     vinification: clean(body.vinification).slice(0, 1000),
     purchaseUrl: cleanUrl(body.purchaseUrl).slice(0, 1000),
     // Preserve on edit; populate on create. Edits never overwrite the

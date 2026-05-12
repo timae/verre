@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { Modal } from '@/components/ui/Modal'
+import { CountrySelect } from '@/components/ui/CountrySelect'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -34,6 +35,11 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   const [grape, setGrape] = useState(editWine?.grape || '')
   const [type, setType] = useState(editWine?.type || '')
   const [position, setPosition] = useState(String(winesCount + 1))
+  const [description, setDescription] = useState(editWine?.description || '')
+  const [region, setRegion] = useState(editWine?.region || '')
+  const [country, setCountry] = useState(editWine?.country || '')
+  const [vinification, setVinification] = useState(editWine?.vinification || '')
+  const [purchaseUrl, setPurchaseUrl] = useState(editWine?.purchaseUrl || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [photoDataUrl, setPhotoDataUrl] = useState('')
@@ -126,7 +132,10 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       }
     }
     setSaving(true); setError('')
-    const body: Record<string, unknown> = { name, producer, vintage, grape, type }
+    const body: Record<string, unknown> = {
+      name, producer, vintage, grape, type,
+      description, region, country, vinification, purchaseUrl,
+    }
     if (photoDataUrl) body.image = photoDataUrl
     if (!isEdit && parsedPos != null) body.position = parsedPos
     const url = isEdit
@@ -242,6 +251,58 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
                 placeholder={String(maxPosition)} />
             </div>
           )}
+        </div>
+
+        {/* Optional details — wine identity beyond name/type. Separated
+            visually so the required fields stay the focal point. */}
+        <div style={{
+          marginTop:14,marginBottom:14,padding:'14px 12px 6px',
+          border:'1px solid var(--border)',borderRadius:8,
+          background:'rgba(255,255,255,0.015)',
+        }}>
+          <div className="panel-hdr">details (optional)</div>
+
+          <div className="field">
+            <div className="fl">description</div>
+            <textarea
+              className="fi" value={description} maxLength={1000}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="character, story, tasting impression…"
+              rows={3}
+              style={{resize:'vertical',minHeight:60,fontFamily:'var(--mono)'}}
+            />
+          </div>
+
+          <div style={{display:'flex',gap:8}}>
+            <div className="field" style={{flex:1,minWidth:0}}>
+              <div className="fl">region</div>
+              <input className="fi" value={region} maxLength={255}
+                onChange={e => setRegion(e.target.value)}
+                placeholder="Burgundy, Wachau…" />
+            </div>
+            <div className="field" style={{flex:1,minWidth:0}}>
+              <div className="fl">country</div>
+              <CountrySelect value={country} onChange={setCountry} />
+            </div>
+          </div>
+
+          <div className="field">
+            <div className="fl">vinification</div>
+            <textarea
+              className="fi" value={vinification} maxLength={1000}
+              onChange={e => setVinification(e.target.value)}
+              placeholder="stainless steel, 10 months in oak…"
+              rows={2}
+              style={{resize:'vertical',minHeight:48,fontFamily:'var(--mono)'}}
+            />
+          </div>
+
+          <div className="field" style={{marginBottom:4}}>
+            <div className="fl">purchase link</div>
+            <input className="fi" value={purchaseUrl} maxLength={1000}
+              onChange={e => setPurchaseUrl(e.target.value)}
+              placeholder="https://…" type="url" />
+          </div>
         </div>
 
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
