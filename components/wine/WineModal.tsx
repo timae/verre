@@ -96,6 +96,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     kind: 'rating-and-note' | 'rating' | 'note'
     name: string
   } | null>(null)
+  // Ref on the scroll container — declared here (vs. closer to its
+  // JSX usage) so the activeWineId-change effect below can reset
+  // scrollTop on swap. Without that reset, the new wine renders
+  // with the previous wine's scrollTop, which is usually invalid
+  // for the new content height and shows mostly empty space.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
 
   // Re-seed per-wine state when the user navigates to a different
   // wine in the same modal. The state initializers on `useState` only
@@ -130,6 +136,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     setCommitError(null)
     setProvenanceOpen(false)
     setMenuOpen(false)
+    // Reset scroll to the top of the new wine. Without this, the
+    // scroll container's scrollTop is preserved across wine swaps —
+    // which is usually invalid for the new content height (and on
+    // iOS specifically, can leave the body rendered in empty space
+    // because the post-swap scrollTop is past the new scrollHeight).
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWineId])
 
@@ -178,7 +190,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // same path as the prev/next buttons. The returned pullDistance +
   // boundary feed the visual indicator below. Wheel/desktop
   // navigation is handled separately via arrow keys.
-  const scrollRef = useRef<HTMLDivElement | null>(null)
+  // scrollRef is declared above (near per-wine state) so the
+  // activeWineId-change effect can reset scrollTop on swap.
   const { pullDistance, boundary } = usePullToSwap({
     containerRef: scrollRef,
     isFirst: isFirstWine,

@@ -314,15 +314,3 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
-/* Pull-to-swap textarea handling — see lib/usePullToSwap.ts. When a
-   scroll container is at a boundary, the hook sets touch-action:none
-   on itself to claim pull gestures from iOS native scroll. Textareas
-   inside such a container would otherwise have their own implicit
-   iOS text-selection handling, causing iOS to issue pointercancel
-   as soon as JS tries to track a vertical drag. Setting
-   touch-action:none on unfocused textareas matches the parent and
-   lets the pull gesture engage. Focused textareas (user is typing)
-   keep native behavior so text-selection works. */
-[data-at-boundary] textarea:not(:focus) {
-  touch-action: none;
-}
