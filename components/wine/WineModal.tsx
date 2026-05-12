@@ -7,6 +7,9 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
+import { sessionPath } from '@/lib/sessionCode'
+import { usePullToSwap } from '@/lib/usePullToSwap'
+import { useRouter, usePathname } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 import type { ProvenanceRenderMode } from '@/components/wine/WineInfoPane'
@@ -34,13 +37,23 @@ interface Props {
 // wine causes the open modal's info tab to populate without reload.
 export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   const { wines, myRatings, code, refresh, isHost, isProvider, isBlind, bookmarkedIds, isLoggedIn, sessionMeta, myId } = useSession()
-  const wine = wines.find(w => w.id === wineId)
-  const existing = myRatings[wineId]
   const qc = useQueryClient()
+
+  // `activeWineId` is the currently-rendered wine. Initialized from
+  // the `wineId` prop, but mutated locally on prev/next navigation so
+  // the user can move through wines without closing/reopening the
+  // modal. The prop is only the entry point; once mounted the modal
+  // owns its navigation state.
+  const [activeWineId, setActiveWineId] = useState(wineId)
+  const wine = wines.find(w => w.id === activeWineId)
+  const existing = myRatings[activeWineId]
+  const currentIndex = wines.findIndex(w => w.id === activeWineId)
+  const isFirstWine = currentIndex === 0
+  const isLastWine = currentIndex === wines.length - 1
 
   const [pane, setPane] = useState<Pane>(initialPane)
   const [saving, setSaving] = useState(false)
-  const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
+  const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(activeWineId) || false)
   const [showEdit, setShowEdit] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [rating, setRating] = useState<RatingValue>({
@@ -68,6 +81,106 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // the local `onClose`. Null when the prompt was opened by the user
   // tapping the modal's own close paths — Discard just calls onClose.
   const pendingNavRef = useRef<(() => void) | null>(null)
+  // Go-back bubble state. Populated after a successful auto-commit +
+  // swap; cleared on next swap or after the 5s timeout. The user can
+  // tap "Go back" to return to the wine they just left. The `kind`
+  // field drives the copy variant (rating / note / both).
+  const [lastSwap, setLastSwap] = useState<{
+    fromWineId: string
+    kind: 'rating-and-note' | 'rating' | 'note'
+    name: string
+  } | null>(null)
+
+  // Re-seed per-wine state when the user navigates to a different
+  // wine in the same modal. The state initializers on `useState` only
+  // run once at mount; without this effect, the rating/bookmarked/
+  // commitError values would persist across wine changes.
+  //
+  // Dep array is `[activeWineId]` only — the effect re-reads
+  // `myRatings` at the moment of the swap and seeds from whatever the
+  // polled data shows then. We deliberately do NOT re-seed when
+  // myRatings updates on its own (polling tick during the same wine):
+  // that would clobber an in-progress edit if another tab committed
+  // underneath. Trade-off accepted: a cross-device update during
+  // typing isn't visible until the user swaps away and back.
+  //
+  // We skip the very first run (mount-time seeding already happened
+  // via useState initializers) via a ref-flag pattern to avoid the
+  // brief re-set that would otherwise discard any rating typed during
+  // initial layout/hydration.
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    const next = myRatings[activeWineId]
+    setRating({
+      score: next?.score || 0,
+      flavors: (next?.flavors as Record<string, number>) || {},
+      notes: next?.notes || '',
+    })
+    setBookmarked(bookmarkedIds?.has(activeWineId) || false)
+    setCommitError(null)
+    setProvenanceOpen(false)
+    setMenuOpen(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWineId])
+
+  // URL sync — only when the modal owns the page. The modal can open
+  // from two paths: `/session/<C>/rate/<wineId>` (modal IS the page —
+  // syncing keeps refresh/share consistent), or as an overlay over
+  // `/session/<C>/wines` or similar (modal is overlay — syncing would
+  // reroute the underlying page and break the "close = back to wines"
+  // mental model). The mount-time check captures which mode applies;
+  // we only emit router.replace in the page-mode case.
+  const router = useRouter()
+  const pathname = usePathname()
+  // Snapshot at mount: did we open as the page, or as an overlay?
+  // The /rate route's path matches `/session/<C>/rate/<wineId>` —
+  // any tail segment past /rate/ implies the modal is the page.
+  const urlOwnedRef = useRef<boolean>(false)
+  useEffect(() => {
+    urlOwnedRef.current = /\/session\/[^/]+\/rate\/[^/]+/.test(pathname)
+    // mount-only — capture entry mode once and ignore later route changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  useEffect(() => {
+    if (!urlOwnedRef.current) return
+    const target = sessionPath(code, `rate/${activeWineId}`)
+    if (pathname !== target) router.replace(target)
+  }, [activeWineId, code, pathname, router])
+
+  // Preload neighbouring wine images so the swap renders without a
+  // visible image fetch. Browser caches the bytes; the next mount of
+  // the WineInfoPane's <img> reads from cache. Trivial side effect —
+  // `new Image()` triggers the GET and we don't need the result.
+  useEffect(() => {
+    const prev = currentIndex > 0 ? wines[currentIndex - 1] : null
+    const next = currentIndex < wines.length - 1 ? wines[currentIndex + 1] : null
+    for (const w of [prev, next]) {
+      if (w?.imageUrl) {
+        const img = new Image()
+        img.src = w.imageUrl
+      }
+    }
+  }, [currentIndex, wines])
+
+  // Pull-to-swap gesture. The hook listens on the scroll container
+  // for pointer/wheel events that drag past the top or bottom
+  // boundary. Past the threshold, it fires onSwapPrev / onSwapNext —
+  // same path as the prev/next buttons. The returned pullDistance +
+  // boundary feed the visual indicator below.
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const { pullDistance, boundary } = usePullToSwap({
+    containerRef: scrollRef,
+    isFirst: isFirstWine,
+    isLast: isLastWine,
+    disabled: saving,
+    onSwapPrev: () => prevWineId && commitAndSwap(prevWineId),
+    onSwapNext: () => nextWineId && commitAndSwap(nextWineId),
+  })
+
   // Ref on the brought-by callout — used to (1) scroll the expanded
   // preview into view if the user had scrolled past the callout
   // before opening it, and (2) detect outside-clicks so the floating
@@ -90,17 +203,20 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     }
   }, [provenanceOpen])
 
-  if (!wine) return (
-    <Modal onClose={onClose} maxWidth={400}>
-      <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
-      <button className="btn-g" onClick={onClose}>close</button>
-    </Modal>
-  )
+  // NOTE: no early-return here even when `wine` is undefined. The
+  // hooks declared further down (beforeunload guard, dirty-guard
+  // registration, lastSwap auto-dismiss) MUST run on every render;
+  // returning early would short-circuit those hooks and produce a
+  // "Rendered fewer hooks than expected" crash on the second render
+  // after a polling tick delivers a wines array without the current
+  // activeWineId (e.g. host deleted the wine from another tab).
+  // Instead, derive wine-dependent values defensively (optional chain
+  // / safe defaults) and gate the JSX at the bottom with a ternary.
 
   // Blind redaction — server-side strips identifying fields for
   // non-host viewers. Host/cohost/provider-on-own-wine bypass.
-  const isRedacted = !!(isBlind && wine._blind && !wine.revealedAt)
-  const canEditThisWine = isHost || (isProvider && !!wine.isMine)
+  const isRedacted = !!(isBlind && wine?._blind && !wine?.revealedAt)
+  const canEditThisWine = isHost || (isProvider && !!wine?.isMine)
   const canReorderThisWine = isHost
 
   // Brought-by clickability + block-pair rendering. Mirrors the
@@ -113,7 +229,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // still block-aware, so a viewer who's blocked the kicked adder
   // sees the stripped profile view on tap — block enforcement holds
   // server-side, just not pre-emptively in the brought-by render.
-  const adderIdentity = wine.addedByUserId != null ? `u:${wine.addedByUserId}` : null
+  const adderIdentity = wine?.addedByUserId != null ? `u:${wine.addedByUserId}` : null
   const blocksOut = new Set(sessionMeta?.viewerBlocksOut ?? [])
   const blocksIn = new Set(sessionMeta?.viewerBlocksIn ?? [])
   const adderIsMe = !!adderIdentity && adderIdentity === myId
@@ -232,23 +348,25 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     return unregister
   })
 
-  // Commit the local rating. Returns true on success (caller is then
-  // free to close the modal), false on failure (caller should keep its
-  // UI mounted so the user can retry). On failure, `commitError` holds
-  // a user-visible message that surfaces in both the footer and the
-  // inner confirm modal.
-  async function commitRating(): Promise<boolean> {
+  // Low-level commit: POST a specific wine's rating value. Returns
+  // true on success, false on failure. Sets `saving`/`commitError`
+  // state but does NOT touch `activeWineId` / `onClose` / `refresh` —
+  // those are the caller's concern.
+  //
+  // Split out from the original `commitRating` so we can reuse it for
+  // three different higher-level flows: save-and-close, save-and-swap-
+  // to-next-wine (via prev/next buttons or pull gesture), and the
+  // future auto-commit-on-pull. Each wraps this primitive with its
+  // own post-success behavior.
+  async function commitWineRating(targetWineId: string, value: RatingValue): Promise<boolean> {
     setSaving(true)
     setCommitError(null)
     try {
       const res = await sessionFetch(code, `/api/session/${code}/rate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wineId, ...rating }),
+        body: JSON.stringify({ wineId: targetWineId, ...value }),
       })
       if (!res.ok) {
-        // 429 (rate limit), 403 (permission), 500 (server) etc. surface
-        // here instead of silently closing the modal and pretending the
-        // rating saved.
         const msg = res.status === 429
           ? 'Rate-limited. Try again shortly.'
           : res.status === 403
@@ -259,8 +377,6 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         return false
       }
       setSaving(false)
-      refresh()
-      onClose()
       return true
     } catch {
       setCommitError('Network error. Check your connection and try again.')
@@ -269,6 +385,96 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     }
   }
 
+  // Save the current rating and close the modal. The original
+  // commitRating behavior — used by the outer Cancel/Commit flow when
+  // the user is done rating and wants out. On the last wine, the
+  // primary CTA "Save & close" routes here too.
+  async function commitRating(): Promise<boolean> {
+    const ok = await commitWineRating(activeWineId, rating)
+    if (ok) {
+      refresh()
+      onClose()
+    }
+    return ok
+  }
+
+  // Detect whether the local rating actually carries content worth
+  // saving. Lets navigation actions skip a no-op POST when the user
+  // hasn't typed anything on the active wine (e.g. they tap → on Wine
+  // info without ever touching Rate).
+  function hasContent(value: RatingValue): boolean {
+    return value.score > 0
+      || Object.values(value.flavors).some(v => v > 0)
+      || value.notes.trim() !== ''
+  }
+
+  // Save the current rating (only if `dirty` — i.e. it carries content
+  // AND differs from `existing`) and swap to a different wine. Used by
+  // the prev/next buttons in the footer, the pull gesture, and the
+  // primary CTA when there's a next wine.
+  //
+  // The `dirty` gate avoids re-POSTing identical ratings on every
+  // swap — a user opening an existing rating and tapping Save & next
+  // without touching anything would otherwise fire a no-op write and
+  // surface the bubble for unmodified data. With the gate, those
+  // browse-only swaps are silent.
+  //
+  // If `dirty` is true but the commit fails, the swap is ABORTED so
+  // the user stays on the failing wine with `commitError` surfaced;
+  // they can retry or Cancel out.
+  //
+  // On a successful committed swap, the Go-back bubble is populated
+  // with the wine the user just left + a copy variant matching what
+  // was saved (rating, note, or both). Bubble auto-dismisses after 5s
+  // or on the next swap.
+  async function commitAndSwap(targetWineId: string): Promise<void> {
+    const fromWineId = activeWineId
+    const fromWine = wine
+    const fromRating = rating
+    let didCommit = false
+    if (dirty) {
+      const ok = await commitWineRating(fromWineId, fromRating)
+      if (!ok) return  // error already surfaced via commitError
+      refresh()
+      didCommit = true
+    }
+    setActiveWineId(targetWineId)
+    if (didCommit && fromWine) {
+      // Copy variant depends on what the user actually committed:
+      // - score > 0 + non-empty notes → "Rating & note saved"
+      // - score > 0 + no notes        → "Rating saved"
+      // - score === 0 + non-empty notes → "Note saved"
+      // The "note saved" case is intentional — we DO let the user
+      // commit a note without a score (e.g. "tasted, save my
+      // impression, no score yet"). The dirty gate ensures we only
+      // POST when something actually changed.
+      const hasScore = fromRating.score > 0
+      const hasNote = fromRating.notes.trim() !== ''
+      const kind: 'rating-and-note' | 'rating' | 'note' =
+        hasScore && hasNote ? 'rating-and-note'
+        : hasScore         ? 'rating'
+        :                    'note'
+      setLastSwap({ fromWineId, kind, name: fromWine.name })
+    } else {
+      setLastSwap(null)
+    }
+  }
+
+  // Auto-dismiss the Go-back bubble after 5s. Reset whenever
+  // `lastSwap` changes (covers both "set to a fresh swap" and "user
+  // cleared it via Go back").
+  useEffect(() => {
+    if (!lastSwap) return
+    const t = setTimeout(() => setLastSwap(null), 5000)
+    return () => clearTimeout(t)
+  }, [lastSwap])
+
+  // Resolve neighbouring wine ids relative to the current position.
+  // Returns null at the list bounds. Computed inline at render rather
+  // than memoized — wines array is small, lookups are O(n) but n<30.
+  const prevWineId: string | null = !isFirstWine ? wines[currentIndex - 1].id : null
+  const nextWineId: string | null = !isLastWine ? wines[currentIndex + 1].id : null
+
   // Mirror commitRating's error handling — without it, a 429/500 on
   // delete silently closes the modal and pretends the deletion happened.
   // The user's saved rating still exists but the UI doesn't show it.
@@ -276,7 +482,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     setSaving(true)
     setCommitError(null)
     try {
-      const res = await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
+      const res = await sessionFetch(code, `/api/session/${code}/rate/${activeWineId}`, {
         method: 'DELETE', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       })
@@ -299,16 +505,26 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
 
   async function toggleBookmark() {
     const method = bookmarked ? 'DELETE' : 'POST'
+    // Snapshot the target wine at click time. If the user swaps to a
+    // different wine before this fetch returns, we mustn't apply the
+    // failure-revert to the new wine's state — the re-seed effect
+    // already set the correct value for the new activeWineId.
+    const targetWineId = activeWineId
+    const wasBookmarked = bookmarked
     // Optimistic flip — revert on server failure so the heart doesn't
     // lie. On success, invalidate the in-session bookmarkedIds query
     // AND the /me/saved page's query so the bookmark surfaces there
     // immediately on next navigation.
-    setBookmarked(!bookmarked)
-    const res = await sessionFetch(code, `/api/session/${code}/wines/${wineId}/bookmark`, {
+    setBookmarked(!wasBookmarked)
+    const res = await sessionFetch(code, `/api/session/${code}/wines/${targetWineId}/bookmark`, {
       method, headers: { 'Content-Type': 'application/json' },
     })
     if (!res.ok) {
-      setBookmarked(bookmarked)
+      // Only revert if the user is still looking at the same wine.
+      // If they swapped, the new wine's bookmarked state was seeded
+      // by the activeWineId-change effect — overwriting it here
+      // would be wrong.
+      if (activeWineId === targetWineId) setBookmarked(wasBookmarked)
       return
     }
     qc.invalidateQueries({ queryKey: ['bookmarks'] })
@@ -316,7 +532,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   }
 
   async function moveWine(delta: number) {
-    const idx = wines.findIndex(w => w.id === wineId)
+    const idx = wines.findIndex(w => w.id === activeWineId)
     if (idx === -1) return
     // Bounds clamp: bail when the target index would fall outside the
     // list. Without this, splice(-1, ...) at idx=0 wraps to the
@@ -334,18 +550,57 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   }
 
   async function deleteWine() {
-    await sessionFetch(code, `/api/session/${code}/wines/${wineId}`, {
+    await sessionFetch(code, `/api/session/${code}/wines/${activeWineId}`, {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     })
     refresh(); onClose()
   }
 
+  // Pull-progress and threshold-crossing flags for the boundary
+  // indicator UI. `pulling` = user is actively dragging at a boundary;
+  // `pullPast` = past the fire threshold (visual prompts shift from
+  // "Pull to load" → "Release to load").
+  const PULL_THRESHOLD = 80
+  const pulling = boundary !== null && Math.abs(pullDistance) > 0
+  const pullPast = Math.abs(pullDistance) >= PULL_THRESHOLD
+  // Block message: at first/last wine boundaries, the indicator copy
+  // shifts to "Start of the list" / "End of the cellar" with no fire.
+  const blockedTop = boundary === 'top' && isFirstWine
+  const blockedBottom = boundary === 'bottom' && isLastWine
+  const blocked = blockedTop || blockedBottom
+
+  // Wine missing — most often because a host deleted it from another
+  // tab and the polling tick just delivered the updated wines array.
+  // This early return runs AFTER all hooks above, so React's hook
+  // sequence stays stable across renders. Once the parent observes
+  // the deletion via its own polling, it should close the modal; in
+  // the meantime we show a minimal placeholder so the user isn't
+  // stuck staring at a broken layout.
+  if (!wine) {
+    return (
+      <Modal onClose={onClose} maxWidth={400}>
+        <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
+        <button className="btn-g" onClick={onClose}>close</button>
+      </Modal>
+    )
+  }
+
   return (
-    <Modal onClose={requestClose} maxWidth={620} maxHeight="90vh">
+    <Modal onClose={requestClose} maxWidth={620} maxHeight="90vh" minHeight="70vh">
+      {/* Outer column: header + tabs at top, scrollable body in middle,
+          error banner / Go-back bubble / footer pinned at bottom. The
+          fixed-height scroll-region is what the pull-to-swap hook
+          watches; pulling past the top/bottom boundary triggers a wine
+          swap (same effect as the prev/next buttons in the footer). */}
+      <div style={{
+        display:'flex',flexDirection:'column',
+        height:'100%',minHeight:0,position:'relative',
+      }}>
       {/* HEADER — 3-dot menu (host-only) + wine name + vintage + Save + close */}
       <div style={{
         display:'flex',alignItems:'center',gap:8,
+        flexShrink:0,
         marginBottom:14,paddingBottom:14,
         borderBottom:'1px solid var(--border)',
       }}>
@@ -408,10 +663,10 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
 
       {/* TAB STRIP — underline-indicator. Rate tab carries a pip with
           the current score when one exists. Tabs are tap-only;
-          horizontal swipe is reserved for step 11 (between-wines). */}
+          vertical pull on the scroll container below navigates wines. */}
       <div style={{
         display:'flex',gap:4,borderBottom:'1px solid var(--border)',
-        marginBottom:18,
+        marginBottom:18,flexShrink:0,
       }}>
         <TabButton active={pane === 'info'} onClick={() => setPane('info')}>
           Wine info
@@ -430,7 +685,35 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         </TabButton>
       </div>
 
-      {/* BODY */}
+      {/* Scrollable body. Pull-to-swap gesture detection lives here:
+          dragging past the top boundary loads the previous wine,
+          past the bottom boundary loads the next. `overscroll-behavior:
+          contain` prevents the browser's native page-pull-to-refresh
+          from interfering on mobile. `touch-action: pan-y` allows
+          vertical drag through to our gesture handler. Score slider
+          and flavor bars set their own `touch-action: none` so
+          horizontal drags on those controls don't bubble. */}
+      {/* Pullable region — wrapper that lets us anchor the pull
+          indicator at the scroll container's edges without the
+          indicator inheriting the body's rubber-band translateY.
+          The inner ref'd div carries the transform; the indicator
+          (rendered as a sibling further down) is positioned
+          absolutely against this wrapper, so it stays pinned to the
+          edge as the body slides. */}
+      <div style={{flex:1,minHeight:0,position:'relative',display:'flex',flexDirection:'column'}}>
+      <div
+        ref={scrollRef}
+        style={{
+          flex:1,minHeight:0,overflowY:'auto',
+          overscrollBehavior:'contain',touchAction:'pan-y',
+          // Rubber-band transform — translates the body visually
+          // during pull. Springs back via transition when the gesture
+          // releases below threshold.
+          transform: `translateY(${pullDistance}px)`,
+          transition: pulling ? 'none' : 'transform 200ms ease-out',
+          position:'relative',
+        }}
+      >
       {pane === 'info' && (
         isRedacted ? (
           // Blind placeholder. Updates live: when the host hits reveal,
@@ -469,17 +752,79 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
 
       {/* RatingPane is controlled — the parent owns `rating`. That means
           unmounting/remounting on tab switch (info ↔ rate) doesn't drop
-          in-progress edits. We keep the `key={wineId}` so swapping
-          between wines does still reset, but tab switches within the
-          same wine preserve state. */}
+          in-progress edits. The `key={activeWineId}` forces a fresh
+          mount when the user navigates between wines, so the new
+          wine's rating state is seeded from scratch. */}
       {pane === 'rate' && (
         <RatingPane
-          key={wineId}
+          key={activeWineId}
           wineType={isRedacted ? null : wine.type}
           value={rating}
           onChange={setRating}
         />
       )}
+      </div>
+
+      {/* Pull indicator — overlays the pullable region's edges with
+          contextual copy as the user pulls past a boundary. Sibling
+          of the scroll container (not a child), so the translateY
+          rubber-band doesn't move it. Anchored to the pullable-region
+          wrapper which has the same bounds as the scroll container.
+          - Top + first wine     → "↑ Start of the list" (capped pull)
+          - Top + not first      → "↑ Pull to load previous" / "Release to load previous"
+          - Bottom + last wine   → "↓ Sorry to disappoint. That's the last one"
+          - Bottom + not last    → "↓ Pull to load next" / "Release to load next"
+          Position: absolute over the scroll container, pinned to the
+          corresponding edge. Opacity tracks pull progress so the
+          indicator fades in as the user drags. */}
+      {pulling && boundary && (
+        <div style={{
+          position:'absolute',left:0,right:0,
+          ...(boundary === 'top'
+            ? { top:0, paddingTop:6 }
+            : { bottom:0, paddingBottom:6 }),
+          display:'flex',justifyContent:'center',alignItems:'center',
+          pointerEvents:'none',zIndex:5,
+          // Baseline opacity so the indicator is visible the instant
+          // the gesture starts; ramps to fully opaque well before the
+          // threshold so the user sees the cue early. Without the
+          // floor, the first ~5px of drag would render a 0-opacity
+          // chip and the user might think nothing's happening.
+          opacity: 0.35 + Math.min(0.65, Math.abs(pullDistance) / 60),
+        }}>
+          <div style={{
+            fontSize:10,fontFamily:'var(--mono)',
+            letterSpacing:'0.1em',textTransform:'uppercase',
+            color: blocked
+              ? 'var(--fg-faint)'
+              : pullPast
+                ? 'var(--accent)'
+                : 'var(--fg-dim)',
+            padding:'6px 12px',borderRadius:100,
+            background:'var(--bg2)',
+            border:`1px solid ${pullPast && !blocked ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,
+            whiteSpace:'nowrap',
+          }}>
+            {/* Arrow points at the wine being summoned, not at the
+                finger's drag direction. Native iOS pull-to-refresh
+                convention: at top the previous wine is "above" so the
+                arrow points UP; at bottom the next wine is "below" so
+                the arrow points DOWN. Blocked boundaries already
+                point outward (start ↑ / end ↓) which is correct.
+                Copy is written in proper sentence case; the chip's
+                CSS `textTransform: 'uppercase'` handles display. */}
+            {boundary === 'top' && blockedTop && '↑ Start of the list'}
+            {boundary === 'top' && !blockedTop && (
+              pullPast ? '↑ Release to load previous' : '↑ Pull to load previous'
+            )}
+            {boundary === 'bottom' && blockedBottom && '↓ Sorry to disappoint. That\'s the last one'}
+            {boundary === 'bottom' && !blockedBottom && (
+              pullPast ? '↓ Release to load next' : '↓ Pull to load next'
+            )}
+          </div>
+        </div>
+      )}
+      </div>
 
       {/* Inline commit-error banner on the rate tab. Surfaces 429/403/
           500/network failures from the most recent commit attempt so
@@ -495,34 +840,150 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         }}>{commitError}</div>
       )}
 
-      {/* FOOTER — action bar. Different per tab. */}
+      {/* Go-back bubble. Surfaces after a successful auto-commit +
+          swap so the user can return to the wine they just left if
+          the navigation was accidental. Auto-dismisses after 5s.
+          "Go back" itself fires commitAndSwap so any in-progress
+          edits on the new wine are saved too (or silent if empty).
+          Copy variant matches what was actually committed: a note
+          saved without a score gets its own phrasing so the user
+          knows a note was broadcast (a note that's visible to all
+          session participants via the compare view). */}
+      {lastSwap && (
+        <div
+          role="status"
+          style={{
+            marginTop:14,padding:'10px 14px',
+            display:'flex',alignItems:'center',gap:12,
+            border:'1px solid rgba(200,150,60,0.4)',
+            background:'rgba(200,150,60,0.08)',
+            borderRadius:8,
+            fontSize:12,color:'var(--fg-warm-soft)',
+          }}
+        >
+          <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+            {lastSwap.kind === 'rating-and-note' && 'Rating & note saved on '}
+            {lastSwap.kind === 'rating'          && 'Rating saved on '}
+            {lastSwap.kind === 'note'            && 'Note saved on '}
+            <span style={{color:'var(--fg-warm)',fontWeight:600}}>{lastSwap.name}</span>
+          </span>
+          <button
+            onClick={() => {
+              const target = lastSwap.fromWineId
+              setLastSwap(null)
+              commitAndSwap(target)
+            }}
+            disabled={saving}
+            style={{
+              display:'inline-flex',alignItems:'center',gap:4,
+              background:'transparent',color:'var(--accent)',
+              border:'1px solid rgba(200,150,60,0.4)',
+              padding:'6px 10px',borderRadius:6,
+              fontSize:10,letterSpacing:'0.08em',
+              textTransform:'uppercase',fontWeight:600,
+              cursor: saving ? 'default' : 'pointer',
+              opacity: saving ? 0.6 : 1,
+              flexShrink:0,
+            }}
+          >
+            <ArrowLeftIcon size={11} />
+            <span>Go back</span>
+          </button>
+        </div>
+      )}
+
+      {/* FOOTER — action bar. Different per tab. Prev/next buttons
+          appear when the user has neighbouring wines; the primary CTA
+          adapts copy based on position (mid-list vs last wine).
+          Labels drop "wine" to fit on narrow screens — full forms
+          would wrap awkwardly with 4 buttons on the rate tab. */}
       <div style={{
         marginTop:18,paddingTop:14,
         borderTop:'1px solid var(--border)',
-        display:'flex',gap:8,
+        display:'flex',gap:8,flexWrap:'wrap',
       }}>
         {pane === 'info' && (
-          <button
-            onClick={() => setPane('rate')}
-            style={{
-              flex:1,
-              display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,
-              background:'var(--accent)',color:'var(--bg)',
-              border:'none',padding:'12px 22px',borderRadius:8,
-              fontWeight:700,fontSize:12,
-              letterSpacing:'0.08em',textTransform:'uppercase',
-              cursor:'pointer',
-              boxShadow:'0 6px 24px -8px var(--accent)',
-            }}
-          >
-            <StarIcon size={16} filled />
-            Rate this wine
-          </button>
+          <>
+            {prevWineId && (
+              <button
+                onClick={() => commitAndSwap(prevWineId)}
+                disabled={saving}
+                aria-label="Previous wine"
+                style={{
+                  display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
+                  background:'transparent',color:'var(--fg-dim)',
+                  border:'1px solid var(--border)',padding:'12px 14px',
+                  borderRadius:8,fontSize:11,letterSpacing:'0.08em',
+                  textTransform:'uppercase',fontWeight:600,
+                  cursor: saving ? 'default' : 'pointer',
+                  opacity: saving ? 0.6 : 1,
+                  flexShrink:0,
+                }}
+              >
+                <ArrowLeftIcon size={13} />
+                <span>Prev</span>
+              </button>
+            )}
+            <button
+              onClick={() => setPane('rate')}
+              style={{
+                flex:1,
+                display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,
+                background:'var(--accent)',color:'var(--bg)',
+                border:'none',padding:'12px 22px',borderRadius:8,
+                fontWeight:700,fontSize:12,
+                letterSpacing:'0.08em',textTransform:'uppercase',
+                cursor:'pointer',
+                boxShadow:'0 6px 24px -8px var(--accent)',
+              }}
+            >
+              <StarIcon size={16} filled />
+              Rate this wine
+            </button>
+            {nextWineId && (
+              <button
+                onClick={() => commitAndSwap(nextWineId)}
+                disabled={saving}
+                aria-label="Next wine"
+                style={{
+                  display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
+                  background:'transparent',color:'var(--fg-dim)',
+                  border:'1px solid var(--border)',padding:'12px 14px',
+                  borderRadius:8,fontSize:11,letterSpacing:'0.08em',
+                  textTransform:'uppercase',fontWeight:600,
+                  cursor: saving ? 'default' : 'pointer',
+                  opacity: saving ? 0.6 : 1,
+                  flexShrink:0,
+                }}
+              >
+                <span>Next</span>
+                <ArrowRightIcon size={13} />
+              </button>
+            )}
+          </>
         )}
         {pane === 'rate' && (
           <>
-            {existing && (
-              <ResetButton onReset={resetRating} />
+            {prevWineId && (
+              <button
+                onClick={() => commitAndSwap(prevWineId)}
+                disabled={saving}
+                aria-label="Save and go to previous wine"
+                style={{
+                  display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
+                  background:'transparent',color:'var(--accent)',
+                  border:'1px solid rgba(200,150,60,0.4)',
+                  padding:'12px 14px',borderRadius:8,
+                  fontSize:11,letterSpacing:'0.08em',
+                  textTransform:'uppercase',fontWeight:600,
+                  cursor: saving ? 'default' : 'pointer',
+                  opacity: saving ? 0.6 : 1,
+                  flexShrink:0,
+                }}
+              >
+                <ArrowLeftIcon size={13} />
+                <span>Save &amp; prev</span>
+              </button>
             )}
             <button
               onClick={requestClose}
@@ -535,8 +996,18 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
                 flexShrink:0,
               }}
             >Cancel</button>
+            {/* Delete sits between Cancel and the primary Save CTA so
+                the destructive action is closest to the destructive
+                corner of the footer, not adjacent to Save & prev (the
+                two accent buttons would otherwise frame Delete on
+                both sides). */}
+            {existing && (
+              <ResetButton onReset={resetRating} />
+            )}
             <button
-              onClick={commitRating}
+              onClick={() => isLastWine
+                ? commitRating()
+                : commitAndSwap(nextWineId!)}
               disabled={saving}
               style={{
                 flex:1,
@@ -551,7 +1022,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               }}
             >
               <CheckIcon size={16} stroke={2.2} />
-              {saving ? 'Saving…' : 'Commit rating'}
+              {saving
+                ? 'Saving…'
+                : isLastWine
+                ? 'Save & close'
+                : 'Save & next'}
+              {!saving && !isLastWine && <ArrowRightIcon size={14} />}
             </button>
           </>
         )}
@@ -588,11 +1064,11 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           <div style={{
             fontSize:15,fontWeight:700,color:'var(--fg-warm)',
             marginBottom:8,letterSpacing:'-0.005em',
-          }}>Unsaved rating</div>
+          }}>Save your rating?</div>
           <div style={{
             fontSize:13,color:'var(--fg-dim)',lineHeight:1.5,
             marginBottom:commitError ? 12 : 18,
-          }}>You have unsaved changes.</div>
+          }}>You have unsaved changes on this wine.</div>
           {commitError && (
             <div style={{
               marginBottom:18,padding:'10px 12px',
@@ -602,9 +1078,9 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
             }}>{commitError}</div>
           )}
-          {/* Button order: Commit (primary) | Keep editing | Discard.
+          {/* Button order: Save (primary) | Keep editing | Discard.
               Red destructive is at the far edge so a thumb-drift from
-              the green CTA can't land on it. Commit stays mounted
+              the green CTA can't land on it. Save stays mounted
               until commitRating resolves — on success commitRating
               calls onClose() which unmounts the whole modal stack; on
               failure the inner confirm stays open with commitError
@@ -641,7 +1117,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               }}
             >
               <CheckIcon size={14} stroke={2.2} />
-              {saving ? 'Saving…' : 'Commit'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               onClick={() => {
@@ -675,6 +1151,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           </div>
         </Modal>
       )}
+      </div>
     </Modal>
   )
 }

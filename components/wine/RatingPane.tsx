@@ -188,6 +188,13 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
               ScoreSlider — its track wrapper IS the pointer target
               and the thumb is a sibling of (not inside) the bar. */}
           <div
+            // `data-no-pull` opts this element out of the parent
+            // modal's pull-to-swap gesture (usePullToSwap reads it on
+            // pointerdown via closest()). Without this, a vertical
+            // wobble during a horizontal score drag could trip a
+            // wine-swap when the rate pane is at the modal's scroll
+            // top boundary.
+            data-no-pull
             onPointerDown={readOnly ? undefined : e => {
               e.preventDefault()
               e.currentTarget.setPointerCapture(e.pointerId)
@@ -359,6 +366,11 @@ function FlavourBar({
   return (
     <div
       ref={barRef}
+      // `data-no-pull` opts this flavor bar out of the parent modal's
+      // pull-to-swap gesture (see usePullToSwap.onPointerDown). The
+      // bar's horizontal drag would otherwise trip vertical pull-swap
+      // when the rate pane is at the modal's scroll bottom boundary.
+      data-no-pull
       style={{
         position:'relative',height:36,borderRadius:6,
         overflow:'hidden',cursor: readOnly ? 'default' : 'pointer',
