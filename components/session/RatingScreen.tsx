@@ -1,14 +1,11 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useSession } from './SessionShell'
-import { FlavorChips } from '@/components/rate/FlavorChips'
-import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { AddWineModal } from '@/components/wine/AddWineModal'
-import { getFL, detectFL, FL } from '@/lib/flavours'
+import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
-import { ScoreSlider } from '@/components/ui/ScoreSlider'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
 
@@ -27,34 +24,22 @@ export function RatingScreen({ wineId, onClose }: Props) {
   // move/reorder; providers do not.
   const canEditThisWine = isHost || (isProvider && !!wine?.isMine)
   const existing = myRatings[wineId]
-  const fl = existing?.flavors && Object.keys(existing.flavors).length
-    ? detectFL(existing.flavors as Record<string, number>)
-    : isRedacted ? FL  // generic dimensions for blind wines
-    : wine ? getFL(wine.type) : getFL('white')
 
-  const [score, setScore] = useState(existing?.score || 0)
-  const [flavors, setFlavors] = useState<Record<string, number>>(() => {
-    const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
-    if (existing?.flavors) Object.assign(base, existing.flavors)
-    return base
-  })
-  const [notes, setNotes] = useState(existing?.notes || '')
   const [saving, setSaving] = useState(false)
   const [bookmarked, setBookmarked] = useState(() => bookmarkedIds?.has(wineId) || false)
   const [showEdit, setShowEdit] = useState(false)
   const [movePos, setMovePos] = useState('')
   const [moveError, setMoveError] = useState('')
   const [moveSuccess, setMoveSuccess] = useState('')
-
-  useEffect(() => {
-    if (existing) {
-      setScore(existing.score || 0)
-      setNotes(existing.notes || '')
-      const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
-      if (existing.flavors) Object.assign(base, existing.flavors as Record<string, number>)
-      setFlavors(base)
-    }
-  }, [wineId]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Mirror of the editor's local state. `<RatingPane>` is the source
+  // of truth for in-progress edits; it pushes them up via onChange so
+  // commit lives here (and can be positioned relative to wine-edit
+  // buttons, not crammed into the pane).
+  const [rating, setRating] = useState<RatingValue>({
+    score: existing?.score || 0,
+    flavors: (existing?.flavors as Record<string, number>) || {},
+    notes: existing?.notes || '',
+  })
 
   if (!wine) return (
     <Modal onClose={onClose} maxWidth={400}>
@@ -63,11 +48,11 @@ export function RatingScreen({ wineId, onClose }: Props) {
     </Modal>
   )
 
-  async function save() {
+  async function commitRating() {
     setSaving(true)
     await sessionFetch(code, `/api/session/${code}/rate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wineId, score, flavors, notes }),
+      body: JSON.stringify({ wineId, ...rating }),
     })
     setSaving(false); refresh(); onClose()
   }
@@ -161,28 +146,12 @@ export function RatingScreen({ wineId, onClose }: Props) {
         <img src={wine.imageUrl} alt={wine.name} onClick={() => openLightbox(wine.imageUrl!, wine.name)} style={{width:'100%',height:140,objectFit:'cover',borderRadius:14,marginBottom:10,cursor:'zoom-in'}} />
       )}
 
-      {/* Score slider — drag or tap, snaps to 0.25 */}
-      <div className="panel">
-        <div className="panel-hdr">score</div>
-        <ScoreSlider value={score} onChange={setScore} />
-      </div>
-
-      {/* Flavours */}
-      <div className="panel">
-        <div className="panel-hdr">flavour profile</div>
-        <IntensityHelp />
-        <FlavorChips flavors={flavors} fl={fl} onChange={setFlavors} />
-      </div>
-
-      {/* Notes */}
-      <div className="panel">
-        <div className="panel-hdr">tasting notes</div>
-        <textarea
-          value={notes} onChange={e => setNotes(e.target.value)}
-          placeholder="aroma, palate, finish…" rows={3}
-          style={{width:'100%',background:'transparent',fontSize:13,color:'var(--fg)',resize:'none',outline:'none',fontFamily:'var(--mono)',border:'none'}}
-        />
-      </div>
+      <RatingPane
+        key={wineId}
+        wineType={isRedacted ? null : wine.type}
+        existing={existing || null}
+        onChange={setRating}
+      />
 
       {/* Wine-edit actions. Edit (always for host/cohost; for providers
           only on their own wines via canEditThisWine). Move/reorder is
@@ -218,7 +187,7 @@ export function RatingScreen({ wineId, onClose }: Props) {
         </>
       )}
 
-      <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>
+      <button className="btn-p" onClick={commitRating} disabled={saving}>{saving ? 'saving…' : '→ commit rating'}</button>
       <button className="btn-g" onClick={toggleBookmark} style={{opacity: bookmarked ? 1 : 0.6}}>
         {bookmarked ? '★ saved' : '☆ add to saved wines'}
       </button>

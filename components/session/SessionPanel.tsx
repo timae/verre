@@ -13,17 +13,9 @@ import { ParticipantActionsMenu } from './ParticipantActionsMenu'
 import { BanPreviewModal } from './BanPreviewModal'
 import { BannedUsersSection } from './BannedUsersSection'
 import { SetRoleButton } from './SetRoleButton'
+import { renderWithLinks } from '@/lib/renderWithLinks'
 
 interface Props { onClose: () => void; onLeave: () => void }
-
-function renderWithLinks(text: string) {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g)
-  return parts.map((part, i) =>
-    /^https?:\/\//.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{color:'var(--accent)'}}>{part}</a>
-      : part
-  )
-}
 
 function formatDate(dt: string) {
   if (!dt) return ''

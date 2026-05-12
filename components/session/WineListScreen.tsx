@@ -11,6 +11,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { sessionPath } from '@/lib/sessionCode'
+import { renderWithLinks } from '@/lib/renderWithLinks'
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -23,15 +24,6 @@ import { CSS } from '@dnd-kit/utilities'
 
 const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
 const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
-
-function renderWithLinks(text: string) {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g)
-  return parts.map((part, i) =>
-    /^https?:\/\//.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{color:'var(--accent)'}}>{part}</a>
-      : part
-  )
-}
 
 function formatDate(dt: string) {
   if (!dt) return ''
