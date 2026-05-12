@@ -1,5 +1,5 @@
 'use client'
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
 import { getFL, detectFL, FL, type FlItem } from '@/lib/flavours'
 
@@ -131,11 +131,12 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
   const scoreDraggingRef = useRef(false)
   const readOnly = !setScore
 
-  // PointerCapture pattern (same as the legacy ScoreSlider): once
-  // pointerdown lands on the wrapper, all subsequent pointermoves
-  // route here regardless of where the cursor actually is — even off
-  // the modal entirely. Modal's mousedown-on-backdrop guard keeps the
-  // modal open during such a drag.
+  // PointerCapture pattern (same as the canonical `<ScoreSlider>`
+  // primitive on main): once pointerdown lands on the wrapper, all
+  // subsequent pointermoves route here regardless of where the
+  // cursor actually is — even off the modal entirely. Modal's
+  // mousedown-on-backdrop guard keeps the modal open during such a
+  // drag.
   function handlePointer(e: React.PointerEvent<HTMLDivElement>) {
     if (!setScore || !barRef.current) return
     const rect = barRef.current.getBoundingClientRect()
@@ -255,17 +256,10 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
               position:'relative',height:36,
               cursor: readOnly ? 'default' : 'pointer',
               userSelect:'none',
-              // No `touch-action` here — let iOS read the value from
-              // the nearest ancestor (scrollRef in WineModal). When
-              // scrollRef is `pan-y`, native vertical scroll works
-              // through this control; intent detection in
-              // pointerdown/move claims the gesture only for
-              // horizontal-dominant drags. When scrollRef is `none`
-              // (at boundary, JS owns gesture), vertical drags here
-              // route to scrollRef's pull handler as well. Setting
-              // pan-y here would override scrollRef's none and cause
-              // iOS to issue pointercancel when it can't actually
-              // scroll the parent.
+              // No `touch-action` here — inherit `pan-y` from
+              // scrollRef. Intent detection in pointerdown/move
+              // claims the gesture only for horizontal-dominant
+              // drags; vertical drags pass through to native scroll.
               display:'flex',alignItems:'center',
             }}
           >
@@ -403,10 +397,10 @@ function FlavourBar({
       style={{
         position:'relative',height:36,borderRadius:6,
         overflow:'hidden',cursor: readOnly ? 'default' : 'pointer',
-        // No `touch-action` — inherits from scrollRef (pan-y when
-        // mid-content, none when at boundary). Intent detection in
-        // onPointerMove claims the gesture only for horizontal drags.
-        // See ScoreSection's matching comment for the longer rationale.
+        // No `touch-action` — inherit `pan-y` from scrollRef. Intent
+        // detection in onPointerMove claims the gesture only for
+        // horizontal-dominant drags; vertical drags pass through to
+        // native scroll.
       }}
       onPointerDown={readOnly ? undefined : e => {
         if (!e.isPrimary) return
@@ -571,12 +565,11 @@ function NotesSection({ notes, setNotes }: { notes: string; setNotes?: (n: strin
     )
   }
   return (
-    // `data-no-pull` opts the notes section out of the parent
-    // modal's pull-to-swap gesture. The textarea sits at the bottom
-    // of the rate pane (so at scrollBottom), and a touch drag inside
-    // it would otherwise be captured by usePullToSwap as a swap
-    // gesture instead of letting the user interact with the textarea
-    // (text selection, drag-to-expand the resize handle, etc.).
+    // `data-no-pull` here is read by WineModal's arrow-key handler
+    // to skip wine navigation when focus is inside this section. The
+    // textarea check in that handler already covers the textarea
+    // itself; this attribute extends the opt-out to any focusable
+    // surrounding chrome that might be added later.
     <section data-no-pull>
       <SectionHeader title="Tasting notes" />
       <textarea

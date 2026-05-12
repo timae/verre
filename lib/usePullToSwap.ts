@@ -115,14 +115,15 @@ export function usePullToSwap({
       if (!t) return
       // No special bail for form controls (textarea/input). Our pull
       // engages on the first significant touchmove via preventDefault
-      // — that should fire before iOS commits to text-selection /
-      // caret positioning for a fresh gesture. For UNFOCUSED
-      // textareas at a boundary, the gesture goes to JS pull. For
-      // FOCUSED textareas (user is typing), they're focused so
-      // text-selection is the desired native behavior; but they're
-      // also not typically at a scroll boundary while editing.
-      // data-no-pull controls (slider, flavor bars) use their own
-      // horizontal-intent detection.
+      // — that fires before iOS commits to text-selection / caret
+      // positioning for a fresh gesture, so pull from an unfocused
+      // textarea at a boundary works. Focused textareas (user is
+      // typing) keep native text-selection behavior because they're
+      // not typically at a scroll boundary while editing.
+      //
+      // Score slider / flavor bars have their own pointer handlers
+      // with horizontal-intent detection. They don't need a bail here.
+      //
       // Decide initial boundary from scroll position. If we're at a
       // boundary, this gesture is a CANDIDATE for pull. Mid-content:
       // bail entirely — native scroll handles the gesture without

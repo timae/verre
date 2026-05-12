@@ -544,9 +544,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
       // confirm; its own Escape handles it, not arrow keys).
       if (pendingClose) return
       // If a nested handler already consumed the key (preventDefault),
-      // don't double-act on it. Covers any current/future focused
-      // control with its own Arrow-key semantics (e.g. the canonical
-      // ScoreSlider primitive if it's reintroduced here).
+      // don't double-act on it. Defensive against any focused control
+      // with its own Arrow-key semantics.
       if (e.defaultPrevented) return
       const t = e.target as HTMLElement | null
       const tag = t?.tagName
@@ -789,10 +788,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           dragging past the top boundary loads the previous wine,
           past the bottom boundary loads the next. `overscroll-behavior:
           contain` prevents the browser's native page-pull-to-refresh
-          from interfering on mobile. `touch-action: pan-y` allows
-          vertical drag through to our gesture handler. Score slider
-          and flavor bars set their own `touch-action: none` so
-          horizontal drags on those controls don't bubble. */}
+          from interfering on mobile. `touch-action: pan-y` is
+          permanent so iOS handles native scroll + momentum; pull
+          engages via touchmove preventDefault on the first qualifying
+          move (see usePullToSwap). Score slider and flavor bars use
+          horizontal-intent detection in their own pointer handlers
+          to claim only horizontal drags. */}
       {/* Pullable region — wrapper that lets us anchor the pull
           indicator at the scroll container's edges without the
           indicator inheriting the body's rubber-band translateY.
