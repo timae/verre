@@ -238,20 +238,6 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
             ))}
           </div>
         </div>
-        <div style={{display:'flex',gap:8}}>
-          <div className="field" style={{flex:1}}>
-            <div className="fl">grape / style</div>
-            <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
-          </div>
-          {!isEdit && (
-            <div className="field" style={{maxWidth:96}}>
-              <div className="fl">position</div>
-              <input className="fi" type="text" inputMode="numeric" pattern="[0-9]*"
-                value={position} onChange={e => setPosition(e.target.value.replace(/\D/g,''))}
-                placeholder={String(maxPosition)} />
-            </div>
-          )}
-        </div>
 
         {/* Optional details — wine identity beyond name/type. Separated
             visually so the required fields stay the focal point. */}
@@ -263,14 +249,8 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
           <div className="panel-hdr">details (optional)</div>
 
           <div className="field">
-            <div className="fl">description</div>
-            <textarea
-              className="fi" value={description} maxLength={1000}
-              onChange={e => setDescription(e.target.value)}
-              placeholder="character, story, tasting impression…"
-              rows={3}
-              style={{resize:'vertical',minHeight:60,fontFamily:'var(--mono)'}}
-            />
+            <div className="fl">grape / style</div>
+            <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
           </div>
 
           <div style={{display:'flex',gap:8}}>
@@ -297,12 +277,36 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
             />
           </div>
 
-          <div className="field" style={{marginBottom:4}}>
+          <div className="field">
+            <div className="fl">description</div>
+            <textarea
+              className="fi" value={description} maxLength={1000}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="character, story, tasting impression…"
+              rows={3}
+              style={{resize:'vertical',minHeight:60,fontFamily:'var(--mono)'}}
+            />
+          </div>
+
+          <div className="field" style={{marginBottom: !isEdit ? 12 : 4}}>
             <div className="fl">purchase link</div>
             <input className="fi" value={purchaseUrl} maxLength={1000}
               onChange={e => setPurchaseUrl(e.target.value)}
               placeholder="https://…" type="url" />
           </div>
+
+          {!isEdit && (
+            <div className="field" style={{marginBottom:4}}>
+              <div className="fl">placement in list</div>
+              <input className="fi" type="text" inputMode="numeric" pattern="[0-9]*"
+                value={position} onChange={e => setPosition(e.target.value.replace(/\D/g,''))}
+                placeholder={String(maxPosition)}
+                style={{width:88}} />
+              <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>
+                ↻ not a fixed placement — host &amp; cohost can reorder anytime
+              </div>
+            </div>
+          )}
         </div>
 
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
