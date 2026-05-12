@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, wineToWire } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, getWines, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -42,8 +42,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Same wire shape as the wines GET — strip `addedByIdentityId` and
   // synthesize `isMine`. Without this, the reorder response would leak
   // provenance the GET pipeline carefully keeps server-internal.
+  // Identities + kicked-user fallback ensure `addedByDisplayName` resolves
+  // to the same value the polling GET would produce.
+  const identities = await redis.hGetAll(k.identities(c))
+  const userNameLookup = await buildKickedUserNameLookup(reordered, identities)
   return NextResponse.json(
-    reordered.map(w => wineToWire(w, identity.id)),
+    reordered.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

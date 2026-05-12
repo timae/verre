@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertWine, wineToWire } from '@/lib/session'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
@@ -53,8 +53,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   // Same wire shape as GET so a client storing this response back into
   // its wines cache doesn't see a different shape than the polling GET
-  // would produce.
-  return NextResponse.json(wineToWire(result, identity.id))
+  // would produce — including the kicked-user fallback for the adder
+  // name, so an edit response and the next poll resolve to the same
+  // `addedByDisplayName` value.
+  const identities = await redis.hGetAll(k.identities(c))
+  const userNameLookup = await buildKickedUserNameLookup([result], identities)
+  return NextResponse.json(wineToWire(result, identity.id, identities, userNameLookup))
 }
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {

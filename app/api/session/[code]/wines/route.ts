@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire } from '@/lib/session'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import type { WineMeta, WireWine } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -14,7 +14,7 @@ type Ctx = { params: Promise<{ code: string }> }
 // filters those out), so isMine is always false. Returning WireWine
 // straight skips a second pass through `wineToWire`.
 function redactWine(wine: WineMeta, index: number): WireWine {
-  const { addedByIdentityId: _provenance, ...rest } = wine
+  const { addedByIdentityId: _provenance, addedByDisplayName: _snapshot, ...rest } = wine
   return {
     ...rest,
     name: `Wine ${index + 1}`,
@@ -27,13 +27,16 @@ function redactWine(wine: WineMeta, index: number): WireWine {
     // Metadata fields that would leak wine identity to a blind taster —
     // strip alongside name/producer/vintage/grape. Country/region/
     // vinification narrow the wine geographically; description/purchaseUrl
-    // can name it outright.
+    // can name it outright. `addedByDisplayName` is stripped too: a
+    // blind taster knowing "Alice brought this one" partially identifies
+    // the wine via Alice's known preferences.
     description: '',
     region: '',
     country: '',
     vinification: '',
     purchaseUrl: '',
     isMine: false,
+    addedByDisplayName: null,
     _blind: true,
   }
 }
@@ -69,6 +72,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     if (Date.now() < revealAt) return NextResponse.json([])
   }
 
+  // Hybrid resolution for `addedByDisplayName`: live identities map →
+  // users.name fallback for kicked logged-in adders → snapshot on the
+  // wine itself → null. Fetch once per request and thread through.
+  const identities = await redis.hGetAll(k.identities(c))
+  const userNameLookup = await buildKickedUserNameLookup(wines, identities)
+
   if (meta.blind && !isUserHost) {
     // Per-wine redaction: a wine is shown un-redacted if it's revealed
     // OR if the caller is the provider who added it (providers see
@@ -80,7 +89,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
       wines.map((w, i) => {
         const ownsThisWine = !!w.addedByIdentityId && w.addedByIdentityId === identity.id
         const showFull = w.revealedAt || ownsThisWine
-        return showFull ? wineToWire(w, identity.id) : redactWine(w, i)
+        return showFull ? wineToWire(w, identity.id, identities, userNameLookup) : redactWine(w, i)
       }),
       // Response varies per viewer (provider sees own un-redacted; the
       // isMine flag is per-caller). Force private, no-store so no
@@ -90,7 +99,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   }
 
   return NextResponse.json(
-    wines.map(w => wineToWire(w, identity.id)),
+    wines.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
     // Non-blind path: isMine still varies per viewer, so same cache
     // posture applies.
     { headers: { 'Cache-Control': 'private, no-store' } },
@@ -124,7 +133,13 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const wines = await getWines(c)
   // Pass the adder's identity so the wine record carries provenance
   // (used by ban-with-delete-wines to identify which wines to orphan).
-  const result = await addWineToSession(c, body, undefined, identity.id)
+  // Snapshot the adder's current display name from the live identities
+  // map so it survives a future kick/ban. Lookup happens here (not in
+  // addWineToSession) because the helper is shared with the PATCH
+  // route where snapshot freezing means we never re-resolve.
+  const identities = await redis.hGetAll(k.identities(c))
+  const adderDisplayName = identities[identity.id] || identity.displayName
+  const result = await addWineToSession(c, body, undefined, identity.id, adderDisplayName)
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   wines.push(result)
@@ -155,5 +170,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // into their wines list shouldn't see a different shape than the
   // polling GET. The caller is the wine's adder, so isMine is always
   // true here (wineToWire computes it from the just-written provenance).
-  return NextResponse.json(wineToWire(result, identity.id))
+  // Pass identities so `addedByDisplayName` resolves to the live name;
+  // userNameLookup is empty (the just-added wine's adder is in the map).
+  return NextResponse.json(wineToWire(result, identity.id, identities))
 }

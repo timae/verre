@@ -216,6 +216,12 @@ Host moderation primitive scoped per-session. Distinct from the user-level [Bloc
 
 **Schema (Postgres).** `wines.added_by_identity_id VARCHAR(64)` (nullable) — records who added each wine. Populated on wine POST from the resolved identity; preserved on edit. Existing pre-feature rows stay NULL and never match a "delete their wines" filter. Indexed on `(session_id, added_by_identity_id)`.
 
+`wines.added_by_display_name VARCHAR(64)` (nullable) — frozen snapshot of the adder's display name at create time. Same freeze rule as `added_by_identity_id`: populated on POST from the live `s:{CODE}:identities` map, preserved verbatim on edit. Pre-feature rows are NULL. Used as a fallback by the wire-time resolver when the adder has been kicked/banned and is no longer in the live identities map.
+
+**Wire-time resolution of `addedByDisplayName`** (in `wineToWire`, the single sanctioned transform): priority is **live identities map → `users.name` lookup (only for `u:<id>` adders) → `addedByDisplayName` snapshot → null**. The live map wins so any future per-session rename surfaces immediately. The `users.name` fallback covers kicked logged-in adders (their identities entry is gone but the user row survives). The snapshot is the last-resort fallback for kicked anon adders (no users row exists). `redactWine` strips `addedByDisplayName` to `null` in blind mode — knowing "Alice brought this one" partially identifies a wine via her known preferences.
+
+The raw `addedByIdentityId` is stripped from the wire by `wineToWire` (privacy: prevents anon-id correlation across wines from the same adder). Only the resolved display name surfaces. Display names are already public elsewhere (identities map, ratings list), so adding them to wines doesn't expand the leak surface.
+
 **Two-flavor removal: kick vs ban.**
 
 - **Kick** (`mode: 'kick'`) — strip the participant from identities + cohost list, drop their `session_members.role` to `taster`. Their ratings, hall_of_fame, bookmarks, session_members row all **stay**. Add to `s:<C>:kicked` so the bounce can identify them. They can rejoin (kicked is not an authorization gate). On the bounce screen they choose Keep (no-op) or Delete (`POST /leave?cleanup=full`, runs the `kick-delete` wipe path).

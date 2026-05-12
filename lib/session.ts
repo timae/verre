@@ -65,34 +65,63 @@ export type WineMeta = {
   // replaces it with a per-caller `isMine` boolean so anon-id
   // correlation across multiple wines stays server-internal.
   addedByIdentityId?: string
+  // Snapshot of the adder's display name at create time, used as a
+  // fallback when the live identities map no longer has them (kicked
+  // anon adder is the canonical case). Frozen forever — edits never
+  // refresh it. The wire resolution at read time prefers the live map
+  // first, falls back to users.name for logged-in adders, then to this
+  // snapshot. Unlike addedByIdentityId, this is safe to surface on the
+  // wire — display names are already public via the identities map.
+  addedByDisplayName?: string
 }
 
 // Wire shape produced by `wineToWire` — same as `WineMeta` minus
 // the server-only `addedByIdentityId` field, plus two wire-only flags:
 // `isMine: boolean` (synthesized per-caller at response time) and
 // `_blind?: boolean` (set by the blind-redaction path in the wines GET
-// when a wine is hidden from the caller). Neither lives on
-// `WineMeta`: they're never stored in Redis or Postgres, only emitted
-// on the wire, so keeping them off the storage type prevents
-// accidental reads that would always be undefined.
-export type WireWine = Omit<WineMeta, 'addedByIdentityId'> & {
+// when a wine is hidden from the caller). The `addedByDisplayName`
+// field is widened from optional-string-snapshot on `WineMeta` to
+// resolved-string-or-null on the wire (live map → users.name →
+// snapshot → null). Neither isMine nor _blind lives on `WineMeta`:
+// they're never stored in Redis or Postgres, only emitted on the
+// wire, so keeping them off the storage type prevents accidental
+// reads that would always be undefined.
+export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'> & {
   isMine: boolean
+  addedByDisplayName: string | null
   _blind?: boolean
 }
 
-// Project a `WineMeta` to its wire shape: strip `addedByIdentityId`
-// and synthesize `isMine` for the caller. This is the SINGLE
-// sanctioned transform — every endpoint that returns wines must
-// route through here. Skipping it leaks anon-id correlation across
-// wines from the same adder, which the wire-strip is specifically
-// designed to prevent.
+// The SINGLE sanctioned wire transform — every endpoint that returns
+// wines must route through here. Skipping it leaks `addedByIdentityId`,
+// which would let a viewer correlate which wines came from the same anon
+// adder across a session.
 //
-// `callerId` is the caller's identity-id (`u:<userId>` or `a:<uuid>`).
-// For server actions where the caller is by definition the adder
-// (e.g. wine POST), pass the same id — `isMine` resolves to true.
-export function wineToWire(w: WineMeta, callerId: string): WireWine {
-  const { addedByIdentityId: provenance, ...rest } = w
-  return { ...rest, isMine: !!provenance && provenance === callerId }
+// Resolution priority for `addedByDisplayName`:
+//   1. identities[addedByIdentityId]      (live participant name)
+//   2. userNameLookup[addedByIdentityId]  (kicked logged-in adder)
+//   3. snapshot on the wine                (kicked anon adder; pre-feature has no snapshot)
+//   4. null
+export function wineToWire(
+  w: WineMeta,
+  callerId: string,
+  identities: Record<string, string> = {},
+  userNameLookup: Map<string, string> = new Map(),
+): WireWine {
+  const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
+  let resolvedName: string | null = null
+  if (provenance) {
+    if (identities[provenance]) resolvedName = identities[provenance]
+    else if (provenance.startsWith('u:') && userNameLookup.has(provenance)) {
+      resolvedName = userNameLookup.get(provenance)!
+    }
+    else if (snapshot) resolvedName = snapshot
+  }
+  return {
+    ...rest,
+    isMine: !!provenance && provenance === callerId,
+    addedByDisplayName: resolvedName,
+  }
 }
 
 export type RatingMeta = {
@@ -222,11 +251,49 @@ function cleanCountry(v: unknown): string {
   return COUNTRY_CODES.has(s) ? s : ''
 }
 
+// Batch-lookup display names for `u:<id>` adders whose identity is no
+// longer in the session's identities map (kicked / banned logged-in
+// users). One Prisma query per request — empty input short-circuits.
+// Anonymous adders (`a:<uuid>`) have no users row to fall back to and
+// are excluded from the input here.
+//
+// Used by the wines GET / reorder / POST / PATCH / reveal routes when
+// they build the wire response. Postgres failures collapse to an empty
+// map so the live wines polling endpoint keeps working through a DB
+// hiccup — the wire resolver still has the live-identities and
+// snapshot fallback paths.
+export async function buildKickedUserNameLookup(
+  wines: WineMeta[],
+  identities: Record<string, string>,
+): Promise<Map<string, string>> {
+  const missingUserIds = new Set<number>()
+  for (const w of wines) {
+    const id = w.addedByIdentityId
+    if (!id || !id.startsWith('u:')) continue
+    if (identities[id]) continue  // covered by the live map
+    const n = Number(id.slice(2))
+    if (Number.isInteger(n) && n > 0) missingUserIds.add(n)
+  }
+  if (missingUserIds.size === 0) return new Map()
+  const out = new Map<string, string>()
+  try {
+    const rows = await prisma.user.findMany({
+      where: { id: { in: [...missingUserIds] } },
+      select: { id: true, name: true },
+    })
+    for (const r of rows) out.set(`u:${r.id}`, r.name)
+  } catch (err) {
+    console.error('[wines] buildKickedUserNameLookup failed, falling back:', err)
+  }
+  return out
+}
+
 export async function addWineToSession(
   code: string,
   body: Partial<WineMeta>,
   existing?: WineMeta,
   addedByIdentityId?: string,
+  addedByDisplayName?: string,
 ): Promise<WineMeta | { error: string }> {
   const name = clean(body.name)
   const type = String(body.type || '').trim()
@@ -277,6 +344,11 @@ export async function addWineToSession(
     // Preserve on edit; populate on create. Edits never overwrite the
     // original adder — `existing.addedByIdentityId` wins.
     addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
+    // Frozen snapshot, same rule as the id above. Set once at create
+    // time from the live identities map by the caller. Existing rows
+    // from before this field landed have `addedByDisplayName=undefined`;
+    // the wire-time resolver handles that by falling through to null.
+    addedByDisplayName: existing?.addedByDisplayName ?? addedByDisplayName,
   }
 }
 
@@ -314,6 +386,7 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       vinification: wine.vinification || null,
       purchaseUrl: wine.purchaseUrl || null,
       addedByIdentityId: wine.addedByIdentityId ?? null,
+      addedByDisplayName: wine.addedByDisplayName ?? null,
     },
     update: {
       name: wine.name,
@@ -330,6 +403,8 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       // Don't overwrite provenance on edit — the original adder is the
       // authoritative anchor. If the row was created pre-feature with
       // addedByIdentityId=NULL we leave it NULL (no way to back-attribute).
+      // addedByDisplayName is the same frozen-on-create story; omit
+      // from update so an edit doesn't refresh it.
     },
   })
 }

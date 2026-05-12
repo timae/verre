@@ -171,6 +171,12 @@ model Wine {
   // participant. Nullable for existing rows (provenance unknown) — those
   // never match a ban-target filter and stay untouched.
   addedByIdentityId String?    @map("added_by_identity_id") @db.VarChar(64)
+  // Snapshot of the adder's display name at create time. Frozen — edits
+  // never refresh this. The live identities map is preferred at read
+  // time; this is a fallback for when the adder has been kicked/banned
+  // (logged-in users fall through to users.name first; anon adders rely
+  // on this snapshot since there's no users row).
+  addedByDisplayName String?   @map("added_by_display_name") @db.VarChar(64)
   bookmarks   Bookmark[]
   ratings     Rating[]
   session     Session?   @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
