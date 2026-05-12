@@ -24,8 +24,42 @@ export type WineDisplay = {
   addedByDisplayName?: string | null
 }
 
+// How to render the brought-by callout.
+//   'clickable'    — logged-in adder, no block in either direction.
+//                    Name renders bold + accent, taps fire onClick.
+//                    Also used for the viewer's own wine (self) —
+//                    clicking opens their own profile preview, same
+//                    as the participants-list self-row.
+//   'blocked-by-me'— viewer blocks adder. Still clickable so unblock
+//                    is reachable via the inline preview. (No [blocked]
+//                    prefix on this surface — see CLAUDE.md.)
+//   'anon-style'   — mutual block OR adder blocks viewer. Renders
+//                    plain (no bold, no link), indistinguishable from
+//                    a normal anon participant.
+//   'plain'        — non-clickable but still visible (anon adder,
+//                    kicked-non-participant, non-session surface).
+export type ProvenanceRenderMode = 'clickable' | 'blocked-by-me' | 'anon-style' | 'plain'
+
 interface Props {
   wine: WineDisplay
+  // Click handler for the brought-by name. When omitted, name renders
+  // plain regardless of `provenanceMode`. Caller (session modal) owns
+  // what happens — inline preview, navigation to /u/<id>, etc.
+  onProvenanceClick?: () => void
+  provenanceMode?: ProvenanceRenderMode
+  // Optional slot rendered below the brought-by callout. Caller uses
+  // this to mount <ProfilePreviewInline> when the user clicks the
+  // name. Kept as a prop slot rather than internal state so the
+  // pane doesn't need to know about session context.
+  provenancePreview?: React.ReactNode
+  // Ref attached to the brought-by callout wrapper. Caller uses this
+  // to scroll the callout into view when the preview opens, so the
+  // expanded content isn't off-screen on long info panes.
+  broughtByRef?: React.RefObject<HTMLDivElement | null>
+  // True when the adder is the viewer themselves. Renders a small
+  // "· you" suffix after the name, same convention as the
+  // participants-list self-row.
+  isSelf?: boolean
 }
 
 // Read-only display of wine identity + metadata. v4 editorial layout:
@@ -37,7 +71,7 @@ interface Props {
 // Renders the same anywhere: in-session modal, /me/saved detail page,
 // /u/<id> check-in card, feed post. Provenance ("brought by") only
 // shows when the caller passes it — feed/profile callers omit it.
-export function WineInfoPane({ wine }: Props) {
+export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain', provenancePreview, broughtByRef, isSelf = false }: Props) {
   const { name, producer, vintage, grape, type, imageUrl,
           description, region, country, vinification, purchaseUrl,
           addedByDisplayName } = wine
@@ -139,35 +173,109 @@ export function WineInfoPane({ wine }: Props) {
         </div>
       </header>
 
-      {/* Brought-by callout. Only renders when caller passes a name
-          (session context — feed/profile callers omit it). */}
-      {addedByDisplayName && (
-        <div style={{
-          display:'flex',alignItems:'center',gap:12,
-          padding:'10px 14px',
-          background:'rgba(255,255,255,0.025)',
-          border:'1px solid var(--border)',
-          borderRadius:12,
-        }}>
-          <div style={{
-            width:32,height:32,borderRadius:'50%',
-            background:'rgba(200,150,60,0.18)',
-            border:'2px solid var(--bg2)',
-            color:'var(--accent)',
-            display:'inline-flex',alignItems:'center',justifyContent:'center',
-            fontSize:13,fontWeight:700,flexShrink:0,
-          }}>{initial}</div>
-          <div style={{display:'flex',flexDirection:'column',gap:2,minWidth:0}}>
-            <span style={{
-              fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',
-              color:'var(--fg-faint)',fontWeight:600,
-            }}>Brought by</span>
-            <span style={{
-              fontSize:13,fontWeight:700,color:'var(--accent)',
-            }}>{addedByDisplayName}</span>
+      {/* Brought-by callout. Block-aware rendering mirrors
+          SessionPanel's participants-list matrix. Click only fires
+          when both the caller passed a handler AND the mode permits
+          (clickable or blocked-by-me — both surface the inline
+          preview, which carries the unblock affordance). */}
+      {addedByDisplayName && (() => {
+        const canClick = !!onProvenanceClick && (provenanceMode === 'clickable' || provenanceMode === 'blocked-by-me')
+        // Bold + accent only when actually clickable (i.e. canClick).
+        // The mode alone isn't enough — an anon viewer would get
+        // provenanceMode='clickable' from the matrix (no blocks
+        // matched) but no handler from the caller (anon can't click
+        // profile previews), and we'd otherwise render a bold link
+        // that does nothing. Tying isHighlighted to canClick keeps
+        // the visual emphasis truthful.
+        const isHighlighted = canClick && provenanceMode === 'clickable'
+        return (
+          <div ref={broughtByRef} style={{position:'relative'}}>
+            <div
+              onClick={canClick ? onProvenanceClick : undefined}
+              onKeyDown={canClick ? e => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  onProvenanceClick && onProvenanceClick()
+                }
+              } : undefined}
+              role={canClick ? 'button' : undefined}
+              tabIndex={canClick ? 0 : undefined}
+              style={{
+                display:'flex',alignItems:'center',gap:12,
+                padding:'10px 14px',
+                background:'rgba(255,255,255,0.025)',
+                border:'1px solid var(--border)',
+                borderRadius:12,
+                cursor: canClick ? 'pointer' : 'default',
+                transition:'background .15s',
+              }}
+            >
+              {/* Avatar always shows the initial — including for
+                  anon-style (mutual block / blocked-viewing-blocker).
+                  The blocked side must be indistinguishable from a
+                  regular anon participant; since anon users render
+                  with an initial-letter avatar, dropping the avatar
+                  here would itself signal "this is a blocked user,"
+                  exactly the inference we're meant to prevent.
+                  docs/block.md's "no avatar" line is from before anon
+                  users had avatars and needs the matching update on
+                  the participants-list side too. */}
+              <div style={{
+                width:32,height:32,borderRadius:'50%',
+                background:'rgba(200,150,60,0.18)',
+                border:'2px solid var(--bg2)',
+                color:'var(--accent)',
+                display:'inline-flex',alignItems:'center',justifyContent:'center',
+                fontSize:13,fontWeight:700,flexShrink:0,
+              }}>{initial}</div>
+              <div style={{display:'flex',flexDirection:'column',gap:2,minWidth:0}}>
+                <span style={{
+                  fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',
+                  color:'var(--fg-faint)',fontWeight:600,
+                }}>Brought by</span>
+                <span style={{
+                  fontSize:13,
+                  fontWeight: isHighlighted ? 700 : 400,
+                  color: isHighlighted ? 'var(--accent)' : 'var(--fg)',
+                }}>
+                  {/* No `[blocked]` prefix on this surface — that
+                      marker is reserved for the participants list
+                      (SessionPanel). Block state shows up only
+                      through the lack of clickability + plain (not
+                      bold/accent) name styling. The viewer can still
+                      reach unblock via the user's /u/<id> page or
+                      Settings → Blocked users. */}
+                  {addedByDisplayName}
+                  {isSelf && (
+                    <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>
+                  )}
+                </span>
+              </div>
+            </div>
+            {provenancePreview && (
+              // Floating preview — `position: absolute` so it sits on
+              // top of the description / fact-row content below
+              // instead of pushing them down. The 6px top offset
+              // visually anchors it to the callout. z-index keeps it
+              // above the rest of the pane content; the modal's own
+              // backdrop sits above this via its own z-layer.
+              <div style={{
+                position:'absolute',
+                top:'calc(100% + 6px)',
+                left:0,right:0,
+                zIndex:10,
+                background:'var(--bg2)',
+                border:'1px solid var(--border)',
+                borderRadius:12,
+                boxShadow:'0 12px 32px -8px rgba(0,0,0,0.6)',
+                overflow:'hidden',
+              }}>
+                {provenancePreview}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )
+      })()}
 
       {/* Description — quoted, serif, no panel chrome */}
       {description && (

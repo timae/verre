@@ -378,6 +378,12 @@ The single underlying rule: counts and renders depend on the **author** (or chec
 
 Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
 
+**Wine modal "Brought by" callout** (`WineInfoPane` inside `WineModal`) follows the participants-list matrix with two divergences:
+- **No `[blocked]` prefix.** That marker stays exclusive to the participants list. Here, block state surfaces only through the lack of clickability + the plain (not bold/accent) name styling. Unblock is still reachable via the user's `/u/<id>` page or Settings → Blocked users.
+- **Avatar always renders** (initial letter), including for anon-style modes (mutual block, being-blocked-by-adder). Since anon participants in this surface render WITH an avatar, dropping the avatar for a blocked user would itself leak the block — the absence is the tell. So the blocked side renders visually identical to a regular anon participant: avatar + plain name + no link. Same rule will eventually need to land in SessionPanel once anon participants there gain avatars; until then docs/block.md's "no avatar" line is participants-list-specific.
+
+Click rules unchanged: clickable + blocked-by-me modes open `ProfilePreviewInline` inline below the callout. Anon-style + plain modes have no click. Anon viewers can't click any mode.
+
 `/api/session/[code]` GET adds `viewerBlocksOut` + `viewerBlocksIn` arrays (identity-ids, scoped to in-session participants only — never the viewer's full block list). Anon viewers get empty arrays. Response has `Cache-Control: private, no-store` since it varies by viewer.
 
 **Follow endpoint scenarios:** 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.

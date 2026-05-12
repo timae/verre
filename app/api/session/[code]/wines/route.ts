@@ -37,6 +37,7 @@ function redactWine(wine: WineMeta, index: number): WireWine {
     purchaseUrl: '',
     isMine: false,
     addedByDisplayName: null,
+    addedByUserId: null,
     _blind: true,
   }
 }

@@ -40,6 +40,13 @@ type SessionCtx = {
     // render the BannedUsersSection — appears when >0, hidden when 0,
     // updates via the polled session GET so cross-host bans propagate.
     banCount?: number
+    // Viewer's block-pair list scoped to participants in THIS session.
+    // viewerBlocksOut = identities the viewer has blocked; viewerBlocksIn
+    // = identities that have blocked the viewer. Anon viewers get
+    // empty arrays. SECURITY: never log / mirror to analytics / persist
+    // outside the response. See CLAUDE.md "Profile blocking" section.
+    viewerBlocksOut?: string[]
+    viewerBlocksIn?: string[]
   } | null
   wines: WireWine[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void

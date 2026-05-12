@@ -7,6 +7,8 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { useQueryClient } from '@tanstack/react-query'
+import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
+import type { ProvenanceRenderMode } from '@/components/wine/WineInfoPane'
 import {
   CloseIcon, HeartIcon, MoreIcon,
   PencilIcon, TrashIcon, ArrowLeftIcon, ArrowRightIcon,
@@ -30,7 +32,7 @@ interface Props {
 // so live polling updates flow through — a host revealing a blind
 // wine causes the open modal's info tab to populate without reload.
 export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
-  const { wines, myRatings, code, refresh, isHost, isProvider, isBlind, bookmarkedIds, isLoggedIn } = useSession()
+  const { wines, myRatings, code, refresh, isHost, isProvider, isBlind, bookmarkedIds, isLoggedIn, sessionMeta, myId } = useSession()
   const wine = wines.find(w => w.id === wineId)
   const existing = myRatings[wineId]
   const qc = useQueryClient()
@@ -45,6 +47,31 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     flavors: (existing?.flavors as Record<string, number>) || {},
     notes: existing?.notes || '',
   })
+  // Provenance preview expanded/collapsed. The brought-by name in the
+  // info pane toggles this; the preview mounts inline below the
+  // callout. Mirrors SessionPanel's expanded-row pattern.
+  const [provenanceOpen, setProvenanceOpen] = useState(false)
+  // Ref on the brought-by callout — used to (1) scroll the expanded
+  // preview into view if the user had scrolled past the callout
+  // before opening it, and (2) detect outside-clicks so the floating
+  // preview dismisses like any other popover.
+  const broughtByRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!provenanceOpen) return
+    broughtByRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    function onDoc(e: MouseEvent) {
+      if (broughtByRef.current && !broughtByRef.current.contains(e.target as Node)) {
+        setProvenanceOpen(false)
+      }
+    }
+    // setTimeout so the click that just opened it doesn't immediately
+    // close (mousedown+mouseup propagate before the listener attaches).
+    const t = setTimeout(() => document.addEventListener('mousedown', onDoc), 0)
+    return () => {
+      clearTimeout(t)
+      document.removeEventListener('mousedown', onDoc)
+    }
+  }, [provenanceOpen])
 
   if (!wine) return (
     <Modal onClose={onClose} maxWidth={400}>
@@ -58,6 +85,34 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   const isRedacted = !!(isBlind && wine._blind && !wine.revealedAt)
   const canEditThisWine = isHost || (isProvider && !!wine.isMine)
   const canReorderThisWine = isHost
+
+  // Brought-by clickability + block-pair rendering. Mirrors the
+  // participants-list matrix in SessionPanel. We only get a click
+  // path for logged-in adders (server only surfaces addedByUserId for
+  // u:<id>). Block lists are scoped to current session participants —
+  // a kicked-out adder won't appear in either set, so block state
+  // can't be reflected at this layer and the callout falls through to
+  // 'clickable'. The /api/users/<id> route the inline preview hits is
+  // still block-aware, so a viewer who's blocked the kicked adder
+  // sees the stripped profile view on tap — block enforcement holds
+  // server-side, just not pre-emptively in the brought-by render.
+  const adderIdentity = wine.addedByUserId != null ? `u:${wine.addedByUserId}` : null
+  const blocksOut = new Set(sessionMeta?.viewerBlocksOut ?? [])
+  const blocksIn = new Set(sessionMeta?.viewerBlocksIn ?? [])
+  const adderIsMe = !!adderIdentity && adderIdentity === myId
+  const blockedByMe = !!adderIdentity && blocksOut.has(adderIdentity)
+  const blockingMe = !!adderIdentity && blocksIn.has(adderIdentity)
+  const provenanceMode: ProvenanceRenderMode =
+    !adderIdentity         ? 'plain'
+    : adderIsMe            ? 'clickable'   // self — opens own profile preview, "· you" suffix from isSelf prop
+    : blockedByMe && blockingMe ? 'anon-style'  // mutual
+    : blockedByMe          ? 'blocked-by-me'
+    : blockingMe           ? 'anon-style'
+    : 'clickable'
+  // Only logged-in viewers can open a profile preview AT ALL — anon
+  // session participants get plain rendering. The mode above stays
+  // accurate either way; this just gates the click handler.
+  const provenanceClickable = isLoggedIn && (provenanceMode === 'clickable' || provenanceMode === 'blocked-by-me')
 
   async function commitRating() {
     setSaving(true)
@@ -226,7 +281,23 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
             </div>
           </div>
         ) : (
-          <WineInfoPane wine={wine} />
+          <WineInfoPane
+            wine={wine}
+            provenanceMode={provenanceMode}
+            isSelf={adderIsMe}
+            onProvenanceClick={provenanceClickable
+              ? () => setProvenanceOpen(o => !o)
+              : undefined}
+            broughtByRef={broughtByRef}
+            provenancePreview={provenanceOpen && wine.addedByUserId != null && (
+              <ProfilePreviewInline
+                userId={wine.addedByUserId}
+                isSelf={adderIsMe}
+                viewerLoggedIn={isLoggedIn}
+                myId={myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+              />
+            )}
+          />
         )
       )}
 

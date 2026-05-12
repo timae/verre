@@ -89,6 +89,10 @@ export type WineMeta = {
 export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'> & {
   isMine: boolean
   addedByDisplayName: string | null
+  // Public userId for logged-in adders ONLY (null for anon adders and
+  // pre-feature wines). Lets the brought-by surface render as a
+  // clickable profile link without re-exposing the raw addedByIdentityId.
+  addedByUserId: number | null
   _blind?: boolean
 }
 
@@ -102,6 +106,13 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
 //   2. userNameLookup[addedByIdentityId]  (kicked logged-in adder)
 //   3. snapshot on the wine                (kicked anon adder; pre-feature has no snapshot)
 //   4. null
+//
+// `addedByUserId` exposes ONLY logged-in adders' public userId so the
+// UI can render the brought-by name as a clickable profile link.
+// Anonymous adders' `a:<uuid>` is never surfaced (prevents anon-id
+// correlation across wines from the same adder, same rationale as the
+// `addedByIdentityId` strip). `/u/<id>` URLs are already public, so a
+// numeric userId carries no new privacy surface.
 export function wineToWire(
   w: WineMeta,
   callerId: string,
@@ -110,17 +121,23 @@ export function wineToWire(
 ): WireWine {
   const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
   let resolvedName: string | null = null
+  let userId: number | null = null
   if (provenance) {
     if (identities[provenance]) resolvedName = identities[provenance]
     else if (provenance.startsWith('u:') && userNameLookup.has(provenance)) {
       resolvedName = userNameLookup.get(provenance)!
     }
     else if (snapshot) resolvedName = snapshot
+    if (provenance.startsWith('u:')) {
+      const n = Number(provenance.slice(2))
+      if (Number.isInteger(n) && n > 0) userId = n
+    }
   }
   return {
     ...rest,
     isMine: !!provenance && provenance === callerId,
     addedByDisplayName: resolvedName,
+    addedByUserId: userId,
   }
 }
 
