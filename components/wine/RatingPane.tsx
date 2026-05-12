@@ -123,6 +123,12 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
   // clientX to score needs to use the inner bar's bounds so the ends
   // line up visually.
   const barRef = useRef<HTMLDivElement>(null)
+  // Intent-detection refs (see slider's pointerdown/move handlers).
+  // Defer pointer capture until SLOP-distance movement reveals
+  // whether the gesture is horizontal (score drag) or vertical
+  // (page scroll). Same pattern as the FlavorChips track on main.
+  const scorePendingDownRef = useRef<{ x: number; y: number } | null>(null)
+  const scoreDraggingRef = useRef(false)
   const readOnly = !setScore
 
   // PointerCapture pattern (same as the legacy ScoreSlider): once
@@ -142,7 +148,11 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
   const half = score - filled >= 0.5
 
   return (
-    <section>
+    // `data-no-pull` on the entire section — not just the 36px slider
+    // hit-area wrapper inside it. The section's padding around the
+    // bar would otherwise be a small zone where a finger could land
+    // and trigger a wine-swap pull when dragging onto the slider.
+    <section data-no-pull>
       <SectionHeader title="Your score" hint={readOnly ? undefined : 'drag or tap the bar to rate'} />
       <div style={{
         display:'grid',gridTemplateColumns:'auto 1fr',gap:24,alignItems:'center',
@@ -188,20 +198,53 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
               ScoreSlider — its track wrapper IS the pointer target
               and the thumb is a sibling of (not inside) the bar. */}
           <div
-            // `data-no-pull` opts this element out of the parent
-            // modal's pull-to-swap gesture (usePullToSwap reads it on
-            // pointerdown via closest()). Without this, a vertical
-            // wobble during a horizontal score drag could trip a
-            // wine-swap when the rate pane is at the modal's scroll
-            // top boundary.
-            data-no-pull
+            // Note: data-no-pull is set on the surrounding <section>
+            // (so the slider's section-level padding is also covered);
+            // no need to repeat it here.
+            //
+            // Intent detection: defer pointer capture until movement
+            // past SLOP reveals horizontal vs vertical intent.
+            // Horizontal → capture for slider drag. Vertical → release
+            // for native pan-y scroll. Mirrors FlavorBar + the working
+            // main FlavorChips pattern.
             onPointerDown={readOnly ? undefined : e => {
-              e.preventDefault()
-              e.currentTarget.setPointerCapture(e.pointerId)
-              handlePointer(e)
+              if (!e.isPrimary) return
+              scorePendingDownRef.current = { x: e.clientX, y: e.clientY }
+              scoreDraggingRef.current = false
             }}
             onPointerMove={readOnly ? undefined : e => {
-              if (e.currentTarget.hasPointerCapture(e.pointerId)) handlePointer(e)
+              if (scoreDraggingRef.current) {
+                handlePointer(e)
+                return
+              }
+              const pd = scorePendingDownRef.current
+              if (!pd) return
+              const dx = e.clientX - pd.x
+              const dy = e.clientY - pd.y
+              if (Math.abs(dx) < FLAVOR_SLOP && Math.abs(dy) < FLAVOR_SLOP) return
+              if (Math.abs(dx) > Math.abs(dy)) {
+                scoreDraggingRef.current = true
+                try { e.currentTarget.setPointerCapture(e.pointerId) } catch {}
+                handlePointer(e)
+              } else {
+                scorePendingDownRef.current = null
+              }
+            }}
+            onPointerUp={readOnly ? undefined : e => {
+              const pd = scorePendingDownRef.current
+              const wasDragging = scoreDraggingRef.current
+              scorePendingDownRef.current = null
+              scoreDraggingRef.current = false
+              if (wasDragging) {
+                handlePointer(e)
+              } else if (pd) {
+                // Tap: commit the score under the tap.
+                handlePointer(e)
+              }
+            }}
+            onPointerCancel={readOnly ? undefined : () => {
+              scorePendingDownRef.current = null
+              scoreDraggingRef.current = false
             }}
             style={{
               // 36px tall hit area = comfortable touch target (close
@@ -211,7 +254,18 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
               // off-bar taps.
               position:'relative',height:36,
               cursor: readOnly ? 'default' : 'pointer',
-              userSelect:'none',touchAction:'none',
+              userSelect:'none',
+              // No `touch-action` here — let iOS read the value from
+              // the nearest ancestor (scrollRef in WineModal). When
+              // scrollRef is `pan-y`, native vertical scroll works
+              // through this control; intent detection in
+              // pointerdown/move claims the gesture only for
+              // horizontal-dominant drags. When scrollRef is `none`
+              // (at boundary, JS owns gesture), vertical drags here
+              // route to scrollRef's pull handler as well. Setting
+              // pan-y here would override scrollRef's none and cause
+              // iOS to issue pointercancel when it can't actually
+              // scroll the parent.
               display:'flex',alignItems:'center',
             }}
           >
@@ -278,7 +332,12 @@ function FlavourSection({
 }) {
   const readOnly = !setFlavor
   return (
-    <section>
+    // `data-no-pull` on the entire flavour section — including the
+    // grid padding between bars — so a finger landing in the gutter
+    // doesn't trigger a wine-swap pull. Also makes the section's
+    // children opt out for keyboard nav (Arrow keys on a focused
+    // flavor segment shouldn't swap wines).
+    <section data-no-pull>
       <SectionHeader
         title="Flavour profile"
         hint={readOnly ? undefined : 'tap or drag a segment to set intensity'}
@@ -297,6 +356,14 @@ function FlavourSection({
   )
 }
 
+// SLOP — distance the finger must move past pointerdown before we
+// commit to either a drag (horizontal-dominant) or a release-to-scroll
+// (vertical-dominant). Mirrors `FlavorChips` on main, which is the
+// proven pattern: touch-action:pan-y on the track + intent-detection
+// in onPointerMove. Vertical drags fall through to native scroll;
+// horizontal drags capture the pointer for flavor adjustment.
+const FLAVOR_SLOP = 6
+
 function FlavourBar({
   item, value, setValue,
 }: {
@@ -305,88 +372,108 @@ function FlavourBar({
   setValue?: (v: number) => void
 }) {
   const [hover, setHover] = useState<number | null>(null)
-  const [dragging, setDragging] = useState(false)
   const barRef = useRef<HTMLDivElement>(null)
+  // Touch start position — used to detect intent on the first
+  // significant move.
+  const pendingDownRef = useRef<{ x: number; y: number } | null>(null)
+  // True once we've committed to a horizontal drag (after pointer
+  // capture). Subsequent moves update the flavor value.
+  const draggingRef = useRef(false)
+  // Whether the user actually moved away from where they pressed.
+  // Tap-with-no-drag on the current value clears it; tap on a different
+  // segment commits that segment.
   const hadMoved = useRef(false)
   const display = hover ?? value
   const fillPct = (display / 5) * 100
   const hasValue = display > 0
   const readOnly = !setValue
 
-  // Compute the segment (1..5) under a clientX position. Returns null
-  // if the position is left of the bar — taps on the bar's leading edge
-  // should still register as segment 1, but we clamp explicitly below.
   function segAt(clientX: number): number {
     if (!barRef.current) return 0
     const rect = barRef.current.getBoundingClientRect()
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-    // Each segment owns 20% of the bar; ceil so x=0..0.2 → seg 1.
     return Math.max(1, Math.min(5, Math.ceil(pct * 5)))
   }
-
-  // Pointer-up listener while dragging. PointerEvents (vs mouse + touch
-  // pair) gives unified mouse/pen/touch handling without duplicate code.
-  useEffect(() => {
-    if (!dragging) return
-    function onMove(e: PointerEvent) {
-      if (!setValue) return
-      setHover(segAt(e.clientX))
-    }
-    function onUp(e: PointerEvent) {
-      if (!setValue) { setDragging(false); return }
-      const seg = segAt(e.clientX)
-      // Tap on the current value to clear — only treat it as a "clear"
-      // when the user didn't drag away from it. A drag that lands on
-      // the same segment commits that segment (no clear surprise).
-      setValue(seg === value && !hadMoved.current ? 0 : seg)
-      setDragging(false)
-      setHover(null)
-      hadMoved.current = false
-    }
-    function onCancel() {
-      // System-initiated cancel (iOS edge-swipe, browser context loss,
-      // app switch). Discard the in-progress gesture — committing
-      // whatever happened to be under the finger at cancel time would
-      // be a hostile surprise.
-      setDragging(false)
-      setHover(null)
-      hadMoved.current = false
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onCancel)
-    return () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onCancel)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dragging])
 
   return (
     <div
       ref={barRef}
-      // `data-no-pull` opts this flavor bar out of the parent modal's
-      // pull-to-swap gesture (see usePullToSwap.onPointerDown). The
-      // bar's horizontal drag would otherwise trip vertical pull-swap
-      // when the rate pane is at the modal's scroll bottom boundary.
-      data-no-pull
+      // Note: data-no-pull is set on the surrounding FlavourSection
+      // <section>; no need to repeat it on each bar.
       style={{
         position:'relative',height:36,borderRadius:6,
         overflow:'hidden',cursor: readOnly ? 'default' : 'pointer',
-        touchAction:'none',  // prevent page scroll on drag
+        // No `touch-action` — inherits from scrollRef (pan-y when
+        // mid-content, none when at boundary). Intent detection in
+        // onPointerMove claims the gesture only for horizontal drags.
+        // See ScoreSection's matching comment for the longer rationale.
       }}
       onPointerDown={readOnly ? undefined : e => {
-        // Prevent the drag from selecting text or starting a scroll.
-        e.preventDefault()
+        if (!e.isPrimary) return
+        // Record the start; don't claim the pointer yet. Wait for
+        // movement past SLOP to know whether it's horizontal or
+        // vertical, then decide.
+        pendingDownRef.current = { x: e.clientX, y: e.clientY }
+        draggingRef.current = false
         hadMoved.current = false
-        setHover(segAt(e.clientX))
-        setDragging(true)
       }}
-      onPointerMove={readOnly || !dragging ? undefined : () => {
-        hadMoved.current = true
+      onPointerMove={readOnly ? undefined : e => {
+        if (draggingRef.current) {
+          // Already committed — update hover/value.
+          hadMoved.current = true
+          setHover(segAt(e.clientX))
+          return
+        }
+        const pd = pendingDownRef.current
+        if (!pd) return
+        const dx = e.clientX - pd.x
+        const dy = e.clientY - pd.y
+        // Wait until we've moved past the slop threshold so we can
+        // reliably classify intent. Pure jitter under SLOP is ignored.
+        if (Math.abs(dx) < FLAVOR_SLOP && Math.abs(dy) < FLAVOR_SLOP) return
+        if (Math.abs(dx) > Math.abs(dy)) {
+          // Horizontal-dominant — claim the gesture. setPointerCapture
+          // re-routes subsequent events to this element regardless of
+          // where the finger drifts.
+          draggingRef.current = true
+          try { barRef.current?.setPointerCapture(e.pointerId) } catch {}
+          hadMoved.current = true
+          setHover(segAt(e.clientX))
+        } else {
+          // Vertical-dominant — release. The browser handles native
+          // pan-y scroll for the rest of the gesture.
+          pendingDownRef.current = null
+        }
       }}
-      onMouseLeave={dragging ? undefined : () => setHover(null)}
+      onPointerUp={readOnly ? undefined : e => {
+        const pd = pendingDownRef.current
+        const wasDragging = draggingRef.current
+        pendingDownRef.current = null
+        draggingRef.current = false
+        if (!setValue) return
+        if (wasDragging) {
+          // Commit the segment under the finger at release.
+          setValue(segAt(e.clientX))
+          setHover(null)
+          return
+        }
+        if (pd && !hadMoved.current) {
+          // Tap, no drag — toggle the segment at the tap.
+          const seg = segAt(e.clientX)
+          setValue(seg === value ? 0 : seg)
+        }
+        setHover(null)
+        hadMoved.current = false
+      }}
+      onPointerCancel={readOnly ? undefined : () => {
+        // System cancelled (e.g. iOS reclassified as scroll). Drop
+        // state, don't commit anything.
+        pendingDownRef.current = null
+        draggingRef.current = false
+        hadMoved.current = false
+        setHover(null)
+      }}
+      onMouseLeave={() => { if (!draggingRef.current) setHover(null) }}
     >
       {/* base + fill */}
       <div style={{
@@ -484,7 +571,13 @@ function NotesSection({ notes, setNotes }: { notes: string; setNotes?: (n: strin
     )
   }
   return (
-    <section>
+    // `data-no-pull` opts the notes section out of the parent
+    // modal's pull-to-swap gesture. The textarea sits at the bottom
+    // of the rate pane (so at scrollBottom), and a touch drag inside
+    // it would otherwise be captured by usePullToSwap as a swap
+    // gesture instead of letting the user interact with the textarea
+    // (text selection, drag-to-expand the resize handle, etc.).
+    <section data-no-pull>
       <SectionHeader title="Tasting notes" />
       <textarea
         value={notes}

@@ -1,6 +1,6 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
-import { Modal } from '@/components/ui/Modal'
+import { Modal, getModalStackDepth } from '@/components/ui/Modal'
 import { WineInfoPane } from '@/components/wine/WineInfoPane'
 import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { AddWineModal } from '@/components/wine/AddWineModal'
@@ -81,6 +81,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // the local `onClose`. Null when the prompt was opened by the user
   // tapping the modal's own close paths — Discard just calls onClose.
   const pendingNavRef = useRef<(() => void) | null>(null)
+  // Single-flight guard for commitAndSwap. The `saving` state flips
+  // asynchronously through React; under arrow-key autorepeat or fast
+  // double-clicks, multiple commitAndSwap calls can enter before
+  // React commits saving=true and the buttons disable themselves.
+  // The ref flips synchronously and gates entry to commitAndSwap.
+  const commitInFlightRef = useRef(false)
   // Go-back bubble state. Populated after a successful auto-commit +
   // swap; cleared on next swap or after the 5s timeout. The user can
   // tap "Go back" to return to the wine they just left. The `kind`
@@ -166,11 +172,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     }
   }, [currentIndex, wines])
 
-  // Pull-to-swap gesture. The hook listens on the scroll container
-  // for pointer/wheel events that drag past the top or bottom
+  // Pull-to-swap gesture (touch only). The hook listens on the
+  // scroll container for pointer drags past the top or bottom
   // boundary. Past the threshold, it fires onSwapPrev / onSwapNext —
   // same path as the prev/next buttons. The returned pullDistance +
-  // boundary feed the visual indicator below.
+  // boundary feed the visual indicator below. Wheel/desktop
+  // navigation is handled separately via arrow keys.
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const { pullDistance, boundary } = usePullToSwap({
     containerRef: scrollRef,
@@ -428,35 +435,45 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // was saved (rating, note, or both). Bubble auto-dismisses after 5s
   // or on the next swap.
   async function commitAndSwap(targetWineId: string): Promise<void> {
-    const fromWineId = activeWineId
-    const fromWine = wine
-    const fromRating = rating
-    let didCommit = false
-    if (dirty) {
-      const ok = await commitWineRating(fromWineId, fromRating)
-      if (!ok) return  // error already surfaced via commitError
-      refresh()
-      didCommit = true
-    }
-    setActiveWineId(targetWineId)
-    if (didCommit && fromWine) {
-      // Copy variant depends on what the user actually committed:
-      // - score > 0 + non-empty notes → "Rating & note saved"
-      // - score > 0 + no notes        → "Rating saved"
-      // - score === 0 + non-empty notes → "Note saved"
-      // The "note saved" case is intentional — we DO let the user
-      // commit a note without a score (e.g. "tasted, save my
-      // impression, no score yet"). The dirty gate ensures we only
-      // POST when something actually changed.
-      const hasScore = fromRating.score > 0
-      const hasNote = fromRating.notes.trim() !== ''
-      const kind: 'rating-and-note' | 'rating' | 'note' =
-        hasScore && hasNote ? 'rating-and-note'
-        : hasScore         ? 'rating'
-        :                    'note'
-      setLastSwap({ fromWineId, kind, name: fromWine.name })
-    } else {
-      setLastSwap(null)
+    // Single-flight gate — synchronous ref flips before React commits
+    // `saving=true`. Under arrow-key autorepeat or rapid double-taps,
+    // multiple invocations can enter the function body before the
+    // saving-state-driven button disable kicks in. Without this gate
+    // the same wine's POST can race itself.
+    if (commitInFlightRef.current) return
+    commitInFlightRef.current = true
+    try {
+      const fromWineId = activeWineId
+      const fromWine = wine
+      const fromRating = rating
+      let didCommit = false
+      if (dirty) {
+        const ok = await commitWineRating(fromWineId, fromRating)
+        if (!ok) return  // error already surfaced via commitError
+        refresh()
+        didCommit = true
+      }
+      setActiveWineId(targetWineId)
+      if (didCommit && fromWine) {
+        // Copy variant depends on what the user actually committed:
+        // - score > 0 + non-empty notes → "Rating & note saved"
+        // - score > 0 + no notes        → "Rating saved"
+        // - score === 0 + non-empty notes → "Note saved"
+        // The "note saved" case is intentional — we DO let the user
+        // commit a note without a score. The dirty gate ensures we
+        // only POST when something actually changed.
+        const hasScore = fromRating.score > 0
+        const hasNote = fromRating.notes.trim() !== ''
+        const kind: 'rating-and-note' | 'rating' | 'note' =
+          hasScore && hasNote ? 'rating-and-note'
+          : hasScore         ? 'rating'
+          :                    'note'
+        setLastSwap({ fromWineId, kind, name: fromWine.name })
+      } else {
+        setLastSwap(null)
+      }
+    } finally {
+      commitInFlightRef.current = false
     }
   }
 
@@ -474,6 +491,69 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // than memoized — wines array is small, lookups are O(n) but n<30.
   const prevWineId: string | null = !isFirstWine ? wines[currentIndex - 1].id : null
   const nextWineId: string | null = !isLastWine ? wines[currentIndex + 1].id : null
+
+  // Keyboard navigation on desktop. Arrow keys move between wines.
+  // ← previous, → next. Wheel-driven swap was removed (see
+  // usePullToSwap header), so this is how desktop users navigate
+  // without the buttons.
+  //
+  // Ignored when:
+  //   - Any modifier key is held (Cmd/Ctrl/Alt/Shift) — reserved for
+  //     browser/system shortcuts.
+  //   - `saving` is true — same single-flight guard as the buttons.
+  //   - Another modal is on top of WineModal (SessionPanel,
+  //     UserPanel, or any future overlay). Gated via the modal
+  //     stack depth from Modal.tsx.
+  //   - The inner Save-confirm modal is open (pendingClose=true).
+  //     Its own Escape handles that, not arrows.
+  //   - A nested control already consumed the key (defaultPrevented).
+  //   - Focus is on an INPUT, TEXTAREA, contentEditable element, or
+  //     anything inside a [data-no-pull] subtree (score slider,
+  //     flavor segments, notes textarea).
+  //
+  // Re-runs every render so the captured closure (commitAndSwap +
+  // pendingClose + saving + prevWineId/nextWineId) is always fresh.
+  // Add/remove listener overhead is negligible.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      if (saving) return
+      // Topmost-modal gate. If something is open ON TOP of WineModal
+      // — SessionPanel, UserPanel, or any future overlay — the arrow
+      // keys belong to that surface, not us. WineModal's own outer
+      // modal is always on the stack while this component is
+      // mounted; the inner Save-confirm pushes one more when
+      // pendingClose is true. Anything beyond that means another
+      // overlay is above us.
+      const expectedDepth = 1 + (pendingClose ? 1 : 0)
+      if (getModalStackDepth() > expectedDepth) return
+      // pendingClose=true also blocks (we're inside the inner
+      // confirm; its own Escape handles it, not arrow keys).
+      if (pendingClose) return
+      // If a nested handler already consumed the key (preventDefault),
+      // don't double-act on it. Covers any current/future focused
+      // control with its own Arrow-key semantics (e.g. the canonical
+      // ScoreSlider primitive if it's reintroduced here).
+      if (e.defaultPrevented) return
+      const t = e.target as HTMLElement | null
+      const tag = t?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || t?.isContentEditable) return
+      // Match the same opt-out contract used for the pointer
+      // gesture — controls in `[data-no-pull]` (score slider, flavor
+      // segments, notes textarea) reserve Arrow keys for their own
+      // semantics, even if they don't yet implement them.
+      if (t?.closest('[data-no-pull]')) return
+      if (e.key === 'ArrowLeft' && prevWineId) {
+        e.preventDefault()
+        commitAndSwap(prevWineId)
+      } else if (e.key === 'ArrowRight' && nextWineId) {
+        e.preventDefault()
+        commitAndSwap(nextWineId)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
 
   // Mirror commitRating's error handling — without it, a 429/500 on
   // delete silently closes the modal and pretends the deletion happened.
@@ -560,7 +640,9 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // Pull-progress and threshold-crossing flags for the boundary
   // indicator UI. `pulling` = user is actively dragging at a boundary;
   // `pullPast` = past the fire threshold (visual prompts shift from
-  // "Pull to load" → "Release to load").
+  // "Pull to load" → "Release to load"). Touch is the only path
+  // wired up — wheel events scroll content natively without firing
+  // swaps. The 80px threshold matches the hook's fire threshold.
   const PULL_THRESHOLD = 80
   const pulling = boundary !== null && Math.abs(pullDistance) > 0
   const pullPast = Math.abs(pullDistance) >= PULL_THRESHOLD
@@ -587,7 +669,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   }
 
   return (
-    <Modal onClose={requestClose} maxWidth={620} maxHeight="90vh" minHeight="70vh">
+    <Modal onClose={requestClose} maxWidth={620} maxHeight="90svh" minHeight="70svh">
       {/* Outer column: header + tabs at top, scrollable body in middle,
           error banner / Go-back bubble / footer pinned at bottom. The
           fixed-height scroll-region is what the pull-to-swap hook
@@ -595,7 +677,12 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           swap (same effect as the prev/next buttons in the footer). */}
       <div style={{
         display:'flex',flexDirection:'column',
-        height:'100%',minHeight:0,position:'relative',
+        // `flex:1; minHeight:0` consumes the sheet's available height
+        // (the Modal sheet is now display:flex column itself when
+        // min+maxHeight are both set — see Modal.tsx). Using flex:1
+        // here instead of `height:100%` lets the sheet size to
+        // content within its min/max range without forcing 90vh.
+        flex:1,minHeight:0,position:'relative',
       }}>
       {/* HEADER — 3-dot menu (host-only) + wine name + vintage + Save + close */}
       <div style={{
@@ -909,6 +996,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
                 onClick={() => commitAndSwap(prevWineId)}
                 disabled={saving}
                 aria-label="Previous wine"
+                aria-keyshortcuts="ArrowLeft"
+                title="Previous wine (←)"
                 style={{
                   display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
                   background:'transparent',color:'var(--fg-dim)',
@@ -945,6 +1034,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
                 onClick={() => commitAndSwap(nextWineId)}
                 disabled={saving}
                 aria-label="Next wine"
+                aria-keyshortcuts="ArrowRight"
+                title="Next wine (→)"
                 style={{
                   display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
                   background:'transparent',color:'var(--fg-dim)',
@@ -969,6 +1060,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
                 onClick={() => commitAndSwap(prevWineId)}
                 disabled={saving}
                 aria-label="Save and go to previous wine"
+                aria-keyshortcuts="ArrowLeft"
+                title="Save & previous wine (←)"
                 style={{
                   display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
                   background:'transparent',color:'var(--accent)',
@@ -1009,6 +1102,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
                 ? commitRating()
                 : commitAndSwap(nextWineId!)}
               disabled={saving}
+              aria-keyshortcuts={isLastWine ? undefined : 'ArrowRight'}
+              title={isLastWine ? undefined : 'Save & next wine (→)'}
               style={{
                 flex:1,
                 display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,
