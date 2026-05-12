@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
 import { getFL, detectFL, FL, type FlItem } from '@/lib/flavours'
 
@@ -13,18 +13,23 @@ interface BasePaneProps {
   // Wine type drives the flavour-dimension set (red vs white vs spark…).
   // Pass null when the wine is blind-redacted — falls back to FL generic.
   wineType: string | null
-  existing: RatingValue | null
 }
 
 interface EditableProps extends BasePaneProps {
   readOnly?: false
-  // Caller subscribes to local edits so it can commit them with its own
-  // button placement. The pane doesn't render its own commit CTA.
+  // Controlled mode: caller owns the rating state. The pane reads from
+  // `value`, calls `onChange` on every edit. Lifting state up lets the
+  // outer modal preserve in-progress edits across tab switches (RatingPane
+  // unmounts when the user taps Wine info; on remount, the parent's
+  // state survives so nothing is lost).
+  value: RatingValue
   onChange: (value: RatingValue) => void
 }
 
 interface ReadOnlyProps extends BasePaneProps {
   readOnly: true
+  // Read-only mode displays a fixed rating with no input handlers.
+  existing: RatingValue | null
 }
 
 type Props = EditableProps | ReadOnlyProps
@@ -34,44 +39,59 @@ type Props = EditableProps | ReadOnlyProps
 // textarea in serif. Read-only mode renders the same widgets without
 // the input handlers.
 //
-// IMPORTANT: when the same `<RatingPane>` instance might host different
-// wines, caller MUST pass `key={wineId}` so React remounts the pane on
-// wine change. Polling the live ratings every few seconds returns a
-// fresh `existing` reference each tick — re-seeding on every change
-// would clobber in-progress edits.
+// **Controlled in edit mode.** Editable callers must own the
+// `RatingValue` state and pass it back via `value`/`onChange`. The pane
+// keeps no internal state in edit mode, so unmount/remount (e.g. when
+// the host tab strip swaps panes) cannot drop in-progress edits.
+//
+// Read-only mode still owns its state — it derives display values from
+// `existing` once at mount; no need for the caller to manage anything.
 export function RatingPane(props: Props) {
-  const { wineType, existing } = props
+  const { wineType } = props
   const readOnly = 'readOnly' in props && props.readOnly === true
 
-  // Detect flavour dimensions from existing rating's stored keys (so
+  if (readOnly) {
+    return <ReadOnlyPane wineType={wineType} existing={(props as ReadOnlyProps).existing} />
+  }
+
+  const { value, onChange } = props as EditableProps
+
+  // Detect flavour dimensions from the current rating's stored keys (so
   // historic ratings with old key names still render right), else use
   // the wine type's standard set, else generic.
-  const fl = existing?.flavors && Object.keys(existing.flavors).length
-    ? detectFL(existing.flavors as Record<string, number>)
+  const fl = value.flavors && Object.keys(value.flavors).length
+    ? detectFL(value.flavors)
     : wineType ? getFL(wineType) : FL
 
-  const [score, setScore] = useState(existing?.score || 0)
-  const [flavors, setFlavors] = useState<Record<string, number>>(() => {
-    const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
-    if (existing?.flavors) Object.assign(base, existing.flavors)
-    return base
-  })
-  const [notes, setNotes] = useState(existing?.notes || '')
-
-  // Push local edits up to the caller for commit. Skipped in read-only.
-  const onChange = !readOnly ? (props as EditableProps).onChange : undefined
-  useEffect(() => {
-    if (!onChange) return
-    onChange({ score, flavors, notes })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [score, flavors, notes])
+  function setScore(score: number) { onChange({ ...value, score }) }
+  function setFlavor(k: string, v: number) {
+    onChange({ ...value, flavors: { ...value.flavors, [k]: v } })
+  }
+  function setNotes(notes: string) { onChange({ ...value, notes }) }
 
   return (
     <div style={{display:'flex',flexDirection:'column',gap:24}}>
-      <ScoreSection score={score} setScore={readOnly ? undefined : setScore} />
-      <FlavourSection fl={fl} flavors={flavors} setFlavor={readOnly ? undefined : (k, v) =>
-        setFlavors(prev => ({ ...prev, [k]: v }))} />
-      <NotesSection notes={notes} setNotes={readOnly ? undefined : setNotes} />
+      <ScoreSection score={value.score} setScore={setScore} />
+      <FlavourSection fl={fl} flavors={value.flavors} setFlavor={setFlavor} />
+      <NotesSection notes={value.notes} setNotes={setNotes} />
+    </div>
+  )
+}
+
+function ReadOnlyPane({ wineType, existing }: { wineType: string | null; existing: RatingValue | null }) {
+  const fl = existing?.flavors && Object.keys(existing.flavors).length
+    ? detectFL(existing.flavors as Record<string, number>)
+    : wineType ? getFL(wineType) : FL
+  const flavors = (() => {
+    const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
+    if (existing?.flavors) Object.assign(base, existing.flavors)
+    return base
+  })()
+  return (
+    <div style={{display:'flex',flexDirection:'column',gap:24}}>
+      <ScoreSection score={existing?.score || 0} />
+      <FlavourSection fl={fl} flavors={flavors} />
+      <NotesSection notes={existing?.notes || ''} />
     </div>
   )
 }

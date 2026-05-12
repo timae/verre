@@ -6,6 +6,7 @@ import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { useDirtyGuard } from '@/lib/dirtyGuard'
 import { useQueryClient } from '@tanstack/react-query'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 import type { ProvenanceRenderMode } from '@/components/wine/WineInfoPane'
@@ -51,6 +52,22 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // info pane toggles this; the preview mounts inline below the
   // callout. Mirrors SessionPanel's expanded-row pattern.
   const [provenanceOpen, setProvenanceOpen] = useState(false)
+  // Uncommitted-rating guard. When the user has typed/dragged/tapped
+  // on the rate pane and tries to leave without committing, we show a
+  // confirm modal. `pendingClose` holds the leave-action to fire after
+  // resolution (Save now / Discard).
+  const [pendingClose, setPendingClose] = useState(false)
+  // Error surface for the commit POST. Cleared on retry. Surfaced in
+  // both the outer footer (when the user committed via the Commit
+  // button) and the inner confirm (when they committed via Save now).
+  const [commitError, setCommitError] = useState<string | null>(null)
+  // When the dirty guard fires from an external navigation attempt
+  // (bottom-nav Link, Leave button, header logo, panel triggers), the
+  // `proceed` callback the guard handed us is stashed here so the
+  // Discard branch of the inner confirm can invoke it after running
+  // the local `onClose`. Null when the prompt was opened by the user
+  // tapping the modal's own close paths — Discard just calls onClose.
+  const pendingNavRef = useRef<(() => void) | null>(null)
   // Ref on the brought-by callout — used to (1) scroll the expanded
   // preview into view if the user had scrolled past the callout
   // before opening it, and (2) detect outside-clicks so the floating
@@ -114,21 +131,170 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // accurate either way; this just gates the click handler.
   const provenanceClickable = isLoggedIn && (provenanceMode === 'clickable' || provenanceMode === 'blocked-by-me')
 
-  async function commitRating() {
-    setSaving(true)
-    await sessionFetch(code, `/api/session/${code}/rate`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wineId, ...rating }),
-    })
-    setSaving(false); refresh(); onClose()
+  // The rate pane's edits are local-only until commit. A "dirty"
+  // form means at least one field carries a value AND it differs
+  // from `existing`. Used by the close-confirm guard below.
+  //
+  // Flavor comparison walks the UNION of keys treating missing as 0.
+  // Legacy ratings (pre wine-type-keyed flavors) store a sparse object
+  // — only the dimensions the user touched — while RatingPane always
+  // seeds the dense FL keyset. A naïve length check would report dirty
+  // every time the user reopens an old rating without touching anything.
+  //
+  // Notes are coerced via `|| ''` defensively; the Redis path always
+  // writes a string, but null could slip through from a non-Redis source.
+  const dirty = (() => {
+    const hasContent =
+      rating.score > 0
+      || Object.values(rating.flavors).some(v => v > 0)
+      || rating.notes.trim() !== ''
+    if (!hasContent) return false   // empty form on leave — silent close
+    if (!existing) return true       // user typed something, never committed
+    const existingFlavors = (existing.flavors as Record<string, number>) || {}
+    const flavorKeys = new Set([
+      ...Object.keys(rating.flavors),
+      ...Object.keys(existingFlavors),
+    ])
+    let flavorsEqual = true
+    for (const k of flavorKeys) {
+      if ((rating.flavors[k] || 0) !== (existingFlavors[k] || 0)) {
+        flavorsEqual = false
+        break
+      }
+    }
+    return rating.score !== existing.score
+      || (rating.notes || '') !== (existing.notes || '')
+      || !flavorsEqual
+  })()
+
+  // Centralized close path. If the rate form is dirty and the user
+  // initiated the close from somewhere other than the explicit commit
+  // button, open the confirm modal. Otherwise close immediately.
+  //
+  // While a commit POST is in flight (`saving`), close requests are
+  // ignored entirely — closing here would race the awaited fetch and
+  // could let a Discard tap on a reopened confirm fire onClose while
+  // the original POST still completes (rating gets committed despite
+  // the user choosing Discard).
+  function requestClose() {
+    if (saving) return
+    if (dirty) setPendingClose(true)
+    else onClose()
   }
 
-  async function resetRating() {
-    await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
-      method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({}),
+  // browser-level guard for tab close / refresh. Best-effort: mobile
+  // Safari ignores beforeunload, but desktop browsers show their
+  // generic "leave site?" prompt.
+  useEffect(() => {
+    if (!dirty) return
+    function handler(e: BeforeUnloadEvent) {
+      e.preventDefault()
+      // Required for the prompt to actually show in some browsers;
+      // the empty string is the modern convention since browsers
+      // ignore the custom message and use a generic one.
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty])
+
+  // App-level dirty guard for client-side nav (bottom-nav Links, Leave
+  // button, header logo, session/user panel buttons). When a guarded
+  // surface is tapped while `dirty` is true, the guard fires
+  // `onAttempt` with a `proceed` callback. We stash it on a ref so the
+  // inner confirm's Discard branch can fire it after onClose, then
+  // open the confirm modal. Save now / Keep editing leave the ref
+  // untouched, so the nav is silently abandoned in those branches.
+  //
+  // Re-register every render rather than once on mount: `dirty` is
+  // recomputed inline each render, and `commitRating` / `onClose`
+  // close over the latest state. A useRef-stable wrapper would let us
+  // skip re-registration but adds a layer for no measurable benefit.
+  const dirtyGuard = useDirtyGuard()
+  useEffect(() => {
+    if (!dirtyGuard) return
+    const unregister = dirtyGuard.register({
+      isDirty: () => dirty && !saving,
+      onAttempt: (proceed) => {
+        // First-attempt-wins. If the user is already resolving an
+        // earlier nav prompt (pendingClose=true, pendingNavRef set),
+        // silently drop the second attempt rather than swap targets
+        // mid-prompt. They tap the first nav, see the confirm, then
+        // tap a second nav — without this gate, B would replace A
+        // and Discard would land them on B instead of A. With the
+        // gate, B is dropped; the user resolves A's prompt explicitly
+        // and can re-tap B afterward if they still want it.
+        if (pendingClose) return
+        pendingNavRef.current = proceed
+        setPendingClose(true)
+      },
     })
-    refresh(); onClose()
+    return unregister
+  })
+
+  // Commit the local rating. Returns true on success (caller is then
+  // free to close the modal), false on failure (caller should keep its
+  // UI mounted so the user can retry). On failure, `commitError` holds
+  // a user-visible message that surfaces in both the footer and the
+  // inner confirm modal.
+  async function commitRating(): Promise<boolean> {
+    setSaving(true)
+    setCommitError(null)
+    try {
+      const res = await sessionFetch(code, `/api/session/${code}/rate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wineId, ...rating }),
+      })
+      if (!res.ok) {
+        // 429 (rate limit), 403 (permission), 500 (server) etc. surface
+        // here instead of silently closing the modal and pretending the
+        // rating saved.
+        const msg = res.status === 429
+          ? 'Rate-limited. Try again shortly.'
+          : res.status === 403
+          ? 'You don’t have permission to rate this wine.'
+          : `Save failed (${res.status}). Try again.`
+        setCommitError(msg)
+        setSaving(false)
+        return false
+      }
+      setSaving(false)
+      refresh()
+      onClose()
+      return true
+    } catch {
+      setCommitError('Network error. Check your connection and try again.')
+      setSaving(false)
+      return false
+    }
+  }
+
+  // Mirror commitRating's error handling — without it, a 429/500 on
+  // delete silently closes the modal and pretends the deletion happened.
+  // The user's saved rating still exists but the UI doesn't show it.
+  async function resetRating() {
+    setSaving(true)
+    setCommitError(null)
+    try {
+      const res = await sessionFetch(code, `/api/session/${code}/rate/${wineId}`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      if (!res.ok) {
+        const msg = res.status === 429
+          ? 'Rate-limited. Try again shortly.'
+          : `Delete failed (${res.status}). Try again.`
+        setCommitError(msg)
+        setSaving(false)
+        return
+      }
+      setSaving(false)
+      refresh()
+      onClose()
+    } catch {
+      setCommitError('Network error. Check your connection and try again.')
+      setSaving(false)
+    }
   }
 
   async function toggleBookmark() {
@@ -176,7 +342,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   }
 
   return (
-    <Modal onClose={onClose} maxWidth={620} maxHeight="90vh">
+    <Modal onClose={requestClose} maxWidth={620} maxHeight="90vh">
       {/* HEADER — 3-dot menu (host-only) + wine name + vintage + Save + close */}
       <div style={{
         display:'flex',alignItems:'center',gap:8,
@@ -228,7 +394,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           </button>
         )}
         <button
-          onClick={onClose}
+          onClick={requestClose}
           aria-label="Close"
           style={{
             background:'transparent',border:'none',
@@ -301,13 +467,32 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         )
       )}
 
+      {/* RatingPane is controlled — the parent owns `rating`. That means
+          unmounting/remounting on tab switch (info ↔ rate) doesn't drop
+          in-progress edits. We keep the `key={wineId}` so swapping
+          between wines does still reset, but tab switches within the
+          same wine preserve state. */}
       {pane === 'rate' && (
         <RatingPane
           key={wineId}
           wineType={isRedacted ? null : wine.type}
-          existing={existing || null}
+          value={rating}
           onChange={setRating}
         />
+      )}
+
+      {/* Inline commit-error banner on the rate tab. Surfaces 429/403/
+          500/network failures from the most recent commit attempt so
+          the user sees something happened. Cleared automatically on
+          the next attempt. */}
+      {pane === 'rate' && commitError && (
+        <div style={{
+          marginTop:14,padding:'10px 12px',
+          borderRadius:8,
+          border:'1px solid rgba(184,64,64,0.5)',
+          background:'rgba(184,64,64,0.08)',
+          color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
+        }}>{commitError}</div>
       )}
 
       {/* FOOTER — action bar. Different per tab. */}
@@ -340,7 +525,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               <ResetButton onReset={resetRating} />
             )}
             <button
-              onClick={onClose}
+              onClick={requestClose}
               style={{
                 display:'inline-flex',alignItems:'center',justifyContent:'center',
                 background:'transparent',color:'var(--fg-dim)',
@@ -379,13 +564,132 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           onSaved={() => { setShowEdit(false); refresh() }}
         />
       )}
+
+      {/* Uncommitted-rating confirm — modal-on-modal. Mounted via the
+          shared Modal portal so it floats above this modal's backdrop
+          rather than nesting in the same stacking context.
+          Backdrop / Escape close ONLY this inner confirm — equivalent
+          to "Keep editing". Outer modal stays mounted underneath; the
+          modalStack in Modal.tsx routes Escape to the topmost.
+          `pendingNavRef` is set when the confirm opens via an external
+          nav attempt (bottom-nav, Leave, header). The three resolutions:
+          - Commit success → run pendingNav so user reaches their target
+          - Discard      → onClose + run pendingNav
+          - Keep editing → clear pendingNav, stay in the modal. */}
+      {pendingClose && (
+        <Modal
+          onClose={() => {
+            if (saving) return
+            pendingNavRef.current = null
+            setPendingClose(false)
+          }}
+          maxWidth={420}
+        >
+          <div style={{
+            fontSize:15,fontWeight:700,color:'var(--fg-warm)',
+            marginBottom:8,letterSpacing:'-0.005em',
+          }}>Unsaved rating</div>
+          <div style={{
+            fontSize:13,color:'var(--fg-dim)',lineHeight:1.5,
+            marginBottom:commitError ? 12 : 18,
+          }}>You have unsaved changes.</div>
+          {commitError && (
+            <div style={{
+              marginBottom:18,padding:'10px 12px',
+              borderRadius:8,
+              border:'1px solid rgba(184,64,64,0.5)',
+              background:'rgba(184,64,64,0.08)',
+              color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
+            }}>{commitError}</div>
+          )}
+          {/* Button order: Commit (primary) | Keep editing | Discard.
+              Red destructive is at the far edge so a thumb-drift from
+              the green CTA can't land on it. Commit stays mounted
+              until commitRating resolves — on success commitRating
+              calls onClose() which unmounts the whole modal stack; on
+              failure the inner confirm stays open with commitError
+              surfaced above. Discard is two-press matching the codebase
+              destructive-button convention. */}
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button
+              onClick={async () => {
+                const ok = await commitRating()
+                if (ok) {
+                  // commitRating already fired onClose internally — but
+                  // it ran BEFORE we got here, so the modal's already
+                  // unmounting. The pendingNav still needs to fire so
+                  // the user lands at the bottom-nav target. Read &
+                  // clear the ref before invoking to guard against an
+                  // accidental double-fire on rapid clicks.
+                  const nav = pendingNavRef.current
+                  pendingNavRef.current = null
+                  setPendingClose(false)
+                  if (nav) nav()
+                }
+              }}
+              disabled={saving}
+              style={{
+                flex:1,minWidth:120,
+                display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,
+                background:'var(--accent)',color:'var(--bg)',
+                border:'none',padding:'12px 16px',borderRadius:8,
+                fontWeight:700,fontSize:11,letterSpacing:'0.08em',
+                textTransform:'uppercase',
+                cursor: saving ? 'default' : 'pointer',
+                opacity: saving ? 0.6 : 1,
+                boxShadow:'0 6px 24px -8px var(--accent)',
+              }}
+            >
+              <CheckIcon size={14} stroke={2.2} />
+              {saving ? 'Saving…' : 'Commit'}
+            </button>
+            <button
+              onClick={() => {
+                if (saving) return
+                pendingNavRef.current = null
+                setPendingClose(false)
+              }}
+              disabled={saving}
+              style={{
+                flex:1,minWidth:0,
+                display:'inline-flex',alignItems:'center',justifyContent:'center',
+                background:'transparent',color:'var(--fg-dim)',
+                border:'1px solid var(--border)',
+                padding:'12px 14px',borderRadius:8,
+                fontSize:11,letterSpacing:'0.08em',
+                textTransform:'uppercase',fontWeight:600,
+                cursor: saving ? 'default' : 'pointer',
+                opacity: saving ? 0.6 : 1,
+              }}
+            >Keep editing</button>
+            <DiscardButton
+              disabled={saving}
+              onDiscard={() => {
+                const nav = pendingNavRef.current
+                pendingNavRef.current = null
+                setPendingClose(false)
+                onClose()
+                if (nav) nav()
+              }}
+            />
+          </div>
+        </Modal>
+      )}
     </Modal>
   )
 }
 
-// Tight icon-button for the rate-tab footer's Reset action. Two-press
-// confirm (first tap arms with a warning tint, second tap fires). Sits
-// next to Cancel + Commit without stealing room from the primary CTA.
+// Tight icon-button for the rate-tab footer's destructive action.
+// Two-press confirm (first tap arms with a red tint, second tap fires).
+// Sits next to Cancel + Commit without stealing room from the primary CTA.
+//
+// Label is "Delete rating" / "Tap to delete" (was "Reset rating" / "Tap
+// to confirm"). The original copy implied a local reset of typed values
+// — but the action POSTs DELETE to the server and wipes the persisted
+// rating row. The renamed copy reflects the actual destructive scope so
+// a user with uncommitted typed edits understands that tapping here
+// destroys the saved rating *and* drops what they typed (the modal closes
+// after the DELETE), rather than thinking "Reset" just undoes their edits.
 function ResetButton({ onReset }: { onReset: () => void }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -405,15 +709,60 @@ function ResetButton({ onReset }: { onReset: () => void }) {
         fontSize:11,letterSpacing:'0.08em',
         textTransform:'uppercase',fontWeight:600,cursor:'pointer',
         flexShrink:0,
-        // Fixed width sized to the wider label ("Reset rating") so
+        // Fixed width sized to the wider label ("Tap to delete") so
         // the button doesn't grow/shrink between idle and armed.
         width:148,
         transition:'border-color .15s, color .15s',
       }}
     >
       <ResetIcon size={13} />
-      <span>{armed ? 'Tap to confirm' : 'Reset rating'}</span>
+      <span>{armed ? 'Tap to delete' : 'Delete rating'}</span>
     </button>
+  )
+}
+
+// Two-press destructive button for the uncommitted-rating confirm. Same
+// visual language as ResetButton — first tap arms with the red border +
+// "Tap to discard" copy, second tap within 3s fires `onDiscard`. The
+// codebase's destructive convention (see ConfirmDeleteButton / DeleteMenuItem
+// / ResetButton) is two-press; a one-tap Discard sitting next to a green
+// Commit CTA was the misclick risk the UX review flagged.
+function DiscardButton({
+  onDiscard, disabled = false,
+}: {
+  onDiscard: () => void
+  disabled?: boolean
+}) {
+  const [armed, setArmed] = useState(false)
+  useEffect(() => {
+    if (!armed) return
+    const t = setTimeout(() => setArmed(false), 3000)
+    return () => clearTimeout(t)
+  }, [armed])
+  return (
+    <button
+      onClick={() => {
+        if (disabled) return
+        if (armed) onDiscard()
+        else setArmed(true)
+      }}
+      disabled={disabled}
+      style={{
+        display:'inline-flex',alignItems:'center',justifyContent:'center',
+        background:'transparent',
+        color: armed ? 'rgba(220,90,90,1)' : 'rgba(220,90,90,0.85)',
+        border: `1px solid ${armed ? 'rgba(184,64,64,0.7)' : 'rgba(184,64,64,0.4)'}`,
+        padding:'12px 14px',borderRadius:8,
+        fontSize:11,letterSpacing:'0.08em',
+        textTransform:'uppercase',fontWeight:600,
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+        // Fixed width sized to the wider label ("Tap to discard") so
+        // the row doesn't reflow when the button arms.
+        width:142,flexShrink:0,
+        transition:'border-color .15s, color .15s',
+      }}
+    >{armed ? 'Tap to discard' : 'Discard'}</button>
   )
 }
 

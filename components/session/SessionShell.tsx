@@ -1,5 +1,5 @@
 'use client'
-import { use, createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { use, createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
@@ -10,6 +10,7 @@ import { UserPanel } from './UserPanel'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
+import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
 // Iterators (compare screen) use Object.entries; lookups (RatingScreen,
@@ -292,65 +293,141 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   if (needsName) return null
 
+  // The DirtyGuardProvider wraps the entire shell so any descendant
+  // (WineModal today, future forms tomorrow) can register a guard that
+  // intercepts navigation surfaces below. Header logo / session badge /
+  // user badge / bottom-nav Links / Leave / You all route through the
+  // guard. ThemeToggle stays unguarded — toggling a theme inside a
+  // dirty modal shouldn't pop a confirm.
   return (
-    <Ctx.Provider value={ctx}>
-      <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
-        {/* Header */}
-        <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
-          <Link href={authSession?.user ? '/me' : '/'} style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <ThemeToggle />
-            <button
-              onClick={() => setShowSessionPanel(true)}
-              title="Session settings"
-              style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
-            >
-              {sessionLabel}
-            </button>
-            <button
-              onClick={() => setShowUserPanel(true)}
-              style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.06em',color:'var(--fg-dim)',border:'1px solid var(--border)',background:'var(--bg2)',padding:'5px 10px',borderRadius:3,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}
-            >
-              <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent2)'}} />
-              {displayName || 'anon'}
-            </button>
-          </div>
-        </header>
+    <DirtyGuardProvider>
+      <Ctx.Provider value={ctx}>
+        <SessionShellChrome
+          authUser={authSession?.user}
+          displayName={displayName}
+          sessionLabel={sessionLabel}
+          showSessionPanel={showSessionPanel}
+          setShowSessionPanel={setShowSessionPanel}
+          showUserPanel={showUserPanel}
+          setShowUserPanel={setShowUserPanel}
+          navItems={navItems}
+          pathname={pathname}
+          router={router}
+        >{children}</SessionShellChrome>
+      </Ctx.Provider>
+    </DirtyGuardProvider>
+  )
+}
 
-        {showSessionPanel && (
-          <SessionPanel
-            onClose={() => setShowSessionPanel(false)}
-            onLeave={() => { setShowSessionPanel(false); router.push(authSession?.user ? '/me' : '/') }}
-          />
-        )}
-        {showUserPanel && (
-          <UserPanel onClose={() => setShowUserPanel(false)} />
-        )}
+// Inner chrome — split out so useDirtyGuard() can be called below the
+// provider. Reads from props instead of pulling SessionShell's local
+// state directly, to keep the boundary explicit.
+function SessionShellChrome({
+  authUser, displayName, sessionLabel,
+  showSessionPanel, setShowSessionPanel,
+  showUserPanel, setShowUserPanel,
+  navItems, pathname, router, children,
+}: {
+  authUser: { name?: string | null } | undefined
+  displayName: string
+  sessionLabel: string
+  showSessionPanel: boolean
+  setShowSessionPanel: (v: boolean) => void
+  showUserPanel: boolean
+  setShowUserPanel: (v: boolean) => void
+  navItems: { label: string; path: string; icon: string; id: string }[]
+  pathname: string
+  router: ReturnType<typeof useRouter>
+  children: ReactNode
+}) {
+  const guard = useDirtyGuard()
+  // Wrap a navigation action with the dirty-guard check. If a guard is
+  // active, it intercepts and may prompt; otherwise the action runs
+  // immediately.
+  const guardedNav = (action: () => void) => {
+    if (guard) guard.attemptNav(action)
+    else action()
+  }
+  // Wrap a Link click for the same gating. Returning preventDefault
+  // when guarded keeps Next from doing the SPA push behind our back —
+  // the guard's proceed callback fires router.push if/when the user
+  // resolves the prompt.
+  const onGuardedLinkClick = (href: string) => (e: React.MouseEvent) => {
+    if (!guard) return
+    e.preventDefault()
+    guard.attemptNav(() => router.push(href))
+  }
+  const leaveHref = authUser ? '/me' : '/'
 
-        {/* Content */}
-        <main style={{flex:1,overflowY:'auto'}}>{children}</main>
-
-        {/* Nav */}
-        <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
-          {navItems.map(({ label, path, icon, id }) => {
-            const active = pathname === path
-            return (
-              <Link key={path} href={path} className={`nav-item${active ? ' active' : ''}`}>
-                <span style={{fontSize:16,lineHeight:1}}>{icon}</span>
-                <span>{label}</span>
-              </Link>
-            )
-          })}
-          <button onClick={() => setShowUserPanel(true)} className="nav-item" style={{flex:1}}>
-            <span style={{fontSize:14,lineHeight:1}}>👤</span>
-            <span>You</span>
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
+      <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
+        <Link
+          href={leaveHref}
+          onClick={onGuardedLinkClick(leaveHref)}
+          style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}
+        >Verre</Link>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <ThemeToggle />
+          <button
+            onClick={() => guardedNav(() => setShowSessionPanel(true))}
+            title="Session settings"
+            style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
+          >{sessionLabel}</button>
+          <button
+            onClick={() => guardedNav(() => setShowUserPanel(true))}
+            style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.06em',color:'var(--fg-dim)',border:'1px solid var(--border)',background:'var(--bg2)',padding:'5px 10px',borderRadius:3,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}
+          >
+            <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent2)'}} />
+            {displayName || 'anon'}
           </button>
-          <button onClick={() => router.push(authSession?.user ? '/me' : '/')} className="nav-item" style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}>
-            <span style={{fontSize:16,lineHeight:1}}>←</span>
-            <span>Leave</span>
-          </button>
-        </nav>
-      </div>
-    </Ctx.Provider>
+        </div>
+      </header>
+
+      {showSessionPanel && (
+        <SessionPanel
+          onClose={() => setShowSessionPanel(false)}
+          onLeave={() => { setShowSessionPanel(false); router.push(leaveHref) }}
+        />
+      )}
+      {showUserPanel && (
+        <UserPanel onClose={() => setShowUserPanel(false)} />
+      )}
+
+      <main style={{flex:1,overflowY:'auto'}}>{children}</main>
+
+      <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
+        {navItems.map(({ label, path, icon }) => {
+          const active = pathname === path
+          return (
+            <Link
+              key={path}
+              href={path}
+              onClick={onGuardedLinkClick(path)}
+              className={`nav-item${active ? ' active' : ''}`}
+            >
+              <span style={{fontSize:16,lineHeight:1}}>{icon}</span>
+              <span>{label}</span>
+            </Link>
+          )
+        })}
+        <button
+          onClick={() => guardedNav(() => setShowUserPanel(true))}
+          className="nav-item"
+          style={{flex:1}}
+        >
+          <span style={{fontSize:14,lineHeight:1}}>👤</span>
+          <span>You</span>
+        </button>
+        <button
+          onClick={() => guardedNav(() => router.push(leaveHref))}
+          className="nav-item"
+          style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}
+        >
+          <span style={{fontSize:16,lineHeight:1}}>←</span>
+          <span>Leave</span>
+        </button>
+      </nav>
+    </div>
   )
 }
