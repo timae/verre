@@ -24,6 +24,15 @@ function redactWine(wine: WineMeta, index: number): WireWine {
     type: 'red',   // keep as red for FL purposes but will show mystery icon
     image: '',
     imageUrl: '',
+    // Metadata fields that would leak wine identity to a blind taster —
+    // strip alongside name/producer/vintage/grape. Country/region/
+    // vinification narrow the wine geographically; description/purchaseUrl
+    // can name it outright.
+    description: '',
+    region: '',
+    country: '',
+    vinification: '',
+    purchaseUrl: '',
     isMine: false,
     _blind: true,
   }

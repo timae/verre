@@ -160,6 +160,10 @@ model Wine {
   style       String?    @db.VarChar(64)
   imageUrl    String?    @map("image_url")
   purchaseUrl String?    @map("purchase_url")
+  description String?    @db.VarChar(1000)
+  region      String?    @db.VarChar(255)
+  country     String?    @db.VarChar(2)
+  vinification String?   @db.VarChar(1000)
   revealedAt  DateTime?  @map("revealed_at") @db.Timestamptz(6)
   createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
   // Identity-id of the user or anon who added this wine. Used by kick/ban

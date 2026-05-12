@@ -43,6 +43,11 @@ export type WineMeta = {
   type: string
   image: string
   imageUrl: string
+  description?: string
+  region?: string
+  country?: string
+  vinification?: string
+  purchaseUrl?: string
   revealedAt?: string | null
   // Identity-id of the participant who added this wine. Used by two
   // independent flows: (1) kick/ban to identify which wines a host can
@@ -190,6 +195,18 @@ function clean(v: unknown): string {
   return scrub(v) ?? ''
 }
 
+// Defang URL inputs at the write boundary: only allow http(s) schemes
+// through; everything else (`javascript:`, `data:`, `vbscript:`, etc.)
+// collapses to `''`. Empty input stays empty. This protects any future
+// render path (or third-party consumer like /api/me/bookmarks which
+// already surfaces purchase_url) from being tricked into clickable
+// scheme-injection links.
+function cleanUrl(v: unknown): string {
+  const s = clean(v)
+  if (!s) return ''
+  return /^https?:\/\//i.test(s) ? s : ''
+}
+
 export async function addWineToSession(
   code: string,
   body: Partial<WineMeta>,
@@ -235,6 +252,13 @@ export async function addWineToSession(
     type,
     image,
     imageUrl,
+    description: clean(body.description).slice(0, 1000),
+    region: clean(body.region).slice(0, 255),
+    // ISO 3166-1 alpha-2: 2-char uppercase. Column is VARCHAR(2) so
+    // anything longer would be rejected by Postgres.
+    country: clean(body.country).slice(0, 2).toUpperCase(),
+    vinification: clean(body.vinification).slice(0, 1000),
+    purchaseUrl: cleanUrl(body.purchaseUrl).slice(0, 1000),
     // Preserve on edit; populate on create. Edits never overwrite the
     // original adder — `existing.addedByIdentityId` wins.
     addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
@@ -269,6 +293,11 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       grape: wine.grape || null,
       style: wine.type || null,
       imageUrl: wine.imageUrl || null,
+      description: wine.description || null,
+      region: wine.region || null,
+      country: wine.country || null,
+      vinification: wine.vinification || null,
+      purchaseUrl: wine.purchaseUrl || null,
       addedByIdentityId: wine.addedByIdentityId ?? null,
     },
     update: {
@@ -278,6 +307,11 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       grape: wine.grape || null,
       style: wine.type || null,
       imageUrl: wine.imageUrl || undefined,
+      description: wine.description || null,
+      region: wine.region || null,
+      country: wine.country || null,
+      vinification: wine.vinification || null,
+      purchaseUrl: wine.purchaseUrl || null,
       // Don't overwrite provenance on edit — the original adder is the
       // authoritative anchor. If the row was created pre-feature with
       // addedByIdentityId=NULL we leave it NULL (no way to back-attribute).
