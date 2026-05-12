@@ -13,8 +13,7 @@ import { timeAgo } from '@/lib/timeAgo'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { Avatar } from '@/components/profile/Avatar'
-
-const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
+import { ICO } from '@/lib/wineTypeColors'
 
 interface Props {
   checkin: {

@@ -1,5 +1,6 @@
 /* @import must precede all other rules per CSS spec (Turbopack enforces strictly). */
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -186,7 +187,13 @@
   --bg: #0E0E0C; --bg2: #141410; --bg3: #1A1A16; --bg4: #202019;
   --border: #2A2A24; --border2: #383830;
   --fg: #D4CFBE; --fg-dim: #6A6658; --fg-faint: #3A3A32;
+  /* Warmer body-text tones for serif long-form copy (description,
+     vinification, tasting notes) — feels candlelit. */
+  --fg-warm: #EBE1CC; --fg-warm-soft: #C8BBA1;
   --accent: #C8963C; --accent2: #8FB87A;
+  /* var(--mono) is set in the body rule of layout.tsx for backwards
+     compat; --serif is new for the wine-info editorial copy. */
+  --serif: 'Fraunces', Georgia, serif;
   --nav-h: 56px; --hdr-h: 52px;
   --fs-title: 24px;
   --fs-heading: 18px;
@@ -197,6 +204,9 @@
   --bg: #F6F0E6; --bg2: #FBF7F0; --bg3: #EFE6D8; --bg4: #E5D8C4;
   --border: #D9CBB9; --border2: #C8B8A2;
   --fg: #231D17; --fg-dim: #605244; --fg-faint: #8A7B6B;
+  /* Inverted warm tones — slightly darker than --fg for prominent
+     serif copy, slightly lighter for soft secondary text. */
+  --fg-warm: #1A140F; --fg-warm-soft: #4A3F33;
   --accent: #9A5F1D; --accent2: #4B7750;
   color-scheme: light;
 }

@@ -72,6 +72,14 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
   const onCloseRef = useRef(onClose)
   useEffect(() => { onCloseRef.current = onClose })
 
+  // Track whether the latest mousedown originated on the backdrop.
+  // Only close if BOTH endpoints (mousedown + click) happened on the
+  // backdrop. Without this, a drag that starts on an inner control
+  // (e.g. the rating slider) and ends with mouseup over the backdrop
+  // fires a `click` event whose target IS the backdrop — and we'd
+  // close the modal mid-interaction.
+  const downOnBackdrop = useRef(false)
+
   useEffect(() => {
     const token = tokenRef.current
     modalStack.push(token)
@@ -96,7 +104,11 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
         background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
         overflowY: 'auto',
       }}
-      onClick={e => { if (e.target === e.currentTarget) onClose() }}
+      onMouseDown={e => { downOnBackdrop.current = e.target === e.currentTarget }}
+      onClick={e => {
+        if (e.target === e.currentTarget && downOnBackdrop.current) onClose()
+        downOnBackdrop.current = false
+      }}
     >
       <div
         style={{

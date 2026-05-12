@@ -3,9 +3,7 @@ import type { WireWine } from '@/lib/session'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { WineIdentity } from './WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
-
-const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
-const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
+import { TCOL, ICO } from '@/lib/wineTypeColors'
 
 interface Props { wine: WireWine; score?: number; index?: number; onClick?: () => void }
 

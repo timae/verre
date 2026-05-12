@@ -44,6 +44,10 @@ type SessionCtx = {
   wines: WireWine[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
+  // True when the viewer has a NextAuth session cookie (logged-in
+  // user). Gates surfaces that require an account: bookmarks, profile,
+  // anything that writes to the user's lifetime data.
+  isLoggedIn: boolean
   isBlind: boolean
   // True before the first wines fetch settles. Distinguishes "loading
   // the wine list" from "host hasn't added any yet" — visually
@@ -258,7 +262,8 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const ctx: SessionCtx = {
     code: C, displayName, myId, isHost: !!isHost, isProvider,
     sessionMeta: metaData || null,
-    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
+    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds,
+    isLoggedIn, isBlind,
     // Loading is true until the first fetch resolves; the gate
     // (`enabled: readyToFetch`) keeps it pending while we resolve
     // the identity, which is exactly the period a user sees a
