@@ -499,6 +499,21 @@ Pending extractions that are on the follow-up list (extract them when you next t
 
 **Modals use the shared `<Modal>` primitive.** `components/ui/Modal.tsx` handles `createPortal(children, document.body)` (so the overlay is never trapped in a parent stacking context — important because `.panel` uses `backdrop-filter` which creates a containing block for fixed descendants), backdrop click-to-close, Escape-key-to-close, and the standard sheet styling. New modal/overlay components should use it rather than re-rolling `position: fixed; inset: 0; …` boilerplate. `ImageLightbox` is the deliberate exception — it has unique styling needs (z-index 9999 to float over everything, full-black backdrop, center-aligned close button) and stays standalone.
 
+The shared `<Modal>` also handles **iOS body scroll lock** while open (overflow:hidden + position:fixed + overscroll-behavior:contain on body). Nested modals don't double-lock; only the first one in the stack mutates body styles, and the last one out restores. Modal stack depth is exposed via `getModalStackDepth()` for callers that need to gate window-level handlers on "am I the topmost modal."
+
+### iOS touch gestures inside modals
+
+Pull-to-swap on the wine modal (drag past top/bottom scroll boundary → load previous/next wine) is built on a narrow set of iOS Safari requirements. Each is load-bearing and was learned the hard way during the wine-rate-split iteration.
+
+- **Hook**: `lib/usePullToSwap.ts`. Touch-only. Dev-mode runtime check asserts the container has `touch-action: pan-y`, `overscroll-behavior: contain`, and `overflow-y: auto/scroll`.
+- **Container CSS** (in the caller, e.g. `WineModal.tsx`'s scrollRef): all three properties above are required. `touch-action: pan-y` permanent (native iOS scroll handles momentum); pull engages via `preventDefault()` inside touchmove with `passive:false` on the first qualifying move ≥2px past the boundary, while `e.cancelable` is still `true`. Letting that engagement window slip (waiting for 4px+, or starting the gesture mid-content and crossing the boundary later) breaks the gesture because iOS commits to native scroll and `cancelable` flips to `false`.
+- **Modal sheet sizing**: `svh` units, not `vh` — iOS Safari's URL-bar collapse changes `vh` mid-gesture, which jumps scrollTop and kills momentum. The Modal sheet uses `display:flex column` when both `minHeight` and `maxHeight` are set, so the inner column with `flex:1` claims a definite height.
+- **scrollTop reset**: required on `activeWineId` change in the consuming modal (`WineModal.tsx`). Otherwise the new wine renders with the previous wine's scrollTop, often past the new content height.
+- **Horizontal-drag controls inside the scroll container** (score slider, flavor bars): use horizontal-intent detection (defer `setPointerCapture` until the first move resolves direction via `|dx|>|dy|`). Do NOT use `touch-action: none` — it would block vertical scroll. Pattern from `components/rate/FlavorChips.tsx` on main; reused in `components/wine/RatingPane.tsx`.
+- **Textarea inside scroll container**: do NOT bail in `onTouchStart` on `<textarea>` targets. The first-move preventDefault wins the race against iOS's text-selection classification, so pull-from-textarea works. Focused textareas (user typing) keep native text behavior because they're not typically at a scroll boundary.
+
+**See `components/wine/CLAUDE.md` for the quick edit-time rules and `docs/dev/ios-touch-gestures.md` for the full history (architectures tried + discarded, why each failed).**
+
 ### Flavour chart system
 
 Two chart types coexist:

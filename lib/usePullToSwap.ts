@@ -95,6 +95,33 @@ export function usePullToSwap({
     const el = containerRef.current
     if (!el) return
 
+    // Dev-mode self-check. The hook depends on three load-bearing CSS
+    // properties being set on the container; if any are missing, pull-
+    // to-swap silently breaks in subtle ways on iOS Safari. This
+    // assertion catches misconfigurations during dev so they don't
+    // ship. See docs/dev/ios-touch-gestures.md for the rationale.
+    if (process.env.NODE_ENV !== 'production') {
+      const cs = window.getComputedStyle(el)
+      const violations: string[] = []
+      if (!cs.touchAction.includes('pan-y')) {
+        violations.push(`expected touch-action to include 'pan-y' (got '${cs.touchAction}')`)
+      }
+      if (cs.overscrollBehaviorY !== 'contain' && cs.overscrollBehavior !== 'contain') {
+        violations.push(`expected overscroll-behavior: contain (got '${cs.overscrollBehaviorY || cs.overscrollBehavior}')`)
+      }
+      if (cs.overflowY !== 'auto' && cs.overflowY !== 'scroll') {
+        violations.push(`expected overflow-y: auto or scroll (got '${cs.overflowY}')`)
+      }
+      if (violations.length) {
+        // eslint-disable-next-line no-console
+        console.error(
+          '[usePullToSwap] container CSS misconfigured — pull will break on iOS:\n  - '
+          + violations.join('\n  - ')
+          + '\nSee docs/dev/ios-touch-gestures.md for what each property is for.'
+        )
+      }
+    }
+
     function atTopBoundary(): boolean {
       return el!.scrollTop <= 0
     }

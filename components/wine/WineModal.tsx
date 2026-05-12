@@ -136,6 +136,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     setCommitError(null)
     setProvenanceOpen(false)
     setMenuOpen(false)
+    // ⚠️ LOAD-BEARING — see docs/dev/ios-touch-gestures.md §6.
     // Reset scroll to the top of the new wine. Without this, the
     // scroll container's scrollTop is preserved across wine swaps —
     // which is usually invalid for the new content height (and on
@@ -681,6 +682,10 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   }
 
   return (
+    // ⚠️ Heights in `svh`, NOT `vh`. `vh` changes as iOS Safari's
+    // URL bar collapses during scroll, jumping the modal mid-gesture
+    // and killing momentum. `svh` (small viewport height) is stable
+    // across URL-bar collapse. See docs/dev/ios-touch-gestures.md §7.
     <Modal onClose={requestClose} maxWidth={620} maxHeight="90svh" minHeight="70svh">
       {/* Outer column: header + tabs at top, scrollable body in middle,
           error banner / Go-back bubble / footer pinned at bottom. The
@@ -805,8 +810,19 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
       <div
         ref={scrollRef}
         style={{
-          flex:1,minHeight:0,overflowY:'auto',
-          overscrollBehavior:'contain',touchAction:'pan-y',
+          flex:1,minHeight:0,
+          // ⚠️ LOAD-BEARING — DO NOT CHANGE without reading
+          // docs/dev/ios-touch-gestures.md and components/wine/CLAUDE.md.
+          // The three properties below (overflowY:auto +
+          // overscrollBehavior:contain + touchAction:pan-y) are
+          // required together for iOS Safari pull-to-swap to work
+          // alongside native scroll + momentum. Removing or changing
+          // ANY one of them silently breaks the gesture on iPhone.
+          // The hook (usePullToSwap.ts) has a dev-mode runtime check
+          // that yells if these are missing.
+          overflowY:'auto',
+          overscrollBehavior:'contain',
+          touchAction:'pan-y',
           // Rubber-band transform — translates the body visually
           // during pull. Springs back via transition when the gesture
           // releases below threshold.
