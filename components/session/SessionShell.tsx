@@ -278,9 +278,13 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     winesLoading: winesPending,
   }
 
+  // Bottom-nav tab order — Rate is the default landing for the
+  // session (the session root path also redirects here). Wines is the
+  // management surface for host/cohost/provider, but anyone can open
+  // it to see the wine list with host-side affordances disabled.
   const navItems = [
-    { label: 'Wines', path: sessionPath(C),            icon: '🍷', id: 'wines' },
     { label: 'Rate',  path: sessionPath(C, 'rate'),    icon: '⭐', id: 'rate' },
+    { label: 'Wines', path: sessionPath(C, 'wines'),   icon: '🍷', id: 'wines' },
     { label: 'Compare', path: sessionPath(C, 'compare'), icon: '◈', id: 'compare' },
   ]
 

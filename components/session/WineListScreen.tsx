@@ -5,7 +5,7 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
 import { LineupLocked } from './LineupLocked'
-import { RatingScreen } from './RatingScreen'
+import { WineModal } from '@/components/wine/WineModal'
 import { useState, useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import type { WireWine } from '@/lib/session'
@@ -33,14 +33,33 @@ function formatDate(dt: string) {
   } catch { return dt }
 }
 
-interface Props { initialRateWineId?: string }
+// Mode controls which affordances render on top of the wine list:
+//   'manage' — host/cohost/provider's management surface. Adds the
+//              "+ add wine", reveal-all/hide-all, drag-to-reorder
+//              handle. Wine taps open the modal with the info pane
+//              first (so the user sees the wine before any rate-form
+//              context). The default landing for the Wines tab.
+//   'rate'   — taster's view: a list with score chips. No host
+//              controls. Tapping a wine opens the rate pane first.
+//              For host/cohost/provider, a "Manage wines" button in
+//              the header shortcuts back to the Wines tab.
+// Both modes share the session-metadata banner, the wine count, the
+// blind-tasting badge, the lineup-hidden countdown.
+interface Props {
+  mode?: 'manage' | 'rate'
+  initialRateWineId?: string
+}
 
-export function WineListScreen({ initialRateWineId }: Props = {}) {
+export function WineListScreen({ mode = 'manage', initialRateWineId }: Props = {}) {
   const { wines, myRatings, isHost, isProvider, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
   const [showAdd, setShowAdd] = useState(false)
   const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
   const router = useRouter()
   const pathname = usePathname()
+  // Whether the viewer can reach the manage-tab affordances. Drives
+  // the "Manage wines" shortcut on rate mode and the host controls
+  // on manage mode.
+  const canManage = isHost || isProvider
 
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
@@ -202,17 +221,28 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
           <div>
             {isBlind && !sessionMeta?.name && <div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'3px 8px',borderRadius:3,marginBottom:8}}>🙈 Blind tasting</div>}
             <div className="subhead" style={{margin:0}}>
-              <div className="subhead-title">Wine list</div>
+              {/* Subhead disambiguates which tab the user is on —
+                  otherwise both tabs render an almost-identical
+                  layout and only the bottom-nav highlight indicates
+                  the active surface. */}
+              <div className="subhead-title">{mode === 'rate' ? 'Rate bottles' : 'Wine list'}</div>
               <div className="subhead-copy">{lineupHidden || (winesLoading && wines.length === 0) ? '??' : wines.length} bottle{(lineupHidden || (winesLoading && wines.length === 0)) ? 's' : wines.length !== 1 ? 's' : ''}</div>
             </div>
           </div>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
-            {isHost && isBlind && wines.length > 0 && (
+            {mode === 'manage' && isHost && isBlind && wines.length > 0 && (
               allRevealed
                 ? <button className="btn-s" onClick={hideAll}>hide all</button>
                 : <button className="btn-s" onClick={revealAll}>reveal all</button>
             )}
-            {(isHost || isProvider) && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
+            {mode === 'manage' && canManage && (
+              <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>
+            )}
+            {mode === 'rate' && canManage && (
+              <button className="btn-s" onClick={() => router.push(sessionPath(code, 'wines'))}>
+                manage wines
+              </button>
+            )}
           </div>
         </div>
 
@@ -223,8 +253,13 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
             {winesLoading
               ? 'Loading wines…'
-              : (isHost || isProvider)
-                ? 'Add the first wine to get started.'
+              : canManage
+                ? (mode === 'manage'
+                    ? 'Add the first wine to get started.'
+                    // On the Rate tab the "+ add wine" button isn't
+                    // visible — direct the host to where the action
+                    // lives instead of pointing at a missing CTA.
+                    : 'Add wines from the Wines tab to get started.')
                 : 'No wines yet — the host hasn\'t added any.'}
           </div>
         )}
@@ -239,7 +274,10 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                     wine={wine}
                     idx={idx}
                     isBlind={isBlind}
-                    isHost={isHost}
+                    // Drag handle + per-row reveal/hide only on the
+                    // management surface — reorder + reveal live with
+                    // the rest of the host tools on the Wines tab.
+                    showHostControls={mode === 'manage' && isHost}
                     rating={myRatings[wine.id]}
                     onClick={() => setRateWineId(wine.id)}
                     onReveal={() => revealWine(wine.id)}
@@ -256,13 +294,23 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
         )}
 
         {rateWineId && (
-          <RatingScreen wineId={rateWineId} onClose={() => {
-            setRateWineId(null)
-            // If the user landed via direct URL /session/<code>/rate/<wineId>,
-            // closing the modal should leave them on the wine list URL —
-            // not on the rate URL where a refresh would re-open the modal.
-            if (pathname?.includes('/rate/')) router.replace(sessionPath(code))
-          }} />
+          // Wines tab opens the modal on the info pane (you came here
+          // to browse wine identity); Rate tab opens on the rate pane.
+          // The direct-link /rate/<wineId> route passes
+          // `initialRateWineId` and stays rate-first regardless of the
+          // surrounding mode.
+          <WineModal
+            wineId={rateWineId}
+            initialPane={mode === 'manage' ? 'info' : 'rate'}
+            onClose={() => {
+              setRateWineId(null)
+              // If the user landed via direct URL /session/<code>/rate/<wineId>,
+              // closing the modal should leave them on the rate tab —
+              // not on the rate-with-wineId URL where a refresh would
+              // re-open the modal.
+              if (pathname?.includes('/rate/')) router.replace(sessionPath(code, 'rate'))
+            }}
+          />
         )}
       </div>
     </div>
@@ -277,19 +325,22 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
 // — the API would reject any reorder POST from a non-host anyway, but
 // hiding the affordance is the right UX.
 function WineRow({
-  wine, idx, isBlind, isHost, rating, onClick, onReveal, onHide,
+  wine, idx, isBlind, showHostControls, rating, onClick, onReveal, onHide,
 }: {
   wine: WireWine
   idx: number
   isBlind: boolean
-  isHost: boolean
+  // Renders the drag-to-reorder handle and per-row reveal/hide
+  // buttons. Wires into dnd-kit's `disabled` flag too, so the row
+  // doesn't accidentally become draggable when controls are hidden.
+  showHostControls: boolean
   rating?: { score: number }
   onClick: () => void
   onReveal: () => void
   onHide: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
-    useSortable({ id: wine.id, disabled: !isHost })
+    useSortable({ id: wine.id, disabled: !showHostControls })
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -331,20 +382,20 @@ function WineRow({
       </div>
 
       <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}} onClick={e => e.stopPropagation()}>
-        {isHost && isBlind && !isRevealed && (
+        {showHostControls && isBlind && !isRevealed && (
           <button onClick={onReveal}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
             reveal
           </button>
         )}
-        {isHost && isBlind && isRevealed && (
+        {showHostControls && isBlind && isRevealed && (
           <button onClick={onHide}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
             ✓ hide
           </button>
         )}
         {rating?.score ? <StarRating value={rating.score} /> : null}
-        {isHost && (
+        {showHostControls && (
           // Activator pattern: spread `attributes` + `listeners` and set
           // the node ref on the handle (NOT the row), so dnd-kit knows
           // which element initiated the drag and the keyboard sensor
