@@ -1,6 +1,7 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { motion, useMotionValue, animate } from 'framer-motion'
 import { Modal, getModalStackDepth } from '@/components/ui/Modal'
 import { WineInfoPane } from '@/components/wine/WineInfoPane'
 import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
@@ -98,50 +99,45 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     name: string
   } | null>(null)
   // Slide-on-swap state. When commitAndSwap fires, we snapshot the
-  // outgoing wine (id + rating + pane + direction) and render it
-  // alongside the incoming wine for ~200ms while CSS animates both.
-  // The outgoing snapshot is non-interactive — its RatingPane gets a
-  // no-op onChange. Cleared via setTimeout when the animation ends.
+  // outgoing wine (id + rating + pane + direction) and render it as
+  // a flex sibling of the live scrollRef inside a vertical "track"
+  // container. The track's `y` motion value is animated by framer-
+  // motion from a starting offset (where OLD is visible) to an end
+  // offset (where NEW is visible). The two panes are STACKED in flex
+  // — they can never drift apart or overlap, because their relative
+  // position is just CSS layout.
   //
   // Direction:
-  //   - 'up'   = next wine selected. Outgoing slides UP out the top,
-  //              incoming enters from below. Matches the pull-up gesture.
-  //   - 'down' = previous wine selected. Outgoing slides DOWN out the
-  //              bottom, incoming enters from above. Matches pull-down.
+  //   - 'up'   = next wine selected. Track order [OLD, NEW]. y goes
+  //              from 0 (OLD visible at top) to -wrapperH (OLD exits
+  //              top, NEW visible). Matches pull-up gesture.
+  //   - 'down' = previous wine selected. Track order [NEW, OLD]. y
+  //              goes from -wrapperH (OLD visible at top) to 0 (NEW
+  //              visible). Matches pull-down gesture.
   //
-  // `fromPullDistance` carries the rubber-band offset at the moment of
-  // swap so the slide can pick up where the pull left off (continuous
-  // motion, iOS Photos / Apple Music pattern).
+  // `fromPullDistance` carries the rubber-band offset at the moment
+  // of swap so the slide picks up where the pull left off (continuous
+  // motion). It's added to the framer y-target so animate starts from
+  // the right position. Pull-distance is signed: positive at top,
+  // negative at bottom.
   const [outgoing, setOutgoing] = useState<{
     wineId: string
     pane: Pane
     rating: RatingValue
     direction: 'up' | 'down'
     fromPullDistance: number
-    // 'enter' = freshly mounted, both panes at start positions, no
-    // transition yet. 'settle' = end positions with 200ms transition.
-    // Flipped via requestAnimationFrame after the outgoing state is
-    // set, so the browser paints the start frame before the transition
-    // begins (otherwise the CSS engine sees only the end position and
-    // skips interpolation).
-    stage: 'enter' | 'settle'
   } | null>(null)
+  // Framer y motion value for the slide track. Owned by useMotionValue
+  // so changes don't trigger React re-renders; framer drives the
+  // underlying DOM transform directly. Used for BOTH:
+  //   1. The pull rubber-band (track shifts by pullDistance during a
+  //      pull gesture; springs back to 0 on release below threshold).
+  //   2. The slide animation when commitAndSwap fires past threshold.
+  const slideY = useMotionValue(0)
   // Measured height of the scroll container at the moment a slide
-  // fires — used as the translateY distance for the entry/exit anims.
-  // Captured into a ref because we read it during the render that
-  // sets `outgoing`, not after a layout pass.
+  // fires. Used to position the entering pane in the track (it sits
+  // one wrapperH below or above the live pane).
   const slideHeightRef = useRef<number>(0)
-  // Timeout that clears `outgoing` after the slide finishes. Tracked
-  // in a ref so:
-  //   (1) rapid re-swaps cancel the prior timeout — otherwise a stale
-  //       timer from swap-1 would fire during swap-2's slide and
-  //       prematurely clear the fresh outgoing snapshot mid-flight.
-  //   (2) unmount cancels any pending timer — avoids setOutgoing on
-  //       unmounted component during the 340ms window.
-  const slideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => {
-    if (slideTimeoutRef.current) clearTimeout(slideTimeoutRef.current)
-  }, [])
   // Ref on the scroll container — declared here (vs. closer to its
   // JSX usage) so the activeWineId-change effect below can reset
   // scrollTop on swap. Without that reset, the new wine renders
@@ -253,6 +249,22 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     onSwapPrev: () => prevWineId && commitAndSwap(prevWineId),
     onSwapNext: () => nextWineId && commitAndSwap(nextWineId),
   })
+
+  // Drive the slide track's y from pullDistance during the pull
+  // gesture (the rubber-band). When NOT in a slide, slideY tracks
+  // pullDistance directly. On release below threshold, pullDistance
+  // resets to 0 and slideY springs back via a short animate(). The
+  // slide animation owns slideY during commitAndSwap, so we skip
+  // sync while outgoing is set.
+  useEffect(() => {
+    if (outgoing) return
+    if (pullDistance === 0 && slideY.get() !== 0) {
+      // Spring back from a sub-threshold pull release.
+      const controls = animate(slideY, 0, { duration: 0.2, ease: [0.25, 0.1, 0.25, 1] })
+      return () => controls.stop()
+    }
+    slideY.set(pullDistance)
+  }, [pullDistance, outgoing, slideY])
 
   // Ref on the brought-by callout — used to (1) scroll the expanded
   // preview into view if the user had scrolled past the callout
@@ -537,36 +549,45 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
       const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
         && fromIdx !== toIdx && scrollRef.current != null
+      let slideAnim: ReturnType<typeof animate<number>> | null = null
       if (willAnimate) {
-        slideHeightRef.current = scrollRef.current!.clientHeight
+        const H = scrollRef.current!.clientHeight
+        slideHeightRef.current = H
+        const direction = toIdx > fromIdx ? 'up' : 'down'
         setOutgoing({
           wineId: fromWineId,
           pane,
           rating: fromRating,
-          direction: toIdx > fromIdx ? 'up' : 'down',
+          direction,
           fromPullDistance: fromPull,
-          stage: 'enter',
         })
-        // Two RAFs: first lets React paint the 'enter' frame (start
-        // positions, no transition). Second flips to 'settle' so the
-        // transition interpolates from start to end. One RAF is enough
-        // in most browsers but two is the safe iOS Safari pattern.
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            setOutgoing(o => o ? { ...o, stage: 'settle' } : null)
-          })
+        // Track layout in the JSX:
+        //   - direction='up' → [OLD pane, NEW pane]. OLD at track-y 0..H,
+        //     NEW at track-y H..2H. y starts at fromPull (continuing pull
+        //     motion) and animates to -H (OLD exits top, NEW arrives).
+        //   - direction='down' → [NEW pane, OLD pane]. NEW at 0..H, OLD
+        //     at H..2H. y starts at -H+fromPull and animates to 0 (NEW
+        //     arrives from above, OLD exits bottom).
+        // Both panes are framer flex children. They cannot drift apart.
+        const startY = direction === 'up' ? fromPull : -H + fromPull
+        const endY = direction === 'up' ? -H : 0
+        slideY.set(startY)
+        slideAnim = animate(slideY, endY, {
+          duration: 0.3,
+          ease: [0.25, 0.1, 0.25, 1],  // ease-out
+          onComplete: () => {
+            // Reset slideY BEFORE clearing outgoing. When `outgoing`
+            // clears, the track collapses from 2 children (OLD pane +
+            // scrollRef) back to 1 (just scrollRef occupying full
+            // wrapper via flex:1). The translate must be 0 by that
+            // point or scrollRef will be off-screen (shifted by ±H)
+            // and the user sees a blank viewport, then a spring-back
+            // from the pull-sync effect — a visible "rubber-band in
+            // from the top" glitch (frames 91-102 in the test video).
+            slideY.set(0)
+            setOutgoing(null)
+          },
         })
-        // Cancel any stale clear-timer from a prior swap so it can't
-        // nuke this fresh `outgoing` mid-flight (UX#P0-2, Code#1).
-        if (slideTimeoutRef.current) clearTimeout(slideTimeoutRef.current)
-        slideTimeoutRef.current = setTimeout(() => {
-          setOutgoing(null)
-          slideTimeoutRef.current = null
-        }, 340)  // 300ms anim + 40ms safety. MUST be >= the slide
-                 // transition duration in the JSX below; if shorter,
-                 // the outgoing snapshot's DOM unmounts before its
-                 // CSS transition has visually settled, popping the
-                 // old wine's glass/title out mid-motion.
       }
       let didCommit = false
       if (dirty) {
@@ -575,12 +596,9 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           // Commit failed — abort the slide before it confuses the
           // user. Without this, the snapshot has already played and
           // the user sees a phantom "wine slides out then back to the
-          // same wine" effect on top of the commitError. Cancel the
-          // timer too so a stale one can't fire on the next swap.
-          if (slideTimeoutRef.current) {
-            clearTimeout(slideTimeoutRef.current)
-            slideTimeoutRef.current = null
-          }
+          // same wine" effect on top of the commitError.
+          if (slideAnim) slideAnim.stop()
+          slideY.set(0)
           setOutgoing(null)
           return
         }
@@ -885,7 +903,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     // URL bar collapses during scroll, jumping the modal mid-gesture
     // and killing momentum. `svh` (small viewport height) is stable
     // across URL-bar collapse. See docs/dev/ios-touch-gestures.md §7.
-    <Modal onClose={requestClose} maxWidth={620} maxHeight="90svh" minHeight="70svh">
+    <Modal onClose={requestClose} maxWidth={620} maxHeight="90svh" minHeight="90svh">
       {/* Outer column: header + tabs at top, scrollable body in middle,
           error banner / Go-back bubble / footer pinned at bottom. The
           fixed-height scroll-region is what the pull-to-swap hook
@@ -1013,89 +1031,121 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
       <div style={{
         flex:1,minHeight:0,position:'relative',
         display:'flex',flexDirection:'column',
-        // Clip the outgoing snapshot during slide. The wrapper bounds
-        // are the scrollRef's bounds (same flex:1), so an off-screen
-        // translateY hides the snapshot pane within the modal sheet.
-        overflow:outgoing ? 'hidden' : 'visible',
+        // Always clip — during slide the snapshot extends past wrapper
+        // bounds; outside slide nothing should escape anyway, so a
+        // permanent overflow:hidden is safer than toggling (which
+        // would invalidate stacking on iOS Safari each toggle).
+        overflow:'hidden',
       }}>
-      {/* OUTGOING snapshot — rendered as an absolutely-positioned
-          sibling of the scroll container during a slide. Non-
-          interactive: its RatingPane has a no-op onChange. Slides off
-          in the direction matched to the swap (up = next wine
-          selected, down = prev wine selected). At 'enter' stage the
-          transform is the pull-distance offset at release — the
-          motion picks up where the rubber-band left off. At 'settle'
-          the transform moves to off-screen and the 200ms transition
-          interpolates the rest of the way. iOS Photos pattern. */}
-      {outgoing && (() => {
-        const H = slideHeightRef.current || 0
-        const enterY = outgoing.fromPullDistance
-        const settleY = outgoing.direction === 'up' ? -H : H
-        const transformY = outgoing.stage === 'enter' ? enterY : settleY
-        return (
+      {/* SLIDE TRACK (framer-motion):
+          A vertical "track" holds the OLD snapshot and the LIVE
+          scrollRef as flex children stacked top-to-bottom. The track's
+          `y` motion value (slideY) is animated when a swap fires.
+          Because both panes are children of the same translating
+          parent, they cannot drift apart — overlap is geometrically
+          impossible. Each pane is height: H, content anchored to its
+          top edge; empty space below content is naturally part of
+          the pane (matches the rest-state layout, no visual jump).
+
+          Direction 'up' (next wine, NEW from below):
+            Track children: [OLD pane, scrollRef pane (NEW)].
+            y starts at 0 + fromPull (OLD visible, continuing pull).
+            y animates to -H (OLD exits top, scrollRef arrives).
+
+          Direction 'down' (prev wine, NEW from above):
+            Track children: [scrollRef pane (NEW), OLD pane].
+            y starts at -H + fromPull (OLD visible at viewport top).
+            y animates to 0 (scrollRef arrives, OLD exits bottom).
+
+          Outside slide: only scrollRef is in the track and slideY=0.
+          The pull-rubber-band drives slideY via the pullDistance
+          effect below. scrollRef behaves identically to before for
+          native iOS scroll + pull-to-swap.
+
+          DOM order swap on direction: when direction='down' we want
+          OLD ABOVE NEW visually but BELOW NEW in DOM order, so we
+          conditionally swap children via React key. Both children
+          remount across swaps, but scrollRef's ref+state are preserved
+          because React tracks elements by component identity inside
+          motion.div. */}
+      <motion.div
+        style={{
+          flex:1,minHeight:0,
+          display:'flex',flexDirection:'column',
+          y: slideY,
+        }}
+      >
+        {/* For direction='up' (next wine), OLD goes FIRST in the
+            track so it sits at the top; scrollRef (NEW) comes after
+            and is one viewport below initially. For direction='down'
+            (prev wine), scrollRef (NEW) goes FIRST (above viewport
+            initially), then OLD comes after to fill the top.
+
+            Snapshot panes are content-anchored to their top edge with
+            height: H so the track's flex layout puts each pane in a
+            full-viewport slot — same as the rest-state. */}
+        {outgoing && outgoing.direction === 'up' && (
           <div
             aria-hidden
             style={{
-              position:'absolute',inset:0,
-              pointerEvents:'none',
-              transform:`translateY(${transformY}px)`,
-              transition: outgoing.stage === 'enter' ? 'none' : 'transform 300ms ease-out',
-              willChange:'transform',
-              overflow:'hidden',
-              zIndex:1,
+              height: slideHeightRef.current || '100%',
+              flexShrink: 0,
+              overflow: 'hidden',
+              pointerEvents: 'none',
             }}
           >
             {renderPaneFor(outgoing.wineId, outgoing.pane, outgoing.rating, false)}
           </div>
-        )
-      })()}
-      <div
-        ref={scrollRef}
-        style={{
-          flex:1,minHeight:0,
-          // ⚠️ LOAD-BEARING — DO NOT CHANGE without reading
-          // docs/dev/ios-touch-gestures.md and components/wine/CLAUDE.md.
-          // The three properties below (overflowY:auto +
-          // overscrollBehavior:contain + touchAction:pan-y) are
-          // required together for iOS Safari pull-to-swap to work
-          // alongside native scroll + momentum. Removing or changing
-          // ANY one of them silently breaks the gesture on iPhone.
-          // The hook (usePullToSwap.ts) has a dev-mode runtime check
-          // that yells if these are missing.
-          overflowY:'auto',
-          overscrollBehavior:'contain',
-          touchAction:'pan-y',
-          // Transform logic:
-          //  - No slide: rubber-band transform tracks the pull gesture.
-          //  - Slide stage='enter': start position. For an UP swap (next
-          //    wine), incoming enters from BELOW (+H). For a DOWN swap
-          //    (prev wine), incoming enters from ABOVE (-H).
-          //  - Slide stage='settle': translateY(0), with 200ms transition.
-          //  The rubber-band's `transition: none` while pulling stays in
-          //  place for the slide so we control the timing explicitly.
-          transform: outgoing
-            ? (outgoing.stage === 'enter'
-                ? `translateY(${outgoing.direction === 'up' ? slideHeightRef.current : -slideHeightRef.current}px)`
-                : `translateY(0px)`)
-            : `translateY(${pullDistance}px)`,
-          transition: outgoing
-            ? (outgoing.stage === 'enter' ? 'none' : 'transform 300ms ease-out')
-            : (pulling ? 'none' : 'transform 200ms ease-out'),
-          position:'relative',
-          // During slide, pointer events disabled so user can't tap
-          // the incoming pane until it's settled. Outgoing snapshot
-          // is also pointer-events:none. Locked design — no rating
-          // edits possible during the slide.
-          pointerEvents: outgoing ? 'none' : 'auto',
-          // Promote to a compositor layer only while a transform is
-          // actively animating (pull rubber-band or slide). Permanent
-          // `will-change` leaks GPU memory; toggling buys the iOS
-          // layer-promotion win without the cost (iOS#3).
-          willChange: (outgoing || pulling) ? 'transform' : 'auto',
-        }}
-      >
-      {renderPaneFor(activeWineId, pane, rating, true)}
-      </div>
+        )}
+        <div
+          ref={scrollRef}
+          style={{
+            // During slide, scrollRef is one cell of a track. Its
+            // height must match slideHeightRef.current so the track
+            // arithmetic (y = ±H) places it correctly. Outside slide
+            // it consumes the wrapper via flex:1.
+            ...(outgoing
+              ? {
+                  height: slideHeightRef.current,
+                  flexShrink: 0,
+                }
+              : {
+                  flex:1,minHeight:0,
+                }),
+            // ⚠️ LOAD-BEARING — DO NOT CHANGE without reading
+            // docs/dev/ios-touch-gestures.md and components/wine/CLAUDE.md.
+            // The three properties below (overflowY:auto +
+            // overscrollBehavior:contain + touchAction:pan-y) are
+            // required together for iOS Safari pull-to-swap to work
+            // alongside native scroll + momentum. Removing or changing
+            // ANY one of them silently breaks the gesture on iPhone.
+            // The hook (usePullToSwap.ts) has a dev-mode runtime check
+            // that yells if these are missing.
+            overflowY:'auto',
+            overscrollBehavior:'contain',
+            touchAction:'pan-y',
+            position:'relative',
+            // During slide, pointer events disabled so user can't tap
+            // the incoming pane until it's settled.
+            pointerEvents: outgoing ? 'none' as const : 'auto' as const,
+          }}
+        >
+        {renderPaneFor(activeWineId, pane, rating, true)}
+        </div>
+        {outgoing && outgoing.direction === 'down' && (
+          <div
+            aria-hidden
+            style={{
+              height: slideHeightRef.current || '100%',
+              flexShrink: 0,
+              overflow: 'hidden',
+              pointerEvents: 'none',
+            }}
+          >
+            {renderPaneFor(outgoing.wineId, outgoing.pane, outgoing.rating, false)}
+          </div>
+        )}
+      </motion.div>
 
       {/* Pull indicator — overlays the pullable region's edges with
           contextual copy as the user pulls past a boundary. Sibling
