@@ -1,5 +1,6 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { Modal, getModalStackDepth } from '@/components/ui/Modal'
 import { WineInfoPane } from '@/components/wine/WineInfoPane'
 import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
@@ -96,6 +97,51 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     kind: 'rating-and-note' | 'rating' | 'note'
     name: string
   } | null>(null)
+  // Slide-on-swap state. When commitAndSwap fires, we snapshot the
+  // outgoing wine (id + rating + pane + direction) and render it
+  // alongside the incoming wine for ~200ms while CSS animates both.
+  // The outgoing snapshot is non-interactive — its RatingPane gets a
+  // no-op onChange. Cleared via setTimeout when the animation ends.
+  //
+  // Direction:
+  //   - 'up'   = next wine selected. Outgoing slides UP out the top,
+  //              incoming enters from below. Matches the pull-up gesture.
+  //   - 'down' = previous wine selected. Outgoing slides DOWN out the
+  //              bottom, incoming enters from above. Matches pull-down.
+  //
+  // `fromPullDistance` carries the rubber-band offset at the moment of
+  // swap so the slide can pick up where the pull left off (continuous
+  // motion, iOS Photos / Apple Music pattern).
+  const [outgoing, setOutgoing] = useState<{
+    wineId: string
+    pane: Pane
+    rating: RatingValue
+    direction: 'up' | 'down'
+    fromPullDistance: number
+    // 'enter' = freshly mounted, both panes at start positions, no
+    // transition yet. 'settle' = end positions with 200ms transition.
+    // Flipped via requestAnimationFrame after the outgoing state is
+    // set, so the browser paints the start frame before the transition
+    // begins (otherwise the CSS engine sees only the end position and
+    // skips interpolation).
+    stage: 'enter' | 'settle'
+  } | null>(null)
+  // Measured height of the scroll container at the moment a slide
+  // fires — used as the translateY distance for the entry/exit anims.
+  // Captured into a ref because we read it during the render that
+  // sets `outgoing`, not after a layout pass.
+  const slideHeightRef = useRef<number>(0)
+  // Timeout that clears `outgoing` after the slide finishes. Tracked
+  // in a ref so:
+  //   (1) rapid re-swaps cancel the prior timeout — otherwise a stale
+  //       timer from swap-1 would fire during swap-2's slide and
+  //       prematurely clear the fresh outgoing snapshot mid-flight.
+  //   (2) unmount cancels any pending timer — avoids setOutgoing on
+  //       unmounted component during the 340ms window.
+  const slideTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => () => {
+    if (slideTimeoutRef.current) clearTimeout(slideTimeoutRef.current)
+  }, [])
   // Ref on the scroll container — declared here (vs. closer to its
   // JSX usage) so the activeWineId-change effect below can reset
   // scrollTop on swap. Without that reset, the new wine renders
@@ -193,11 +239,17 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // navigation is handled separately via arrow keys.
   // scrollRef is declared above (near per-wine state) so the
   // activeWineId-change effect can reset scrollTop on swap.
+  // Slide-in-flight state at this scope so usePullToSwap can be
+  // disabled during the 340ms window. iOS#2 fix: pointerEvents:none
+  // on scrollRef doesn't gate touch events on iOS Safari — the hook
+  // would still see touchstart/touchmove mid-slide and could queue a
+  // second swap that interrupts the first one's clear-timeout.
+  const slideActive = !!outgoing
   const { pullDistance, boundary } = usePullToSwap({
     containerRef: scrollRef,
     isFirst: isFirstWine,
     isLast: isLastWine,
-    disabled: saving,
+    disabled: saving || slideActive,
     onSwapPrev: () => prevWineId && commitAndSwap(prevWineId),
     onSwapNext: () => nextWineId && commitAndSwap(nextWineId),
   })
@@ -460,13 +512,87 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
       const fromWineId = activeWineId
       const fromWine = wine
       const fromRating = rating
+      const fromIdx = currentIndex
+      const toIdx = wines.findIndex(w => w.id === targetWineId)
+      // Snapshot pull-distance NOW, before any await. usePullToSwap's
+      // touchend handler calls reset() right after firing onSwap* — if
+      // we wait for the async commit to resolve before reading
+      // pullDistance, by then React has rendered with pullDistance=0
+      // and the scrollRef has visibly snapped back from peak-pull.
+      // Capturing here keeps the continuous-handoff feel.
+      const fromPull = pullDistance
+      // Fire the slide BEFORE the network commit. iOS#1 fix: in the
+      // dirty path, awaiting the POST first means usePullToSwap's
+      // reset() flushes pullDistance=0 to React before `outgoing` is
+      // set, producing a visible 200ms snap-back to translateY(0)
+      // followed by a jump to the slide start. By setting `outgoing`
+      // synchronously here, the scrollRef's transform stays under our
+      // control across the commit await — no snap-back, no visible
+      // glitch on slow networks. If the commit later FAILS, the slide
+      // has already played; we surface the error inline (commitError)
+      // and leave activeWineId untouched. Acceptable: the failure
+      // case is rare and the wine pane content is the same identity-
+      // wise — the user just sees the slide land then an error appear.
+      const reduced = typeof window !== 'undefined'
+        && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+      const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
+        && fromIdx !== toIdx && scrollRef.current != null
+      if (willAnimate) {
+        slideHeightRef.current = scrollRef.current!.clientHeight
+        setOutgoing({
+          wineId: fromWineId,
+          pane,
+          rating: fromRating,
+          direction: toIdx > fromIdx ? 'up' : 'down',
+          fromPullDistance: fromPull,
+          stage: 'enter',
+        })
+        // Two RAFs: first lets React paint the 'enter' frame (start
+        // positions, no transition). Second flips to 'settle' so the
+        // transition interpolates from start to end. One RAF is enough
+        // in most browsers but two is the safe iOS Safari pattern.
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setOutgoing(o => o ? { ...o, stage: 'settle' } : null)
+          })
+        })
+        // Cancel any stale clear-timer from a prior swap so it can't
+        // nuke this fresh `outgoing` mid-flight (UX#P0-2, Code#1).
+        if (slideTimeoutRef.current) clearTimeout(slideTimeoutRef.current)
+        slideTimeoutRef.current = setTimeout(() => {
+          setOutgoing(null)
+          slideTimeoutRef.current = null
+        }, 340)  // 300ms anim + 40ms safety. MUST be >= the slide
+                 // transition duration in the JSX below; if shorter,
+                 // the outgoing snapshot's DOM unmounts before its
+                 // CSS transition has visually settled, popping the
+                 // old wine's glass/title out mid-motion.
+      }
       let didCommit = false
       if (dirty) {
         const ok = await commitWineRating(fromWineId, fromRating)
-        if (!ok) return  // error already surfaced via commitError
+        if (!ok) {
+          // Commit failed — abort the slide before it confuses the
+          // user. Without this, the snapshot has already played and
+          // the user sees a phantom "wine slides out then back to the
+          // same wine" effect on top of the commitError. Cancel the
+          // timer too so a stale one can't fire on the next swap.
+          if (slideTimeoutRef.current) {
+            clearTimeout(slideTimeoutRef.current)
+            slideTimeoutRef.current = null
+          }
+          setOutgoing(null)
+          return
+        }
         refresh()
         didCommit = true
       }
+      // Reset scroll BEFORE swapping activeWineId so the new wine
+      // mounts at scrollTop=0 in the same frame the slide enters.
+      // Otherwise the activeWineId effect resets scrollTop after the
+      // new pane has rendered, which on iOS can cause a one-frame
+      // paint at the wrong position followed by the slide (iOS#4).
+      if (scrollRef.current) scrollRef.current.scrollTop = 0
       setActiveWineId(targetWineId)
       if (didCommit && fromWine) {
         // Copy variant depends on what the user actually committed:
@@ -681,6 +807,79 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     )
   }
 
+  // Pane content renderer. Looks up everything from wineId so it can
+  // render the OUTGOING snapshot during a slide animation as well as
+  // the live wine. When `interactive` is false (outgoing snapshot),
+  // RatingPane gets a no-op onChange and inputs don't reach setRating.
+  // Provenance popover, broughtByRef, and the live ProfilePreview are
+  // only wired into the live render — the snapshot is read-only.
+  function renderPaneFor(
+    forWineId: string,
+    forPane: Pane,
+    forRating: RatingValue,
+    interactive: boolean,
+  ) {
+    const w = wines.find(x => x.id === forWineId)
+    if (!w) return null
+    const red = !!(isBlind && w._blind && !w.revealedAt)
+    const adderId = w.addedByUserId != null ? `u:${w.addedByUserId}` : null
+    const adderMe = !!adderId && adderId === myId
+    const blkOut = !!adderId && blocksOut.has(adderId)
+    const blkIn = !!adderId && blocksIn.has(adderId)
+    const mode: ProvenanceRenderMode =
+      !adderId               ? 'plain'
+      : adderMe              ? 'clickable'
+      : blkOut && blkIn      ? 'anon-style'
+      : blkOut               ? 'blocked-by-me'
+      : blkIn                ? 'anon-style'
+      :                        'clickable'
+    const clickable = interactive && isLoggedIn && (mode === 'clickable' || mode === 'blocked-by-me')
+    return (
+      <>
+        {forPane === 'info' && (
+          red ? (
+            <div style={{textAlign:'center',padding:'40px 16px'}}>
+              <div style={{fontSize:48,marginBottom:12}}>🙈</div>
+              <div style={{
+                fontFamily:'var(--mono)',fontSize:14,fontWeight:700,
+                color:'var(--fg-dim)',marginBottom:6,
+              }}>{w.name}</div>
+              <div style={{fontSize:11,color:'var(--fg-faint)',letterSpacing:'0.06em'}}>
+                hidden until revealed
+              </div>
+            </div>
+          ) : (
+            <WineInfoPane
+              wine={w}
+              provenanceMode={mode}
+              isSelf={adderMe}
+              onProvenanceClick={clickable
+                ? () => setProvenanceOpen(o => !o)
+                : undefined}
+              broughtByRef={interactive ? broughtByRef : undefined}
+              provenancePreview={interactive && provenanceOpen && w.addedByUserId != null && (
+                <ProfilePreviewInline
+                  userId={w.addedByUserId}
+                  isSelf={adderMe}
+                  viewerLoggedIn={isLoggedIn}
+                  myId={myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+                />
+              )}
+            />
+          )
+        )}
+        {forPane === 'rate' && (
+          <RatingPane
+            key={forWineId}
+            wineType={red ? null : w.type}
+            value={forRating}
+            onChange={interactive ? setRating : () => {}}
+          />
+        )}
+      </>
+    )
+  }
+
   return (
     // ⚠️ Heights in `svh`, NOT `vh`. `vh` changes as iOS Safari's
     // URL bar collapses during scroll, jumping the modal mid-gesture
@@ -767,10 +966,15 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
 
       {/* TAB STRIP — underline-indicator. Rate tab carries a pip with
           the current score when one exists. Tabs are tap-only;
-          vertical pull on the scroll container below navigates wines. */}
+          vertical pull on the scroll container below navigates wines.
+          During a slide swap, tab buttons are pointer-events-gated so
+          a stray tap can't mutate `pane` mid-animation (which would
+          re-render the LIVE pane mid-flight while the outgoing
+          snapshot stays frozen on the old tab — visible glitch). */}
       <div style={{
         display:'flex',gap:4,borderBottom:'1px solid var(--border)',
         marginBottom:18,flexShrink:0,
+        pointerEvents: slideActive ? 'none' : 'auto',
       }}>
         <TabButton active={pane === 'info'} onClick={() => setPane('info')}>
           Wine info
@@ -806,7 +1010,45 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           (rendered as a sibling further down) is positioned
           absolutely against this wrapper, so it stays pinned to the
           edge as the body slides. */}
-      <div style={{flex:1,minHeight:0,position:'relative',display:'flex',flexDirection:'column'}}>
+      <div style={{
+        flex:1,minHeight:0,position:'relative',
+        display:'flex',flexDirection:'column',
+        // Clip the outgoing snapshot during slide. The wrapper bounds
+        // are the scrollRef's bounds (same flex:1), so an off-screen
+        // translateY hides the snapshot pane within the modal sheet.
+        overflow:outgoing ? 'hidden' : 'visible',
+      }}>
+      {/* OUTGOING snapshot — rendered as an absolutely-positioned
+          sibling of the scroll container during a slide. Non-
+          interactive: its RatingPane has a no-op onChange. Slides off
+          in the direction matched to the swap (up = next wine
+          selected, down = prev wine selected). At 'enter' stage the
+          transform is the pull-distance offset at release — the
+          motion picks up where the rubber-band left off. At 'settle'
+          the transform moves to off-screen and the 200ms transition
+          interpolates the rest of the way. iOS Photos pattern. */}
+      {outgoing && (() => {
+        const H = slideHeightRef.current || 0
+        const enterY = outgoing.fromPullDistance
+        const settleY = outgoing.direction === 'up' ? -H : H
+        const transformY = outgoing.stage === 'enter' ? enterY : settleY
+        return (
+          <div
+            aria-hidden
+            style={{
+              position:'absolute',inset:0,
+              pointerEvents:'none',
+              transform:`translateY(${transformY}px)`,
+              transition: outgoing.stage === 'enter' ? 'none' : 'transform 300ms ease-out',
+              willChange:'transform',
+              overflow:'hidden',
+              zIndex:1,
+            }}
+          >
+            {renderPaneFor(outgoing.wineId, outgoing.pane, outgoing.rating, false)}
+          </div>
+        )
+      })()}
       <div
         ref={scrollRef}
         style={{
@@ -823,63 +1065,36 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           overflowY:'auto',
           overscrollBehavior:'contain',
           touchAction:'pan-y',
-          // Rubber-band transform — translates the body visually
-          // during pull. Springs back via transition when the gesture
-          // releases below threshold.
-          transform: `translateY(${pullDistance}px)`,
-          transition: pulling ? 'none' : 'transform 200ms ease-out',
+          // Transform logic:
+          //  - No slide: rubber-band transform tracks the pull gesture.
+          //  - Slide stage='enter': start position. For an UP swap (next
+          //    wine), incoming enters from BELOW (+H). For a DOWN swap
+          //    (prev wine), incoming enters from ABOVE (-H).
+          //  - Slide stage='settle': translateY(0), with 200ms transition.
+          //  The rubber-band's `transition: none` while pulling stays in
+          //  place for the slide so we control the timing explicitly.
+          transform: outgoing
+            ? (outgoing.stage === 'enter'
+                ? `translateY(${outgoing.direction === 'up' ? slideHeightRef.current : -slideHeightRef.current}px)`
+                : `translateY(0px)`)
+            : `translateY(${pullDistance}px)`,
+          transition: outgoing
+            ? (outgoing.stage === 'enter' ? 'none' : 'transform 300ms ease-out')
+            : (pulling ? 'none' : 'transform 200ms ease-out'),
           position:'relative',
+          // During slide, pointer events disabled so user can't tap
+          // the incoming pane until it's settled. Outgoing snapshot
+          // is also pointer-events:none. Locked design — no rating
+          // edits possible during the slide.
+          pointerEvents: outgoing ? 'none' : 'auto',
+          // Promote to a compositor layer only while a transform is
+          // actively animating (pull rubber-band or slide). Permanent
+          // `will-change` leaks GPU memory; toggling buys the iOS
+          // layer-promotion win without the cost (iOS#3).
+          willChange: (outgoing || pulling) ? 'transform' : 'auto',
         }}
       >
-      {pane === 'info' && (
-        isRedacted ? (
-          // Blind placeholder. Updates live: when the host hits reveal,
-          // the next poll flips `_blind` to false and the real info
-          // pane renders without modal close/reopen.
-          <div style={{textAlign:'center',padding:'40px 16px'}}>
-            <div style={{fontSize:48,marginBottom:12}}>🙈</div>
-            <div style={{
-              fontFamily:'var(--mono)',fontSize:14,fontWeight:700,
-              color:'var(--fg-dim)',marginBottom:6,
-            }}>{wine.name}</div>
-            <div style={{fontSize:11,color:'var(--fg-faint)',letterSpacing:'0.06em'}}>
-              hidden until revealed
-            </div>
-          </div>
-        ) : (
-          <WineInfoPane
-            wine={wine}
-            provenanceMode={provenanceMode}
-            isSelf={adderIsMe}
-            onProvenanceClick={provenanceClickable
-              ? () => setProvenanceOpen(o => !o)
-              : undefined}
-            broughtByRef={broughtByRef}
-            provenancePreview={provenanceOpen && wine.addedByUserId != null && (
-              <ProfilePreviewInline
-                userId={wine.addedByUserId}
-                isSelf={adderIsMe}
-                viewerLoggedIn={isLoggedIn}
-                myId={myId.startsWith('u:') ? Number(myId.slice(2)) : null}
-              />
-            )}
-          />
-        )
-      )}
-
-      {/* RatingPane is controlled — the parent owns `rating`. That means
-          unmounting/remounting on tab switch (info ↔ rate) doesn't drop
-          in-progress edits. The `key={activeWineId}` forces a fresh
-          mount when the user navigates between wines, so the new
-          wine's rating state is seeded from scratch. */}
-      {pane === 'rate' && (
-        <RatingPane
-          key={activeWineId}
-          wineType={isRedacted ? null : wine.type}
-          value={rating}
-          onChange={setRating}
-        />
-      )}
+      {renderPaneFor(activeWineId, pane, rating, true)}
       </div>
 
       {/* Pull indicator — overlays the pullable region's edges with
@@ -957,25 +1172,43 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         }}>{commitError}</div>
       )}
 
-      {/* Go-back bubble. Surfaces after a successful auto-commit +
-          swap so the user can return to the wine they just left if
-          the navigation was accidental. Auto-dismisses after 5s.
-          "Go back" itself fires commitAndSwap so any in-progress
-          edits on the new wine are saved too (or silent if empty).
-          Copy variant matches what was actually committed: a note
-          saved without a score gets its own phrasing so the user
-          knows a note was broadcast (a note that's visible to all
-          session participants via the compare view). */}
-      {lastSwap && (
+      {/* Go-back toast portaled to document.body — floats at top of
+          viewport over the modal backdrop, iOS-style. Surfaces after
+          a successful auto-commit + swap so the user can return to
+          the wine they just left if the navigation was accidental.
+          Auto-dismisses after 5s. Whole toast is clickable (more tap
+          area on mobile). "Go back" fires commitAndSwap so any in-
+          progress edits on the new wine are saved too (or silent if
+          empty). Copy variant matches what was actually committed.
+          z-index 60 sits above the Modal (z-50). */}
+      {lastSwap && typeof document !== 'undefined' && createPortal(
         <div
           role="status"
+          onClick={() => {
+            if (saving) return
+            const target = lastSwap.fromWineId
+            setLastSwap(null)
+            commitAndSwap(target)
+          }}
           style={{
-            marginTop:14,padding:'10px 14px',
+            position:'fixed',
+            top:'max(16px, env(safe-area-inset-top))',
+            left:'50%',
+            transform:'translateX(-50%)',
+            zIndex:60,
+            maxWidth:'min(420px, calc(100vw - 32px))',
+            width:'max-content',
+            padding:'10px 14px',
             display:'flex',alignItems:'center',gap:12,
             border:'1px solid rgba(200,150,60,0.4)',
-            background:'rgba(200,150,60,0.08)',
-            borderRadius:8,
+            background:'var(--bg2)',
+            backdropFilter:'blur(8px)',
+            WebkitBackdropFilter:'blur(8px)',
+            borderRadius:10,
+            boxShadow:'0 8px 24px rgba(0,0,0,0.25)',
             fontSize:12,color:'var(--fg-warm-soft)',
+            cursor: saving ? 'default' : 'pointer',
+            opacity: saving ? 0.6 : 1,
           }}
         >
           <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
@@ -984,29 +1217,22 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
             {lastSwap.kind === 'note'            && 'Note saved on '}
             <span style={{color:'var(--fg-warm)',fontWeight:600}}>{lastSwap.name}</span>
           </span>
-          <button
-            onClick={() => {
-              const target = lastSwap.fromWineId
-              setLastSwap(null)
-              commitAndSwap(target)
-            }}
-            disabled={saving}
+          <span
             style={{
               display:'inline-flex',alignItems:'center',gap:4,
-              background:'transparent',color:'var(--accent)',
+              color:'var(--accent)',
               border:'1px solid rgba(200,150,60,0.4)',
               padding:'6px 10px',borderRadius:6,
               fontSize:10,letterSpacing:'0.08em',
               textTransform:'uppercase',fontWeight:600,
-              cursor: saving ? 'default' : 'pointer',
-              opacity: saving ? 0.6 : 1,
               flexShrink:0,
             }}
           >
             <ArrowLeftIcon size={11} />
             <span>Go back</span>
-          </button>
-        </div>
+          </span>
+        </div>,
+        document.body
       )}
 
       {/* FOOTER — action bar. Different per tab. Prev/next buttons
@@ -1203,15 +1429,44 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
             }}>{commitError}</div>
           )}
-          {/* Button order: Save (primary) | Keep editing | Discard.
-              Red destructive is at the far edge so a thumb-drift from
-              the green CTA can't land on it. Save stays mounted
-              until commitRating resolves — on success commitRating
-              calls onClose() which unmounts the whole modal stack; on
-              failure the inner confirm stays open with commitError
-              surfaced above. Discard is two-press matching the codebase
-              destructive-button convention. */}
+          {/* Button order: Discard | Keep editing | Save (primary).
+              Discard is two-press (matches the codebase destructive-
+              button convention) so a thumb-drift onto it doesn't
+              destroy work — the first tap only arms it. Save stays
+              mounted until commitRating resolves; on success
+              commitRating calls onClose() which unmounts the whole
+              modal stack; on failure the inner confirm stays open
+              with commitError surfaced above. */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <DiscardButton
+              disabled={saving}
+              onDiscard={() => {
+                const nav = pendingNavRef.current
+                pendingNavRef.current = null
+                setPendingClose(false)
+                onClose()
+                if (nav) nav()
+              }}
+            />
+            <button
+              onClick={() => {
+                if (saving) return
+                pendingNavRef.current = null
+                setPendingClose(false)
+              }}
+              disabled={saving}
+              style={{
+                flex:1,minWidth:0,
+                display:'inline-flex',alignItems:'center',justifyContent:'center',
+                background:'transparent',color:'var(--fg-dim)',
+                border:'1px solid var(--border)',
+                padding:'12px 14px',borderRadius:8,
+                fontSize:11,letterSpacing:'0.08em',
+                textTransform:'uppercase',fontWeight:600,
+                cursor: saving ? 'default' : 'pointer',
+                opacity: saving ? 0.6 : 1,
+              }}
+            >Keep editing</button>
             <button
               onClick={async () => {
                 const ok = await commitRating()
@@ -1244,35 +1499,6 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
               <CheckIcon size={14} stroke={2.2} />
               {saving ? 'Saving…' : 'Save'}
             </button>
-            <button
-              onClick={() => {
-                if (saving) return
-                pendingNavRef.current = null
-                setPendingClose(false)
-              }}
-              disabled={saving}
-              style={{
-                flex:1,minWidth:0,
-                display:'inline-flex',alignItems:'center',justifyContent:'center',
-                background:'transparent',color:'var(--fg-dim)',
-                border:'1px solid var(--border)',
-                padding:'12px 14px',borderRadius:8,
-                fontSize:11,letterSpacing:'0.08em',
-                textTransform:'uppercase',fontWeight:600,
-                cursor: saving ? 'default' : 'pointer',
-                opacity: saving ? 0.6 : 1,
-              }}
-            >Keep editing</button>
-            <DiscardButton
-              disabled={saving}
-              onDiscard={() => {
-                const nav = pendingNavRef.current
-                pendingNavRef.current = null
-                setPendingClose(false)
-                onClose()
-                if (nav) nav()
-              }}
-            />
           </div>
         </Modal>
       )}

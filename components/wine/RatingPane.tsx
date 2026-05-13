@@ -156,12 +156,25 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
     <section data-no-pull>
       <SectionHeader title="Your score" hint={readOnly ? undefined : 'drag or tap the bar to rate'} />
       <div style={{
-        display:'grid',gridTemplateColumns:'auto 1fr',gap:24,alignItems:'center',
+        // Fixed left column width so the digit display can never
+        // change the column size (which would cascade into the
+        // stars + slider on the right and wobble both during drag).
+        // 130px fits "5.00" at 52px in Fraunces + 4px gap + "/ 5"
+        // at 13px mono with a tiny safety margin.
+        display:'grid',gridTemplateColumns:'130px 1fr',gap:24,alignItems:'center',
       }}>
         <div style={{display:'flex',alignItems:'baseline',gap:4,whiteSpace:'nowrap'}}>
           <span style={{
             fontFamily:'var(--serif)',fontSize:52,lineHeight:1,
             color:'var(--accent)',fontWeight:400,
+            // Tabular figures + explicit tnum feature so digit widths
+            // match across values (Fraunces' default proportional
+            // figures cause widths to drift during a drag through
+            // 0.00 → 4.25). Belt-and-suspenders with the fixed column
+            // width above; either alone would mostly work, both
+            // together guarantee zero wobble.
+            fontVariantNumeric:'tabular-nums',
+            fontFeatureSettings:'"tnum"',
           }}>{score.toFixed(2)}</span>
           <span style={{fontFamily:'var(--mono)',fontSize:13,color:'var(--fg-faint)'}}>/ 5</span>
         </div>
@@ -385,7 +398,11 @@ function FlavourBar({
   function segAt(clientX: number): number {
     if (!barRef.current) return 0
     const rect = barRef.current.getBoundingClientRect()
-    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    // Drag past the left edge clears the rating (level 0). Inside
+    // the bar, x position maps to segments 1..5. Mirrors the
+    // canonical FlavorChips behavior on main.
+    if (clientX < rect.left) return 0
+    const pct = Math.min(1, (clientX - rect.left) / rect.width)
     return Math.max(1, Math.min(5, Math.ceil(pct * 5)))
   }
 
@@ -484,14 +501,24 @@ function FlavourBar({
         opacity: hover !== null && hover !== value ? 0.55 : 0.7,
         transition:'width .15s, opacity .15s',
       }} />
-      {/* dividers between zones */}
-      {[1,2,3,4].map(i => (
-        <div key={i} style={{
-          position:'absolute',top:3,bottom:3,width:1,
-          background:'rgba(0,0,0,0.55)',
-          left:`${(i/5)*100}%`,pointerEvents:'none',zIndex:2,
-        }} />
-      ))}
+      {/* Dividers between zones. Each sits at a fixed percentage
+          (20/40/60/80). Over the colored fill, a black divider reads
+          as a harsh slash that fights the hue — use a translucent
+          white instead so the divider lifts a shade of the same
+          color. Off the fill (over bg3), translucent black reads
+          cleanly. */}
+      {[1,2,3,4].map(i => {
+        const dividerPct = (i / 5) * 100
+        const overFill = fillPct >= dividerPct
+        return (
+          <div key={i} style={{
+            position:'absolute',top:3,bottom:3,width:1,
+            background: overFill ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.55)',
+            left:`${dividerPct}%`,pointerEvents:'none',zIndex:2,
+            transition:'background .15s',
+          }} />
+        )
+      })}
       {/* content layer */}
       <div style={{
         position:'absolute',inset:0,
@@ -501,8 +528,11 @@ function FlavourBar({
         <span style={{
           display:'inline-flex',alignItems:'center',gap:8,
           fontSize:12,fontWeight:600,
-          color: hasValue ? '#fff' : 'var(--fg)',
-          textShadow: hasValue ? '0 1px 2px rgba(0,0,0,0.5)' : 'none',
+          // `--fg-warm` is theme-aware (light on dark, dark on light)
+          // and contrasts against both the bg3 base AND the muted
+          // colored fill in either theme. The old hard-coded `#fff`
+          // was invisible in light mode where bg3 is itself light.
+          color: hasValue ? 'var(--fg-warm)' : 'var(--fg)',
         }}>
           <span style={{
             width:6,height:6,borderRadius:'50%',
@@ -513,8 +543,7 @@ function FlavourBar({
         <span style={{
           fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',
           fontWeight:700,
-          color: hasValue ? '#fff' : 'var(--fg-faint)',
-          textShadow: hasValue ? '0 1px 2px rgba(0,0,0,0.5)' : 'none',
+          color: hasValue ? 'var(--fg-warm)' : 'var(--fg-faint)',
         }}>{INTENSITY_LABELS[display]}</span>
       </div>
       {/* Keyboard activation surface. `pointerEvents:'none'` blocks
