@@ -12,7 +12,7 @@ import { openLightbox } from '@/components/ui/ImageLightbox'
 // Use on any read-only chart surface where tap-to-expand makes sense
 // (feed cards, saved-wine modal, profile aggregate). Skip it on
 // editing surfaces (CheckinModal sliders) and already-large surfaces
-// (RatingScreen, Compare).
+// (WineModal's Rate pane, Compare).
 export function openWheelLightbox(ref: RefObject<HTMLDivElement | null>, label: string) {
   const svg = ref.current?.querySelector('svg')
   if (!svg) return

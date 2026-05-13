@@ -1,11 +1,10 @@
 import { redirect } from 'next/navigation'
 import { normalizeCode, sessionPath } from '@/lib/sessionCode'
 
-// The session root redirects to the Rate tab — the new default
-// landing per the step-7 wine-rate-split design. Direct links to
-// /session/<C> still resolve cleanly; the user lands on Rate and
-// taps "Wines" in the bottom nav (or the in-page "manage wines"
-// button for hosts) to reach the management surface.
+// The session root redirects to the Wines tab — the sole list surface
+// after the rate-page consolidation. Tapping a wine row opens the
+// modal on Wine Info; the inline "Rate" button on unrated rows opens
+// it on the Rate pane.
 //
 // Query parameters are preserved on the redirect because LobbyClient
 // and JoinClient pass bootstrap params (`?name=...&id=...&host=1`)
@@ -21,9 +20,9 @@ export default async function SessionRootPage({
   const sp = await searchParams
   const c = normalizeCode(code)
   // normalizeCode returns null on a malformed code — fall through to
-  // the original input so the rate route can surface its own 404 /
+  // the original input so the wines route can surface its own 404 /
   // invalid-session response instead of redirecting to an empty path.
-  const target = sessionPath(c || code, 'rate')
+  const target = sessionPath(c || code, 'wines')
   const qs = new URLSearchParams()
   for (const [k, v] of Object.entries(sp)) {
     if (Array.isArray(v)) { for (const vv of v) qs.append(k, vv) }

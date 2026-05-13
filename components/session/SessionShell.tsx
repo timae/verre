@@ -13,7 +13,7 @@ import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionC
 import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
-// Iterators (compare screen) use Object.entries; lookups (RatingScreen,
+// Iterators (compare screen) use Object.entries; lookups (WineModal,
 // WineListScreen) read myRatings, which is the per-user ratings map already
 // projected from `data[myId].ratings` in SessionShell.
 export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
@@ -279,12 +279,11 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     winesLoading: winesPending,
   }
 
-  // Bottom-nav tab order — Rate is the default landing for the
-  // session (the session root path also redirects here). Wines is the
-  // management surface for host/cohost/provider, but anyone can open
-  // it to see the wine list with host-side affordances disabled.
+  // Bottom-nav tab order. Wines is the default landing (session root
+  // redirects here). Tapping a wine opens the modal on the Wine Info
+  // pane; an inline "Rate" button on each unrated row opens the modal
+  // on the Rate pane directly.
   const navItems = [
-    { label: 'Rate',  path: sessionPath(C, 'rate'),    icon: '⭐', id: 'rate' },
     { label: 'Wines', path: sessionPath(C, 'wines'),   icon: '🍷', id: 'wines' },
     { label: 'Compare', path: sessionPath(C, 'compare'), icon: '◈', id: 'compare' },
   ]

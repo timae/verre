@@ -9,9 +9,7 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
-import { sessionPath } from '@/lib/sessionCode'
 import { usePullToSwap } from '@/lib/usePullToSwap'
-import { useRouter, usePathname } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 import type { ProvenanceRenderMode } from '@/components/wine/WineInfoPane'
@@ -37,7 +35,7 @@ interface Props {
 // Reads `wine` + `existing` rating from session context every render
 // so live polling updates flow through — a host revealing a blind
 // wine causes the open modal's info tab to populate without reload.
-export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
+export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const { wines, myRatings, code, refresh, isHost, isProvider, isBlind, bookmarkedIds, isLoggedIn, sessionMeta, myId } = useSession()
   const qc = useQueryClient()
 
@@ -204,30 +202,6 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
     if (scrollRef.current) scrollRef.current.scrollTop = 0
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWineId])
-
-  // URL sync — only when the modal owns the page. The modal can open
-  // from two paths: `/session/<C>/rate/<wineId>` (modal IS the page —
-  // syncing keeps refresh/share consistent), or as an overlay over
-  // `/session/<C>/wines` or similar (modal is overlay — syncing would
-  // reroute the underlying page and break the "close = back to wines"
-  // mental model). The mount-time check captures which mode applies;
-  // we only emit router.replace in the page-mode case.
-  const router = useRouter()
-  const pathname = usePathname()
-  // Snapshot at mount: did we open as the page, or as an overlay?
-  // The /rate route's path matches `/session/<C>/rate/<wineId>` —
-  // any tail segment past /rate/ implies the modal is the page.
-  const urlOwnedRef = useRef<boolean>(false)
-  useEffect(() => {
-    urlOwnedRef.current = /\/session\/[^/]+\/rate\/[^/]+/.test(pathname)
-    // mount-only — capture entry mode once and ignore later route changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-  useEffect(() => {
-    if (!urlOwnedRef.current) return
-    const target = sessionPath(code, `rate/${activeWineId}`)
-    if (pathname !== target) router.replace(target)
-  }, [activeWineId, code, pathname, router])
 
   // Preload neighbouring wine images so the swap renders without a
   // visible image fetch. Browser caches the bytes; the next mount of

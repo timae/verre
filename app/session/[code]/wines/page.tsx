@@ -1,11 +1,10 @@
 import { WineListScreen } from '@/components/session/WineListScreen'
 
-// The Wines tab — full wine-list management surface. Host/cohost see
-// the "+ add wine", drag-to-reorder, and reveal-all/hide-all
-// affordances; providers see only the add button (reorder is
-// host-tier). Tapping a wine opens the modal with the info pane
-// first (so the user lands on the wine's identity, not the rate
-// form). The Rate tab handles the rate-first flow.
+// The Wines tab — the sole wine-list surface. Tapping a row opens
+// the modal on the Wine Info pane; the inline "Rate" button on each
+// unrated row (or the score chip on rated rows) opens the modal on
+// the Rate pane directly. Host/cohost/provider see add-wine,
+// drag-to-reorder, and (for hosts) reveal-all/hide-all controls.
 export default function WinesPage() {
-  return <WineListScreen mode="manage" />
+  return <WineListScreen />
 }

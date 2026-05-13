@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 // Module-level stack of open Modal instances. The Escape key closes only
 // the topmost (most recently opened) — without this, every open Modal's
 // own keydown listener would fire and they'd all close at once. That's
-// jarring when modals stack (e.g. RatingScreen has an "edit wine" button
+// jarring when modals stack (e.g. WineModal has an "edit wine" button
 // that opens AddWineModal on top — Escape there should close just the
 // inner one and leave the outer one alone).
 //
