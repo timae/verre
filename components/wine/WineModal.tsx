@@ -995,13 +995,13 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         )}
         <div style={{flex:1,minWidth:0,display:'flex',alignItems:'baseline',gap:10}}>
           <span style={{
-            fontSize:15,fontWeight:700,color:'var(--fg-warm)',
+            fontSize:18,fontWeight:700,color:'var(--fg-warm)',
             whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',
             letterSpacing:'-0.005em',
           }}>{wine.name}</span>
           {wine.vintage && (
             <span style={{
-              fontFamily:'var(--mono)',fontSize:11,color:'var(--fg-dim)',
+              fontFamily:'var(--mono)',fontSize:14,color:'var(--fg-dim)',
               letterSpacing:'0.06em',flexShrink:0,
             }}>{wine.vintage}</span>
           )}
@@ -1010,6 +1010,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           <button
             onClick={toggleBookmark}
             title={bookmarked ? 'remove from saved' : 'save wine'}
+            className="btn-icon-narrow"
             style={{
               display:'inline-flex',alignItems:'center',gap:6,
               padding:'6px 12px',borderRadius:100,
@@ -1023,7 +1024,7 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
             }}
           >
             <HeartIcon size={13} filled={bookmarked} />
-            <span>{bookmarked ? 'Saved' : 'Save'}</span>
+            <span className="hide-narrow">{bookmarked ? 'Saved' : 'Save'}</span>
           </button>
         )}
         <button
@@ -1186,9 +1187,16 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
       {pulling && boundary && (
         <div style={{
           position:'absolute',left:0,right:0,
+          // Pin the chip at the EDGE of the pulled content, not at
+          // the wrapper edge. The body translates by pullDistance,
+          // exposing a void between the wrapper edge and the content
+          // edge. Placing the chip at that boundary keeps it just
+          // outside the wine pane (in the pull void) instead of
+          // overlapping whatever is at the top/bottom of the content
+          // (e.g. the wine image on Bijou).
           ...(boundary === 'top'
-            ? { top:0, paddingTop:6 }
-            : { bottom:0, paddingBottom:6 }),
+            ? { top: Math.max(0, pullDistance - 40), paddingTop: 6 }
+            : { bottom: Math.max(0, -pullDistance - 40), paddingBottom: 6 }),
           display:'flex',justifyContent:'center',alignItems:'center',
           pointerEvents:'none',zIndex:5,
           // Baseline opacity so the indicator is visible the instant
@@ -1201,11 +1209,9 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           <div style={{
             fontSize:10,fontFamily:'var(--mono)',
             letterSpacing:'0.1em',textTransform:'uppercase',
-            color: blocked
-              ? 'var(--fg-faint)'
-              : pullPast
-                ? 'var(--accent)'
-                : 'var(--fg-dim)',
+            color: pullPast && !blocked
+              ? 'var(--accent)'
+              : 'var(--fg-warm-soft)',
             padding:'6px 12px',borderRadius:100,
             background:'var(--bg2)',
             border:`1px solid ${pullPast && !blocked ? 'rgba(200,150,60,0.4)' : 'var(--border)'}`,

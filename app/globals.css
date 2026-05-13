@@ -280,6 +280,15 @@ body {
   .me-bottom-nav { display: block; }
   .hide-narrow { display: none !important; }
 
+  /* Buttons that lose their text label on narrow screens (via
+     .hide-narrow on the inner span) — collapse the pill padding and
+     icon-text gap so the remaining icon sits at a sensible touch-
+     target size instead of floating in a wide pill. */
+  .btn-icon-narrow {
+    gap: 0 !important;
+    padding: 8px !important;
+  }
+
   /* iOS auto-zooms when an input's font-size is below 16px. The .fi
      class and several other inputs render at 13px on desktop for
      density; bump them to 16px on mobile to suppress the zoom-in

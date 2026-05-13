@@ -227,7 +227,11 @@ export function usePullToSwap({
         (dragBoundary.current === 'top' && isFirstRef.current) ||
         (dragBoundary.current === 'bottom' && isLastRef.current)
       if (isBlocked) {
-        signed = Math.sign(signed) * Math.min(Math.abs(signed), THRESHOLD * 0.4)
+        // Capped rubber-band at the list ends. Larger cap gives the
+        // "Start of the list" / "End of the cellar" chip more room to
+        // breathe in the visible void instead of overlapping the
+        // pulled content (which can't move much when blocked).
+        signed = Math.sign(signed) * Math.min(Math.abs(signed), THRESHOLD * 0.8)
       }
       // preventDefault stops iOS from doing any native scroll/bounce
       // for the rest of the gesture. Must be inside touchmove with
