@@ -30,7 +30,7 @@ export function MeNav({ myId }: NavProps) {
   const items = buildNav(myId).filter(n => show(n.id))
 
   return (
-    <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',position:'relative',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
+    <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid var(--chrome-border)',background:'var(--chrome-nav-bg)',backdropFilter:'blur(18px)',position:'relative',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
       {items.map(({ href, icon, label }) => {
         const active = pathname === href
         return (

@@ -13,7 +13,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
   return (
     <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
       {/* Header */}
-      <header style={{padding:'0 16px',height:'var(--hdr-h)',display:'flex',alignItems:'center',justifyContent:'space-between',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',position:'sticky',top:0,zIndex:10,flexShrink:0}}>
+      <header style={{padding:'0 16px',height:'var(--hdr-h)',display:'flex',alignItems:'center',justifyContent:'space-between',borderBottom:'1px solid var(--chrome-border)',background:'var(--chrome-bg)',backdropFilter:'blur(18px)',position:'sticky',top:0,zIndex:10,flexShrink:0}}>
         <Link href="/me" style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <ThemeToggle />
@@ -29,7 +29,7 @@ export default async function MeLayout({ children }: { children: React.ReactNode
       {/* Body: sidebar + content */}
       <div style={{flex:1,display:'flex',overflow:'hidden'}}>
         {/* Sidebar — desktop only */}
-        <aside style={{width:180,flexShrink:0,borderRight:'1px solid rgba(255,255,255,0.04)',padding:'16px 8px',display:'flex',flexDirection:'column',gap:2,overflowY:'auto'}} className="me-sidebar">
+        <aside style={{width:180,flexShrink:0,borderRight:'1px solid var(--chrome-border)',padding:'16px 8px',display:'flex',flexDirection:'column',gap:2,overflowY:'auto'}} className="me-sidebar">
           <MeSidebar myId={myId} />
         </aside>
 

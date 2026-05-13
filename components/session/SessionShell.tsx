@@ -360,7 +360,7 @@ function SessionShellChrome({
 
   return (
     <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
-      <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
+      <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid var(--chrome-border)',background:'var(--chrome-bg)',backdropFilter:'blur(18px)',zIndex:10}}>
         <Link
           href={leaveHref}
           onClick={onGuardedLinkClick(leaveHref)}
@@ -395,7 +395,7 @@ function SessionShellChrome({
 
       <main style={{flex:1,overflowY:'auto'}}>{children}</main>
 
-      <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
+      <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid var(--chrome-border)',background:'var(--chrome-nav-bg)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
         {navItems.map(({ label, path, icon }) => {
           const active = pathname === path
           return (

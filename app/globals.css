@@ -191,6 +191,13 @@
      vinification, tasting notes) — feels candlelit. */
   --fg-warm: #EBE1CC; --fg-warm-soft: #C8BBA1;
   --accent: #C8963C; --accent2: #8FB87A;
+  /* Glassmorphic shell chrome (app header + bottom nav). Translucent
+     so the background gradient bleeds through under the backdrop
+     blur. Theme-aware; sits alongside --bg/--bg2 as a dedicated
+     surface token instead of being hardcoded as rgba(14,14,12,...). */
+  --chrome-bg: rgba(14,14,12,0.82);
+  --chrome-nav-bg: rgba(10,10,9,0.88);
+  --chrome-border: rgba(255,255,255,0.04);
   /* var(--mono) is set in the body rule of layout.tsx for backwards
      compat; --serif is new for the wine-info editorial copy. */
   --serif: 'Fraunces', Georgia, serif;
@@ -208,6 +215,13 @@
      serif copy, slightly lighter for soft secondary text. */
   --fg-warm: #1A140F; --fg-warm-soft: #4A3F33;
   --accent: #9A5F1D; --accent2: #4B7750;
+  /* Glassmorphic shell chrome — cream tones with similar opacity as
+     dark mode (~82-88%) so the same backdrop-blur produces a
+     comparable frosted effect. Borders flip to rgba(black) since
+     white-on-white is invisible. */
+  --chrome-bg: rgba(251,247,240,0.82);
+  --chrome-nav-bg: rgba(246,240,230,0.88);
+  --chrome-border: rgba(0,0,0,0.06);
   color-scheme: light;
 }
 

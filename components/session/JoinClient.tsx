@@ -79,7 +79,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
 
   return (
     <div className="app-bg" style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
-      <header style={{padding:'0 16px',height:'var(--hdr-h)',display:'flex',alignItems:'center',justifyContent:'space-between',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.5)',backdropFilter:'blur(18px)'}}>
+      <header style={{padding:'0 16px',height:'var(--hdr-h)',display:'flex',alignItems:'center',justifyContent:'space-between',borderBottom:'1px solid var(--chrome-border)',background:'var(--chrome-bg)',backdropFilter:'blur(18px)'}}>
         <Link href="/" style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
         <ThemeToggle />
       </header>
