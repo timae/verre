@@ -138,6 +138,23 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // fires. Used to position the entering pane in the track (it sits
   // one wrapperH below or above the live pane).
   const slideHeightRef = useRef<number>(0)
+  // In-flight slide animation controls (from framer's `animate()`).
+  // Tracked on a ref so a rapid second swap can `.stop()` the prior
+  // animation before starting a new one. Framer does NOT preempt
+  // concurrent animations on the same motion value — both would keep
+  // ticking, and the late-finishing one's onComplete would nuke a
+  // fresh slide via the slideY.set(0)+setOutgoing(null) reset.
+  const slideAnimRef = useRef<ReturnType<typeof animate<number>> | null>(null)
+  // Cancel any in-flight slide on unmount. Without this, closing the
+  // modal mid-slide leaves the framer animation running; its onComplete
+  // fires on an unmounted component (React 18 silently no-ops the
+  // state setters, but it's still a leak the linter could flag).
+  useEffect(() => () => {
+    if (slideAnimRef.current) {
+      slideAnimRef.current.stop()
+      slideAnimRef.current = null
+    }
+  }, [])
   // Ref on the scroll container — declared here (vs. closer to its
   // JSX usage) so the activeWineId-change effect below can reset
   // scrollTop on swap. Without that reset, the new wine renders
@@ -255,6 +272,18 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // resets to 0 and slideY springs back via a short animate(). The
   // slide animation owns slideY during commitAndSwap, so we skip
   // sync while outgoing is set.
+  //
+  // ⚠️ ORDERING IS LOCKED: `if (outgoing) return` MUST come before
+  // the pullDistance branches. The slide's onComplete sets slideY=0
+  // then setOutgoing(null) in the same tick; this effect re-runs on
+  // the next render with outgoing=null and pullDistance=0. Without
+  // the early return, the pullDistance===0 branch would see slideY=0
+  // already and no-op — fine. But if `pullDistance` happened to be
+  // non-zero at that exact moment (impossible today because the pull
+  // hook is gated by `disabled: slideActive`, but a future change to
+  // either gate could break it), the effect would jump slideY to the
+  // pull offset without animation, mid-frame. Keep the outgoing-gate
+  // first as the canonical "slide owns slideY" invariant.
   useEffect(() => {
     if (outgoing) return
     if (pullDistance === 0 && slideY.get() !== 0) {
@@ -512,13 +541,20 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
   // was saved (rating, note, or both). Bubble auto-dismisses after 5s
   // or on the next swap.
   async function commitAndSwap(targetWineId: string): Promise<void> {
-    // Single-flight gate — synchronous ref flips before React commits
-    // `saving=true`. Under arrow-key autorepeat or rapid double-taps,
-    // multiple invocations can enter the function body before the
-    // saving-state-driven button disable kicks in. Without this gate
-    // the same wine's POST can race itself.
+    // Single-flight gate. Held from entry until the slide animation
+    // completes (or aborts) — NOT just until the POST resolves. The
+    // slide takes 300ms; the POST often resolves in <100ms; if we
+    // released the gate when the POST returned, a footer-button or
+    // arrow-key re-tap during the remaining ~200ms would re-enter
+    // here, overwrite `outgoing` mid-animation, and call slideY.set
+    // out of order — exactly the slideY-reset gotcha documented in
+    // components/wine/CLAUDE.md.
     if (commitInFlightRef.current) return
     commitInFlightRef.current = true
+    // Track whether the slide animation owns the in-flight release.
+    // When the slide kicks off, we hand the gate-release responsibility
+    // to onComplete. Otherwise the finally below clears it synchronously.
+    let releaseInFinally = true
     try {
       const fromWineId = activeWineId
       const fromWine = wine
@@ -543,7 +579,6 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
       const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
         && fromIdx !== toIdx && scrollRef.current != null
-      let slideAnim: ReturnType<typeof animate<number>> | null = null
       if (willAnimate) {
         const H = scrollRef.current!.clientHeight
         slideHeightRef.current = H
@@ -565,8 +600,16 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         // Both panes are framer flex children. They cannot drift apart.
         const startY = direction === 'up' ? fromPull : -H + fromPull
         const endY = direction === 'up' ? -H : 0
+        // Stop any prior in-flight slide before starting a new one.
+        // Framer's animate() does NOT preempt concurrent animations
+        // on the same motion value — both keep ticking and the late
+        // finisher's onComplete (slideY.set(0)+setOutgoing(null)) can
+        // nuke a fresh slide. (Defensive: with the in-flight gate
+        // held through onComplete, this path should be unreachable.
+        // Kept as a belt-and-braces invariant.)
+        if (slideAnimRef.current) slideAnimRef.current.stop()
         slideY.set(startY)
-        slideAnim = animate(slideY, endY, {
+        slideAnimRef.current = animate(slideY, endY, {
           duration: 0.3,
           ease: [0.25, 0.1, 0.25, 1],  // ease-out
           onComplete: () => {
@@ -579,9 +622,22 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
             // and spring-animates back to 0 — visible as a "rubber-band
             // in from above" glitch right after settle.
             slideY.set(0)
+            // Defensive scrollTop=0 in case the user managed to touch
+            // scrollRef mid-slide and trigger a native iOS scroll. The
+            // earlier reset (before setActiveWineId) wouldn't catch a
+            // scroll initiated AFTER setActiveWineId fired.
+            if (scrollRef.current) scrollRef.current.scrollTop = 0
             setOutgoing(null)
+            slideAnimRef.current = null
+            commitInFlightRef.current = false
           },
         })
+        releaseInFinally = false
+      } else {
+        // Reduced-motion or first/last edge: no slide. Make sure slideY
+        // is at 0 in case a prior slide / pull left it non-zero (rare,
+        // but defensive).
+        slideY.set(0)
       }
       let didCommit = false
       if (dirty) {
@@ -591,9 +647,15 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
           // user. Without this, the snapshot has already played and
           // the user sees a phantom "wine slides out then back to the
           // same wine" effect on top of the commitError.
-          if (slideAnim) slideAnim.stop()
+          if (slideAnimRef.current) {
+            slideAnimRef.current.stop()
+            slideAnimRef.current = null
+          }
           slideY.set(0)
           setOutgoing(null)
+          // Hand the gate-release back to the finally block since the
+          // animation onComplete won't fire.
+          releaseInFinally = true
           return
         }
         refresh()
@@ -625,7 +687,8 @@ export function WineModal({ wineId, initialPane = 'rate', onClose }: Props) {
         setLastSwap(null)
       }
     } finally {
-      commitInFlightRef.current = false
+      // Only release here if the slide didn't take ownership.
+      if (releaseInFinally) commitInFlightRef.current = false
     }
   }
 

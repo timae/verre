@@ -125,6 +125,26 @@ as a "rubber-band in from above" glitch right after settle. Locked
 order in `commitAndSwap`'s onComplete: `slideY.set(0)` then
 `setOutgoing(null)`. Same applies to the commit-failure abort path.
 
+**In-flight gating across the slide:** `commitInFlightRef` is held
+from commitAndSwap entry until the slide's `onComplete` (NOT just
+until the POST resolves). The POST often resolves in <100ms but the
+slide takes 300ms — a rapid second tap on a footer button or arrow
+key during that gap would re-enter commitAndSwap, overwrite
+`outgoing` mid-animation, and trigger the slideY-reset gotcha. The
+gate ownership is tracked via a local `releaseInFinally` flag in
+commitAndSwap — when the slide kicks off, gate-release ownership
+moves to onComplete; when the slide doesn't run (reduced-motion or
+edge), the finally block releases.
+
+**Concurrent animate() controls:** framer's `animate()` does NOT
+preempt concurrent animations on the same motion value. Both keep
+ticking. The late finisher's onComplete (slideY.set(0)+setOutgoing(null))
+can nuke a fresh slide. Defense: `slideAnimRef` stores the in-flight
+animation controls; commitAndSwap calls `.stop()` on the prior ref
+before starting a new animate(). With the in-flight gate held
+through onComplete this path should be unreachable, but the
+defensive stop is kept as a belt-and-braces invariant.
+
 ## Tab-switch state preservation
 
 When the user switches between the Wine info and Rate tabs, the
