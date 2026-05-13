@@ -173,6 +173,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // with the previous wine's scrollTop, which is usually invalid
   // for the new content height and shows mostly empty space.
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  // Tracks the last valid position of the active wine in the list so
+  // that when a host deletes it mid-session we can still offer the
+  // neighbouring wines as navigation targets. Updated on every render
+  // while currentIndex is valid; frozen at the last known value once
+  // the wine disappears (currentIndex === -1).
+  const lastKnownIndexRef = useRef(currentIndex >= 0 ? currentIndex : 0)
+  if (currentIndex >= 0) lastKnownIndexRef.current = currentIndex
 
   // Re-seed per-wine state when the user navigates to a different
   // wine in the same modal. The state initializers on `useState` only
@@ -720,8 +727,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // Resolve neighbouring wine ids relative to the current position.
   // Returns null at the list bounds. Computed inline at render rather
   // than memoized — wines array is small, lookups are O(n) but n<30.
-  const prevWineId: string | null = !isFirstWine ? wines[currentIndex - 1].id : null
-  const nextWineId: string | null = !isLastWine ? wines[currentIndex + 1].id : null
+  const prevWineId: string | null = (wine && !isFirstWine) ? wines[currentIndex - 1].id : null
+  const nextWineId: string | null = (wine && !isLastWine) ? wines[currentIndex + 1].id : null
 
   // Keyboard navigation on desktop. Arrow keys move between wines.
   // ← previous, → next. Wheel-driven swap was removed (see
@@ -794,6 +801,11 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // delete silently closes the modal and pretends the deletion happened.
   // The user's saved rating still exists but the UI doesn't show it.
   async function resetRating() {
+    // No server-side rating yet — just clear the local form.
+    if (!existing) {
+      setRating({ score: 0, flavors: {}, notes: '' })
+      return
+    }
     setSaving(true)
     setCommitError(null)
     try {
@@ -804,14 +816,14 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       if (!res.ok) {
         const msg = res.status === 429
           ? 'Rate-limited. Try again shortly.'
-          : `Delete failed (${res.status}). Try again.`
+          : `Reset failed (${res.status}). Try again.`
         setCommitError(msg)
         setSaving(false)
         return
       }
       setSaving(false)
       refresh()
-      onClose()
+      setRating({ score: 0, flavors: {}, notes: '' })
     } catch {
       setCommitError('Network error. Check your connection and try again.')
       setSaving(false)
@@ -887,18 +899,98 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const blockedBottom = boundary === 'bottom' && isLastWine
   const blocked = blockedTop || blockedBottom
 
-  // Wine missing — most often because a host deleted it from another
-  // tab and the polling tick just delivered the updated wines array.
-  // This early return runs AFTER all hooks above, so React's hook
-  // sequence stays stable across renders. Once the parent observes
-  // the deletion via its own polling, it should close the modal; in
-  // the meantime we show a minimal placeholder so the user isn't
-  // stuck staring at a broken layout.
+  // Wine missing — the host deleted it from another tab and the polling
+  // tick delivered an updated wines array that no longer includes this
+  // wine. This early return runs AFTER all hooks above so React's hook
+  // sequence stays stable. We show a friendly message inside the same
+  // full-size modal shell and offer navigation to neighbouring wines.
   if (!wine) {
+    const lastIdx = lastKnownIndexRef.current
+    // After deletion the wine at `lastIdx` is what was immediately
+    // after the deleted one; `lastIdx - 1` is what was before it.
+    const prevOnDelete = lastIdx > 0 ? wines[lastIdx - 1] : null
+    const nextOnDelete = lastIdx < wines.length ? wines[lastIdx] : null
+    const hasNeighbour = prevOnDelete || nextOnDelete
     return (
-      <Modal onClose={onClose} maxWidth={400}>
-        <p style={{padding:16,color:'var(--fg-dim)',fontSize:13}}>Wine not found.</p>
-        <button className="btn-g" onClick={onClose}>close</button>
+      <Modal onClose={onClose} maxWidth={620} maxHeight="90svh" minHeight="90svh">
+        <div style={{display:'flex',flexDirection:'column',flex:1,minHeight:0}}>
+          {/* Close X — top right, matches normal modal header */}
+          <div style={{display:'flex',justifyContent:'flex-end',flexShrink:0}}>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              style={{
+                background:'transparent',border:'none',
+                width:32,height:32,borderRadius:8,
+                color:'var(--fg-dim)',cursor:'pointer',
+                display:'inline-flex',alignItems:'center',justifyContent:'center',
+              }}
+            ><CloseIcon size={18} /></button>
+          </div>
+          {/* Centred message + buttons inline */}
+          <div style={{
+            flex:1,display:'flex',flexDirection:'column',
+            alignItems:'center',justifyContent:'center',
+            gap:16,padding:'24px 32px 40px',textAlign:'center',
+          }}>
+            <div style={{fontSize:48}}>🍷</div>
+            <div style={{fontSize:18,fontWeight:700,color:'var(--fg-warm)'}}>
+              Oh no! This wine was just deleted.
+            </div>
+            <div style={{fontSize:13,color:'var(--fg-dim)',maxWidth:320}}>
+              {hasNeighbour
+                ? 'Head to another wine or close the tasting.'
+                : 'No other wines in the lineup right now.'}
+            </div>
+            <div style={{display:'flex',gap:8,width:'100%',maxWidth:380,marginTop:4}}>
+              {prevOnDelete && (
+                <button
+                  onClick={() => setActiveWineId(prevOnDelete.id)}
+                  style={{
+                    flex:1,display:'inline-flex',alignItems:'center',
+                    justifyContent:'center',gap:6,
+                    background:'var(--accent)',color:'var(--bg)',
+                    border:'none',padding:'12px 14px',borderRadius:8,
+                    fontSize:11,letterSpacing:'0.08em',
+                    textTransform:'uppercase',fontWeight:600,cursor:'pointer',
+                  }}
+                >
+                  <ArrowLeftIcon size={13} /> Previous wine
+                </button>
+              )}
+              {nextOnDelete && (
+                <button
+                  onClick={() => setActiveWineId(nextOnDelete.id)}
+                  style={{
+                    flex:1,display:'inline-flex',alignItems:'center',
+                    justifyContent:'center',gap:6,
+                    background:'var(--accent)',color:'var(--bg)',
+                    border:'none',padding:'12px 14px',borderRadius:8,
+                    fontSize:11,letterSpacing:'0.08em',
+                    textTransform:'uppercase',fontWeight:600,cursor:'pointer',
+                  }}
+                >
+                  Next wine <ArrowRightIcon size={13} />
+                </button>
+              )}
+              {!hasNeighbour && (
+                <button
+                  onClick={onClose}
+                  style={{
+                    flex:1,display:'inline-flex',alignItems:'center',
+                    justifyContent:'center',
+                    background:'var(--accent)',color:'var(--bg)',
+                    border:'none',padding:'12px 14px',borderRadius:8,
+                    fontSize:11,letterSpacing:'0.08em',
+                    textTransform:'uppercase',fontWeight:600,cursor:'pointer',
+                  }}
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       </Modal>
     )
   }
@@ -1482,7 +1574,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
                 corner of the footer, not adjacent to Save & prev (the
                 two accent buttons would otherwise frame Delete on
                 both sides). */}
-            {existing && (
+            {(existing || hasContent(rating)) && (
               <ResetButton onReset={resetRating} />
             )}
             <button
@@ -1579,13 +1671,6 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
 // Two-press confirm (first tap arms with a red tint, second tap fires).
 // Sits next to Cancel + Commit without stealing room from the primary CTA.
 //
-// Label is "Delete rating" / "Tap to delete" (was "Reset rating" / "Tap
-// to confirm"). The original copy implied a local reset of typed values
-// — but the action POSTs DELETE to the server and wipes the persisted
-// rating row. The renamed copy reflects the actual destructive scope so
-// a user with uncommitted typed edits understands that tapping here
-// destroys the saved rating *and* drops what they typed (the modal closes
-// after the DELETE), rather than thinking "Reset" just undoes their edits.
 function ResetButton({ onReset }: { onReset: () => void }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -1612,7 +1697,7 @@ function ResetButton({ onReset }: { onReset: () => void }) {
       }}
     >
       <ResetIcon size={13} />
-      <span>{armed ? 'Tap to delete' : 'Delete rating'}</span>
+      <span>{armed ? 'Tap to confirm' : 'Reset rating'}</span>
     </button>
   )
 }

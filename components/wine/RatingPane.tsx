@@ -59,9 +59,9 @@ export function RatingPane(props: Props) {
   // Detect flavour dimensions from the current rating's stored keys (so
   // historic ratings with old key names still render right), else use
   // the wine type's standard set, else generic.
-  const fl = value.flavors && Object.keys(value.flavors).length
-    ? detectFL(value.flavors)
-    : wineType ? getFL(wineType) : FL
+  const fl = wineType
+    ? getFL(wineType)
+    : (value.flavors && Object.keys(value.flavors).length ? detectFL(value.flavors) : FL)
 
   function setScore(score: number) { onChange({ ...value, score }) }
   function setFlavor(k: string, v: number) {
