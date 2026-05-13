@@ -152,9 +152,8 @@ export function MoonIcon(p: IconProps) {
 // Used by the WineInfoPane hero decoration.
 interface GlassProps { type: string; fillColor: string; width?: number; height?: number }
 
-const GLASS_STROKE = 'rgba(212,207,190,0.35)'
 const GLASS_STROKE_PROPS = {
-  stroke: GLASS_STROKE,
+  style: { stroke: 'var(--fg-dim)' },
   strokeWidth: 1.2,
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
