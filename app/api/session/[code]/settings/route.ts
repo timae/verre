@@ -35,19 +35,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (body.timezone !== undefined)    meta.timezone    = String(body.timezone    || '').trim().slice(0, 64)
   if (body.description !== undefined) meta.description = String(body.description || '').trim().slice(0, 1000)
   if (body.link !== undefined)               meta.link                    = String(body.link || '').trim().slice(0, 512)
+  // Pro-gated settings (blind, lifespan): a non-pro caller may submit
+  // the current value (no-op, e.g. a cohost saving unrelated edits with
+  // the full settings payload) but cannot change it in either direction.
+  // Symmetric gate — both enabling and disabling require pro. Per-wine
+  // reveal-all already covers the "show everything in a blind session"
+  // case without needing to flip the meta.blind flag, so disabling is
+  // not a workflow the non-pro caller actually needs.
   if (body.blind !== undefined) {
-    // Enabling blind tasting requires a pro account. Disabling is always
-    // allowed (lets a host turn it off without having to be pro).
-    if (body.blind && !isPro) {
+    const newBlind = !!body.blind
+    if (newBlind !== meta.blind && !isPro) {
       return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
     }
-    meta.blind = !!body.blind
+    meta.blind = newBlind
   }
   if (body.hideLineup !== undefined)         meta.hideLineup              = !!body.hideLineup
   if (body.hideLineupMinutesBefore !== undefined) meta.hideLineupMinutesBefore = Number(body.hideLineupMinutesBefore) || 0
 
   if (body.lifespan !== undefined) {
-    if (body.lifespan !== '48h' && !isPro) {
+    if (body.lifespan !== meta.lifespan && !isPro) {
       return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
     }
     meta.lifespan = body.lifespan
