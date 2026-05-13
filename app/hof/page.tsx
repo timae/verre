@@ -1,8 +1,9 @@
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { prisma } from '@/lib/prisma'
-import { ICO } from '@/lib/wineTypeColors'
 
 export const dynamic = 'force-dynamic'
+
+const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 // SSR — read directly from Prisma instead of fetching our own API route.
 // The previous version did `fetch(NEXTAUTH_URL/api/hof)` which depended
