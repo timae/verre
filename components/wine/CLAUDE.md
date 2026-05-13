@@ -33,9 +33,13 @@ yells in `console.error` if any of these are missing.
 
 ### Other load-bearing details
 
-- **Modal sheet uses `svh` units** (`90svh`, `70svh`), not `vh`. `vh`
-  changes when iOS Safari's URL bar collapses, jumping scroll
-  mid-gesture.
+- **Modal sheet uses `svh` units** (locked at `90svh` for both min and
+  max), not `vh`. `vh` changes when iOS Safari's URL bar collapses,
+  jumping scroll mid-gesture. The sheet is *locked to fixed height*
+  rather than sized-to-content (`minHeight === maxHeight`), so swapping
+  between wines of different content heights doesn't resize the modal
+  (which would cause two visible jumps: sheet resize, then content
+  reflow).
 - **Modal sheet is `display: flex; flex-direction: column`** (set by
   `components/ui/Modal.tsx` when both `minHeight` and `maxHeight` are
   passed). Without flex, the inner column doesn't get a definite
@@ -92,6 +96,34 @@ bottom-nav navigation while the user has unsaved rating edits. The
 guard registration in WineModal uses ref-stash + last-attempt-wins
 to handle stacked nav attempts. See the comments around
 `pendingNavRef` and the `dirtyGuard.register` call.
+
+## Slide-on-swap animation (framer-motion)
+
+When `activeWineId` changes via `commitAndSwap`, the modal plays a
+vertical slide: OLD pane exits, NEW pane enters from the opposite
+edge. The implementation lives in `WineModal.tsx` and uses
+framer-motion (already a project dependency; ProfileTabs uses the
+same pattern horizontally).
+
+Architecture: a `motion.div` "track" is a vertical flex column. The
+LIVE scrollRef is always one child. During a slide an OLD snapshot
+pane is added as a sibling (above scrollRef for direction='up',
+below for direction='down'). The track's `y` motion value is
+animated by `animate(slideY, target, ...)`. Because both panes are
+flex children of ONE translating parent, they cannot drift apart —
+overlap is geometrically impossible (the invariant is enforced by
+CSS layout, not by per-pane transform math).
+
+**The slideY-reset gotcha:** when the animation completes and
+`outgoing` clears, the track collapses from 2 children back to 1
+(scrollRef alone via flex:1). slideY MUST be reset to 0 in
+`animate.onComplete` BEFORE `setOutgoing(null)` — otherwise the
+single remaining child sits at translate(±H) (off-screen) for a
+frame, then the pull-rubber-band sync effect detects
+`pullDistance=0 && slideY≠0` and spring-animates back to 0, visible
+as a "rubber-band in from above" glitch right after settle. Locked
+order in `commitAndSwap`'s onComplete: `slideY.set(0)` then
+`setOutgoing(null)`. Same applies to the commit-failure abort path.
 
 ## Tab-switch state preservation
 
