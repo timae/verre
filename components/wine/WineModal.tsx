@@ -205,6 +205,15 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     if (!provenanceOpen) return
     broughtByRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     function onDoc(e: MouseEvent) {
+      // Topmost-modal gate: if a stacked modal is open above WineModal
+      // (e.g. UserProfileModal launched from the preview's "visit
+      // profile" button, or AddWineModal for editing), the click target
+      // is portaled outside broughtByRef and would otherwise read as
+      // "outside" → close the preview → unmount the preview's React
+      // subtree → unmount the stacked modal too. Same expectedDepth
+      // formula as the arrow-key handler.
+      const expectedDepth = 1 + (pendingClose ? 1 : 0)
+      if (getModalStackDepth() > expectedDepth) return
       if (broughtByRef.current && !broughtByRef.current.contains(e.target as Node)) {
         setProvenanceOpen(false)
       }
@@ -216,7 +225,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       clearTimeout(t)
       document.removeEventListener('mousedown', onDoc)
     }
-  }, [provenanceOpen])
+  }, [provenanceOpen, pendingClose])
 
   // NOTE: no early-return here even when `wine` is undefined — hooks below
   // (beforeunload, dirty-guard, lastSwap dismiss) MUST run every render.
@@ -876,6 +885,16 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     const adderMe = !!adderId && adderId === myId
     const mode = resolveProvenanceMode(adderId, myId, blocksOut, blocksIn)
     const clickable = interactive && isLoggedIn && (mode === 'clickable' || mode === 'blocked-by-me')
+    // Adder's profile picture for the brought-by badge. Resolved from
+    // sessionMeta.participants, which the server already gates by block
+    // (either direction) + profile-visibility tier — null arrives here
+    // for anon adders, no-avatar users, and any case the gate denied.
+    // We additionally clamp to mode==='clickable' as belt-and-braces: a
+    // brief desync between viewerBlocksOut/In and a polled imageUrl
+    // could otherwise flash a real face during a block flip.
+    const adderImageUrl = (mode === 'clickable' && adderId
+      ? sessionMeta?.participants.find(p => p.id === adderId)?.imageUrl ?? null
+      : null)
     return (
       <>
         {forPane === 'info' && (
@@ -895,6 +914,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
               wine={w}
               provenanceMode={mode}
               isSelf={adderMe}
+              addedByImageUrl={adderImageUrl}
               onProvenanceClick={clickable
                 ? () => setProvenanceOpen(o => !o)
                 : undefined}
@@ -927,7 +947,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     // URL bar collapses during scroll, jumping the modal mid-gesture
     // and killing momentum. `svh` (small viewport height) is stable
     // across URL-bar collapse. See docs/dev/ios-touch-gestures.md §7.
-    <Modal onClose={requestClose} maxWidth={620} maxHeight="90svh" minHeight="90svh">
+    <Modal onClose={requestClose} maxWidth={1100} maxHeight="90svh" minHeight="90svh">
       {/* Outer column: header + tabs at top, scrollable body in middle,
           error banner / Go-back bubble / footer pinned at bottom. The
           fixed-height scroll-region is what the pull-to-swap hook

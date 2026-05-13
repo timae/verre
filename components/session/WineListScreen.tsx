@@ -338,7 +338,7 @@ function WineRow({
         )}
       </div>
 
-      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}} onClick={e => e.stopPropagation()}>
+      <div style={{display:'flex',alignItems:'center',gap:0,flexShrink:0}} onClick={e => e.stopPropagation()}>
         {showHostControls && isBlind && !isRevealed && (
           <button onClick={onReveal}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
@@ -362,12 +362,12 @@ function WineRow({
             at the same x across all row variants (rated/unrated ×
             host/taster). Width is tight on the widest realistic
             score chip so narrow viewports don't lose wine-title
-            space to slack. Tasters get a slightly wider slot for
-            the larger "Rate" pill. */}
+            space to slack. */}
         {(rating?.score || !isRedacted) && (
           <div style={{
-            width: showHostControls ? 72 : 80,
+            width: 80,
             display:'flex',alignItems:'center',justifyContent:'flex-end',
+            paddingRight: 1,
             flexShrink:0,
           }}>
             {rating?.score ? (
@@ -389,28 +389,19 @@ function WineRow({
                 <StarRating value={rating.score} />
               </button>
             ) : (
-              // Hosts (showHostControls) get a smaller "rate" pill so the
-              // row's right edge stays uncluttered next to the reveal/hide
-              // button + drag handle. Tasters get the prominent
-              // accent-gold pill that draws the eye to unrated wines —
-              // their primary action on this surface.
+              // Prominent accent-gold pill — same style for every role
+              // (host, cohost, provider, taster). Rating is the primary
+              // action on this surface for everyone, so the visual
+              // emphasis is uniform.
               <button
                 type="button"
                 onClick={e => { e.stopPropagation(); onOpen('rate') }}
-                style={showHostControls
-                  ? {
-                      fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',
-                      color:'var(--accent)',
-                      border:'1px solid rgba(200,150,60,0.3)',
-                      background:'rgba(200,150,60,0.08)',
-                      padding:'4px 8px',borderRadius:3,cursor:'pointer',
-                    }
-                  : {
-                      background:'var(--accent)',color:'var(--bg)',
-                      border:'none',padding:'7px 14px',borderRadius:100,
-                      fontSize:11,fontWeight:700,letterSpacing:'0.08em',
-                      textTransform:'uppercase',cursor:'pointer',
-                    }}
+                style={{
+                  background:'var(--accent)',color:'var(--bg)',
+                  border:'none',padding:'7px 14px',borderRadius:100,
+                  fontSize:11,fontWeight:700,letterSpacing:'0.08em',
+                  textTransform:'uppercase',cursor:'pointer',
+                }}
               >
                 Rate
               </button>

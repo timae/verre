@@ -153,7 +153,7 @@ export function MoonIcon(p: IconProps) {
 interface GlassProps { type: string; fillColor: string; width?: number; height?: number }
 
 const GLASS_STROKE_PROPS = {
-  style: { stroke: 'var(--fg-dim)' },
+  style: { stroke: 'var(--fg-faint)' },
   strokeWidth: 1.2,
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,

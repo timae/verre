@@ -4,6 +4,7 @@ import { countryName } from '@/lib/countries'
 import { renderWithLinks } from '@/lib/renderWithLinks'
 import { TYPE_LABEL, tcolAlpha } from '@/lib/wineTypeColors'
 import { WineGlass, PinIcon, FlaskIcon, LinkIcon, ArrowRightIcon } from '@/components/ui/icons'
+import { Avatar } from '@/components/profile/Avatar'
 
 // Normalized wine-display shape — what the info pane reads. Session
 // WireWine satisfies this directly; future check-in / bookmark / feed
@@ -60,6 +61,13 @@ interface Props {
   // "· you" suffix after the name, same convention as the
   // participants-list self-row.
   isSelf?: boolean
+  // Adder's avatar URL. Gated upstream by block + profile-visibility
+  // tier (server-side, in /api/session/<C>) and additionally clamped to
+  // provenanceMode==='clickable' by the caller. When null, the badge
+  // falls back to the initial letter — same visual as anon participants,
+  // no-avatar users, blocked-pair, and tier-denied cases (the absence
+  // can mean any of these, so no single inference works).
+  addedByImageUrl?: string | null
 }
 
 // Read-only display of wine identity + metadata. v4 editorial layout:
@@ -71,43 +79,43 @@ interface Props {
 // Renders the same anywhere: in-session modal, /me/saved detail page,
 // /u/<id> check-in card, feed post. Provenance ("brought by") only
 // shows when the caller passes it — feed/profile callers omit it.
-export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain', provenancePreview, broughtByRef, isSelf = false }: Props) {
+export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain', provenancePreview, broughtByRef, isSelf = false, addedByImageUrl = null }: Props) {
   const { name, producer, vintage, grape, type, imageUrl,
           description, region, country, vinification, purchaseUrl,
           addedByDisplayName } = wine
   const countryDisplay = country ? (countryName(country) || country) : ''
   const hasOrigin = !!(region || countryDisplay)
   const liquidColor = tcolAlpha(type, 0.7)
-  const initial = (addedByDisplayName?.trim()[0] || '').toUpperCase()
 
   return (
-    <div style={{display:'flex',flexDirection:'column',gap:20}}>
+    <div className="wine-layout">
 
-      {/* Image — rendered only when set. Empty wines skip it entirely
-          (the hero's wine-glass decoration carries the visual presence). */}
-      {imageUrl && (
-        <div
-          onClick={() => openLightbox(imageUrl, name)}
-          style={{
-            // Portrait 3:4 frame — wine bottles are taller than wide.
-            // max-width capped so the computed height (= width × 4/3)
-            // doesn't dominate the modal on wide viewports.
-            width:'100%',maxWidth:260,aspectRatio:'3 / 4',
-            borderRadius:14,overflow:'hidden',
-            border:'1px solid var(--border)',
-            cursor:'zoom-in',
-            margin:'0 auto',
-            background:'var(--bg3)',
-          }}
-        >
-          <img src={imageUrl} alt={name}
-            style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}} />
-        </div>
-      )}
+      {/* Media column — left on desktop, top on mobile (only when imageUrl).
+          Fixed width on desktop so switching between wines with/without images
+          doesn't shift the right column. Glass shown here on desktop when no
+          image; glass in hero handles mobile (hidden on desktop via CSS). */}
+      <div className={`wine-layout-media${imageUrl ? ' has-image' : ''}`}>
+        {imageUrl ? (
+          <div
+            className="wine-layout-media-img"
+            onClick={() => openLightbox(imageUrl, name)}
+          >
+            <img src={imageUrl} alt={name}
+              style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}} />
+          </div>
+        ) : (
+          <div style={{display:'flex',justifyContent:'center',paddingTop:8,opacity:0.85}} aria-hidden="true">
+            <WineGlass type={type} fillColor={liquidColor} width={120} height={180} />
+          </div>
+        )}
+      </div>
+
+      {/* Content column — right on desktop, full-width on mobile */}
+      <div className="wine-layout-content">
 
       {/* Hero — wine identity. Title in Fraunces, producer in sans,
           vintage chip + colored swatch + grape + type label. Glass on
-          the right, filled with the wine-type liquid color. */}
+          the right (mobile only — hidden on desktop, lives in media col). */}
       <header style={{
         display:'flex',alignItems:'flex-start',gap:18,
         paddingBottom:18,borderBottom:'1px solid var(--border)',
@@ -168,7 +176,7 @@ export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain'
           </div>
         </div>
 
-        <div style={{flexShrink:0,marginTop:-4,opacity:0.9}} aria-hidden="true">
+        <div className="wine-layout-glass-hero" style={{flexShrink:0,marginTop:-4,opacity:0.9}} aria-hidden="true">
           <WineGlass type={type} fillColor={liquidColor} />
         </div>
       </header>
@@ -210,24 +218,18 @@ export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain'
                 transition:'background .15s',
               }}
             >
-              {/* Avatar always shows the initial — including for
-                  anon-style (mutual block / blocked-viewing-blocker).
-                  The blocked side must be indistinguishable from a
-                  regular anon participant; since anon users render
-                  with an initial-letter avatar, dropping the avatar
-                  here would itself signal "this is a blocked user,"
-                  exactly the inference we're meant to prevent.
-                  docs/block.md's "no avatar" line is from before anon
-                  users had avatars and needs the matching update on
-                  the participants-list side too. */}
-              <div style={{
-                width:32,height:32,borderRadius:'50%',
-                background:'rgba(200,150,60,0.18)',
-                border:'2px solid var(--bg2)',
-                color:'var(--accent)',
-                display:'inline-flex',alignItems:'center',justifyContent:'center',
-                fontSize:13,fontWeight:700,flexShrink:0,
-              }}>{initial}</div>
+              {/* Avatar always renders the circle. Real photo shows
+                  only when the upstream gate passed (mode==='clickable'
+                  + tier allows + no block): see addedByImageUrl prop
+                  comment. Otherwise the Avatar primitive falls back to
+                  the initial letter, indistinguishable from anon
+                  participants, no-avatar users, and any denied case —
+                  no single inference about block/tier survives. */}
+              <Avatar
+                name={addedByDisplayName || ''}
+                imageUrl={addedByImageUrl}
+                size={32}
+              />
               <div style={{display:'flex',flexDirection:'column',gap:2,minWidth:0}}>
                 <span style={{
                   fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',
@@ -320,6 +322,7 @@ export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain'
         </dl>
       )}
 
+      </div>
     </div>
   )
 }

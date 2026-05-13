@@ -19,7 +19,7 @@ import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
 // projected from `data[myId].ratings` in SessionShell.
 export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
 
-type Participant = { id: string; displayName: string }
+type Participant = { id: string; displayName: string; imageUrl?: string | null }
 
 type SessionCtx = {
   code: string; displayName: string; myId: string; isHost: boolean
