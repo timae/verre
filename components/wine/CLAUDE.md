@@ -100,45 +100,76 @@ to handle stacked nav attempts. See the comments around
 ## Slide-on-swap animation (framer-motion)
 
 When `activeWineId` changes via `commitAndSwap`, the modal plays a
-vertical slide: OLD pane exits, NEW pane enters from the opposite
+slide animation: OLD pane exits, NEW pane enters from the opposite
 edge. The implementation lives in `WineModal.tsx` and uses
 framer-motion (already a project dependency; ProfileTabs uses the
 same pattern horizontally).
 
-Architecture: a `motion.div` "track" is a vertical flex column. The
-LIVE scrollRef is always one child. During a slide an OLD snapshot
-pane is added as a sibling (above scrollRef for direction='up',
-below for direction='down'). The track's `y` motion value is
-animated by `animate(slideY, target, ...)`. Because both panes are
-flex children of ONE translating parent, they cannot drift apart —
-overlap is geometrically impossible (the invariant is enforced by
-CSS layout, not by per-pane transform math).
+Architecture: a `motion.div` "track" is a flex container. The LIVE
+scrollRef is always one child. During a slide an OLD snapshot pane
+is added as a sibling (before scrollRef for direction='up', after
+for direction='down'). The track's `slideOffset` motion value is
+animated by `animate(slideOffset, target, ...)`. Because both panes
+are flex children of ONE translating parent, they cannot drift
+apart — overlap is geometrically impossible (the invariant is
+enforced by CSS layout, not by per-pane transform math).
 
-**The slideY-reset gotcha:** when the animation completes and
+**Axis per viewport:** the slide axis is captured at slide start
+from `window.matchMedia('(max-width: 639px)').matches`. Mobile
+(≤639px) → `axis='y'`, flexDirection:'column', vertical slide that
+matches the touch-pull gesture. Desktop (>639px) → `axis='x'`,
+flexDirection:'row', horizontal page-turn that matches arrow-key /
+footer-button navigation. Math is identical between axes — swap
+height↔width and y↔x. Once locked at slide start, the axis stays
+for the full 300ms even if the user resizes the browser.
+
+**Dual-axis motion-value binding (load-bearing):** the motion.div
+binds `slideOffset` to BOTH `x` AND `y` simultaneously, with the
+inactive axis pinned to literal `0`:
+```ts
+x: outgoing?.axis === 'x' ? slideOffset : 0
+y: outgoing?.axis === 'x' ? 0 : slideOffset
+```
+Without this, swapping which axis prop is set between renders
+(slide-active → slide-cleared) leaves residual transform from the
+previous axis until framer's next tick — visible as a one-frame
+jitter on slow devices. Pin `flex-direction` to `outgoing?.axis`
+the same way (not to a viewport check that could re-fire on
+resize).
+
+**fromPullDistance zeroed on horizontal slides:** the pull-rubber-
+band is touch-only and vertical-only. For desktop horizontal
+slides, carrying a vertical pull offset into the horizontal start
+position would translate the pane sideways from where the user
+just visually pulled it down. `commitAndSwap` zeroes fromPull
+when axis === 'x' (locked: `axis === 'y' ? pullDistance : 0`).
+
+**The slideOffset-reset gotcha:** when the animation completes and
 `outgoing` clears, the track collapses from 2 children back to 1
-(scrollRef alone via flex:1). slideY MUST be reset to 0 in
+(scrollRef alone via flex:1). slideOffset MUST be reset to 0 in
 `animate.onComplete` BEFORE `setOutgoing(null)` — otherwise the
-single remaining child sits at translate(±H) (off-screen) for a
+single remaining child sits at translate(±S) (off-screen) for a
 frame, then the pull-rubber-band sync effect detects
-`pullDistance=0 && slideY≠0` and spring-animates back to 0, visible
-as a "rubber-band in from above" glitch right after settle. Locked
-order in `commitAndSwap`'s onComplete: `slideY.set(0)` then
-`setOutgoing(null)`. Same applies to the commit-failure abort path.
+`pullDistance=0 && slideOffset≠0` and spring-animates back to 0,
+visible as a "rubber-band from above" glitch right after settle.
+Locked order in `commitAndSwap`'s onComplete: `slideOffset.set(0)`
+then `setOutgoing(null)`. Same applies to the commit-failure
+abort path.
 
 **In-flight gating across the slide:** `commitInFlightRef` is held
 from commitAndSwap entry until the slide's `onComplete` (NOT just
 until the POST resolves). The POST often resolves in <100ms but the
 slide takes 300ms — a rapid second tap on a footer button or arrow
 key during that gap would re-enter commitAndSwap, overwrite
-`outgoing` mid-animation, and trigger the slideY-reset gotcha. The
-gate ownership is tracked via a local `releaseInFinally` flag in
+`outgoing` mid-animation, and trigger the slideOffset-reset gotcha.
+The gate ownership is tracked via a local `releaseInFinally` flag in
 commitAndSwap — when the slide kicks off, gate-release ownership
 moves to onComplete; when the slide doesn't run (reduced-motion or
 edge), the finally block releases.
 
 **Concurrent animate() controls:** framer's `animate()` does NOT
 preempt concurrent animations on the same motion value. Both keep
-ticking. The late finisher's onComplete (slideY.set(0)+setOutgoing(null))
+ticking. The late finisher's onComplete (slideOffset.set(0)+setOutgoing(null))
 can nuke a fresh slide. Defense: `slideAnimRef` stores the in-flight
 animation controls; commitAndSwap calls `.stop()` on the prior ref
 before starting a new animate(). With the in-flight gate held

@@ -121,27 +121,40 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const [outgoing, setOutgoing] = useState<{
     wineId: string
     pane: Pane
-    rating: RatingValue
     direction: 'up' | 'down'
+    rating: RatingValue
     fromPullDistance: number
+    // Slide axis. 'y' on mobile (≤639px viewport) — the original
+    // vertical conveyor that matches the touch pull gesture. 'x' on
+    // desktop — horizontal page-turn that matches arrow-key / footer-
+    // button navigation. Captured at slide start; doesn't change
+    // mid-animation if the user resizes the browser.
+    axis: 'x' | 'y'
   } | null>(null)
-  // Framer y motion value for the slide track. Owned by useMotionValue
+  // Framer motion value for the slide track. Owned by useMotionValue
   // so changes don't trigger React re-renders; framer drives the
   // underlying DOM transform directly. Used for BOTH:
   //   1. The pull rubber-band (track shifts by pullDistance during a
   //      pull gesture; springs back to 0 on release below threshold).
+  //      Pull is touch-only and vertical only — outgoing.axis is 'y'
+  //      in this case (or null, when there's no slide).
   //   2. The slide animation when commitAndSwap fires past threshold.
-  const slideY = useMotionValue(0)
-  // Measured height of the scroll container at the moment a slide
-  // fires. Used to position the entering pane in the track (it sits
-  // one wrapperH below or above the live pane).
-  const slideHeightRef = useRef<number>(0)
+  //      Drives the active axis ('x' on desktop, 'y' on mobile).
+  // The motion.div below binds the value to BOTH x and y simultaneously
+  // (with the inactive axis pinned to literal 0) to avoid a one-frame
+  // race when the active axis swaps at onComplete.
+  const slideOffset = useMotionValue(0)
+  // Measured size of the scroll container at slide start. clientHeight
+  // for axis='y' slides, clientWidth for axis='x'. Used to position
+  // the entering pane (it sits one viewport-size away from the live
+  // pane along the active axis).
+  const slideSizeRef = useRef<number>(0)
   // In-flight slide animation controls (from framer's `animate()`).
   // Tracked on a ref so a rapid second swap can `.stop()` the prior
   // animation before starting a new one. Framer does NOT preempt
   // concurrent animations on the same motion value — both would keep
   // ticking, and the late-finishing one's onComplete would nuke a
-  // fresh slide via the slideY.set(0)+setOutgoing(null) reset.
+  // fresh slide via the slideOffset.set(0)+setOutgoing(null) reset.
   const slideAnimRef = useRef<ReturnType<typeof animate<number>> | null>(null)
   // Cancel any in-flight slide on unmount. Without this, closing the
   // modal mid-slide leaves the framer animation running; its onComplete
@@ -241,32 +254,32 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   })
 
   // Drive the slide track's y from pullDistance during the pull
-  // gesture (the rubber-band). When NOT in a slide, slideY tracks
+  // gesture (the rubber-band). When NOT in a slide, slideOffset tracks
   // pullDistance directly. On release below threshold, pullDistance
-  // resets to 0 and slideY springs back via a short animate(). The
-  // slide animation owns slideY during commitAndSwap, so we skip
+  // resets to 0 and slideOffset springs back via a short animate(). The
+  // slide animation owns slideOffset during commitAndSwap, so we skip
   // sync while outgoing is set.
   //
   // ⚠️ ORDERING IS LOCKED: `if (outgoing) return` MUST come before
-  // the pullDistance branches. The slide's onComplete sets slideY=0
+  // the pullDistance branches. The slide's onComplete sets slideOffset=0
   // then setOutgoing(null) in the same tick; this effect re-runs on
   // the next render with outgoing=null and pullDistance=0. Without
-  // the early return, the pullDistance===0 branch would see slideY=0
+  // the early return, the pullDistance===0 branch would see slideOffset=0
   // already and no-op — fine. But if `pullDistance` happened to be
   // non-zero at that exact moment (impossible today because the pull
   // hook is gated by `disabled: slideActive`, but a future change to
-  // either gate could break it), the effect would jump slideY to the
+  // either gate could break it), the effect would jump slideOffset to the
   // pull offset without animation, mid-frame. Keep the outgoing-gate
-  // first as the canonical "slide owns slideY" invariant.
+  // first as the canonical "slide owns slideOffset" invariant.
   useEffect(() => {
     if (outgoing) return
-    if (pullDistance === 0 && slideY.get() !== 0) {
+    if (pullDistance === 0 && slideOffset.get() !== 0) {
       // Spring back from a sub-threshold pull release.
-      const controls = animate(slideY, 0, { duration: 0.2, ease: [0.25, 0.1, 0.25, 1] })
+      const controls = animate(slideOffset, 0, { duration: 0.2, ease: [0.25, 0.1, 0.25, 1] })
       return () => controls.stop()
     }
-    slideY.set(pullDistance)
-  }, [pullDistance, outgoing, slideY])
+    slideOffset.set(pullDistance)
+  }, [pullDistance, outgoing, slideOffset])
 
   // Ref on the brought-by callout — used to (1) scroll the expanded
   // preview into view if the user had scrolled past the callout
@@ -520,8 +533,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     // slide takes 300ms; the POST often resolves in <100ms; if we
     // released the gate when the POST returned, a footer-button or
     // arrow-key re-tap during the remaining ~200ms would re-enter
-    // here, overwrite `outgoing` mid-animation, and call slideY.set
-    // out of order — exactly the slideY-reset gotcha documented in
+    // here, overwrite `outgoing` mid-animation, and call slideOffset.set
+    // out of order — exactly the slideOffset-reset gotcha documented in
     // components/wine/CLAUDE.md.
     if (commitInFlightRef.current) return
     commitInFlightRef.current = true
@@ -543,9 +556,9 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       // Fire the slide BEFORE the network commit. In the dirty path,
       // awaiting the POST first would let usePullToSwap.reset() flush
       // pullDistance=0 to React before the slide takes ownership of
-      // slideY, producing a visible spring-back to 0 followed by a
+      // slideOffset, producing a visible spring-back to 0 followed by a
       // jump to the slide start position. Setting up `outgoing` and
-      // calling slideY.set/animate synchronously here keeps the track
+      // calling slideOffset.set/animate synchronously here keeps the track
       // under our control across the commit await — no snap-back, no
       // visible glitch on slow networks. If the commit later FAILS we
       // abort the slide and surface the error inline.
@@ -554,48 +567,74 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
         && fromIdx !== toIdx && scrollRef.current != null
       if (willAnimate) {
-        const H = scrollRef.current!.clientHeight
-        slideHeightRef.current = H
+        // Pick the slide axis from viewport width. Mobile (≤639px)
+        // keeps the original vertical conveyor that matches the touch
+        // pull gesture. Desktop (>639px) uses a horizontal page-turn
+        // — pull is touch-only and won't fire there anyway, so the
+        // axis is governed entirely by the navigation source (footer
+        // buttons / arrow keys). 639px is the same breakpoint as the
+        // .hide-narrow class in globals.css for consistency.
+        // No `typeof window` guard needed: willAnimate already required
+        // `scrollRef.current != null`, which is browser-only.
+        const axis: 'x' | 'y' = window.matchMedia('(max-width: 639px)').matches ? 'y' : 'x'
+        // Capture the track's size along the active axis at slide
+        // start. Stays stable across the 300ms animation even if the
+        // user resizes the browser (rare; recoverable on next slide).
+        const S = axis === 'y' ? scrollRef.current!.clientHeight : scrollRef.current!.clientWidth
+        slideSizeRef.current = S
         const direction = toIdx > fromIdx ? 'up' : 'down'
+        // The pull-rubber-band offset only makes sense on a vertical
+        // slide (pull is vertical-only by design). For horizontal
+        // slides on desktop, pulling-then-arrow-keying is an edge
+        // case; carrying the vertical pull offset into a horizontal
+        // start position would translate the pane SIDEWAYS from
+        // where the user just visually pulled it down. Zero it.
+        const startOffset = axis === 'y'
+          ? (direction === 'up' ? fromPull : -S + fromPull)
+          : (direction === 'up' ? 0 : -S)
         setOutgoing({
           wineId: fromWineId,
           pane,
           rating: fromRating,
           direction,
-          fromPullDistance: fromPull,
+          fromPullDistance: axis === 'y' ? fromPull : 0,
+          axis,
         })
-        // Track layout in the JSX:
-        //   - direction='up' → [OLD pane, NEW pane]. OLD at track-y 0..H,
-        //     NEW at track-y H..2H. y starts at fromPull (continuing pull
-        //     motion) and animates to -H (OLD exits top, NEW arrives).
-        //   - direction='down' → [NEW pane, OLD pane]. NEW at 0..H, OLD
-        //     at H..2H. y starts at -H+fromPull and animates to 0 (NEW
-        //     arrives from above, OLD exits bottom).
-        // Both panes are framer flex children. They cannot drift apart.
-        const startY = direction === 'up' ? fromPull : -H + fromPull
-        const endY = direction === 'up' ? -H : 0
+        // Track layout in the JSX (identical math for both axes,
+        // just swap "track-y" for "track-x" and H for W):
+        //   - direction='up' → [OLD pane, NEW pane]. OLD at 0..S,
+        //     NEW at S..2S. Offset starts at fromPull (continuing
+        //     pull motion) and animates to -S (OLD exits leading,
+        //     NEW arrives from trailing).
+        //   - direction='down' → [NEW pane, OLD pane]. NEW at 0..S,
+        //     OLD at S..2S. Offset starts at -S+fromPull and
+        //     animates to 0 (NEW arrives from leading, OLD exits
+        //     trailing).
+        // Both panes are framer flex children (column for 'y', row
+        // for 'x'). They cannot drift apart.
+        const endOffset = direction === 'up' ? -S : 0
         // Stop any prior in-flight slide before starting a new one.
         // Framer's animate() does NOT preempt concurrent animations
         // on the same motion value — both keep ticking and the late
-        // finisher's onComplete (slideY.set(0)+setOutgoing(null)) can
+        // finisher's onComplete (slideOffset.set(0)+setOutgoing(null)) can
         // nuke a fresh slide. (Defensive: with the in-flight gate
         // held through onComplete, this path should be unreachable.
         // Kept as a belt-and-braces invariant.)
         if (slideAnimRef.current) slideAnimRef.current.stop()
-        slideY.set(startY)
-        slideAnimRef.current = animate(slideY, endY, {
+        slideOffset.set(startOffset)
+        slideAnimRef.current = animate(slideOffset, endOffset, {
           duration: 0.3,
           ease: [0.25, 0.1, 0.25, 1],  // ease-out
           onComplete: () => {
-            // ⚠️ Reset slideY BEFORE clearing outgoing. When `outgoing`
+            // ⚠️ Reset slideOffset BEFORE clearing outgoing. When `outgoing`
             // clears, the track collapses from 2 children (OLD pane +
             // scrollRef) back to 1 (scrollRef occupying full wrapper
             // via flex:1). The translate must be 0 at that moment, or
             // scrollRef sits off-screen (shifted by ±H) for one frame;
-            // then the pull-sync effect detects pullDistance=0 + slideY≠0
+            // then the pull-sync effect detects pullDistance=0 + slideOffset≠0
             // and spring-animates back to 0 — visible as a "rubber-band
             // in from above" glitch right after settle.
-            slideY.set(0)
+            slideOffset.set(0)
             // Defensive scrollTop=0 in case the user managed to touch
             // scrollRef mid-slide and trigger a native iOS scroll. The
             // earlier reset (before setActiveWineId) wouldn't catch a
@@ -608,10 +647,10 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         })
         releaseInFinally = false
       } else {
-        // Reduced-motion or first/last edge: no slide. Make sure slideY
+        // Reduced-motion or first/last edge: no slide. Make sure slideOffset
         // is at 0 in case a prior slide / pull left it non-zero (rare,
         // but defensive).
-        slideY.set(0)
+        slideOffset.set(0)
       }
       let didCommit = false
       if (dirty) {
@@ -625,7 +664,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
             slideAnimRef.current.stop()
             slideAnimRef.current = null
           }
-          slideY.set(0)
+          slideOffset.set(0)
           setOutgoing(null)
           // Hand the gate-release back to the finally block since the
           // animation onComplete won't fire.
@@ -706,7 +745,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
-      if (saving) return
+      // Gate on both `saving` AND `slideActive` so a rapid arrow-key
+      // re-tap during the post-POST / pre-onComplete window (~200ms
+      // when the slide is still playing) doesn't silently fall
+      // through to commitAndSwap's commitInFlightRef check and get
+      // swallowed via e.preventDefault. Matches the footer buttons'
+      // disabled semantics.
+      if (saving || slideActive) return
       // Topmost-modal gate. If something is open ON TOP of WineModal
       // — SessionPanel, UserPanel, or any future overlay — the arrow
       // keys belong to that surface, not us. WineModal's own outer
@@ -1056,46 +1101,73 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         overflow:'hidden',
       }}>
       {/* SLIDE TRACK (framer-motion conveyor):
-          A vertical flex column holding the OLD snapshot (during a
-          slide) and the LIVE scrollRef. slideY drives the column's
-          translateY. Because both panes are children of ONE translating
-          parent, they cannot drift apart and overlap is geometrically
-          impossible (the invariant is enforced by CSS layout, not by
-          per-pane transform math).
+          A flex container holding the OLD snapshot (during a slide)
+          and the LIVE scrollRef. slideOffset drives the container's
+          translate along the active axis. Because both panes are
+          children of ONE translating parent, they cannot drift apart
+          and overlap is geometrically impossible (the invariant is
+          enforced by CSS layout, not by per-pane transform math).
 
-          Each pane is height: H (the wrapper's clientHeight measured at
-          slide start). Content is anchored to the top edge; empty space
-          below content is naturally part of the pane.
+          AXIS: 'y' on mobile (≤639px), 'x' on desktop.
+            - 'y': flexDirection:'column', panes stacked vertically,
+                   each pane height: H (clientHeight). Slide animates y.
+            - 'x': flexDirection:'row', panes side-by-side, each pane
+                   width: W (clientWidth). Slide animates x.
+            Math is identical between axes — just swap H↔W and y↔x.
 
-          Direction 'up' (next wine, NEW from below):
+          BINDING (load-bearing): the motion.div binds slideOffset to
+          BOTH x AND y simultaneously, with the inactive axis pinned
+          to literal 0. Avoids a one-frame race when the active axis
+          would otherwise change between renders (axis is captured
+          per-slide; default outside slide is 'y').
+
+          Direction 'up' (next wine, NEW from trailing edge):
             Children: [OLD pane, scrollRef]
-            y: fromPull → -H. OLD exits top, scrollRef arrives.
+            offset: fromPull → -S. OLD exits leading, scrollRef arrives.
 
-          Direction 'down' (prev wine, NEW from above):
+          Direction 'down' (prev wine, NEW from leading edge):
             Children: [scrollRef, OLD pane]
-            y: -H + fromPull → 0. scrollRef arrives, OLD exits bottom.
+            offset: -S + fromPull → 0. scrollRef arrives, OLD exits.
 
-          Outside slide: only scrollRef is in the column (single flex:1
-          child filling the wrapper). slideY=0; the pull-rubber-band
-          drives slideY via the sync effect above. scrollRef itself
-          retains its native overflow-y:auto for content scrolling. */}
+          Outside slide: only scrollRef is in the container (single
+          flex:1 child filling the wrapper). slideOffset=0; the pull-
+          rubber-band drives slideOffset via the sync effect above.
+          scrollRef itself retains its native overflow-y:auto. The
+          flex direction outside slide defaults to 'column' so the
+          pull rubber-band continues to translate vertically. */}
       <motion.div
         style={{
           flex:1,minHeight:0,
-          display:'flex',flexDirection:'column',
-          y: slideY,
+          display:'flex',
+          // Pin flex-direction to outgoing.axis (not a viewport check
+          // that could re-fire on resize). Defaults to 'column' so
+          // the pull rubber-band continues to work vertically when
+          // there's no slide in flight.
+          flexDirection: outgoing?.axis === 'x' ? 'row' : 'column',
+          // Bind motion value to BOTH axes simultaneously. The
+          // active axis (per outgoing.axis) carries slideOffset; the
+          // inactive axis is a literal 0. Without this dual binding,
+          // swapping which axis prop is set between renders leaves
+          // residual transform from the previous axis until framer's
+          // next tick — visible as a one-frame jitter on slow devices.
+          x: outgoing?.axis === 'x' ? slideOffset : 0,
+          y: outgoing?.axis === 'x' ? 0 : slideOffset,
         }}
       >
         {/* OLD pane goes BEFORE scrollRef for direction='up' (NEW
-            arrives from below), AFTER scrollRef for direction='down'
-            (NEW arrives from above). The conditional rendering below
-            achieves the DOM order swap. Outside a slide, neither
-            block renders and scrollRef alone fills the wrapper. */}
+            arrives from the trailing edge), AFTER scrollRef for
+            direction='down' (NEW arrives from the leading edge). The
+            conditional rendering below achieves the DOM order swap.
+            Outside a slide, neither block renders and scrollRef
+            alone fills the wrapper. Pane sizing axis-aware: width
+            for 'x', height for 'y'. */}
         {outgoing && outgoing.direction === 'up' && (
           <div
             aria-hidden
             style={{
-              height: slideHeightRef.current,
+              ...(outgoing.axis === 'x'
+                ? { width: slideSizeRef.current }
+                : { height: slideSizeRef.current }),
               flexShrink: 0,
               overflow: 'hidden',
               pointerEvents: 'none',
@@ -1108,11 +1180,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
           ref={scrollRef}
           style={{
             // During slide: scrollRef is one cell of the track,
-            // explicit height H so the conveyor math (y=±H) works.
-            // Outside slide: flex:1 fills the wrapper for native
-            // scroll of tall content.
+            // explicit size S along the active axis so the conveyor
+            // math (offset=±S) works. Outside slide: flex:1 fills
+            // the wrapper for native scroll of tall content.
             ...(outgoing
-              ? { height: slideHeightRef.current, flexShrink: 0 }
+              ? (outgoing.axis === 'x'
+                  ? { width: slideSizeRef.current, flexShrink: 0 }
+                  : { height: slideSizeRef.current, flexShrink: 0 })
               : { flex:1, minHeight:0 }),
             // ⚠️ LOAD-BEARING — DO NOT CHANGE without reading
             // docs/dev/ios-touch-gestures.md and components/wine/CLAUDE.md.
@@ -1135,7 +1209,9 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
           <div
             aria-hidden
             style={{
-              height: slideHeightRef.current,
+              ...(outgoing.axis === 'x'
+                ? { width: slideSizeRef.current }
+                : { height: slideSizeRef.current }),
               flexShrink: 0,
               overflow: 'hidden',
               pointerEvents: 'none',

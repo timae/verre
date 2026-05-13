@@ -414,7 +414,7 @@ function WineRow({
             style={{
               touchAction: 'none', cursor: 'grab', padding: '6px 4px',
               background: 'transparent', border: 'none',
-              color: 'var(--fg-faint)', fontSize: 14, lineHeight: 1,
+              color: 'var(--fg-warm)', fontSize: 14, lineHeight: 1,
               display: 'flex', alignItems: 'center',
             }}
           >
