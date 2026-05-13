@@ -295,9 +295,9 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // The DirtyGuardProvider wraps the entire shell so any descendant
   // (WineModal today, future forms tomorrow) can register a guard that
   // intercepts navigation surfaces below. Header logo / session badge /
-  // user badge / bottom-nav Links / Leave / You all route through the
-  // guard. ThemeToggle stays unguarded — toggling a theme inside a
-  // dirty modal shouldn't pop a confirm.
+  // user badge / bottom-nav Links / Leave all route through the guard.
+  // ThemeToggle stays unguarded — toggling a theme inside a dirty modal
+  // shouldn't pop a confirm.
   return (
     <DirtyGuardProvider>
       <Ctx.Provider value={ctx}>
@@ -410,14 +410,6 @@ function SessionShellChrome({
             </Link>
           )
         })}
-        <button
-          onClick={() => guardedNav(() => setShowUserPanel(true))}
-          className="nav-item"
-          style={{flex:1}}
-        >
-          <span style={{fontSize:14,lineHeight:1}}>👤</span>
-          <span>You</span>
-        </button>
         <button
           onClick={() => guardedNav(() => router.push(leaveHref))}
           className="nav-item"
