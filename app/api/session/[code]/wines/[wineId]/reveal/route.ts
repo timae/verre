@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, wineToWire } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, getWines, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -33,8 +33,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
   await touchWithMeta(c)
 
+  const identities = await redis.hGetAll(k.identities(c))
+  const userNameLookup = await buildKickedUserNameLookup([wines[idx]], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(wines[idx], identity.id) },
+    { ok: true, wine: wineToWire(wines[idx], identity.id, identities, userNameLookup) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }
@@ -66,8 +68,10 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
   await touchWithMeta(c)
 
+  const identities = await redis.hGetAll(k.identities(c))
+  const userNameLookup = await buildKickedUserNameLookup([wines[idx]], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(wines[idx], identity.id) },
+    { ok: true, wine: wineToWire(wines[idx], identity.id, identities, userNameLookup) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

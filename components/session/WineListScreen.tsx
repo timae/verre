@@ -5,12 +5,11 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
 import { LineupLocked } from './LineupLocked'
-import { RatingScreen } from './RatingScreen'
+import { WineModal } from '@/components/wine/WineModal'
 import { useState, useEffect } from 'react'
-import { useRouter, usePathname } from 'next/navigation'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { sessionPath } from '@/lib/sessionCode'
+import { renderWithLinks } from '@/lib/renderWithLinks'
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, TouchSensor,
   useSensor, useSensors, type DragEndEvent,
@@ -21,17 +20,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 
-const TCOL: Record<string, string> = { red:'#B84040', white:'#C8A84B', spark:'#7AAFC8', rose:'#C86880', nonalc:'#6AAA82' }
-const ICO:  Record<string, string> = { red:'🍷', white:'🥂', spark:'🍾', rose:'🌸', nonalc:'🌿' }
-
-function renderWithLinks(text: string) {
-  const parts = text.split(/(https?:\/\/[^\s]+)/g)
-  return parts.map((part, i) =>
-    /^https?:\/\//.test(part)
-      ? <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{color:'var(--accent)'}}>{part}</a>
-      : part
-  )
-}
+import { TCOL, ICO } from '@/lib/wineTypeColors'
 
 function formatDate(dt: string) {
   if (!dt) return ''
@@ -42,14 +31,20 @@ function formatDate(dt: string) {
   } catch { return dt }
 }
 
-interface Props { initialRateWineId?: string }
-
-export function WineListScreen({ initialRateWineId }: Props = {}) {
+// Single wine-list surface. Tapping a row opens the modal on the
+// Wine Info pane. Unrated rows render an inline "Rate" button that
+// opens the modal on the Rate pane directly; rated rows render the
+// StarRating chip as a tap-target with the same intent. Hosts/cohosts/
+// providers see the management affordances inline (add wine, reveal,
+// drag-to-reorder); tasters see a plain list.
+export function WineListScreen() {
   const { wines, myRatings, isHost, isProvider, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
   const [showAdd, setShowAdd] = useState(false)
-  const [rateWineId, setRateWineId] = useState<string | null>(initialRateWineId ?? null)
-  const router = useRouter()
-  const pathname = usePathname()
+  // When opening the wine modal, track which pane to start on so the
+  // row-body tap (info) and the inline Rate button (rate) can share
+  // one modal-open path.
+  const [openWine, setOpenWine] = useState<{ id: string; pane: 'info' | 'rate' } | null>(null)
+  const canManage = isHost || isProvider
 
   const m = sessionMeta as typeof sessionMeta & {
     address?: string; dateFrom?: string | null; dateTo?: string | null
@@ -221,7 +216,9 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                 ? <button className="btn-s" onClick={hideAll}>hide all</button>
                 : <button className="btn-s" onClick={revealAll}>reveal all</button>
             )}
-            {(isHost || isProvider) && <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>}
+            {canManage && (
+              <button className="btn-s" onClick={() => setShowAdd(true)}>+ add wine</button>
+            )}
           </div>
         </div>
 
@@ -232,7 +229,7 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
           <div style={{textAlign:'center',padding:'48px 0',color:'var(--fg-dim)',fontSize:13}}>
             {winesLoading
               ? 'Loading wines…'
-              : (isHost || isProvider)
+              : canManage
                 ? 'Add the first wine to get started.'
                 : 'No wines yet — the host hasn\'t added any.'}
           </div>
@@ -248,9 +245,9 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
                     wine={wine}
                     idx={idx}
                     isBlind={isBlind}
-                    isHost={isHost}
+                    showHostControls={isHost}
                     rating={myRatings[wine.id]}
-                    onClick={() => setRateWineId(wine.id)}
+                    onOpen={pane => setOpenWine({ id: wine.id, pane })}
                     onReveal={() => revealWine(wine.id)}
                     onHide={() => hideWine(wine.id)}
                   />
@@ -264,14 +261,12 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
           <AddWineModal code={code} winesCount={wines.length} onClose={() => setShowAdd(false)} onSaved={() => { setShowAdd(false); refresh() }} />
         )}
 
-        {rateWineId && (
-          <RatingScreen wineId={rateWineId} onClose={() => {
-            setRateWineId(null)
-            // If the user landed via direct URL /session/<code>/rate/<wineId>,
-            // closing the modal should leave them on the wine list URL —
-            // not on the rate URL where a refresh would re-open the modal.
-            if (pathname?.includes('/rate/')) router.replace(sessionPath(code))
-          }} />
+        {openWine && (
+          <WineModal
+            wineId={openWine.id}
+            initialPane={openWine.pane}
+            onClose={() => setOpenWine(null)}
+          />
         )}
       </div>
     </div>
@@ -286,19 +281,23 @@ export function WineListScreen({ initialRateWineId }: Props = {}) {
 // — the API would reject any reorder POST from a non-host anyway, but
 // hiding the affordance is the right UX.
 function WineRow({
-  wine, idx, isBlind, isHost, rating, onClick, onReveal, onHide,
+  wine, idx, isBlind, showHostControls, rating, onOpen, onReveal, onHide,
 }: {
   wine: WireWine
   idx: number
   isBlind: boolean
-  isHost: boolean
+  // Renders the drag-to-reorder handle and per-row reveal/hide
+  // buttons. Wires into dnd-kit's `disabled` flag too, so the row
+  // doesn't accidentally become draggable when controls are hidden.
+  showHostControls: boolean
   rating?: { score: number }
-  onClick: () => void
+  // Tap on row body → 'info'. Tap on inline Rate button or score chip → 'rate'.
+  onOpen: (pane: 'info' | 'rate') => void
   onReveal: () => void
   onHide: () => void
 }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
-    useSortable({ id: wine.id, disabled: !isHost })
+    useSortable({ id: wine.id, disabled: !showHostControls })
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),
@@ -316,7 +315,7 @@ function WineRow({
   const accentColor = TCOL[wine.type] || TCOL.red
 
   return (
-    <div ref={setNodeRef} style={style} className="wine-card" onClick={onClick}>
+    <div ref={setNodeRef} style={style} className="wine-card" onClick={() => onOpen('info')}>
       <div style={{position:'absolute',left:0,top:0,bottom:0,width:2,background: isRedacted ? 'var(--fg-faint)' : accentColor,opacity:0.6}} />
       <div style={{width:24,flexShrink:0,textAlign:'right',fontFamily:'var(--mono)',fontSize:18,fontWeight:700,color:'var(--fg-faint)',lineHeight:1}}>{idx + 1}</div>
 
@@ -340,20 +339,85 @@ function WineRow({
       </div>
 
       <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}} onClick={e => e.stopPropagation()}>
-        {isHost && isBlind && !isRevealed && (
+        {showHostControls && isBlind && !isRevealed && (
           <button onClick={onReveal}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)',border:'1px solid rgba(200,150,60,0.3)',background:'rgba(200,150,60,0.08)',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
             reveal
           </button>
         )}
-        {isHost && isBlind && isRevealed && (
+        {showHostControls && isBlind && isRevealed && (
           <button onClick={onHide}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
-            ✓ hide
+            hide
           </button>
         )}
-        {rating?.score ? <StarRating value={rating.score} /> : null}
-        {isHost && (
+        {/* Score chip if rated, Rate button if not. Both are tap
+            targets that open the modal on the Rate pane. The Rate
+            button is intentionally prominent (accent-tinted pill) so
+            unrated wines stand out in a mixed list.
+            stopPropagation prevents the parent row's onClick (which
+            opens the Info pane) from firing alongside.
+
+            Fixed-width right-aligned slot so the drag handle stays
+            at the same x across all row variants (rated/unrated ×
+            host/taster). Width is tight on the widest realistic
+            score chip so narrow viewports don't lose wine-title
+            space to slack. Tasters get a slightly wider slot for
+            the larger "Rate" pill. */}
+        {(rating?.score || !isRedacted) && (
+          <div style={{
+            width: showHostControls ? 72 : 80,
+            display:'flex',alignItems:'center',justifyContent:'flex-end',
+            flexShrink:0,
+          }}>
+            {rating?.score ? (
+              <button
+                type="button"
+                aria-label="Edit rating"
+                onClick={e => { e.stopPropagation(); onOpen('rate') }}
+                style={{
+                  // 6×10 padding bumps the touch target to ~44×40px around
+                  // the star+number, meeting WCAG 2.5.5 (44×44 minimum).
+                  // Negative margin keeps the row's visual rhythm by
+                  // absorbing the padding into surrounding gap, so layout
+                  // doesn't shift vs. the prior padding:0 version.
+                  background:'transparent',border:'none',
+                  padding:'6px 10px',margin:'-6px -10px',
+                  cursor:'pointer',display:'inline-flex',alignItems:'center',
+                }}
+              >
+                <StarRating value={rating.score} />
+              </button>
+            ) : (
+              // Hosts (showHostControls) get a smaller "rate" pill so the
+              // row's right edge stays uncluttered next to the reveal/hide
+              // button + drag handle. Tasters get the prominent
+              // accent-gold pill that draws the eye to unrated wines —
+              // their primary action on this surface.
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onOpen('rate') }}
+                style={showHostControls
+                  ? {
+                      fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',
+                      color:'var(--accent)',
+                      border:'1px solid rgba(200,150,60,0.3)',
+                      background:'rgba(200,150,60,0.08)',
+                      padding:'4px 8px',borderRadius:3,cursor:'pointer',
+                    }
+                  : {
+                      background:'var(--accent)',color:'var(--bg)',
+                      border:'none',padding:'7px 14px',borderRadius:100,
+                      fontSize:11,fontWeight:700,letterSpacing:'0.08em',
+                      textTransform:'uppercase',cursor:'pointer',
+                    }}
+              >
+                Rate
+              </button>
+            )}
+          </div>
+        )}
+        {showHostControls && (
           // Activator pattern: spread `attributes` + `listeners` and set
           // the node ref on the handle (NOT the row), so dnd-kit knows
           // which element initiated the drag and the keyboard sensor
@@ -369,7 +433,7 @@ function WineRow({
             style={{
               touchAction: 'none', cursor: 'grab', padding: '6px 4px',
               background: 'transparent', border: 'none',
-              color: 'var(--fg-faint)', fontSize: 14, lineHeight: 1,
+              color: 'var(--fg-warm)', fontSize: 14, lineHeight: 1,
               display: 'flex', alignItems: 'center',
             }}
           >

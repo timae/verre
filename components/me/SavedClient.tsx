@@ -7,11 +7,10 @@ import { authedFetch } from '@/lib/authedFetch'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@/lib/sessionCode'
 import { StarRating } from '@/components/ui/StarRating'
+import { ICO } from '@/lib/wineTypeColors'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
-
-const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 export function SavedClient() {
   const [selected, setSelected] = useState<Bookmark | null>(null)
@@ -20,10 +19,16 @@ export function SavedClient() {
   const { data: bookmarks = [], isLoading } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
     queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
+    // Always refetch on mount so a bookmark made elsewhere in the app
+    // (modal save in a session) shows up immediately when the user
+    // arrives at /me/saved, even if RSC navigation served a cached
+    // page shell.
+    refetchOnMount: 'always',
   })
   const { data: ratings = [] } = useQuery<Rating[]>({
     queryKey: ['me-ratings'],
     queryFn: () => authedFetch<Rating[]>('/api/me/ratings'),
+    refetchOnMount: 'always',
   })
 
   if (isLoading) return <p style={{color:'var(--fg-dim)',fontSize:13}}>Loading…</p>

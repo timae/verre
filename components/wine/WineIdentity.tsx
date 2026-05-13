@@ -3,7 +3,7 @@
 //   2. Producer
 //   3. Grape
 //
-// Sites that display a wine (WineCard, RatingScreen header, Compare,
+// Sites that display a wine (WineCard, WineModal header, Compare,
 // CheckinCard, SavedWineModal) should use this component rather than
 // re-implementing the field order inline. New variants extend the props
 // rather than re-rolling the layout.
@@ -24,12 +24,12 @@ type Size = 'compact' | 'card' | 'hero'
 
 interface Props {
   wine: WineLike
-  // 'compact' = list rows (WineCard, Compare, RatingScreen header)
+  // 'compact' = list rows (WineCard, Compare, WineModal header)
   // 'card'    = medium emphasis (SavedWineModal)
   // 'hero'    = headline emphasis (CheckinCard with photo / no photo)
   size?: Size
   // Optional prefix rendered inline before the wine name (e.g. a "revealed"
-  // badge in RatingScreen, or a wine-type icon in Compare). Keeps the call
+  // badge in WineModal, or a wine-type icon in Compare). Keeps the call
   // site in control of context-specific decoration without forcing the
   // identity layout to change.
   titlePrefix?: React.ReactNode

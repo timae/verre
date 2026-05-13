@@ -1,9 +1,12 @@
 'use client'
 import { openLightbox } from '@/components/ui/ImageLightbox'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { Modal } from '@/components/ui/Modal'
+import { CountrySelect } from '@/components/ui/CountrySelect'
+import { UnsavedChangesConfirm } from '@/components/ui/UnsavedChangesConfirm'
+import { useDirtyGuard } from '@/lib/dirtyGuard'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -34,6 +37,11 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   const [grape, setGrape] = useState(editWine?.grape || '')
   const [type, setType] = useState(editWine?.type || '')
   const [position, setPosition] = useState(String(winesCount + 1))
+  const [description, setDescription] = useState(editWine?.description || '')
+  const [region, setRegion] = useState(editWine?.region || '')
+  const [country, setCountry] = useState(editWine?.country || '')
+  const [vinification, setVinification] = useState(editWine?.vinification || '')
+  const [purchaseUrl, setPurchaseUrl] = useState(editWine?.purchaseUrl || '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [photoDataUrl, setPhotoDataUrl] = useState('')
@@ -114,19 +122,22 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     setScanning(false)
   }
 
-  async function save() {
-    if (!name.trim()) { setError('Name required'); return }
-    if (!type) { setError('Select a type'); return }
+  async function save(): Promise<boolean> {
+    if (!name.trim()) { setError('Name required'); return false }
+    if (!type) { setError('Select a type'); return false }
     let parsedPos: number | null = null
     if (!isEdit) {
       parsedPos = parseInt(position, 10)
       if (!Number.isInteger(parsedPos) || parsedPos < 1 || parsedPos > maxPosition) {
         setError(`Position must be between 1 and ${maxPosition}.`)
-        return
+        return false
       }
     }
     setSaving(true); setError('')
-    const body: Record<string, unknown> = { name, producer, vintage, grape, type }
+    const body: Record<string, unknown> = {
+      name, producer, vintage, grape, type,
+      description, region, country, vinification, purchaseUrl,
+    }
     if (photoDataUrl) body.image = photoDataUrl
     if (!isEdit && parsedPos != null) body.position = parsedPos
     const url = isEdit
@@ -138,8 +149,9 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       body: JSON.stringify(body),
     })
     setSaving(false)
-    if (!res.ok) { setError(isEdit ? 'Could not update wine' : 'Could not save wine'); return }
+    if (!res.ok) { setError(isEdit ? 'Could not update wine' : 'Could not save wine'); return false }
     onSaved()
+    return true
   }
 
   const photo = photoDataUrl || existingPhotoUrl
@@ -156,14 +168,73 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     setShowAI(false)
   }
 
+  // Dirty detection. Drives the close-confirm gate (X / backdrop /
+  // Escape) AND the cross-cutting DirtyGuard for external nav surfaces.
+  // Add mode: dirty if any field has content OR a fresh photo was
+  // selected. Edit mode: dirty if any field differs from editWine.
+  // The single-array form (vs. the parallel Add/Edit ternaries it
+  // replaced) prevents the "forget to add the new field to one branch"
+  // hazard.
+  const dirty = (() => {
+    const baseline = editWine || {}
+    const current: Record<string, string> = {
+      name, producer, vintage, grape, type,
+      description, region, country, vinification, purchaseUrl,
+    }
+    for (const k of Object.keys(current)) {
+      const a = current[k] || ''
+      const b = (baseline as Record<string, string | undefined | null>)[k] || ''
+      if (a !== b) return true
+    }
+    return !!photoDataUrl
+  })()
+
+  // Inner save-confirm modal state. Mirrors WineModal's pattern: the
+  // close path (X / backdrop / Escape) and the external-nav gate both
+  // route through this so the user gets one consistent prompt.
+  // `pendingNavRef` carries the proceed callback when the gate fired
+  // from an external nav (DirtyGuard); null when fired from a local
+  // close action — in that case, resolving the confirm just unmounts.
+  const [pendingClose, setPendingClose] = useState(false)
+  const pendingNavRef = useRef<(() => void) | null>(null)
+
+  // Register the cross-cutting DirtyGuard so bottom-nav / Leave /
+  // header-logo clicks while this modal is open route through the
+  // save-confirm. Re-registers every render so closures stay fresh.
+  const dirtyGuard = useDirtyGuard()
+  useEffect(() => {
+    if (!dirtyGuard) return
+    return dirtyGuard.register({
+      isDirty: () => dirty && !saving,
+      onAttempt: (proceed) => {
+        // First-attempt-wins: same posture as WineModal. Drop the
+        // second nav if the user is already resolving an earlier one.
+        if (pendingClose) return
+        pendingNavRef.current = proceed
+        setPendingClose(true)
+      },
+    })
+  })
+
+  // Local close gate (X / backdrop / Escape). Opens the inner confirm
+  // when dirty, otherwise unmounts immediately.
+  function requestClose() {
+    if (saving) return
+    if (dirty) {
+      pendingNavRef.current = null
+      setPendingClose(true)
+      return
+    }
+    onClose()
+  }
+
   return (
-    <Modal onClose={onClose} maxWidth={600} maxHeight="90vh">
+    <Modal onClose={requestClose} maxWidth={600} maxHeight="90vh">
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
           <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>
-            {isEdit ? 'Edit wine' : 'Add wine'}{' '}
-            <span style={{fontSize:9,border:'1px solid var(--border2)',padding:'1px 6px',borderRadius:2,color:'var(--fg-dim)',letterSpacing:'0.08em',textTransform:'uppercase',marginLeft:4}}>shared</span>
+            {isEdit ? 'Edit wine' : 'Add wine'}
           </div>
-          <button className="btn-s" onClick={onClose} style={{fontSize:9}}>close</button>
+          <button className="btn-s" onClick={requestClose} style={{fontSize:9}}>close</button>
         </div>
 
         {/* Photo + scan */}
@@ -229,24 +300,126 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
             ))}
           </div>
         </div>
-        <div style={{display:'flex',gap:8}}>
-          <div className="field" style={{flex:1}}>
+
+        {/* Optional details — wine identity beyond name/type. Separated
+            visually so the required fields stay the focal point. */}
+        <div style={{
+          marginTop:14,marginBottom:14,padding:'14px 12px 6px',
+          border:'1px solid var(--border)',borderRadius:8,
+          background:'rgba(255,255,255,0.015)',
+        }}>
+          <div className="panel-hdr">details (optional)</div>
+
+          <div className="field">
             <div className="fl">grape / style</div>
             <input className="fi" value={grape} onChange={e => setGrape(e.target.value)} placeholder="Pinot Noir, Pét-Nat…" />
           </div>
+
+          <div style={{display:'flex',gap:8}}>
+            <div className="field" style={{flex:1,minWidth:0}}>
+              <div className="fl">region</div>
+              <input className="fi" value={region} maxLength={255}
+                onChange={e => setRegion(e.target.value)}
+                placeholder="Burgundy, Wachau…" />
+            </div>
+            <div className="field" style={{flex:1,minWidth:0}}>
+              <div className="fl">country</div>
+              <CountrySelect value={country} onChange={setCountry} />
+            </div>
+          </div>
+
+          <div className="field">
+            <div className="fl">vinification</div>
+            <textarea
+              className="fi" value={vinification} maxLength={1000}
+              onChange={e => setVinification(e.target.value)}
+              placeholder="stainless steel, 10 months in oak…"
+              rows={2}
+              style={{resize:'vertical',minHeight:48,fontFamily:'var(--mono)'}}
+            />
+          </div>
+
+          <div className="field">
+            <div className="fl">description</div>
+            <textarea
+              className="fi" value={description} maxLength={1000}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="character, story, tasting impression…"
+              rows={3}
+              style={{resize:'vertical',minHeight:60,fontFamily:'var(--mono)'}}
+            />
+          </div>
+
+          <div className="field" style={{marginBottom: !isEdit ? 12 : 4}}>
+            <div className="fl">purchase link</div>
+            <input className="fi" value={purchaseUrl} maxLength={1000}
+              onChange={e => setPurchaseUrl(e.target.value)}
+              placeholder="https://…" type="url" />
+          </div>
+
           {!isEdit && (
-            <div className="field" style={{maxWidth:96}}>
-              <div className="fl">position</div>
+            <div className="field" style={{marginBottom:4}}>
+              <div className="fl">placement in list</div>
               <input className="fi" type="text" inputMode="numeric" pattern="[0-9]*"
                 value={position} onChange={e => setPosition(e.target.value.replace(/\D/g,''))}
-                placeholder={String(maxPosition)} />
+                placeholder={String(maxPosition)}
+                style={{width:88}} />
+              <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>
+                ↻ not a fixed placement — host &amp; cohost can reorder anytime
+              </div>
             </div>
           )}
         </div>
 
         {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
         <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>
-        <button className="btn-g" onClick={onClose}>cancel</button>
+        <button className="btn-g" onClick={requestClose}>cancel</button>
+
+        {/* Uncommitted-edits confirm. Save success unmounts via the
+            existing onSaved() in save(); we just need to fire
+            pendingNav afterwards if it was set. */}
+        <UnsavedChangesConfirm
+          open={pendingClose}
+          title={isEdit ? 'Save your changes?' : 'Save this wine?'}
+          subtitle={`You have unsaved ${isEdit ? 'edits' : 'details'}.`}
+          error={error}
+          saving={saving}
+          onDismiss={() => {
+            if (saving) return
+            pendingNavRef.current = null
+            setPendingClose(false)
+          }}
+          onKeep={() => {
+            pendingNavRef.current = null
+            setPendingClose(false)
+          }}
+          onDiscard={() => {
+            const nav = pendingNavRef.current
+            pendingNavRef.current = null
+            setPendingClose(false)
+            onClose()
+            if (nav) nav()
+          }}
+          onSave={async () => {
+            // Capture pendingNav before await so we know what to fire
+            // on success. save() returns true after firing onSaved()
+            // (which the parent uses to unmount). On success the
+            // setState below lands on an unmounted component (React
+            // dev-mode no-op + warning) — acceptable since the
+            // unmount is fired by save() itself and the warning is
+            // benign. On failure we keep the confirm open with the
+            // error banner so the user can retry; pendingNav stays
+            // set for the eventual success path.
+            const nav = pendingNavRef.current
+            const ok = await save()
+            if (ok) {
+              pendingNavRef.current = null
+              setPendingClose(false)
+              if (nav) nav()
+            }
+            return ok
+          }}
+        />
     </Modal>
   )
 }

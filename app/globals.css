@@ -1,5 +1,6 @@
 /* @import must precede all other rules per CSS spec (Turbopack enforces strictly). */
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,400&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -186,7 +187,24 @@
   --bg: #0E0E0C; --bg2: #141410; --bg3: #1A1A16; --bg4: #202019;
   --border: #2A2A24; --border2: #383830;
   --fg: #D4CFBE; --fg-dim: #6A6658; --fg-faint: #3A3A32;
+  /* Warmer body-text tones for serif long-form copy (description,
+     vinification, tasting notes) — feels candlelit. */
+  --fg-warm: #EBE1CC; --fg-warm-soft: #C8BBA1;
   --accent: #C8963C; --accent2: #8FB87A;
+  /* Provider role chip color — third accent slot alongside host (gold)
+     and co-host (green). Used by RoleBadge in the user menu and the
+     participants list in SessionPanel. */
+  --accent-provider: rgba(120,180,220,0.95);
+  /* Glassmorphic shell chrome (app header + bottom nav). Translucent
+     so the background gradient bleeds through under the backdrop
+     blur. Theme-aware; sits alongside --bg/--bg2 as a dedicated
+     surface token instead of being hardcoded as rgba(14,14,12,...). */
+  --chrome-bg: rgba(14,14,12,0.82);
+  --chrome-nav-bg: rgba(10,10,9,0.88);
+  --chrome-border: rgba(255,255,255,0.04);
+  /* var(--mono) is set in the body rule of layout.tsx for backwards
+     compat; --serif is new for the wine-info editorial copy. */
+  --serif: 'Fraunces', Georgia, serif;
   --nav-h: 56px; --hdr-h: 52px;
   --fs-title: 24px;
   --fs-heading: 18px;
@@ -197,7 +215,19 @@
   --bg: #F6F0E6; --bg2: #FBF7F0; --bg3: #EFE6D8; --bg4: #E5D8C4;
   --border: #D9CBB9; --border2: #C8B8A2;
   --fg: #231D17; --fg-dim: #605244; --fg-faint: #8A7B6B;
+  /* Inverted warm tones — slightly darker than --fg for prominent
+     serif copy, slightly lighter for soft secondary text. */
+  --fg-warm: #1A140F; --fg-warm-soft: #4A3F33;
   --accent: #9A5F1D; --accent2: #4B7750;
+  /* Provider role chip — deeper blue for the light-mode background. */
+  --accent-provider: rgba(40,110,160,0.95);
+  /* Glassmorphic shell chrome — cream tones with similar opacity as
+     dark mode (~82-88%) so the same backdrop-blur produces a
+     comparable frosted effect. Borders flip to rgba(black) since
+     white-on-white is invisible. */
+  --chrome-bg: rgba(251,247,240,0.82);
+  --chrome-nav-bg: rgba(246,240,230,0.88);
+  --chrome-border: rgba(0,0,0,0.06);
   color-scheme: light;
 }
 
@@ -270,13 +300,22 @@ body {
   .me-bottom-nav { display: block; }
   .hide-narrow { display: none !important; }
 
+  /* Buttons that lose their text label on narrow screens (via
+     .hide-narrow on the inner span) — collapse the pill padding and
+     icon-text gap so the remaining icon sits at a sensible touch-
+     target size instead of floating in a wide pill. */
+  .btn-icon-narrow {
+    gap: 0 !important;
+    padding: 8px !important;
+  }
+
   /* iOS auto-zooms when an input's font-size is below 16px. The .fi
      class and several other inputs render at 13px on desktop for
      density; bump them to 16px on mobile to suppress the zoom-in
      animation. Slightly larger inputs on phones are also a touch-
      target win.
      `!important` is necessary because some call sites set font-size
-     via inline style (RatingScreen's notes textarea and the host's
+     via inline style (RatingPane's notes textarea and the host's
      "move to:" position input). Without !important, those inline
      styles win on mobile and re-trigger the zoom. */
   .fi,
@@ -303,3 +342,4 @@ body {
 ::-webkit-scrollbar { width: 3px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+

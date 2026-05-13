@@ -1,5 +1,3 @@
-import { redis, k } from '@/lib/redis'
-
 // Reserved names — case-insensitive after lowercasing.
 // Blocks impersonation of system actors and the deletion placeholder.
 const RESERVED = new Set([
@@ -83,32 +81,19 @@ export function validateDisplayName(raw: unknown): string {
   return trimmed
 }
 
-// Curated food emoji pool used to disambiguate duplicate display names within
-// a session. Excludes anything that reads as suggestive (eggplant, peach) and
-// the banana per product preference.
-const FOOD_EMOJI = [
-  '🍎','🍊','🍋','🍉','🍇','🍓','🫐','🍒','🥭','🍍','🥥','🥝',
-  '🍅','🥑','🌽','🥕','🥒','🥬','🥦','🧄','🧅','🥔','🍠',
-  '🥨','🥯','🍞','🧀','🍗','🍖','🥓','🍔','🍟','🍕','🌭','🥪',
-  '🌮','🌯','🥗','🍝','🍜','🍲','🍛','🍣','🍱','🥟','🍤','🍙',
-  '🍚','🍘','🍢','🍡','🍧','🍨','🍦','🥧','🧁','🍰','🎂','🍮',
-  '🍭','🍬','🍫','🍩','🍪','🥜','🌰','🫖','🍵','☕','🧃','🥤',
-]
+// `disambiguateDisplayName` + its FOOD_EMOJI pool live in
+// `displayName.server.ts` so this file stays import-safe for client
+// components (which pull in stripDisambiguationEmoji /
+// validateDisplayName but can't import lib/redis).
 
-// If the requested name is already used by another participant in this
-// session, suffix it with a random food emoji so humans can tell two
-// participants apart in the UI. Disambiguation is purely cosmetic now —
-// since data is identity-id keyed, two identical display names no longer
-// cause data collisions. The check looks at the identities map (the
-// authoritative participant list).
+// Strip a trailing " <emoji>" suffix from a display name. Used by the
+// client rename UI so users editing their name see the bare name they
+// typed, not the auto-appended disambiguation emoji from join time.
 //
-// The collision check + write are not atomic, so a tight join-race could in
-// theory still produce two identical names; acceptable since the data layer
-// doesn't depend on uniqueness.
-export async function disambiguateDisplayName(code: string, name: string): Promise<string> {
-  const identities = await redis.hGetAll(k.identities(code))
-  const taken = Object.values(identities).some(n => n === name)
-  if (!taken) return name
-  const emoji = FOOD_EMOJI[Math.floor(Math.random() * FOOD_EMOJI.length)]
-  return `${name} ${emoji}`
+// Safe to strip ANY trailing emoji because `validateDisplayName`'s
+// ALLOWED regex (Letters / Numbers / space / `'_.-`) rejects emoji on
+// write — the only way an emoji can be in a stored name is the server-
+// side disambiguation suffix. No valid user-typed data is lost.
+export function stripDisambiguationEmoji(name: string): string {
+  return name.replace(/\s+\p{Extended_Pictographic}+$/u, '')
 }

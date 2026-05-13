@@ -25,6 +25,11 @@ In the **participants list**:
 
 In the **Compare** screen, everyone in the session is shown as normal. We deliberately don't filter blocked people out — if a column just went missing, you could deduce the block, and that's exactly what we're not trying to surface.
 
+On the **wine info modal**, the "Brought by" callout is slightly different from the participants list:
+- There's no **[blocked]** marker here. That tag only appears in the participants list.
+- The blocker side stays clickable so you can reach unblock through the inline profile preview.
+- The blocked side renders as a regular anonymous participant — avatar with initial, name, no link. Same rule for mutual blocks. The avatar stays on purpose: anonymous participants on this surface have an avatar, so dropping it for a blocked user would itself signal who's behind the name.
+
 Everyone else in the session sees both of you the way they always would.
 
 ## Blocking someone

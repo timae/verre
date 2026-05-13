@@ -1,18 +1,20 @@
 'use client'
-import { use, createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { use, createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import type { WireWine, RatingMeta } from '@/lib/session'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { SessionPanel } from './SessionPanel'
-import { UserPanel } from './UserPanel'
+import { UserMenu } from '@/components/me/UserMenu'
+import { SessionAnonMenu } from './SessionAnonMenu'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
+import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
-// Iterators (compare screen) use Object.entries; lookups (RatingScreen,
+// Iterators (compare screen) use Object.entries; lookups (WineModal,
 // WineListScreen) read myRatings, which is the per-user ratings map already
 // projected from `data[myId].ratings` in SessionShell.
 export type RatingsByIdentity = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>
@@ -40,10 +42,21 @@ type SessionCtx = {
     // render the BannedUsersSection — appears when >0, hidden when 0,
     // updates via the polled session GET so cross-host bans propagate.
     banCount?: number
+    // Viewer's block-pair list scoped to participants in THIS session.
+    // viewerBlocksOut = identities the viewer has blocked; viewerBlocksIn
+    // = identities that have blocked the viewer. Anon viewers get
+    // empty arrays. SECURITY: never log / mirror to analytics / persist
+    // outside the response. See CLAUDE.md "Profile blocking" section.
+    viewerBlocksOut?: string[]
+    viewerBlocksIn?: string[]
   } | null
   wines: WireWine[]; allRatings: RatingsByIdentity
   myRatings: Record<string, RatingMeta>; refresh: () => void
   bookmarkedIds: Set<string>
+  // True when the viewer has a NextAuth session cookie (logged-in
+  // user). Gates surfaces that require an account: bookmarks, profile,
+  // anything that writes to the user's lifetime data.
+  isLoggedIn: boolean
   isBlind: boolean
   // True before the first wines fetch settles. Distinguishes "loading
   // the wine list" from "host hasn't added any yet" — visually
@@ -131,7 +144,6 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const needsName = !displayName && !authSession?.user
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showSessionPanel, setShowSessionPanel] = useState(false)
-  const [showUserPanel,    setShowUserPanel]    = useState(false)
 
   useEffect(() => {
     // Gate on `hydrated` so the redirect doesn't fire in the first-render
@@ -252,13 +264,23 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // server-side role model, but mirroring the flag separately here so
   // the UI can branch on "host vs provider" without re-checking lists.
   const isProvider = !!(metaData?.providerIds && myId && metaData.providerIds.includes(myId))
+  // Single role badge for the user-menu identity block. Strict-host
+  // takes precedence over the URL-driven isHostState fallback (which
+  // applies before the metadata payload lands). Order matches server-
+  // side role precedence: host > co-host > provider > taster (null).
+  const myRole: 'host' | 'co-host' | 'provider' | null =
+    isHostById ? 'host'
+    : isCoHost ? 'co-host'
+    : isProvider ? 'provider'
+    : null
   const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 
   const isBlind = !!(metaData?.blind)
   const ctx: SessionCtx = {
     code: C, displayName, myId, isHost: !!isHost, isProvider,
     sessionMeta: metaData || null,
-    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds, isBlind,
+    wines: winesData, allRatings: ratingsData, myRatings, refresh, bookmarkedIds,
+    isLoggedIn, isBlind,
     // Loading is true until the first fetch resolves; the gate
     // (`enabled: readyToFetch`) keeps it pending while we resolve
     // the identity, which is exactly the period a user sees a
@@ -266,9 +288,12 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     winesLoading: winesPending,
   }
 
+  // Bottom-nav tab order. Wines is the default landing (session root
+  // redirects here). Tapping a wine opens the modal on the Wine Info
+  // pane; an inline "Rate" button on each unrated row opens the modal
+  // on the Rate pane directly.
   const navItems = [
-    { label: 'Wines', path: sessionPath(C),            icon: '🍷', id: 'wines' },
-    { label: 'Rate',  path: sessionPath(C, 'rate'),    icon: '⭐', id: 'rate' },
+    { label: 'Wines', path: sessionPath(C, 'wines'),   icon: '🍷', id: 'wines' },
     { label: 'Compare', path: sessionPath(C, 'compare'), icon: '◈', id: 'compare' },
   ]
 
@@ -276,65 +301,153 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 
   if (needsName) return null
 
+  // The DirtyGuardProvider wraps the entire shell so any descendant
+  // (WineModal today, future forms tomorrow) can register a guard that
+  // intercepts navigation surfaces below. Header logo / session badge /
+  // user badge / bottom-nav Links / Leave all route through the guard.
+  // ThemeToggle stays unguarded — toggling a theme inside a dirty modal
+  // shouldn't pop a confirm.
   return (
-    <Ctx.Provider value={ctx}>
-      <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
-        {/* Header */}
-        <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid rgba(255,255,255,0.04)',background:'rgba(14,14,12,0.82)',backdropFilter:'blur(18px)',zIndex:10}}>
-          <Link href={authSession?.user ? '/me' : '/'} style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}>Verre</Link>
-          <div style={{display:'flex',alignItems:'center',gap:8}}>
-            <ThemeToggle />
-            <button
-              onClick={() => setShowSessionPanel(true)}
-              title="Session settings"
-              style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
+    <DirtyGuardProvider>
+      <Ctx.Provider value={ctx}>
+        <SessionShellChrome
+          authUser={authSession?.user as { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined}
+          displayName={displayName}
+          code={C}
+          myRole={myRole}
+          sessionLabel={sessionLabel}
+          showSessionPanel={showSessionPanel}
+          setShowSessionPanel={setShowSessionPanel}
+          navItems={navItems}
+          pathname={pathname}
+          router={router}
+          onAnonRenamed={(newName: string) => {
+            // Server rename succeeded — persist to localStorage and
+            // update state so the header label, dropdown, and any
+            // descendant reading `displayName` from context re-render.
+            // Polling (refresh) keeps the participants list / ratings
+            // wired to the same identity-id, so just refresh after.
+            localStorage.setItem(`vr_name_${C}`, newName)
+            setStoredName(newName)
+            refresh()
+          }}
+        >{children}</SessionShellChrome>
+      </Ctx.Provider>
+    </DirtyGuardProvider>
+  )
+}
+
+// Inner chrome — split out so useDirtyGuard() can be called below the
+// provider. Reads from props instead of pulling SessionShell's local
+// state directly, to keep the boundary explicit.
+function SessionShellChrome({
+  authUser, displayName, code, myRole, sessionLabel,
+  showSessionPanel, setShowSessionPanel,
+  navItems, pathname, router, onAnonRenamed, children,
+}: {
+  authUser: { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined
+  displayName: string
+  code: string
+  myRole: 'host' | 'co-host' | 'provider' | null
+  sessionLabel: string
+  showSessionPanel: boolean
+  setShowSessionPanel: (v: boolean) => void
+  navItems: { label: string; path: string; icon: string; id: string }[]
+  pathname: string
+  router: ReturnType<typeof useRouter>
+  onAnonRenamed: (newName: string) => void
+  children: ReactNode
+}) {
+  const guard = useDirtyGuard()
+  // Wrap a navigation action with the dirty-guard check. If a guard is
+  // active, it intercepts and may prompt; otherwise the action runs
+  // immediately.
+  const guardedNav = (action: () => void) => {
+    if (guard) guard.attemptNav(action)
+    else action()
+  }
+  // Wrap a Link click for the same gating. Returning preventDefault
+  // when guarded keeps Next from doing the SPA push behind our back —
+  // the guard's proceed callback fires router.push if/when the user
+  // resolves the prompt.
+  const onGuardedLinkClick = (href: string) => (e: React.MouseEvent) => {
+    if (!guard) return
+    e.preventDefault()
+    guard.attemptNav(() => router.push(href))
+  }
+  const leaveHref = authUser ? '/me' : '/'
+
+  return (
+    <div style={{display:'flex',flexDirection:'column',height:'100vh',background:'var(--bg)'}}>
+      <header style={{height:'var(--hdr-h)',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',borderBottom:'1px solid var(--chrome-border)',background:'var(--chrome-bg)',backdropFilter:'blur(18px)',zIndex:10}}>
+        <Link
+          href={leaveHref}
+          onClick={onGuardedLinkClick(leaveHref)}
+          style={{fontFamily:'var(--mono)',fontSize:21,fontWeight:800,letterSpacing:'0.04em',textTransform:'uppercase',color:'var(--accent)',textDecoration:'none'}}
+        >Verre</Link>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <ThemeToggle />
+          <button
+            onClick={() => guardedNav(() => setShowSessionPanel(true))}
+            title="Session settings"
+            style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
+          >{sessionLabel}</button>
+          {/* Logged-in users get the same UserMenu dropdown as /me and
+              /u/[id] (account info, profile link, sign out). Anons get
+              a slimmer menu with sign-in/up + an inline rename for
+              their per-session display name. */}
+          {authUser && authUser.id && authUser.name ? (
+            <UserMenu
+              myId={Number(authUser.id)}
+              name={authUser.name}
+              email={authUser.email || ''}
+              pro={!!authUser.pro}
+              sessionRole={myRole}
+            />
+          ) : (
+            <SessionAnonMenu
+              displayName={displayName}
+              code={code}
+              role={myRole}
+              onRenamed={onAnonRenamed}
+            />
+          )}
+        </div>
+      </header>
+
+      {showSessionPanel && (
+        <SessionPanel
+          onClose={() => setShowSessionPanel(false)}
+          onLeave={() => { setShowSessionPanel(false); router.push(leaveHref) }}
+        />
+      )}
+
+      <main style={{flex:1,overflowY:'auto'}}>{children}</main>
+
+      <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid var(--chrome-border)',background:'var(--chrome-nav-bg)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
+        {navItems.map(({ label, path, icon }) => {
+          const active = pathname === path
+          return (
+            <Link
+              key={path}
+              href={path}
+              onClick={onGuardedLinkClick(path)}
+              className={`nav-item${active ? ' active' : ''}`}
             >
-              {sessionLabel}
-            </button>
-            <button
-              onClick={() => setShowUserPanel(true)}
-              style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.06em',color:'var(--fg-dim)',border:'1px solid var(--border)',background:'var(--bg2)',padding:'5px 10px',borderRadius:3,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}
-            >
-              <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent2)'}} />
-              {displayName || 'anon'}
-            </button>
-          </div>
-        </header>
-
-        {showSessionPanel && (
-          <SessionPanel
-            onClose={() => setShowSessionPanel(false)}
-            onLeave={() => { setShowSessionPanel(false); router.push(authSession?.user ? '/me' : '/') }}
-          />
-        )}
-        {showUserPanel && (
-          <UserPanel onClose={() => setShowUserPanel(false)} />
-        )}
-
-        {/* Content */}
-        <main style={{flex:1,overflowY:'auto'}}>{children}</main>
-
-        {/* Nav */}
-        <nav style={{height:'calc(var(--nav-h) + 10px)',flexShrink:0,display:'flex',gap:10,borderTop:'1px solid rgba(255,255,255,0.04)',background:'rgba(10,10,9,0.88)',backdropFilter:'blur(18px)',zIndex:10,padding:'8px 14px calc(env(safe-area-inset-bottom,0px) + 8px)'}}>
-          {navItems.map(({ label, path, icon, id }) => {
-            const active = pathname === path
-            return (
-              <Link key={path} href={path} className={`nav-item${active ? ' active' : ''}`}>
-                <span style={{fontSize:16,lineHeight:1}}>{icon}</span>
-                <span>{label}</span>
-              </Link>
-            )
-          })}
-          <button onClick={() => setShowUserPanel(true)} className="nav-item" style={{flex:1}}>
-            <span style={{fontSize:14,lineHeight:1}}>👤</span>
-            <span>You</span>
-          </button>
-          <button onClick={() => router.push(authSession?.user ? '/me' : '/')} className="nav-item" style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}>
-            <span style={{fontSize:16,lineHeight:1}}>←</span>
-            <span>Leave</span>
-          </button>
-        </nav>
-      </div>
-    </Ctx.Provider>
+              <span style={{fontSize:16,lineHeight:1}}>{icon}</span>
+              <span>{label}</span>
+            </Link>
+          )
+        })}
+        <button
+          onClick={() => guardedNav(() => router.push(leaveHref))}
+          className="nav-item"
+          style={{flex:1,color:'var(--fg-faint)',borderColor:'transparent',background:'transparent'}}
+        >
+          <span style={{fontSize:16,lineHeight:1}}>←</span>
+          <span>Leave</span>
+        </button>
+      </nav>
+    </div>
   )
 }

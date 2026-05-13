@@ -23,7 +23,7 @@ interface Props {
 
 export function StarRating({ value, size = 'compact' }: Props) {
   if (value == null || !Number.isFinite(value) || value <= 0) return null
-  const fontSize = size === 'detail' ? 28 : 22
+  const fontSize = size === 'detail' ? 28 : 21
   return (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4, lineHeight: 1, color: 'var(--accent)', fontWeight: 800 }}>
       {/* Explicit text-font stack forces Chromium/Brave to use a system

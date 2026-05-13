@@ -216,6 +216,12 @@ Host moderation primitive scoped per-session. Distinct from the user-level [Bloc
 
 **Schema (Postgres).** `wines.added_by_identity_id VARCHAR(64)` (nullable) — records who added each wine. Populated on wine POST from the resolved identity; preserved on edit. Existing pre-feature rows stay NULL and never match a "delete their wines" filter. Indexed on `(session_id, added_by_identity_id)`.
 
+`wines.added_by_display_name VARCHAR(64)` (nullable) — frozen snapshot of the adder's display name at create time. Same freeze rule as `added_by_identity_id`: populated on POST from the live `s:{CODE}:identities` map, preserved verbatim on edit. Pre-feature rows are NULL. Used as a fallback by the wire-time resolver when the adder has been kicked/banned and is no longer in the live identities map.
+
+**Wire-time resolution of `addedByDisplayName`** (in `wineToWire`, the single sanctioned transform): priority is **live identities map → `users.name` lookup (only for `u:<id>` adders) → `addedByDisplayName` snapshot → null**. The live map wins so any future per-session rename surfaces immediately. The `users.name` fallback covers kicked logged-in adders (their identities entry is gone but the user row survives). The snapshot is the last-resort fallback for kicked anon adders (no users row exists). `redactWine` strips `addedByDisplayName` to `null` in blind mode — knowing "Alice brought this one" partially identifies a wine via her known preferences.
+
+The raw `addedByIdentityId` is stripped from the wire by `wineToWire` (privacy: prevents anon-id correlation across wines from the same adder). Only the resolved display name surfaces. Display names are already public elsewhere (identities map, ratings list), so adding them to wines doesn't expand the leak surface.
+
 **Two-flavor removal: kick vs ban.**
 
 - **Kick** (`mode: 'kick'`) — strip the participant from identities + cohost list, drop their `session_members.role` to `taster`. Their ratings, hall_of_fame, bookmarks, session_members row all **stay**. Add to `s:<C>:kicked` so the bounce can identify them. They can rejoin (kicked is not an authorization gate). On the bounce screen they choose Keep (no-op) or Delete (`POST /leave?cleanup=full`, runs the `kick-delete` wipe path).
@@ -290,6 +296,8 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 **Identity ids:** `u:<userId>` for logged-in users, `a:<uuid>` for anonymous. These ids are the trust anchor everywhere — Redis rating keys, host checks, cohost lists, all id-keyed.
 
 **Display names are presentation-only.** What a user types as their name (or what `users.name` holds for logged-in accounts) is user-chosen, mutable, non-unique within a session (collisions get an emoji suffix), and carries **zero** trust. It must never be used for identification, authentication, authorization, matching, or lookup. There is no concept of a "username" in this codebase — if a request, ticket, or PR talks about matching on username/name, translate it to identity id and push back on the framing. Fields like `meta.host`, `ratings.rater_name`, and the values (not keys) of `s:{CODE}:identities` are display strings: store them, render them, but never branch on them. All authorization checks resolve through `resolveIdentity` → `{id, kind}` and compare on `id`.
+
+**Anon per-session rename.** Anonymous participants can rename themselves within a session via `PATCH /api/session/:code/me/name` (body `{name}`). Anon-only — logged-in users hit 403 with a "use profile settings" hint, because their per-session name is read live from `users.name` and changing it once in profile settings propagates to every session. The endpoint validates via the same `validateDisplayName` pipeline as join, re-runs `disambiguateDisplayName` against the current participants map (so a collision with a current entry adds an emoji), and writes to `s:{CODE}:identities`. Rate-limited 10/min/identity to bound spam (hGetAll on every call + live participant-list noise via 5s polling). Pre-rename `ratings.rater_name` snapshots stay frozen per the policy above — historic ratings keep the old name. The client-safe helper `stripDisambiguationEmoji` (in `lib/displayName.ts`) strips a trailing emoji from the displayed name when populating the rename input, so users don't have to re-type the suffix the server added on a previous collision. The full disambiguation logic lives in `lib/displayName.server.ts` to keep `lib/redis` out of client bundles.
 
 **URL query parameters are presentation-only too.** Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed the client UI on first render after a redirect from create/join. They must be captured synchronously into `useState` initializers (so the first render has the value) and stripped from the URL via `router.replace` in a mount effect — see `SessionShell.tsx`. Never branch authorization on a URL param; never leave one in the URL where copy-paste turns it into a confused-UI bug for the recipient. Server trust still flows only through the NextAuth cookie or the `x-vr-anon-token` header.
 
@@ -372,6 +380,12 @@ The single underlying rule: counts and renders depend on the **author** (or chec
 
 Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
 
+**Wine modal "Brought by" callout** (`WineInfoPane` inside `WineModal`) follows the participants-list matrix with two divergences:
+- **No `[blocked]` prefix.** That marker stays exclusive to the participants list. Here, block state surfaces only through the lack of clickability + the plain (not bold/accent) name styling. Unblock is still reachable via the user's `/u/<id>` page or Settings → Blocked users.
+- **Avatar always renders** (initial letter), including for anon-style modes (mutual block, being-blocked-by-adder). Since anon participants in this surface render WITH an avatar, dropping the avatar for a blocked user would itself leak the block — the absence is the tell. So the blocked side renders visually identical to a regular anon participant: avatar + plain name + no link. Same rule will eventually need to land in SessionPanel once anon participants there gain avatars; until then docs/block.md's "no avatar" line is participants-list-specific.
+
+Click rules unchanged: clickable + blocked-by-me modes open `ProfilePreviewInline` inline below the callout. Anon-style + plain modes have no click. Anon viewers can't click any mode.
+
 `/api/session/[code]` GET adds `viewerBlocksOut` + `viewerBlocksIn` arrays (identity-ids, scoped to in-session participants only — never the viewer's full block list). Anon viewers get empty arrays. Response has `Cache-Control: private, no-store` since it varies by viewer.
 
 **Follow endpoint scenarios:** 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.
@@ -450,8 +464,8 @@ Top-level routes:
 - `/` — lobby (`app/(public)/page.tsx` → `LobbyClient`)
 - `/login`, `/register` — NextAuth credentials flows
 - `/me` and subpaths — logged-in dashboard, history, saved, profile, badges, account, feed
-- `/session/<code>` — in-session shell (`SessionShell` provides context to wine list, rate, compare screens)
-- `/session/<code>/rate/<wineId>` — direct-link entry into the rate modal (renders the wine list with the modal pre-opened; the rate flow itself is a `<Modal>`, not a separate route)
+- `/session/<code>` — in-session shell (`SessionShell` provides context). Redirects to `/wines`.
+- `/session/<code>/wines` — the sole wine-list surface. Tapping a row opens the wine modal on the Wine Info pane; the inline "Rate" button on unrated rows (or the score chip on rated rows) opens the modal on the Rate pane. Host-tier affordances render inline. Modal navigation between wines uses pull-to-swap / prev-next buttons / arrow keys.
 - `/session/<code>/compare` — overlay/per-rater comparison view
 - `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
 - `/u/<id>` — public user profile + recent check-ins
@@ -470,15 +484,17 @@ Visual consistency across screens is enforced by reusable primitives, not by con
 
 Primitives in place today:
 
-- **Color tokens** (`app/globals.css` CSS variables exposed via Tailwind). Use `var(--bg2)`, `var(--accent)`, `text-fg-dim`, etc. — never raw hex codes.
+- **Color tokens** (`app/globals.css` CSS variables exposed via Tailwind). Use `var(--bg2)`, `var(--accent)`, `text-fg-dim`, etc. — never raw hex codes. Chrome-specific tokens for app shell (header / bottom nav / borders): `var(--chrome-bg)`, `var(--chrome-nav-bg)`, `var(--chrome-border)` — theme-aware (cream tones in light mode, dark warm-tinted in dark mode). Use these on any sticky header / fixed bottom nav rather than hardcoding `rgba(14,14,12,...)`-style literals. Role chip color for providers is `var(--accent-provider)`.
 - **Element classes** (`.btn-p`, `.btn-g`, `.btn-s`, `.btn-del`, `.fi`, `.field`, `.fl`, `.panel`, `.chip`). Use these for buttons and form fields rather than re-styling inline.
-- **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`.
+- **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`. Full-width `.btn-del` style.
+- **`<DiscardButton>`** (`components/ui/DiscardButton.tsx`) — sibling of `<ConfirmDeleteButton>` for the "row destructive" case where the button sits in a flex row alongside Keep editing / Save (e.g. the unsaved-changes confirm modals in WineModal and AddWineModal). Same two-press semantics, fixed-width ghost button with red border, sized so the row layout doesn't reflow when armed.
+- **`<UnsavedChangesConfirm>`** (`components/ui/UnsavedChangesConfirm.tsx`) — shared modal-on-modal confirm used by WineModal (uncommitted-rating) and AddWineModal (uncommitted-wine-metadata). Three resolutions wired by the caller: Discard → onDiscard, Keep editing → onKeep, Save → onSave (returns `Promise<boolean>`; on success the caller fires the queued nav, on failure the confirm stays open and surfaces `error`). Backdrop/Escape → onDismiss (Keep-editing semantics). Use this for any other modal that grows a dirty-guard prompt rather than re-rolling the button row.
 - **Lightbox** (`components/ui/ImageLightbox.tsx`). Use `openLightbox(url, alt)` to display any image full-screen.
 - **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
 - **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
-- **`<FlavorChips>`** (`components/rate/FlavorChips.tsx`) — canonical input surface for setting flavour intensity (none → intense, 0–5). Used in RatingScreen and CheckinModal. Tap-or-drag pill chips with a separate × clear button per row; the `INTENSITY` label array is shared with `<IntensityHelp>` (`components/rate/IntensityHelp.tsx`), the (i)-popover that explains the scale, so chip captions and help text can't drift.
+- **`<FlavorChips>`** (`components/rate/FlavorChips.tsx`) — canonical input surface for setting flavour intensity (none → intense, 0–5). Used in WineModal's Rate pane and CheckinModal. Tap-or-drag pill chips with a separate × clear button per row; the `INTENSITY` label array is shared with `<IntensityHelp>` (`components/rate/IntensityHelp.tsx`), the (i)-popover that explains the scale, so chip captions and help text can't drift.
 - **`<StarRating>`** (`components/ui/StarRating.tsx`) + **`formatScore`** (`lib/formatScore.ts`) — canonical *read-side* score rendering. The component renders `★ <num>` in two size tiers (`compact` / `detail`); `formatScore(v)` is the same logic exported for non-component call sites (compare-page chips, history sublist rows where the full primitive would dominate the surrounding row). Use one of these on every surface that displays a score — never re-implement `★ ${v}` inline. Display rule (locked): single star + number, no `/5` denominator; whole numbers show `.0` (`4.0`), half-steps trim trailing zero (`4.5`), quarters keep both decimals (`4.25`); empty state (null/undefined/0/NaN) renders nothing.
-- **`<ScoreSlider>`** (`components/ui/ScoreSlider.tsx`) — canonical *write-side* score input. Touch-and-drag slider (0..5, snaps to 0.25), tabular-nums + `.toFixed(2)` for stable digits during drag, full keyboard support via `role="slider"` + arrow/Page/Home/End handlers. Used in RatingScreen and CheckinModal. Replaces the old 5-button score row; if a third score-entry surface appears, route it through this primitive too.
+- **`<ScoreSlider>`** (`components/ui/ScoreSlider.tsx`) — canonical *write-side* score input. Touch-and-drag slider (0..5, snaps to 0.25), tabular-nums + `.toFixed(2)` for stable digits during drag, full keyboard support via `role="slider"` + arrow/Page/Home/End handlers. Used in WineModal's Rate pane and CheckinModal. Replaces the old 5-button score row; if a third score-entry surface appears, route it through this primitive too.
 - **`<Avatar>`** (`components/profile/Avatar.tsx`) — canonical user-avatar circle. Renders `<img>` when `imageUrl` is set, falls back to the user's initial letter on an accent-tinted background. Single `size` prop (pixels). Use this everywhere a user circle appears (ProfileHeader, ProfilePreviewInline, CheckinCard author byline, ProfilePanelPeople rows, AvatarEditor empty state). Two thin client wrappers add behavior: `<EditableAvatar>` (own avatar — tap opens AvatarEditor with optimistic UI + TanStack invalidation on save), `<ZoomableAvatar>` (other users — tap opens the full-screen lightbox).
 
 Pending extractions that are on the follow-up list (extract them when you next touch the relevant area):
@@ -486,6 +502,21 @@ Pending extractions that are on the follow-up list (extract them when you next t
 - `<WineIdentityFields>` — sibling for create/edit forms (CheckinModal, AddWineModal). Same canonical field order as `<WineIdentity>`.
 
 **Modals use the shared `<Modal>` primitive.** `components/ui/Modal.tsx` handles `createPortal(children, document.body)` (so the overlay is never trapped in a parent stacking context — important because `.panel` uses `backdrop-filter` which creates a containing block for fixed descendants), backdrop click-to-close, Escape-key-to-close, and the standard sheet styling. New modal/overlay components should use it rather than re-rolling `position: fixed; inset: 0; …` boilerplate. `ImageLightbox` is the deliberate exception — it has unique styling needs (z-index 9999 to float over everything, full-black backdrop, center-aligned close button) and stays standalone.
+
+The shared `<Modal>` also handles **iOS body scroll lock** while open (overflow:hidden + position:fixed + overscroll-behavior:contain on body). Nested modals don't double-lock; only the first one in the stack mutates body styles, and the last one out restores. Modal stack depth is exposed via `getModalStackDepth()` for callers that need to gate window-level handlers on "am I the topmost modal."
+
+### iOS touch gestures inside modals
+
+Pull-to-swap on the wine modal (drag past top/bottom scroll boundary → load previous/next wine) is built on a narrow set of iOS Safari requirements. Each is load-bearing and was learned the hard way during the wine-rate-split iteration.
+
+- **Hook**: `lib/usePullToSwap.ts`. Touch-only. Dev-mode runtime check asserts the container has `touch-action: pan-y`, `overscroll-behavior: contain`, and `overflow-y: auto/scroll`.
+- **Container CSS** (in the caller, e.g. `WineModal.tsx`'s scrollRef): all three properties above are required. `touch-action: pan-y` permanent (native iOS scroll handles momentum); pull engages via `preventDefault()` inside touchmove with `passive:false` on the first qualifying move ≥2px past the boundary, while `e.cancelable` is still `true`. Letting that engagement window slip (waiting for 4px+, or starting the gesture mid-content and crossing the boundary later) breaks the gesture because iOS commits to native scroll and `cancelable` flips to `false`.
+- **Modal sheet sizing**: `svh` units, not `vh` — iOS Safari's URL-bar collapse changes `vh` mid-gesture, which jumps scrollTop and kills momentum. The Modal sheet uses `display:flex column` when both `minHeight` and `maxHeight` are set, so the inner column with `flex:1` claims a definite height.
+- **scrollTop reset**: required on `activeWineId` change in the consuming modal (`WineModal.tsx`). Otherwise the new wine renders with the previous wine's scrollTop, often past the new content height.
+- **Horizontal-drag controls inside the scroll container** (score slider, flavor bars): use horizontal-intent detection (defer `setPointerCapture` until the first move resolves direction via `|dx|>|dy|`). Do NOT use `touch-action: none` — it would block vertical scroll. Pattern from `components/rate/FlavorChips.tsx` on main; reused in `components/wine/RatingPane.tsx`.
+- **Textarea inside scroll container**: do NOT bail in `onTouchStart` on `<textarea>` targets. The first-move preventDefault wins the race against iOS's text-selection classification, so pull-from-textarea works. Focused textareas (user typing) keep native text behavior because they're not typically at a scroll boundary.
+
+**See `components/wine/CLAUDE.md` for the quick edit-time rules and `docs/dev/ios-touch-gestures.md` for the full history (architectures tried + discarded, why each failed).**
 
 ### Flavour chart system
 
@@ -515,9 +546,18 @@ Flavour dimensions are **type-specific**:
   - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places; when unset, falls back to OSM Overpass + Nominatim.
   - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
 
+### Wine metadata fields
+
+Beyond name/producer/vintage/grape/type, wines carry editorial detail:
+- `description` — free-form text (≤1000 chars), markdown-style links auto-link via `renderWithLinks` on the info pane.
+- `region` (≤255) + `country` (ISO 3166-1 alpha-2; validated server-side against the static `COUNTRY_CODES` set in `lib/countries.ts`).
+- `vinification` (≤1000) — production/aging notes.
+- `purchase_url` (≤1000, http(s) only) — vendor link. Validated by `cleanUrl` at the write boundary (`scheme ∈ {http, https}`); rendered with `rel="noopener noreferrer"` and `target="_blank"`. Restricting to http/https prevents `javascript:` / `data:` injection via crafted URLs.
+
+All five fields are nullable and edited via `PATCH /api/session/:code/wines/:wineId`. They're stripped by `redactWine` in blind mode along with name/producer/vintage/grape — anything that identifies a wine.
+
 ### Schema notes for future features
 
 These columns exist in the schema but are not yet wired to UI:
-- `wines.purchase_url` — vendor/pro feature: link to purchase
 - `users.role = 'vendor'` — paid tier hook (the `pro` boolean is wired)
 - `wines.category` — extensible drink type beyond wine (beer, spirit, kombucha)

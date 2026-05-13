@@ -10,11 +10,10 @@ import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
 import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@/lib/sessionCode'
+import { ICO } from '@/lib/wineTypeColors'
 
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
 type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
-
-const ICO: Record<string, string> = { red: '🍷', white: '🥂', spark: '🍾', rose: '🌸', nonalc: '🌿' }
 
 interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void; onRemove?: () => void | Promise<void> }
 

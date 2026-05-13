@@ -3,15 +3,21 @@ import { useState, useRef, useEffect } from 'react'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { clearSessionNames } from '@/lib/clientStorage'
+import { RoleBadge } from '@/components/session/RoleBadge'
 
 interface Props {
   myId: number
   name: string
   email: string
   pro: boolean
+  // Optional session-scoped role badge rendered next to the name in
+  // the dropdown identity block. Only set when this menu is mounted
+  // inside a session shell (host / co-host / provider). `/me` and
+  // `/u/[id]` callers omit this, so non-session surfaces stay clean.
+  sessionRole?: 'host' | 'co-host' | 'provider' | null
 }
 
-export function UserMenu({ myId, name, email, pro }: Props) {
+export function UserMenu({ myId, name, email, pro, sessionRole = null }: Props) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -39,7 +45,10 @@ export function UserMenu({ myId, name, email, pro }: Props) {
         <div style={{position:'absolute',right:0,top:'calc(100% + 6px)',width:200,background:'var(--bg2)',border:'1px solid var(--border2)',borderRadius:10,overflow:'hidden',boxShadow:'0 12px 40px rgba(0,0,0,0.4)',zIndex:100}}>
           {/* Account info */}
           <div style={{padding:'10px 12px',borderBottom:'1px solid var(--border)'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'var(--fg)'}}>{name}</div>
+            <div style={{display:'flex',alignItems:'center',gap:6,minWidth:0}}>
+              <div style={{fontSize:12,fontWeight:700,color:'var(--fg)',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
+              {sessionRole && <RoleBadge role={sessionRole} />}
+            </div>
             <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:1}}>{email}</div>
             {pro && <div style={{fontSize:9,color:'var(--accent)',marginTop:3,letterSpacing:'0.06em',textTransform:'uppercase'}}>✦ Pro account</div>}
           </div>
