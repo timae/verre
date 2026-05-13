@@ -6,6 +6,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
+import { RoleBadge } from './RoleBadge'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { formatCode, joinPath } from '@/lib/sessionCode'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
@@ -349,9 +350,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                                 {p.displayName}
                                 {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
                               </span>
-                              {isThisHost && <span style={{fontSize:9,color:'var(--accent)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(200,150,60,0.3)',padding:'1px 5px',borderRadius:2}}>host</span>}
-                              {isCo && !isThisHost && <span style={{fontSize:9,color:'var(--accent2)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(143,184,122,0.3)',padding:'1px 5px',borderRadius:2}}>co-host</span>}
-                              {isProv && !isThisHost && !isCo && <span style={{fontSize:9,color:'rgba(120,180,220,0.95)',letterSpacing:'0.08em',textTransform:'uppercase',border:'1px solid rgba(120,180,220,0.35)',padding:'1px 5px',borderRadius:2}}>provider</span>}
+                              <RoleBadge role={isThisHost ? 'host' : isCo ? 'co-host' : isProv ? 'provider' : null} />
                               {/* Set/Change role — host or cohost can promote/
                                   demote per the locked transition rule. Strict-
                                   host sees Co-host as an option; cohost-only
@@ -389,6 +388,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                                 isSelf={isMe}
                                 viewerLoggedIn={!!myId && myId.startsWith('u:')}
                                 myId={myId && myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+                                indent={16}
                               />
                             )}
                           </div>

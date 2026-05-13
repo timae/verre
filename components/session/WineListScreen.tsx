@@ -348,56 +348,75 @@ function WineRow({
         {showHostControls && isBlind && isRevealed && (
           <button onClick={onHide}
             style={{fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.2)',background:'transparent',padding:'4px 8px',borderRadius:3,cursor:'pointer'}}>
-            ✓ hide
+            hide
           </button>
         )}
         {/* Score chip if rated, Rate button if not. Both are tap
             targets that open the modal on the Rate pane. The Rate
             button is intentionally prominent (accent-tinted pill) so
-            unrated wines stand out in a mixed list. Layout shifts
-            between the two states are intentional — a quick scan
-            shows immediately which wines still need rating.
+            unrated wines stand out in a mixed list.
             stopPropagation prevents the parent row's onClick (which
-            opens the Info pane) from firing alongside. */}
-        {rating?.score ? (
-          <button
-            type="button"
-            aria-label="Edit rating"
-            onClick={e => { e.stopPropagation(); onOpen('rate') }}
-            style={{
-              background:'transparent',border:'none',padding:0,
-              cursor:'pointer',display:'inline-flex',alignItems:'center',
-            }}
-          >
-            <StarRating value={rating.score} />
-          </button>
-        ) : !isRedacted ? (
-          // Hosts (showHostControls) get a smaller "rate" pill so the
-          // row's right edge stays uncluttered next to the reveal/hide
-          // button + drag handle. Tasters get the prominent
-          // accent-gold pill that draws the eye to unrated wines —
-          // their primary action on this surface.
-          <button
-            type="button"
-            onClick={e => { e.stopPropagation(); onOpen('rate') }}
-            style={showHostControls
-              ? {
-                  fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',
-                  color:'var(--accent)',
-                  border:'1px solid rgba(200,150,60,0.3)',
-                  background:'rgba(200,150,60,0.08)',
-                  padding:'4px 8px',borderRadius:3,cursor:'pointer',
-                }
-              : {
-                  background:'var(--accent)',color:'var(--bg)',
-                  border:'none',padding:'7px 14px',borderRadius:100,
-                  fontSize:11,fontWeight:700,letterSpacing:'0.08em',
-                  textTransform:'uppercase',cursor:'pointer',
+            opens the Info pane) from firing alongside.
+
+            Fixed-width right-aligned slot so the drag handle stays
+            at the same x across all row variants (rated/unrated ×
+            host/taster). Width is tight on the widest realistic
+            score chip so narrow viewports don't lose wine-title
+            space to slack. Tasters get a slightly wider slot for
+            the larger "Rate" pill. */}
+        {(rating?.score || !isRedacted) && (
+          <div style={{
+            width: showHostControls ? 72 : 80,
+            display:'flex',alignItems:'center',justifyContent:'flex-end',
+            flexShrink:0,
+          }}>
+            {rating?.score ? (
+              <button
+                type="button"
+                aria-label="Edit rating"
+                onClick={e => { e.stopPropagation(); onOpen('rate') }}
+                style={{
+                  // 6×10 padding bumps the touch target to ~44×40px around
+                  // the star+number, meeting WCAG 2.5.5 (44×44 minimum).
+                  // Negative margin keeps the row's visual rhythm by
+                  // absorbing the padding into surrounding gap, so layout
+                  // doesn't shift vs. the prior padding:0 version.
+                  background:'transparent',border:'none',
+                  padding:'6px 10px',margin:'-6px -10px',
+                  cursor:'pointer',display:'inline-flex',alignItems:'center',
                 }}
-          >
-            Rate
-          </button>
-        ) : null}
+              >
+                <StarRating value={rating.score} />
+              </button>
+            ) : (
+              // Hosts (showHostControls) get a smaller "rate" pill so the
+              // row's right edge stays uncluttered next to the reveal/hide
+              // button + drag handle. Tasters get the prominent
+              // accent-gold pill that draws the eye to unrated wines —
+              // their primary action on this surface.
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); onOpen('rate') }}
+                style={showHostControls
+                  ? {
+                      fontSize:9,letterSpacing:'0.08em',textTransform:'uppercase',
+                      color:'var(--accent)',
+                      border:'1px solid rgba(200,150,60,0.3)',
+                      background:'rgba(200,150,60,0.08)',
+                      padding:'4px 8px',borderRadius:3,cursor:'pointer',
+                    }
+                  : {
+                      background:'var(--accent)',color:'var(--bg)',
+                      border:'none',padding:'7px 14px',borderRadius:100,
+                      fontSize:11,fontWeight:700,letterSpacing:'0.08em',
+                      textTransform:'uppercase',cursor:'pointer',
+                    }}
+              >
+                Rate
+              </button>
+            )}
+          </div>
+        )}
         {showHostControls && (
           // Activator pattern: spread `attributes` + `listeners` and set
           // the node ref on the handle (NOT the row), so dnd-kit knows

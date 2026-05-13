@@ -184,6 +184,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
 | PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
+| PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
 | GET | /api/session/:code/bans | List banned identities (host + cohost) |
 | POST | /api/session/:code/bans | Kick or ban a participant (body: `{identityId, mode: 'kick'\|'ban', deleteAddedWines?}`). Strict-host required when target is a cohost |
 | DELETE | /api/session/:code/bans/:identityId | Unban (host + cohost); shares 60/10min rate limit with POST |

@@ -253,22 +253,20 @@ export function WineInfoPane({ wine, onProvenanceClick, provenanceMode = 'plain'
               </div>
             </div>
             {provenancePreview && (
-              // Floating preview — `position: absolute` so it sits on
-              // top of the description / fact-row content below
-              // instead of pushing them down. The 6px top offset
-              // visually anchors it to the callout. z-index keeps it
-              // above the rest of the pane content; the modal's own
-              // backdrop sits above this via its own z-layer.
+              // Floating preview — `position: absolute` so it overlays
+              // the description / fact-row content below instead of
+              // pushing them down. Overlap is the deliberate choice
+              // for this surface: the preview is transient and the
+              // user can dismiss it to read the content underneath.
+              // The wrapper carries NO chrome (no background, border,
+              // or radius) — ProfilePreviewInline brings its own
+              // panel styling, and a second layer of chrome here
+              // produced a visible "two stacked bubbles" effect.
               <div style={{
                 position:'absolute',
                 top:'calc(100% + 6px)',
                 left:0,right:0,
                 zIndex:10,
-                background:'var(--bg2)',
-                border:'1px solid var(--border)',
-                borderRadius:12,
-                boxShadow:'0 12px 32px -8px rgba(0,0,0,0.6)',
-                overflow:'hidden',
               }}>
                 {provenancePreview}
               </div>

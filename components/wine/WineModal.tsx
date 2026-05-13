@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { motion, useMotionValue, animate } from 'framer-motion'
 import { Modal, getModalStackDepth } from '@/components/ui/Modal'
+import { UnsavedChangesConfirm } from '@/components/ui/UnsavedChangesConfirm'
 import { WineInfoPane } from '@/components/wine/WineInfoPane'
 import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { AddWineModal } from '@/components/wine/AddWineModal'
@@ -705,12 +706,14 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     }
   }
 
-  // Auto-dismiss the Go-back bubble after 5s. Reset whenever
+  // Auto-dismiss the Go-back bubble after 8s. Reset whenever
   // `lastSwap` changes (covers both "set to a fresh swap" and "user
-  // cleared it via Go back").
+  // cleared it via Go back"). 8s gives a glanceable window for a
+  // distracted taster — short enough not to linger, long enough that
+  // a mid-pour conversation doesn't time it out.
   useEffect(() => {
     if (!lastSwap) return
-    const t = setTimeout(() => setLastSwap(null), 5000)
+    const t = setTimeout(() => setLastSwap(null), 8000)
     return () => clearTimeout(t)
   }, [lastSwap])
 
@@ -729,9 +732,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   //   - Any modifier key is held (Cmd/Ctrl/Alt/Shift) — reserved for
   //     browser/system shortcuts.
   //   - `saving` is true — same single-flight guard as the buttons.
-  //   - Another modal is on top of WineModal (SessionPanel,
-  //     UserPanel, or any future overlay). Gated via the modal
-  //     stack depth from Modal.tsx.
+  //   - Another modal is on top of WineModal (SessionPanel or any
+  //     future overlay). Gated via the modal stack depth from Modal.tsx.
   //   - The inner Save-confirm modal is open (pendingClose=true).
   //     Its own Escape handles that, not arrows.
   //   - A nested control already consumed the key (defaultPrevented).
@@ -753,8 +755,8 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       // disabled semantics.
       if (saving || slideActive) return
       // Topmost-modal gate. If something is open ON TOP of WineModal
-      // — SessionPanel, UserPanel, or any future overlay — the arrow
-      // keys belong to that surface, not us. WineModal's own outer
+      // — SessionPanel or any future overlay — the arrow keys belong
+      // to that surface, not us. WineModal's own outer
       // modal is always on the stack while this component is
       // mounted; the inner Save-confirm pushes one more when
       // pendingClose is true. Anything beyond that means another
@@ -1522,116 +1524,52 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         />
       )}
 
-      {/* Uncommitted-rating confirm — modal-on-modal. Mounted via the
-          shared Modal portal so it floats above this modal's backdrop
-          rather than nesting in the same stacking context.
-          Backdrop / Escape close ONLY this inner confirm — equivalent
-          to "Keep editing". Outer modal stays mounted underneath; the
-          modalStack in Modal.tsx routes Escape to the topmost.
-          `pendingNavRef` is set when the confirm opens via an external
-          nav attempt (bottom-nav, Leave, header). The three resolutions:
-          - Commit success → run pendingNav so user reaches their target
-          - Discard      → onClose + run pendingNav
-          - Keep editing → clear pendingNav, stay in the modal. */}
-      {pendingClose && (
-        <Modal
-          onClose={() => {
-            if (saving) return
+      {/* Uncommitted-rating confirm. `pendingNavRef` carries the
+          proceed callback when the gate fired from an external nav
+          (bottom-nav, Leave, header logo via DirtyGuard.attemptNav);
+          null when fired from a local close path (X, backdrop, X-key).
+          Resolutions: Discard → onClose + run pendingNav. Keep
+          editing / dismiss → clear pendingNav. Save → commit; on
+          success commitRating fires onClose internally so we just
+          need to fire pendingNav. On failure the confirm stays open
+          with commitError surfaced. */}
+      <UnsavedChangesConfirm
+        open={pendingClose}
+        title="Save your rating?"
+        subtitle="You have unsaved changes on this wine."
+        error={commitError}
+        saving={saving}
+        onDismiss={() => {
+          if (saving) return
+          pendingNavRef.current = null
+          setPendingClose(false)
+        }}
+        onKeep={() => {
+          pendingNavRef.current = null
+          setPendingClose(false)
+        }}
+        onDiscard={() => {
+          const nav = pendingNavRef.current
+          pendingNavRef.current = null
+          setPendingClose(false)
+          onClose()
+          if (nav) nav()
+        }}
+        onSave={async () => {
+          const ok = await commitRating()
+          if (ok) {
+            // commitRating already fired onClose internally — modal's
+            // already unmounting. The pendingNav still needs to fire
+            // so the user lands at the bottom-nav target. Read & clear
+            // the ref before invoking to guard against a double-fire.
+            const nav = pendingNavRef.current
             pendingNavRef.current = null
             setPendingClose(false)
-          }}
-          maxWidth={420}
-        >
-          <div style={{
-            fontSize:15,fontWeight:700,color:'var(--fg-warm)',
-            marginBottom:8,letterSpacing:'-0.005em',
-          }}>Save your rating?</div>
-          <div style={{
-            fontSize:13,color:'var(--fg-dim)',lineHeight:1.5,
-            marginBottom:commitError ? 12 : 18,
-          }}>You have unsaved changes on this wine.</div>
-          {commitError && (
-            <div style={{
-              marginBottom:18,padding:'10px 12px',
-              borderRadius:8,
-              border:'1px solid rgba(184,64,64,0.5)',
-              background:'rgba(184,64,64,0.08)',
-              color:'rgba(220,90,90,1)',fontSize:12,lineHeight:1.4,
-            }}>{commitError}</div>
-          )}
-          {/* Button order: Discard | Keep editing | Save (primary).
-              Discard is two-press (matches the codebase destructive-
-              button convention) so a thumb-drift onto it doesn't
-              destroy work — the first tap only arms it. Save stays
-              mounted until commitRating resolves; on success
-              commitRating calls onClose() which unmounts the whole
-              modal stack; on failure the inner confirm stays open
-              with commitError surfaced above. */}
-          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            <DiscardButton
-              disabled={saving}
-              onDiscard={() => {
-                const nav = pendingNavRef.current
-                pendingNavRef.current = null
-                setPendingClose(false)
-                onClose()
-                if (nav) nav()
-              }}
-            />
-            <button
-              onClick={() => {
-                if (saving) return
-                pendingNavRef.current = null
-                setPendingClose(false)
-              }}
-              disabled={saving}
-              style={{
-                flex:1,minWidth:0,
-                display:'inline-flex',alignItems:'center',justifyContent:'center',
-                background:'transparent',color:'var(--fg-dim)',
-                border:'1px solid var(--border)',
-                padding:'12px 14px',borderRadius:8,
-                fontSize:11,letterSpacing:'0.08em',
-                textTransform:'uppercase',fontWeight:600,
-                cursor: saving ? 'default' : 'pointer',
-                opacity: saving ? 0.6 : 1,
-              }}
-            >Keep editing</button>
-            <button
-              onClick={async () => {
-                const ok = await commitRating()
-                if (ok) {
-                  // commitRating already fired onClose internally — but
-                  // it ran BEFORE we got here, so the modal's already
-                  // unmounting. The pendingNav still needs to fire so
-                  // the user lands at the bottom-nav target. Read &
-                  // clear the ref before invoking to guard against an
-                  // accidental double-fire on rapid clicks.
-                  const nav = pendingNavRef.current
-                  pendingNavRef.current = null
-                  setPendingClose(false)
-                  if (nav) nav()
-                }
-              }}
-              disabled={saving}
-              style={{
-                flex:1,minWidth:120,
-                display:'inline-flex',alignItems:'center',justifyContent:'center',gap:8,
-                background:'var(--accent)',color:'var(--bg)',
-                border:'none',padding:'12px 16px',borderRadius:8,
-                fontWeight:700,fontSize:11,letterSpacing:'0.08em',
-                textTransform:'uppercase',
-                cursor: saving ? 'default' : 'pointer',
-                opacity: saving ? 0.6 : 1,
-                boxShadow:'0 6px 24px -8px var(--accent)',
-              }}
-            >
-              <CheckIcon size={14} stroke={2.2} />
-              {saving ? 'Saving…' : 'Save'}
-            </button>
-          </div>
-        </Modal>
-      )}
+            if (nav) nav()
+          }
+          return ok
+        }}
+      />
       </div>
     </Modal>
   )
@@ -1679,58 +1617,18 @@ function ResetButton({ onReset }: { onReset: () => void }) {
   )
 }
 
-// Two-press destructive button for the uncommitted-rating confirm. Same
-// visual language as ResetButton — first tap arms with the red border +
-// "Tap to discard" copy, second tap within 3s fires `onDiscard`. The
-// codebase's destructive convention (see ConfirmDeleteButton / DeleteMenuItem
-// / ResetButton) is two-press; a one-tap Discard sitting next to a green
-// Commit CTA was the misclick risk the UX review flagged.
-function DiscardButton({
-  onDiscard, disabled = false,
-}: {
-  onDiscard: () => void
-  disabled?: boolean
-}) {
-  const [armed, setArmed] = useState(false)
-  useEffect(() => {
-    if (!armed) return
-    const t = setTimeout(() => setArmed(false), 3000)
-    return () => clearTimeout(t)
-  }, [armed])
-  return (
-    <button
-      onClick={() => {
-        if (disabled) return
-        if (armed) onDiscard()
-        else setArmed(true)
-      }}
-      disabled={disabled}
-      style={{
-        display:'inline-flex',alignItems:'center',justifyContent:'center',
-        background:'transparent',
-        color: armed ? 'rgba(220,90,90,1)' : 'rgba(220,90,90,0.85)',
-        border: `1px solid ${armed ? 'rgba(184,64,64,0.7)' : 'rgba(184,64,64,0.4)'}`,
-        padding:'12px 14px',borderRadius:8,
-        fontSize:11,letterSpacing:'0.08em',
-        textTransform:'uppercase',fontWeight:600,
-        cursor: disabled ? 'default' : 'pointer',
-        opacity: disabled ? 0.5 : 1,
-        // Fixed width sized to the wider label ("Tap to discard") so
-        // the row doesn't reflow when the button arms.
-        width:142,flexShrink:0,
-        transition:'border-color .15s, color .15s',
-      }}
-    >{armed ? 'Tap to discard' : 'Discard'}</button>
-  )
-}
-
 function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
       style={{
+        // minHeight locks the tab strip's vertical size regardless of
+        // whether the Rate tab carries a score pip (which is slightly
+        // taller than the bare label). Without this, switching between
+        // wines where one has a rating and one doesn't would shift
+        // every panel below the tab strip by 1-2px.
         position:'relative',background:'transparent',border:'none',
-        padding:'12px 16px',
+        padding:'12px 16px',minHeight:44,
         fontSize:11,letterSpacing:'0.12em',textTransform:'uppercase',
         fontWeight:700,
         color: active ? 'var(--fg)' : 'var(--fg-dim)',

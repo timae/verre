@@ -6,7 +6,8 @@ import Link from 'next/link'
 import type { WireWine, RatingMeta } from '@/lib/session'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { SessionPanel } from './SessionPanel'
-import { UserPanel } from './UserPanel'
+import { UserMenu } from '@/components/me/UserMenu'
+import { SessionAnonMenu } from './SessionAnonMenu'
 import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
@@ -143,7 +144,6 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const needsName = !displayName && !authSession?.user
   const [isHostState] = useState(() => searchParams.get('host') === '1')
   const [showSessionPanel, setShowSessionPanel] = useState(false)
-  const [showUserPanel,    setShowUserPanel]    = useState(false)
 
   useEffect(() => {
     // Gate on `hydrated` so the redirect doesn't fire in the first-render
@@ -264,6 +264,15 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // server-side role model, but mirroring the flag separately here so
   // the UI can branch on "host vs provider" without re-checking lists.
   const isProvider = !!(metaData?.providerIds && myId && metaData.providerIds.includes(myId))
+  // Single role badge for the user-menu identity block. Strict-host
+  // takes precedence over the URL-driven isHostState fallback (which
+  // applies before the metadata payload lands). Order matches server-
+  // side role precedence: host > co-host > provider > taster (null).
+  const myRole: 'host' | 'co-host' | 'provider' | null =
+    isHostById ? 'host'
+    : isCoHost ? 'co-host'
+    : isProvider ? 'provider'
+    : null
   const myRatings = (myId && ratingsData[myId]?.ratings) || {}
 
   const isBlind = !!(metaData?.blind)
@@ -302,16 +311,26 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     <DirtyGuardProvider>
       <Ctx.Provider value={ctx}>
         <SessionShellChrome
-          authUser={authSession?.user}
+          authUser={authSession?.user as { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined}
           displayName={displayName}
+          code={C}
+          myRole={myRole}
           sessionLabel={sessionLabel}
           showSessionPanel={showSessionPanel}
           setShowSessionPanel={setShowSessionPanel}
-          showUserPanel={showUserPanel}
-          setShowUserPanel={setShowUserPanel}
           navItems={navItems}
           pathname={pathname}
           router={router}
+          onAnonRenamed={(newName: string) => {
+            // Server rename succeeded — persist to localStorage and
+            // update state so the header label, dropdown, and any
+            // descendant reading `displayName` from context re-render.
+            // Polling (refresh) keeps the participants list / ratings
+            // wired to the same identity-id, so just refresh after.
+            localStorage.setItem(`vr_name_${C}`, newName)
+            setStoredName(newName)
+            refresh()
+          }}
         >{children}</SessionShellChrome>
       </Ctx.Provider>
     </DirtyGuardProvider>
@@ -322,21 +341,21 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
 // provider. Reads from props instead of pulling SessionShell's local
 // state directly, to keep the boundary explicit.
 function SessionShellChrome({
-  authUser, displayName, sessionLabel,
+  authUser, displayName, code, myRole, sessionLabel,
   showSessionPanel, setShowSessionPanel,
-  showUserPanel, setShowUserPanel,
-  navItems, pathname, router, children,
+  navItems, pathname, router, onAnonRenamed, children,
 }: {
-  authUser: { name?: string | null } | undefined
+  authUser: { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined
   displayName: string
+  code: string
+  myRole: 'host' | 'co-host' | 'provider' | null
   sessionLabel: string
   showSessionPanel: boolean
   setShowSessionPanel: (v: boolean) => void
-  showUserPanel: boolean
-  setShowUserPanel: (v: boolean) => void
   navItems: { label: string; path: string; icon: string; id: string }[]
   pathname: string
   router: ReturnType<typeof useRouter>
+  onAnonRenamed: (newName: string) => void
   children: ReactNode
 }) {
   const guard = useDirtyGuard()
@@ -373,13 +392,26 @@ function SessionShellChrome({
             title="Session settings"
             style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.1em',color:'var(--accent2)',border:'1px solid rgba(143,184,122,0.3)',background:'rgba(143,184,122,0.08)',padding:'4px 10px',borderRadius:3,cursor:'pointer'}}
           >{sessionLabel}</button>
-          <button
-            onClick={() => guardedNav(() => setShowUserPanel(true))}
-            style={{fontFamily:'var(--mono)',fontSize:10,letterSpacing:'0.06em',color:'var(--fg-dim)',border:'1px solid var(--border)',background:'var(--bg2)',padding:'5px 10px',borderRadius:3,cursor:'pointer',display:'flex',alignItems:'center',gap:6}}
-          >
-            <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent2)'}} />
-            {displayName || 'anon'}
-          </button>
+          {/* Logged-in users get the same UserMenu dropdown as /me and
+              /u/[id] (account info, profile link, sign out). Anons get
+              a slimmer menu with sign-in/up + an inline rename for
+              their per-session display name. */}
+          {authUser && authUser.id && authUser.name ? (
+            <UserMenu
+              myId={Number(authUser.id)}
+              name={authUser.name}
+              email={authUser.email || ''}
+              pro={!!authUser.pro}
+              sessionRole={myRole}
+            />
+          ) : (
+            <SessionAnonMenu
+              displayName={displayName}
+              code={code}
+              role={myRole}
+              onRenamed={onAnonRenamed}
+            />
+          )}
         </div>
       </header>
 
@@ -388,9 +420,6 @@ function SessionShellChrome({
           onClose={() => setShowSessionPanel(false)}
           onLeave={() => { setShowSessionPanel(false); router.push(leaveHref) }}
         />
-      )}
-      {showUserPanel && (
-        <UserPanel onClose={() => setShowUserPanel(false)} />
       )}
 
       <main style={{flex:1,overflowY:'auto'}}>{children}</main>

@@ -12,6 +12,11 @@ interface Props {
   isSelf: boolean
   viewerLoggedIn: boolean
   myId: number | null
+  // Horizontal indent of the preview panel from its left edge. Used
+  // by SessionPanel to align the panel under the participant row's
+  // content (avatar/handle column). Other mount sites pass 0 so the
+  // panel fills its container flush.
+  indent?: number
 }
 
 // /api/users/[id] returns three shapes:
@@ -35,7 +40,7 @@ function isGated(p: ProfileResponse): p is { id: number; name: string; gated: tr
   return (p as { gated?: boolean }).gated === true
 }
 
-export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: Props) {
+export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId, indent = 0 }: Props) {
   const qc = useQueryClient()
   const [openProfile, setOpenProfile] = useState(false)
   const [openSettings, setOpenSettings] = useState(false)
@@ -63,7 +68,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId }: P
   return (
     <>
       <div style={{
-        marginLeft: 16, marginTop: 4, marginBottom: 4,
+        marginLeft: indent, marginTop: 4, marginBottom: 4,
         padding: 12,
         background: 'var(--bg2)',
         border: '1px solid var(--border)',

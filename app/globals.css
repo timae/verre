@@ -191,6 +191,10 @@
      vinification, tasting notes) — feels candlelit. */
   --fg-warm: #EBE1CC; --fg-warm-soft: #C8BBA1;
   --accent: #C8963C; --accent2: #8FB87A;
+  /* Provider role chip color — third accent slot alongside host (gold)
+     and co-host (green). Used by RoleBadge in the user menu and the
+     participants list in SessionPanel. */
+  --accent-provider: rgba(120,180,220,0.95);
   /* Glassmorphic shell chrome (app header + bottom nav). Translucent
      so the background gradient bleeds through under the backdrop
      blur. Theme-aware; sits alongside --bg/--bg2 as a dedicated
@@ -215,6 +219,8 @@
      serif copy, slightly lighter for soft secondary text. */
   --fg-warm: #1A140F; --fg-warm-soft: #4A3F33;
   --accent: #9A5F1D; --accent2: #4B7750;
+  /* Provider role chip — deeper blue for the light-mode background. */
+  --accent-provider: rgba(40,110,160,0.95);
   /* Glassmorphic shell chrome — cream tones with similar opacity as
      dark mode (~82-88%) so the same backdrop-blur produces a
      comparable frosted effect. Borders flip to rgba(black) since
@@ -309,7 +315,7 @@ body {
      animation. Slightly larger inputs on phones are also a touch-
      target win.
      `!important` is necessary because some call sites set font-size
-     via inline style (RatingScreen's notes textarea and the host's
+     via inline style (RatingPane's notes textarea and the host's
      "move to:" position input). Without !important, those inline
      styles win on mobile and re-trigger the zoom. */
   .fi,

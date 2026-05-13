@@ -297,6 +297,8 @@ The `lib/identity.ts` `resolveIdentity(code, req, session)` returns `{id, displa
 
 **Display names are presentation-only.** What a user types as their name (or what `users.name` holds for logged-in accounts) is user-chosen, mutable, non-unique within a session (collisions get an emoji suffix), and carries **zero** trust. It must never be used for identification, authentication, authorization, matching, or lookup. There is no concept of a "username" in this codebase — if a request, ticket, or PR talks about matching on username/name, translate it to identity id and push back on the framing. Fields like `meta.host`, `ratings.rater_name`, and the values (not keys) of `s:{CODE}:identities` are display strings: store them, render them, but never branch on them. All authorization checks resolve through `resolveIdentity` → `{id, kind}` and compare on `id`.
 
+**Anon per-session rename.** Anonymous participants can rename themselves within a session via `PATCH /api/session/:code/me/name` (body `{name}`). Anon-only — logged-in users hit 403 with a "use profile settings" hint, because their per-session name is read live from `users.name` and changing it once in profile settings propagates to every session. The endpoint validates via the same `validateDisplayName` pipeline as join, re-runs `disambiguateDisplayName` against the current participants map (so a collision with a current entry adds an emoji), and writes to `s:{CODE}:identities`. Rate-limited 10/min/identity to bound spam (hGetAll on every call + live participant-list noise via 5s polling). Pre-rename `ratings.rater_name` snapshots stay frozen per the policy above — historic ratings keep the old name. The client-safe helper `stripDisambiguationEmoji` (in `lib/displayName.ts`) strips a trailing emoji from the displayed name when populating the rename input, so users don't have to re-type the suffix the server added on a previous collision. The full disambiguation logic lives in `lib/displayName.server.ts` to keep `lib/redis` out of client bundles.
+
 **URL query parameters are presentation-only too.** Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed the client UI on first render after a redirect from create/join. They must be captured synchronously into `useState` initializers (so the first render has the value) and stripped from the URL via `router.replace` in a mount effect — see `SessionShell.tsx`. Never branch authorization on a URL param; never leave one in the URL where copy-paste turns it into a confused-UI bug for the recipient. Server trust still flows only through the NextAuth cookie or the `x-vr-anon-token` header.
 
 **Authorization patterns:**
@@ -482,9 +484,10 @@ Visual consistency across screens is enforced by reusable primitives, not by con
 
 Primitives in place today:
 
-- **Color tokens** (`app/globals.css` CSS variables exposed via Tailwind). Use `var(--bg2)`, `var(--accent)`, `text-fg-dim`, etc. — never raw hex codes.
+- **Color tokens** (`app/globals.css` CSS variables exposed via Tailwind). Use `var(--bg2)`, `var(--accent)`, `text-fg-dim`, etc. — never raw hex codes. Chrome-specific tokens for app shell (header / bottom nav / borders): `var(--chrome-bg)`, `var(--chrome-nav-bg)`, `var(--chrome-border)` — theme-aware (cream tones in light mode, dark warm-tinted in dark mode). Use these on any sticky header / fixed bottom nav rather than hardcoding `rgba(14,14,12,...)`-style literals. Role chip color for providers is `var(--accent-provider)`.
 - **Element classes** (`.btn-p`, `.btn-g`, `.btn-s`, `.btn-del`, `.fi`, `.field`, `.fl`, `.panel`, `.chip`). Use these for buttons and form fields rather than re-styling inline.
-- **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`.
+- **`<ConfirmDeleteButton>`** (`components/ui/ConfirmDeleteButton.tsx`) — two-press destructive button with armed/pending/failed states. Use for any destructive action that previously would have called `window.confirm()`. Full-width `.btn-del` style.
+- **`<DiscardButton>`** (`components/ui/DiscardButton.tsx`) — sibling of `<ConfirmDeleteButton>` for the "row destructive" case where the button sits in a flex row alongside Keep editing / Save (e.g. the unsaved-changes confirm modals in WineModal and AddWineModal). Same two-press semantics, fixed-width ghost button with red border, sized so the row layout doesn't reflow when armed.
 - **Lightbox** (`components/ui/ImageLightbox.tsx`). Use `openLightbox(url, alt)` to display any image full-screen.
 - **`<WineIdentity>`** (`components/wine/WineIdentity.tsx`) — canonical wine identity rendering: Name + Vintage on line 1, Producer on line 2, Grape on line 3. Three sizes (`compact` / `card` / `hero`) cover list rows, modal cards, and hero banners. Use this on every surface that displays a wine — never re-implement the field order inline. Surrounding chrome (image, accent bar, score, like button, "revealed" badge, etc.) stays in the call site.
 - **`CHART_SIZE`** (`components/charts/sizes.ts`) — named PolarChart / RadarChart sizes (`THUMB` / `EMBED` / `DETAIL` / `COMPARE` / `HERO`) instead of inline pixel values. Pick the tier that matches the chart's *role* in the layout (glance, embedded with form, modal detail, side-by-side compare, hero interactive surface).
@@ -542,9 +545,18 @@ Flavour dimensions are **type-specific**:
   - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places; when unset, falls back to OSM Overpass + Nominatim.
   - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
 
+### Wine metadata fields
+
+Beyond name/producer/vintage/grape/type, wines carry editorial detail:
+- `description` — free-form text (≤1000 chars), markdown-style links auto-link via `renderWithLinks` on the info pane.
+- `region` (≤255) + `country` (ISO 3166-1 alpha-2; validated server-side against the static `COUNTRY_CODES` set in `lib/countries.ts`).
+- `vinification` (≤1000) — production/aging notes.
+- `purchase_url` (≤1000, http(s) only) — vendor link. Validated by `cleanUrl` at the write boundary (`scheme ∈ {http, https}`); rendered with `rel="noopener noreferrer"` and `target="_blank"`. Restricting to http/https prevents `javascript:` / `data:` injection via crafted URLs.
+
+All five fields are nullable and edited via `PATCH /api/session/:code/wines/:wineId`. They're stripped by `redactWine` in blind mode along with name/producer/vintage/grape — anything that identifies a wine.
+
 ### Schema notes for future features
 
 These columns exist in the schema but are not yet wired to UI:
-- `wines.purchase_url` — vendor/pro feature: link to purchase
 - `users.role = 'vendor'` — paid tier hook (the `pro` boolean is wired)
 - `wines.category` — extensible drink type beyond wine (beer, spirit, kombucha)

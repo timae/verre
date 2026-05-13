@@ -19,6 +19,12 @@ export function CountrySelect({ value, onChange, placeholder = 'select country' 
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
+  // Whether to render the panel ABOVE the trigger instead of below.
+  // Decided on open based on available space within the trigger's
+  // nearest scrollable ancestor (typically the modal sheet). Without
+  // this, a trigger near the bottom of a small modal opens a 320px
+  // panel that gets clipped by the sheet's overflow.
+  const [openUp, setOpenUp] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -35,8 +41,15 @@ export function CountrySelect({ value, onChange, placeholder = 'select country' 
   // Focus the search input when the panel opens. The input owns keyboard
   // focus while open; arrow keys navigate via the keydown handler, the
   // text input itself just captures the query.
+  //
+  // Skip on coarse-pointer devices (touch / mobile) — autofocus there
+  // pops the iOS keyboard, which on a small viewport eats most of the
+  // dropdown panel before the user has even glanced at the list. Touch
+  // users can tap the input themselves if they want to filter.
   useEffect(() => {
-    if (open) inputRef.current?.focus()
+    if (!open) return
+    const isTouch = window.matchMedia?.('(pointer: coarse)').matches
+    if (!isTouch) inputRef.current?.focus()
   }, [open])
 
   // Scroll the active row into view as the user navigates.
@@ -87,7 +100,22 @@ export function CountrySelect({ value, onChange, placeholder = 'select country' 
     <div ref={wrapRef} style={{ position: 'relative' }}>
       <button
         type="button"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => {
+          // Decide flip direction BEFORE opening so the first render
+          // is already correct (no flash of below-then-up). Read the
+          // trigger's viewport position and compare with available
+          // space against the panel's maxHeight (~320 + 56 chrome).
+          if (!open && wrapRef.current) {
+            const rect = wrapRef.current.getBoundingClientRect()
+            const PANEL = 360
+            const below = window.innerHeight - rect.bottom
+            const above = rect.top
+            // Flip up only when there's noticeably more room above.
+            // 80px buffer avoids ping-ponging at boundary cases.
+            setOpenUp(below < PANEL && above > below + 80)
+          }
+          setOpen(o => !o)
+        }}
         className="fi"
         style={{
           textAlign: 'left',
@@ -107,7 +135,11 @@ export function CountrySelect({ value, onChange, placeholder = 'select country' 
         <div
           style={{
             position: 'absolute',
-            top: 'calc(100% + 4px)',
+            // Flip up when the panel would clip below the modal's
+            // scroll bottom. `openUp` decision is made on open.
+            ...(openUp
+              ? { bottom: 'calc(100% + 4px)' }
+              : { top: 'calc(100% + 4px)' }),
             left: 0,
             right: 0,
             background: 'var(--bg2)',
