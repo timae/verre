@@ -16,6 +16,7 @@ const TABS: { key: Tab; label: string }[] = [
 ]
 
 type CheckinSeed = Parameters<typeof ProfileCheckins>[0]['initialCheckins']
+type SessionPostSeed = NonNullable<Parameters<typeof ProfileCheckins>[0]['initialSessionPosts']>
 
 interface Stats {
   ratings: number
@@ -32,6 +33,7 @@ interface Props {
   myId: number | null
   viewerFollowsProfile: boolean
   initialCheckins: CheckinSeed
+  initialSessionPosts?: SessionPostSeed
   initialTab?: Tab
   stats: Stats
   flavor: FlavorBlock
@@ -41,7 +43,7 @@ const SWIPE_THRESHOLD = 60
 const SWIPE_VELOCITY = 400
 
 export function ProfileTabs({
-  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialTab = 'checkins', stats, flavor,
+  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialSessionPosts, initialTab = 'checkins', stats, flavor,
 }: Props) {
   const [tab, setTab] = useState<Tab>(initialTab)
   // Track which tabs have ever been active so adjacent panels can lazy-mount
@@ -141,6 +143,7 @@ export function ProfileTabs({
                 myId={myId}
                 viewerFollowsProfile={viewerFollowsProfile}
                 initialCheckins={initialCheckins}
+                initialSessionPosts={initialSessionPosts}
               />
             )}
           </PaneShell>

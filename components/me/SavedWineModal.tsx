@@ -12,13 +12,25 @@ import { StarRating } from '@/components/ui/StarRating'
 import { formatCode } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
-type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
+type Bookmark = {
+  wine_id: string; name: string; producer: string | null; vintage: string | null
+  grape: string | null; style: string | null; image_url: string | null
+  session_code: string | null
+  session_deleted?: boolean
+}
+type Rating = {
+  wine_id: string
+  wine_name: string; score: number; flavors: Record<string,number>; notes: string | null
+  session_code: string | null
+}
 
 interface Props { wine: Bookmark; ratings: Rating[]; onClose: () => void; onRemove?: () => void | Promise<void> }
 
 export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
-  const rating = ratings.find(r => r.session_code === wine.session_code && r.wine_name === wine.name)
+  // Cross-match on wine_id — name-based join collides across deleted-session
+  // ratings of differently-spelled same-name wines once the §8 scrub nulls
+  // session_code on both rows.
+  const rating = ratings.find(r => r.wine_id === wine.wine_id)
   const fl = rating?.flavors ? detectFL(rating.flavors) : FL
   const wheelRef = useRef<HTMLDivElement>(null)
 
@@ -36,9 +48,11 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
           {!wine.image_url && <span style={{fontSize:28}}>{ICO[wine.style||'']||'🍷'}</span>}
           <div style={{flex:1, minWidth:0}}>
             <WineIdentity wine={wine} size="card" />
-            {wine.session_code && (
+            {wine.session_deleted ? (
+              <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>[deleted session]</p>
+            ) : wine.session_code ? (
               <p style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>session {formatCode(wine.session_code)}</p>
-            )}
+            ) : null}
           </div>
         </div>
 

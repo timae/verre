@@ -12,8 +12,22 @@ type Checkin = {
   createdAt?: string|Date|null; tags?: { id: number; name: string }[]
 }
 
+// Phase 2 stub for a session feed_item on the profile. Phase 3 will replace
+// this with a proper SessionFeedCard that fans out per-wine ratings.
+export type SessionPost = {
+  id: number
+  sessionId: number | null
+  sessionName: string | null
+  deleted: boolean
+  blind: boolean
+  createdAt?: string | Date | null
+  likeCount?: number
+  liked?: boolean
+}
+
 interface Props {
   initialCheckins: Checkin[]
+  initialSessionPosts?: SessionPost[]
   profileUserId: number
   profileUserName: string
   profileUserXp?: number
@@ -22,7 +36,7 @@ interface Props {
   viewerFollowsProfile?: boolean
 }
 
-export function ProfileCheckins({ initialCheckins, profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile }: Props) {
+export function ProfileCheckins({ initialCheckins, initialSessionPosts = [], profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile }: Props) {
   const router = useRouter()
   // Optimistic delete: hide ids client-side until the next router.refresh().
   const [hiddenIds, setHiddenIds] = useState<Set<number>>(new Set())
@@ -31,12 +45,23 @@ export function ProfileCheckins({ initialCheckins, profileUserId, profileUserNam
   const author = { id: profileUserId, name: profileUserName, xp: profileUserXp, imageUrl: profileUserImageUrl }
   const visible = initialCheckins.filter(c => !hiddenIds.has(c.id))
 
-  if (visible.length === 0) {
+  if (visible.length === 0 && initialSessionPosts.length === 0) {
     return <p style={{ color: 'var(--fg-dim)', fontSize: 13, padding: '16px 0' }}>No public check-ins yet.</p>
   }
 
   return (
     <>
+      {initialSessionPosts.map(s => (
+        // Phase 2 stub. Phase 3 will replace with SessionFeedCard fan-out.
+        <div key={`s-${s.id}`} className="panel" style={{ marginBottom: 10, padding: '12px 14px' }}>
+          <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4 }}>
+            {profileUserName} had a tasting
+          </div>
+          <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--fg)' }}>
+            {s.deleted ? '[deleted session]' : (s.sessionName || 'Untitled session')}
+          </div>
+        </div>
+      ))}
       {visible.map(c => (
         <CheckinCard
           key={c.id}

@@ -9,8 +9,23 @@ import { formatCode } from '@/lib/sessionCode'
 import { StarRating } from '@/components/ui/StarRating'
 import { ICO } from '@/lib/wineTypeColors'
 
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; grape: string | null; style: string | null; image_url: string | null; session_code: string | null }
-type Rating = { wine_name: string; score: number; flavors: Record<string,number>; notes: string | null; session_code: string | null }
+type Bookmark = {
+  wine_id: string; name: string; producer: string | null; vintage: string | null
+  grape: string | null; style: string | null; image_url: string | null
+  session_code: string | null
+  // session_deleted: true when the source session has been soft-deleted
+  // (the §8 contract scrubs the session row). Renderer shows
+  // "[deleted session]" instead of the join code.
+  session_deleted?: boolean
+  session_id?: number | null
+}
+type Rating = {
+  wine_id: string
+  wine_name: string; score: number; flavors: Record<string,number>; notes: string | null
+  session_code: string | null
+  session_deleted?: boolean
+  session_id?: number | null
+}
 
 export function SavedClient() {
   const [selected, setSelected] = useState<Bookmark | null>(null)
@@ -41,7 +56,11 @@ export function SavedClient() {
       <h1 style={{fontSize:24,fontWeight:700,color:'#F0E3C6',marginBottom:16}}>Saved wines</h1>
       <div className="wine-stack">
         {bookmarks.map(b => {
-          const rating = ratings.find(r => r.session_code === b.session_code && r.wine_name === b.name)
+          // Cross-match on wine_id (the only stable join key). The legacy
+          // session_code/wine_name name-based join collided across two
+          // deleted-session ratings of differently-spelled same-name wines
+          // once the §8 scrub nulled session_code on both rows.
+          const rating = ratings.find(r => r.wine_id === b.wine_id)
           return (
             <button key={b.wine_id} className="wine-card" style={{width:'100%',textAlign:'left'}} onClick={() => setSelected(b)}>
               {b.image_url ? (
@@ -53,9 +72,11 @@ export function SavedClient() {
               )}
               <div style={{flex:1,minWidth:0}}>
                 <WineIdentity wine={b} size="compact" />
-                {b.session_code && (
+                {b.session_deleted ? (
+                  <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>[deleted session]</p>
+                ) : b.session_code ? (
                   <p style={{fontSize:9,color:'var(--fg-faint)',marginTop:2,fontFamily:'var(--mono)',letterSpacing:'0.06em'}}>session {formatCode(b.session_code)}</p>
-                )}
+                ) : null}
               </div>
               {rating?.score ? (
                 <div style={{flexShrink:0}}>

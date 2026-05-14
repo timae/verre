@@ -27,6 +27,22 @@ export type LoadedCheckin = {
   tags: { id: number; name: string }[]
 }
 
+// Phase 2 stub for a session feed_item on the user's profile. Phase 3 will
+// replace this rendering with a proper SessionFeedCard that fans out the
+// wines rated by the user in the session. Until then, the profile shows a
+// minimal "[deleted session]" or "<session name>" line — enough to confirm
+// the data shape is right and give the surface something to test against.
+export type LoadedSessionPost = {
+  id: number              // feed_items.id
+  sessionId: number | null
+  sessionName: string | null  // null when deleted (scrubbed) or unnamed
+  deleted: boolean
+  blind: boolean
+  createdAt: Date
+  likeCount: number
+  liked: boolean
+}
+
 export type LoadedProfile = {
   id: number
   name: string
@@ -44,6 +60,10 @@ export type LoadedProfile = {
   flavor: FlavorBlock | { avgScore: FlavorBlock['avgScore']; fiveStar: FlavorBlock['fiveStar']; keys: FlavorBlock['keys'] }
   isFollowing: boolean
   recentCheckins: LoadedCheckin[]
+  // Phase 2 addition: session feed_items, rendered as stubs. Phase 3 ships
+  // SessionFeedCard; this array becomes its data source. Empty for users
+  // who have no session feed_items.
+  recentSessionPosts: LoadedSessionPost[]
 }
 
 interface Args {
@@ -63,10 +83,24 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     select: {
       id: true, name: true, xp: true, imageUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
-      _count: { select: { earnedBadges: true, checkins: true, followers: true, following: true } },
+      // _count.checkins is the legacy table count — kept until phase 4
+      // drops the table. The user-facing "check-ins" stat is sourced
+      // from feed_items kind='standalone' below (which the data migration
+      // backfills to match the legacy count, and which new POSTs write
+      // to from slice 3 onward).
+      _count: { select: { earnedBadges: true, followers: true, following: true } },
     },
   })
   if (!user) return null
+
+  // Count standalone feed_items as the source of truth for the profile's
+  // "check-ins" stat post-rewire. Pre-rewire used `_count.checkins`. The
+  // data migration backfills feed_items.kind='standalone' to match the
+  // legacy count on first run; after that, every new standalone POST
+  // writes a feed_item but not a checkins row (slice 3).
+  const standaloneCount = await prisma.feedItem.count({
+    where: { userId, kind: 'standalone' },
+  })
 
   // Block-pair counts: subtract any follower/following edge where the
   // other end is in a block-pair with the profile owner. Locked design:
@@ -104,58 +138,90 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     ? flavorFull
     : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
-  // Explicit select — never ship lat/lng on the public wire. No
-  // per-row visibility filter; the upstream profile gate handled it.
-  const recentCheckins = await prisma.checkin.findMany({
-    where: { userId },
+  // Standalone feed_items — the post-rewire shape. Each has a rating + wine
+  // + optional rating_image attached. The profile renders these as the
+  // user's standalone check-ins, matching pre-rewire behaviour on the
+  // surface.
+  //
+  // Never ship lat/lng on the public wire. No per-row visibility filter
+  // here — the upstream profile gate handled it.
+  const standaloneFeedItems = await prisma.feedItem.findMany({
+    where: { userId, kind: 'standalone' },
     orderBy: { createdAt: 'desc' },
     take: 10,
     select: {
-      id: true, wineName: true, producer: true, vintage: true, grape: true, type: true,
-      score: true, flavors: true, notes: true, imageUrl: true,
+      id: true,
       venueName: true, city: true, country: true, createdAt: true,
       _count: { select: { likes: true } },
       tags: { include: { user: { select: { id: true, name: true } } } },
+      rating: {
+        select: {
+          score: true, flavors: true, notes: true,
+          wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, imageUrl: true } },
+          images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
+        },
+      },
     },
   })
 
-  // Hydrate viewer's "liked" state in one batch lookup.
+  // Session feed_items (kind='session'). Stub-rendered until phase 3.
+  // Include the session row to read deletedAt (tombstone label) + name +
+  // blind. Soft-deleted sessions have name=NULL (§8 scrub); the renderer
+  // collapses to "[deleted session]".
+  const sessionFeedItems = await prisma.feedItem.findMany({
+    where: { userId, kind: 'session' },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    select: {
+      id: true, createdAt: true,
+      _count: { select: { likes: true } },
+      session: { select: { id: true, name: true, deletedAt: true, blind: true } },
+    },
+  })
+
+  // Hydrate viewer's "liked" state across BOTH standalone and session
+  // feed_items in one batch lookup.
+  const allFeedItemIds = [
+    ...standaloneFeedItems.map(f => f.id),
+    ...sessionFeedItems.map(f => f.id),
+  ]
   const likedSet = viewerId
     ? new Set(
-        (await prisma.checkinLike.findMany({
-          where: { userId: viewerId, checkinId: { in: recentCheckins.map(c => c.id) } },
-          select: { checkinId: true },
-        })).map(l => l.checkinId),
+        (await prisma.feedItemLike.findMany({
+          where: { userId: viewerId, feedItemId: { in: allFeedItemIds } },
+          select: { feedItemId: true },
+        })).map(l => l.feedItemId),
       )
     : new Set<number>()
 
-  // Block-pair like adjustment for the profile's own check-ins. Same
-  // global symmetric rule as feed: a like by user X on a check-in by
+  // Block-pair like adjustment for the profile's own feed_items. Same
+  // global symmetric rule as feed: a like by user X on a feed_item by
   // user Y is invisible to every viewer once X↔Y has a block.
   //
-  // COUNT(DISTINCT cl.user_id) protects against a mutual A↔B block
+  // COUNT(DISTINCT fl.user_id) protects against a mutual A↔B block
   // (two rows in user_blocks for the same pair) double-counting the
-  // single like row.
-  const profileCheckinIds = recentCheckins.map(c => c.id)
+  // single like row. Run across BOTH standalone and session ids — same
+  // shape, single query.
   const profileBlockHiddenLikes = new Map<number, number>()
-  if (profileCheckinIds.length > 0) {
-    const rows = await prisma.$queryRaw<{ checkin_id: number; n: bigint }[]>`
-      SELECT cl.checkin_id AS checkin_id, COUNT(DISTINCT cl.user_id)::bigint AS n
-      FROM checkin_likes cl
+  if (allFeedItemIds.length > 0) {
+    const rows = await prisma.$queryRaw<{ feed_item_id: number; n: bigint }[]>`
+      SELECT fl.feed_item_id AS feed_item_id, COUNT(DISTINCT fl.user_id)::bigint AS n
+      FROM feed_item_likes fl
       JOIN user_blocks b
-        ON (b.blocker_id = cl.user_id AND b.blocked_id = ${userId}::integer)
-        OR (b.blocker_id = ${userId}::integer AND b.blocked_id = cl.user_id)
-      WHERE cl.checkin_id = ANY(${profileCheckinIds}::int[])
-      GROUP BY cl.checkin_id
+        ON (b.blocker_id = fl.user_id AND b.blocked_id = ${userId}::integer)
+        OR (b.blocker_id = ${userId}::integer AND b.blocked_id = fl.user_id)
+      WHERE fl.feed_item_id = ANY(${allFeedItemIds}::int[])
+      GROUP BY fl.feed_item_id
     `
-    for (const r of rows) profileBlockHiddenLikes.set(r.checkin_id, Number(r.n))
+    for (const r of rows) profileBlockHiddenLikes.set(r.feed_item_id, Number(r.n))
   }
 
-  // Block-pair tag filter on the profile's own check-ins. Tag rendering
-  // drops block-pair tags from every viewer's view of the profile.
-  // The "other side" of each block-pair row (not the profile owner) is
-  // the user id to filter out of the tag list.
-  const tagUserIds = recentCheckins.flatMap(c => c.tags.map(t => t.user.id))
+  // Block-pair tag filter on the profile's own standalone feed_items.
+  // Session feed_items don't have tags today (no taggedUserIds on
+  // session-rate), so only standalone matters here. The "other side" of
+  // each block-pair row (not the profile owner) is the user id to filter
+  // out of the tag list.
+  const tagUserIds = standaloneFeedItems.flatMap(f => f.tags.map(t => t.user.id))
   const blockedTagUserIds = tagUserIds.length > 0
     ? new Set(
         (await prisma.userBlock.findMany({
@@ -180,30 +246,51 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       ratings: user.lifetimeRatings,
       sessions: user.lifetimeSessionsJoined,
       badges: user._count.earnedBadges,
-      checkins: user._count.checkins,
+      checkins: standaloneCount,
       followers: adjustedFollowers,
       following: adjustedFollowing,
     },
     flavor,
     isFollowing,
-    recentCheckins: recentCheckins.map(c => ({
-      id: c.id,
-      wineName: c.wineName,
-      producer: c.producer,
-      vintage: c.vintage,
-      grape: c.grape,
-      type: c.type,
-      score: decimalToNumber(c.score),
-      flavors: c.flavors,
-      notes: c.notes,
-      imageUrl: c.imageUrl,
-      venueName: c.venueName,
-      city: c.city,
-      country: c.country,
-      createdAt: c.createdAt,
-      likeCount: Math.max(0, c._count.likes - (profileBlockHiddenLikes.get(c.id) ?? 0)),
-      liked: likedSet.has(c.id),
-      tags: (c.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
+    recentCheckins: standaloneFeedItems.flatMap<LoadedCheckin>(f => {
+      // Defensive: a standalone feed_item with no rating is a schema
+      // violation; drop rather than crash.
+      if (!f.rating) return []
+      const wine = f.rating.wine
+      const ratingImage = f.rating.images[0]?.imageUrl ?? null
+      return [{
+        id: f.id,
+        wineName: wine.name,
+        producer: wine.producer,
+        vintage: wine.vintage,
+        grape: wine.grape,
+        type: wine.style,
+        score: decimalToNumber(f.rating.score),
+        flavors: f.rating.flavors,
+        notes: f.rating.notes,
+        // Image priority: rating's own photo first, falling back to the
+        // wine's canonical bottle shot (null for standalone wines today).
+        imageUrl: ratingImage ?? wine.imageUrl,
+        venueName: f.venueName,
+        city: f.city,
+        country: f.country,
+        createdAt: f.createdAt,
+        likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
+        liked: likedSet.has(f.id),
+        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
+      }]
+    }),
+    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => ({
+      id: f.id,
+      sessionId: f.session?.id ?? null,
+      // §8 contract: when soft-deleted, the session's name is scrubbed
+      // (NULL). Renderer collapses to "[deleted session]" without a link.
+      sessionName: f.session?.deletedAt ? null : (f.session?.name ?? null),
+      deleted: !!f.session?.deletedAt,
+      blind: !!f.session?.blind,
+      createdAt: f.createdAt,
+      likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
+      liked: likedSet.has(f.id),
     })),
   }
 }
