@@ -2,45 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
-import type { WineMeta, WireWine } from '@/lib/session'
+import { redactWine } from '@/lib/wineRedaction'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 
 type Ctx = { params: Promise<{ code: string }> }
-
-// Produce a redacted WireWine directly — wines that hit this path are by
-// definition not the caller's own (the provider-bypass at the call site
-// filters those out), so isMine is always false. Returning WireWine
-// straight skips a second pass through `wineToWire`.
-function redactWine(wine: WineMeta, index: number): WireWine {
-  const { addedByIdentityId: _provenance, addedByDisplayName: _snapshot, ...rest } = wine
-  return {
-    ...rest,
-    name: `Wine ${index + 1}`,
-    producer: '',
-    vintage: '',
-    grape: '',
-    type: 'red',   // keep as red for FL purposes but will show mystery icon
-    image: '',
-    imageUrl: '',
-    // Metadata fields that would leak wine identity to a blind taster —
-    // strip alongside name/producer/vintage/grape. Country/region/
-    // vinification narrow the wine geographically; description/purchaseUrl
-    // can name it outright. `addedByDisplayName` is stripped too: a
-    // blind taster knowing "Alice brought this one" partially identifies
-    // the wine via Alice's known preferences.
-    description: '',
-    region: '',
-    country: '',
-    vinification: '',
-    purchaseUrl: '',
-    isMine: false,
-    addedByDisplayName: null,
-    addedByUserId: null,
-    _blind: true,
-  }
-}
 
 export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
@@ -80,17 +47,19 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const userNameLookup = await buildKickedUserNameLookup(wines, identities)
 
   if (meta.blind && !isUserHost) {
-    // Per-wine redaction: a wine is shown un-redacted if it's revealed
-    // OR if the caller is the provider who added it (providers see
-    // their own wines un-redacted while still being blind to other
-    // tasters' contributions). Pre-feature wines have NULL
-    // `addedByIdentityId` and never match the provider exception —
-    // they redact like any other wine the caller didn't add.
+    // Per-wine redaction: see lib/wineRedaction.ts for the full rule.
+    // Pre-feature wines have NULL `addedByIdentityId` and never match
+    // the provider exception — they redact like any other wine the
+    // caller didn't add.
     return NextResponse.json(
       wines.map((w, i) => {
-        const ownsThisWine = !!w.addedByIdentityId && w.addedByIdentityId === identity.id
-        const showFull = w.revealedAt || ownsThisWine
-        return showFull ? wineToWire(w, identity.id, identities, userNameLookup) : redactWine(w, i)
+        const redacted = redactWine(w, {
+          revealed: !!w.revealedAt,
+          isHost: isUserHost,
+          ownsWine: !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
+          index: i,
+        })
+        return redacted ?? wineToWire(w, identity.id, identities, userNameLookup)
       }),
       // Response varies per viewer (provider sees own un-redacted; the
       // isMine flag is per-caller). Force private, no-store so no

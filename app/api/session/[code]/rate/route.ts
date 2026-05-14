@@ -71,31 +71,80 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         await pgUpsertSession(c, meta)
         await pgUpsertWine(c, wine)
 
-        // Snapshot the prior rating + the user's prior month-bucket set so
-        // we can update the lifetime_* counters atomically, only bumping
-        // them on the relevant transitions (new rating, first 5★, longer
-        // note, new month). Counters NEVER decrement.
-        const prior = await prisma.rating.findUnique({
-          where: { wineId_userId: { wineId, userId } },
+        // The new partial unique constraint on ratings (phase 1.5
+        // migration) is `(user_id, wine_id, session_id) WHERE session_id
+        // IS NOT NULL AND user_id IS NOT NULL`. We need sessions.id (an
+        // integer) for the FK write — translate from the Crockford code
+        // via a single lookup. pgUpsertSession just ran above so the
+        // row is guaranteed to exist.
+        const sessionRow = await prisma.session.findUnique({
+          where: { code: c },
+          select: { id: true },
         })
+        if (!sessionRow) throw new Error('session row missing after upsert')
+        const sessionId = sessionRow.id
+
+        // Snapshot the prior rating so the lifetime_* counters bump
+        // only on the relevant transitions (new rating, first 5★, longer
+        // note, new month). Counters NEVER decrement. Raw SELECT instead
+        // of prisma.rating.findUnique({wineId_userId:…}) because the
+        // compound-key accessor disappears once this PR's migration
+        // drops @@unique([wineId, userId]).
+        //
+        // Scoped to (wine_id, user_id, session_id) so the prior we read
+        // matches the row the upsert below will target. Without the
+        // session_id clause, once phase 2 ships standalone ratings
+        // (session_id IS NULL) for the same (wine, user) pair, this
+        // SELECT could pick up the standalone row and mis-attribute
+        // counter deltas for the session row.
+        //
+        // Race note: a brand-new (wine, user, session) triple under two
+        // concurrent tabs has both SELECTs returning null and both
+        // INSERTs racing on the partial unique. The row itself collapses
+        // to one (ON CONFLICT DO UPDATE — no 23505), but both branches
+        // compute isNew=true and double-bump lifetime_ratings by 1. This
+        // is unchanged from the old upsert and accepted at current scale;
+        // see future-work-rewire.md if it ever becomes user-visible.
+        const priorRows = await prisma.$queryRaw<{ score: unknown; notes: string | null }[]>`
+          SELECT score, notes FROM ratings
+           WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${sessionId}
+           LIMIT 1`
+        const prior = priorRows[0] ?? null
         const noteLen = (notes || '').length
         const wroteNote = noteLen > 5
 
         // `origin` shipped in rewire phase 1 (additive). Every rating
-        // created from this endpoint is by definition session-origin;
-        // phase 1.5 refactors this whole upsert to raw SQL that also
-        // populates ratings.session_id.
-        await prisma.rating.upsert({
-          where: { wineId_userId: { wineId, userId } },
-          create: {
-            wineId, userId, raterName: identity.displayName, origin: 'session',
-            score: ratingScore, flavors: validFlavors, notes: notes || null, ratedAt: new Date(),
-          },
-          update: {
-            raterName: identity.displayName,
-            score: ratingScore, flavors: validFlavors, notes: notes || null, ratedAt: new Date(),
-          },
-        })
+        // from this endpoint is by definition session-origin. The raw
+        // INSERT…ON CONFLICT shape mirrors the SQL phase 2 needs — race-
+        // safe under the new partial unique (concurrent same-(user,wine,
+        // session) POSTs collapse to a single UPDATE instead of a 23505).
+        // Conflict target columns must match the partial-unique index
+        // declaration exactly so Postgres picks it as the arbiter.
+        //
+        // Caveat documented in rewire.md §6 phase 1.5: raw SQL bypasses
+        // Prisma's typecheck — a future column rename won't be caught
+        // at compile time. Same trade-off the lifetime-counter UPDATE
+        // below already accepts.
+        await prisma.$executeRaw`
+          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, notes, rated_at)
+          VALUES (
+            ${wineId},
+            ${userId},
+            ${sessionId},
+            'session',
+            ${identity.displayName},
+            ${ratingScore}::numeric,
+            ${JSON.stringify(validFlavors)}::jsonb,
+            ${notes || null},
+            NOW()
+          )
+          ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL
+          DO UPDATE SET
+            rater_name = EXCLUDED.rater_name,
+            score = EXCLUDED.score,
+            flavors = EXCLUDED.flavors,
+            notes = EXCLUDED.notes,
+            rated_at = EXCLUDED.rated_at`
 
         // Lifetime counter updates. Done as a single SQL UPDATE with
         // GREATEST() / conditional increments so we never double-count

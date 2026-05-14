@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -33,6 +34,21 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   })
   await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
   await touchWithMeta(c)
+
+  // Mirror to Postgres — restricted to rows that need flipping
+  // (revealed_at IS NOT NULL). No-ops for anon-host wines whose
+  // Postgres row doesn't exist.
+  try {
+    const sessionRow = await prisma.session.findUnique({ where: { code: c }, select: { id: true } })
+    if (sessionRow) {
+      await prisma.wine.updateMany({
+        where: { sessionId: sessionRow.id, revealedAt: { not: null } },
+        data: { revealedAt: null },
+      })
+    }
+  } catch (err) {
+    console.error('hide-all pg update error:', err)
+  }
 
   return NextResponse.json({ ok: true })
 }
