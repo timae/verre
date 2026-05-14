@@ -125,15 +125,20 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   //     rating_images row and reclaim the S3 object.
   //   - imageData undefined (not sent) → leave existing rating_image alone.
   let nextImageUrl: string | null | undefined = undefined  // undefined = leave alone
+  // Track whether we just uploaded a fresh S3 object so the catch below
+  // can reclaim it if the txn rolls back.
+  let freshUploadUrl: string | null = null
   if (imageData?.startsWith('data:image/')) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    // Key includes the rating id (not feed_item id) so the canonical S3 path
-    // matches what POST uses elsewhere (wines/ci_<userId>_<timestamp>).
+    // Same key scheme as POST (wines/ci_<userId>_<timestamp>).
     const keyBase = `wines/ci_${userId}_${Date.now()}`
     const uploaded = await uploadImage(keyBase, imageData).catch(() => null)
-    if (uploaded) nextImageUrl = uploaded
+    if (uploaded) {
+      nextImageUrl = uploaded
+      freshUploadUrl = uploaded
+    }
     // If upload failed, leave the existing image untouched (undefined).
   } else if (imageData === null) {
     nextImageUrl = null
@@ -167,8 +172,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     urlsToReclaim.push(currentImage.imageUrl)
   }
 
-  const { updatedWine, updatedRating, updatedFeedItem, updatedImageUrl } =
-    await prisma.$transaction(async (tx) => {
+  let txResult: { updatedWine: Awaited<ReturnType<typeof prisma.wine.update>>; updatedRating: Awaited<ReturnType<typeof prisma.rating.update>>; updatedFeedItem: Awaited<ReturnType<typeof prisma.feedItem.update>>; updatedImageUrl: string | null }
+  try {
+    txResult = await prisma.$transaction(async (tx) => {
     // Wine-side fields (name, producer, vintage, grape, style).
     const updatedWine = await tx.wine.update({
       where: { id: wine.id },
@@ -248,11 +254,26 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     }
 
     return { updatedWine, updatedRating, updatedFeedItem, updatedImageUrl: resolvedImageUrl }
-  })
+    })
+  } catch (err) {
+    // If the txn failed AND we just uploaded a fresh S3 object, reclaim it
+    // — otherwise the upload becomes orphan bytes with no recovery path.
+    // Same capture-on-failure pattern as POST's USER_MISSING handler.
+    //
+    // P2025 (record not found) most likely means a concurrent account-delete
+    // cascaded the rating between our findUnique and the tx.rating.update;
+    // surface as 404. Other Prisma errors bubble as 500.
+    if (freshUploadUrl) reclaimImage(freshUploadUrl)
+    const errCode = (err as { code?: string })?.code
+    if (errCode === 'P2025') {
+      return NextResponse.json({ error: 'not found' }, { status: 404 })
+    }
+    throw err
+  }
+  const { updatedWine, updatedRating, updatedFeedItem, updatedImageUrl } = txResult
 
-  // S3 reclaim AFTER commit. If the txn rolled back, urlsToReclaim is still
-  // populated but the for-loop runs only after a successful await above —
-  // a thrown error skips the loop. Standard capture/commit/reclaim-after.
+  // S3 reclaim AFTER commit (the prior rating_image's URL, replaced by the
+  // upload we just did). Standard capture/commit/reclaim-after.
   for (const url of urlsToReclaim) reclaimImage(url)
 
   // Client-compatible legacy envelope, same shape as POST.
@@ -271,8 +292,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     venueName: updatedFeedItem.venueName,
     city: updatedFeedItem.city,
     country: updatedFeedItem.country,
-    lat: updatedFeedItem.lat,
-    lng: updatedFeedItem.lng,
+    // feed_items.lat/lng are Decimal(9,6); Prisma surfaces them as Decimal
+    // objects that JSON-serialize as strings. Coerce to number so the wire
+    // shape matches POST's response (which echoes raw client numbers).
+    // Same Decimal-as-string trap as `score` (handled by decimalToNumber).
+    lat: decimalToNumber(updatedFeedItem.lat),
+    lng: decimalToNumber(updatedFeedItem.lng),
     createdAt: updatedFeedItem.createdAt.toISOString(),
   })
 }
