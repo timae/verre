@@ -23,7 +23,11 @@ export async function GET() {
     JOIN sessions s ON s.code = sm.session_code
     LEFT JOIN wines w ON w.session_id = s.id
     LEFT JOIN ratings r ON r.wine_id = w.id AND r.user_id = ${userId}
-    WHERE sm.user_id = ${userId}
+    -- Soft-deleted sessions are scrubbed (code NULL, deleted_at set) and
+    -- session_members rows wiped, so the JOIN naturally drops them. The
+    -- explicit deleted_at filter documents intent and survives any future
+    -- change to the scrub or member-wipe paths.
+    WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
     GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.address
     ORDER BY sm.joined_at DESC
     LIMIT 50

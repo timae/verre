@@ -130,12 +130,15 @@ model UserBlock {
 
 model Session {
   id          Int        @id @default(autoincrement())
-  code        String     @unique @db.VarChar(16)
+  // Every column except `id` and `deletedAt` is nullable: phase 2 soft-delete
+  // scrubs them to NULL per the §8 data-survival contract. Unique on `code`
+  // still works — Postgres treats multiple NULLs as distinct.
+  code        String?    @unique @db.VarChar(16)
   hostUserId  Int?       @map("host_user_id")
-  hostName    String     @map("host_name") @db.VarChar(64)
-  blind       Boolean    @default(false)
-  createdAt   DateTime   @map("created_at") @db.Timestamptz(6)
-  archivedAt  DateTime   @default(now()) @map("archived_at") @db.Timestamptz(6)
+  hostName    String?    @map("host_name") @db.VarChar(64)
+  blind       Boolean?
+  createdAt   DateTime?  @map("created_at") @db.Timestamptz(6)
+  archivedAt  DateTime?  @default(now()) @map("archived_at") @db.Timestamptz(6)
   name        String?    @db.VarChar(255)
   address     String?    @db.VarChar(255)
   dateFrom    DateTime?  @map("date_from") @db.Timestamptz(6)

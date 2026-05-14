@@ -39,7 +39,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // (revealed_at IS NOT NULL). No-ops for anon-host wines whose
   // Postgres row doesn't exist.
   try {
-    const sessionRow = await prisma.session.findUnique({ where: { code: c }, select: { id: true } })
+    const sessionRow = await prisma.session.findFirst({ where: { code: c, deletedAt: null }, select: { id: true } })
     if (sessionRow) {
       await prisma.wine.updateMany({
         where: { sessionId: sessionRow.id, revealedAt: { not: null } },

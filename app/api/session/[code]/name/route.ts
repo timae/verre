@@ -32,6 +32,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // to 48h on a rename.
   await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
   await touchWithMeta(c)
-  try { await prisma.session.update({ where: { code: c }, data: { name: name || null } }) } catch {}
+  // updateMany so a soft-deleted code (NULL) misses cleanly — `update`
+  // would throw if the unique target doesn't exist.
+  try { await prisma.session.updateMany({ where: { code: c, deletedAt: null }, data: { name: name || null } }) } catch {}
   return NextResponse.json({ ok: true, name })
 }

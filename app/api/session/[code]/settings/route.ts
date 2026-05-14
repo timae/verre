@@ -65,8 +65,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   for (const key of keys) await redis.expire(key, ttl)
 
   try {
-    await prisma.session.update({
-      where: { code: c },
+    // Soft-deleted sessions have `code = NULL` (§8 contract), so the
+    // updateMany below naturally targets only live rows. Explicit filter
+    // documents intent and survives any future change to the scrub set.
+    await prisma.session.updateMany({
+      where: { code: c, deletedAt: null },
       data: {
         name:        meta.name        || null,
         blind:       !!meta.blind,

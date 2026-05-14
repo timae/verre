@@ -68,21 +68,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     try {
       const meta = await getSessionMeta(c)
       if (meta) {
-        await pgUpsertSession(c, meta)
+        // pgUpsertSession returns the sessions.id directly (one DB roundtrip
+        // instead of upsert + findUnique). The integer id is what the new
+        // partial unique on ratings (user_id, wine_id, session_id) needs
+        // for its FK write.
+        const sessionId = await pgUpsertSession(c, meta)
         await pgUpsertWine(c, wine)
-
-        // The new partial unique constraint on ratings (phase 1.5
-        // migration) is `(user_id, wine_id, session_id) WHERE session_id
-        // IS NOT NULL AND user_id IS NOT NULL`. We need sessions.id (an
-        // integer) for the FK write — translate from the Crockford code
-        // via a single lookup. pgUpsertSession just ran above so the
-        // row is guaranteed to exist.
-        const sessionRow = await prisma.session.findUnique({
-          where: { code: c },
-          select: { id: true },
-        })
-        if (!sessionRow) throw new Error('session row missing after upsert')
-        const sessionId = sessionRow.id
 
         // Snapshot the prior rating so the lifetime_* counters bump
         // only on the relevant transitions (new rating, first 5★, longer

@@ -91,25 +91,61 @@ async function deleteSessionFromRedis(code: string): Promise<void> {
   if (keys.length > 0) await redis.del(keys)
 }
 
-// Drop the Postgres archive of a session that's being deleted whole. Without
-// this, /me/history would keep showing the session for participants whose
-// session_members rows survive — they'd click rejoin and hit 404. By
-// definition (toDelete = no engagement from non-host identities), there are
-// no other-user ratings or HoF entries worth preserving here.
+// Tombstone the Postgres archive of a session that's being deleted whole as
+// part of host account deletion. Without this, /me/history would keep showing
+// the session for participants whose session_members rows survive — they'd
+// click rejoin and hit 404. By definition (toDelete = no engagement from
+// non-host identities), there are no other-user ratings, feed_items, or HoF
+// entries worth preserving here.
+//
+// Soft-delete (not hard-delete) is the uniform contract: the DB-level trigger
+// `prevent_session_hard_delete` (rewire phase 2 migration) blocks any DELETE
+// against the sessions table. All session-deletion paths route through the
+// same §8 data-survival scrub. Empty-session tombstones are the cost of the
+// guarantee — at Tim+Simon scale they're invisible, and the periodic-cleanup
+// runbook in docs/dev/session-deletion.md is the escape hatch.
+//
+// Already-soft-deleted sessions are skipped (deletedAt IS NULL filter): the
+// scrub is idempotent but there's nothing to do.
 async function deleteSessionFromPostgres(code: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
-    const row = await tx.session.findUnique({ where: { code }, select: { id: true } })
+    const row = await tx.session.findFirst({
+      where: { code, deletedAt: null },
+      select: { id: true },
+    })
     if (!row) return
     const sid = row.id
-    // Order matters: drop ratings (referenced by wine.id) before we orphan
-    // wines, otherwise the subquery in the DELETE finds no rows.
+    // Wipe children that exist for these no-engagement sessions: ratings
+    // (only the host's, by definition of "no other engagement"), HoF
+    // entries the host filed, session_members. Wines orphan (sessionId
+    // NULL) so any bookmarked wine remains reachable from /me/saved.
     await tx.$executeRaw`
       DELETE FROM ratings WHERE wine_id IN (SELECT id FROM wines WHERE session_id = ${sid})
     `
     await tx.$executeRaw`DELETE FROM hall_of_fame WHERE session_code = ${code}`
     await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sid}`
     await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${code}`
-    await tx.$executeRaw`DELETE FROM sessions WHERE id = ${sid}`
+    // Scrub the sessions row per the §8 data-survival contract. Same shape
+    // as DELETE /api/session/[code]; uniform tombstone across all session-
+    // deletion paths.
+    await tx.$executeRaw`
+      UPDATE sessions
+        SET deleted_at = NOW(),
+            code = NULL,
+            host_user_id = NULL,
+            host_name = NULL,
+            blind = NULL,
+            created_at = NULL,
+            archived_at = NULL,
+            name = NULL,
+            address = NULL,
+            date_from = NULL,
+            date_to = NULL,
+            timezone = NULL,
+            description = NULL,
+            link = NULL
+       WHERE id = ${sid}
+    `
   })
 }
 
