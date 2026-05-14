@@ -227,11 +227,53 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
 
 // Postgres transaction is the GDPR-relevant step (atomic). Redis cleanup
 // runs after, best-effort — Redis state is bounded by session lifespan TTL.
+//
+// Per-row treatment after the rewire (see docs/dev/proposals/rewire.md §6
+// phase 2 + root CLAUDE.md "Cascade vs tombstone"):
+//
+//   - Standalone ratings (session_id IS NULL): hard-cascade. No other user
+//     depends on them. Their feed_items (kind='standalone', 1:1 via
+//     ratingId) cascade on the rating delete; their rating_images cascade
+//     via FK on ratings.id. The user's session feed_items (kind='session',
+//     ratingId=null) cascade via `feed_items.user_id` on the user delete.
+//
+//   - Session ratings (session_id IS NOT NULL): tombstone. Other tasters'
+//     compare views and the session's HoF need them. user_id → NULL,
+//     rater_name → '[deleted]'. The rating_images attached to these stay
+//     (their FK is ratings.id, not user_id).
+//
+//   - HoF rows: tombstone (today's behaviour preserved).
+//
+//   - Sessions hosted: tombstone host fields. Cohosts can administer.
+//
+//   - Old `checkins` table: cascade via FK on user delete. Their imageUrls
+//     are captured below from `prisma.checkin.findMany` so S3 reclaims
+//     after commit. The old table goes away in phase 4.
 export async function executeAccountDelete(userId: number): Promise<DeletePlan> {
   // Capture image URLs before the cascade fires. Reclaim happens AFTER commit
   // — fire-and-forget; if the transaction rolls back we haven't deleted any
   // S3 objects, and if S3 fails after commit the row is already gone (orphan
   // bytes that a future cleanup can sweep, never a broken DB state).
+  //
+  // Three sources of user-owned images to reclaim:
+  //   1. Standalone rating_images (new model — the user's photos attached to
+  //      their own standalone ratings; cascade on rating delete).
+  //   2. Legacy checkins.imageUrl (old model — still has rows until phase 4
+  //      migration completes and the table is dropped).
+  //   3. Wines added by sessions the user hosted (the host's "added wine"
+  //      photos — orphan when the host's account dies, separate path from
+  //      rating photos).
+  //   4. The user's own avatar.
+  //
+  // Session-rating images are NOT captured: those ratings tombstone (the
+  // rating stays alive, image stays attached, neither row goes away).
+  const standaloneRatingImages = await prisma.$queryRaw<{ image_url: string }[]>`
+    SELECT ri.image_url
+    FROM rating_images ri
+    JOIN ratings r ON r.id = ri.rating_id
+    WHERE r.user_id = ${userId}
+      AND r.session_id IS NULL
+      AND ri.image_url IS NOT NULL`
   const checkinImages = await prisma.checkin.findMany({
     where: { userId, imageUrl: { not: null } },
     select: { imageUrl: true },
@@ -246,16 +288,49 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
   })
 
   await prisma.$transaction(async (tx) => {
-    // UPDATE before DELETE because ratings/hof/sessions FK constraints are
-    // ON DELETE NoAction — Postgres won't drop the user row otherwise.
-    // Cascades on bookmarks/user_badges/session_members/checkins/follows fire
-    // on the DELETE. See CLAUDE.md "Cascade vs. tombstone — the rule".
-    await tx.$executeRaw`UPDATE ratings SET user_id = NULL, rater_name = ${TOMBSTONE_NAME} WHERE user_id = ${userId}`
+    // Standalone ratings hard-cascade (no other user depends). Their
+    // feed_items (kind='standalone', FK to ratings.id ON DELETE CASCADE)
+    // and rating_images go with them. Done BEFORE the DELETE FROM users
+    // so we don't fight the NoAction FK on ratings.user_id — the tombstone
+    // UPDATE below handles the rows that survive.
+    await tx.$executeRaw`
+      DELETE FROM ratings
+      WHERE user_id = ${userId}
+        AND session_id IS NULL`
+
+    // Session ratings tombstone. Other tasters' compare views still see
+    // the rated data, attributed to the tombstone name.
+    await tx.$executeRaw`
+      UPDATE ratings
+      SET user_id = NULL, rater_name = ${TOMBSTONE_NAME}
+      WHERE user_id = ${userId}
+        AND session_id IS NOT NULL`
+
+    // HoF rows tombstone (today's behaviour preserved).
     await tx.$executeRaw`UPDATE hall_of_fame SET user_id = NULL, rater_name = ${TOMBSTONE_NAME} WHERE user_id = ${userId}`
+
+    // Sessions hosted: tombstone host fields. Cohosts can administer.
+    // Soft-deleted sessions already have host_user_id NULL, so the WHERE
+    // clause naturally misses them.
     await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = ${TOMBSTONE_NAME} WHERE host_user_id = ${userId}`
+
+    // DELETE FROM users cascades the rest:
+    //   - feed_items.user_id CASCADE (all the user's session feed_items —
+    //     standalone feed_items already gone above with their ratings)
+    //   - bookmarks.user_id CASCADE
+    //   - checkins.user_id CASCADE (legacy table)
+    //   - checkin_likes.user_id CASCADE
+    //   - checkin_tags.user_id CASCADE
+    //   - feed_item_likes.user_id CASCADE
+    //   - feed_item_tags.user_id CASCADE
+    //   - follows.followerId / followeeId CASCADE (both directions)
+    //   - user_badges.user_id CASCADE
+    //   - session_members.user_id CASCADE
+    //   - user_mutes / user_blocks both directions CASCADE
     await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
   })
 
+  for (const ri of standaloneRatingImages) reclaimImage(ri.image_url)
   for (const c of checkinImages) reclaimImage(c.imageUrl)
   for (const w of hostedWineImages) reclaimImage(w.imageUrl)
   if (userRow?.imageUrl) reclaimImage(userRow.imageUrl)

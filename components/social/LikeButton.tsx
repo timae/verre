@@ -1,9 +1,9 @@
 'use client'
 import { useState } from 'react'
 
-interface Props { checkinId: number; initialLiked: boolean; initialCount: number }
+interface Props { feedItemId: number; initialLiked: boolean; initialCount: number }
 
-export function LikeButton({ checkinId, initialLiked, initialCount }: Props) {
+export function LikeButton({ feedItemId, initialLiked, initialCount }: Props) {
   const [liked, setLiked] = useState(initialLiked)
   const [count, setCount] = useState(initialCount)
   const [loading, setLoading] = useState(false)
@@ -14,7 +14,7 @@ export function LikeButton({ checkinId, initialLiked, initialCount }: Props) {
     setLiked(!liked)
     setCount(c => liked ? c - 1 : c + 1)
     const method = liked ? 'DELETE' : 'POST'
-    const res = await fetch(`/api/checkins/${checkinId}/like`, { method })
+    const res = await fetch(`/api/feed-items/${feedItemId}/like`, { method })
     setLoading(false)
     if (res.ok) {
       const data = await res.json()

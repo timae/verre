@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, CopyObjectCommand } from '@aws-sdk/client-s3'
+import { nanoid } from 'nanoid'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
@@ -101,9 +102,15 @@ export async function POST(req: NextRequest) {
     const keyBase = `wines/ci_${userId}_${Date.now()}`
     imageUrl = await uploadImage(keyBase, imageData).catch(() => null)
   } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
-    // "had a sip" flow: resolve the source row server-side, verify the
-    // caller is allowed to copy it, then clone the bytes. The client never
-    // gets to point at an arbitrary S3 URL.
+    // "had a sip" flow: resolve the source server-side, verify the caller
+    // is allowed to copy it, then clone the bytes. The client never gets
+    // to point at an arbitrary S3 URL.
+    //
+    // Post-rewire, `copyFromCheckinId` resolves to a `feed_items.id` of
+    // kind='standalone' (the field name is preserved for client/URL
+    // compatibility; semantics shift per rewire.md §5). The migration
+    // backfills feed_items.id = source.checkins.id, so cached client links
+    // (e.g. notification deep-links into "had a sip") continue to resolve.
     //
     // Two gates, both required: (a) viewer can see the author's content
     // per their profile-visibility tier — copying content the viewer
@@ -114,15 +121,22 @@ export async function POST(req: NextRequest) {
     //
     // All negative branches collapse to a single generic 400 message so
     // the endpoint can't be used to enumerate per-id existence /
-    // ownership / follow-state. Distinct messages would let any authed
-    // user probe ids and learn which ones exist, who owns them, and who
-    // they follow.
+    // ownership / follow-state.
     const COPY_ERROR = 'This check-in cannot be copied right now.'
-    const source = await prisma.checkin.findUnique({
+    const source = await prisma.feedItem.findUnique({
       where: { id: copyFromCheckinId },
-      select: { imageUrl: true, userId: true },
+      select: {
+        userId: true,
+        kind: true,
+        rating: {
+          select: {
+            wine: { select: { imageUrl: true } },
+            images: { select: { imageUrl: true }, orderBy: { sortOrder: 'asc' }, take: 1 },
+          },
+        },
+      },
     })
-    if (!source) {
+    if (!source || source.kind !== 'standalone' || !source.rating) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     if (source.userId === userId) {
@@ -138,37 +152,118 @@ export async function POST(req: NextRequest) {
     if (!follows) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
-    if (source.imageUrl) {
-      imageUrl = await copyImageFromCheckin(source.imageUrl, userId)
+    // Source image priority: the rating's first attached image if present
+    // (the user's tasting photo), else the wine's canonical bottle shot.
+    const sourceImageUrl = source.rating.images[0]?.imageUrl || source.rating.wine.imageUrl
+    if (sourceImageUrl) {
+      imageUrl = await copyImageFromCheckin(sourceImageUrl, userId)
       if (!imageUrl) return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
   }
 
-  const checkin = await prisma.checkin.create({
-    data: {
-      userId,
-      // wineName scrubbed earlier; remaining free-text run through
-      // scrub() so NULL bytes don't cause P22021 from Postgres TEXT.
-      wineName,
-      producer: scrub(producer),
-      vintage: scrub(vintage)?.slice(0, 4) || null,
-      grape: scrub(grape),
-      type: type || null,
-      score: scoreCheck.value,
-      flavors: flavorsCheck.value,
-      notes: scrub(notes),
-      imageUrl,
-      venueName: scrub(venueName),
-      city: scrub(city),
-      country: scrub(country)?.slice(0, 2).toUpperCase() || null,
-      lat: lat ?? null,
-      lng: lng ?? null,
-    },
+  // Build the new-model writes. Path B per rewire.md §5: fresh wine +
+  // rating + feed_item + rating_images. No shared catalog identity (the
+  // no-dedup non-goal applies to "had a sip" too). When real dedup ships
+  // later, this becomes smarter — until then every standalone POST mints
+  // its own wines row.
+  //
+  // Identifiers:
+  //   - wines.id: standard 21-char nanoid (phase 1 widened the column).
+  //   - feed_items.id: autoincrement; the migration preserves
+  //     `feed_items.id = source.checkins.id` for backfilled rows, so the
+  //     "had a sip" copyFromCheckinId id-equality story is preserved.
+  //     New rows just get the next sequence value (no special handling).
+  //   - ratings.id: autoincrement.
+  const wineId = nanoid()
+  const scrubVintage = scrub(vintage)?.slice(0, 4) || null
+  const scrubProducer = scrub(producer) || null
+  const scrubGrape = scrub(grape) || null
+  const wineStyle = type || null
+  const scrubNotes = scrub(notes) || null
+  const scrubVenue = scrub(venueName) || null
+  const scrubCity = scrub(city) || null
+  const scrubCountry = scrub(country)?.slice(0, 2).toUpperCase() || null
+  const ratingScore = scoreCheck.value
+  const ratingFlavors = flavorsCheck.value ?? {}
+
+  // locationPublic = true iff any location field is non-null (per
+  // rewire.md §5: "true if any location field is non-NULL else false").
+  // Public/private session location toggle UI is post-rewire; this is the
+  // default for standalone check-ins, where the user supplied the venue.
+  const hasLocation = !!(scrubVenue || scrubCity || scrubCountry || lat != null || lng != null)
+
+  // Pull the user's display name for ratings.raterName (snapshot at write
+  // time; subsequent profile renames don't propagate to existing rows).
+  const userRow = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { name: true },
+  })
+  if (!userRow) return NextResponse.json({ error: 'user not found' }, { status: 401 })
+
+  const { feedItem, rating } = await prisma.$transaction(async (tx) => {
+    // 1. Mint the wine row. sessionId=NULL (standalone), category='wine'
+    //    (only category seeded today; future categories add their own).
+    await tx.wine.create({
+      data: {
+        id: wineId,
+        sessionId: null,
+        name: wineName,
+        producer: scrubProducer,
+        vintage: scrubVintage,
+        grape: scrubGrape,
+        style: wineStyle,
+        category: 'wine',
+        imageUrl,
+      },
+    })
+    // 2. Mint the rating. origin='standalone', sessionId=NULL (per the
+    //    partial-unique-on-(user,wine,session) contract: standalone
+    //    ratings are unconstrained, multiple standalone tastings of the
+    //    same wine are legal — the aging-bottle case).
+    const r = await tx.rating.create({
+      data: {
+        wineId,
+        userId,
+        sessionId: null,
+        origin: 'standalone',
+        raterName: userRow.name,
+        score: ratingScore,
+        flavors: ratingFlavors,
+        notes: scrubNotes,
+        ratedAt: new Date(),
+      },
+    })
+    // 3. Mint the feed_item. kind='standalone'; ratingId points at the new
+    //    rating; locationPublic computed above. The feed_items.ratingId is
+    //    @unique so this is 1:1 — re-saving a standalone is a new rating
+    //    row + new feed_item, not an update.
+    const fi = await tx.feedItem.create({
+      data: {
+        userId,
+        kind: 'standalone',
+        sessionId: null,
+        ratingId: r.id,
+        venueName: scrubVenue,
+        city: scrubCity,
+        country: scrubCountry,
+        lat: lat ?? null,
+        lng: lng ?? null,
+        locationPublic: hasLocation,
+      },
+    })
+    // 4. Attach the rating_image if we have one. sortOrder=0 (single
+    //    image today; the column exists for future multi-photo support).
+    if (imageUrl) {
+      await tx.ratingImage.create({
+        data: { ratingId: r.id, imageUrl, sortOrder: 0 },
+      })
+    }
+    return { feedItem: fi, rating: r }
   })
 
-  // Save tags — only mutual follows (verify server-side). Block-pair
-  // members are excluded from the write: tagging a user the author
-  // block-pairs with shouldn't persist a row that the render-time
+  // Save tags as feed_item_tags — only mutual follows (verify server-side).
+  // Block-pair members are excluded from the write: tagging a user the
+  // author block-pairs with shouldn't persist a row that the render-time
   // filter would then hide globally anyway.
   if (Array.isArray(taggedUserIds) && taggedUserIds.length > 0) {
     const mutuals = await prisma.$queryRaw<{ id: number }[]>`
@@ -184,12 +279,35 @@ export async function POST(req: NextRequest) {
     `
     const validIds = mutuals.map(m => m.id)
     if (validIds.length > 0) {
-      await prisma.checkinTag.createMany({
-        data: validIds.map(uid => ({ checkinId: checkin.id, userId: uid })),
+      await prisma.feedItemTag.createMany({
+        data: validIds.map(uid => ({ feedItemId: feedItem.id, userId: uid })),
         skipDuplicates: true,
       })
     }
   }
 
-  return NextResponse.json({ ...checkin, score: decimalToNumber(checkin.score) }, { status: 201 })
+  // Client-compatible response shape: surface the new model in the legacy
+  // `{...checkin, score}` envelope so existing consumers (mobile clients,
+  // /me/feed surface, profile renders) don't have to change in lockstep.
+  // Read paths transition in subsequent slices (task #13–#14); the response
+  // adapter keeps writes ahead of reads safely.
+  return NextResponse.json({
+    id: feedItem.id,
+    userId,
+    wineName,
+    producer: scrubProducer,
+    vintage: scrubVintage,
+    grape: scrubGrape,
+    type: wineStyle,
+    score: decimalToNumber(rating.score),
+    flavors: ratingFlavors,
+    notes: scrubNotes,
+    imageUrl,
+    venueName: scrubVenue,
+    city: scrubCity,
+    country: scrubCountry,
+    lat: lat ?? null,
+    lng: lng ?? null,
+    createdAt: feedItem.createdAt.toISOString(),
+  }, { status: 201 })
 }

@@ -189,7 +189,7 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
 
       {/* Like */}
       <div style={{ marginTop:12 }}>
-        <LikeButton checkinId={checkin.id} initialLiked={liked} initialCount={checkin.likeCount??0} />
+        <LikeButton feedItemId={checkin.id} initialLiked={liked} initialCount={checkin.likeCount??0} />
       </div>
 
       {editing && (
