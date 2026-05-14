@@ -57,6 +57,9 @@ model User {
   mutedBy                   UserMute[]             @relation("UserMuted")
   blocks                    UserBlock[]            @relation("UserBlocker")
   blockedBy                 UserBlock[]            @relation("UserBlocked")
+  feedItems                 FeedItem[]
+  feedItemLikes             FeedItemLike[]
+  feedItemTags              FeedItemTag[]
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -126,83 +129,132 @@ model UserBlock {
 }
 
 model Session {
-  id          Int       @id @default(autoincrement())
-  code        String    @unique @db.VarChar(16)
-  hostUserId  Int?      @map("host_user_id")
-  hostName    String    @map("host_name") @db.VarChar(64)
-  blind       Boolean   @default(false)
-  createdAt   DateTime  @map("created_at") @db.Timestamptz(6)
-  archivedAt  DateTime  @default(now()) @map("archived_at") @db.Timestamptz(6)
-  name        String?   @db.VarChar(255)
-  address     String?   @db.VarChar(255)
-  dateFrom    DateTime? @map("date_from") @db.Timestamptz(6)
-  dateTo      DateTime? @map("date_to") @db.Timestamptz(6)
-  timezone    String?   @db.VarChar(64)
+  id          Int        @id @default(autoincrement())
+  code        String     @unique @db.VarChar(16)
+  hostUserId  Int?       @map("host_user_id")
+  hostName    String     @map("host_name") @db.VarChar(64)
+  blind       Boolean    @default(false)
+  createdAt   DateTime   @map("created_at") @db.Timestamptz(6)
+  archivedAt  DateTime   @default(now()) @map("archived_at") @db.Timestamptz(6)
+  name        String?    @db.VarChar(255)
+  address     String?    @db.VarChar(255)
+  dateFrom    DateTime?  @map("date_from") @db.Timestamptz(6)
+  dateTo      DateTime?  @map("date_to") @db.Timestamptz(6)
+  timezone    String?    @db.VarChar(64)
   description String?
-  link        String?   @db.VarChar(512)
-  host        User?     @relation(fields: [hostUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  link        String?    @db.VarChar(512)
+  // Soft-delete tombstone marker. NULL = live; non-null = deleted at this
+  // instant, with every other column scrubbed to NULL per the §8 data-survival
+  // contract in docs/dev/proposals/rewire.md. The row itself stays so
+  // `ratings.session_id` and `feed_items.session_id` keep their grouping
+  // signal; renderers JOIN sessions to display "[deleted session]".
+  // Partial index `sessions_live_idx` (added in migration SQL) makes the
+  // dominant `WHERE deleted_at IS NULL` filter selective.
+  deletedAt   DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  host        User?      @relation(fields: [hostUserId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   wines       Wine[]
+  ratings     Rating[]
+  feedItems   FeedItem[]
 
   @@map("sessions")
 }
 
 model Wine {
-  id          String     @id @db.VarChar(20)
+  // Widened to VarChar(21) for standard 21-char nanoid generation (replacing
+  // Date.now().toString() which collided under concurrent inserts). Existing
+  // rows keep their shorter timestamp-string ids — they still fit.
+  id                 String         @id @db.VarChar(21)
   // Nullable so wines can be retained when their session is deleted —
   // bookmarked wines stay reachable from the bookmark page even after the
   // hosting session is gone. Wines with sessionId=NULL are orphans.
-  sessionId   Int?       @map("session_id")
-  name        String     @db.VarChar(255)
-  producer    String?    @db.VarChar(255)
-  vintage     String?    @db.Char(4)
-  grape       String?    @db.VarChar(255)
-  category    String     @default("wine") @db.VarChar(32)
-  style       String?    @db.VarChar(64)
-  imageUrl    String?    @map("image_url")
-  purchaseUrl String?    @map("purchase_url") @db.VarChar(1000)
-  description String?    @db.VarChar(1000)
-  region      String?    @db.VarChar(255)
-  country     String?    @db.VarChar(2)
-  vinification String?   @db.VarChar(1000)
-  revealedAt  DateTime?  @map("revealed_at") @db.Timestamptz(6)
-  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  sessionId          Int?           @map("session_id")
+  name               String         @db.VarChar(255)
+  producer           String?        @db.VarChar(255)
+  vintage            String?        @db.Char(4)
+  grape              String?        @db.VarChar(255)
+  category           String         @default("wine") @db.VarChar(32)
+  style              String?        @db.VarChar(64)
+  imageUrl           String?        @map("image_url")
+  purchaseUrl        String?        @map("purchase_url") @db.VarChar(1000)
+  description        String?        @db.VarChar(1000)
+  region             String?        @db.VarChar(255)
+  country            String?        @db.VarChar(2)
+  vinification       String?        @db.VarChar(1000)
+  revealedAt         DateTime?      @map("revealed_at") @db.Timestamptz(6)
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   // Identity-id of the user or anon who added this wine. Used by kick/ban
   // to identify which wines a host can choose to orphan when removing a
   // participant. Nullable for existing rows (provenance unknown) — those
   // never match a ban-target filter and stay untouched.
-  addedByIdentityId String?    @map("added_by_identity_id") @db.VarChar(64)
+  addedByIdentityId  String?        @map("added_by_identity_id") @db.VarChar(64)
   // Snapshot of the adder's display name at create time. Frozen — edits
   // never refresh this. The live identities map is preferred at read
   // time; this is a fallback for when the adder has been kicked/banned
   // (logged-in users fall through to users.name first; anon adders rely
   // on this snapshot since there's no users row).
-  addedByDisplayName String?   @map("added_by_display_name") @db.VarChar(64)
-  bookmarks   Bookmark[]
-  ratings     Rating[]
-  session     Session?   @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
+  addedByDisplayName String?        @map("added_by_display_name") @db.VarChar(64)
+  bookmarks          Bookmark[]
+  ratings            Rating[]
+  session            Session?       @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
+  // Composite FK to category_styles guarantees (category, style) is a valid
+  // pair. Style is nullable; the FK only enforces when both columns are
+  // non-null (Postgres default MATCH SIMPLE). Pre-flight confirmed every
+  // existing row has a canonical pair; no backfill needed.
+  categoryStyle      CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([sessionId, addedByIdentityId])
+  // pg_trgm GIN indexes for the future Tastes-tab search/filter on wine name
+  // + producer. Adding now is cheap and avoids a post-import rebuild on a
+  // larger table later. `raw("gin_trgm_ops")` makes ILIKE queries
+  // index-eligible (the default would only support tsvector lookups).
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([producer(ops: raw("gin_trgm_ops"))], type: Gin)
   @@map("wines")
 }
 
 model Rating {
-  id        Int      @id @default(autoincrement())
-  wineId    String   @map("wine_id") @db.VarChar(20)
-  userId    Int?     @map("user_id")
-  raterName String   @map("rater_name") @db.VarChar(64)
+  id        Int           @id @default(autoincrement())
+  wineId    String        @map("wine_id") @db.VarChar(21)
+  userId    Int?          @map("user_id")
+  // NEW (phase 1): direct FK to the originating session. NULL for standalone
+  // ratings; non-null for in-session ratings. Backfilled in this phase's
+  // migration from wines.session_id. Survives session-delete because the
+  // sessions row is soft-deleted (§8 contract).
+  sessionId Int?          @map("session_id")
+  // NEW (phase 1): provenance tag — how the rating came into being.
+  // 'session' | 'standalone' today; future: 'imported', 'restaurant_api',
+  // 'bottle_scan', etc. Immutable once set. Distinct from session-membership
+  // (sessionId) — see rewire.md §2 for the why.
+  origin    String        @db.VarChar(32)
+  raterName String        @map("rater_name") @db.VarChar(64)
   // Decimal(3,2) accepts 0.00 through 5.00 in 0.25 increments.
   // Stored as numeric so AVG / GREATEST / range comparisons work
   // directly in SQL. Validation enforces the 0.25-step constraint at
   // the route layer (lib/checkinValidation.ts).
-  score     Decimal  @db.Decimal(3, 2)
-  flavors   Json     @default("{}")
+  // Stays NOT NULL in phase 1; becomes nullable in phase 1.5 alongside the
+  // partial-unique swap.
+  score     Decimal       @db.Decimal(3, 2)
+  flavors   Json          @default("{}")
   notes     String?
-  ratedAt   DateTime @map("rated_at") @db.Timestamptz(6)
-  user      User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  wine      Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  ratedAt   DateTime      @map("rated_at") @db.Timestamptz(6)
+  // Restrict matches the §2 design: hard-deleting a referenced session
+  // should fail loudly. Soft-delete (sessions.deletedAt) is the contract;
+  // any future GDPR purge must null this FK explicitly first.
+  session   Session?      @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  user      User?         @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  wine      Wine          @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  images    RatingImage[]
+  feedItem  FeedItem?
 
+  // Phase 1: existing unique stays in place — consumers in app/api/session/[code]/rate/route.ts
+  // (Prisma-generated `wineId_userId` compound key) keep working. Phase 1.5
+  // drops this and replaces with a raw partial unique on
+  // `(user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL`.
   @@unique([wineId, userId])
   @@index([userId])
+  @@index([sessionId])
+  @@index([userId, wineId])
+  @@index([userId, sessionId])
   @@map("ratings")
 }
 
@@ -221,7 +273,7 @@ model SessionMember {
 model Bookmark {
   id      Int      @id @default(autoincrement())
   userId  Int      @map("user_id")
-  wineId  String   @map("wine_id") @db.VarChar(20)
+  wineId  String   @map("wine_id") @db.VarChar(21)
   savedAt DateTime @default(now()) @map("saved_at") @db.Timestamptz(6)
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   wine    Wine     @relation(fields: [wineId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -348,4 +400,130 @@ model CheckinLike {
 
   @@id([userId, checkinId])
   @@map("checkin_likes")
+}
+
+// ── Rewire phase 1: unified rating / feed model ───────────────────
+// See docs/dev/proposals/rewire.md for the architecture and migration plan.
+// Phase 1 ships these new tables purely additively — no read or write path
+// in the application uses them yet. Phase 2 cuts over the feed; phase 4
+// drops the legacy Checkin* tables.
+
+// Lookup table that constrains (wines.category, wines.style) to a known set.
+// Soft-deletable (`active=false`) because dropping a style row would break
+// FKs from existing wines. UI dropdowns filter on active=true.
+model CategoryStyle {
+  category  String  @db.VarChar(32)
+  style     String  @db.VarChar(64)
+  label     String  @db.VarChar(64)
+  sortOrder Int     @default(0) @map("sort_order")
+  active    Boolean @default(true)
+  wines     Wine[]
+
+  @@id([category, style])
+  @@index([category, sortOrder])
+  @@map("category_styles")
+}
+
+// Per-tasting photo album. Multiple photos per rating (live session AND
+// standalone), distinct from the wine's canonical bottle shot
+// (wines.imageUrl). Cascade on rating delete; S3 reclaim is independent
+// of cascade and lives in every delete path (capture / commit / reclaim-after,
+// per root CLAUDE.md cross-cutting rule).
+model RatingImage {
+  id        Int      @id @default(autoincrement())
+  ratingId  Int      @map("rating_id")
+  imageUrl  String   @map("image_url")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  rating    Rating   @relation(fields: [ratingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ratingId, sortOrder])
+  @@map("rating_images")
+}
+
+// The unified feed entry. Two kinds today: 'session' (one per (user, session)
+// — wraps every rating that user made in that session) and 'standalone'
+// (one per check-in — wraps a single rating). Future kinds extend the
+// enum without schema changes. See rewire.md §2 for the full reasoning.
+model FeedItem {
+  id             Int            @id @default(autoincrement())
+  // NOT NULL — anon ratings never get feed_items (§3). Forcing non-null
+  // prevents accidental anon writes from reaching the table.
+  userId         Int            @map("user_id")
+  // 'session' | 'standalone' today. Immutable once set.
+  kind           String         @db.VarChar(32)
+  sessionId      Int?           @map("session_id")
+  // Standalone is 1:1 with a rating; session enumerates ratings via
+  // (userId, sessionId) on the ratings table — no ratingId here.
+  ratingId       Int?           @unique @map("rating_id")
+  venueName      String?        @map("venue_name") @db.VarChar(255)
+  city           String?        @db.VarChar(100)
+  country        String?        @db.Char(2)
+  lat            Decimal?       @db.Decimal(9, 6)
+  lng            Decimal?       @db.Decimal(9, 6)
+  // false = render no location at all; true = render venue/city. Boolean,
+  // not enum — the "private tasting" signal is UX copy, not data (§2).
+  locationPublic Boolean        @default(false) @map("location_public")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // Restrict: hard-deleting a session must fail loudly. Soft-delete
+  // (sessions.deletedAt) is the contract; the §8 tombstone preserves the
+  // FK so the JOIN keeps rendering "[deleted session]" tombstones.
+  session        Session?       @relation(fields: [sessionId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+  // Standalone is 1:1 with a rating; cascade is correct (the post is the
+  // social wrapper of the rating).
+  rating         Rating?        @relation(fields: [ratingId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  likes          FeedItemLike[]
+  tags           FeedItemTag[]
+
+  // One feed_item per (user, session) — prevents double-creation under
+  // concurrent rates via ON CONFLICT DO NOTHING (§2). NULLs are distinct
+  // in Postgres unique constraints, so standalone rows (sessionId IS NULL)
+  // are unconstrained — exactly what we want.
+  @@unique([userId, sessionId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("feed_items")
+}
+
+// Likes on a feed item. Cascade matches today's checkin_likes pattern: the
+// liker deleting their account drops the edge; the author keeps the post.
+model FeedItemLike {
+  userId     Int      @map("user_id")
+  feedItemId Int      @map("feed_item_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  feedItem   FeedItem @relation(fields: [feedItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([userId, feedItemId])
+  @@index([feedItemId])
+  @@map("feed_item_likes")
+}
+
+// Tags on a feed item. Cascade matches today's checkin_tags pattern: the
+// tagged user deleting their account drops the edge; the author keeps the
+// post (the social signal alone goes).
+model FeedItemTag {
+  feedItemId Int      @map("feed_item_id")
+  userId     Int      @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  feedItem   FeedItem @relation(fields: [feedItemId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([feedItemId, userId])
+  @@index([userId])
+  @@map("feed_item_tags")
+}
+
+// Checkpoint tracker for the phase 2 data-migration script. Lets the
+// batched migration resume from where it crashed/stopped instead of
+// reprocessing already-migrated rows. Phase 1 ships the empty table;
+// phase 2's script is the first writer. Dropped in phase 4 alongside
+// checkins/.
+model MigrationCheckpoint {
+  name      String   @id @db.VarChar(64)
+  lastRowId Int      @map("last_row_id")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("_migration_checkpoints")
 }

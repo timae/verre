@@ -21,11 +21,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineId, score, flavors, notes } = body
-  // wineId is a millisecond-timestamp string in current code (~13 chars
-  // numeric). Strict allow-list: digits, letters, underscore, dash —
-  // never colons, glob chars, newlines, or quotes that could collide
-  // with Redis key separators or confuse downstream tooling. Cap at 32
-  // chars to leave headroom while bounding key size.
+  // wineId is a string id minted in lib/session.ts — today nanoid(21)
+  // for new rows; older rows are 13-char numeric timestamps. Strict
+  // allow-list: digits, letters, underscore, dash — never colons, glob
+  // chars, newlines, or quotes that could collide with Redis key
+  // separators or confuse downstream tooling. Cap at 32 chars to leave
+  // headroom while bounding key size (schema is VarChar(21)).
   if (!wineId || typeof wineId !== 'string' || wineId.length > 32 || !/^[A-Za-z0-9_-]+$/.test(wineId)) {
     return NextResponse.json({ error: 'wineId required' }, { status: 400 })
   }
@@ -80,10 +81,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         const noteLen = (notes || '').length
         const wroteNote = noteLen > 5
 
+        // `origin` shipped in rewire phase 1 (additive). Every rating
+        // created from this endpoint is by definition session-origin;
+        // phase 1.5 refactors this whole upsert to raw SQL that also
+        // populates ratings.session_id.
         await prisma.rating.upsert({
           where: { wineId_userId: { wineId, userId } },
           create: {
-            wineId, userId, raterName: identity.displayName,
+            wineId, userId, raterName: identity.displayName, origin: 'session',
             score: ratingScore, flavors: validFlavors, notes: notes || null, ratedAt: new Date(),
           },
           update: {

@@ -1,4 +1,5 @@
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { nanoid } from 'nanoid'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
@@ -317,6 +318,16 @@ export async function addWineToSession(
   if (!name) return { error: 'name required' }
   if (!['red', 'white', 'spark', 'rose', 'nonalc'].includes(type)) return { error: 'valid type required' }
 
+  // Mint the wine id once and reuse it for both the S3 upload key and
+  // the returned WineMeta. With nanoid the two strings would otherwise
+  // be completely uncorrelated, so a single mint is load-bearing.
+  // (The previous code had a latent bug: the two `Date.now().toString()`
+  // calls were separated by `await uploadImage(...)` — an S3 PUT that
+  // takes 50–500ms — so the image got keyed by one timestamp and the
+  // wine row stored a different one, leaking the S3 object whenever the
+  // wine was later deleted via deleteImage(wineId).)
+  const id = existing?.id || nanoid()
+
   let imageUrl = existing?.imageUrl || ''
   let image = body.image === undefined
     ? (existing?.image || '')
@@ -330,7 +341,6 @@ export async function addWineToSession(
   // throws or returns empty, the old image stays referenced and accessible.
   if (image && image.startsWith('data:image/')) {
     try {
-      const id = existing?.id || Date.now().toString()
       const url = await uploadImage(`wines/${id}`, image)
       if (url) {
         if (existing?.imageUrl && existing.imageUrl !== url) {
@@ -343,7 +353,7 @@ export async function addWineToSession(
   }
 
   return {
-    id: existing?.id || Date.now().toString(),
+    id,
     name,
     producer: clean(body.producer),
     vintage: clean(body.vintage).slice(0, 4),
