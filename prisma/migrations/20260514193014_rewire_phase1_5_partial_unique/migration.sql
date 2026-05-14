@@ -86,10 +86,19 @@ UPDATE "ratings" r
 
 ------------------------------------------------------------------------
 -- 2. Drop the old @@unique([wineId, userId])
---    Index name is Prisma's generated convention `<table>_<col>_<col>_key`.
+--    Prod's Postgres materialises @@unique as a table CONSTRAINT (the
+--    backing index shares the constraint's name). DROP INDEX on a
+--    constraint-backed index errors ("cannot drop index ... because
+--    constraint ... requires it") — must drop the constraint instead,
+--    which removes the backing index automatically.
+--
+--    Some older databases materialise the same @@unique as a bare
+--    unique index with no constraint row; ALTER TABLE DROP CONSTRAINT
+--    IF EXISTS handles both shapes idempotently.
 ------------------------------------------------------------------------
 
-DROP INDEX "ratings_wine_id_user_id_key";
+ALTER TABLE "ratings" DROP CONSTRAINT IF EXISTS "ratings_wine_id_user_id_key";
+DROP INDEX IF EXISTS "ratings_wine_id_user_id_key";
 
 ------------------------------------------------------------------------
 -- 3. Create the new partial unique
