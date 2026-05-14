@@ -1,7 +1,7 @@
 # The big rewire — unifying ratings, check-ins, and the feed
 
-**Status**: planning, not yet started.
-**Branch**: `feature/rewire-plan` for this doc; subsequent phases each get their own branch.
+**Status**: phases 1, 1.5, and 2 shipped (2026-05). Phase 3 (UI rewire with aggregate session card + engagement-deletion undo) and phase 4 (drop legacy `checkins*` tables) still to come. This doc remains the authoritative source for design rationale (the *why*); the per-feature impl docs (`session-deletion.md`, `account-deletion.md`, `social-feed.md`, etc.) describe the shipped behaviour.
+**Branch**: `feature/rewire-plan` for this doc; subsequent phases each got their own branch.
 
 This is the architecture and migration plan for unifying the two parallel rating systems (in-session ratings + standalone feed check-ins) into a single normalised model, and reshaping the feed to render sessions as aggregate "posts" rather than one-card-per-rating.
 
@@ -681,7 +681,7 @@ This is the irreversible step. Everything before it can be rolled back.
   - `id` — the grouping key, never changes. Children (wines, ratings, feed_items) keep their FK references.
   - `deletedAt` — the tombstone marker.
 
-  **Every other column is scrubbed to NULL** — `name`, `description`, `link`, `code`, `host_*`, `timezone`, `created_at`, `address`, `dateFrom`, `dateTo`, `archivedAt`, lifespan tier, blind flag, anything else that's on the row today or added in the future. The tombstone is genuinely empty: you can tell the row exists and that it's deleted, nothing more.
+  **Every other column is scrubbed to NULL** — `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `address`, `date_from`, `date_to`, `archived_at`, `blind`, anything else that's on the row today or added in the future. Lifespan today is encoded in Redis TTL, not in a Postgres column — so there's no `lifespan_tier` column to scrub; if one ever lands, it joins the scrub list. The tombstone is genuinely empty: you can tell the row exists and that it's deleted, nothing more. The canonical scrub list (kept in sync with the actual `UPDATE sessions SET ... = NULL` block) lives in `docs/dev/session-deletion.md`.
 
   Children of the deleted session keep their data; the session_id link survives on ratings and feed_items, but is nulled on wines:
 

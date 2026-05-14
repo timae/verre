@@ -64,6 +64,15 @@ Limit policy table lives in root CLAUDE.md. Helper API in `lib/CLAUDE.md`. Per-e
 
 Exists because NextAuth v5 strips error messages from the client-side `signIn()` response. The login form calls precheck first and surfaces the "Try again in N seconds" message itself; on success it then hits the real `signIn()`. Precheck uses `peekRate` so it doesn't pollute the counter.
 
+## Engagement trigger (rate POST + checkins POST → feed_items)
+
+Both `POST /api/session/[code]/rate` and `POST /api/checkins` create `feed_items` rows alongside the underlying ratings. Two contracts shape this:
+
+- **Session rate**: a feed_item materialises on first engagement (score > 0, OR chips, OR notes). Idempotent via the partial unique `(user_id, session_id)` + `ON CONFLICT DO NOTHING` — subsequent rates in the same session no-op, so `created_at` stays anchored on first engagement. Anon ratings skip entirely (schema-enforced via `feed_items.user_id NOT NULL`).
+- **Standalone POST**: the act of POSTing IS the engagement signal; the feed_item is always created (the user explicitly chose to post). One feed_item per check-in (1:1 with the rating via `feed_items.ratingId`).
+
+Full mechanics: see `docs/dev/social-feed.md` §Engagement trigger.
+
 ## API surface
 
 The full endpoint list lives in README.md. When adding a new endpoint, also update the README API table if it's user-visible. Feature deep-dive docs live in `docs/dev/`.
