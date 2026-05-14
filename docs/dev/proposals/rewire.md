@@ -111,8 +111,9 @@ ratings
   id        Int          @id @default(autoincrement())
   wineId    String
   userId    Int?
-  sessionId Int?         // NEW — NULL = standalone rating, otherwise FK to session
-  raterName String       // tombstone snapshot, today's behaviour
+  sessionId Int?         // NEW — FK to session when origin='session'; nulled on session-delete
+  origin    String       // NEW — 'session' | 'standalone'; immutable once set
+  raterName String       // tombstone snapshot for [deleted] users, today's behaviour
   score     Decimal?     // NEW — was NOT NULL
   flavors   Json
   notes     String?
@@ -123,6 +124,8 @@ ratings
   @@index([sessionId])
   @@index([userId, wineId])    // for the future "all my tastings of this wine" query
 ```
+
+**Why `origin` as a String:** Future-proofs against new origin types (e.g. `'verified_session'`, `'imported'`) without a migration. Same pattern as `wines.category` and `feed_items.kind`. Also load-bearing for the session-deletion rule (§8): we null `sessionId` on session-delete, so `origin='session' AND sessionId IS NULL` is the "tasted at [deleted session]" signal.
 
 **Why drop the unique:** The constraint was load-bearing for one reason — in a session, "rate the same wine twice" should mean "edit your rating," not "create a second rating." That's correct *inside one session*. It breaks the moment the same wine row gets tasted across contexts:
 
@@ -146,8 +149,8 @@ The cost is small print: HoF / "average score" / "rated above 4" queries need `W
 feed_items
   id                  Int @id autoincrement
   userId              Int
-  kind                String  // 'session' | 'standalone'
-  sessionId           Int?    // set when kind='session'
+  kind                String  // 'session' | 'standalone'; immutable once set
+  sessionId           Int?    // set when kind='session'; nulled when host deletes the session
   ratingId            Int?    // set when kind='standalone' (single-rating shortcut)
   venueName           String?
   city                String?
@@ -160,6 +163,8 @@ feed_items
   @@index([createdAt desc])              // global feed pagination
   @@unique([userId, sessionId])          // one feed item per (user, session) — see below
 ```
+
+`kind` follows the same future-proof string pattern as `ratings.origin` and `wines.category`. After session-deletion, `kind='session' AND sessionId IS NULL` is the "post about a [deleted session]" signal.
 
 **Why feed_items separate from ratings:** A session feed item bundles many ratings into one social post (Instagram-multi-image model). It can't sit on a rating row. A standalone feed item could conceptually live on the rating, but giving both kinds the same shape means one render path, one like target, one pagination cursor — much simpler than special-casing standalone-as-rating vs session-as-bundle.
 
@@ -235,20 +240,20 @@ The user base is small enough to migrate cleanly. We migrate.
 
 For each existing `checkins` row:
 1. Look up or create a `wines` row (the rewire moves to "every check-in is backed by a wine row"). `sessionId = NULL`. Default `category = 'wine'`.
-2. Create a `ratings` row pointing at that wine. `sessionId = NULL`. `score` carries through (NULL if the original was scoreless — now legal).
+2. Create a `ratings` row pointing at that wine. `sessionId = NULL`. `origin = 'standalone'`. `score` carries through (NULL if the original was scoreless — now legal).
 3. Create a `feed_items` row with `kind='standalone'`, `ratingId` set, `venueName/city/country/lat/lng/createdAt` carried over, `locationVisibility='public'` if any location field is non-NULL else `'none'`.
 4. For each `checkin_likes` row: create a `feed_item_likes` row pointing at the new feed item.
 5. For each `checkin_tags` row: create a `feed_item_tags` row pointing at the new feed item.
 
-For each existing `ratings` row that came from a session (today: every row): set `sessionId` to the session-id derived from the wine's existing `sessionId`. (Today the rating belongs to a session implicitly via the wine; we now make it explicit on the rating itself.)
+For each existing `ratings` row that came from a session (today: every row): set `sessionId` to the session-id derived from the wine's existing `sessionId`, and set `origin='session'`. (Today the rating belongs to a session implicitly via the wine; we now make it explicit on the rating itself.) Phase 1's structural backfill (§6) handles `origin`; this step just sets `sessionId`.
 
 For each existing `(session, user)` pair where the user has at least one rating in that session:
 1. Create a `feed_items` row with `kind='session'`, `sessionId` set, `createdAt` = the user's earliest rating timestamp in that session.
 2. No likes/tags to migrate (sessions don't have those today).
 
-### Wines that exist but have no `category`
+### Category/style FK
 
-Today every wine row has `category='wine'` by default — the column has been there silently. After the rewire we activate the FK to `category_styles`. Pre-flight: seed `category_styles` with `('wine', 'red'), ('wine', 'white'), ('wine', 'spark'), ('wine', 'rose'), ('wine', 'nonalc')` before applying the FK. Existing wines whose `style` is NULL or doesn't match a seeded row need either a backfill or temporary FK relaxation — settle in phase 1 once we count the affected rows.
+Pre-flight (§8) confirmed every existing wine row has a valid `(category, style)` pair against the seeded `category_styles` table. Phase 1 adds the composite FK directly with no backfill. Re-run the pre-flight query before phase 1 PR merges in case new wines were added in the meantime.
 
 ### How the migration script runs
 
@@ -267,18 +272,21 @@ Each phase = one branch, one PR, mergeable on its own. After each merge to main,
 
 - New tables: `category_styles`, `feed_items`, `feed_item_likes`, `feed_item_tags`.
 - Seed `category_styles` with the 5 wine styles.
-- New columns: `feed_items.locationVisibility`, `ratings.sessionId`.
+- New columns: `feed_items.locationVisibility`, `ratings.sessionId`, `ratings.origin`.
 - Drop `@@unique([wineId, userId])` on `ratings`. Make `ratings.score` nullable.
-- Add the composite FK `wines (category, style) → category_styles (category, style)` — only after the pre-flight check that all existing wine rows have valid pairs (or we relax to a soft FK and backfill in phase 2).
-- No code changes. No reads, no writes affected. Just structure.
+- Backfill `ratings.origin = 'session'` for all existing rows (today, every rating is from a session).
+- Add the composite FK `wines (category, style) → category_styles (category, style)`. Pre-flight check (§8) confirmed clean — no backfill needed. Re-run before merge.
+- Rewrite `docs/dev/session-deletion.md` to document the new tombstone rule (the actual code change ships in phase 2).
+- No application code changes. No reads, no writes affected. Just structure + the one-time origin backfill.
 
 Mergeable to main with zero behaviour change. Production gets the new tables on the next deploy.
 
 ### Phase 2 — dual-write + backfill
 **Branch**: `feature/rewire-p2-dualwrite`
 
-- `POST /api/checkins` continues to write to `checkins` AND now also writes the equivalent `wines` + `ratings` (sessionId=NULL) + `feed_items` + `feed_item_likes/tags`. Same for PATCH/DELETE on a check-in (mirrored deletes).
-- `POST /api/session/[code]/rate` continues to write `ratings` AND now also (a) sets `ratings.sessionId` on the new row and (b) creates/upserts the `feed_items` row for `(session, user)` (idempotent — only the first engagement in a session creates the feed item).
+- `POST /api/checkins` continues to write to `checkins` AND now also writes the equivalent `wines` + `ratings` (sessionId=NULL, origin='standalone') + `feed_items` (kind='standalone') + `feed_item_likes/tags`. Same for PATCH/DELETE on a check-in (mirrored deletes).
+- `POST /api/session/[code]/rate` continues to write `ratings` AND now also (a) sets `ratings.sessionId` and `ratings.origin='session'` on the new row and (b) creates/upserts the `feed_items` row for `(session, user)` with `kind='session'` (idempotent — only the first engagement in a session creates the feed item).
+- `DELETE /api/session/[code]` switches to the new tombstone rule: stop deleting unbookmarked ratings; instead null `ratings.sessionId` and `feed_items.sessionId`. The `origin` and `kind` columns survive untouched, providing the "tasted at [deleted session]" signal. Wine-row + lifetime-counter behaviour stays as today.
 - Run the backfill script (§5) once against staging, eyeball, then prod.
 - After this phase: both the old `checkins` table and the new `feed_items`/`ratings`-with-sessionId mirror are populated and stay in sync. Reads still come from the old tables.
 
@@ -331,11 +339,46 @@ This is the irreversible step. Everything before it can be rolled back.
 
 ---
 
-## 8. Open questions to settle before phase 1
+## 8. Decisions and open items for phase 1
 
-1. **`feed_items.kind` value name** — `'standalone'` or `'checkin'`? Lean: **`'standalone'`** because we'll continue to use the word "check-in" in user-facing copy for both kinds (a session check-in is what happens when you engage with a wine in a session; a standalone check-in is what we used to call a check-in). Internal kind names should disambiguate, not double the user-language overload.
-2. **Pre-flight `category_styles` mismatch count** — count how many existing wines have `(category, style)` pairs not in the seed list. If zero, FK can be added in phase 1 directly. If non-zero, decide: backfill missing pairs into `category_styles`, or relax the FK and backfill in phase 2.
-3. **What happens to a session feed item if the host deletes the session?** Today: ratings are kept if bookmarked, else deleted (per `docs/dev/session-deletion.md`). For the feed item: probably "delete the feed item if zero ratings remain after the session-deletion rule runs." Worth a one-liner addition to `docs/dev/session-deletion.md` after phase 1 lands.
+**Settled:**
+
+- **`feed_items.kind` values: `'standalone'` and `'session'`.** User-facing copy continues to use the word "check-in" for both kinds (a session check-in vs a standalone check-in). Internal `kind` names disambiguate without doubling the user-language overload.
+
+- **Session deletion now tombstones, doesn't delete.** Updates today's rule in `docs/dev/session-deletion.md`. New behaviour:
+
+  - **All ratings are kept** when the host deletes a session, regardless of bookmark status. `ratings.sessionId` is nulled. The rating's `origin='session'` flag survives, so the user's history shows "tasted at [deleted session]" — a literal label, not a snapshot of the original session name. Re-definable later if a richer history surface is wanted.
+  - **Session feed items are kept** symmetrically. `feed_items.sessionId` nulled; `feed_items.kind='session'` survives. The social post stays in friends' old feed scrolls and in the author's profile Posts tab, rendered with the same "[deleted session]" label.
+  - **HoF retention rule today** (kept if bookmarked, dropped otherwise) is unchanged — Tim's HoF rework is separate and we don't touch HoF in the rewire.
+  - **Wine rows** continue to follow today's rule (kept with `sessionId=NULL` so bookmarks remain reachable).
+
+  **Why the change:** today's "delete unbookmarked ratings" rule treats session ratings as ephemeral, which contradicts the rewire's central premise — every tasting is a permanent first-class artifact of the user's history. Bookmark status is the wrong gate; the user's choice to *engage* is what makes a tasting matter.
+
+  **Why a literal `[deleted session]` label, not a snapshot of the original name:** Cheaper schema (no extra column on two tables), and host-deleted sessions are rare and intentional. The user already saw the session name during the live session; if richer history (per-session distinguishability across multiple deleted sessions) becomes a need, adding a snapshot column later is a non-destructive migration. We defer until someone asks.
+
+  **Why we still need `ratings.origin`:** Once `sessionId` is nulled on session-delete, we lose the signal "this rating *was* from a session." The `origin` column (immutable since insert) preserves it, so the UI can render "[deleted session]" instead of incorrectly showing it as a standalone check-in.
+
+  **Note on host account deletion (separate flow):** When a host deletes their *account* (not the session), the existing rules in `docs/dev/account-deletion.md` apply — sessions with engagement stay alive with the host identity tombstoned to `[deleted]`; cohosts can administer. The new session-delete tombstone rule above only fires when the host actively deletes the session via `DELETE /api/session/[code]`. Different flows, different rules; no overlap.
+
+  **Lifetime counters** continue to never decrement (today's behaviour). Live aggregations (avg flavour, total_rated) reflect the actual rating count, which now stays high since nothing is deleted.
+
+  **Phase 1** adds `ratings.origin` column. **Phase 2** updates the session-deletion endpoint to null `sessionId` (instead of deleting unbookmarked ratings). **Phase 1's PR** includes the rewrite of `docs/dev/session-deletion.md` to match.
+
+**Pre-flight checks:**
+
+- **`category_styles` mismatch count.** ✅ Confirmed clean against prod — query returned zero rows. FK lands in phase 1 with no backfill needed. Query for reference:
+
+  ```sql
+  SELECT category, style, COUNT(*)
+  FROM wines
+  WHERE (category, style) NOT IN (
+    VALUES ('wine','red'), ('wine','white'), ('wine','spark'),
+           ('wine','rose'), ('wine','nonalc')
+  )
+  GROUP BY category, style;
+  ```
+
+  Re-run before phase 1 PR merges in case new wines were added with non-canonical styles in the meantime.
 
 ---
 
