@@ -336,6 +336,14 @@ After the rewire, the question is: **when does a wine become "a wine I tasted in
 
 Setting any one of those creates the `ratings` row (with the others NULL/empty). The wine then appears on the session feed item for that user. If it's the user's first engagement in that session, the upsert into `feed_items` (with `ON CONFLICT DO NOTHING` on `(userId, sessionId)`) creates the session post.
 
+**Cascading semantic change worth flagging:** before the rewire, "rated" implied "scored" — every rating row had a non-zero score. After the rewire, a chips-only or notes-only rating row also exists. This changes what "rated" means across the codebase:
+
+- **Lifetime counters** (`users.lifetime_ratings`): increment on every rating insert, including chips-only / notes-only. Acceptable — the user did engage, the counter reflects engagement-events not scoring-events. UI label: "tastings" not "ratings."
+- **HoF trigger** (`score >= 5`): unchanged — already filters by score, chips-only rows never qualify. Safe.
+- **`five_star` counter, `high_avg` badge, "rated above 4" queries**: all already filter by score; chips-only rows naturally excluded. Safe.
+- **"Rated/unrated" UI badge** on the wine list inside a session: needs explicit decision. Old semantic: "has a non-zero score" → unrated badge for users who chipped-only. New semantic could be: "has any rating row" → rated badge for chips-only too. Lean: new semantic — the user engaged, that's what the badge should reflect. Confirm in phase 2's UI work.
+- **Profile Tastes tab**: shows all `ratings` rows including chips-only / notes-only. UI must render score column as "—" for those.
+
 **Why this rule:** In a session setting, we have no other signal that the user actually drank a wine. (Standalone is different — the act of creating a check-in is itself the signal that "I drank this.") Engagement on the rating page is the only behavioural proxy we have. Three forms of engagement matters because:
 
 - A user might know the score immediately ("4 stars, easy") without thinking about flavours.
@@ -348,7 +356,9 @@ All three count as "I tasted this." Standalone scoreless check-ins are the same 
 
 If a user clears their score (back to 0), removes all chips, and empties the note, the rating row is deleted. If it was the user's only rating in the session, the session feed item is deleted too.
 
-Application code runs S3 reclaim first (fetch `rating_images.imageUrl` for the rating, fire `reclaimImage()` on each — the cascade FK doesn't trigger S3 cleanup, per root CLAUDE.md), then the two SQL statements below. The CTE pattern from earlier drafts had a subtle MVCC bug — Postgres CTE sub-statements share a snapshot, so a `NOT EXISTS (SELECT FROM ratings)` in the same CTE as a `DELETE FROM ratings` would still see the just-deleted row in its snapshot and never fire the cleanup. Two separate statements (each with its own snapshot) avoid this:
+Application-level ordering, mirroring `lib/accountDelete.ts:188-219` (rollback-safe): **(1)** capture `rating_images.imageUrl` for the rating into memory; **(2)** run the two SQL statements below (each in its own auto-commit, NOT inside a wrapping `prisma.$transaction` — both statements would share a snapshot and the bug returns); **(3)** if step 2 succeeded, fire `reclaimImage()` on each captured URL. Capture-first / commit / reclaim-after preserves the property that a transaction rollback doesn't leave orphaned S3 deletes (the cascade FK doesn't trigger S3 cleanup either way, per root CLAUDE.md).
+
+The CTE pattern from earlier drafts had a subtle MVCC bug — Postgres CTE sub-statements share a snapshot, so a `NOT EXISTS (SELECT FROM ratings)` in the same CTE as a `DELETE FROM ratings` would still see the just-deleted row in its snapshot and never fire the cleanup. Two separate statements (each with its own snapshot) avoid this:
 
 ```sql
 -- Step 1: delete the now-empty rating
@@ -406,7 +416,9 @@ A session that has both anon and logged-in participants gets feed_items only for
 
 So blind sessions follow the **same feed_item creation rule as non-blind**: the post materialises on first engagement, exactly as for any other session. No deferred creation, no `sessions.allRevealedAt` denormalisation, no special path.
 
-The blind dimension only affects **rendering**: for each wine in a feed_item's enumeration (or in the user's own Tastes view), if `wines.revealedAt IS NULL`, the wine-identifying fields are redacted. Already-revealed wines render normally. Single rule, applied uniformly.
+The blind dimension only affects **rendering**: for each wine in a feed_item's enumeration (or in the user's own Tastes view), if `sessions.blind = true AND wines.revealedAt IS NULL`, the wine-identifying fields are redacted. Already-revealed wines render normally. Non-blind sessions never redact (the `blind` guard short-circuits). Deleted sessions (`sessions.deletedAt IS NOT NULL`) take precedence over per-wine redaction — the post renders with the "[deleted session]" tombstone label and per-wine identity is not exposed regardless of `revealedAt` state. Single rule with a tiny precedence ladder, applied uniformly.
+
+**`wines.revealedAt` must be persisted to Postgres on every reveal.** Today the reveal endpoints only write Redis. Phase 2 adds a Postgres write to: `/api/session/[code]/wines/[wineId]/reveal` (POST + DELETE), `/api/session/[code]/wines/reveal-all`, `/api/session/[code]/wines/hide-all`. Each updates `wines.revealed_at` on the affected wines (set or null per the action). Cheap (one row per wine touched) and the only way the renderer's redaction rule works post-Redis-eviction.
 
 **What followers see for a pre-reveal blind post:**
 - Author's identity, post timing, location (if `locationPublic`), the post exists.
@@ -417,7 +429,7 @@ The blind dimension only affects **rendering**: for each wine in a feed_item's e
 - Wine identity (the entire point of blind).
 - `rating_images` for unrevealed wines (a label-bearing pour photo would leak the wine). Same redaction rule extends to images: hide `rating_images` rows whose attached rating's wine is unrevealed.
 
-**Redaction helper:** the existing `redactWine` lives in `app/api/session/[code]/wines/route.ts:16` (file-local). **Phase 3 must extract it to `lib/wineRedaction.ts`** so the feed-render path, Tastes-tab render path, and live session render path all share it. The helper takes a wine + a "is this revealed?" flag and returns the wine with identifying fields blanked out when not revealed.
+**Redaction helper:** the existing `redactWine` lives in `app/api/session/[code]/wines/route.ts:16` (file-local). **Phase 2 must extract it to `lib/wineRedaction.ts`** so the new feed-read path uses it from day one — otherwise the phase-2-to-phase-3 window would render unredacted blind-session wines on the feed (privacy bug). Same helper then powers the Tastes-tab render and the live session view (which keeps its existing call site, just imports from the new lib path). Helper takes a wine + a "is this revealed?" flag and returns the wine with identifying fields blanked out when not revealed.
 
 **The user's own pre-reveal Tastes view:** their own score / flavours / notes / `rating_images` stay visible (their own data); wine identity still redacts via the same helper. Identical rule, applied to the same data, on every surface.
 
@@ -543,6 +555,8 @@ Each phase = one branch, one PR, mergeable on its own. After each merge to main,
 
 Mergeable to main with zero behaviour change visible to users. Production gets the new tables on the next deploy.
 
+**Race window during phase 1 → phase 2 gap:** phase 1 drops the old `@@unique([wineId, userId])` and adds the new partial unique on `(user_id, wine_id, session_id)`. But phase 1 doesn't touch the rate endpoint — writes still happen via the old code path that doesn't set `ratings.sessionId`. Until phase 2 ships, all new ratings go in with `sessionId = NULL`, so the partial unique (gated on `WHERE session_id IS NOT NULL`) doesn't constrain them. Concurrent same-user same-wine in-session rates could create two rows. **Acceptable at Tim+Simon scale** (we tell each other not to dual-tab during the rollout window). Worth knowing about; not a blocker.
+
 ### Phase 2 — migrate, dual-write briefly, cut over (was phases 2 + 3 in earlier drafts)
 **Branch**: `feature/rewire-p2-cutover`
 
@@ -551,9 +565,9 @@ This is the heavy phase. Single branch, single PR, runs during a brief downtime 
 **Schema-touching writes:**
 - `POST /api/checkins` switches to writing through the new model: `wines` + `ratings` (sessionId=NULL, origin='standalone') + `feed_items` (kind='standalone') + `feed_item_likes/tags` + `rating_images`. Old `checkins` table receives a final mirror write during the migration window, then writes stop. The `copyFromCheckinId` body field is preserved (not renamed) — the field accepts a feed_item_id under the new semantics; old client code continues to work.
 - `POST /api/session/[code]/rate` adds: sets `ratings.sessionId` and `ratings.origin = 'session'`; creates/upserts the `feed_items` row for `(session, user)` with `kind='session'` (idempotent — only the first engagement creates the feed item). Same path for blind and non-blind sessions; blind is a tasting format only, handled at render time via per-wine redaction (§3).
-- Session-rate DELETE path implements the engagement-deletion CTE pattern from §3 (single-statement DELETE-with-CTE, MVCC-consistent). Includes the safety prerequisite: undo affordance must be in phase 3 before this rule is enabled. **S3 reclaim**: before running the CTE, fetch `rating_images.imageUrl` for the rating and fire `reclaimImage()` on each (the CTE's cascade fires the row delete; reclaim must precede so we don't lose the URLs).
+- Session-rate DELETE path implements the engagement-deletion two-statement pattern from §3. **Refactor required**: today's `prisma.rating.deleteMany({where: {wineId, userId}})` doesn't capture the deleted row id — must change to a single-row DELETE with `RETURNING id, user_id, session_id` so step 2's `id <> $rating_id` self-exclusion guard works. Includes the safety prerequisite: undo affordance must be in phase 3 before this rule is enabled. **S3 reclaim ordering**: capture `rating_images.imageUrl` for the rating BEFORE the DELETE; fire `reclaimImage()` AFTER the DELETE commits (mirrors today's `lib/accountDelete.ts` pattern — capture-first / commit / reclaim-after preserves rollback safety; the cascade FK doesn't trigger S3 cleanup, per root CLAUDE.md). **Don't wrap in `prisma.$transaction`** — both statements would share an MVCC snapshot and the bug returns.
 - `DELETE /api/session/[code]` switches from hard-delete to soft-delete: set `sessions.deletedAt = now()` and scrub every other column to NULL per the §8 contract. Stop deleting unbookmarked ratings. All existing side effects (HoF cleanup, S3 reclaim, session_members wipe, Redis purge) continue to fire.
-- Reveal endpoints (`/api/session/[code]/wines/reveal-all` and `/api/session/[code]/wines/[wineId]/reveal`, plus the un-reveal counterparts in `hide-all` and the per-wine reveal DELETE): no Postgres write needed. They continue to touch Redis only. The redaction helper at render time reads `wines.revealedAt` directly; toggling it (in either direction) just changes what subsequent renders return.
+- Reveal endpoints (`/api/session/[code]/wines/reveal-all` POST + `/api/session/[code]/wines/[wineId]/reveal` POST + DELETE + `/api/session/[code]/wines/hide-all`): each adds a Postgres `UPDATE wines SET revealed_at = $value WHERE id = $wid` call on the affected wines (set to `now()` for reveals, NULL for un-reveals). Today these endpoints only touch Redis; the renderer needs `wines.revealedAt` to survive Redis eviction. **Render order: deleted-session label > per-wine `redactWine` > raw fields.** Wine-add endpoint needs no special guard — newly-added blind-session wines naturally render redacted via the same predicate.
 - Concurrent in-session edit conflict resolution: the partial unique constraint on `(user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL` enforces "one rating per (user, wine, session)" race-safe. Writes use `INSERT ... ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL DO UPDATE SET score=..., flavors=..., notes=..., rated_at=...` — last-write-wins semantics, no 23505 errors surfaced to the client.
 - Ban transaction adds: also delete the banned user's `feed_items` row for that session, in the same transaction as the rating deletes. Symmetric: kick keeps both ratings + feed_item; ban deletes both. **S3 reclaim** for any `rating_images` on the deleted ratings runs before the cascade.
 - Account-deletion path (extends today's `lib/accountDelete.ts`):
@@ -565,8 +579,10 @@ This is the heavy phase. Single branch, single PR, runs during a brief downtime 
 - "Had a sip" path: keep the `copyFromCheckinId` field name; the value now refers to a `feed_items.id` of `kind='standalone'`. Implement the path-B copy semantics (fresh wine + rating + feed_item + image clone via rating_images).
 
 **Read cutover:**
+- **Extract `redactWine` to `lib/wineRedaction.ts`** as a phase-2 prerequisite. The new feed-read path uses it. Today's call site in `app/api/session/[code]/wines/route.ts` switches to importing from the new lib path. Without this extraction shipping in phase 2, the new feed renders blind-session wines unredacted (privacy bug for the duration of phase 2).
+- **Use Prisma `include` for batched fetches**: `prisma.feedItem.findMany({ include: { rating: { include: { wine: true, images: true } } } })` — single round-trip, batched IN clauses for the relations. Naive per-row accessors would N+1; explicit `include` shape avoids it.
 - `/api/feed` SELECTs from `feed_items` (with JOINs to `ratings` + `wines` + `sessions`). Output shape stays compatible with the existing `CheckinCard` component for standalone; session feed items render a stub session card until phase 3 ships the aggregate UI. The query JOINs `sessions` precisely to read `deletedAt` so tombstoned-session posts can render the "[deleted session]" label.
-- **Blind sessions**: no feed query change. Blind sessions create feed_items at engagement time, same as non-blind. The redaction helper applies per-wine on every render path (feed, profile Tastes, live session) — wines with `revealedAt IS NULL` render with identifying fields blanked out. Single rule, every surface (§3).
+- **Blind sessions**: no feed query change. Blind sessions create feed_items at engagement time, same as non-blind. The redaction helper applies per-wine on every render path (feed, profile Tastes, live session) — wines with `sessions.blind = true AND wines.revealedAt IS NULL` render with identifying fields blanked out (§3).
 - `/api/me/feed` (own feed): same.
 - `/u/<id>` profile activity: switch the source from `checkins` to `feed_items`.
 - `/api/me/history` (the future "Tastes" tab data) starts pulling from `ratings` directly, no longer needs the `UNION` between ratings and checkins.
@@ -628,7 +644,7 @@ This is the irreversible step. Everything before it can be rolled back.
 | **Engagement-deletion race across tabs.** Two concurrent "delete my last rating" tabs could both see "the other deleted it" and orphan the feed_item. | Two-statement pattern with `id <> $rating_id` self-exclusion in the second statement's NOT EXISTS (§3). Each statement gets its own MVCC snapshot, so the second sees the first's effect; the self-exclusion is belt-and-suspenders against any visibility lag. |
 | **Migration interrupted mid-run.** A single-transaction script that crashes leaves a half-migrated state with no recovery. | Batched + checkpoint-tracked migration (§5). Restart resumes from the last checkpoint; running on already-migrated data is a no-op. |
 | **Concurrent in-session edits create duplicate ratings.** The dropped `@@unique([wineId, userId])` would allow two-tab races to insert two rows. | Partial unique `(userId, wineId, sessionId) WHERE sessionId IS NOT NULL` on ratings (§2). Standalone re-tasting stays unconstrained (aging-bottle case). |
-| **Blind tasting wine identity leak before reveal.** | Per-wine render-time redaction (§3). Blind is a tasting format, not a privacy mechanism. The post exists from first engagement and renders with redacted wine cards for any wine where `wines.revealedAt IS NULL`. Single helper, every render path. No deferred creation, no schema column, no feed filter. The reveal becomes a UX moment when wine cards "fill in." Author identity / post existence / participation are intentionally visible; finer privacy lives on the user's profile-visibility tier (orthogonal). |
+| **Blind tasting wine identity leak before reveal.** | Per-wine render-time redaction with predicate `sessions.blind = true AND wines.revealedAt IS NULL` (§3). Deleted-session label takes precedence. Phase 2 persists `wines.revealedAt` to Postgres on every reveal/un-reveal endpoint (today Redis-only). Single helper, every render path. The reveal becomes a UX moment when wine cards "fill in." |
 | **Anonymous engagement crashes feed_items insert.** Anon users have no `userId`; `feed_items.userId NOT NULL` would reject. | Explicit rule (§3): anon ratings skip `feed_items` entirely. The `NOT NULL` constraint enforces this at the schema level — a bug that tries to insert an anon feed_item gets rejected loudly, not silently. |
 | **Ban transaction leaves orphan feed_item.** Today's ban deletes ratings; without an update, the banned user's session feed_item would survive pointing at deleted ratings. | Phase 2 ban transaction extended to also delete `feed_items WHERE userId=target AND sessionId=this`. Same transaction as the rating cleanup. |
 | **Account-deletion semantic drift.** Cascade vs tombstone is a careful per-table choice today; new tables need the same care. | Phase 2 implements per-row treatment: standalone ratings hard-cascade (no other user depends on them); session ratings tombstone (other tasters' compare views need them) per today's pattern. `feed_items.userId Cascade` then takes care of all feed_items the user authored. `rating_images` cascade with their parent rating. |
@@ -720,6 +736,23 @@ This is the irreversible step. Everything before it can be rolled back.
   ```
 
   Re-run before phase 1 PR merges in case new wines were added with non-canonical styles in the meantime.
+
+- **Partial-unique duplicate count on `(userId, wineId, sessionId)` after the backfill.** Today's `@@unique([wineId, userId])` blocks any duplicate `(wineId, userId)` pairs across the entire ratings table — once we drop it and add the partial unique on `(user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL`, the new constraint must hold. Hypothetical-backfill check:
+
+  ```sql
+  -- After populating ratings.sessionId from wines.sessionId, would any
+  -- (user_id, wine_id, session_id) triple have COUNT > 1?
+  SELECT user_id, wine_id, w.session_id, COUNT(*)
+  FROM ratings r
+  JOIN wines w ON w.id = r.wine_id
+  WHERE r.user_id IS NOT NULL AND w.session_id IS NOT NULL
+  GROUP BY user_id, wine_id, w.session_id
+  HAVING COUNT(*) > 1;
+  ```
+
+  Expected: zero rows (today's unique constraint guarantees this within the wine.session pair). Run before phase 1 PR merges. If non-zero, investigate before adding the new constraint.
+
+- **`feed_items` empty before phase 2 migration.** The `copyFromCheckinId` ID-equality story (§5) requires that no `feed_items` rows exist before the migration backfill inserts them with explicit ids matched to source `checkins.id`. Phase 1 creates the `feed_items` table but writes nothing to it; phase 2's migration is the first writer. Re-run `SELECT COUNT(*) FROM feed_items` immediately before the migration: must return zero.
 
 ---
 
