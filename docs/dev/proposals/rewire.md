@@ -173,6 +173,7 @@ ratings
   ratedAt   Timestamptz
 
   images    RatingImage[]    // see below
+  session   Session? @relation(onDelete: Restrict)        -- soft-delete is the contract; mirror feed_items.session
 
   @@index([wineId])
   @@index([userId])
@@ -180,10 +181,15 @@ ratings
   @@index([userId, wineId])     // for the "all my tastings of this wine" query
   @@index([userId, sessionId])  // hot path: enumerate the wines a user engaged with in a session
 
-  // Race-safe in-session uniqueness; standalone rows unconstrained
+  // Race-safe in-session uniqueness for logged-in users; standalone rows unconstrained
+  // Note: `WHERE user_id IS NOT NULL` is load-bearing — Postgres treats NULLs as
+  // distinct, so without this guard the constraint would not constrain anon ratings
+  // (where user_id IS NULL). Anon two-tab race is an accepted edge case (anon
+  // sessions are casual; if it ever matters, store identity-id from lib/identity.ts
+  // on the rating row and add a parallel partial unique on it).
   CREATE UNIQUE INDEX ratings_session_unique
     ON ratings (user_id, wine_id, session_id)
-    WHERE session_id IS NOT NULL;
+    WHERE session_id IS NOT NULL AND user_id IS NOT NULL;
 ```
 
 **Why drop the unique:** The old constraint was load-bearing for one reason — in a session, "rate the same wine twice" should mean "edit your rating," not "create a second rating." That's correct *inside one session*. It breaks the moment the same wine row gets tasted across contexts:
@@ -246,11 +252,11 @@ feed_items
   lat           Decimal?
   lng           Decimal?
   locationPublic Boolean      @default(false)              -- true = render the venue/city; false = render nothing
-  createdAt     Timestamptz                                 -- set explicitly to source rating's ratedAt
-                                                            --   for blind-deferred items; default now() otherwise
+  createdAt     Timestamptz                                 -- default now(); never updated on conflict, so re-engagement
+                                                            --   keeps the original post's chronology
 
   user      User      @relation(onDelete: Cascade)
-  session   Session?  @relation(onDelete: SetNull)         -- safety net for hard-delete; soft-delete keeps the FK
+  session   Session?  @relation(onDelete: Restrict)        -- soft-delete is the contract; hard-delete must explicitly clean up first
   rating    Rating?   @relation(onDelete: Cascade)         -- standalone is 1:1; cascade is right
   likes     FeedItemLike[]
   tags      FeedItemTag[]
@@ -275,7 +281,7 @@ feed_items
 
 **Why `@@unique([userId, sessionId])`:** Each user gets exactly one feed item per session — a "session post." User A and user B in the same session get two separate feed items (their own posts, with their own ratings inside). This is correct: each user is sharing their own experience, not a shared one. The unique constraint exists to prevent **double-creation under concurrent rates** — when user A rates wine 1 and wine 2 in session X near-simultaneously, both inserts try to upsert "feed item for (A, X)"; the unique constraint + `ON CONFLICT DO NOTHING` makes the second insert a no-op. The constraint doesn't apply to standalone (sessionId is NULL there, and Postgres treats NULLs as distinct in unique constraints by default — so 50 standalone feed_items for the same user are all considered unique).
 
-**Why `session.onDelete: SetNull` despite soft-delete being the primary path:** Safety net. If we ever hard-delete a session row in the future (a periodic GDPR purge job, or a manual emergency), the FK won't break. Day-to-day, soft-delete preserves the FK and SetNull never fires.
+**Why `session.onDelete: Restrict` and not SetNull:** Soft-delete is the contract — hard-delete should never happen accidentally. SetNull would silently destroy the session-grouping signal (the very thing soft-delete exists to preserve) if a future GDPR purge or manual emergency forgot to null FKs first. Restrict makes the hard-delete fail loudly, forcing the cleanup path to confront the consequences explicitly. The same logic applies to `ratings.sessionId` — also Restrict.
 
 **Why `locationPublic` boolean and not a 3-value enum:** Earlier drafts had `'public' | 'private' | 'none'`. Distinguishing "private tasting" from "no location" is UX copy decided per kind, not data. Boolean: `true` → render "@ Bar Toni, Zürich"; `false` → render nothing (no signal at all). If product later wants the explicit-private signal, a boolean→enum migration is additive.
 
@@ -311,23 +317,6 @@ feed_item_tags
 
 Both follow today's `checkin_likes` / `checkin_tags` cascade pattern: when the tagged/liking user deletes their account, the edge disappears (the author keeps the post; the social signal alone goes). When the feed_item is deleted (e.g. account-deletion of the author), all likes and tags on it cascade.
 
-#### `feed_item_ratings` — empty join table, planted for future curated collections
-
-```
-feed_item_ratings
-  feedItemId  Int
-  ratingId    Int
-  sortOrder   Int    @default(0)
-
-  feedItem  FeedItem  @relation(onDelete: Cascade)
-  rating    Rating    @relation(onDelete: Cascade)
-
-  @@id([feedItemId, ratingId])
-  @@index([ratingId])
-```
-
-**Why plant the table now even though no code reads or writes it:** A future "curated collection" feed_item kind (e.g. "best Pinots of 2026") needs many-to-many between feed_items and ratings — one rating could appear on its standalone post AND on a curated-collection post. Without this table, that future feature requires a destructive migration (drop `feed_items.ratingId`, add `feed_item_ratings`, backfill). Planting an empty table now costs ~zero (no rows, no writes, no reads) and converts the future migration to additive (deprecate `feed_items.ratingId` later, populate the join table on writes, no schema break).
-
 #### `checkins` and friends — dropped in phase 4
 
 Until then they coexist with the new model. Note: today's `checkins.isPublic` no longer exists (already dropped, per `lib/profileLoad.ts:56`); every check-in is feed-eligible and gated only by profile-visibility tier. Migration treats every check-in as feed-eligible accordingly.
@@ -359,32 +348,36 @@ All three count as "I tasted this." Standalone scoreless check-ins are the same 
 
 If a user clears their score (back to 0), removes all chips, and empties the note, the rating row is deleted. If it was the user's only rating in the session, the session feed item is deleted too.
 
-Two sequential statements — no explicit transaction needed because the `WHERE NOT EXISTS` re-reads visible state:
+A single CTE that performs both deletes in one statement, so MVCC visibility is consistent across the rating-delete and the feed_item-cleanup:
 
 ```sql
--- delete the now-empty rating
-DELETE FROM ratings
- WHERE id = $rating_id
-   AND (score = 0 OR score IS NULL)
-   AND flavors = '{}'::jsonb
-   AND (notes IS NULL OR notes = '');
-
--- if no other ratings remain for this user in this session, drop the feed_item
+WITH deleted_rating AS (
+  DELETE FROM ratings
+   WHERE id = $rating_id
+     AND (score = 0 OR score IS NULL)
+     AND flavors = '{}'::jsonb
+     AND (notes IS NULL OR notes = '')
+  RETURNING user_id, session_id
+)
 DELETE FROM feed_items
- WHERE user_id = $user_id
-   AND session_id = $session_id
+ WHERE user_id = (SELECT user_id FROM deleted_rating)
+   AND session_id = (SELECT session_id FROM deleted_rating)
    AND NOT EXISTS (
      SELECT 1 FROM ratings
-      WHERE user_id = $user_id
-        AND session_id = $session_id
+      WHERE user_id = feed_items.user_id
+        AND session_id = feed_items.session_id
    );
 ```
 
-Concurrent tabs: if both delete-the-last-rating, the second's `NOT EXISTS` correctly sees zero rows and the feed_item is deleted exactly once. If one deletes and the other doesn't (its rating was non-empty), the second's `NOT EXISTS` sees the surviving rating and the feed_item correctly stays.
+The CTE makes both deletes part of a single MVCC snapshot — the `NOT EXISTS` evaluates against the same view of `ratings` that the DELETE just modified. Concurrent transactions inserting a new rating between the two deletes can't slip in (the second clause's `NOT EXISTS` sees them either both before or both after, never split). If the rating-delete WHERE clause matches zero rows (rating wasn't actually empty), `deleted_rating` is empty, both subqueries return NULL, the second DELETE's WHERE evaluates to NULL, no rows match, no feed_item delete fires — correct no-op.
 
-**Flavours equality contract:** The `flavors = '{}'::jsonb` check assumes the UI strips zero-count keys before save (an empty selection writes `{}`, not `{red: 0, oak: 0}`). Validation in `lib/checkinValidation.ts` should enforce this — if it doesn't yet, fix as part of phase 2.
+**Flavours equality contract:** The `flavors = '{}'::jsonb` check requires that an "empty" flavours payload is literally `{}`, not `{red: 0, oak: 0}` (zero-count keys). Today `lib/checkinValidation.ts` does NOT strip zero-count keys — it only validates types — so submitting score+chips and then deselecting the chips would persist `{red: 0}` and the engagement-deletion match would silently fail. **Phase 2 prerequisite**: update `validateFlavors` to drop entries with `value === 0` before storing. Two-line change in `lib/checkinValidation.ts`.
 
 **Caveat:** the in-session rating page has only "go back," no undo. Auto-delete on cleared-input is destructive and a tap-fumble away. **Phase 3 must ship the undo affordance before this rule is enabled.** Captured in `.local/future-work-rewire.md`; phase 3's task list includes it.
+
+**Re-engagement after un-engagement:** if a user fully un-engages with a wine (rating + feed_item deleted) and then re-engages later, the new rating creates a new `feed_items` row with a fresh `createdAt = now()`. The post chronology resets to the re-engagement time. Intentional — the original post no longer exists, so there's no "original" timestamp to preserve.
+
+**Multi-device photo upload:** when a user has stale UI state (laptop showing pre-existing rating, but laptop's local cache thinks no rating exists), the in-session rate POST does `INSERT ... ON CONFLICT (user_id, wine_id, session_id) WHERE user_id IS NOT NULL DO UPDATE ... RETURNING id`. The `RETURNING id` resolves to the existing rating's id (not the laptop's intended-new id). Subsequent `rating_images` inserts must use the RETURNING'd id, not the laptop's locally-generated assumption. Otherwise the FK either fails or the photo attaches to the wrong rating.
 
 ### Anonymous engagement
 
@@ -408,12 +401,31 @@ Today, **reveal is per-wine** — each `wines.revealedAt` is set independently, 
 - `ratings` rows are created on engagement as normal (the live session needs them).
 - `feed_items` rows are ALSO created at engagement time, same as non-blind sessions. `createdAt` defaults to `now()` at first engagement; the upsert doesn't update `createdAt` on conflict, so chronology stays honest.
 - The feed query enforces blind-hiding via: `WHERE NOT (sessions.blind = true AND sessions.allRevealedAt IS NULL)`. Pre-full-reveal blind feed_items are hard-excluded from `/api/feed`, `/api/me/feed`, and any profile feed surface.
-- The reveal endpoints (`reveal-all`, `[wineId]/reveal`) check after each reveal: if every wine in the session now has `revealedAt`, set `sessions.allRevealedAt = now()`. The filter then naturally stops excluding the row.
+- After each per-wine reveal commits, the reveal endpoints run an **atomic** "did the last wine just get revealed?" check + set, in a single statement (not read-then-write — that races when two reveals commit near-simultaneously and both miss seeing the other's wine):
+
+  ```sql
+  UPDATE sessions
+     SET all_revealed_at = now()
+   WHERE id = $session_id
+     AND all_revealed_at IS NULL
+     AND blind = true
+     AND NOT EXISTS (
+       SELECT 1 FROM wines
+        WHERE session_id = $session_id
+          AND revealed_at IS NULL
+     );
+  ```
+
+  Idempotent (the `IS NULL` guard prevents re-set), atomic (one statement, NOT EXISTS evaluated at the same MVCC snapshot as the UPDATE), and race-safe (two concurrent last-wine reveals will both run this UPDATE; whichever serialises second sees the other's effect via the row lock and the `IS NULL` guard short-circuits).
+
+- **Adding a wine to a blind session that has `allRevealedAt IS NOT NULL`**: reset `allRevealedAt = NULL`. The new wine has no `revealedAt`; without resetting, the filter would let the post stay visible and the new wine's identity would leak the moment it's rated. Cost: the post temporarily disappears from followers' feeds until the host reveals the new wine. Acceptable — a partially-revealed blind tasting isn't a coherent post.
 
 **Pre-full-reveal display on the user's own profile / Tastes tab / live session** (anywhere the user sees their OWN pre-reveal ratings):
 - The user's own score, flavours, notes, and rating images stay visible (those are the user's own data).
 - For each individual wine, if `wines.revealedAt IS NULL`, all wine-identifying fields are redacted: `name`, `producer`, `vintage`, `grape`, `region`, `country`, `vinification`, `description`, `purchaseUrl`. Plus `wines.imageUrl`. Already-revealed wines render normally.
 - The existing redaction logic lives as `redactWine` in `app/api/session/[code]/wines/route.ts:16` (file-local). **Phase 3 must extract it to `lib/wineRedaction.ts`** before the Tastes/Posts surfaces can reuse it.
+
+**Pre-reveal `rating_images` on OTHER participants' compare view:** A user's pour photo for a blind wine could leak the wine identity (label visible). Pre-reveal compare must hide other participants' `rating_images` for unrevealed wines (`wines.revealedAt IS NULL`). Owner sees own images; co-tasters do not. Post-reveal (per-wine), co-tasters see them normally. Wire this in phase 2's compare path update.
 
 **Post-full-reveal:** the feed filter stops excluding; all fields render normally.
 
@@ -447,7 +459,7 @@ To keep the scope sane, these are explicit non-goals:
 10. **Notifications on likes/tags moving from `checkins` → `feed_items`.** No notification system exists today; nothing to update.
 11. **Archive / "past sessions" lifecycle as a separate user action.** Today's implicit "live for N hours then expired" lifespan is unchanged. The new `sessions.deletedAt` is for explicit host-deletion only, not for archiving.
 12. **Hard-delete (GDPR purge) job.** The schema supports it (FK SetNull on `feed_items.session`, etc.) but the actual purge job is future work. The cleanup order matters: a hard-purge of a deleted session must first null `wines.session_id` on any wines still pointing at it (today's `NoAction` FK would otherwise reject the delete). Document when the purge job ships.
-13. **Multiple feed_items per rating** (e.g. one rating shown on both a personal post AND a curated "best of 2026" collection). Today's model is rigid: standalone is 1:1, session is N:1 via `(userId, sessionId)`. Curated collections needing this would require a `feed_item_ratings(feedItemId, ratingId)` join table — a destructive migration relative to today's `ratingId` column. Worth knowing when planning that future feature.
+13. **Curated collections / multiple feed_items per rating** (e.g. one rating shown on both a personal post AND a curated "best of 2026" collection). Out of scope, no roadmap. When it ships, needs a `feed_item_ratings(feedItemId, ratingId)` join table and a deprecation of the current `feed_items.ratingId` column — destructive migration. Earlier drafts planted the empty join table now to make that migration additive; dropped because curated collections aren't on a near-timeline and an empty Prisma model is a confusion landmine for the two developers in the meantime.
 14. **Per-rating "private" flag / per-user "opt out of feed."** Schema supports this additively (a `ratings.private Boolean default false` and/or a `users.feedOptOut` column). When it ships, also need an HoF-suppression rule — private 5★ ratings shouldn't enter the public leaderboard.
 15. **Master-data ownership for shared wines.** Today's "had a sip" creates fresh wine rows (per §5), so this question doesn't arise. When real cross-user dedup ships, the question of "who can edit wine metadata" needs a real answer — captured in future-work.
 
@@ -464,7 +476,7 @@ For each existing `checkins` row:
 2. Create a `ratings` row pointing at that wine. The rating's `sessionId = NULL`, `origin = 'standalone'`. `score` carries through (NULL or 0 if the original was scoreless — both legal now).
 3. Create a `feed_items` row with `kind='standalone'`, `ratingId` set, `userId` from the source check-in (NOT NULL guaranteed because checkins always have a userId today), `venueName/city/country/lat/lng/createdAt` carried over, `locationPublic = true` if any location field is non-NULL else `false`.
 4. For each `checkin_likes` row: create a `feed_item_likes` row pointing at the new feed item.
-5. For each `checkin_tags` row: create a `feed_item_tags` row pointing at the new feed item (`source = 'user'`).
+5. For each `checkin_tags` row: create a `feed_item_tags` row pointing at the new feed item.
 6. If the source check-in had an `imageUrl`, create a `rating_images` row referencing the new rating.
 
 For each existing `ratings` row (today: every row came from a session): set `sessionId` from the wine's existing `sessionId` if present, else NULL (the wine may have been orphaned by a prior session-delete). Set `origin = 'session'`.
@@ -487,7 +499,9 @@ Pre-flight (§8) confirmed every existing wine row has a valid `(category, style
 
 Today: `POST /api/checkins` with `copyFromCheckinId` clones an existing check-in onto the caller's profile, including image bytes.
 
-After the rewire: `POST /api/checkins` keeps the `copyFromCheckinId` field name (no API breaking change for naming-only value — same trade-off as keeping `wines`/`ratings` table names). The field semantics shift: it now accepts the id of a `feed_items` row of `kind='standalone'` (which used to BE a checkins row). Behaviour: load the source feed_item, apply the existing same-gates (caller is mutual-follow + visibility-allowed), then:
+After the rewire: `POST /api/checkins` keeps the `copyFromCheckinId` field name (no API breaking change). The field semantics shift: the value is now interpreted as a `feed_items.id`. **To preserve URL/cache compatibility**, the migration backfills `feed_items.id` to match the source `checkins.id`: for each migrated check-in, the new standalone `feed_items` row is inserted with the same id as its source. Then the autoincrement sequence is bumped past the highest used id (`SELECT setval('feed_items_id_seq', MAX(id)) FROM feed_items`) so post-migration inserts skip past the reserved range. Net effect: `copyFromCheckinId=47` resolves to the same logical row before and after the rewire — no client breakage, no cached-link 404s.
+
+Behaviour after migration: load the source feed_item, apply the existing same-gates (caller is mutual-follow + visibility-allowed), then:
 1. Create a NEW `wines` row with the source wine's metadata copied (no shared catalog identity — the rewire's "no dedup" non-goal applies to the social copy flow too).
 2. Create a NEW `ratings` row pointing at the new wine.
 3. Create a NEW `feed_items` row with `kind='standalone'`.
@@ -505,7 +519,7 @@ A SQL script (or a TypeScript script if wine_id minting needs nanoid) at `prisma
 - True idempotency: running the script on already-migrated data is a no-op (every batch finds zero unprocessed rows).
 - At Tim+Simon scale this finishes in seconds; the batching is for future-proofing against 100k+ row growth where a single transaction would hold locks for minutes.
 
-Migration runs during a brief read-only maintenance window. **Enforcement**: a `MAINTENANCE_MODE` env var read by a Next.js middleware (`middleware.ts`) that returns 503 for every state-changing API route (`POST`/`PATCH`/`DELETE`), including `/api/checkins`, `/api/me/avatar`, all session-rate endpoints, all reveal endpoints. Reads (GET) continue serving normally. The middleware short-circuits BEFORE S3 upload paths so partial writes (S3 PUT succeeded, DB write rejected) can't leak orphaned bytes. At current scale the window is under a minute. Don't try to run lock-free — the middleware approach is simpler and bullet-proof.
+Migration runs during a brief downtime window. **Enforcement**: scale the app to zero replicas (or `kubectl scale --replicas=0` / Deploio analogue), run the script, scale back up. At current scale (Tim+Simon, no production traffic to speak of) this is under a minute and easier than introducing a maintenance-mode middleware that exists forever for a once-a-decade event. Tell the other developer "don't touch the app for a minute" and you're done. If the user base ever grows to where downtime is genuinely costly, revisit and add the middleware then.
 
 ### Stale dependencies that get rewritten in the merged phase 2
 
@@ -520,7 +534,7 @@ Each phase = one branch, one PR, mergeable on its own. After each merge to main,
 ### Phase 1 — additive schema only
 **Branch**: `feature/rewire-p1-schema`
 
-- New tables: `category_styles`, `feed_items`, `feed_item_likes`, `feed_item_tags`, `feed_item_ratings` (planted empty for future curated collections — see §2), `rating_images`, `_migration_checkpoints`.
+- New tables: `category_styles`, `feed_items`, `feed_item_likes`, `feed_item_tags`, `rating_images`, `_migration_checkpoints`.
 - Seed `category_styles` with the 5 wine styles.
 - New columns: `feed_items.locationPublic`, `ratings.sessionId`, `ratings.origin`, `sessions.deletedAt`, `sessions.allRevealedAt`.
 - Drop `@@unique([wineId, userId])` on `ratings`. Add partial unique `WHERE sessionId IS NOT NULL`. Make `ratings.score` nullable.
@@ -539,26 +553,27 @@ Mergeable to main with zero behaviour change visible to users. Production gets t
 ### Phase 2 — migrate, dual-write briefly, cut over (was phases 2 + 3 in earlier drafts)
 **Branch**: `feature/rewire-p2-cutover`
 
-This is the heavy phase. Single branch, single PR, runs during a brief maintenance window.
+This is the heavy phase. Single branch, single PR, runs during a brief downtime window (scale to 0 replicas, run script, scale back up).
 
 **Schema-touching writes:**
 - `POST /api/checkins` switches to writing through the new model: `wines` + `ratings` (sessionId=NULL, origin='standalone') + `feed_items` (kind='standalone') + `feed_item_likes/tags` + `rating_images`. Old `checkins` table receives a final mirror write during the migration window, then writes stop. The `copyFromCheckinId` body field is preserved (not renamed) — the field accepts a feed_item_id under the new semantics; old client code continues to work.
 - `POST /api/session/[code]/rate` adds: sets `ratings.sessionId` and `ratings.origin = 'session'`; creates/upserts the `feed_items` row for `(session, user)` with `kind='session'` (idempotent — only the first engagement creates the feed item). Same path for blind and non-blind sessions; blind-hiding happens at feed-read time via the SQL filter (§3).
-- Session-rate DELETE path implements the engagement-deletion sequential-statement pattern from §3 (delete rating, then `WHERE NOT EXISTS` cleanup of feed_item). Includes the safety prerequisite: undo affordance must be in phase 3 before this rule is enabled. **S3 reclaim**: explicitly enumerate `rating_images.imageUrl` for the deleted rating(s) and fire `reclaimImage()` BEFORE the cascade.
+- Session-rate DELETE path implements the engagement-deletion CTE pattern from §3 (single-statement DELETE-with-CTE, MVCC-consistent). Includes the safety prerequisite: undo affordance must be in phase 3 before this rule is enabled. **S3 reclaim**: before running the CTE, fetch `rating_images.imageUrl` for the rating and fire `reclaimImage()` on each (the CTE's cascade fires the row delete; reclaim must precede so we don't lose the URLs).
 - `DELETE /api/session/[code]` switches from hard-delete to soft-delete: set `sessions.deletedAt = now()` and scrub every other column to NULL per the §8 contract. Stop deleting unbookmarked ratings. All existing side effects (HoF cleanup, S3 reclaim, session_members wipe, Redis purge) continue to fire.
-- Reveal endpoints (`/api/session/[code]/wines/reveal-all` and `/api/session/[code]/wines/[wineId]/reveal`) gain a post-reveal check: if every wine in the session now has `revealedAt`, set `sessions.allRevealedAt = now()`. Idempotent — already-set value isn't overwritten. (No deferred-materialisation job needed; feed_items already exist from engagement time, the SQL filter just stops excluding them.)
+- Reveal endpoints (`/api/session/[code]/wines/reveal-all` and `/api/session/[code]/wines/[wineId]/reveal`) gain a post-reveal Postgres write that runs the atomic "all revealed?" UPDATE pattern from §3 (today these endpoints only touch Redis; phase 2 adds the new Postgres call). Wine-add endpoint (`/api/session/[code]/wines`) gains a guard: if the session is blind and `allRevealedAt IS NOT NULL`, reset it to NULL so the new unrevealed wine doesn't leak via the now-unfiltered feed.
 - Concurrent in-session edit conflict resolution: the partial unique constraint on `(userId, wineId, sessionId)` enforces "one rating per (user, wine, session)" race-safe. Writes use `INSERT ... ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL DO UPDATE SET score=..., flavors=..., notes=..., rated_at=...` — last-write-wins semantics, no 23505 errors surfaced to the client.
 - Ban transaction adds: also delete the banned user's `feed_items` row for that session, in the same transaction as the rating deletes. Symmetric: kick keeps both ratings + feed_item; ban deletes both. **S3 reclaim** for any `rating_images` on the deleted ratings runs before the cascade.
-- Account-deletion path:
-  - Standalone ratings (`sessionId IS NULL`) hard-cascade — no other user depends on them, so they go with their `feed_items` and `rating_images`.
+- Account-deletion path (extends today's `lib/accountDelete.ts`):
+  - **S3 reclaim first**: enumerate `rating_images.imageUrl` for the user's standalone ratings (sessionId IS NULL) and call `reclaimImage()` on each. (Today's `lib/accountDelete.ts:217` already does this for `checkin.imageUrl`; same pattern.) Session-rating images are tombstoned with the rating, not deleted, so they stay.
+  - Then standalone ratings (`sessionId IS NULL`) hard-cascade — no other user depends on them, so they go with their `feed_items` and `rating_images`.
   - Session ratings (`sessionId IS NOT NULL`) continue tombstoning per `docs/dev/account-deletion.md` (`UPDATE ... SET userId=NULL, raterName='[deleted]'`) — other tasters' compare views still need to render "Anna rated this 4★" after Anna deletes her account.
-  - Implementation order: tombstone session ratings first, then `DELETE FROM ratings WHERE userId=$id` cascades only the standalone rows.
+  - Implementation order: S3 reclaim → tombstone session ratings → `DELETE FROM ratings WHERE userId=$id` cascades only the standalone rows.
   - `feed_items.userId Cascade` then takes care of: standalone feed_items (1:1 with the cascaded standalone ratings) AND the user's session feed_items (their social presence in those sessions disappears; other participants' session feed_items are unaffected). New tables match this pattern from `lib/accountDelete.ts`.
 - "Had a sip" path: keep the `copyFromCheckinId` field name; the value now refers to a `feed_items.id` of `kind='standalone'`. Implement the path-B copy semantics (fresh wine + rating + feed_item + image clone via rating_images).
 
 **Read cutover:**
 - `/api/feed` SELECTs from `feed_items` (with JOINs to `ratings` + `wines` + `sessions`). Output shape stays compatible with the existing `CheckinCard` component for standalone; session feed items render a stub session card until phase 3 ships the aggregate UI. The query JOINs `sessions` precisely to read `deletedAt` so tombstoned-session posts can render the "[deleted session]" label.
-- **Blind-session feed filter**: the feed query adds `WHERE NOT (sessions.blind = true AND sessions.revealedAt IS NULL)` so pre-reveal blind feed_items are hard-excluded from the response payload (no follower can see them, regardless of viewer relationship). Post-reveal, they appear normally with `createdAt = ratedAt` (already set at engagement time, so chronology is honest). The redaction helper still applies on the user's own profile/Tastes surfaces for the user's own pre-reveal ratings (where the rating is shown but wine identity is hidden).
+- **Blind-session feed filter**: the feed query adds `WHERE NOT (COALESCE(sessions.blind, false) = true AND sessions.allRevealedAt IS NULL)` so pre-reveal blind feed_items are hard-excluded from the response payload (no follower can see them, regardless of viewer relationship). The `COALESCE` is load-bearing: tombstoned sessions have `blind = NULL` after the §8 scrub, and a naive `sessions.blind = true` would evaluate to NULL, three-valued logic excludes the row, and tombstoned-blind-session posts would silently disappear from feeds. With `COALESCE`, NULL `blind` is treated as `false` and the post renders normally with the `[deleted session]` label. Post-reveal, posts appear with their honest `createdAt` from engagement time. The redaction helper still applies on the user's own profile/Tastes surfaces for the user's own pre-reveal ratings (where the rating is shown but wine identity is hidden).
 - `/api/me/feed` (own feed): same.
 - `/u/<id>` profile activity: switch the source from `checkins` to `feed_items`.
 - `/api/me/history` (the future "Tastes" tab data) starts pulling from `ratings` directly, no longer needs the `UNION` between ratings and checkins.
@@ -566,12 +581,14 @@ This is the heavy phase. Single branch, single PR, runs during a brief maintenan
 - Session-existence call sites (~5 total: `/api/session/[code]` GET, settings, name, `lib/session.ts` resolvers) get the inline `WHERE deletedAt IS NULL` filter.
 
 **Migration:**
-- Run the batched + checkpoint-tracked script (§5) inside the maintenance window. Eyeball staging first, then prod.
-- The window is brief (under a minute at current scale) but real — set the read-only env flag, run the script, flip the cutover, lift the flag.
+- Run the batched + checkpoint-tracked script (§5) inside the downtime window. Eyeball staging first, then prod.
+- The window is brief (under a minute at current scale): scale app to 0, take `pg_dump`, run migration script, deploy the new code with reads pointing at `feed_items`, scale back up. Tell the other developer "don't touch the app for a minute" beforehand.
 
 **Rewrite `docs/dev/social-feed.md`** to describe the new model (it currently describes the soon-to-be-dead `checkins` model).
 
-This is the highest-risk phase. The migration is reversible only via `pg_dump` restore; take the dump before lifting the read-only flag.
+This is the highest-risk phase. The migration is reversible only via `pg_dump` restore; take the dump before scaling the app back up.
+
+**Why not split into 2a (write+migrate) + 2b (read cutover)?** Earlier review feedback proposed this for safer rollback. Rejected for current scale: at Tim+Simon scale, splitting means two downtime windows instead of one, two PRs instead of one, and a brief period of dual-write divergence risk between phases. The split makes sense for a high-traffic system where flag-gated rollouts are needed; here, one short downtime + a `pg_dump` rollback path is the simpler, lower-risk option. Revisit the split if the user base ever grows to where downtime is genuinely costly.
 
 ### Phase 3 — UI rewire (aggregate session card)
 **Branch**: `feature/rewire-p3-aggregate-card`
@@ -605,16 +622,16 @@ This is the irreversible step. Everything before it can be rolled back.
 | Risk | Mitigation |
 |---|---|
 | **Soft-delete leak: deleted session shows as live somewhere.** A `prisma.session.findX` call without `WHERE deletedAt IS NULL` would render a deleted session as active. Risk grows with scale and new features. | Phase 2 adds the inline filter to all ~5 session-existence call sites. PR description lists every audited site. The view (`live_sessions`) is a future option if the surface grows past ~15 sites. |
-| **Wine ID collision** during migration or concurrent rates. `Date.now().toString()` collides for inserts in the same millisecond. | Phase 1 switches to `nanoid` / `cuid` for new wine creation. Migration script uses the same generator. |
+| **Wine ID collision** during migration or concurrent rates. `Date.now().toString()` collides for inserts in the same millisecond. | Phase 1 switches to `nanoid(20)` for new wine creation. Migration script uses the same generator. |
 | **Engagement-deletion race across tabs.** Two concurrent "delete my last rating" tabs could both see "the other deleted it" and orphan the feed_item. | Atomic transaction with `WHERE NOT EXISTS` (§3). Concurrent tabs serialise on the rating-row lock; only one sees no rows remaining. |
 | **Migration interrupted mid-run.** A single-transaction script that crashes leaves a half-migrated state with no recovery. | Batched + checkpoint-tracked migration (§5). Restart resumes from the last checkpoint; running on already-migrated data is a no-op. |
 | **Concurrent in-session edits create duplicate ratings.** The dropped `@@unique([wineId, userId])` would allow two-tab races to insert two rows. | Partial unique `(userId, wineId, sessionId) WHERE sessionId IS NOT NULL` on ratings (§2). Standalone re-tasting stays unconstrained (aging-bottle case). |
-| **Blind tasting feed leak.** Engagement-time feed_item creation would publish wine identity before reveal. | Deferred materialisation (§3): `feed_items` for blind sessions are created at reveal time, with `createdAt = source rating's earliest ratedAt` so feed chronology stays honest. Pre-reveal Tastes/Posts surfaces use the existing redaction helper. |
+| **Blind tasting feed leak.** Engagement-time feed_item creation would publish wine identity before reveal. | Render-time SQL filter (§3): `WHERE NOT (COALESCE(sessions.blind, false) = true AND sessions.allRevealedAt IS NULL)` hard-excludes pre-reveal blind feed_items from feed responses. The `COALESCE` keeps tombstoned-blind-session posts visible (their scrubbed `blind = NULL`). Pre-reveal Tastes/Posts surfaces apply the redaction helper for the user's own ratings. |
 | **Anonymous engagement crashes feed_items insert.** Anon users have no `userId`; `feed_items.userId NOT NULL` would reject. | Explicit rule (§3): anon ratings skip `feed_items` entirely. The `NOT NULL` constraint enforces this at the schema level — a bug that tries to insert an anon feed_item gets rejected loudly, not silently. |
 | **Ban transaction leaves orphan feed_item.** Today's ban deletes ratings; without an update, the banned user's session feed_item would survive pointing at deleted ratings. | Phase 2 ban transaction extended to also delete `feed_items WHERE userId=target AND sessionId=this`. Same transaction as the rating cleanup. |
 | **Account-deletion semantic drift.** Cascade vs tombstone is a careful per-table choice today; new tables need the same care. | Phase 2 implements per-row treatment: standalone ratings hard-cascade (no other user depends on them); session ratings tombstone (other tasters' compare views need them) per today's pattern. `feed_items.userId Cascade` then takes care of all feed_items the user authored. `rating_images` cascade with their parent rating. |
 | **Pre-existing session-delete side effects skipped.** Today's hard-delete fires HoF cleanup, S3 reclaim, session_members wipe, Redis purge. Soft-delete must keep all of these alive. | Phase 2's `DELETE /api/session/[code]` rewrite preserves every side effect; only the final `DELETE FROM sessions` becomes `UPDATE sessions SET deleted_at=now(), name=NULL, ...`. PR includes a side-by-side check. |
-| **Migration runs against active writes.** In-flight checkin or session-rate POSTs during the migration window could slip past the snapshot. | Brief read-only maintenance window via env flag during phase 2's migration. Under a minute at current scale. Don't try lock-free. |
+| **Migration runs against active writes.** In-flight checkin or session-rate POSTs during the migration window could slip past the snapshot. | Brief downtime window during phase 2: scale app to 0 replicas, run migration, scale back up. Under a minute at current scale. Don't try lock-free. |
 | **`pg_dump` not taken before destructive phase.** Phase 4 drops three tables; mistake here is unrecoverable. | Phase 4's PR template requires the dump file checksum before merge. Per `prisma/CLAUDE.md` destructive-changes rule. |
 
 ---
@@ -724,7 +741,7 @@ This is the irreversible step. Everything before it can be rolled back.
 - Per-rating "private" flag / per-user "opt out of social feed."
 - Master-data ownership for shared wines when real cross-user dedup ships.
 - Per-feed-item image override (alternate to `rating_images` for posts that want a different photo from the tasting).
-- Multiple feed_items per rating (curated collections — would need `feed_item_ratings` join table, destructive migration relative to today).
+- Curated collections / multiple feed_items per rating (would need a `feed_item_ratings` join table; destructive migration when shipped).
 - Auto-reveal for blind sessions (anchored on `sessions.dateTo`, `sessions.dateFrom + N days`, or `createdAt + 30d` fallback — schema is already in place).
 
 All of these become easy or trivial to build *because* of this rewire. None of them ship as part of it.
