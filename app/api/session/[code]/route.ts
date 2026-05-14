@@ -419,14 +419,18 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
 
   // Order: Redis wipe FIRST, then Postgres scrub.
   //
-  // Inverse ordering (Postgres-first) has a race: between the scrub commit
-  // and the Redis wipe, a concurrent rate POST sees live meta in Redis,
-  // calls pgUpsertSession with the now-tombstoned code, finds no live row
-  // (the scrub nulled the code column), and creates a fresh sessions row
-  // with the same code — a phantom session, undeletable, invisible to the
-  // host. Redis-first means a concurrent rate POST in the window sees no
-  // Redis meta → returns 404 → never reaches pgUpsertSession. The Postgres
-  // scrub still happens atomically under the trigger, just slightly later.
+  // This NARROWS but does not fully close the pgUpsertSession-resurrection
+  // race. Mechanism: a rate POST that has already read `s:{CODE}:meta` from
+  // Redis still holds live meta in memory; if it then races a soft-delete,
+  // it proceeds to pgUpsertSession, finds no live row by code (the scrub
+  // nulled it), and creates a fresh sessions row with the same code — a
+  // phantom session, undeletable.
+  //
+  // Redis-first prevents the wider window (requests that haven't read Redis
+  // yet 404 cleanly). The residual race is "rate POST in flight at the
+  // exact moment of delete" — a few-ms window at Tim+Simon scale, accepted.
+  // Closing it fully would need keeping `code` on the tombstone + a partial
+  // unique index `WHERE deleted_at IS NULL`; out of scope for phase 2.
   //
   // Failure semantics: if the Postgres scrub fails after Redis is wiped,
   // the session is "gone from the user's perspective" (404 on every
