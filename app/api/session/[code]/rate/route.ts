@@ -138,19 +138,31 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             rated_at = EXCLUDED.rated_at`
 
         // Materialise the session feed_item on first engagement. The engagement
-        // trigger from §3 of the rewire: any rating that landed above (score
-        // OR chips OR notes) counts as engagement; idempotent via the partial
-        // unique (user_id, session_id). Subsequent rates in the same session
-        // collapse to ON CONFLICT DO NOTHING — the feed_item's createdAt is
-        // never updated, so post chronology stays anchored on first engagement.
+        // trigger from §3 of the rewire: any rating with score > 0, flavour
+        // chips, or a note counts as engagement. A rate POST with all three
+        // empty (e.g. a misbehaving or hostile client) lands the rating row
+        // — that's the user's interaction with the wine — but does NOT create
+        // a social post. Phase 3's engagement-deletion auto-cascade reaps any
+        // emptied rating; this guard avoids materialising the post in the
+        // first place so the user doesn't accumulate empty session posts.
+        //
+        // Idempotent via the partial unique (user_id, session_id). Subsequent
+        // rates in the same session collapse to ON CONFLICT DO NOTHING — the
+        // feed_item's createdAt is never updated, so post chronology stays
+        // anchored on first engagement.
         //
         // Anon ratings never reach this branch (the outer `identity.kind ===
         // 'user'` gate at the top of the handler skips them). feed_items.user_id
         // NOT NULL enforces this at the schema level.
-        await prisma.$executeRaw`
-          INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
-          VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
-          ON CONFLICT (user_id, session_id) DO NOTHING`
+        const hasEngagement = ratingScore > 0
+          || Object.keys(validFlavors ?? {}).length > 0
+          || (notes != null && notes.length > 0)
+        if (hasEngagement) {
+          await prisma.$executeRaw`
+            INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
+            VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
+            ON CONFLICT (user_id, session_id) DO NOTHING`
+        }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with
         // GREATEST() / conditional increments so we never double-count

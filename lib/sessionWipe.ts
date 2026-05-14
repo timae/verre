@@ -7,7 +7,7 @@ import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
 // captured in .local/future-work-rewire.md as a future extraction to
 // lib/s3reclaim.ts. Trade-off accepted to keep phase 2 PR scope tight.
 const _S3_ENDPOINT = process.env.S3_ENDPOINT
-const _S3_BUCKET   = process.env.S3_BUCKET_NAME
+const _S3_BUCKET   = process.env.S3_BUCKET
 const _s3 = _S3_ENDPOINT && _S3_BUCKET
   ? new S3Client({
       endpoint: _S3_ENDPOINT,
