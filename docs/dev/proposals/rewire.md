@@ -40,6 +40,7 @@ The rewire collapses these into one model where **a rating is a rating, regardle
 
 - A **wine** (row in `wines`) is a catalog entry. One row per wine-as-the-DB-sees-it.
 - A **rating** (row in `ratings`) is the atomic taste event: one user, one wine, one moment in time, with a score + flavours + notes + timestamp. Score is optional (more on this below).
+- A **session** (row in `sessions`) is a tasting event with a host, a wine lineup, and participants. Soft-deletable — the row never goes away.
 - A **feed item** (row in a new `feed_items` table) is what shows up on the social feed. Two kinds:
   - **standalone** — wraps a single rating (the old "check-in").
   - **session** — wraps a session-worth of ratings by one user (one feed item per (session, user) pair, not per wine).
@@ -65,6 +66,26 @@ So conceptually `ratings` is misnamed — it's `tastings`. We keep the table nam
 | **Wishlist** | `bookmarks WHERE userId = me` | "Wines I want to try." Already exists today as `/me/saved`. |
 
 ### Schema deltas
+
+#### `sessions` — soft-deletable
+
+Add one column:
+
+```
+sessions
+  ... existing columns ...
+  deletedAt   Timestamptz?    // NEW: NULL = live, set = deleted (tombstone)
+                              // On delete: every column except `id` and `deletedAt` is scrubbed
+                              // to NULL. The tombstone is genuinely empty. See §8 for contract.
+
+  @@index([deletedAt])        // for "live sessions" filter
+```
+
+**Why soft-delete on `sessions` and not on the children:** session_id is the natural grouping key for "all my ratings from this tasting" and "all wines on this post." If we hard-deleted `sessions` and nulled the FKs on ratings/feed_items, we'd lose the grouping (and a user's three deleted sessions would all collapse into one indistinguishable bucket of orphaned ratings). Keeping the `sessions` row as a tombstone preserves the grouping for free — every existing query that joins on `session_id` keeps working, and a `sessions.deletedAt IS NOT NULL` check tells the UI to render "[deleted session]" instead of the original name.
+
+**The leak risk and how we contain it:** every query that lists "live sessions" or checks "is this session active" needs `WHERE deletedAt IS NULL`. Mitigation: a Postgres view, `CREATE VIEW live_sessions AS SELECT * FROM sessions WHERE deletedAt IS NULL`. Read paths route through the view by default — the filter is enforced at the database layer, so new code picks up the right behaviour for free. The handful of code paths that need to see deleted rows (the soft-delete code itself, a future GDPR purge job, an admin "list of deleted sessions" surface if one ever ships) explicitly query the underlying `sessions` table; the friction of typing `sessions` instead of `live_sessions` is the right friction for those rare cases.
+
+The session-existence surface in the codebase is small (host check, lifespan check, `s:{CODE}:meta` Redis lookup which is independent of Postgres). The view is the durable answer that keeps working as the codebase grows and new features ship.
 
 #### `wines` — mostly unchanged
 
@@ -99,20 +120,24 @@ category_styles
 
 **Why `active` instead of hard-delete:** A wine row that references `(category='wine', style='legacy_thing')` would break if the lookup row vanished. Soft-delete keeps the FK valid; UI filters `active=true` for the dropdown.
 
-#### `ratings` — drop the over-strict unique, allow scoreless rows
+#### `ratings` — drop the over-strict unique, allow scoreless rows, link to session, mark provenance
 
-Two changes to the existing table:
+Four changes to the existing table:
 
 1. **Drop `@@unique([wineId, userId])`.** Replace with no unique constraint at all.
 2. **Make `score` nullable** (`Decimal?` instead of `Decimal`).
+3. **Add `sessionId Int?` FK.** Direct link to the originating session (NULL = no session).
+4. **Add `origin String`.** Provenance tag: how this rating came into being. Today: `'session'` | `'standalone'`. Future: `'imported'`, `'restaurant_api'`, `'bottle_scan'`, etc.
 
 ```
 ratings
   id        Int          @id @default(autoincrement())
   wineId    String
   userId    Int?
-  sessionId Int?         // NEW — FK to session when origin='session'; nulled on session-delete
-  origin    String       // NEW — 'session' | 'standalone'; immutable once set
+  sessionId Int?         // NEW — FK to session when origin='session'; NULL otherwise
+                         // Survives session-delete because sessions is soft-deleted (§8 contract)
+  origin    String       // NEW — 'session' | 'standalone' (today); future: 'imported', etc.
+                         // Immutable once set; sets at insert time
   raterName String       // tombstone snapshot for [deleted] users, today's behaviour
   score     Decimal?     // NEW — was NOT NULL
   flavors   Json
@@ -124,8 +149,6 @@ ratings
   @@index([sessionId])
   @@index([userId, wineId])    // for the future "all my tastings of this wine" query
 ```
-
-**Why `origin` as a String:** Future-proofs against new origin types (e.g. `'verified_session'`, `'imported'`) without a migration. Same pattern as `wines.category` and `feed_items.kind`. Also load-bearing for the session-deletion rule (§8): we null `sessionId` on session-delete, so `origin='session' AND sessionId IS NULL` is the "tasted at [deleted session]" signal.
 
 **Why drop the unique:** The constraint was load-bearing for one reason — in a session, "rate the same wine twice" should mean "edit your rating," not "create a second rating." That's correct *inside one session*. It breaks the moment the same wine row gets tasted across contexts:
 
@@ -141,36 +164,55 @@ The session UX continues to feel like "edit in place" because in *that session*,
 
 The cost is small print: HoF / "average score" / "rated above 4" queries need `WHERE score IS NOT NULL`. Trivial to remember; the linter won't catch it but the queries are few and concentrated.
 
-**Why the new `sessionId` column on `ratings`:** Today we resolve "is this a session rating?" via `wines.sessionId`. After the rewire that's wrong, because a single wine row can host both session ratings and standalone ratings. The rating itself needs to know its origin context. Also makes the session feed item enumeration trivial: `SELECT * FROM ratings WHERE userId=X AND sessionId=Y` directly gives "what wines did X engage with in session Y."
+**Why `sessionId` on ratings:** Today we resolve "is this a session rating?" via `wines.sessionId`. After the rewire that's wrong, because a single wine row can host both session ratings and standalone ratings. The rating itself needs to know its session context. Also makes the session feed item enumeration trivial: `SELECT * FROM ratings WHERE userId=X AND sessionId=Y` directly gives "what wines did X engage with in session Y" — and this query keeps working after session-delete because the soft-delete preserves the `sessions` row.
+
+**Why `ratings.origin` despite having `sessionId`:** Provenance is a separate question from session-membership. Today there are two ingestion paths (session, standalone), and `sessionId IS NULL ⇔ standalone` happens to hold. But future paths — Vivino / CellarTracker imports, restaurant API integrations, bottle scans, guided tasting flows — would all be `sessionId IS NULL` with completely different origins. Without `origin`, the user's profile couldn't tell "manually checked this in" from "imported from CellarTracker" — they'd both look like "standalone." The `origin` column captures provenance that `sessionId` alone can't express. Future origin types add a string value, no schema migration. Note: `origin` is about *how the rating was created*, not about *what kind of feed_item it ended up in* — the latter is `feed_items.kind`, which lives on the social wrapper and answers a different question (verified-session feed cards, badge-unlock cards, etc., all of which are independent of the rating's ingestion origin).
+
+**Future-proofing for "private ratings" / feed-opt-out:** A rating without a feed_item is fine in this model — `feed_items` is a separate table, not a parent. Adding a per-rating "is this private" flag or a per-user "opt out of feed" preference is purely additive; no schema rewrite needed.
 
 #### `feed_items` — new table
 
 ```
 feed_items
-  id                  Int @id autoincrement
-  userId              Int
-  kind                String  // 'session' | 'standalone'; immutable once set
-  sessionId           Int?    // set when kind='session'; nulled when host deletes the session
-  ratingId            Int?    // set when kind='standalone' (single-rating shortcut)
+  id                  Int       @id @default(autoincrement())
+  userId              Int                                              -- author
+  kind                String                                           -- 'session' | 'standalone' (extensible)
+  sessionId           Int?                                             -- set when kind='session'
+  ratingId            Int?                                             -- set when kind='standalone'
   venueName           String?
   city                String?
   country             Char(2)?
-  lat / lng           Decimal?
-  locationVisibility  String  // 'public' | 'private' | 'none' (default 'none')
-  createdAt           Timestamptz default now()
+  lat                 Decimal?
+  lng                 Decimal?
+  locationVisibility  String    @default("none")                       -- 'public' | 'private' | 'none'
+  createdAt           Timestamptz @default(now())
 
-  @@index([userId, createdAt desc])      // profile "Posts" tab
-  @@index([createdAt desc])              // global feed pagination
-  @@unique([userId, sessionId])          // one feed item per (user, session) — see below
+  user      User      @relation(onDelete: Cascade)
+  session   Session?  @relation(onDelete: SetNull)                     -- safety net for hard-delete; soft-delete keeps the FK
+  rating    Rating?   @relation(onDelete: Cascade)                     -- standalone is 1:1; cascade is right
+  likes     FeedItemLike[]
+  tags      FeedItemTag[]
+
+  @@unique([userId, sessionId])         -- one feed_item per (user, session); ON CONFLICT DO NOTHING on rate
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("feed_items")
 ```
-
-`kind` follows the same future-proof string pattern as `ratings.origin` and `wines.category`. After session-deletion, `kind='session' AND sessionId IS NULL` is the "post about a [deleted session]" signal.
 
 **Why feed_items separate from ratings:** A session feed item bundles many ratings into one social post (Instagram-multi-image model). It can't sit on a rating row. A standalone feed item could conceptually live on the rating, but giving both kinds the same shape means one render path, one like target, one pagination cursor — much simpler than special-casing standalone-as-rating vs session-as-bundle.
 
-**Why `kind` and not just "infer from sessionId":** Explicit is better. A reader (human or query) doesn't have to know "sessionId IS NULL means standalone, IS NOT NULL means session." Also future-proofs against a third kind we haven't thought of (e.g. badge unlocks, if we ever fold those into `feed_items`).
+**Why `kind` does three jobs:**
+1. Tells the renderer how to display the post (session aggregate card vs standalone single-wine card).
+2. Tells the data-fetch layer where to find the wines/ratings inside (`kind='session'` → JOIN ratings on `(userId, sessionId)`; `kind='standalone'` → JOIN ratings on `feed_items.ratingId`).
+3. Future extensibility hook — adding `kind='badge_unlock'` or `kind='curated_collection'` later means add a value, add a renderer, optionally add a column for the new kind's link target. No migration of existing rows.
 
-**Why `@@unique([userId, sessionId])`:** Each user gets exactly one feed item per session — a "session post." User A and user B in the same session get two separate feed items (their own posts, with their own ratings inside). This is correct: each user is sharing their own experience, not a shared one. The unique constraint exists to prevent **double-creation under concurrent rates** — when user A rates wine 1 and wine 2 in session X near-simultaneously, both inserts try to upsert "feed item for (A, X)"; the unique constraint + `ON CONFLICT DO NOTHING` makes the second insert a no-op.
+**Why both `sessionId` and `ratingId` are nullable:** Each kind sets the relevant one. Future kinds (`'badge_unlock'`, `'milestone'`, `'curated_collection'`, etc.) leave both NULL and reference their own targets via additional optional columns. The table stays the social-layer wrapper, decoupled from what it wraps.
+
+**Why no `kind` constraint at the DB level:** String column, app-layer validation. Same reasoning as `wines.category` — adding a new kind is a code change, not a schema change. Postgres ENUMs need `ALTER TYPE ADD VALUE` migrations which don't roll back cleanly.
+
+**Why `@@unique([userId, sessionId])`:** Each user gets exactly one feed item per session — a "session post." User A and user B in the same session get two separate feed items (their own posts, with their own ratings inside). This is correct: each user is sharing their own experience, not a shared one. The unique constraint exists to prevent **double-creation under concurrent rates** — when user A rates wine 1 and wine 2 in session X near-simultaneously, both inserts try to upsert "feed item for (A, X)"; the unique constraint + `ON CONFLICT DO NOTHING` makes the second insert a no-op. The constraint doesn't apply to standalone (sessionId is NULL there, and Postgres treats NULLs as distinct in unique constraints by default — so 50 standalone feed_items for the same user are all considered unique).
+
+**Why `session.onDelete: SetNull` despite soft-delete being the primary path:** Safety net. If we ever hard-delete a session row in the future (a periodic GDPR purge job, or a manual emergency), the FK won't break. Day-to-day, soft-delete preserves the FK and SetNull never fires.
 
 **Why `locationVisibility`:** A standalone check-in at a public bar should show the location in the feed (helps friends know where to find good wine). A tasting session at someone's home should not — it's a private space. Three values:
 
@@ -211,7 +253,7 @@ Setting any one of those creates the `ratings` row (with the others NULL/empty).
 
 All three count as "I tasted this." Standalone scoreless check-ins are the same idea — see the score-nullable reasoning in §2.
 
-**Symmetric un-engagement: deletion.** If a user clears their score, removes all chips, and empties the note, the rating row is deleted. If it was the user's only rating in the session, the session feed item gets deleted too. Symmetric with the engagement-based creation; prevents accidental engagements from being sticky.
+**Symmetric un-engagement: deletion.** If a user clears their score, removes all chips, and empties the note, the rating row is deleted. If it was the user's only rating in the session, the session feed item gets deleted too. Symmetric with the engagement-based creation; prevents accidental engagements from being sticky. **Caveat:** in-session rating page needs an undo affordance before this can ship safely — captured in `.local/future-work-rewire.md` as a phase-4 prerequisite.
 
 ---
 
@@ -229,6 +271,8 @@ To keep the scope sane, these are explicit non-goals:
 8. **Auto-tagging session participants.** A future option ("tag everyone you tasted with") — captured as future work. The rewire doesn't ship it.
 9. **Aggregate views beyond the basic session card.** No "10 friends rated this wine" cross-session views in this pass — the data model unblocks them, the UI doesn't ship them.
 10. **Notifications on likes/tags moving from `checkins` → `feed_items`.** No notification system exists today; nothing to update.
+11. **Archive / "past sessions" lifecycle as a separate user action.** Discussed and deferred. Today's implicit "live for N hours then expired" lifespan is unchanged. The new `sessions.deletedAt` is for explicit host-deletion only, not for archiving.
+12. **Hard-delete (GDPR purge) job.** The schema supports it (FK SetNull on feed_items.session, etc.) but the actual purge job is future work — not needed until retention policy demands it.
 
 ---
 
@@ -245,11 +289,13 @@ For each existing `checkins` row:
 4. For each `checkin_likes` row: create a `feed_item_likes` row pointing at the new feed item.
 5. For each `checkin_tags` row: create a `feed_item_tags` row pointing at the new feed item.
 
-For each existing `ratings` row that came from a session (today: every row): set `sessionId` to the session-id derived from the wine's existing `sessionId`, and set `origin='session'`. (Today the rating belongs to a session implicitly via the wine; we now make it explicit on the rating itself.) Phase 1's structural backfill (§6) handles `origin`; this step just sets `sessionId`.
+For each existing `ratings` row that came from a session (today: every row): set `sessionId` to the session-id derived from the wine's existing `sessionId`, and set `origin = 'session'`. (Today the rating belongs to a session implicitly via the wine; we now make it explicit on the rating itself.) Phase 1's structural backfill handles `origin`; this step also sets `sessionId`.
 
 For each existing `(session, user)` pair where the user has at least one rating in that session:
 1. Create a `feed_items` row with `kind='session'`, `sessionId` set, `createdAt` = the user's earliest rating timestamp in that session.
 2. No likes/tags to migrate (sessions don't have those today).
+
+`sessions.deletedAt` is NULL for all migrated rows — every existing session is live (or expired by lifespan, which is a separate concept).
 
 ### Category/style FK
 
@@ -272,12 +318,13 @@ Each phase = one branch, one PR, mergeable on its own. After each merge to main,
 
 - New tables: `category_styles`, `feed_items`, `feed_item_likes`, `feed_item_tags`.
 - Seed `category_styles` with the 5 wine styles.
-- New columns: `feed_items.locationVisibility`, `ratings.sessionId`, `ratings.origin`.
+- New columns: `feed_items.locationVisibility`, `ratings.sessionId`, `ratings.origin`, `sessions.deletedAt`.
 - Drop `@@unique([wineId, userId])` on `ratings`. Make `ratings.score` nullable.
 - Backfill `ratings.origin = 'session'` for all existing rows (today, every rating is from a session).
 - Add the composite FK `wines (category, style) → category_styles (category, style)`. Pre-flight check (§8) confirmed clean — no backfill needed. Re-run before merge.
-- Rewrite `docs/dev/session-deletion.md` to document the new tombstone rule (the actual code change ships in phase 2).
-- No application code changes. No reads, no writes affected. Just structure + the one-time origin backfill.
+- Add the `live_sessions` Postgres view: `CREATE VIEW live_sessions AS SELECT * FROM sessions WHERE deleted_at IS NULL`. Phase-2 read paths route through it. See §8 for the leak-mitigation reasoning.
+- Rewrite `docs/dev/session-deletion.md` to document the new soft-delete rule (the actual code change ships in phase 2).
+- No application code changes. No reads, no writes affected. Just structure + the one-time origin backfill + the view.
 
 Mergeable to main with zero behaviour change. Production gets the new tables on the next deploy.
 
@@ -285,31 +332,34 @@ Mergeable to main with zero behaviour change. Production gets the new tables on 
 **Branch**: `feature/rewire-p2-dualwrite`
 
 - `POST /api/checkins` continues to write to `checkins` AND now also writes the equivalent `wines` + `ratings` (sessionId=NULL, origin='standalone') + `feed_items` (kind='standalone') + `feed_item_likes/tags`. Same for PATCH/DELETE on a check-in (mirrored deletes).
-- `POST /api/session/[code]/rate` continues to write `ratings` AND now also (a) sets `ratings.sessionId` and `ratings.origin='session'` on the new row and (b) creates/upserts the `feed_items` row for `(session, user)` with `kind='session'` (idempotent — only the first engagement in a session creates the feed item).
-- `DELETE /api/session/[code]` switches to the new tombstone rule: stop deleting unbookmarked ratings; instead null `ratings.sessionId` and `feed_items.sessionId`. The `origin` and `kind` columns survive untouched, providing the "tasted at [deleted session]" signal. Wine-row + lifetime-counter behaviour stays as today.
+- `POST /api/session/[code]/rate` continues to write `ratings` AND now also (a) sets `ratings.sessionId` and `ratings.origin = 'session'` on the new row and (b) creates/upserts the `feed_items` row for `(session, user)` with `kind='session'` (idempotent — only the first engagement in a session creates the feed item).
+- `DELETE /api/session/[code]` switches from hard-delete to soft-delete: set `sessions.deletedAt = now()` and scrub every other column to NULL per the §8 contract. Stop deleting unbookmarked ratings. Wine-row + lifetime-counter behaviour stays as today (wines kept with `sessionId` intact via the soft-deleted session; counters never decrement).
+- Route session-read call sites through the `live_sessions` view (added in phase 1). PR description lists every audited call site.
 - Run the backfill script (§5) once against staging, eyeball, then prod.
 - After this phase: both the old `checkins` table and the new `feed_items`/`ratings`-with-sessionId mirror are populated and stay in sync. Reads still come from the old tables.
 
-This is the highest-risk phase — anything that diverges between the writers will surface here. Worth slowing down for.
+This is the highest-risk phase — anything that diverges between the writers will surface here, and the soft-delete leak risk is also live. Worth slowing down for.
 
 ### Phase 3 — read cutover
 **Branch**: `feature/rewire-p3-readcutover`
 
-- `/api/feed` SELECTs from `feed_items` (with JOINs to `ratings` + `wines`) instead of `checkins`. Output shape stays compatible with the existing `CheckinCard` component: standalone feed items render as before; session feed items render as a stub "session card" until phase 4 ships the aggregate UI.
+- `/api/feed` SELECTs from `feed_items` (with JOINs to `ratings` + `wines` + `sessions`) instead of `checkins`. Output shape stays compatible with the existing `CheckinCard` component: standalone feed items render as before; session feed items render a stub "session card" until phase 4 ships the aggregate UI.
 - `/api/me/feed` (own feed): same.
 - `/u/<id>` profile activity: switch the source from `checkins` to `feed_items`.
 - `/api/me/history` (the future "Tastes" tab data) starts pulling from `ratings` directly, no longer needs the `UNION` between ratings and checkins.
 - Block / mute / visibility plumbing (`batchLoadVisibilities`, `viewerCanSeeAuthor`, block-pair like/tag scrubbing) gets re-pointed from `checkin_id` keys to `feed_item_id` keys. The logic itself stays — only the join keys change.
+- Render path for tombstoned sessions: when `sessions.deletedAt IS NOT NULL` is joined in, render "[deleted session]" instead of `sessions.name`, and don't link to the live session URL.
 
 After this phase, the new model is what users see. The old `checkins` table is still being written (phase 2's dual-write) but no longer read.
 
 ### Phase 4 — UI rewire (aggregate session card)
 **Branch**: `feature/rewire-p4-aggregate-card`
 
-- New `<SessionFeedCard>` component for `feed_items.kind='session'` — renders the host name + session name + a list/grid of wines rated by the user, with their scores. Likes + tags on the card, not per-wine.
+- New `<SessionFeedCard>` component for `feed_items.kind='session'` — renders the host name + session name + a list/grid of wines rated by the user, with their scores. Likes + tags on the card, not per-wine. Tombstoned-session variant renders "[deleted session]" and unlinks.
 - `<CheckinCard>` (the existing one) handles `feed_items.kind='standalone'`.
 - `FeedClient` switches on `kind` to pick the renderer.
-- Profile gets the three-tab split (Posts / Tastes / Wishlist). Tastes-tab UI shape kept minimal — chronological list is fine for the rewire; richer grouping is future work.
+- Profile gets the three-tab split (Posts / Tastes / Wishlist). Tastes-tab UI shape kept minimal — chronological list is fine for the rewire; richer grouping is future work. Each Tastes row shows session context: live session → link, deleted session → "[deleted session]" label, no session → "standalone."
+- **Prerequisite:** ship the in-session rating-page undo affordance before this phase (per `.local/future-work-rewire.md`), so the engagement-deletion rule from §3 can't accidentally nuke a user's session post.
 
 This phase is pure frontend; no schema, no API.
 
@@ -330,12 +380,12 @@ This is the irreversible step. Everything before it can be rolled back.
 | Risk | Mitigation |
 |---|---|
 | **Dual-write divergence in phase 2.** Old and new writers slowly drift. | One write path per endpoint, both branches in the same function, same transaction where possible. Smoke-test by running the backfill repeatedly against a staging DB and diffing the row counts. |
+| **Soft-delete leak: deleted session shows as live somewhere.** A `prisma.session.findX` call without `WHERE deletedAt IS NULL` would render a deleted session as active. Risk grows with scale and new features more than with deletion volume. | Phase 1 ships the `live_sessions` Postgres view; phase 2 routes every session-read call site through it. New code defaults to the right behaviour. The few call sites that need to see deleted rows (the soft-delete code itself, future GDPR purge job) explicitly query the underlying `sessions` table — friction is intentional. |
 | **Double-creation of a user's feed item under concurrent rates.** User A rates wine 1 + wine 2 in session X near-simultaneously; both inserts try to upsert "feed item for (A, X)". | The `@@unique([userId, sessionId])` constraint + `ON CONFLICT DO NOTHING` in the upsert. Won't crash; will silently dedupe to one feed item. |
 | **Privacy regression on session locations.** Hosts didn't opt in to anything when they created their existing sessions; if we default `locationVisibility` to `public`, we'd surface "Simon's living room" as a venue if it ever got entered. | All migrated session feed items default to `locationVisibility='none'`. Session-create UI to set this is a follow-up; until then, sessions show no location. |
 | **Block-pair scrubbing breaks during read cutover.** The current feed has 30+ lines of careful block-aware filtering on `checkin_id`. | Phase 3's PR includes a side-by-side: old `/api/feed` vs new `/api/feed` for the same viewer should return the same items minus the session aggregations. Run before merge. |
 | **Lifetime counters double-count during phase 2.** Today `users.lifetime_ratings` etc. increment from the in-session rating endpoint. If the dual-write also increments from the standalone-checkin endpoint (which today increments per-checkin counters separately), we might double. | Audit the counter increments per endpoint before phase 2 lands. Counter increments stay tied to the canonical write path (the rating insert), not duplicated on the feed-item insert. |
-| **Existing wines with `(category, style)` that doesn't match `category_styles`.** Pre-flight check before adding the FK. | Phase 1 includes a `SELECT category, style, COUNT(*) FROM wines WHERE (category, style) NOT IN (SELECT category, style FROM category_styles)`. If non-zero, decide: backfill or relax the FK to deferred / soft. |
-| **Engagement-deletion edge case.** User clears their last rating in a session — feed item should also be deleted. | The session-rate DELETE path (or the symmetric "all fields cleared = delete row" trigger) checks `COUNT(*) FROM ratings WHERE userId=X AND sessionId=Y` post-delete; if zero, deletes the feed item. |
+| **Engagement-deletion edge case.** User accidentally clears their last rating in a session — feed item gets deleted with no warning. | Don't ship the engagement-deletion rule until the rating-page undo affordance exists. Captured as a phase-4 prerequisite in `.local/future-work-rewire.md`. |
 
 ---
 
@@ -345,24 +395,44 @@ This is the irreversible step. Everything before it can be rolled back.
 
 - **`feed_items.kind` values: `'standalone'` and `'session'`.** User-facing copy continues to use the word "check-in" for both kinds (a session check-in vs a standalone check-in). Internal `kind` names disambiguate without doubling the user-language overload.
 
-- **Session deletion now tombstones, doesn't delete.** Updates today's rule in `docs/dev/session-deletion.md`. New behaviour:
+- **Session deletion is a soft-delete, not a hard-delete.** Replaces today's rule in `docs/dev/session-deletion.md`. The new behaviour:
 
-  - **All ratings are kept** when the host deletes a session, regardless of bookmark status. `ratings.sessionId` is nulled. The rating's `origin='session'` flag survives, so the user's history shows "tasted at [deleted session]" — a literal label, not a snapshot of the original session name. Re-definable later if a richer history surface is wanted.
-  - **Session feed items are kept** symmetrically. `feed_items.sessionId` nulled; `feed_items.kind='session'` survives. The social post stays in friends' old feed scrolls and in the author's profile Posts tab, rendered with the same "[deleted session]" label.
+  - **Set `sessions.deletedAt = now()`.** The session row stays in the DB.
+  - **Scrub every other column on the `sessions` row to NULL.** Full list per the data-survival contract below.
+  - **Ratings and feed_items are not touched.** `sessionId` references stay intact on both, providing the grouping signal.
+  - **Wine rows** continue to follow today's rule (kept with `sessionId` pointing at the soft-deleted session row).
   - **HoF retention rule today** (kept if bookmarked, dropped otherwise) is unchanged — Tim's HoF rework is separate and we don't touch HoF in the rewire.
-  - **Wine rows** continue to follow today's rule (kept with `sessionId=NULL` so bookmarks remain reachable).
 
-  **Why the change:** today's "delete unbookmarked ratings" rule treats session ratings as ephemeral, which contradicts the rewire's central premise — every tasting is a permanent first-class artifact of the user's history. Bookmark status is the wrong gate; the user's choice to *engage* is what makes a tasting matter.
+  ### Data-survival contract for a deleted session
 
-  **Why a literal `[deleted session]` label, not a snapshot of the original name:** Cheaper schema (no extra column on two tables), and host-deleted sessions are rare and intentional. The user already saw the session name during the live session; if richer history (per-session distinguishability across multiple deleted sessions) becomes a need, adding a snapshot column later is a non-destructive migration. We defer until someone asks.
+  After `DELETE /api/session/[code]`, the only data guaranteed to survive on the `sessions` row itself is:
 
-  **Why we still need `ratings.origin`:** Once `sessionId` is nulled on session-delete, we lose the signal "this rating *was* from a session." The `origin` column (immutable since insert) preserves it, so the UI can render "[deleted session]" instead of incorrectly showing it as a standalone check-in.
+  - `id` — the grouping key, never changes. Children (wines, ratings, feed_items) keep their FK references.
+  - `deletedAt` — the tombstone marker.
 
-  **Note on host account deletion (separate flow):** When a host deletes their *account* (not the session), the existing rules in `docs/dev/account-deletion.md` apply — sessions with engagement stay alive with the host identity tombstoned to `[deleted]`; cohosts can administer. The new session-delete tombstone rule above only fires when the host actively deletes the session via `DELETE /api/session/[code]`. Different flows, different rules; no overlap.
+  **Every other column is scrubbed to NULL** — `name`, `description`, `link`, `code`, `host_*`, `timezone`, `created_at`, lifespan tier, blind flag, anything else that's on the row today or added in the future. The tombstone is genuinely empty: you can tell the row exists and that it's deleted, nothing more.
+
+  Children of the deleted session keep their data and their session_id link:
+
+  - `wines.session_id` keeps pointing at the deleted session's id (today's behaviour preserved)
+  - `ratings.session_id` (NEW column) keeps pointing at the deleted session's id
+  - `feed_items.session_id` keeps pointing at the deleted session's id
+  - All ratings, all feed_items, all likes/tags on those feed_items survive untouched
+  - `ratings.ratedAt` is the relevant timestamp for "when did the user taste this" — it's on the rating row, never on the session, so deletion doesn't affect it
+
+  ### Why this shape
+
+  **Why soft-delete on `sessions` instead of nulling the FKs on children:** The session_id is the only natural grouping key. If we nulled it on ratings/feed_items, two of a user's three deleted-session posts would become indistinguishable from each other and from each other's wines. Soft-delete preserves grouping for free without any new column on either child table.
+
+  **Why scrub everything except `id` + `deletedAt`:** Anything we keep on the tombstone is data we'd have to defend later ("why did you keep the timezone?"). The minimal contract is the easiest to reason about, the easiest to audit for privacy, and forces us to be explicit if we ever decide a specific field should survive (it'd require a doc update + schema change). The cost is small: tombstoned-session UX in user history shows just "[deleted session]" with no extra context. Acceptable.
+
+  **Why `ratings.origin` despite `sessionId`:** See §2's reasoning. Origin is provenance (how the rating was created — session, standalone, future imports/scans/integrations), distinct from session-membership (whether it has a `sessionId`). Both columns are needed; they answer different questions.
+
+  **Note on host account deletion (separate flow):** When a host deletes their *account* (not the session), the existing rules in `docs/dev/account-deletion.md` apply — sessions with engagement stay alive with the host identity tombstoned to `[deleted]`; cohosts can administer. The new session-soft-delete rule above only fires when the host (or eventually a cohost) actively deletes the session via `DELETE /api/session/[code]`. Different flows, different rules; no overlap.
 
   **Lifetime counters** continue to never decrement (today's behaviour). Live aggregations (avg flavour, total_rated) reflect the actual rating count, which now stays high since nothing is deleted.
 
-  **Phase 1** adds `ratings.origin` column. **Phase 2** updates the session-deletion endpoint to null `sessionId` (instead of deleting unbookmarked ratings). **Phase 1's PR** includes the rewrite of `docs/dev/session-deletion.md` to match.
+  **Phase 1** adds `sessions.deletedAt` column + the `live_sessions` view. **Phase 2** updates the session-deletion endpoint to soft-delete (instead of hard-delete) and routes every session-read call site through the view. **Phase 1's PR** includes the rewrite of `docs/dev/session-deletion.md` to match.
 
 **Pre-flight checks:**
 
@@ -395,5 +465,9 @@ This is the irreversible step. Everything before it can be rolled back.
 - Profile search/filter on the Tastes tab.
 - Tastes-tab UI shape (group-by-wine vs flat chronological).
 - "7th round with this wine" badge / aging analytics.
+- Archive / "past sessions" as a separate user action, distinct from delete.
+- Hard-delete (GDPR purge) job for sessions older than retention window.
+- Snapshot of session name at deletion time (richer "[deleted: Friday Pinot Night]" history).
+- Per-rating "private" flag / per-user "opt out of social feed."
 
 All of these become easy or trivial to build *because* of this rewire. None of them ship as part of it.
