@@ -218,10 +218,10 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
-| POST | /api/checkins | Create a check-in (body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`). Visibility is governed by the author's profile-visibility tier — no per-check-in toggle. |
-| PATCH | /api/checkins/:id | Edit own check-in; image replace reclaims old S3 |
-| DELETE | /api/checkins/:id | Delete own check-in; reclaims S3 image |
-| POST/DELETE | /api/checkins/:id/like | Like / unlike a check-in |
+| POST | /api/checkins | Create a standalone check-in. Body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`. Post-rewire writes through `wines + ratings + feed_items + rating_images` in one transaction (URL kept for client compatibility). `copyFromCheckinId` resolves to a `feed_items.id` of `kind='standalone'`. Visibility is governed by the author's profile-visibility tier — no per-row toggle. |
+| PATCH | /api/checkins/:id | Edit own standalone check-in. `:id` is a `feed_items.id`; handler walks feed_item → rating → wine → optional rating_image. Image replace reclaims old S3 after commit. |
+| DELETE | /api/checkins/:id | Delete own standalone check-in. Cascades the rating → its feed_item and rating_images via FK. S3 reclaim follows the capture / commit / reclaim-after pattern. The wines row survives (orphan acceptable per the no-dedup policy). |
+| POST/DELETE | /api/feed-items/:id/like | Like / unlike a feed item (check-in or session post). The `:id` value matches the legacy `/api/checkins/:id/like` shape for migrated rows — id-equality preserved by the rewire phase 2 data migration. |
 | POST/DELETE | /api/users/:id/follow | Follow / unfollow a user (no self-follow) |
 | GET | /api/users/:id | Public profile + stats; viewer's `isFollowing` flag when authed |
 | GET | /api/me/friends | Mutual follows of the calling user |

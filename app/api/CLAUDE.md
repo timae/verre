@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 ## Status code rules (leak prevention)
 
 - **`{status: 'gone'}` from `resolveProfileViewer` → 404**, never 403 or 401. The caller can't distinguish "no such user" from "exists but tier denies you."
-- **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/checkins/[id]/like/route.ts` for the canonical pattern.
+- **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/feed-items/[id]/like/route.ts` for the canonical pattern.
 - **403 reserved for permission-denied with identity AND visibility both resolved** ("only host can…", "pro required"). Never use 403 to indicate "you can't see this resource exists."
 
 ## Cache-Control on viewer-dependent responses
