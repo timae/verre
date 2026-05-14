@@ -43,10 +43,6 @@ interface Props {
   // preserve the cap, or leave undefined to let the backdrop handle
   // overflow.
   maxHeight?: string
-  // Override the inner sheet's vertical alignment. Default 'flex-end'
-  // (slide up from bottom) — set to 'center' for centered modals if
-  // a future caller needs it.
-  align?: 'flex-end' | 'center'
 }
 
 // Shared modal/sheet primitive.
@@ -72,7 +68,7 @@ interface Props {
 //   - The contents (forms, content, buttons).
 //   - A visible close affordance (top-right `btn-s` "close" button is
 //     the convention — see SessionPanel for the canonical example).
-export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight, align = 'flex-end' }: Props) {
+export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight }: Props) {
   // Stable token for this Modal instance — used to identify ourselves in
   // the open-modal stack so we only respond to Escape when topmost.
   const tokenRef = useRef<object>({})
@@ -171,9 +167,10 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
   if (typeof document === 'undefined') return null
   return createPortal(
     <div
+      className="modal-backdrop"
       style={{
         position: 'fixed', inset: 0, zIndex: 50,
-        display: 'flex', alignItems: align, justifyContent: 'center',
+        display: 'flex', justifyContent: 'center',
         background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)',
         overflowY: 'auto',
       }}
@@ -184,6 +181,7 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
       }}
     >
       <div
+        className="modal-sheet"
         style={{
           width: '100%', maxWidth,
           // Sizing logic:
@@ -210,9 +208,7 @@ export function Modal({ children, onClose, maxWidth = 560, minHeight, maxHeight,
             : minHeight ? { minHeight }
             : {}),
           background: 'var(--bg2)',
-          borderRadius: '22px 22px 0 0',
           padding: 18, paddingBottom: 32,
-          ...(align === 'flex-end' ? { marginTop: 'auto' } : {}),
         }}
       >
         {children}

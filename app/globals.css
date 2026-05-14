@@ -343,3 +343,29 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
+/* Modal: bottom-anchored sheet on mobile, centered on desktop. */
+.modal-backdrop { align-items: flex-end; }
+.modal-sheet { border-radius: 22px 22px 0 0; margin-top: auto; }
+@media (min-width: 640px) {
+  .modal-backdrop { align-items: center; }
+  .modal-sheet { border-radius: 22px; margin-top: 0; }
+}
+
+/* Wine info pane: single column on mobile, two-column on desktop */
+.wine-layout { display:flex; flex-direction:column; gap:20px; }
+.wine-layout-media { display:none; }
+.wine-layout-media.has-image { display:block; }
+.wine-layout-media-img {
+  width:100%; max-width:260px; aspect-ratio:3/4;
+  border-radius:14px; overflow:hidden;
+  border:1px solid var(--border); cursor:zoom-in;
+  margin:0 auto; background:var(--bg3);
+}
+.wine-layout-content { display:flex; flex-direction:column; gap:20px; min-width:0; }
+@media (min-width:640px) {
+  .wine-layout { display:grid; grid-template-columns:320px 1fr; gap:32px; align-items:start; }
+  .wine-layout-media { display:flex; flex-direction:column; align-items:center; position:sticky; top:0; }
+  .wine-layout-media-img { max-width:none; margin:0; width:100%; }
+  .wine-layout-glass-hero { display:none; }
+}
+
