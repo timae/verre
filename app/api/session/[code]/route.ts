@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
-import { redis, k } from '@/lib/redis'
+import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { type SessionMeta, isHostByIdentity } from '@/lib/session'
@@ -417,10 +417,30 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
   }
 
-  // Postgres cleanup wrapped in a transaction so any failure rolls back the
-  // whole set — no half-deleted state where, say, ratings are gone but the
-  // session row remains. If the transaction throws, we still wipe Redis
-  // below so the user gets the "session is gone" experience client-side.
+  // Order: Redis wipe FIRST, then Postgres scrub.
+  //
+  // Inverse ordering (Postgres-first) has a race: between the scrub commit
+  // and the Redis wipe, a concurrent rate POST sees live meta in Redis,
+  // calls pgUpsertSession with the now-tombstoned code, finds no live row
+  // (the scrub nulled the code column), and creates a fresh sessions row
+  // with the same code — a phantom session, undeletable, invisible to the
+  // host. Redis-first means a concurrent rate POST in the window sees no
+  // Redis meta → returns 404 → never reaches pgUpsertSession. The Postgres
+  // scrub still happens atomically under the trigger, just slightly later.
+  //
+  // Failure semantics: if the Postgres scrub fails after Redis is wiped,
+  // the session is "gone from the user's perspective" (404 on every
+  // endpoint) but the Postgres row remains live. Recoverable — the operator
+  // can re-run the soft-delete by hand (the trigger lets soft-delete UPDATEs
+  // through), or wait for lifespan expiry. Strictly preferable to the
+  // phantom-row alternative.
+  try {
+    const keys = await scanKeys(`s:${c}:*`)
+    if (keys.length > 0) await redis.del(keys)
+  } catch (err) {
+    console.error('session delete (redis) error:', err)
+  }
+
   let reclaimUrls: string[] = []
   try {
     reclaimUrls = await prisma.$transaction(async (tx): Promise<string[]> => {
@@ -521,14 +541,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   // back, reclaimUrls is [] so nothing happens. If S3 fails, the row is
   // already gone — orphan bytes for a future cleanup, never broken DB state.
   for (const url of reclaimUrls) reclaimImage(url)
-
-  // Wipe Redis. After this, every endpoint serving this session returns 404.
-  try {
-    const keys = await redis.keys(`s:${c}:*`)
-    if (keys.length > 0) await redis.del(keys)
-  } catch (err) {
-    console.error('session delete (redis) error:', err)
-  }
 
   return NextResponse.json({ ok: true })
 }

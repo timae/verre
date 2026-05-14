@@ -1,6 +1,6 @@
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '@/lib/prisma'
-import { redis, k } from '@/lib/redis'
+import { redis, k, scanKeys } from '@/lib/redis'
 import { userIdentityId } from '@/lib/identity'
 import type { SessionMeta } from '@/lib/session'
 
@@ -87,7 +87,7 @@ async function sessionHasEngagement(code: string, hostIdentityId: string | undef
 }
 
 async function deleteSessionFromRedis(code: string): Promise<void> {
-  const keys = await redis.keys(`s:${code}:*`)
+  const keys = await scanKeys(`s:${code}:*`)
   if (keys.length > 0) await redis.del(keys)
 }
 
@@ -197,9 +197,15 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
           // Drop Postgres archive too so the session disappears from
           // participants' /me/history; otherwise it lingers as an
           // un-rejoinable phantom.
+          //
+          // Order: Redis FIRST, Postgres second. Same reasoning as the
+          // DELETE /api/session/[code] handler — Redis-first means a
+          // concurrent rate POST in the window sees no meta → 404 → never
+          // resurrects the session via pgUpsertSession. Postgres-first
+          // would expose the phantom-resurrection race.
+          await deleteSessionFromRedis(code)
           try { await deleteSessionFromPostgres(code) }
           catch (err) { console.error(`[accountDelete] postgres cleanup failed code=${code}`, err) }
-          await deleteSessionFromRedis(code)
           plan.toDelete.push(code)
         }
       } else if (isCohostOfSession(meta, userId)) {

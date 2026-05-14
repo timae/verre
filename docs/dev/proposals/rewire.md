@@ -683,9 +683,9 @@ This is the irreversible step. Everything before it can be rolled back.
 
   **Every other column is scrubbed to NULL** — `name`, `description`, `link`, `code`, `host_*`, `timezone`, `created_at`, `address`, `dateFrom`, `dateTo`, `archivedAt`, lifespan tier, blind flag, anything else that's on the row today or added in the future. The tombstone is genuinely empty: you can tell the row exists and that it's deleted, nothing more.
 
-  Children of the deleted session keep their data and their session_id link:
+  Children of the deleted session keep their data; the session_id link survives on ratings and feed_items, but is nulled on wines:
 
-  - `wines.session_id` keeps pointing at the deleted session's id (today's behaviour preserved). Wine detail pages reachable from the Wishlist tab MUST JOIN `sessions` to read `deletedAt` and render the tombstone label ("[deleted session]"), never the scrubbed (NULL) name.
+  - `wines.session_id` is NULLed on soft-delete (today's pre-rewire behaviour preserved per the Q3 phase-2-implementation decision). The wines themselves stay reachable for bookmark/Wishlist surfaces. **The wishlist tombstone label resolves via `ratings.session_id`** — find a rating the viewer wrote against this wine, follow its `session_id` to the tombstoned session row, read `deletedAt`. This commits to the future direction where `wines.session_id` becomes deprecated entirely (a wine is a thing, ratings are the session-scoped event).
   - `ratings.session_id` (NEW column) keeps pointing at the deleted session's id
   - `feed_items.session_id` keeps pointing at the deleted session's id
   - All ratings, all feed_items, all likes/tags on those feed_items survive untouched
