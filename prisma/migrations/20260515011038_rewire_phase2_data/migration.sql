@@ -311,6 +311,11 @@ BEGIN
     RETURN;
   END IF;
 
+  -- Engagement guard per rewire.md §3: a session feed_item only materialises
+  -- when the user actually engaged with at least one wine (score > 0, OR
+  -- flavour chips set, OR a non-empty note). Pre-rewire ratings that were
+  -- all-empty (legacy oddity) shouldn't show up as ghost session posts.
+  -- Mirrors the runtime `hasEngagement` guard in the rate POST handler.
   INSERT INTO feed_items (
     user_id, kind, session_id, created_at, location_public
   )
@@ -323,6 +328,11 @@ BEGIN
    WHERE r.user_id IS NOT NULL
      AND r.session_id IS NOT NULL
    GROUP BY r.user_id, r.session_id
+  HAVING bool_or(
+           (r.score IS NOT NULL AND r.score > 0)
+        OR (r.flavors IS NOT NULL AND r.flavors <> '{}'::jsonb)
+        OR (r.notes IS NOT NULL AND length(r.notes) > 0)
+       )
   ON CONFLICT (user_id, session_id) DO NOTHING;
 
   INSERT INTO _migration_checkpoints (name, last_row_id)

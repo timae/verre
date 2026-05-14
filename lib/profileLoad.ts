@@ -168,6 +168,12 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   // Include the session row to read deletedAt (tombstone label) + name +
   // blind. Soft-deleted sessions have name=NULL (§8 scrub); the renderer
   // collapses to "[deleted session]".
+  //
+  // Take a wider window than 10 because the two arrays are merged
+  // chronologically at the render layer (ProfileCheckins). Pulling 10 of
+  // each guarantees the top-10 chronological mix is correctly resolved
+  // for users with a strong skew either way; the renderer will slice as
+  // appropriate. At Tim+Simon scale this is two cheap queries.
   const sessionFeedItems = await prisma.feedItem.findMany({
     where: { userId, kind: 'session' },
     orderBy: { createdAt: 'desc' },
