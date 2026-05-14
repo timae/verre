@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { S3Client, CopyObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { nanoid } from 'nanoid'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
@@ -27,6 +27,22 @@ const _s3 = _S3_ENDPOINT
       forcePathStyle: true,
     })
   : null
+
+// Local S3 reclaim used when the txn fails after a successful upload.
+// Duplicated across [id]/route.ts, accountDelete.ts, session.ts, avatar
+// route — extraction to lib/s3reclaim.ts captured in .local/future-work.
+async function reclaimImage(url: string | null | undefined) {
+  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
+  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 // Server-side S3 copy for the "had a sip" flow. Caller passes a source
 // check-in id (already authorized to view that row), we resolve its stored
@@ -192,17 +208,31 @@ export async function POST(req: NextRequest) {
   // default for standalone check-ins, where the user supplied the venue.
   const hasLocation = !!(scrubVenue || scrubCity || scrubCountry || lat != null || lng != null)
 
-  // Pull the user's display name for ratings.raterName (snapshot at write
-  // time; subsequent profile renames don't propagate to existing rows).
-  const userRow = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { name: true },
-  })
-  if (!userRow) return NextResponse.json({ error: 'user not found' }, { status: 401 })
+  // Sentinel error used by the txn to surface "user disappeared" without
+  // bubbling as a generic 500. Caught by the awaiting code below.
+  const USER_MISSING = Symbol('user-missing')
 
-  const { feedItem, rating } = await prisma.$transaction(async (tx) => {
+  let txResult: { feedItem: Awaited<ReturnType<typeof prisma.feedItem.create>>; rating: Awaited<ReturnType<typeof prisma.rating.create>> }
+  try {
+    txResult = await prisma.$transaction(async (tx) => {
+    // Pull the user's display name INSIDE the txn so a concurrent account-
+    // deletion can't slip between the lookup and the rating insert (which
+    // would leave a successful S3 upload orphan with no reclaim path).
+    // raterName is a snapshot at write time; subsequent profile renames
+    // don't propagate to existing rows.
+    const userRow = await tx.user.findUnique({
+      where: { id: userId },
+      select: { name: true },
+    })
+    if (!userRow) throw USER_MISSING
     // 1. Mint the wine row. sessionId=NULL (standalone), category='wine'
     //    (only category seeded today; future categories add their own).
+    //    `wines.imageUrl` is the canonical catalog bottle shot (per §2),
+    //    not the user's tasting photo. Standalone POSTs don't curate the
+    //    catalog — the user's photo lives in rating_images instead. Leave
+    //    the wine's imageUrl null so a cascade-delete of the rating later
+    //    doesn't leave a dangling S3 pointer on a surviving (bookmarked)
+    //    wine row.
     await tx.wine.create({
       data: {
         id: wineId,
@@ -213,7 +243,7 @@ export async function POST(req: NextRequest) {
         grape: scrubGrape,
         style: wineStyle,
         category: 'wine',
-        imageUrl,
+        imageUrl: null,
       },
     })
     // 2. Mint the rating. origin='standalone', sessionId=NULL (per the
@@ -259,7 +289,18 @@ export async function POST(req: NextRequest) {
       })
     }
     return { feedItem: fi, rating: r }
-  })
+    })
+  } catch (err) {
+    if (err === USER_MISSING) {
+      // Reclaim the orphan S3 upload that landed before the txn opened
+      // (the upload is the only "external" side-effect; everything else
+      // rolls back with the txn).
+      if (imageUrl) reclaimImage(imageUrl)
+      return NextResponse.json({ error: 'user not found' }, { status: 401 })
+    }
+    throw err
+  }
+  const { feedItem, rating } = txResult
 
   // Save tags as feed_item_tags — only mutual follows (verify server-side).
   // Block-pair members are excluded from the write: tagging a user the
