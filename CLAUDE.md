@@ -126,6 +126,8 @@ When adding a table that references `users.id`, pick one:
 
 The test: does another user's view (own history, compare screen, leaderboard, ongoing session they're in) reference this row in a way where deletion would leave their experience broken? Yes → tombstone. No → cascade. **S3 image reclaim is independent of cascade**: cascade does NOT trigger S3 cleanup; any table with an `imageUrl` field needs explicit `reclaimImage()` calls in every deletion path.
 
+**Capture / commit / reclaim-after ordering is mandatory** when an S3 delete is paired with a DB delete: capture the `imageUrl` set into memory BEFORE the txn, run the DB cascade, commit, then fire `reclaimImage()` on each captured URL AFTER commit. A txn rollback after S3 deletes already fired would leave a "DB still has the row, bytes are gone" inconsistency. This pattern is implemented across `lib/accountDelete.ts`, `lib/sessionWipe.ts`, `app/api/session/[code]/route.ts`, and the `/api/checkins/[id]` PATCH/DELETE handlers. "Had a sip" is the deliberate exception — it COPIES bytes server-side (CopyObjectCommand), never reclaims.
+
 Account-deletion implementation (Postgres transaction + Redis SCAN+decide+act loop): see `docs/dev/account-deletion.md`.
 
 ### Profile visibility (cross-cutting authorization)
@@ -145,11 +147,13 @@ Tier semantics, audit log, HoF/compare exceptions: see `docs/dev/profile-visibil
 - **Logged-in (free account)**: same live session + visits/ratings archived to Postgres. History, bookmarks, Hall of Fame, flavour profile persist indefinitely.
 - **Pro** (`users.pro = true`): paid tier. Gates **blind tastings** (host pre-rates while wine identities are hidden from tasters until reveal) + extended lifespan (72h / 1w / unlimited beyond the 48h default).
 
-### Session-deletion retention rule
+### Session deletion is a soft-delete (rewire phase 2)
 
-When a host deletes a session: for each `(user, wine)` pair, the rating row is **kept** if the user bookmarked the wine (so the bookmark detail page still renders) and **deleted** otherwise. Hall of Fame follows the same rule. Wine rows are kept with `session_id = NULL` so bookmarked wines remain reachable from `/me/saved`. Lifetime counters never decrement.
+When a host deletes a session: `sessions.deletedAt = NOW()` is set and every other column on the row is scrubbed to NULL (`code`, `host_name`, `name`, `blind`, `created_at`, `archived_at`, `address`, `dateFrom`/`dateTo`, `timezone`, `description`, `link`, `host_user_id`). Ratings + feed_items survive untouched — their `session_id` still points at the tombstoned row, providing the grouping signal for the user's own Tastes / Posts views. Wines orphan (`session_id = NULL`) so bookmarked wines remain reachable from `/me/saved`; the wishlist tombstone label resolves via the wine's ratings, not the wine's session FK. Lifetime counters never decrement.
 
-Full impl, Redis wipe, participant bounce: see `docs/dev/session-deletion.md`.
+A Postgres trigger (`prevent_session_hard_delete`) blocks any `DELETE FROM sessions` — soft-delete is an actual DB invariant, not just an app-layer convention. Cleanup of long-tombstoned rows is a manual operator step (`DISABLE TRIGGER` for the duration of a vetted DELETE, then re-enable).
+
+Full impl, Redis-first ordering vs Postgres scrub, trigger contract, cleanup runbook: see `docs/dev/session-deletion.md`.
 
 ## Rate limits
 

@@ -39,7 +39,7 @@ The feed response carries items tagged by `type`:
 - `type: 'session_stub'` — session feed_items. Phase 2 emits a minimal stub (author + session name + tombstone label + timestamp). Phase 3 ships `<SessionFeedCard>` with per-wine fan-out and per-wine redaction for blind sessions.
 - `type: 'badge'` — user_badges (unchanged).
 
-Soft-deleted sessions collapse to "[deleted session]" labels on both surfaces (`session.deletedAt` non-null per the §8 data-survival contract; `session.name` and `session.code` are NULL on the tombstone).
+Soft-deleted sessions collapse to "[deleted session]" labels on both surfaces (`session.deletedAt` non-null per the §8 data-survival contract; `session.name` and `session.code` are NULL on the tombstone). See [session-deletion.md](session-deletion.md) for the full soft-delete contract and the DB-level trigger that enforces it.
 
 ## Tags require mutual follow
 
@@ -57,7 +57,7 @@ Block-pair-adjusted like counts: a like by user X on a feed_item by user Y is in
 
 Rating images live at `wines/ci_<userId>_<keyId>.<ext>` keyed by `Date.now()` at POST and at PATCH (so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
-**The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — engagement deletion, ban-tx wipe, account deletion, "had a sip" source-image cleanup — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes.
+**The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — ban-tx wipe, account deletion, and the future engagement-deletion cascade (phase 3) — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes. ("Had a sip" COPIES bytes via S3 `CopyObjectCommand`; it doesn't reclaim, and the new check-in owns its own copy outright.)
 
 `wines.imageUrl` is the canonical catalog bottle shot. Standalone POSTs write `NULL` on the wine row — the user's tasting photo lives on `rating_images`, not on the wine. This way a cascade-delete of the rating doesn't leave a dangling S3 pointer on a wine row that may survive (bookmarked from elsewhere).
 

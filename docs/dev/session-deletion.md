@@ -21,11 +21,15 @@ The minimal contract is the easiest to audit for privacy and forces explicit doc
 
 ### Children survive untouched
 
-- `wines.session_id` keeps pointing at the deleted session's id (today's behaviour preserved). Wine detail pages reachable from `/me/saved` MUST JOIN `sessions` to read `deleted_at` and render "[deleted session]" — never the scrubbed (NULL) name.
+- `wines.session_id` is **nulled** on soft-delete (today's pre-rewire behaviour preserved per the Q3 phase-2 decision). The wines themselves stay reachable for bookmark/Wishlist surfaces. **The wishlist tombstone label resolves via `ratings.session_id`** — find a rating the viewer wrote against this wine, follow its `session_id` to the tombstoned session row, read `deletedAt`. This commits to the future direction where `wines.session_id` becomes deprecated entirely (a wine is a thing, ratings are the session-scoped event). See `app/api/me/bookmarks/route.ts` for the resolver.
 - `ratings.session_id` keeps pointing at the deleted session's id.
 - `feed_items.session_id` keeps pointing at the deleted session's id.
 - All ratings, feed_items, likes, tags, and `rating_images` survive untouched.
 - `ratings.rated_at` is the relevant timestamp for "when did the user taste this" — on the rating row, never on the session, so deletion doesn't affect it.
+
+### Adding a new column to `sessions`
+
+Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ... = NULL` scrub list in `app/api/session/[code]/route.ts` MUST be extended to include it (and the matching list in `lib/accountDelete.ts:deleteSessionFromPostgres`). The schema-level enforcement is the nullability — but a NOT-NULL column added later would block soft-delete with a constraint error. Make all new columns nullable, and add them to the scrub.
 
 ### Why soft-delete instead of nulling the child FKs
 
