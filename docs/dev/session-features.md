@@ -1,0 +1,27 @@
+# Session features — implementation
+
+User-facing role copy: `../roles.md`.
+
+- **Session metadata**: name, description (1000 chars), address, datetime range (dateFrom/dateTo with timezone), external link. All editable via settings PATCH.
+- **Lifespan**: 48h (default, all users) / 72h / 1w / unlimited (pro). Drives Redis TTL across all session keys.
+- **Blind tasting**: host can hide wine identities from tasters until they reveal them. Host POSTs `/wines/<id>/reveal` per wine, or `/wines/reveal-all` / `/wines/hide-all` for batch. Server redacts wine details for non-host callers when `meta.blind && !wine.revealedAt`. Pro-gated.
+- **Hide lineup before tasting**: when a host sets `meta.hideLineup = true` and provides `dateFrom`, the wine list is hidden from non-host participants until `dateFrom - hideLineupMinutesBefore`. Server returns `[]` for the wines GET in that window. The client shows a `LineupLocked` countdown screen, auto-refetches when the reveal time arrives.
+- **Cohost roles**: host can promote any participant to cohost. Cohosts can do everything a host can — add/edit/delete wines, edit settings, reveal/hide blind wines, reorder — except assign cohost roles or delete the session (those are strict-host-only). Tracked as `meta.coHostIds` (identity-id list, the trust anchor). When a host deletes their account on a session that has engagement, host fields are tombstoned and cohosts inherit delete rights via the softened strict-host check.
+- **Provider role**: lighter-weight role for someone bringing wines to a tasting without full host powers. Providers can add wines to the lineup and edit/delete only the wines they themselves added (matched via `wines.addedByIdentityId === provider.id`). Providers cannot change settings, rename, delete the session, reorder wines, reveal/hide blind wines, or assign/remove roles. Cannot kick/ban — moderation stays with host + cohost. Tracked as `meta.providerIds` (identity-id list, the trust anchor). **Mutually exclusive with cohost** — a participant is at most one of {host, cohost, provider, taster}. In blind tasting mode, a provider sees their own wines un-redacted while other participants' wines stay redacted (provider-bypass at the wine GET level).
+
+## Role transition rule (locked)
+
+Any role mutation that adds OR removes the `co_host` designation requires **strict-host**. Cohosts can only drive `taster ↔ provider` transitions. This collapses promote-to and demote-from cohost into one rule and is enforced both client-side (the SetRoleButton picker hides Co-host from non-strict-host viewers) and server-side (the `set-role` action gates on the strict-host check when the transition touches cohost). The picker also omits the target's current role from the option list — selecting a user who's already a provider shows just Co-host (strict-host only) and Taster.
+
+## Role mutation endpoint
+
+`PATCH /api/session/<C>` with `action: 'set-role', targetId, role: 'taster'|'co_host'|'provider'`. Mutual exclusion: setting `co_host` strips from `providerIds`; setting `provider` strips from `coHostIds`; setting `taster` strips from both. The legacy `add-cohost`, `remove-cohost`, and `transfer-host` actions were removed in the provider-role commit — host handoff is handled by account-deletion's tombstone mechanism (see `docs/dev/account-deletion.md`), not by a user-driven action.
+
+## Enumeration oracle posture
+
+The PATCH handler runs a coarse moderator gate before target resolution (non-moderators → 403 regardless of target). For strict-host-only paths (`set-role co_host`), the strict-host check ALSO runs before target resolution, so cohost callers get a uniform 403 whether the target exists or not. The residual leak: a cohost calling `set-role taster|provider` on a cohost target gets 403 (touchesCohost), while the same call on a non-existent target gets 400 (targetId required). The asymmetry tells a cohost whether `targetId u:<n>` is a cohost in this session — but cohosts already see the full `coHostIds`/`providerIds` lists via `GET /api/session/<C>`, so this isn't a privilege escalation. Accepted as a bounded leak, not closed because closing it would require a redis read inside the lock that's redundant with already-public information.
+
+- **Display-name disambiguation on join**: when a participant tries to join with a name already taken in this session, they get a random food emoji suffix appended (e.g. `Sam` → `Sam 🍅`). Idempotent for logged-in users — re-joining doesn't accumulate suffixes. The check uses the identities map, not the legacy users set.
+- **Bookmarks** (logged-in only): `POST /api/session/<code>/wines/<id>/bookmark`. Saved wines persist across sessions, survive session deletion (the wine row is orphaned with `session_id = NULL` rather than cascade-deleted).
+- **Hall of Fame** (logged-in only): every 5★ rating creates a row in `hall_of_fame`. Public leaderboard at `/hof`, no auth required to read. Denormalized — entries survive without the underlying wine/session row.
+- **Badges + XP**: ~60+ badges in `lib/badges.ts`, evaluated on every rate POST against the user's lifetime counter snapshots. Awarded badges are permanent (`user_badges` table); deleting ratings doesn't un-earn.
