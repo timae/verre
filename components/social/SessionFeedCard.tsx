@@ -126,9 +126,10 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
 
   if (wine._blind) {
     // Mystery slot — wine identity hidden; user's score / chips / notes still
-    // visible (their own data). Matches the live session view's blind render:
-    // 🙈 icon + "Wine #N" copy per LobbyClient + WineListScreen conventions.
-    const blindLabel = `Wine #${index + 1}`
+    // visible (their own data). Matches the live session view: 🙈 icon +
+    // "Wine N" copy (no #, per lib/wineRedaction.ts:39 which is the
+    // canonical label generator for the live route).
+    const blindLabel = `Wine ${index + 1}`
     return (
       <div style={{ display:'flex', gap:12, padding:'10px 0', borderTop:'1px solid var(--border)' }}>
         <div style={{
