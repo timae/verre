@@ -38,7 +38,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // that need flipping; no-ops for anon-host sessions whose
   // wines row doesn't exist in Postgres.
   try {
-    const sessionRow = await prisma.session.findUnique({ where: { code: c }, select: { id: true } })
+    const sessionRow = await prisma.session.findFirst({ where: { code: c, deletedAt: null }, select: { id: true } })
     if (sessionRow) {
       await prisma.wine.updateMany({
         where: { sessionId: sessionRow.id, revealedAt: null },

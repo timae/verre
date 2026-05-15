@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
 ## Status code rules (leak prevention)
 
 - **`{status: 'gone'}` from `resolveProfileViewer` → 404**, never 403 or 401. The caller can't distinguish "no such user" from "exists but tier denies you."
-- **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/checkins/[id]/like/route.ts` for the canonical pattern.
+- **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/feed-items/[id]/like/route.ts` for the canonical pattern.
 - **403 reserved for permission-denied with identity AND visibility both resolved** ("only host can…", "pro required"). Never use 403 to indicate "you can't see this resource exists."
 
 ## Cache-Control on viewer-dependent responses
@@ -63,6 +63,15 @@ Limit policy table lives in root CLAUDE.md. Helper API in `lib/CLAUDE.md`. Per-e
 ## `/api/auth/login-precheck`
 
 Exists because NextAuth v5 strips error messages from the client-side `signIn()` response. The login form calls precheck first and surfaces the "Try again in N seconds" message itself; on success it then hits the real `signIn()`. Precheck uses `peekRate` so it doesn't pollute the counter.
+
+## Engagement trigger (rate POST + checkins POST → feed_items)
+
+Both `POST /api/session/[code]/rate` and `POST /api/checkins` create `feed_items` rows alongside the underlying ratings. Two contracts shape this:
+
+- **Session rate**: a feed_item materialises on first engagement (score > 0, OR chips, OR notes). Idempotent via the partial unique `(user_id, session_id)` + `ON CONFLICT DO NOTHING` — subsequent rates in the same session no-op, so `created_at` stays anchored on first engagement. Anon ratings skip entirely (schema-enforced via `feed_items.user_id NOT NULL`).
+- **Standalone POST**: the act of POSTing IS the engagement signal; the feed_item is always created (the user explicitly chose to post). One feed_item per check-in (1:1 with the rating via `feed_items.ratingId`).
+
+Full mechanics: see `docs/dev/social-feed.md` §Engagement trigger.
 
 ## API surface
 

@@ -379,8 +379,8 @@ export async function addWineToSession(
   }
 }
 
-export async function pgUpsertSession(code: string, meta: SessionMeta) {
-  await prisma.session.upsert({
+export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<number> {
+  const row = await prisma.session.upsert({
     where: { code },
     create: {
       code,
@@ -390,11 +390,19 @@ export async function pgUpsertSession(code: string, meta: SessionMeta) {
       createdAt: new Date(meta.createdAt),
     },
     update: { name: meta.name || undefined },
+    select: { id: true },
   })
+  return row.id
 }
 
 export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
-  const session = await prisma.session.findUnique({ where: { code: sessionCode } })
+  // Skip soft-deleted sessions (code = NULL after the §8 scrub naturally
+  // misses, but the explicit filter documents intent and survives any
+  // future scrub-set change).
+  const session = await prisma.session.findFirst({
+    where: { code: sessionCode, deletedAt: null },
+    select: { id: true },
+  })
   if (!session) return
   await prisma.wine.upsert({
     where: { id: wine.id },

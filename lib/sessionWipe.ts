@@ -1,5 +1,36 @@
 import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
+import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
+
+// Local copy of reclaimImage to avoid coupling sessionWipe to accountDelete.
+// Duplicated in three other places (accountDelete.ts, session.ts, me/avatar);
+// captured in .local/future-work-rewire.md as a future extraction to
+// lib/s3reclaim.ts. Trade-off accepted to keep phase 2 PR scope tight.
+const _S3_ENDPOINT = process.env.S3_ENDPOINT
+const _S3_BUCKET   = process.env.S3_BUCKET
+const _s3 = _S3_ENDPOINT && _S3_BUCKET
+  ? new S3Client({
+      endpoint: _S3_ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
+  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] reclaimImage failed:', { key, err })
+  }
+}
 
 // Single helper for all flavors of removing a participant from a session,
 // invoked by both the host-side ban/kick endpoint and the kicked-user's
@@ -57,12 +88,34 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
     await redis.sAdd(k.kicked(code), identityId)
   }
 
+  // ── Capture rating_images URLs BEFORE the transaction so we can reclaim
+  // them from S3 AFTER commit. Capture-first / commit / reclaim-after is
+  // the contract for any S3 cleanup paired with a DB delete (rollback-safe
+  // — a txn rollback doesn't leave orphan S3 deletes). Only relevant for
+  // kick-delete + ban; kick-keep doesn't drop ratings so there's nothing
+  // to reclaim.
+  let ratingImageUrls: string[] = []
+  if ((scope === 'kick-delete' || scope === 'ban') && userId !== null) {
+    const rows = await prisma.$queryRaw<{ image_url: string }[]>`
+      SELECT ri.image_url
+      FROM rating_images ri
+      JOIN ratings r ON r.id = ri.rating_id
+      JOIN wines w ON w.id = r.wine_id
+      JOIN sessions s ON s.id = w.session_id
+      WHERE r.user_id = ${userId}
+        AND s.code = ${code}
+        AND s.deleted_at IS NULL`
+    ratingImageUrls = rows.map(r => r.image_url).filter(Boolean)
+  }
+
   // ── Postgres in a single transaction.
   await prisma.$transaction(async tx => {
     if (scope === 'kick-keep') {
       // Reset cohost role so /me/sessions doesn't show a stale "co-host"
       // tag. The user's ratings + bookmarks + session_members row stay
-      // — they decide on the bounce screen what to do with them.
+      // — they decide on the bounce screen what to do with them. Feed_item
+      // also stays (the user's session post is theirs to keep until they
+      // actively choose to leave-with-cleanup).
       if (userId !== null) {
         await tx.sessionMember.updateMany({
           where: { userId, sessionCode: code },
@@ -74,9 +127,18 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       if (userId !== null) {
         // Ratings link to wines (not directly to sessions). Walk the
         // relation so we delete only ratings whose wines belong to THIS
-        // session.
+        // session. rating_images cascade with the ratings (FK on ratings.id).
         await tx.rating.deleteMany({
           where: { userId, wine: { session: { code } } },
+        })
+        // Drop the user's session post. The rewire makes feed_items the
+        // social wrapper around session ratings; without this delete, a
+        // banned user's feed_item lingers pointing at the now-deleted
+        // ratings — empty card, orphan post. Match by (userId, session)
+        // via relation traversal so we don't need a separate sessionId
+        // lookup.
+        await tx.feedItem.deleteMany({
+          where: { userId, session: { code } },
         })
         await tx.hallOfFame.deleteMany({ where: { userId, sessionCode: code } })
         // Bookmarks pointing at wines belonging to this session. Other
@@ -97,6 +159,11 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       })
     }
   })
+
+  // ── S3 reclaim AFTER commit. Fire-and-forget; if S3 fails the ratings
+  // are already gone — orphan bytes for a future cleanup, never broken
+  // DB state.
+  for (const url of ratingImageUrls) reclaimImage(url)
 
   // ── Redis cleanup (post-transaction; each op is idempotent).
   // Per-rating keys via SCAN to avoid blocking Redis on large sessions.

@@ -151,6 +151,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
               ...c,
               flavors: c.flavors as Record<string, number>,
             }))}
+            initialSessionPosts={data.recentSessionPosts}
           />
         </>
       )}

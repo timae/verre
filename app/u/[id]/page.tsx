@@ -104,6 +104,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
               ...c,
               flavors: c.flavors as Record<string, number>,
             }))}
+            initialSessionPosts={profile.recentSessionPosts}
           />
       </>
     )

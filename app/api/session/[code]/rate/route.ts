@@ -68,21 +68,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     try {
       const meta = await getSessionMeta(c)
       if (meta) {
-        await pgUpsertSession(c, meta)
+        // pgUpsertSession returns the sessions.id directly (one DB roundtrip
+        // instead of upsert + findUnique). The integer id is what the new
+        // partial unique on ratings (user_id, wine_id, session_id) needs
+        // for its FK write.
+        const sessionId = await pgUpsertSession(c, meta)
         await pgUpsertWine(c, wine)
-
-        // The new partial unique constraint on ratings (phase 1.5
-        // migration) is `(user_id, wine_id, session_id) WHERE session_id
-        // IS NOT NULL AND user_id IS NOT NULL`. We need sessions.id (an
-        // integer) for the FK write — translate from the Crockford code
-        // via a single lookup. pgUpsertSession just ran above so the
-        // row is guaranteed to exist.
-        const sessionRow = await prisma.session.findUnique({
-          where: { code: c },
-          select: { id: true },
-        })
-        if (!sessionRow) throw new Error('session row missing after upsert')
-        const sessionId = sessionRow.id
 
         // Snapshot the prior rating so the lifetime_* counters bump
         // only on the relevant transitions (new rating, first 5★, longer
@@ -145,6 +136,33 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             flavors = EXCLUDED.flavors,
             notes = EXCLUDED.notes,
             rated_at = EXCLUDED.rated_at`
+
+        // Materialise the session feed_item on first engagement. The engagement
+        // trigger from §3 of the rewire: any rating with score > 0, flavour
+        // chips, or a note counts as engagement. A rate POST with all three
+        // empty (e.g. a misbehaving or hostile client) lands the rating row
+        // — that's the user's interaction with the wine — but does NOT create
+        // a social post. Phase 3's engagement-deletion auto-cascade reaps any
+        // emptied rating; this guard avoids materialising the post in the
+        // first place so the user doesn't accumulate empty session posts.
+        //
+        // Idempotent via the partial unique (user_id, session_id). Subsequent
+        // rates in the same session collapse to ON CONFLICT DO NOTHING — the
+        // feed_item's createdAt is never updated, so post chronology stays
+        // anchored on first engagement.
+        //
+        // Anon ratings never reach this branch (the outer `identity.kind ===
+        // 'user'` gate at the top of the handler skips them). feed_items.user_id
+        // NOT NULL enforces this at the schema level.
+        const hasEngagement = ratingScore > 0
+          || Object.keys(validFlavors ?? {}).length > 0
+          || (notes != null && notes.length > 0)
+        if (hasEngagement) {
+          await prisma.$executeRaw`
+            INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
+            VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
+            ON CONFLICT (user_id, session_id) DO NOTHING`
+        }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with
         // GREATEST() / conditional increments so we never double-count

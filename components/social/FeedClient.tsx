@@ -14,9 +14,24 @@ type CheckinPayload = {
   viewerFollowsAuthor?: boolean
   tags?: { id: number; name: string }[]
 }
+// Phase 2 stub for a session feed_item. Phase 3 will replace this rendering
+// with a real <SessionFeedCard> that fans out per-wine ratings; for now we
+// surface the host + session name + a tombstone label if the session was
+// soft-deleted.
+type SessionStubPayload = {
+  id: number              // feed_items.id (used for like-button keys etc.)
+  sessionId: number | null
+  sessionName: string | null  // null when deleted (scrubbed) or unnamed
+  deleted: boolean
+  blind: boolean
+  likeCount: number
+  liked: boolean
+}
+
 type FeedItem =
-  | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
-  | { type: 'badge';   createdAt: string; author: { id: number; name: string }; badge: { id: string; name: string; icon: string; description: string; xp_reward: number } }
+  | { type: 'checkin';      createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
+  | { type: 'session_stub'; createdAt: string; author: { id: number; name: string; xp: number }; session: SessionStubPayload }
+  | { type: 'badge';        createdAt: string; author: { id: number; name: string }; badge: { id: string; name: string; icon: string; description: string; xp_reward: number } }
 
 type FeedResponse = { items: FeedItem[]; nextCursor: string | null }
 
@@ -111,6 +126,27 @@ export function FeedClient({ myId }: { myId: number }) {
                 taggedViewer: !!item.checkin.tags?.some(t => t.id === myId),
               })}
             />
+          )
+        }
+        if (item.type === 'session_stub') {
+          // Phase 2 placeholder for a session post. Phase 3 ships
+          // <SessionFeedCard> with per-wine fan-out. For now, render a
+          // minimal "X had a tasting" card; the soft-deleted variant
+          // collapses to "[deleted session]" without a link.
+          const s = item.session
+          return (
+            <div key={`s-${s.id}-${i}`} className="panel" style={{ marginBottom:10, padding:'12px 14px' }}>
+              <div style={{ fontSize:11, color:'var(--fg-dim)', marginBottom:4 }}>
+                <Link href={`/u/${item.author.id}`} style={{ color:'var(--accent)', textDecoration:'none', fontWeight:700 }}>{item.author.name}</Link>
+                {' '}had a tasting
+              </div>
+              <div style={{ fontWeight:600, fontSize:14, color:'var(--fg)' }}>
+                {s.deleted ? '[deleted session]' : (s.sessionName || 'Untitled session')}
+              </div>
+              <div style={{ fontSize:10, color:'var(--fg-dim)', fontFamily:'var(--mono)', marginTop:6 }}>
+                {timeAgo(item.createdAt)}
+              </div>
+            </div>
           )
         }
         const badge = item.badge

@@ -120,10 +120,13 @@ Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUD
 
 When adding a table that references `users.id`, pick one:
 
-- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `checkins`, `checkin_likes`, `checkin_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`.
-- **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings`, `hall_of_fame`, `sessions.host_user_id`.
+- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `checkins` (legacy), `checkin_likes` (legacy), `checkin_tags` (legacy), `follows`, `bookmarks`, `user_badges`, `session_members`. **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
+- **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings` where `session_id IS NOT NULL`, `hall_of_fame`, `sessions.host_user_id`.
+- **Split rule on `ratings`** — standalone ratings (`session_id IS NULL`) hard-cascade in the account-delete path (their feed_items go with them via downstream cascade); session ratings tombstone (other tasters' compare views need them). See `lib/accountDelete.ts` for the implementation.
 
-The test: does another user's view (own history, compare screen, leaderboard, ongoing session they're in) reference this row in a way where deletion would leave their experience broken? Yes → tombstone. No → cascade. **S3 image reclaim is independent of cascade**: cascade does NOT trigger S3 cleanup; any table with an `imageUrl` field needs explicit `reclaimImage()` calls in every deletion path.
+The test: does another user's view (own history, compare screen, leaderboard, ongoing session they're in) reference this row in a way where deletion would leave their experience broken? Yes → tombstone. No → cascade. (Or **both ways within one table, keyed on a column** — see `ratings`, which splits on `session_id IS NULL`.) **S3 image reclaim is independent of cascade**: cascade does NOT trigger S3 cleanup; any table with an `imageUrl` field needs explicit `reclaimImage()` calls in every deletion path.
+
+**Capture / commit / reclaim-after ordering is mandatory** when an S3 delete is paired with a DB delete: capture the `imageUrl` set into memory BEFORE the txn, run the DB cascade, commit, then fire `reclaimImage()` on each captured URL AFTER commit. A txn rollback after S3 deletes already fired would leave a "DB still has the row, bytes are gone" inconsistency. This pattern is implemented across `lib/accountDelete.ts`, `lib/sessionWipe.ts`, `app/api/session/[code]/route.ts`, and the `/api/checkins/[id]` PATCH/DELETE handlers. "Had a sip" is the deliberate exception — it COPIES bytes server-side (CopyObjectCommand), never reclaims.
 
 Account-deletion implementation (Postgres transaction + Redis SCAN+decide+act loop): see `docs/dev/account-deletion.md`.
 
@@ -144,11 +147,13 @@ Tier semantics, audit log, HoF/compare exceptions: see `docs/dev/profile-visibil
 - **Logged-in (free account)**: same live session + visits/ratings archived to Postgres. History, bookmarks, Hall of Fame, flavour profile persist indefinitely.
 - **Pro** (`users.pro = true`): paid tier. Gates **blind tastings** (host pre-rates while wine identities are hidden from tasters until reveal) + extended lifespan (72h / 1w / unlimited beyond the 48h default).
 
-### Session-deletion retention rule
+### Session deletion is a soft-delete (rewire phase 2)
 
-When a host deletes a session: for each `(user, wine)` pair, the rating row is **kept** if the user bookmarked the wine (so the bookmark detail page still renders) and **deleted** otherwise. Hall of Fame follows the same rule. Wine rows are kept with `session_id = NULL` so bookmarked wines remain reachable from `/me/saved`. Lifetime counters never decrement.
+When a host deletes a session: `sessions.deletedAt = NOW()` is set and every other column on the row is scrubbed to NULL (`code`, `host_name`, `name`, `blind`, `created_at`, `archived_at`, `address`, `dateFrom`/`dateTo`, `timezone`, `description`, `link`, `host_user_id`). Ratings + feed_items survive untouched — their `session_id` still points at the tombstoned row, providing the grouping signal for the user's own Tastes / Posts views. Wines orphan (`session_id = NULL`) so bookmarked wines remain reachable from `/me/saved`; the wishlist tombstone label resolves via the wine's ratings, not the wine's session FK. Lifetime counters never decrement.
 
-Full impl, Redis wipe, participant bounce: see `docs/dev/session-deletion.md`.
+A Postgres trigger (`prevent_session_hard_delete`) blocks any `DELETE FROM sessions` — soft-delete is an actual DB invariant, not just an app-layer convention. Cleanup of long-tombstoned rows is a manual operator step (`DISABLE TRIGGER` for the duration of a vetted DELETE, then re-enable).
+
+Full impl, Redis-first ordering vs Postgres scrub, trigger contract, cleanup runbook: see `docs/dev/session-deletion.md`.
 
 ## Rate limits
 
@@ -188,7 +193,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, Redis wipe, participant bounce
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning
 - [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap, HoF trigger
-- [Social feed](docs/dev/social-feed.md) — follow graph, check-ins, mutual-follow tag gating, "had a sip" S3 copy flow
+- [Social feed](docs/dev/social-feed.md) — unified `feed_items` model (post-rewire), follow graph, engagement trigger, mutual-follow tag gating, "had a sip" S3 copy flow, session-stub render (phase 3 ships `<SessionFeedCard>`)
 - [Avatars](docs/dev/avatars.md) — upload pipeline, MIME allow-list + magic-byte signatures, JPEG EXIF strip, account-delete reclaim
 - [Flavour charts](docs/dev/flavour-charts.md) — polar vs radar, type-specific dimensions (FL_RED/WHITE/SPARK/ROSE/legacy)
 - [iOS touch gestures](docs/dev/ios-touch-gestures.md) — pull-to-swap design history (architectures tried + discarded)

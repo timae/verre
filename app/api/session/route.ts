@@ -62,6 +62,12 @@ export async function POST(req: NextRequest) {
   // touch Redis, but a Postgres row can survive a Redis TTL expiry — re-using
   // such a code would clobber the unique constraint at create time. Log the
   // retry count so namespace-exhaustion shows up in logs before it bites.
+  //
+  // Soft-deleted sessions have `code = NULL` per the §8 scrub, so the
+  // `findUnique({where:{code:candidate}})` below naturally misses them and
+  // their codes are freed for re-use. Intentional — the unique index permits
+  // multiple NULLs (NULLs are distinct), and a tombstoned session has no
+  // public surface that the recycled code would conflict with.
   let code: string | null = null
   let attempts = 0
   for (let i = 0; i < 10; i++) {

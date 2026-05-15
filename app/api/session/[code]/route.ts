@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { auth } from '@/auth'
-import { redis, k } from '@/lib/redis'
+import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { type SessionMeta, isHostByIdentity } from '@/lib/session'
@@ -362,17 +362,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   }
 }
 
-// DELETE permanently removes a session and most of its data. Host-only
-// (co-hosts cannot delete — same restriction as cohost role assignment).
+// DELETE soft-deletes a session per the §8 data-survival contract in
+// docs/dev/proposals/rewire.md. Host-only (co-hosts cannot delete — same
+// restriction as cohost role assignment).
 //
-// Retention rule: per (user, wine) pair, if the user bookmarked the wine,
-// keep their rating row (so the bookmark detail still shows their score,
-// notes, flavors). Delete every other rating row for those wines. HoF
-// entries follow the rating: deleted when the corresponding rating is
-// deleted, kept otherwise.
+// What survives on the sessions row: `id` and `deleted_at`. Every other
+// column is scrubbed to NULL. The tombstone is genuinely empty: callers
+// can tell the row exists and that it's deleted, nothing more.
 //
-// Wines themselves are kept (orphaned with session_id = NULL) so bookmarked
-// wines remain reachable from /me/saved with image, name, etc. intact.
+// Ratings + feed_items survive untouched. Their `session_id` still points
+// at the tombstoned row, providing the grouping signal for the user's
+// own Tastes / Posts surfaces. Renderers JOIN sessions to read deletedAt
+// and display "[deleted session]" labels.
+//
+// Wines: orphaned with `session_id = NULL` (today's behaviour preserved
+// per the Q3 plan decision). The wishlist tombstone-label resolver reads
+// session context via a wine's own ratings, not via `wines.session_id`.
+//
+// Pre-existing side effects still fire: HoF cleanup (legacy table is still
+// load-bearing while Tim's HoF v2 hasn't shipped); S3 reclaim of orphan
+// wine images; session_members wipe; Redis purge.
 //
 // Lifetime counters on users do NOT decrement — that's the whole point of
 // the snapshot column design.
@@ -408,14 +417,45 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
   }
 
-  // Postgres cleanup wrapped in a transaction so any failure rolls back the
-  // whole set — no half-deleted state where, say, ratings are gone but the
-  // session row remains. If the transaction throws, we still wipe Redis
-  // below so the user gets the "session is gone" experience client-side.
+  // Order: Redis wipe FIRST, then Postgres scrub.
+  //
+  // This NARROWS but does not fully close the pgUpsertSession-resurrection
+  // race. Mechanism: a rate POST that has already read `s:{CODE}:meta` from
+  // Redis still holds live meta in memory; if it then races a soft-delete,
+  // it proceeds to pgUpsertSession, finds no live row by code (the scrub
+  // nulled it), and creates a fresh sessions row with the same code — a
+  // phantom session, undeletable.
+  //
+  // Redis-first prevents the wider window (requests that haven't read Redis
+  // yet 404 cleanly). The residual race is "rate POST in flight at the
+  // exact moment of delete" — a few-ms window at Tim+Simon scale, accepted.
+  // Closing it fully would need keeping `code` on the tombstone + a partial
+  // unique index `WHERE deleted_at IS NULL`; out of scope for phase 2.
+  //
+  // Failure semantics: if the Postgres scrub fails after Redis is wiped,
+  // the session is "gone from the user's perspective" (404 on every
+  // endpoint) but the Postgres row remains live. Recoverable — the operator
+  // can re-run the soft-delete by hand (the trigger lets soft-delete UPDATEs
+  // through), or wait for lifespan expiry. Strictly preferable to the
+  // phantom-row alternative.
+  try {
+    const keys = await scanKeys(`s:${c}:*`)
+    if (keys.length > 0) await redis.del(keys)
+  } catch (err) {
+    console.error('session delete (redis) error:', err)
+  }
+
   let reclaimUrls: string[] = []
   try {
     reclaimUrls = await prisma.$transaction(async (tx): Promise<string[]> => {
-      const sessionRow = await tx.session.findUnique({ where: { code: c } })
+      // Soft-deleted sessions have `code = NULL` per the §8 contract,
+      // so the findUnique below naturally misses them. The explicit
+      // `deletedAt: null` filter makes intent obvious and survives any
+      // future change that re-populates `code` on a tombstoned row.
+      const sessionRow = await tx.session.findFirst({
+        where: { code: c, deletedAt: null },
+        select: { id: true },
+      })
       if (!sessionRow) return []
       const sessionId = sessionRow.id
 
@@ -433,23 +473,18 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
       `
 
-      // 1. Delete ratings whose (user, wine) is NOT bookmarked. Anonymous
-      //    ratings only live in Redis; this only touches logged-in raters.
-      await tx.$executeRaw`
-        DELETE FROM ratings r
-        USING wines w
-        WHERE r.wine_id = w.id
-          AND w.session_id = ${sessionId}
-          AND r.user_id IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM bookmarks b
-            WHERE b.user_id = r.user_id AND b.wine_id = r.wine_id
-          )
-      `
-
-      // 2. Delete HoF entries that correspond to ratings we just deleted.
-      //    HoF rows are denormalized (wineName + userId), so the rule is
-      //    symmetric: keep HoF when the rater bookmarked, drop otherwise.
+      // 1. Ratings + feed_items SURVIVE per the §8 contract. The scrub on
+      //    `sessions` below tombstones the parent row; children keep their
+      //    `session_id` reference, providing the grouping signal for the
+      //    user's own Tastes / Posts views. No DELETE FROM ratings here
+      //    (was the pre-rewire bookmark-or-drop rule — gone).
+      //
+      // 2. HoF cleanup (legacy table) — still load-bearing while Tim's
+      //    HoF v2 ranking hasn't shipped. The bookmark-aware rule below
+      //    matches today's semantics: keep HoF if the rater also bookmarked
+      //    the wine; drop otherwise. Note the JOIN uses wines.session_id,
+      //    which is still set at this point — the orphaning UPDATE in
+      //    step 3 runs AFTER this DELETE.
       await tx.$executeRaw`
         DELETE FROM hall_of_fame h
         WHERE h.session_code = ${c}
@@ -462,16 +497,43 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
           )
       `
 
-      // 3. Orphan the wines (sessionId NULL). Schema's onDelete: SetNull
-      //    would do this automatically when we delete the session row,
-      //    but doing it explicitly is clearer.
+      // 3. Orphan the wines (sessionId NULL) — today's behaviour preserved
+      //    per Q3. The wishlist tombstone-label resolver reads session
+      //    context via the wine's own ratings (`ratings.session_id` still
+      //    points at the now-scrubbed sessions row), not via wines.session_id.
+      //    This commits to the future direction where `wines.session_id`
+      //    becomes deprecated entirely.
       await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
 
       // 4. Delete session_members rows for this session.
       await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
 
-      // 5. Delete the session row itself.
-      await tx.$executeRaw`DELETE FROM sessions WHERE id = ${sessionId}`
+      // 5. Scrub the sessions row to a tombstone per the §8 data-survival
+      //    contract. Only `id` and `deleted_at` survive; every other column
+      //    is set to NULL. `code` going NULL is intentional — deep-link
+      //    lookup by code returns no row, and the unique index on `code`
+      //    permits multiple NULLs (Postgres treats NULLs as distinct), so
+      //    soft-deleted sessions don't collide with each other or with
+      //    live ones. The schema-level NOT NULL is gone (phase 2
+      //    nullability migration applied earlier in this PR).
+      await tx.$executeRaw`
+        UPDATE sessions
+          SET deleted_at = NOW(),
+              code = NULL,
+              host_user_id = NULL,
+              host_name = NULL,
+              blind = NULL,
+              created_at = NULL,
+              archived_at = NULL,
+              name = NULL,
+              address = NULL,
+              date_from = NULL,
+              date_to = NULL,
+              timezone = NULL,
+              description = NULL,
+              link = NULL
+         WHERE id = ${sessionId}
+      `
 
       return orphanImages.map(r => r.image_url).filter(Boolean)
     })
@@ -483,14 +545,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   // back, reclaimUrls is [] so nothing happens. If S3 fails, the row is
   // already gone — orphan bytes for a future cleanup, never broken DB state.
   for (const url of reclaimUrls) reclaimImage(url)
-
-  // Wipe Redis. After this, every endpoint serving this session returns 404.
-  try {
-    const keys = await redis.keys(`s:${c}:*`)
-    if (keys.length > 0) await redis.del(keys)
-  } catch (err) {
-    console.error('session delete (redis) error:', err)
-  }
 
   return NextResponse.json({ ok: true })
 }

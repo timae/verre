@@ -21,11 +21,15 @@ The minimal contract is the easiest to audit for privacy and forces explicit doc
 
 ### Children survive untouched
 
-- `wines.session_id` keeps pointing at the deleted session's id (today's behaviour preserved). Wine detail pages reachable from `/me/saved` MUST JOIN `sessions` to read `deleted_at` and render "[deleted session]" — never the scrubbed (NULL) name.
+- `wines.session_id` is **nulled** on soft-delete (today's pre-rewire behaviour preserved per the Q3 phase-2 decision). The wines themselves stay reachable for bookmark/Wishlist surfaces. **The wishlist tombstone label resolves via `ratings.session_id`** — find a rating the viewer wrote against this wine, follow its `session_id` to the tombstoned session row, read `deletedAt`. This commits to the future direction where `wines.session_id` becomes deprecated entirely (a wine is a thing, ratings are the session-scoped event). See `app/api/me/bookmarks/route.ts` for the resolver.
 - `ratings.session_id` keeps pointing at the deleted session's id.
 - `feed_items.session_id` keeps pointing at the deleted session's id.
 - All ratings, feed_items, likes, tags, and `rating_images` survive untouched.
 - `ratings.rated_at` is the relevant timestamp for "when did the user taste this" — on the rating row, never on the session, so deletion doesn't affect it.
+
+### Adding a new column to `sessions`
+
+Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ... = NULL` scrub list in `app/api/session/[code]/route.ts` MUST be extended to include it (and the matching list in `lib/accountDelete.ts:deleteSessionFromPostgres`). The schema-level enforcement is the nullability — but a NOT-NULL column added later would block soft-delete with a constraint error. Make all new columns nullable, and add them to the scrub.
 
 ### Why soft-delete instead of nulling the child FKs
 
@@ -58,9 +62,51 @@ Only the final `DELETE FROM sessions` becomes an `UPDATE sessions SET deleted_at
 
 The pre-rewire "delete unbookmarked ratings" cleanup is **removed** in phase 2. Ratings and feed_items survive the soft-delete; the tombstone label is what hides the deleted session from live use.
 
-## Soft-delete vs hard-delete (GDPR purge) — different operations
+## Hard-delete is blocked at the database layer
 
-A future GDPR / retention-window purge job is **not** the same operation as soft-delete. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures hard-delete as future work. When it ships, the FK contract requires explicit cleanup before `DELETE FROM sessions`, because the three child FKs behave differently on delete:
+Rewire phase 2 installs a Postgres trigger on `sessions`: any `DELETE FROM sessions ...` is rejected with `ERROR: sessions are soft-deleted only`. The trigger fires regardless of where the DELETE comes from — Prisma client, raw SQL via `$executeRaw`, a hand-typed `psql` query, a forgotten cron. The only way past it is to explicitly disable the trigger (see the cleanup runbook below).
+
+This turns the soft-delete convention into a database-level invariant. Every session-deletion code path — the user-facing `DELETE /api/session/[code]`, host-account-deletion's no-engagement cleanup in `lib/accountDelete.ts`, anything in the future — routes through the same §8 scrub `UPDATE`. There is no "this session has no children, let's just hard-delete it" optimisation; everything tombstones.
+
+## Tombstone cleanup runbook (periodic, manual)
+
+Soft-delete trades a tiny amount of dead data (rows where `deleted_at IS NOT NULL`) for the guarantee that no code path can accidentally lose a session. At Tim+Simon scale the dead data is invisible. If/when the count grows enough to matter, the operator can do a manual purge:
+
+```sql
+BEGIN;
+
+-- 1. Disable the trigger for the duration of this transaction.
+ALTER TABLE sessions DISABLE TRIGGER prevent_session_hard_delete;
+
+-- 2. Hard-delete tombstoned sessions older than N (pick a retention window),
+--    BUT ONLY rows that have no children left. After the §8 scrub, ratings
+--    and feed_items still reference the session id — those need explicit
+--    nulling first (or check that none reference the targets before delete).
+--
+--    Example: purge sessions tombstoned more than a year ago whose children
+--    have already been cleaned up separately:
+DELETE FROM sessions
+ WHERE deleted_at IS NOT NULL
+   AND deleted_at < NOW() - INTERVAL '1 year'
+   AND id NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)
+   AND id NOT IN (SELECT session_id FROM feed_items WHERE session_id IS NOT NULL);
+
+-- 3. Re-enable the trigger before committing. If anything went wrong above,
+--    ROLLBACK leaves both the trigger state AND the table state untouched.
+ALTER TABLE sessions ENABLE TRIGGER prevent_session_hard_delete;
+
+COMMIT;
+```
+
+**Operator notes:**
+- Always run inside a transaction so `DISABLE TRIGGER` + the DELETE + `ENABLE TRIGGER` are atomic. A crash mid-script leaves the trigger disabled otherwise.
+- Take a `pg_dump` first. Per `prisma/CLAUDE.md`, this is destructive work.
+- The `NOT IN (SELECT session_id FROM ratings WHERE session_id IS NOT NULL)` guard prevents accidentally deleting a session that still has child rows (which would orphan ratings via the `Restrict` FK and roll back the txn — but verifying first is cheaper than waiting for the error).
+- This is operator work, not Claude work — don't automate or schedule. Periodic, manual, audited.
+
+## Future hard-delete (GDPR purge) — same escape hatch
+
+A future GDPR / retention-window purge job follows the same `DISABLE TRIGGER` pattern. The plan ([proposals/rewire.md](proposals/rewire.md), §4 "Out of scope" item #12) captures this as future work. The FK contract requires explicit cleanup of children before `DELETE FROM sessions`, because the three child FKs behave differently on delete:
 
 1. `UPDATE feed_items SET session_id = NULL WHERE session_id = $sid` (FK is `ON DELETE RESTRICT` — a bare `DELETE FROM sessions` would be rejected).
 2. `UPDATE ratings SET session_id = NULL WHERE session_id = $sid` (same — `ON DELETE RESTRICT`).

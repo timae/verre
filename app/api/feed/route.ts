@@ -105,70 +105,87 @@ export async function GET(req: NextRequest) {
   })
   if (!allowedNetworkIds.length) return NextResponse.json({ items: [], nextCursor: null })
 
-  // Checkins
-  const checkins = await prisma.checkin.findMany({
+  // Feed items — both kind='standalone' and kind='session' in one query.
+  // Standalone renders via the existing CheckinCard; session renders as a
+  // stub card until phase 3 ships the aggregate SessionFeedCard.
+  //
+  // Single Prisma query with explicit `include` — batched IN clauses for
+  // the relations. Naive per-row accessors would N+1; the include shape
+  // avoids it (one round-trip plus one per included relation, all
+  // resolved via Prisma's WHERE … IN under the hood).
+  const feedItems = await prisma.feedItem.findMany({
     where: { userId: { in: allowedNetworkIds }, createdAt: { lt: cursor } },
     include: {
       user: { select: { id: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
       tags: { include: { user: { select: { id: true, name: true } } } },
+      rating: {
+        include: {
+          wine: true,
+          images: { orderBy: { sortOrder: 'asc' }, take: 1 },
+        },
+      },
+      // Session is included for kind='session' rendering — we read
+      // deletedAt (tombstone label), name, blind (phase 3 redaction).
+      // Standalone rows have sessionId=NULL so this is undefined for them.
+      session: { select: { id: true, deletedAt: true, name: true, blind: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: PAGE,
   })
 
-  // Which of these checkins has the current user already liked?
+  // Which of these feed_items has the current user already liked?
   const myLikes = new Set(
-    (await prisma.checkinLike.findMany({
-      where: { userId, checkinId: { in: checkins.map(c => c.id) } },
-      select: { checkinId: true },
-    })).map(l => l.checkinId)
+    (await prisma.feedItemLike.findMany({
+      where: { userId, feedItemId: { in: feedItems.map(f => f.id) } },
+      select: { feedItemId: true },
+    })).map(l => l.feedItemId)
   )
 
   // Like-count adjustment for block-pair likes. Locked design: a like
-  // by user X on a check-in by user Y is invisible to ALL viewers (not
+  // by user X on a feed_item by user Y is invisible to ALL viewers (not
   // just the block-pair members) once a block exists between X and Y.
   // Globally symmetric — every viewer sees the same adjusted count.
   //
-  // One batched query fetches the like-rows on the page's check-ins
-  // that involve a block-pair edge between liker and check-in author;
-  // we subtract those from each check-in's _count.likes.
+  // One batched query fetches the like-rows on the page's feed_items
+  // that involve a block-pair edge between liker and feed_item author;
+  // we subtract those from each feed_item's _count.likes.
   //
-  // COUNT(DISTINCT cl.user_id) protects against a mutual A↔B block
+  // COUNT(DISTINCT fl.user_id) protects against a mutual A↔B block
   // (two user_blocks rows for the same pair) double-counting the same
   // like row.
-  const checkinIds = checkins.map(c => c.id)
+  const feedItemIds = feedItems.map(f => f.id)
   const blockAdjustedLikeCount = new Map<number, number>()
-  if (checkinIds.length > 0) {
-    const blockHiddenLikes = await prisma.$queryRaw<{ checkin_id: number; n: bigint }[]>`
-      SELECT cl.checkin_id AS checkin_id, COUNT(DISTINCT cl.user_id)::bigint AS n
-      FROM checkin_likes cl
-      JOIN checkins c ON c.id = cl.checkin_id
+  if (feedItemIds.length > 0) {
+    const blockHiddenLikes = await prisma.$queryRaw<{ feed_item_id: number; n: bigint }[]>`
+      SELECT fl.feed_item_id AS feed_item_id, COUNT(DISTINCT fl.user_id)::bigint AS n
+      FROM feed_item_likes fl
+      JOIN feed_items fi ON fi.id = fl.feed_item_id
       JOIN user_blocks b
-        ON (b.blocker_id = cl.user_id AND b.blocked_id = c.user_id)
-        OR (b.blocker_id = c.user_id AND b.blocked_id = cl.user_id)
-      WHERE cl.checkin_id = ANY(${checkinIds}::int[])
-      GROUP BY cl.checkin_id
+        ON (b.blocker_id = fl.user_id AND b.blocked_id = fi.user_id)
+        OR (b.blocker_id = fi.user_id AND b.blocked_id = fl.user_id)
+      WHERE fl.feed_item_id = ANY(${feedItemIds}::int[])
+      GROUP BY fl.feed_item_id
     `
-    for (const r of blockHiddenLikes) blockAdjustedLikeCount.set(r.checkin_id, Number(r.n))
+    for (const r of blockHiddenLikes) blockAdjustedLikeCount.set(r.feed_item_id, Number(r.n))
   }
 
   // Set of viewer-follows-author — gates the "had a sip" button per row.
   const myFollowing = new Set(
     (await prisma.follow.findMany({
-      where: { followerId: userId, followingId: { in: checkins.map(c => c.user.id) } },
+      where: { followerId: userId, followingId: { in: feedItems.map(f => f.user.id) } },
       select: { followingId: true },
     })).map(f => f.followingId)
   )
 
-  // Block-pair tag filter is GLOBAL: a tag of user X on a check-in by
+  // Block-pair tag filter is GLOBAL: a tag of user X on a feed_item by
   // author Y is invisible to ALL viewers (not just the viewer's
   // block-pair set) once X↔Y has a block in either direction. Locked
   // design — match the like-count rule.
   //
   // One batched query collects every (author, tag-user) pair from the
-  // page that has a block-pair edge; we filter tags per check-in.
-  const tagAuthorPairs = checkins.flatMap(c => c.tags.map(t => ({ authorId: c.user.id, tagUserId: t.user.id })))
+  // page that has a block-pair edge; we filter tags per feed_item.
+  const tagAuthorPairs = feedItems.flatMap(f => f.tags.map(t => ({ authorId: f.user.id, tagUserId: t.user.id })))
   // hiddenAuthorTag is a Set of "authorId:tagUserId" strings — fast O(1) lookup at render.
   const hiddenAuthorTag = new Set<string>()
   if (tagAuthorPairs.length > 0) {
@@ -202,27 +219,87 @@ export async function GET(req: NextRequest) {
     take: PAGE,
   })
 
-  // Merge and sort
-  const feedItems = [
-    ...checkins.map(c => ({
-      type: 'checkin' as const,
-      createdAt: c.createdAt,
-      author: c.user,
-      checkin: {
-        id: c.id, wineName: c.wineName, producer: c.producer, vintage: c.vintage,
-        grape: c.grape, type: c.type, score: decimalToNumber(c.score), notes: c.notes, imageUrl: c.imageUrl,
-        venueName: c.venueName, city: c.city, country: c.country,
-        flavors: c.flavors, likeCount: Math.max(0, c._count.likes - (blockAdjustedLikeCount.get(c.id) ?? 0)), createdAt: c.createdAt,
-        // Tag filter: drop GLOBALLY block-pair tags. A tag of user X on
-        // a check-in by author Y is invisible to all viewers (same rule
-        // as the like-count subtraction). Hidden via the (author,
-        // tag-user) lookup set computed above. Render-time only — the
-        // tag row stays in DB.
-        tags: c.tags?.filter(t => !hiddenAuthorTag.has(`${c.user.id}:${t.user.id}`)).map(t => t.user) ?? [],
-        liked: myLikes.has(c.id),
-        viewerFollowsAuthor: myFollowing.has(c.user.id),
-      },
-    })),
+  // Merge and sort. Three discriminated payload shapes:
+  //   - 'checkin' — standalone feed_items (kind='standalone'). Renders
+  //     via the existing CheckinCard. checkin.id is now the feed_item.id;
+  //     the migration preserves id-equality with the legacy checkins.id
+  //     so cached client URLs (PATCH/DELETE, like) keep working.
+  //   - 'session_stub' — session feed_items (kind='session'). Phase 2
+  //     emits a minimal stub shape; phase 3 ships SessionFeedCard which
+  //     will fan-out to the wines rated by the user in that session.
+  //     Deleted-session collapse: if session.deletedAt is non-null, the
+  //     stub renders as "[deleted session]" with no link.
+  //   - 'badge' — user_badges (unchanged).
+  type OutgoingItem =
+    | { type: 'checkin';      createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
+    | { type: 'session_stub'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: Record<string, unknown> }
+    | { type: 'badge';        createdAt: Date; author: { id: number; name: string; imageUrl: string | null }; badge: { id: string; name: string; icon: string; description: string; category: string; rarity: string; xp_reward: number } }
+  const items: OutgoingItem[] = [
+    ...feedItems.flatMap((f): OutgoingItem[] => {
+      if (f.kind === 'standalone') {
+        if (!f.rating) return []  // defensive — schema invariant says standalone has ratingId set
+        const wine = f.rating.wine
+        const ratingImage = f.rating.images[0]?.imageUrl ?? null
+        return [{
+          type: 'checkin' as const,
+          createdAt: f.createdAt,
+          author: f.user,
+          checkin: {
+            id: f.id,
+            wineName: wine.name,
+            producer: wine.producer,
+            vintage: wine.vintage,
+            grape: wine.grape,
+            type: wine.style,
+            score: decimalToNumber(f.rating.score),
+            notes: f.rating.notes,
+            // Image priority: the rating's own photo first (the user's
+            // tasting photo), falling back to the wine's canonical bottle
+            // shot (host-curated; null for standalone wines today).
+            imageUrl: ratingImage ?? wine.imageUrl,
+            venueName: f.venueName,
+            city: f.city,
+            country: f.country,
+            flavors: f.rating.flavors,
+            likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
+            createdAt: f.createdAt,
+            // Tag filter: drop GLOBALLY block-pair tags. Same rule as
+            // the like-count subtraction. Render-time only — the tag row
+            // stays in DB.
+            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`)).map(t => t.user),
+            liked: myLikes.has(f.id),
+            viewerFollowsAuthor: myFollowing.has(f.user.id),
+          },
+        }]
+      }
+      if (f.kind === 'session') {
+        // Session stub. Phase 3 will replace this with a real aggregate
+        // card. For now: surface enough for the client to render "X had
+        // a tasting" plus a tombstone label when the session is deleted.
+        const s = f.session
+        return [{
+          type: 'session_stub' as const,
+          createdAt: f.createdAt,
+          author: f.user,
+          session: {
+            id: f.id,
+            sessionId: s?.id ?? null,
+            // §8 contract: when soft-deleted, name + code are scrubbed
+            // and deletedAt is set. Renderer collapses to "[deleted
+            // session]" without a link.
+            sessionName: s?.deletedAt ? null : (s?.name ?? null),
+            deleted: !!s?.deletedAt,
+            // blind/redaction handling is phase 3 work (per-wine redaction
+            // via lib/wineRedaction.ts). The stub doesn't enumerate wines
+            // yet, so blind is forwarded but unused here.
+            blind: !!s?.blind,
+            likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
+            liked: myLikes.has(f.id),
+          },
+        }]
+      }
+      return []  // unknown kind — drop defensively
+    }),
     ...badges.map(b => ({
       type: 'badge' as const,
       createdAt: b.earnedAt,
@@ -231,15 +308,15 @@ export async function GET(req: NextRequest) {
     })),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, PAGE)
 
-  const nextCursor = feedItems.length === PAGE
-    ? feedItems[feedItems.length - 1].createdAt.toISOString()
+  const nextCursor = items.length === PAGE
+    ? items[items.length - 1].createdAt.toISOString()
     : null
 
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
   // like-count adjustment all depend on the calling user). Force
   // private no-store so a CDN can't serve one viewer's feed to another.
   return NextResponse.json(
-    { items: feedItems, nextCursor },
+    { items, nextCursor },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }
