@@ -224,8 +224,18 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
     if (res.ok) {
       setUnfollowArmed(false)
       setFlash('unfollowed')
-      onUnfollowToggle?.()
-      flashTimer.current = setTimeout(() => { setFlash(null); setOpen(false) }, 700)
+      // Defer onUnfollowToggle until AFTER the flash so the caller's
+      // cache invalidation (which re-renders the list row with the row
+      // now showing +follow instead of the kebab, unmounting this menu)
+      // doesn't pre-empt the user-visible "Unfollowed ✓" confirmation.
+      // Mute/Block don't have this race: Mute is reversible from the
+      // same menu so the row doesn't swap shape; Block flips the parent
+      // to ProfileBlockedView which the flash bridges intentionally.
+      flashTimer.current = setTimeout(() => {
+        setFlash(null)
+        setOpen(false)
+        onUnfollowToggle?.()
+      }, 700)
     }
   }
 
