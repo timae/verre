@@ -34,13 +34,13 @@ export function LikeButton({ feedItemId, initialLiked, initialCount }: Props) {
       style={{
         display: 'flex', alignItems: 'center', gap: 4,
         background: 'none', border: 'none', cursor: 'pointer',
-        fontSize: 12, color: liked ? '#e07070' : 'var(--fg-faint)',
+        fontSize: 12, color: liked ? '#e07070' : 'var(--fg-dim)',
         fontFamily: 'var(--mono)', transition: 'color .15s',
         padding: '4px 8px', borderRadius: 6,
       }}
     >
       <span style={{ fontSize: 14, lineHeight: 1 }}>{liked ? '❤️' : '🤍'}</span>
-      {count > 0 && <span>{count}</span>}
+      {count > 0 && <span style={{ fontWeight: 700 }}>{count}</span>}
     </button>
   )
 }
