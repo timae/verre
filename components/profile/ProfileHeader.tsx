@@ -1,3 +1,5 @@
+'use client'
+import { useRouter } from 'next/navigation'
 import { getLevel } from '@/lib/badges'
 import { ProfileSettingsButton } from './ProfileSettingsButton'
 import { FollowButton } from '@/components/social/FollowButton'
@@ -18,8 +20,13 @@ interface Props {
   // Optional. Passed by callers in a client-cached context (e.g.
   // UserProfileModal) so a follow-toggle invalidates the cached
   // profile payload; the gate may flip when the viewer becomes a
-  // follower or stops being one. SSR /u/[id] usage doesn't need it
-  // — the page is server-rendered and the next nav refetches.
+  // follower or stops being one.
+  //
+  // SSR /u/[id] usage omits it; we fall back to router.refresh() so
+  // an unfollow (or a follow that turned a non-mutual back into a
+  // shell) re-runs resolveProfileViewer and re-renders with the new
+  // gate without the user navigating away.
+  //
   // The FollowButton's onToggle is (following: boolean) => void;
   // we ignore the param because the invalidation doesn't branch on
   // direction.
@@ -33,10 +40,19 @@ interface Props {
 }
 
 export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, isFollowing, viewerMutes, onFollowToggle, onMuteToggle, onBlockToggle }: Props) {
+  const router = useRouter()
   const level = getLevel(userXp)
   const nextXP = level.nextXP
   const progress = nextXP ? ((userXp - level.minXP) / (nextXP - level.minXP)) * 100 : 100
   const isOwner = myId === userId
+
+  // SSR /u/[id] callers omit these — fall back to router.refresh() so
+  // the server gate re-evaluates (follow/unfollow flips shell↔ok; block
+  // flips ok→blocked-by-me; mute changes the feed-filter side-effect).
+  // Client-cached callers (UserProfileModal) pass their own invalidation.
+  const handleFollowToggle = onFollowToggle ?? (() => router.refresh())
+  const handleMuteToggle = onMuteToggle ?? (() => router.refresh())
+  const handleBlockToggle = onBlockToggle ?? (() => router.refresh())
 
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
@@ -56,12 +72,12 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
           <ProfileSettingsButton />
         ) : myId ? (
           <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-            <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={onFollowToggle} />
+            <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={handleFollowToggle} />
             <ProfileActionsMenu
               userId={userId}
               viewerMutes={!!viewerMutes}
-              onMuteToggle={onMuteToggle}
-              onBlockToggle={onBlockToggle}
+              onMuteToggle={handleMuteToggle}
+              onBlockToggle={handleBlockToggle}
             />
           </div>
         ) : null}

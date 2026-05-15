@@ -1,3 +1,5 @@
+'use client'
+import { useRouter } from 'next/navigation'
 import { Avatar } from './Avatar'
 import { FollowButton } from '@/components/social/FollowButton'
 
@@ -8,11 +10,15 @@ interface Props {
   isFollowing: boolean
   // Optional — passed by the in-modal renderer (UserProfileModal) so a
   // follow toggle invalidates the cached profile payload and the gate
-  // re-resolves. SSR /u/[id] usage doesn't need it (page is server-
-  // rendered; the next navigation refetches). FollowButton's onToggle
-  // signature accepts a (following: boolean) param; callers here ignore
-  // it because the invalidation logic doesn't branch on direction —
-  // both follow and unfollow refetch the same cache key.
+  // re-resolves. FollowButton's onToggle signature accepts a
+  // (following: boolean) param; callers here ignore it because the
+  // invalidation logic doesn't branch on direction — both follow and
+  // unfollow refetch the same cache key.
+  //
+  // SSR /u/[id] usage omits it; we fall back to router.refresh() so the
+  // server component re-runs resolveProfileViewer and the gate flips
+  // (shell → ok when a follow satisfies the tier) without the user
+  // needing to navigate away and back.
   onFollowToggle?: () => void
 }
 
@@ -25,6 +31,8 @@ interface Props {
 // Logged-out viewers see only name + dummy avatar; they can sign in
 // and try the follow path from there.
 export function ProfileShell({ userId, userName, myId, isFollowing, onFollowToggle }: Props) {
+  const router = useRouter()
+  const handleToggle = onFollowToggle ?? (() => router.refresh())
   return (
     <div className="panel" style={{ marginBottom: 16 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
@@ -33,7 +41,7 @@ export function ProfileShell({ userId, userName, myId, isFollowing, onFollowTogg
           <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{userName}</h1>
           <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>private profile</div>
         </div>
-        {myId ? <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={onFollowToggle} /> : null}
+        {myId ? <FollowButton userId={userId} initialFollowing={isFollowing} onToggle={handleToggle} /> : null}
       </div>
     </div>
   )
