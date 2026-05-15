@@ -5,6 +5,7 @@ import { CheckinCard } from './CheckinCard'
 import { CheckinModal, type CopySource } from './CheckinModal'
 import { timeAgo } from '@/lib/timeAgo'
 import Link from 'next/link'
+import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 type CheckinPayload = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
@@ -14,24 +15,10 @@ type CheckinPayload = {
   viewerFollowsAuthor?: boolean
   tags?: { id: number; name: string }[]
 }
-// Phase 2 stub for a session feed_item. Phase 3 will replace this rendering
-// with a real <SessionFeedCard> that fans out per-wine ratings; for now we
-// surface the host + session name + a tombstone label if the session was
-// soft-deleted.
-type SessionStubPayload = {
-  id: number              // feed_items.id (used for like-button keys etc.)
-  sessionId: number | null
-  sessionName: string | null  // null when deleted (scrubbed) or unnamed
-  deleted: boolean
-  blind: boolean
-  likeCount: number
-  liked: boolean
-}
-
 type FeedItem =
-  | { type: 'checkin';      createdAt: string; author: { id: number; name: string; xp: number }; checkin: CheckinPayload }
-  | { type: 'session_stub'; createdAt: string; author: { id: number; name: string; xp: number }; session: SessionStubPayload }
-  | { type: 'badge';        createdAt: string; author: { id: number; name: string }; badge: { id: string; name: string; icon: string; description: string; xp_reward: number } }
+  | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; checkin: CheckinPayload }
+  | { type: 'session'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; session: SessionFeedPayload }
+  | { type: 'badge';   createdAt: string; author: { id: number; name: string };                    badge: { id: string; name: string; icon: string; description: string; xp_reward: number } }
 
 type FeedResponse = { items: FeedItem[]; nextCursor: string | null }
 
@@ -128,11 +115,10 @@ export function FeedClient({ myId }: { myId: number }) {
             />
           )
         }
-        if (item.type === 'session_stub') {
-          // Phase 2 placeholder for a session post. Phase 3 ships
-          // <SessionFeedCard> with per-wine fan-out. For now, render a
-          // minimal "X had a tasting" card; the soft-deleted variant
-          // collapses to "[deleted session]" without a link.
+        if (item.type === 'session') {
+          // Chunk B replaces this with <SessionFeedCard>. Chunk A only
+          // updated the wire shape — the placeholder markup below still
+          // renders something usable until SessionFeedCard ships.
           const s = item.session
           return (
             <div key={`s-${s.id}-${i}`} className="panel" style={{ marginBottom:10, padding:'12px 14px' }}>

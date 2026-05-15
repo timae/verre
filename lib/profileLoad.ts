@@ -6,6 +6,8 @@ import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { decimalToNumber } from '@/lib/decimal'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
   id: number
@@ -27,17 +29,17 @@ export type LoadedCheckin = {
   tags: { id: number; name: string }[]
 }
 
-// Phase 2 stub for a session feed_item on the user's profile. Phase 3 will
-// replace this rendering with a proper SessionFeedCard that fans out the
-// wines rated by the user in the session. Until then, the profile shows a
-// minimal "[deleted session]" or "<session name>" line — enough to confirm
-// the data shape is right and give the surface something to test against.
+// Per-wine fan-out shape for a session feed_item on the profile.
+// Mirror of the API's SessionFeedPayload, plus a `createdAt` field
+// for chronological merging with standalone check-ins on the same surface.
 export type LoadedSessionPost = {
   id: number              // feed_items.id
   sessionId: number | null
   sessionName: string | null  // null when deleted (scrubbed) or unnamed
+  hostName: string | null     // null when deleted (scrubbed) or anon-host
   deleted: boolean
   blind: boolean
+  wines: SessionFeedWine[]    // empty when deleted (collapse rule)
   createdAt: Date
   likeCount: number
   liked: boolean
@@ -164,10 +166,9 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     },
   })
 
-  // Session feed_items (kind='session'). Stub-rendered until phase 3.
-  // Include the session row to read deletedAt (tombstone label) + name +
-  // blind. Soft-deleted sessions have name=NULL (§8 scrub); the renderer
-  // collapses to "[deleted session]".
+  // Session feed_items (kind='session'). Phase 3 ships per-wine fan-out:
+  // the same SessionFeedCard the social feed renders. Soft-deleted sessions
+  // collapse to deleted=true with wines=[] (§3 collapse rule).
   //
   // Take a wider window than 10 because the two arrays are merged
   // chronologically at the render layer (ProfileCheckins). Pulling 10 of
@@ -181,9 +182,27 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     select: {
       id: true, createdAt: true,
       _count: { select: { likes: true } },
-      session: { select: { id: true, name: true, deletedAt: true, blind: true } },
+      session: {
+        select: {
+          id: true, name: true, deletedAt: true, blind: true,
+          hostName: true, hostUserId: true,
+        },
+      },
     },
   })
+
+  // Per-wine bulk-load for the session feed_items, mirroring /api/feed.
+  // Tombstoned sessions skip — the §3 collapse rule means no wine load.
+  const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f => {
+    if (!f.session || f.session.deletedAt) return []
+    return [{
+      authorId: userId,
+      sessionId: f.session.id,
+      blind: !!f.session.blind,
+      hostUserId: f.session.hostUserId ?? null,
+    }]
+  })
+  const sessionWines = await loadSessionFeedWines(sessionPairs, viewerId)
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
   // feed_items in one batch lookup.
@@ -286,17 +305,26 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
         tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
       }]
     }),
-    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => ({
-      id: f.id,
-      sessionId: f.session?.id ?? null,
-      // §8 contract: when soft-deleted, the session's name is scrubbed
-      // (NULL). Renderer collapses to "[deleted session]" without a link.
-      sessionName: f.session?.deletedAt ? null : (f.session?.name ?? null),
-      deleted: !!f.session?.deletedAt,
-      blind: !!f.session?.blind,
-      createdAt: f.createdAt,
-      likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
-      liked: likedSet.has(f.id),
-    })),
+    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => {
+      const deleted = !!f.session?.deletedAt
+      const wines = deleted || !f.session
+        ? []
+        : (sessionWines.get(pairKey(userId, f.session.id)) ?? [])
+      return {
+        id: f.id,
+        sessionId: f.session?.id ?? null,
+        // §8 contract: when soft-deleted, the session's name + hostName
+        // are scrubbed (NULL). Renderer collapses to "[deleted session]"
+        // without a link or per-wine enumeration.
+        sessionName: deleted ? null : (f.session?.name ?? null),
+        hostName: deleted ? null : (f.session?.hostName ?? null),
+        deleted,
+        blind: !!f.session?.blind,
+        wines,
+        createdAt: f.createdAt,
+        likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
+        liked: likedSet.has(f.id),
+      }
+    }),
   }
 }

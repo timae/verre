@@ -13,18 +13,11 @@ type Checkin = {
   createdAt?: string|Date|null; tags?: { id: number; name: string }[]
 }
 
-// Phase 2 stub for a session feed_item on the profile. Phase 3 will replace
-// this with a proper SessionFeedCard that fans out per-wine ratings.
-export type SessionPost = {
-  id: number
-  sessionId: number | null
-  sessionName: string | null
-  deleted: boolean
-  blind: boolean
-  createdAt?: string | Date | null
-  likeCount?: number
-  liked?: boolean
-}
+// Re-exports the canonical session-feed payload, plus the optional
+// `createdAt` the renderer uses for chronological merging with the
+// standalone check-in list.
+import type { SessionFeedPayload } from '@/lib/feedTypes'
+export type SessionPost = SessionFeedPayload & { createdAt?: string | Date | null }
 
 interface Props {
   initialCheckins: Checkin[]
