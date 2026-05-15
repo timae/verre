@@ -59,7 +59,7 @@ export type LoadedProfile = {
     followers: number
     following: number
   }
-  flavor: FlavorBlock | { avgScore: FlavorBlock['avgScore']; fiveStar: FlavorBlock['fiveStar']; keys: FlavorBlock['keys'] }
+  flavor: FlavorBlock | { hasActiveRatings: boolean; avgScore: FlavorBlock['avgScore']; fiveStar: FlavorBlock['fiveStar']; keys: FlavorBlock['keys'] }
   isFollowing: boolean
   recentCheckins: LoadedCheckin[]
   // Phase 2 addition: session feed_items, rendered as stubs. Phase 3 ships
@@ -138,7 +138,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   const isOwner = viewerId !== null && viewerId === userId
   const flavor = isOwner
     ? flavorFull
-    : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
+    : { hasActiveRatings: flavorFull.hasActiveRatings, avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   // Standalone feed_items — the post-rewire shape. Each has a rating + wine
   // + optional rating_image attached. The profile renders these as the

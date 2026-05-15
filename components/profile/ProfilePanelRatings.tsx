@@ -22,26 +22,22 @@ export function ProfilePanelRatings({ lifetimeRatings, flavor, profileUserName, 
   const wheelRef = useRef<HTMLDivElement>(null)
 
   // Empty-state branches:
-  // 1. No active rows AND no lifetime — never rated anything. Same copy
-  //    for own and other.
-  // 2. Active = 0 but lifetime > 0 — rated something, then everything
-  //    rated got deleted (session deletions of non-bookmarked wines).
-  //    Honest copy: "all rated wines have been deleted." Same for other,
-  //    just phrased neutrally.
-  // Empty-state detection: owner gets the exact `activeRatings === 0`
-  // signal. Non-owners don't receive `activeRatings` (privacy redaction
-  // — see FlavorBlock comment), so we infer "no data to plot" from the
-  // wheel keys themselves: every key being null means no rating ever
-  // contributed any flavor signal. Combined with `lifetimeRatings === 0`
-  // we can still distinguish "never rated" from "all rated wines were
-  // deleted" without exposing the exact active count.
-  const noWheelData = isOwn
-    ? flavor.activeRatings === 0
-    : Object.values(flavor.keys).every(v => v == null)
-  if (noWheelData) {
+  // 1. lifetimeRatings === 0 — never rated anything. "No flavours tasted yet."
+  // 2. Has active scored ratings but no chip data on any of them — the wheel
+  //    can't be drawn, but the user has been tasting. "No flavour notes yet."
+  // 3. lifetime > 0 but no active scored ratings — every prior rating's
+  //    session was deleted. "All rated wines have been deleted."
+  //
+  // `hasActiveRatings` is the count > 0 boolean (privacy-safe variant of
+  // activeRatings — surfaced to owner AND non-owner so this branch can
+  // distinguish without leaking the exact count).
+  const hasChipData = Object.values(flavor.keys).some(v => v != null)
+  if (!hasChipData) {
     const message = lifetimeRatings === 0
       ? 'No flavours tasted yet'
-      : 'All rated wines have been deleted'
+      : flavor.hasActiveRatings
+        ? 'No flavour notes yet'
+        : 'All rated wines have been deleted'
     return (
       <div style={{ padding: '32px 8px', textAlign: 'center' }}>
         <p style={{ fontSize: 13, color: 'var(--fg-dim)' }}>{message}</p>
