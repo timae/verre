@@ -72,5 +72,11 @@ export async function GET() {
       // (replaces the legacy session_code/wine_name name-based join).
       session_id: latestRating?.sessionId ?? null,
     }
-  }))
+  }), {
+    // Viewer-private content (only this user's bookmarks). Per
+    // app/api/CLAUDE.md, viewer-dependent responses MUST set
+    // Cache-Control: private, no-store so a shared cache can't serve
+    // one viewer's payload to another.
+    headers: { 'Cache-Control': 'private, no-store' },
+  })
 }

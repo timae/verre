@@ -60,5 +60,10 @@ export async function GET() {
       session_deleted: sessionDeleted,
       session_date: r.session?.createdAt ?? null,
     }
-  }))
+  }), {
+    // Viewer-private content (only this user's ratings). Per
+    // app/api/CLAUDE.md, viewer-dependent responses MUST set
+    // Cache-Control: private, no-store.
+    headers: { 'Cache-Control': 'private, no-store' },
+  })
 }
