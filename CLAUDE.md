@@ -193,7 +193,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, Redis wipe, participant bounce
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning
 - [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap, HoF trigger
-- [Social feed](docs/dev/social-feed.md) — unified `feed_items` model (post-rewire), follow graph, engagement trigger, mutual-follow tag gating, "had a sip" S3 copy flow, session-stub render (phase 3 ships `<SessionFeedCard>`)
+- [Social feed](docs/dev/social-feed.md) — unified `feed_items` model, follow graph, engagement trigger + auto-deletion cascade, mutual-follow tag gating, "had a sip" S3 copy flow, `<SessionFeedCard>` aggregate render with server-side blind redaction
 - [Avatars](docs/dev/avatars.md) — upload pipeline, MIME allow-list + magic-byte signatures, JPEG EXIF strip, account-delete reclaim
 - [Flavour charts](docs/dev/flavour-charts.md) — polar vs radar, type-specific dimensions (FL_RED/WHITE/SPARK/ROSE/legacy)
 - [iOS touch gestures](docs/dev/ios-touch-gestures.md) — pull-to-swap design history (architectures tried + discarded)
