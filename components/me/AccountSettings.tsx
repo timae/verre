@@ -161,10 +161,14 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
   // change so the footer button + close-guard + inline messages stay
   // in sync. `saveAccount` closes over the latest input state via
   // React closures — the host never holds a stale reference.
+  // `user?.name` / `user?.email` are in the dep list because `update()`
+  // after a successful save flips the session-side values, which would
+  // otherwise stale-true the `dirty` derivation without firing this
+  // effect (local state didn't change; only the JWT baseline did).
   useEffect(() => {
     onReady?.({ save: saveAccount, saving, dirty, error, success })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saving, dirty, error, success, name, email, currentPw, newPw, confirmPw])
+  }, [saving, dirty, error, success, name, email, currentPw, newPw, confirmPw, user?.name, user?.email])
 
   if (!user) return null
 
