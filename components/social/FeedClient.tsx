@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CheckinCard } from './CheckinCard'
+import { SessionFeedCard } from './SessionFeedCard'
 import { CheckinModal, type CopySource } from './CheckinModal'
 import { timeAgo } from '@/lib/timeAgo'
 import Link from 'next/link'
@@ -116,23 +117,13 @@ export function FeedClient({ myId }: { myId: number }) {
           )
         }
         if (item.type === 'session') {
-          // Chunk B replaces this with <SessionFeedCard>. Chunk A only
-          // updated the wire shape — the placeholder markup below still
-          // renders something usable until SessionFeedCard ships.
-          const s = item.session
           return (
-            <div key={`s-${s.id}-${i}`} className="panel" style={{ marginBottom:10, padding:'12px 14px' }}>
-              <div style={{ fontSize:11, color:'var(--fg-dim)', marginBottom:4 }}>
-                <Link href={`/u/${item.author.id}`} style={{ color:'var(--accent)', textDecoration:'none', fontWeight:700 }}>{item.author.name}</Link>
-                {' '}had a tasting
-              </div>
-              <div style={{ fontWeight:600, fontSize:14, color:'var(--fg)' }}>
-                {s.deleted ? '[deleted session]' : (s.sessionName || 'Untitled session')}
-              </div>
-              <div style={{ fontSize:10, color:'var(--fg-dim)', fontFamily:'var(--mono)', marginTop:6 }}>
-                {timeAgo(item.createdAt)}
-              </div>
-            </div>
+            <SessionFeedCard
+              key={`s-${item.session.id}-${i}`}
+              session={item.session}
+              author={item.author}
+              createdAt={item.createdAt}
+            />
           )
         }
         const badge = item.badge

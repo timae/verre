@@ -219,13 +219,16 @@ export async function GET(req: NextRequest) {
   // Per-wine ratings for kind='session' feed_items, in one bulk query
   // (one query per page, not per session post). Server-side redaction
   // applied — never ship unrevealed blind-wine identity over the wire.
+  // Tombstoned sessions short-circuit redaction (see SessionFeedPair
+  // comment for the trade-off); the session-level identity (name + host)
+  // is still scrubbed at the payload layer below.
   const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f => {
-    if (f.kind !== 'session') return []
-    if (!f.session || f.session.deletedAt) return []  // tombstoned: collapse, no wines
+    if (f.kind !== 'session' || !f.session) return []
     return [{
       authorId: f.user.id,
       sessionId: f.session.id,
       blind: !!f.session.blind,
+      deleted: !!f.session.deletedAt,
       hostUserId: f.session.hostUserId ?? null,
     }]
   })
@@ -297,10 +300,11 @@ export async function GET(req: NextRequest) {
       if (f.kind === 'session') {
         const s = f.session
         const deleted = !!s?.deletedAt
-        // Tombstoned sessions skip the wine load entirely (§3 collapse rule).
-        const wines = deleted || !s
-          ? []
-          : (sessionWines.get(pairKey(f.user.id, s.id)) ?? [])
+        // Tombstoned sessions still ship their per-wine list (the post
+        // is a preserved record); only the session-level identity
+        // (name + host) is scrubbed. Per-wine identity is still gated
+        // by the blind/revealed predicate inside loadSessionFeedWines.
+        const wines = !s ? [] : (sessionWines.get(pairKey(f.user.id, s.id)) ?? [])
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
@@ -309,8 +313,8 @@ export async function GET(req: NextRequest) {
             id: f.id,
             sessionId: s?.id ?? null,
             // §8 contract: when soft-deleted, name + hostName + code are
-            // scrubbed. Renderer collapses to "[deleted session]" with
-            // no per-wine enumeration.
+            // scrubbed. Renderer shows the "[deleted session]" header in
+            // place of the live name; the wine list still renders.
             sessionName: deleted ? null : (s?.name ?? null),
             hostName: deleted ? null : (s?.hostName ?? null),
             deleted,

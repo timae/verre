@@ -253,7 +253,20 @@ function clean(v: unknown): string {
 function cleanUrl(v: unknown): string {
   const s = clean(v)
   if (!s) return ''
-  return /^https?:\/\/\S+$/i.test(s) ? s : ''
+  // Auto-prepend https:// when the user typed a bare domain ("example.com").
+  // Avoids the silent-drop trap where a paste without scheme would appear
+  // saved but never render. URL-validate the result — without this,
+  // `javascript:alert(1)` would prepend to `https://javascript:alert(1)`,
+  // a non-navigable string that browsers reject on click but pollutes
+  // the DB.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`
+  try {
+    const u = new URL(candidate)
+    if ((u.protocol !== 'https:' && u.protocol !== 'http:') || !u.hostname) return ''
+    return u.toString()
+  } catch {
+    return ''
+  }
 }
 
 // ISO 3166-1 alpha-2 allow-list. Normalize and validate at the write

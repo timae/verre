@@ -17,13 +17,22 @@ import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@/lib/decimal'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
-// Input record per session feed_item. `blind` and `hostUserId` come
-// from the included `session` row on the feed_item; pass them in so
-// the helper doesn't need to re-read them.
+// Input record per session feed_item. `blind`, `hostUserId`, and
+// `deleted` come from the included `session` row on the feed_item;
+// pass them in so the helper doesn't need to re-read them.
+//
+// Tombstoned sessions (`deleted: true`) always render their wines fully
+// — the live blind invariant only matters while the session is active.
+// A host who deletes a blind session pre-reveal accepts that the
+// preserved post records reveal the wine identity to participants.
+// (Trade-off: deletes are rare and host-initiated; the alternative
+// "treat scrubbed-blind as blind" over-redacts non-blind sessions
+// forever because non-blind wines never have `revealedAt` set.)
 export type SessionFeedPair = {
   authorId: number
   sessionId: number
   blind: boolean
+  deleted: boolean
   hostUserId: number | null
 }
 
@@ -40,10 +49,8 @@ export async function loadSessionFeedWines(
   const out = new Map<string, SessionFeedWine[]>()
   if (pairs.length === 0) return out
 
-  // Single OR-of-AND query covering every pair on the page.
-  // sessionId NOT NULL is implied by the schema's session_id type
-  // here, but Prisma still emits IS NOT NULL — fine, dropped by the
-  // planner via the index on (user_id, session_id).
+  // Single OR-of-AND query covering every pair on the page. Backed
+  // by the (user_id, session_id) composite index on `ratings`.
   const ratings = await prisma.rating.findMany({
     where: {
       OR: pairs.map(p => ({ userId: p.authorId, sessionId: p.sessionId })),
@@ -75,7 +82,7 @@ export async function loadSessionFeedWines(
   const viewerIdentity = viewerUserId == null ? null : `u:${viewerUserId}`
 
   for (const r of ratings) {
-    if (r.userId == null || r.sessionId == null) continue  // schema-impossible but typescript
+    if (r.userId == null || r.sessionId == null) continue  // standalone tastings can't reach this loop (no matching pair)
     const key = pairKey(r.userId, r.sessionId)
     const meta = pairMeta.get(key)
     if (!meta) continue
@@ -87,7 +94,9 @@ export async function loadSessionFeedWines(
       && w.addedByIdentityId === viewerIdentity
     // Redaction predicate identical to lib/wineRedaction.ts: any
     // bypass wins. If non-blind session, redaction never fires.
-    const redacted = meta.blind && !revealed && !isHost && !ownsWine
+    // Tombstoned sessions short-circuit to "always show" — see the
+    // SessionFeedPair comment for the trade-off.
+    const redacted = !meta.deleted && meta.blind && !revealed && !isHost && !ownsWine
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {

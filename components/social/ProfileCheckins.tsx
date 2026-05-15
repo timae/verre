@@ -2,8 +2,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { CheckinCard } from './CheckinCard'
+import { SessionFeedCard } from './SessionFeedCard'
 import { CheckinModal, type CopySource } from './CheckinModal'
-import { timeAgo } from '@/lib/timeAgo'
 
 type Checkin = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
@@ -67,21 +67,13 @@ export function ProfileCheckins({ initialCheckins, initialSessionPosts = [], pro
     <>
       {mixed.map(item => {
         if (item.__kind === 'session') {
-          // Phase 2 stub. Phase 3 will replace with SessionFeedCard fan-out.
           return (
-            <div key={`s-${item.id}`} className="panel" style={{ marginBottom: 10, padding: '12px 14px' }}>
-              <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4 }}>
-                {profileUserName} had a tasting
-              </div>
-              <div style={{ fontWeight: 600, fontSize: 14, color: 'var(--fg)' }}>
-                {item.deleted ? '[deleted session]' : (item.sessionName || 'Untitled session')}
-              </div>
-              {item.createdAt && (
-                <div style={{ fontSize: 10, color: 'var(--fg-dim)', fontFamily: 'var(--mono)', marginTop: 6 }}>
-                  {timeAgo(item.createdAt)}
-                </div>
-              )}
-            </div>
+            <SessionFeedCard
+              key={`s-${item.id}`}
+              session={item}
+              author={author}
+              createdAt={item.createdAt}
+            />
           )
         }
         const c = item

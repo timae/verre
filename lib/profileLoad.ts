@@ -95,14 +95,14 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   })
   if (!user) return null
 
-  // Count standalone feed_items as the source of truth for the profile's
-  // "check-ins" stat post-rewire. Pre-rewire used `_count.checkins`. The
-  // data migration backfills feed_items.kind='standalone' to match the
-  // legacy count on first run; after that, every new standalone POST
-  // writes a feed_item but not a checkins row (slice 3).
-  const standaloneCount = await prisma.feedItem.count({
-    where: { userId, kind: 'standalone' },
-  })
+  // "Check-ins" tile counts EVERY tasting (per-wine), not per-post —
+  // a session with 4 rated wines + 1 standalone = 5 check-ins.
+  // Sourced directly from `ratings` so it stays correct today regardless
+  // of the lifetime_ratings parity gap (today's session-rate bumps it,
+  // standalone POST doesn't — captured in .local/future-work-rewire.md).
+  // Cheap on Tim+Simon scale; revisit if the user grows a six-figure
+  // rating history.
+  const tastingCount = await prisma.rating.count({ where: { userId } })
 
   // Block-pair counts: subtract any follower/following edge where the
   // other end is in a block-pair with the profile owner. Locked design:
@@ -192,13 +192,15 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   })
 
   // Per-wine bulk-load for the session feed_items, mirroring /api/feed.
-  // Tombstoned sessions skip — the §3 collapse rule means no wine load.
+  // Tombstoned sessions surface their wines fully (the live blind
+  // invariant ends at delete — see SessionFeedPair comment).
   const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f => {
-    if (!f.session || f.session.deletedAt) return []
+    if (!f.session) return []
     return [{
       authorId: userId,
       sessionId: f.session.id,
       blind: !!f.session.blind,
+      deleted: !!f.session.deletedAt,
       hostUserId: f.session.hostUserId ?? null,
     }]
   })
@@ -271,7 +273,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       ratings: user.lifetimeRatings,
       sessions: user.lifetimeSessionsJoined,
       badges: user._count.earnedBadges,
-      checkins: standaloneCount,
+      checkins: tastingCount,
       followers: adjustedFollowers,
       following: adjustedFollowing,
     },
@@ -307,7 +309,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     }),
     recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => {
       const deleted = !!f.session?.deletedAt
-      const wines = deleted || !f.session
+      const wines = !f.session
         ? []
         : (sessionWines.get(pairKey(userId, f.session.id)) ?? [])
       return {
