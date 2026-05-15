@@ -164,7 +164,16 @@ BEGIN
          c.producer,
          c.vintage,
          c.grape,
-         c.type,
+         -- Coerce style against the seeded category_styles set
+         -- (red/white/spark/rose/nonalc). Legacy `checkins.type` is
+         -- not constrained by an FK; if any row carries an unknown
+         -- value (e.g. an old import that wrote 'sparkling' before
+         -- the canonical set was settled), pass NULL so the composite
+         -- FK wines (category, style) → category_styles doesn't reject
+         -- and abort the whole migration. NULL bypasses the FK because
+         -- Postgres composite FKs with any NULL component skip the
+         -- check — exactly the right behaviour for "style unknown."
+         CASE WHEN c.type IN ('red','white','spark','rose','nonalc') THEN c.type ELSE NULL END,
          'wine',
          -- Tasting photos live on rating_images, NOT on wines.imageUrl
          -- (which is the canonical catalog bottle shot, per §2). The

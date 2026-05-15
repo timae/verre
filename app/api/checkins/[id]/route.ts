@@ -183,7 +183,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         producer: producer !== undefined ? scrub(producer)                 : wine.producer,
         vintage:  vintage  !== undefined ? (scrub(vintage)?.slice(0,4) || null) : wine.vintage,
         grape:    grape    !== undefined ? scrub(grape)                    : wine.grape,
-        style:    type     !== undefined ? (type || null)                  : wine.style,
+        // Validate `type` against the seeded category_styles. Unknown
+        // values coerce to NULL — see POST handler for the rationale.
+        style:    type     !== undefined ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null) : wine.style,
         // wine.imageUrl is the catalog bottle shot, not the user's tasting
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create

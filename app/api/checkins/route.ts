@@ -194,7 +194,15 @@ export async function POST(req: NextRequest) {
   const scrubVintage = scrub(vintage)?.slice(0, 4) || null
   const scrubProducer = scrub(producer) || null
   const scrubGrape = scrub(grape) || null
-  const wineStyle = type || null
+  // Validate `type` against the seeded category_styles values. The
+  // composite FK wines (category, style) → category_styles rejects any
+  // unrecognized value; coerce unknowns to NULL so a stale client (or
+  // a hostile body) doesn't 500 the endpoint inside the txn. NULL
+  // bypasses the FK (Postgres composite FK with any NULL component
+  // skips validation), which is fine here — "unknown style" is a real
+  // state for an old import or a beer/spirit that hasn't been seeded yet.
+  const VALID_STYLES = new Set(['red', 'white', 'spark', 'rose', 'nonalc'])
+  const wineStyle = typeof type === 'string' && VALID_STYLES.has(type) ? type : null
   const scrubNotes = scrub(notes) || null
   const scrubVenue = scrub(venueName) || null
   const scrubCity = scrub(city) || null
@@ -291,11 +299,14 @@ export async function POST(req: NextRequest) {
     return { feedItem: fi, rating: r }
     })
   } catch (err) {
+    // Reclaim the orphan S3 upload that landed before the txn opened
+    // (the upload is the only "external" side-effect; everything inside
+    // the txn rolls back). Fire on every catch path — not just
+    // USER_MISSING — because any txn failure (FK violation on
+    // category_styles, Prisma connection blip, etc.) leaves the same
+    // orphan bytes with no recovery if we don't reclaim here.
+    if (imageUrl) reclaimImage(imageUrl)
     if (err === USER_MISSING) {
-      // Reclaim the orphan S3 upload that landed before the txn opened
-      // (the upload is the only "external" side-effect; everything else
-      // rolls back with the txn).
-      if (imageUrl) reclaimImage(imageUrl)
       return NextResponse.json({ error: 'user not found' }, { status: 401 })
     }
     throw err
