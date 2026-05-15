@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { validateDisplayName } from '@/lib/displayName'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { verifyRegisterToken } from '@/lib/registerToken'
+import { isSameOrigin } from '@/lib/csrf'
 
 const schema = z.object({
   name:       z.string(),
@@ -15,6 +16,14 @@ const schema = z.object({
 })
 
 export async function POST(req: NextRequest) {
+  // Origin guard — first thing on every state-changing route, per
+  // app/api/CLAUDE.md. Register is unauthenticated so traditional cookie-CSRF
+  // doesn't apply, and the honeypot + signed form-token already form a
+  // complete anti-abuse defense. The origin check is defense-in-depth: it
+  // catches some attack shapes (e.g. a future refactor that authenticates
+  // the route) without depending on the bot-defense layer staying intact.
+  if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+
   // Rate limit: 100 registrations per minute per IP. Generous enough for
   // a busy event where many people sign up at once; tight enough to make
   // sustained signup spam expensive.
