@@ -194,3 +194,5 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [iOS touch gestures](docs/dev/ios-touch-gestures.md) — pull-to-swap design history (architectures tried + discarded)
 - [Deployment](docs/dev/deployment.md) — Deploio env vars, deploy story
 - [Wine metadata](docs/dev/wine-metadata.md) — description/region/country/vinification/purchase_url specs, `cleanUrl` http(s)-only rule
+
+Planning docs for unshipped work live in [`docs/dev/proposals/`](docs/dev/proposals/) — not indexed here until they ship.
