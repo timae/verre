@@ -136,7 +136,8 @@ model Session {
   code        String?    @unique @db.VarChar(16)
   hostUserId  Int?       @map("host_user_id")
   hostName    String?    @map("host_name") @db.VarChar(64)
-  blind       Boolean?
+  blind            Boolean?
+  blindForEveryone Boolean?  @map("blind_for_everyone")
   createdAt   DateTime?  @map("created_at") @db.Timestamptz(6)
   archivedAt  DateTime?  @default(now()) @map("archived_at") @db.Timestamptz(6)
   name        String?    @db.VarChar(255)

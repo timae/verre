@@ -133,7 +133,7 @@ export async function GET(req: NextRequest) {
       // SessionFeedCard wine join).
       session: {
         select: {
-          id: true, deletedAt: true, name: true, blind: true,
+          id: true, deletedAt: true, name: true, blind: true, blindForEveryone: true,
           hostName: true, hostUserId: true,
         },
       },
@@ -228,6 +228,7 @@ export async function GET(req: NextRequest) {
       authorId: f.user.id,
       sessionId: f.session.id,
       blind: !!f.session.blind,
+      blindForEveryone: !!f.session.blindForEveryone,
       deleted: !!f.session.deletedAt,
       hostUserId: f.session.hostUserId ?? null,
     }]

@@ -135,6 +135,7 @@ async function deleteSessionFromPostgres(code: string): Promise<void> {
             host_user_id = NULL,
             host_name = NULL,
             blind = NULL,
+            blind_for_everyone = NULL,
             created_at = NULL,
             archived_at = NULL,
             name = NULL,

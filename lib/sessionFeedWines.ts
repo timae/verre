@@ -32,6 +32,10 @@ export type SessionFeedPair = {
   authorId: number
   sessionId: number
   blind: boolean
+  // "Blind for all" — disables the host/own-wine bypass for blind
+  // sessions. Composes with reveal: a revealed wine still un-redacts.
+  // See lib/wineRedaction.ts for the live-route mirror.
+  blindForEveryone: boolean
   deleted: boolean
   hostUserId: number | null
 }
@@ -92,11 +96,12 @@ export async function loadSessionFeedWines(
     const ownsWine = viewerIdentity != null
       && !!w.addedByIdentityId
       && w.addedByIdentityId === viewerIdentity
-    // Redaction predicate identical to lib/wineRedaction.ts: any
-    // bypass wins. If non-blind session, redaction never fires.
-    // Tombstoned sessions short-circuit to "always show" — see the
-    // SessionFeedPair comment for the trade-off.
-    const redacted = !meta.deleted && meta.blind && !revealed && !isHost && !ownsWine
+    // Redaction predicate mirrors lib/wineRedaction.ts: revealed wines
+    // always win; non-blind never redacts; tombstoned sessions short-
+    // circuit to "always show" (see SessionFeedPair comment); when
+    // blindForEveryone is on the host/own-wine bypasses are disabled.
+    const bypass = !meta.blindForEveryone && (isHost || ownsWine)
+    const redacted = !meta.deleted && meta.blind && !revealed && !bypass
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {

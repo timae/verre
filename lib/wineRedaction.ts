@@ -8,8 +8,12 @@
 // blind invariant leaks.
 //
 // Decision logic (returns null = "show full, no redaction"):
-//   - opts.isHost true → null (host bypass — sees everything).
 //   - opts.revealed true → null (wine is revealed to all tasters).
+//     Reveal is the deliberate "show this to everyone" action and
+//     always wins, even over blindForEveryone.
+//   - opts.blindForEveryone true → never bypass on isHost/ownsWine. The
+//     host opted into "nobody sees the lineup, including me."
+//   - opts.isHost true → null (host bypass — sees everything).
 //   - opts.ownsWine true → null (provider self-view exception:
 //     providers see their own wines un-redacted even while blind
 //     to other contributors').
@@ -29,10 +33,16 @@ export type RedactWineOpts = {
   isHost: boolean
   ownsWine: boolean
   index: number
+  // Per-session "Blind for all" flag. When true, the host/cohost/
+  // provider/wine-adder bypasses are disabled — only `revealed`
+  // un-redacts. Composes with meta.blind (callers gate this whole
+  // helper on meta.blind first).
+  blindForEveryone?: boolean
 }
 
 export function redactWine(wine: WineMeta, opts: RedactWineOpts): WireWine | null {
-  if (opts.isHost || opts.revealed || opts.ownsWine) return null
+  if (opts.revealed) return null
+  if (!opts.blindForEveryone && (opts.isHost || opts.ownsWine)) return null
   const { addedByIdentityId: _provenance, addedByDisplayName: _snapshot, ...rest } = wine
   return {
     ...rest,

@@ -48,9 +48,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
     }
     meta.blind = newBlind
+    // Disabling blind also clears blindForEveryone. Otherwise the host could
+    // disable blind, re-enable it later, and find themselves blinded again
+    // because the stale flag persisted — a UX surprise. Keep blindForEveryone's
+    // scope strictly within an active blind session.
+    if (!newBlind) meta.blindForEveryone = false
   }
   if (body.hideLineup !== undefined)         meta.hideLineup              = !!body.hideLineup
   if (body.hideLineupMinutesBefore !== undefined) meta.hideLineupMinutesBefore = Number(body.hideLineupMinutesBefore) || 0
+  // "Blind for all" — composes on top of meta.blind. NOT pro-gated
+  // (running a blind tasting is fine for free hosts who happen to flip
+  // an existing pro-blind session; only flipping a session TO blind needs
+  // pro, which is gated above). Silently no-ops when meta.blind is false
+  // — there's no rendered effect, so accept the value but it doesn't do
+  // anything until blind is true.
+  if (body.blindForEveryone !== undefined)        meta.blindForEveryone             = !!body.blindForEveryone
 
   if (body.lifespan !== undefined) {
     if (body.lifespan !== meta.lifespan && !isPro) {
@@ -73,6 +85,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       data: {
         name:        meta.name        || null,
         blind:       !!meta.blind,
+        blindForEveryone: !!meta.blindForEveryone,
         address:     meta.address     || null,
         dateFrom:    meta.dateFrom    ? new Date(meta.dateFrom) : null,
         dateTo:      meta.dateTo      ? new Date(meta.dateTo)   : null,

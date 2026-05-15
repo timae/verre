@@ -158,6 +158,14 @@ export type SessionMeta = {
   // hostUserId), `a:<uuid>` for anonymous hosts (the only stable handle).
   hostIdentityId?: string
   blind?: boolean
+  // "Blind for all" — stacks on top of meta.blind. When true, the host,
+  // cohosts, providers, and wine-adders ALL see redacted wines (same as
+  // tasters). Lets a host run a tasting where nobody — including
+  // themselves — knows the lineup. Toggleable mid-session by any
+  // host/cohost; the toggle is per-session (not per-cohost). Composes
+  // with reveal: revealed wines un-redact for everyone regardless.
+  // No-op when meta.blind is false.
+  blindForEveryone?: boolean
   lifespan?: string
   coHostIds?: string[]
   // Provider role: can add wines and edit/delete the wines they added,
