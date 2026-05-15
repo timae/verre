@@ -50,11 +50,40 @@ function PasswordField({ label, value, onChange, placeholder, autoComplete, hint
 // called for password-only changes since those don't change anything
 // the parent renders, but it's harmless if a caller still acts on
 // every save — the post-save state is the same.
-interface Props {
-  onSaved?: () => void
+// API the modal-driven caller (AccountSettingsModal) uses to drive the
+// footer Save button and surface state above the footer. The inline
+// "save changes" button was removed; the shared component now requires
+// a hosting surface that wires `onReady` — the modal is the only such
+// surface today.
+//
+// - save() returns when the operation resolves (success or error).
+// - saving is the live in-flight flag for disabled-state on the footer.
+// - dirty is true iff the user has unsaved changes in the form. The
+//   modal uses this to gate close-on-Escape / X / backdrop with a
+//   confirm prompt.
+// - error / success surface the inline messages above the footer so
+//   they're visible even when the form is scrolled out of view.
+export interface AccountSettingsApi {
+  // Returns true on a successful save (server 200) OR a no-op (no
+  // pending changes). Returns false on any error path so the modal
+  // can keep its dirty-guard confirm open and surface the error.
+  save: () => Promise<boolean>
+  saving: boolean
+  dirty: boolean
+  error: string
+  success: string
 }
 
-export function AccountSettings({ onSaved }: Props = {}) {
+interface Props {
+  onSaved?: () => void
+  // Optional. When passed, the host (typically AccountSettingsModal)
+  // takes over the save action via the api callback and the inline
+  // "save changes" button is hidden. The host is responsible for
+  // exposing a Save affordance somewhere (typically a footer button).
+  onReady?: (api: AccountSettingsApi) => void
+}
+
+export function AccountSettings({ onSaved, onReady }: Props = {}) {
   const { data: authSession, update } = useSession()
   const user = authSession?.user as { name: string; email: string } | undefined
 
@@ -67,30 +96,40 @@ export function AccountSettings({ onSaved }: Props = {}) {
   const [error,     setError]     = useState('')
   const [success,   setSuccess]   = useState('')
 
-  async function saveAccount() {
+  // Returns true on success / no-op, false on any error.
+  async function saveAccount(): Promise<boolean> {
     setSaving(true); setError(''); setSuccess('')
 
     if (newPw && newPw.length < 8) {
       setError('Password must be at least 8 characters.')
-      setSaving(false); return
+      setSaving(false); return false
     }
     if (newPw && newPw !== confirmPw) {
       setError('New passwords do not match.')
-      setSaving(false); return
+      setSaving(false); return false
+    }
+    // User entered current-password but no new-password — they likely
+    // intended to change their password but forgot the new one. Without
+    // this guard the body would be empty (newPw is the only thing that
+    // routes currentPw into the body), Save would silently no-op, and
+    // the user would think the wrong-current-pw check passed.
+    if (currentPw && !newPw) {
+      setError('Enter a new password to change it, or clear the current-password field.')
+      setSaving(false); return false
     }
 
     const body: Record<string, string> = {}
     if (name  !== user?.name)  body.name  = name
     if (email !== user?.email) body.email = email
     if (newPw) { body.currentPassword = currentPw; body.newPassword = newPw }
-    if (Object.keys(body).length === 0) { setSaving(false); return }
+    if (Object.keys(body).length === 0) { setSaving(false); return true }
 
     const res = await fetch('/api/me/account', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
     setSaving(false)
-    if (res.status === 401) { window.location.href = '/login'; return }
+    if (res.status === 401) { window.location.href = '/login'; return false }
     if (res.ok) {
       setSuccess('changes saved')
       setCurrentPw(''); setNewPw(''); setConfirmPw('')
@@ -101,10 +140,31 @@ export function AccountSettings({ onSaved }: Props = {}) {
       // to re-run the SSR profile page.
       if (body.name || body.email) await update()
       onSaved?.()
-    } else {
-      const d = await res.json(); setError(d.error || 'update failed')
+      return true
     }
+    const d = await res.json(); setError(d.error || 'update failed')
+    return false
   }
+
+  // Dirty = any modifiable field differs from the loaded session state
+  // OR a password-change is in progress (any of the three password
+  // fields filled). Password fields aren't compared to a baseline
+  // because the JWT doesn't carry the password hash — presence alone
+  // means the user is trying to change something.
+  const dirty = (
+    name !== (user?.name ?? '') ||
+    email !== (user?.email ?? '') ||
+    !!currentPw || !!newPw || !!confirmPw
+  )
+
+  // Publish the save API + state to the host (modal) on every relevant
+  // change so the footer button + close-guard + inline messages stay
+  // in sync. `saveAccount` closes over the latest input state via
+  // React closures — the host never holds a stale reference.
+  useEffect(() => {
+    onReady?.({ save: saveAccount, saving, dirty, error, success })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saving, dirty, error, success, name, email, currentPw, newPw, confirmPw])
 
   if (!user) return null
 
@@ -122,9 +182,10 @@ export function AccountSettings({ onSaved }: Props = {}) {
       <PasswordField label="current password" value={currentPw} onChange={setCurrentPw} placeholder="required to change password" autoComplete="current-password" />
       <PasswordField label="new password" value={newPw} onChange={setNewPw} placeholder="min 8 characters" autoComplete="new-password" hint="Use at least 8 characters." />
       <PasswordField label="confirm new password" value={confirmPw} onChange={setConfirmPw} placeholder="retype new password" autoComplete="new-password" />
-      {error   && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
-      {success && <p style={{color:'var(--accent2)',fontSize:11,marginBottom:8}}>✓ {success}</p>}
-      <button className="btn-p" onClick={saveAccount} disabled={saving}>{saving ? 'saving…' : '→ save changes'}</button>
+      {/* Inline save button + error/success messages removed — the
+          hosting AccountSettingsModal drives save via the onReady api
+          and renders the messages near the footer Save so they stay
+          visible regardless of scroll position. */}
 
       <ProfileVisibilitySection />
       <BlockedUsersSection />
