@@ -405,14 +405,15 @@ function WineRow({
             at the same x across all row variants (rated/unrated ×
             host/taster). Width is tight on the widest realistic
             score chip so narrow viewports don't lose wine-title
-            space to slack. */}
-        {(rating?.score || !isRedacted) && (
-          <div style={{
-            width: 80,
-            display:'flex',alignItems:'center',justifyContent:'flex-end',
-            paddingRight: 1,
-            flexShrink:0,
-          }}>
+            space to slack. Slot is always rendered — rating a
+            redacted blind wine is exactly the point of blind
+            tasting, so the Rate button must be reachable inline. */}
+        <div style={{
+          width: 80,
+          display:'flex',alignItems:'center',justifyContent:'flex-end',
+          paddingRight: 1,
+          flexShrink:0,
+        }}>
             {rating?.score ? (
               <button
                 type="button"
@@ -450,7 +451,6 @@ function WineRow({
               </button>
             )}
           </div>
-        )}
         {showHostControls && (
           // Activator pattern: spread `attributes` + `listeners` and set
           // the node ref on the handle (NOT the row), so dnd-kit knows
