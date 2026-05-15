@@ -1,5 +1,6 @@
 'use client'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 
 interface Props {
@@ -10,6 +11,12 @@ interface Props {
   // profile, session-meta, etc.). SSR usage can omit them.
   onMuteToggle?: () => void
   onBlockToggle?: () => void
+  // Unfollow row (opt-in). When omitted the menu shows only Mute + Block —
+  // that's the canonical profile-header shape. When provided, an Unfollow
+  // row is prepended; used by the Following list where the "following" pill
+  // used to insta-unfollow on tap. Two-tap commit, same pattern as Mute.
+  viewerFollowing?: boolean
+  onUnfollowToggle?: () => void
 }
 
 // 3-dot menu next to the FollowButton on a profile header. Houses Mute
@@ -32,15 +39,22 @@ interface Props {
 // this menu: the upstream gate routes blocker-side views to
 // <ProfileBlockedView>, which has its own inline unblock. The settings
 // "Blocked users" list is the canonical place to manage past blocks.
-type Flash = 'muted' | 'unmuted' | 'blocked' | null
+type Flash = 'muted' | 'unmuted' | 'blocked' | 'unfollowed' | null
 
-export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockToggle }: Props) {
+export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockToggle, viewerFollowing, onUnfollowToggle }: Props) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [muted, setMuted] = useState(viewerMutes)
   const [muteArmed, setMuteArmed] = useState(false)
   const [blockArmed, setBlockArmed] = useState(false)
+  const [unfollowArmed, setUnfollowArmed] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Portal placement — anchored to the button's bounding rect so the
+  // dropdown escapes any overflow:hidden ancestor (e.g. the swipeable
+  // panel container in ProfileTabs). Recomputed on open, on scroll, and
+  // on resize. Initial null means "not yet measured."
+  const [anchor, setAnchor] = useState<{ top: number; right: number; flipUp: boolean } | null>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
   // Brief confirmation flash in the menu item label after a successful
   // toggle. Mute flash auto-closes the menu after ~700ms. Block flash
   // bridges the gap before the cache invalidates and the profile view
@@ -48,6 +62,7 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
   // time) is encoded in the single state.
   const [flash, setFlash] = useState<Flash>(null)
   const ref = useRef<HTMLDivElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
   // Track the post-success setTimeout so we can clear it on unmount —
   // otherwise React logs a setState-after-unmount warning and a stray
   // router.refresh() / window.location.reload() can fire after the
@@ -61,6 +76,36 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
   // after a cache invalidation re-fetched the profile).
   useEffect(() => { setMuted(viewerMutes) }, [viewerMutes])
 
+  // Track the button's bounding rect while the menu is open so the
+  // portaled dropdown stays anchored. Recomputes on scroll + resize
+  // (capture-phase scroll listener catches scrolls inside any ancestor,
+  // not just window). When there's not enough room below the button,
+  // flip the menu above instead — the swipeable-panel context in
+  // ProfileTabs can be quite short.
+  useLayoutEffect(() => {
+    if (!open) { setAnchor(null); return }
+    const measure = () => {
+      const b = btnRef.current?.getBoundingClientRect()
+      if (!b) return
+      // ~220px max menu height (3 items × ~40px + paddings + gap). If
+      // there isn't that much room below the button, flip upward.
+      const spaceBelow = window.innerHeight - b.bottom
+      const flipUp = spaceBelow < 220 && b.top > spaceBelow
+      setAnchor({
+        top: flipUp ? b.top : b.bottom,
+        right: window.innerWidth - b.right,
+        flipUp,
+      })
+    }
+    measure()
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+  }, [open])
+
   // Close on outside click / Escape so the menu doesn't get stuck open
   // when the user moves on. Resets any armed state so the next open
   // starts clean.
@@ -70,9 +115,16 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
       setOpen(false)
       setMuteArmed(false)
       setBlockArmed(false)
+      setUnfollowArmed(false)
     }
     const onPointer = (e: PointerEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) dismiss()
+      const target = e.target as Node
+      // Clicks inside the button OR inside the portaled menu should NOT
+      // dismiss — the menu is in document.body so a single `ref.contains`
+      // check isn't sufficient.
+      if (ref.current && ref.current.contains(target)) return
+      if (menuRef.current && menuRef.current.contains(target)) return
+      dismiss()
     }
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') dismiss() }
     // pointerdown unifies mouse + touch + pen — older iOS Safari with
@@ -106,9 +158,10 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
     }
     if (!muteArmed) {
       setMuteArmed(true)
-      // Disarm the block button if the user was about to confirm that
-      // and changed direction — only one action can be armed at a time.
+      // Disarm sibling actions if the user changed direction — only one
+      // action can be armed at a time.
       setBlockArmed(false)
+      setUnfollowArmed(false)
       return
     }
     setBusy(true)
@@ -130,6 +183,7 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
     if (!blockArmed) {
       setBlockArmed(true)
       setMuteArmed(false)
+      setUnfollowArmed(false)
       return
     }
     setBusy(true)
@@ -152,6 +206,29 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
     }
   }
 
+  // Unfollow — two-tap commit, matching Mute/Block. Only rendered when
+  // viewerFollowing is non-undefined (opt-in via the prop pair). Single-
+  // direction: undoing an unfollow from this menu is a fresh +follow on
+  // the row's follow button (which only exists in the non-following state).
+  async function doUnfollow() {
+    if (busy) return
+    if (!unfollowArmed) {
+      setUnfollowArmed(true)
+      setMuteArmed(false)
+      setBlockArmed(false)
+      return
+    }
+    setBusy(true)
+    const res = await fetch(`/api/users/${userId}/follow`, { method: 'DELETE' })
+    setBusy(false)
+    if (res.ok) {
+      setUnfollowArmed(false)
+      setFlash('unfollowed')
+      onUnfollowToggle?.()
+      flashTimer.current = setTimeout(() => { setFlash(null); setOpen(false) }, 700)
+    }
+  }
+
   // Color tokens — kept inline for clarity. Mute armed = accent orange,
   // matches FollowButton's accent treatment. Block armed = .btn-del red.
   const accentBg = 'rgba(200,150,60,0.12)'
@@ -160,30 +237,46 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
   const delColor = 'rgba(184,64,64,0.95)'
   const muteFlashing = flash === 'muted' || flash === 'unmuted'
   const blockFlashing = flash === 'blocked'
+  const unfollowFlashing = flash === 'unfollowed'
+  const showUnfollow = viewerFollowing === true
 
-  return (
-    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        aria-label="More actions"
-        className="btn-s"
-        style={{
-          width: 36, marginTop: 0, padding: '10px 0',
-          textAlign: 'center', fontSize: 16, lineHeight: 1,
-        }}
-      >
-        ⋯
-      </button>
-      {open && (
+  const menu = open && anchor && typeof document !== 'undefined' ? createPortal(
+    (
         <div
+          ref={menuRef}
           style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 6,
-            minWidth: 160, zIndex: 20,
+            position: 'fixed',
+            // flipUp anchors the menu's bottom to the button's top; default
+            // anchors its top to the button's bottom. 6px gap either way.
+            ...(anchor.flipUp
+              ? { bottom: window.innerHeight - anchor.top + 6 }
+              : { top: anchor.top + 6 }),
+            right: anchor.right,
+            minWidth: 160, zIndex: 1000,
             background: 'var(--bg2)', border: '1px solid var(--border)',
             borderRadius: 8, boxShadow: '0 4px 16px rgba(0,0,0,0.3)',
             padding: 4, display: 'flex', flexDirection: 'column', gap: 2,
           }}
         >
+          {showUnfollow && (
+            <button
+              onClick={doUnfollow}
+              disabled={busy || flash !== null}
+              style={{
+                textAlign: 'left', padding: '8px 10px', fontSize: 12,
+                background: unfollowArmed || unfollowFlashing ? accentBg : 'transparent',
+                border: 'none', cursor: 'pointer',
+                color: unfollowArmed || unfollowFlashing ? accentColor : 'var(--fg)',
+                borderRadius: 4,
+              }}
+              onMouseEnter={e => { if (!unfollowArmed && !unfollowFlashing) e.currentTarget.style.background = 'var(--bg3)' }}
+              onMouseLeave={e => { if (!unfollowArmed && !unfollowFlashing) e.currentTarget.style.background = 'transparent' }}
+            >
+              {flash === 'unfollowed' ? 'Unfollowed ✓'
+                : unfollowArmed ? 'Confirm unfollow'
+                : 'Unfollow'}
+            </button>
+          )}
           <button
             onClick={doMute}
             disabled={busy || flash !== null}
@@ -219,7 +312,25 @@ export function ProfileActionsMenu({ userId, viewerMutes, onMuteToggle, onBlockT
             {blockFlashing ? 'Blocked ✓' : blockArmed ? 'Confirm block' : 'Block'}
           </button>
         </div>
-      )}
+    ),
+    document.body,
+  ) : null
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button
+        ref={btnRef}
+        onClick={() => setOpen(v => !v)}
+        aria-label="More actions"
+        className="btn-s"
+        style={{
+          width: 36, marginTop: 0, padding: '10px 0',
+          textAlign: 'center', fontSize: 16, lineHeight: 1,
+        }}
+      >
+        ⋯
+      </button>
+      {menu}
     </div>
   )
 }
