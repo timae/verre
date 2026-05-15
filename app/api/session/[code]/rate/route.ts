@@ -7,6 +7,7 @@ import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateScore, validateFlavors } from '@/lib/checkinValidation'
 import { isSameOrigin } from '@/lib/csrf'
+import { engagementDeletionCascade } from '@/lib/engagementCascade'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -116,7 +117,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // Prisma's typecheck — a future column rename won't be caught
         // at compile time. Same trade-off the lifetime-counter UPDATE
         // below already accepts.
-        await prisma.$executeRaw`
+        // RETURNING id is captured so the engagement-deletion cascade
+        // below (when the upsert lands an empty payload) can target the
+        // exact row. ON CONFLICT DO UPDATE … RETURNING returns the
+        // pre-existing id on conflict — the canonical row, not the
+        // client's stale local id.
+        const upsertRows = await prisma.$queryRaw<{ id: number }[]>`
           INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, notes, rated_at)
           VALUES (
             ${wineId},
@@ -135,7 +141,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             score = EXCLUDED.score,
             flavors = EXCLUDED.flavors,
             notes = EXCLUDED.notes,
-            rated_at = EXCLUDED.rated_at`
+            rated_at = EXCLUDED.rated_at
+          RETURNING id`
+        const ratingId = upsertRows[0]?.id
 
         // Materialise the session feed_item on first engagement. The engagement
         // trigger from §3 of the rewire: any rating with score > 0, flavour
@@ -162,6 +170,24 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
             VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
             ON CONFLICT (user_id, session_id) DO NOTHING`
+        } else if (ratingId != null) {
+          // Engagement-deletion cascade — the user just cleared score +
+          // chips + notes on a previously-engaged rating. Reap the
+          // empty row and drop the session feed_item if this was their
+          // only rating in the session. The empty-payload predicate on
+          // the cascade is a safety net: if the upsert went a different
+          // path (e.g. inserted a brand-new empty row that doesn't
+          // technically need reaping — the user's first action was an
+          // empty rate, which is meaningless), the cascade still
+          // matches and the row goes away. Either way, no feed_item
+          // was created above, so the cleanup is symmetric.
+          //
+          // Wipe the Redis placeholder too so reads don't surface a
+          // ghost "rated empty" row. The empty rating was just written
+          // to Redis at the top of this handler; the cascade decides
+          // it shouldn't exist, so the Redis side follows.
+          await engagementDeletionCascade(ratingId)
+          await redis.del(k.rating(c, identity.id, wineId))
         }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with

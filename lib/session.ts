@@ -400,8 +400,20 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
       hostName: meta.host,
       hostUserId: meta.hostUserId,
       name: meta.name || null,
+      // `blind` must round-trip to Postgres for the SessionFeedCard
+      // redaction predicate (lib/sessionFeedWines.ts). Pre-rewire the
+      // column existed but was never written, so every Postgres-side
+      // read of `blind` came back NULL and redaction silently no-op'd
+      // on the feed / profile surfaces. Live session route reads from
+      // Redis where blind WAS set — that's why the bug stayed dormant.
+      blind: !!meta.blind,
       createdAt: new Date(meta.createdAt),
     },
+    // Note: `blind` is intentionally NOT in the update path. Sessions
+    // can't be toggled blind ↔ non-blind mid-flight (no UI for it),
+    // and the create path already captures the right value at session
+    // birth. Leaving it out of update avoids accidentally flipping it
+    // if a future meta-update code path forgets to carry it.
     update: { name: meta.name || undefined },
     select: { id: true },
   })

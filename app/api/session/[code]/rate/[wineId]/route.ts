@@ -6,6 +6,7 @@ import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 import { getWines } from '@/lib/session'
+import { engagementDeletionCascade } from '@/lib/engagementCascade'
 
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string; wineId: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -27,19 +28,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   // userId), so we look up the wine name from Redis to target the
   // exact row — wineName + userId + sessionCode triple.
   //
-  // Scope the rating delete to (wineId, userId, sessionId). Pre-rewire
-  // the same (wineId, userId) couldn't appear across multiple sessions
-  // because @@unique([wineId, userId]) global-blocked it. Phase 1.5 swapped
-  // that for a partial unique on (user_id, wine_id, session_id), so the
-  // same (wine, user) pair CAN now appear with sessionId=NULL (a standalone
-  // rating) or in another session. Unscoped deleteMany would wipe those
-  // unrelated rows. Resolve sessionId from the live (deletedAt IS NULL)
-  // session row and filter explicitly.
-  //
-  // Engagement-deletion auto-cascade (rating empty → drop, last in session
-  // → also drop the feed_item) is deferred to phase 3 alongside the undo
-  // affordance. This handler keeps today's "delete on explicit DELETE only"
-  // semantics; feed_items survive the rating delete.
+  // Engagement-deletion auto-cascade (rewire.md §3): force-delete the
+  // rating, then drop the session feed_item if this was the user's
+  // last rating in the session. Rating photos S3-reclaim AFTER commit.
+  // The DELETE endpoint is the explicit "Reset" path — the rating
+  // gate (origin check, participant check, identity check) has
+  // already authorised the wipe, so force-mode bypasses the empty-
+  // payload predicate (the POST path uses empty-only mode).
   if (identity.kind === 'user') {
     const userId = Number(identity.id.slice(2))
     if (Number.isInteger(userId) && userId > 0) {
@@ -48,9 +43,15 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
         select: { id: true },
       })
       if (sessionRow) {
-        await prisma.rating.deleteMany({
+        // Resolve the canonical rating_id. The path param is wineId; the
+        // cascade keys on rating_id for the self-exclusion guard in
+        // step 2. Scoped to (userId, sessionId) so a same-(user,wine)
+        // standalone or other-session rating is never touched.
+        const rating = await prisma.rating.findFirst({
           where: { wineId, userId, sessionId: sessionRow.id },
+          select: { id: true },
         })
+        if (rating) await engagementDeletionCascade(rating.id, 'force')
       }
       const wines = await getWines(c)
       const wine = wines.find(w => w.id === wineId)
