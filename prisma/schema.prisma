@@ -231,9 +231,10 @@ model Rating {
   // Stored as numeric so AVG / GREATEST / range comparisons work
   // directly in SQL. Validation enforces the 0.25-step constraint at
   // the route layer (lib/checkinValidation.ts).
-  // Stays NOT NULL in phase 1; becomes nullable in phase 1.5 alongside the
-  // partial-unique swap.
-  score     Decimal       @db.Decimal(3, 2)
+  // Nullable since phase 1.5: a chips-only or notes-only rating row
+  // has no score, distinct from `score = 0` ("not rated"). See
+  // rewire.md §3 (engagement rule) and §2 score-nullable reasoning.
+  score     Decimal?      @db.Decimal(3, 2)
   flavors   Json          @default("{}")
   notes     String?
   ratedAt   DateTime      @map("rated_at") @db.Timestamptz(6)
@@ -246,11 +247,13 @@ model Rating {
   images    RatingImage[]
   feedItem  FeedItem?
 
-  // Phase 1: existing unique stays in place — consumers in app/api/session/[code]/rate/route.ts
-  // (Prisma-generated `wineId_userId` compound key) keep working. Phase 1.5
-  // drops this and replaces with a raw partial unique on
-  // `(user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL`.
-  @@unique([wineId, userId])
+  // Phase 1.5 dropped @@unique([wineId, userId]) in favour of a raw
+  // partial unique on (user_id, wine_id, session_id) WHERE session_id
+  // IS NOT NULL AND user_id IS NOT NULL — declared in the migration
+  // because Prisma can't express partial uniques in schema.prisma.
+  // Standalone ratings (session_id IS NULL) are intentionally
+  // unconstrained: a user can have multiple standalone tastings of
+  // the same wine over time (rewire.md §2).
   @@index([userId])
   @@index([sessionId])
   @@index([userId, wineId])

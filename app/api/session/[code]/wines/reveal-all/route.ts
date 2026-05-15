@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -26,10 +27,27 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
 
   const wines = await getWines(c)
-  const now = new Date().toISOString()
+  const nowDate = new Date()
+  const now = nowDate.toISOString()
   const updated = wines.map(w => w.revealedAt ? w : { ...w, revealedAt: now })
   await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
   await touchWithMeta(c)
+
+  // Mirror to Postgres so the post-rewire feed-read path renders
+  // correctly after Redis eviction. UPDATE is restricted to rows
+  // that need flipping; no-ops for anon-host sessions whose
+  // wines row doesn't exist in Postgres.
+  try {
+    const sessionRow = await prisma.session.findUnique({ where: { code: c }, select: { id: true } })
+    if (sessionRow) {
+      await prisma.wine.updateMany({
+        where: { sessionId: sessionRow.id, revealedAt: null },
+        data: { revealedAt: nowDate },
+      })
+    }
+  } catch (err) {
+    console.error('reveal-all pg update error:', err)
+  }
 
   return NextResponse.json({ ok: true, revealed: updated.filter(w => w.revealedAt).length })
 }
