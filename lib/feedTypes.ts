@@ -31,9 +31,13 @@ export type SessionFeedWine = {
 }
 
 // The session-feed payload, replacing the phase-2 `'session_stub'` shape.
-// Tombstoned sessions (`deleted: true`) carry an empty `wines` array
-// and the renderer collapses to "[deleted session]" without per-wine
-// enumeration.
+// Tombstoned sessions (`deleted: true`) still ship the per-wine list —
+// only the session-level identity (sessionName + hostName) scrubs to
+// null. The renderer shows "[deleted session]" in the header and renders
+// the wines below. The blind-redaction predicate short-circuits on
+// `deleted`, so a post-delete blind tasting reveals wine identity
+// regardless of `revealedAt` — accepted trade-off (host who deletes
+// has authorised the reveal; participants engaged with the wine).
 export type SessionFeedPayload = {
   id: number              // feed_items.id
   sessionId: number | null

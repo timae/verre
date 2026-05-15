@@ -126,24 +126,26 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
 
   if (wine._blind) {
     // Mystery slot — wine identity hidden; user's score / chips / notes still
-    // visible (their own data). Matches the live session view's blind render.
+    // visible (their own data). Matches the live session view's blind render:
+    // 🙈 icon + "Wine #N" copy per LobbyClient + WineListScreen conventions.
+    const blindLabel = `Wine #${index + 1}`
     return (
       <div style={{ display:'flex', gap:12, padding:'10px 0', borderTop:'1px solid var(--border)' }}>
         <div style={{
           flex:'0 0 30%', minHeight:80, borderRadius:10, background:'var(--bg3)',
           display:'flex', alignItems:'center', justifyContent:'center',
         }}>
-          <span style={{ fontSize:36, opacity:0.35 }}>🍷</span>
+          <span style={{ fontSize:36, opacity:0.35 }}>🙈</span>
         </div>
         <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:4 }}>
           <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
             <div style={{ fontSize:13, fontWeight:600, color:'var(--fg-dim)', fontStyle:'italic' }}>
-              Wine {index + 1}
+              {blindLabel}
             </div>
             {wine.score ? <div style={{ flexShrink:0 }}><StarRating value={wine.score} size="compact" /></div> : null}
           </div>
           {hasFlavors && (
-            <div ref={wheelRef} onClick={() => openWheelLightbox(wheelRef, `Wine ${index + 1}`)}
+            <div ref={wheelRef} onClick={() => openWheelLightbox(wheelRef, blindLabel)}
               style={{ marginTop:4, display:'flex', alignItems:'center', justifyContent:'flex-start', cursor:'zoom-in' }}>
               <PolarChart flavors={wine.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
             </div>

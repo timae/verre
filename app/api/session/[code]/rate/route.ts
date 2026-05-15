@@ -165,6 +165,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         const hasEngagement = ratingScore > 0
           || Object.keys(validFlavors ?? {}).length > 0
           || (notes != null && notes.length > 0)
+        let cascadeReaped = false
         if (hasEngagement) {
           await prisma.$executeRaw`
             INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
@@ -175,19 +176,15 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           // chips + notes on a previously-engaged rating. Reap the
           // empty row and drop the session feed_item if this was their
           // only rating in the session. The empty-payload predicate on
-          // the cascade is a safety net: if the upsert went a different
-          // path (e.g. inserted a brand-new empty row that doesn't
-          // technically need reaping — the user's first action was an
-          // empty rate, which is meaningless), the cascade still
-          // matches and the row goes away. Either way, no feed_item
-          // was created above, so the cleanup is symmetric.
-          //
-          // Wipe the Redis placeholder too so reads don't surface a
-          // ghost "rated empty" row. The empty rating was just written
-          // to Redis at the top of this handler; the cascade decides
-          // it shouldn't exist, so the Redis side follows.
-          await engagementDeletionCascade(ratingId)
-          await redis.del(k.rating(c, identity.id, wineId))
+          // the cascade is a safety net: if a concurrent engaged POST
+          // (from another tab) lands between this handler's upsert and
+          // the cascade's SELECT, the row no longer matches the empty
+          // predicate, cascade no-ops, and we MUST leave Redis alone —
+          // wiping it would clobber the other tab's just-written state.
+          // The cascade returns true only when it actually reaped; gate
+          // the Redis cleanup AND the lifetime-counter bump on it.
+          cascadeReaped = await engagementDeletionCascade(ratingId)
+          if (cascadeReaped) await redis.del(k.rating(c, identity.id, wineId))
         }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with
@@ -195,6 +192,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // (e.g. re-rating to 5★ after rating to 5★ doesn't bump again).
         // Prisma surfaces Decimal columns as runtime Decimal objects;
         // coerce via Number() (or toNumber()) before strict equality.
+        //
+        // Skip entirely when the cascade just reaped the row — incrementing
+        // lifetime_ratings for a row that no longer exists would leave
+        // permanent drift (counters never decrement). first_rated_at
+        // similarly should anchor on a real engagement, not on a no-op
+        // empty rate from a misbehaving client.
         const isNew = !prior
         const priorScore = prior?.score == null ? null : Number(prior.score)
         const newFiveStar = ratingScore === 5 && priorScore !== 5
@@ -207,7 +210,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // month). We just inserted, so the current month is guaranteed
         // present; bump only if THIS rating is the only one in the bucket.
         let newMonth = false
-        if (isNew) {
+        if (isNew && !cascadeReaped) {
           const [{ count }] = await prisma.$queryRaw<[{count:bigint}]>`
             SELECT COUNT(*) AS count FROM ratings
             WHERE user_id=${userId}
@@ -215,17 +218,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           newMonth = Number(count) === 1
         }
 
-        await prisma.$executeRaw`
-          UPDATE users SET
-            lifetime_ratings = lifetime_ratings + ${isNew ? 1 : 0},
-            lifetime_five_star = lifetime_five_star + ${newFiveStar ? 1 : 0},
-            lifetime_one_star = lifetime_one_star + ${newOneStar ? 1 : 0},
-            lifetime_notes_written = lifetime_notes_written + ${newNote ? 1 : 0},
-            lifetime_max_note_len = GREATEST(lifetime_max_note_len, ${noteLen}),
-            lifetime_photos_added = lifetime_photos_added + ${newPhoto ? 1 : 0},
-            lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
-            first_rated_at = COALESCE(first_rated_at, NOW())
-          WHERE id = ${userId}`
+        if (!cascadeReaped) {
+          await prisma.$executeRaw`
+            UPDATE users SET
+              lifetime_ratings = lifetime_ratings + ${isNew ? 1 : 0},
+              lifetime_five_star = lifetime_five_star + ${newFiveStar ? 1 : 0},
+              lifetime_one_star = lifetime_one_star + ${newOneStar ? 1 : 0},
+              lifetime_notes_written = lifetime_notes_written + ${newNote ? 1 : 0},
+              lifetime_max_note_len = GREATEST(lifetime_max_note_len, ${noteLen}),
+              lifetime_photos_added = lifetime_photos_added + ${newPhoto ? 1 : 0},
+              lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
+              first_rated_at = COALESCE(first_rated_at, NOW())
+            WHERE id = ${userId}`
+        }
       }
     } catch (err) {
       console.error('rate counter update error:', err)

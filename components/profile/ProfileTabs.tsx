@@ -39,22 +39,32 @@ interface Props {
   initialTab?: Tab
   stats: Stats
   flavor: FlavorBlock
+  // Mirror the active tab into ?tab=... on the URL — only meaningful
+  // on the standalone /u/[id] page. When ProfileTabs is mounted inside
+  // a modal (UserProfileModal opens over /session/[code]/wines etc.),
+  // rewriting the underlying page's URL is a leak: the URL is for the
+  // OTHER page, not this overlay. Default true; set false from modal.
+  syncToUrl?: boolean
 }
 
 const SWIPE_THRESHOLD = 60
 const SWIPE_VELOCITY = 400
 
 export function ProfileTabs({
-  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialSessionPosts, initialTab, stats, flavor,
+  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialSessionPosts, initialTab, stats, flavor, syncToUrl = true,
 }: Props) {
   // URL-param tab selection: ?tab=ratings deep-links straight to that
   // panel. Read at mount; updates flow back to the URL via router.replace
   // on every tab change so deep-link state survives reload + back-button
   // navigation. Falls back to the prop, then to the first tab.
+  //
+  // syncToUrl=false (e.g. when mounted inside UserProfileModal) skips
+  // both the URL read AND the write — the modal sits on top of an
+  // unrelated page whose URL we mustn't pollute.
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
-  const paramTab = searchParams.get('tab')
+  const paramTab = syncToUrl ? searchParams.get('tab') : null
   const seedTab: Tab = (paramTab && TAB_KEYS.has(paramTab as Tab))
     ? paramTab as Tab
     : (initialTab ?? TABS[0].key)
@@ -68,13 +78,14 @@ export function ProfileTabs({
   // initial render — the URL already has the value we read.
   const firstRunRef = useRef(true)
   useEffect(() => {
+    if (!syncToUrl) return
     if (firstRunRef.current) { firstRunRef.current = false; return }
     const params = new URLSearchParams(searchParams.toString())
     if (tab === TABS[0].key) params.delete('tab')
     else params.set('tab', tab)
     const qs = params.toString()
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
-  }, [tab, pathname, router, searchParams])
+  }, [tab, pathname, router, searchParams, syncToUrl])
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const x = useMotionValue(0)

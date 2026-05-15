@@ -152,6 +152,10 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
               flavors: c.flavors as Record<string, number>,
             }))}
             initialSessionPosts={data.recentSessionPosts}
+            // Modal overlay sits on top of an unrelated page (e.g.
+            // /session/[code]/wines). Don't rewrite the underlying
+            // URL with ?tab=... when switching tabs inside the modal.
+            syncToUrl={false}
           />
         </>
       )}

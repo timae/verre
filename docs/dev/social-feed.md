@@ -23,7 +23,7 @@ Legacy `checkins / checkin_likes / checkin_tags` tables still exist until phase 
 
 A session feed_item materialises on first engagement by a logged-in user. Engagement = any of: a score > 0, OR a non-empty flavour chip set, OR a non-empty note. The rate POST (`app/api/session/[code]/rate/route.ts`) runs the rating upsert first, then a `hasEngagement` guard, then an idempotent `INSERT INTO feed_items ... ON CONFLICT (user_id, session_id) DO NOTHING`.
 
-Per `proposals/rewire.md` §3: anonymous ratings never create feed_items (schema-enforced via `userId NOT NULL` on feed_items). An empty rate POST (all three fields empty) lands the rating row but does NOT create a feed_item — phase 3 will reap the orphan rating via the engagement-deletion rule once the undo affordance ships.
+Per `proposals/rewire.md` §3: anonymous ratings never create feed_items (schema-enforced via `userId NOT NULL` on feed_items). An empty rate POST (all three fields empty) does NOT create a feed_item — and, when the upsert lands an empty payload on a previously-engaged row, the engagement-deletion cascade (`lib/engagementCascade.ts`) reaps the row and drops the session feed_item if it was the user's only rating in the session. The Reset path (`DELETE /api/session/[code]/rate/[wineId]`) runs the same cascade in `force` mode (bypasses the empty-payload predicate). The undo chip in WineModal gives a 7s window to re-POST the prior values.
 
 ## Network query
 
@@ -36,10 +36,12 @@ Visibility / mute / block filtering composes multiplicatively per author: block-
 The feed response carries items tagged by `type`:
 
 - `type: 'checkin'` — standalone feed_items. Renders via the existing `<CheckinCard>`. `checkin.id` is now the `feed_items.id` (migration-preserved id-equality means cached client URLs keep working).
-- `type: 'session_stub'` — session feed_items. Phase 2 emits a minimal stub (author + session name + tombstone label + timestamp). Phase 3 ships `<SessionFeedCard>` with per-wine fan-out and per-wine redaction for blind sessions.
+- `type: 'session'` — session feed_items. Renders via `<SessionFeedCard>` with per-wine fan-out. Wire shape declared in `lib/feedTypes.ts` (`SessionFeedPayload` + `SessionFeedWine`). The bulk loader `lib/sessionFeedWines.ts` runs ONE Prisma query per feed page across all session posts on the page (OR-of-AND on `(userId, sessionId)` pairs, backed by the composite index).
 - `type: 'badge'` — user_badges (unchanged).
 
-Soft-deleted sessions collapse to "[deleted session]" labels on both surfaces (`session.deletedAt` non-null per the §8 data-survival contract; `session.name` and `session.code` are NULL on the tombstone). See [session-deletion.md](session-deletion.md) for the full soft-delete contract and the DB-level trigger that enforces it.
+Soft-deleted sessions show "[deleted session]" in the card header but still render the per-wine list (only the session-level identity scrubs). The blind-redaction predicate `!meta.deleted && meta.blind && !revealed && !isHost && !ownsWine` short-circuits on `deleted` — a post-delete blind tasting reveals wine identity regardless of `wines.revealedAt`. **Cross-cutting rule**: any new surface that renders per-wine session data must use `loadSessionFeedWines` (server-side redaction) and NOT roll its own join — the blind invariant lives in that helper and nowhere else.
+
+See [session-deletion.md](session-deletion.md) for the full soft-delete contract and the DB-level trigger that enforces it.
 
 ## Tags require mutual follow
 
@@ -57,7 +59,7 @@ Block-pair-adjusted like counts: a like by user X on a feed_item by user Y is in
 
 Rating images live at `wines/ci_<userId>_<keyId>.<ext>` keyed by `Date.now()` at POST and at PATCH (so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
-**The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — ban-tx wipe, account deletion, and the future engagement-deletion cascade (phase 3) — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes. ("Had a sip" COPIES bytes via S3 `CopyObjectCommand`; it doesn't reclaim, and the new check-in owns its own copy outright.)
+**The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — ban-tx wipe, account deletion, and the engagement-deletion cascade (`lib/engagementCascade.ts`) — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes. ("Had a sip" COPIES bytes via S3 `CopyObjectCommand`; it doesn't reclaim, and the new check-in owns its own copy outright.)
 
 `wines.imageUrl` is the canonical catalog bottle shot. Standalone POSTs write `NULL` on the wine row — the user's tasting photo lives on `rating_images`, not on the wine. This way a cascade-delete of the rating doesn't leave a dangling S3 pointer on a wine row that may survive (bookmarked from elsewhere).
 
@@ -79,4 +81,4 @@ The feed payload includes `viewerFollowsAuthor` per feed_item to gate the button
 
 Profiles at `/u/<id>` are public reads; viewer's `isFollowing` flag populated when authed. `/api/users/search` is anonymous prefix lookup for follow/tag discovery — never participates in authorization (see root CLAUDE.md trust-model section).
 
-Profile activity surfaces BOTH `kind='standalone'` feed_items (rendered via `<CheckinCard>`) AND `kind='session'` feed_items (rendered as phase-2 stubs). Profile-stat `checkins` counts standalone feed_items only — the same semantic as pre-rewire.
+Profile activity surfaces BOTH `kind='standalone'` feed_items (rendered via `<CheckinCard>`) AND `kind='session'` feed_items (rendered via `<SessionFeedCard>`). Profile-stat `checkins` (tile labelled "tastes" on the profile UI) counts every `ratings` row for the user — session and standalone combined, including chips-only / score-zero rows. Sourced directly via `prisma.rating.count` rather than `users.lifetime_ratings` (which has a known parity gap with standalone POSTs, captured in `.local/future-work-rewire.md`).
