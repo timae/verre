@@ -175,7 +175,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 0' }}>
               <span style={{ fontSize: 22 }}>📷</span>
               <span style={{ fontSize: 10, color: 'var(--fg-dim)', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
-                {isEdit || isCopy ? 'replace photo' : 'attach bottle photo'}
+                attach bottle photo
               </span>
               <input type="file" accept="image/*" style={{ display: 'none' }} onChange={handlePhoto} />
             </label>
