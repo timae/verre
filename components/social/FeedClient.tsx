@@ -4,8 +4,6 @@ import { useQuery } from '@tanstack/react-query'
 import { CheckinCard } from './CheckinCard'
 import { SessionFeedCard } from './SessionFeedCard'
 import { CheckinModal, type CopySource } from './CheckinModal'
-import { timeAgo } from '@/lib/timeAgo'
-import Link from 'next/link'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 type CheckinPayload = {
@@ -19,7 +17,6 @@ type CheckinPayload = {
 type FeedItem =
   | { type: 'checkin'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; checkin: CheckinPayload }
   | { type: 'session'; createdAt: string; author: { id: number; name: string; xp: number; imageUrl?: string|null }; session: SessionFeedPayload }
-  | { type: 'badge';   createdAt: string; author: { id: number; name: string };                    badge: { id: string; name: string; icon: string; description: string; xp_reward: number } }
 
 type FeedResponse = { items: FeedItem[]; nextCursor: string | null }
 
@@ -116,33 +113,13 @@ export function FeedClient({ myId }: { myId: number }) {
             />
           )
         }
-        if (item.type === 'session') {
-          return (
-            <SessionFeedCard
-              key={`s-${item.session.id}-${i}`}
-              session={item.session}
-              author={item.author}
-              createdAt={item.createdAt}
-            />
-          )
-        }
-        const badge = item.badge
         return (
-          <div key={`b-${badge.id}-${i}`} className="panel" style={{ marginBottom:10, display:'flex', alignItems:'center', gap:12 }}>
-            <div style={{ fontSize:28, flexShrink:0 }}>{badge.icon}</div>
-            <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontSize:11, color:'var(--fg-dim)', marginBottom:2 }}>
-                <Link href={`/u/${item.author.id}`} style={{ color:'var(--accent)', textDecoration:'none', fontWeight:700 }}>{item.author.name}</Link>
-                {' '}earned a badge
-              </div>
-              <div style={{ fontWeight:700, fontSize:13 }}>{badge.name}</div>
-              <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:2 }}>{badge.description}</div>
-            </div>
-            <div style={{ textAlign:'right', flexShrink:0 }}>
-              <div style={{ fontSize:10, color:'var(--accent)', fontFamily:'var(--mono)' }}>+{badge.xp_reward} xp</div>
-              <div style={{ fontSize:10, color:'var(--fg-dim)', fontFamily:'var(--mono)', marginTop:3 }}>{timeAgo(item.createdAt)}</div>
-            </div>
-          </div>
+          <SessionFeedCard
+            key={`s-${item.session.id}-${i}`}
+            session={item.session}
+            author={item.author}
+            createdAt={item.createdAt}
+          />
         )
       })}
 
