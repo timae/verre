@@ -15,6 +15,7 @@
 
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@/lib/decimal'
+import { existsKey, k } from '@/lib/redis'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 // Input record per session feed_item. `blind`, `hostUserId`, and
@@ -28,6 +29,19 @@ import type { SessionFeedWine } from '@/lib/feedTypes'
 // (Trade-off: deletes are rare and host-initiated; the alternative
 // "treat scrubbed-blind as blind" over-redacts non-blind sessions
 // forever because non-blind wines never have `revealedAt` set.)
+//
+// `expired: true` mirrors the `deleted` short-circuit for blind
+// sessions whose Redis lifespan (48h/72h/1w/unlimited) ran out before
+// the host revealed. Once the session's Redis state is gone there is
+// no live URL to reveal in and no off-session reveal API — leaving
+// the post permanently redacted as "Wine N" with no recovery path.
+// Treating expired-blind as auto-reveal is the safer default (a host
+// who let their session expire has effectively authorised reveal,
+// same as one who deleted it). Detection uses `detectExpiredCodes`
+// below — `EXISTS` on both `s:CODE:meta` AND `s:CODE:wines` so a
+// single-key LRU eviction (where `meta` is gone but `wines` survives)
+// won't falsely trigger reveal on a still-live session. See
+// docs/dev/proposals/rewire.md "Auto-reveal for blind sessions".
 export type SessionFeedPair = {
   authorId: number
   sessionId: number
@@ -37,6 +51,7 @@ export type SessionFeedPair = {
   // See lib/wineRedaction.ts for the live-route mirror.
   blindForEveryone: boolean
   deleted: boolean
+  expired: boolean
   hostUserId: number | null
 }
 
@@ -44,6 +59,25 @@ export type SessionFeedPair = {
 // each feed_item's wines without reconstructing the join.
 export function pairKey(authorId: number, sessionId: number): string {
   return `${authorId}:${sessionId}`
+}
+
+// Detect which of the given session codes have expired (Redis lifespan
+// ran out). Returns a Set of codes whose `s:CODE:meta` AND `s:CODE:wines`
+// keys are both gone — the two-key gate defends against an LRU policy
+// that could evict `meta` alone on a still-live session and force a
+// premature reveal. Caller passes only LIVE codes (deletedAt IS NULL,
+// non-null code); tombstoned sessions short-circuit via `deleted` and
+// don't need this check.
+export async function detectExpiredCodes(codes: string[]): Promise<Set<string>> {
+  const out = new Set<string>()
+  if (codes.length === 0) return out
+  const unique = [...new Set(codes)]
+  const results = await Promise.all(unique.map(async c => {
+    const [meta, wines] = await Promise.all([existsKey(k.meta(c)), existsKey(k.wines(c))])
+    return { code: c, alive: meta || wines }
+  }))
+  for (const r of results) if (!r.alive) out.add(r.code)
+  return out
 }
 
 export async function loadSessionFeedWines(
@@ -97,11 +131,12 @@ export async function loadSessionFeedWines(
       && !!w.addedByIdentityId
       && w.addedByIdentityId === viewerIdentity
     // Redaction predicate mirrors lib/wineRedaction.ts: revealed wines
-    // always win; non-blind never redacts; tombstoned sessions short-
-    // circuit to "always show" (see SessionFeedPair comment); when
-    // blindForEveryone is on the host/own-wine bypasses are disabled.
+    // always win; non-blind never redacts; tombstoned AND expired-blind
+    // sessions short-circuit to "always show" (see SessionFeedPair
+    // comment for the why); when blindForEveryone is on the host/own-
+    // wine bypasses are disabled.
     const bypass = !meta.blindForEveryone && (isHost || ownsWine)
-    const redacted = !meta.deleted && meta.blind && !revealed && !bypass
+    const redacted = !meta.deleted && !meta.expired && meta.blind && !revealed && !bypass
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {

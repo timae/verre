@@ -94,7 +94,8 @@ export async function scanKeys(pattern: string, opts: { count?: number; maxItera
 }
 
 // Yes/no variant — returns on the first matching key. Cheaper than
-// scanKeys when the caller only needs existence.
+// scanKeys when the caller only needs existence. Use for patterns
+// with wildcards; for an exact key prefer `existsKey` (O(1)).
 export async function hasKey(pattern: string): Promise<boolean> {
   let cursor = 0
   for (let i = 0; i < 1000; i++) {
@@ -104,4 +105,11 @@ export async function hasKey(pattern: string): Promise<boolean> {
     if (cursor === 0) return false
   }
   return false
+}
+
+// Exact-key existence — O(1) via Redis EXISTS. Use this whenever the
+// key string is fully resolved (no `*`/`?` glob). Avoids the SCAN
+// overhead that `hasKey` pays for pattern matching.
+export async function existsKey(key: string): Promise<boolean> {
+  return (await redis.exists(key)) > 0
 }
