@@ -196,3 +196,21 @@ scope for the current branch but tracked as future work.
 `<WineIdentity>` is the canonical read-side wine identity renderer
 (name + vintage + producer + grape). Use it on every surface that
 displays a wine; don't reimplement.
+
+## Rate-pane semantics: local until commit
+
+Every field on the Rate pane (score slider, flavor chips, notes,
+**and the Clear button**) mutates only local React state until the
+user commits via Save & next / Save & close. The actual rate POST
+runs at commit time; the server's engagement-deletion cascade
+reaps the rating row when committed-empty. The dirty-guard
+(`UnsavedChangesConfirm`) catches close attempts with uncommitted
+edits — including a Clear followed by close, which would otherwise
+leave the server-side rating untouched and surprise the user on
+reopening.
+
+Reset/Clear used to fire a DELETE directly on the second tap of the
+arming button — a commit-on-action surprise inconsistent with the
+other fields. Now it's local-only; the two-tap arming is kept as a
+cheap safety net for accidental taps that wipe score+chips+notes
+together.

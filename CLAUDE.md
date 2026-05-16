@@ -145,11 +145,11 @@ Tier semantics, audit log, HoF/compare exceptions: see `docs/dev/profile-visibil
 
 - **Anonymous / free**: session-based, Redis only, 48h lifespan. No account.
 - **Logged-in (free account)**: same live session + visits/ratings archived to Postgres. History, bookmarks, Hall of Fame, flavour profile persist indefinitely.
-- **Pro** (`users.pro = true`): paid tier. Gates **blind tastings** (host pre-rates while wine identities are hidden from tasters until reveal) + extended lifespan (72h / 1w / unlimited beyond the 48h default).
+- **Pro** (`users.pro = true`): paid tier. Gates **blind tastings** (host pre-rates while wine identities are hidden from tasters until reveal) + extended lifespan (72h / 1w / unlimited beyond the 48h default). The blind-tasting "host bypass" — the host/cohost/provider/wine-adder see un-redacted wines while tasters see "Wine N" — can be disabled per session via the **Blind-for-everyone** toggle (`meta.blindForEveryone`, mirrored to `sessions.blindForEveryone`). When on, every viewer of every surface (live wine GET, feed, profile session-card) gates uniformly; only per-wine reveal un-redacts. NOT pro-gated on its own — only flipping a session TO blind needs pro; cohosts on a pro-blind session can flip the toggle without being pro themselves. Disabling `meta.blind` cascades to clear `blindForEveryone` so a stale flag can't resurrect on re-enable.
 
 ### Session deletion is a soft-delete (rewire phase 2)
 
-When a host deletes a session: `sessions.deletedAt = NOW()` is set and every other column on the row is scrubbed to NULL (`code`, `host_name`, `name`, `blind`, `created_at`, `archived_at`, `address`, `dateFrom`/`dateTo`, `timezone`, `description`, `link`, `host_user_id`). Ratings + feed_items survive untouched — their `session_id` still points at the tombstoned row, providing the grouping signal for the user's own Tastes / Posts views. Wines orphan (`session_id = NULL`) so bookmarked wines remain reachable from `/me/saved`; the wishlist tombstone label resolves via the wine's ratings, not the wine's session FK. Lifetime counters never decrement.
+When a host deletes a session: `sessions.deletedAt = NOW()` is set and every other column on the row is scrubbed to NULL (`code`, `host_name`, `name`, `blind`, `blind_for_everyone`, `created_at`, `archived_at`, `address`, `dateFrom`/`dateTo`, `timezone`, `description`, `link`, `host_user_id`). Ratings + feed_items survive untouched — their `session_id` still points at the tombstoned row, providing the grouping signal for the user's own Tastes / Posts views. Wines orphan (`session_id = NULL`) so bookmarked wines remain reachable from `/me/saved`; the wishlist tombstone label resolves via the wine's ratings, not the wine's session FK. Lifetime counters never decrement.
 
 A Postgres trigger (`prevent_session_hard_delete`) blocks any `DELETE FROM sessions` — soft-delete is an actual DB invariant, not just an app-layer convention. Cleanup of long-tombstoned rows is a manual operator step (`DISABLE TRIGGER` for the duration of a vetted DELETE, then re-enable).
 
@@ -188,7 +188,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Block](docs/dev/block.md) — bilateral invisibility, in-session render matrix, globally-subtracted counts, mutual-block resolver
 - [Mute](docs/dev/mute.md) — feed-only filter, composes with the profile-visibility tier filter
 - [Profile visibility](docs/dev/profile-visibility.md) — four tiers + FoF, chokepoint API, HoF exception, audit log
-- [Session features](docs/dev/session-features.md) — blind tasting, hide-lineup, roles, lifespan, disambiguation, enumeration-oracle posture
+- [Session features](docs/dev/session-features.md) — blind tasting, blind-for-everyone toggle, hide-lineup, roles, lifespan, disambiguation, enumeration-oracle posture
 - [Session codes](docs/dev/session-codes.md) — Crockford alphabet, 4/8-char canonical forms, three-forms rule, collision check
 - [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, Redis wipe, participant bounce
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning

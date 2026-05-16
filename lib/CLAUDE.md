@@ -4,7 +4,7 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 
 ## Redis key namespace
 
-- `s:{CODE}:meta` — JSON session metadata (host, name, blind, lifespan, hostIdentityId, hostUserId, coHostIds, providerIds, …)
+- `s:{CODE}:meta` — JSON session metadata (host, name, blind, blindForEveryone, lifespan, hostIdentityId, hostUserId, coHostIds, providerIds, …). `blindForEveryone` stacks on `blind`: when true, the host/cohost/provider/wine-adder bypasses in `redactWine` (`lib/wineRedaction.ts`) are disabled and only `revealed` un-redacts. Mirrored to Postgres `sessions.blindForEveryone` so the feed/profile read paths (`lib/sessionFeedWines.ts`) apply the same gate without Redis. Disabling `blind` in the settings PATCH cascades to clear `blindForEveryone`.
 - `s:{CODE}:wines` — JSON array of wines for this session
 - `s:{CODE}:r:{IDENTITYID}:{WINEID}` — per-rating JSON (score, flavors, notes). Identity-id keyed (`u:<userId>` or `a:<uuid>`), never display name
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)

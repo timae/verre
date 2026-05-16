@@ -15,7 +15,7 @@ After the soft-delete commits, the only data guaranteed to survive on the `sessi
 - `id` — the grouping key; children (wines, ratings, feed_items) keep their FK references.
 - `deleted_at` — the tombstone marker.
 
-**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, and anything else added later. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more.
+**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, `blind_for_everyone`, and anything else added later. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more.
 
 The minimal contract is the easiest to audit for privacy and forces explicit doc + schema updates the day someone wants a specific field to survive. Cost is small: tombstoned-session UX in user history shows just "[deleted session]" with no extra context.
 
@@ -37,7 +37,7 @@ The `session_id` is the only natural grouping key for "all my ratings from this 
 
 ### Blind-redaction short-circuit on tombstoned sessions
 
-Per `lib/sessionFeedWines.ts` (the bulk loader powering `<SessionFeedCard>`), the per-wine redaction predicate is `redacted = !meta.deleted && meta.blind && !revealed && !isHost && !ownsWine`. The `!meta.deleted` short-circuit means a soft-deleted blind session reveals wine identity to every viewer who could see the post — regardless of `wines.revealedAt`. Trade-off accepted: a host who deletes a blind session pre-reveal has authorised the reveal, and the alternative ("treat scrubbed-`blind` as blind") would over-redact non-blind tombstoned sessions forever (non-blind wines never have `revealedAt` set, so they'd render as "Wine #N" placeholders permanently). Cross-cutting: any new surface that renders per-wine session data MUST use `loadSessionFeedWines` and not roll its own join — the short-circuit lives in that helper and nowhere else.
+Per `lib/sessionFeedWines.ts` (the bulk loader powering `<SessionFeedCard>`), the per-wine redaction predicate is `redacted = !meta.deleted && meta.blind && !revealed && !(!meta.blindForEveryone && (isHost || ownsWine))` — the host/own-wine bypass is suppressed when `blindForEveryone` is on; only `revealed` un-redacts in that mode. The `!meta.deleted` short-circuit means a soft-deleted blind session reveals wine identity to every viewer who could see the post — regardless of `wines.revealedAt`. Trade-off accepted: a host who deletes a blind session pre-reveal has authorised the reveal, and the alternative ("treat scrubbed-`blind` as blind") would over-redact non-blind tombstoned sessions forever (non-blind wines never have `revealedAt` set, so they'd render as "Wine #N" placeholders permanently). Cross-cutting: any new surface that renders per-wine session data MUST use `loadSessionFeedWines` and not roll its own join — the short-circuit lives in that helper and nowhere else.
 
 ## Cohost behaviour after soft-delete
 
