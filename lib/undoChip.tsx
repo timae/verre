@@ -19,11 +19,12 @@ import type { RatingValue } from '@/lib/rating'
 //   priorRating != null → edit/overwrite; undo re-POSTs prior values
 //
 // When undo succeeds the provider calls `refresh` (server-state poll)
-// and, if a wine-opener is registered (see registerOpenWine), invokes
-// it with the undone wine id. WineListScreen registers its
-// setOpenWine so a tap on the chip after the modal closed re-opens
-// the modal on the undone wine — matching the previous behaviour
-// where undo navigated back to the wine inside the modal.
+// and bumps `navTo` — a one-shot {wineId, nonce} signal. WineModal
+// subscribes via `[undo?.navTo?.nonce]` and navigates internally when
+// open; WineListScreen subscribes and opens the modal when closed.
+// The nonce keying is load-bearing: a dep that also changes on
+// internal modal navigation (like a `wineId` prop) would re-fire the
+// effect at slide-end and snap back to a stale value.
 
 export type UndoableCommit = {
   wineId: string
@@ -38,10 +39,12 @@ type Ctx = {
   // restored state immediately instead of waiting for the polling
   // refresh. Returns null and clears the seed after first read.
   consumeUndoSeed: (wineId: string) => RatingValue | null
-  // WineListScreen (or any future host of WineModal) registers a
-  // "open this wine in the modal" callback. Provider calls it after a
-  // successful undo. Returns an unregister function.
-  registerOpenWine: (fn: (wineId: string) => void) => () => void
+  // One-shot navigation signal. The provider bumps `nonce` on every
+  // successful undo. Subscribers watch `[navTo?.nonce]` — NEVER any
+  // dep that also changes on internal modal navigation (e.g. a prop
+  // like `wineId`), which would re-fire the effect at slide-end and
+  // snap the modal back to the stale value.
+  navTo: { wineId: string; nonce: number } | null
 }
 
 const UndoCtx = createContext<Ctx | null>(null)
@@ -58,7 +61,7 @@ export function UndoChipProvider({
   children: ReactNode
 }) {
   const [chip, setChip] = useState<(UndoableCommit & { pending: boolean }) | null>(null)
-  const openWineRef = useRef<((wineId: string) => void) | null>(null)
+  const [navTo, setNavTo] = useState<{ wineId: string; nonce: number } | null>(null)
   const seedRef = useRef<{ wineId: string; value: RatingValue } | null>(null)
 
   const publish = useCallback((c: UndoableCommit) => {
@@ -72,19 +75,6 @@ export function UndoChipProvider({
       return s.value
     }
     return null
-  }, [])
-
-  const registerOpenWine = useCallback((fn: (wineId: string) => void) => {
-    // Single-slot — only one chip-host is mounted today (WineListScreen).
-    // If a second caller registers concurrently, warn so the contract
-    // is visible: the loser silently never receives the openWine signal.
-    if (openWineRef.current && openWineRef.current !== fn) {
-      console.warn('[undoChip] registerOpenWine replacing an existing handler — only one chip-host is supported at a time')
-    }
-    openWineRef.current = fn
-    return () => {
-      if (openWineRef.current === fn) openWineRef.current = null
-    }
   }, [])
 
   // Auto-dismiss. Skipped while undo is in-flight so the chip doesn't
@@ -123,12 +113,11 @@ export function UndoChipProvider({
         value: c.priorRating ?? { score: 0, flavors: {}, notes: '' },
       }
       refresh()
-      // Re-open the modal on the undone wine when a host (typically
-      // WineListScreen) has registered an opener. Idempotent when the
-      // modal is already open on this wine; harmless when it's open on
-      // a different wine (the modal's activeWineId effect picks up the
-      // seed via consumeUndoSeed).
-      openWineRef.current?.(c.wineId)
+      // Bump the one-shot nav signal. WineModal navigates internally
+      // when open; WineListScreen opens the modal when closed. The
+      // nonce bumps even on same-wine consecutive undos so subscribers
+      // observe the change.
+      setNavTo(prev => ({ wineId: c.wineId, nonce: (prev?.nonce ?? 0) + 1 }))
     } else {
       // Chip just disappears; we have no inline error surface. Log so a
       // 429 / 500 / network drop isn't entirely silent in DevTools.
@@ -142,14 +131,11 @@ export function UndoChipProvider({
   }
 
   // Memoize the context value so it doesn't get a new reference on
-  // every chip-state change. Without this, consumers that include the
-  // context value in their useEffect deps (e.g. WineListScreen's
-  // registerOpenWine call) re-run on every chip publish/dismiss,
-  // causing a brief window where openWineRef.current is null between
-  // cleanup and re-register.
+  // every render. `navTo` is intentionally in deps — that's the
+  // signal subscribers watch.
   const value = useMemo(
-    () => ({ publish, consumeUndoSeed, registerOpenWine }),
-    [publish, consumeUndoSeed, registerOpenWine],
+    () => ({ publish, consumeUndoSeed, navTo }),
+    [publish, consumeUndoSeed, navTo],
   )
 
   return (

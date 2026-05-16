@@ -47,14 +47,17 @@ export function WineListScreen() {
   // one modal-open path.
   const [openWine, setOpenWine] = useState<{ id: string; pane: 'info' | 'rate' } | null>(null)
 
-  // Register an "open this wine in the modal" callback with the chip
-  // provider so a tap on the chip after the modal has closed re-opens
-  // it on the undone wine. When the modal is already open, the prop-
-  // sync effect inside WineModal navigates to the new wineId.
+  // Open the modal when the chip is tapped while the modal is closed.
+  // WineModal subscribes to the same signal for the modal-open case
+  // (it navigates internally). Both subscribers act independently and
+  // key off the nonce so internal modal nav doesn't refire this.
+  const navNonce = undo?.navTo?.nonce ?? null
   useEffect(() => {
-    if (!undo) return
-    return undo.registerOpenWine((wineId) => setOpenWine({ id: wineId, pane: 'rate' }))
-  }, [undo])
+    const t = undo?.navTo
+    if (!t || openWine) return
+    setOpenWine({ id: t.wineId, pane: 'rate' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navNonce])
   const canManage = isHost || isProvider
 
   const m = sessionMeta as typeof sessionMeta & {
