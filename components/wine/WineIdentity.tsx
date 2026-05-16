@@ -50,10 +50,17 @@ export function WineIdentity({ wine, size = 'compact', titlePrefix }: Props) {
     ? { fontSize: 'clamp(16px,4vw,22px)', fontWeight: dims.weight, color: 'var(--fg)', lineHeight: 1.15, margin: 0, wordBreak: 'break-word' }
     : { fontSize: dims.title, fontWeight: dims.weight, color: 'var(--fg)', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
-  const lineStyle: React.CSSProperties = {
-    fontSize: dims.subtitle, color: 'var(--fg-dim)', marginTop: 2,
-    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-  }
+  // Subtitle lines (producer, grape):
+  //   - hero    → wrap naturally so a column with extra width can show
+  //     the full producer name even when the parent's measured width
+  //     would clip nowrap text (feed CheckinCard hero render). Matches
+  //     the hero title's wordBreak: break-word semantics.
+  //   - compact / card → nowrap+ellipsis to keep tight list rows on a
+  //     single line and prevent reflow when scrolling.
+  const lineStyle: React.CSSProperties = size === 'hero'
+    ? { fontSize: dims.subtitle, color: 'var(--fg-dim)', marginTop: 2, wordBreak: 'break-word' }
+    : { fontSize: dims.subtitle, color: 'var(--fg-dim)', marginTop: 2,
+        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }
 
   return (
     <>
