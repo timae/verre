@@ -297,8 +297,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       rating.score > 0
       || Object.values(rating.flavors).some(v => v > 0)
       || rating.notes.trim() !== ''
-    if (!hasContent) return false   // empty form on leave — silent close
-    if (!existing) return true       // user typed something, never committed
+    // No server-side rating: empty form on leave is a silent close
+    // (user opened the modal and didn't engage).
+    if (!existing) return hasContent
+    // Server-side rating exists: every difference matters, including
+    // "form is now empty but server still has values" — that's the
+    // Clear-then-leave case, which MUST trip the dirty guard so the
+    // user isn't surprised by an uncommitted clear surviving close.
     const existingFlavors = (existing.flavors as Record<string, number>) || {}
     const flavorKeys = new Set([
       ...Object.keys(rating.flavors),
@@ -754,40 +759,18 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // Mirror commitRating's error handling — without it, a 429/500 on
   // delete silently closes the modal and pretends the deletion happened.
   // The user's saved rating still exists but the UI doesn't show it.
-  async function resetRating() {
-    // No server-side rating yet — just clear the local form.
-    if (!existing) {
-      setRating({ score: 0, flavors: {}, notes: '' })
-      return
-    }
-    setSaving(true)
-    setCommitError(null)
-    try {
-      const res = await sessionFetch(code, `/api/session/${code}/rate/${activeWineId}`, {
-        method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      })
-      if (!res.ok) {
-        const msg = res.status === 429
-          ? 'Rate-limited. Try again shortly.'
-          : `Reset failed (${res.status}). Try again.`
-        setCommitError(msg)
-        setSaving(false)
-        return
-      }
-      setSaving(false)
-      refresh()
-      // Snapshot for undo BEFORE clearing — `existing` is still the
-      // pre-DELETE rating at this point.
-      const restoreTo = existingToRatingValue(existing)
-      setRating({ score: 0, flavors: {}, notes: '' })
-      if (wine && restoreTo) {
-        publishUndoChip({ wineId: activeWineId, name: wine.name, priorRating: restoreTo, pending: false })
-      }
-    } catch {
-      setCommitError('Network error. Check your connection and try again.')
-      setSaving(false)
-    }
+  // Local-only clear. Reset behaves like every other rate-pane field:
+  // mutates the local form state, the actual server-side cleanup
+  // (DELETE / cascade-reap) happens on the next commit (Save & next /
+  // Save & close). If the user navigates away without committing, the
+  // dirty-guard prompts; Discard reverts the local form to `existing`,
+  // so an accidental Reset is fully recoverable without a network call.
+  //
+  // The undo chip is published by the commit path on every successful
+  // POST, so there's no longer a Reset-specific chip — the user's next
+  // commit will surface it normally.
+  function resetRating() {
+    setRating({ score: 0, flavors: {}, notes: '' })
   }
 
   async function toggleBookmark() {
@@ -1642,6 +1625,11 @@ function resolveProvenanceMode(
 // Two-press confirm (first tap arms with a red tint, second tap fires).
 // Sits next to Cancel + Commit without stealing room from the primary CTA.
 //
+// Clears the rate pane locally; the server-side rating row is left
+// alone until the next commit (Save & next / Save & close). Two-tap
+// arming preserves an "are you sure?" gesture without burning a
+// network round-trip — accidental taps are recoverable by re-typing
+// or the dirty-guard's Discard on close.
 function ResetButton({ onReset }: { onReset: () => void }) {
   const [armed, setArmed] = useState(false)
   useEffect(() => {
@@ -1651,7 +1639,7 @@ function ResetButton({ onReset }: { onReset: () => void }) {
   }, [armed])
   return (
     <button
-      onClick={() => { if (armed) onReset(); else setArmed(true) }}
+      onClick={() => { if (armed) { onReset(); setArmed(false) } else setArmed(true) }}
       style={{
         display:'inline-flex',alignItems:'center',justifyContent:'center',gap:6,
         background:'transparent',
@@ -1661,14 +1649,14 @@ function ResetButton({ onReset }: { onReset: () => void }) {
         fontSize:11,letterSpacing:'0.08em',
         textTransform:'uppercase',fontWeight:600,cursor:'pointer',
         flexShrink:0,
-        // Fixed width sized to the wider label ("Tap to delete") so
+        // Fixed width sized to the wider label ("Tap to confirm") so
         // the button doesn't grow/shrink between idle and armed.
         width:148,
         transition:'border-color .15s, color .15s',
       }}
     >
       <ResetIcon size={13} />
-      <span>{armed ? 'Tap to confirm' : 'Reset rating'}</span>
+      <span>{armed ? 'Tap to confirm' : 'Clear'}</span>
     </button>
   )
 }
