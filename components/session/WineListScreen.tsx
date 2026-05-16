@@ -108,7 +108,7 @@ export function WineListScreen() {
   // is rare and the visual change is global, so wait for the round-trip.
   // Label uses "everyone" instead of "all" to avoid colliding with the
   // adjacent "reveal all" button.
-  async function toggleBlindForAll() {
+  async function toggleBlindForEveryone() {
     const next = !sessionMeta?.blindForEveryone
     await sessionFetch(code, `/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -241,7 +241,7 @@ export function WineListScreen() {
               // collide visually with the neighbouring "reveal all" button.
               <button
                 className="btn-s"
-                onClick={toggleBlindForAll}
+                onClick={toggleBlindForEveryone}
                 title={blindForEveryone
                   ? 'You see redacted wines too. Tap to see the lineup again (still hidden from tasters).'
                   : 'Hide wines from yourself too. Even you won\'t know the lineup until reveal.'}

@@ -257,7 +257,14 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // Blind redaction — server-side strips identifying fields for
   // non-host viewers. Host/cohost/provider-on-own-wine bypass.
   const isRedacted = !!(isBlind && wine?._blind && !wine?.revealedAt)
-  const canEditThisWine = isHost || (isProvider && !!wine?.isMine)
+  // Edit affordance must hide on redacted wines for EVERY role, not just
+  // provider. Provider already gates via the wire-shape `isMine: false`
+  // under blindForEveryone. Host's client-side `isHost` doesn't change,
+  // so without the !isRedacted gate the host could open the edit modal
+  // on a "Wine N" row and overwrite the identity — re-identifying the
+  // wine by injection and subverting the toggle's "even the host doesn't
+  // know" contract.
+  const canEditThisWine = !isRedacted && (isHost || (isProvider && !!wine?.isMine))
   const canReorderThisWine = isHost
 
   // Brought-by clickability + block-pair rendering. Mirrors the

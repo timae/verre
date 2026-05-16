@@ -543,7 +543,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
                 <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
                 <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
-                  Close this session for good. Your tasters keep their ratings, notes, tasting history and bookmarked wines — the session itself just shows as deleted. This cannot be undone.
+                  Close this session for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted. This cannot be undone.
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}

@@ -120,7 +120,10 @@ export function AccountSettingsModal({ onClose }: Props) {
               className="btn-p"
               style={{ flex: 1, marginTop: 0 }}
             >
-              {savedPulse ? '✓ changes saved' : api?.saving ? 'saving…' : 'Save'}
+              {savedPulse ? '✓ changes saved'
+                : api?.saving ? 'saving…'
+                : api?.dirty ? 'Save'
+                : 'Close'}
             </button>
           </div>
         </div>

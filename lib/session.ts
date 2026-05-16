@@ -415,13 +415,20 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
       // on the feed / profile surfaces. Live session route reads from
       // Redis where blind WAS set — that's why the bug stayed dormant.
       blind: !!meta.blind,
+      // `blindForEveryone` mirrors what's in Redis at create time so a
+      // hypothetical future create-path that seeds it (today's create
+      // endpoint doesn't — settings PATCH is the only writer) survives
+      // to Postgres. Same rationale as `blind`: the SessionFeedCard
+      // redaction predicate reads this column.
+      blindForEveryone: !!meta.blindForEveryone,
       createdAt: new Date(meta.createdAt),
     },
-    // Note: `blind` is intentionally NOT in the update path. Sessions
-    // can't be toggled blind ↔ non-blind mid-flight (no UI for it),
-    // and the create path already captures the right value at session
-    // birth. Leaving it out of update avoids accidentally flipping it
-    // if a future meta-update code path forgets to carry it.
+    // Note: `blind` and `blindForEveryone` are intentionally NOT in the
+    // update path. Settings changes route through a separate
+    // `prisma.session.updateMany` in `app/api/session/[code]/settings/
+    // route.ts` that writes both. Leaving them out of this update path
+    // avoids accidentally flipping them if a future meta-update code
+    // path forgets to carry the values.
     update: { name: meta.name || undefined },
     select: { id: true },
   })
