@@ -122,7 +122,8 @@ export function AccountSettingsModal({ onClose }: Props) {
             >
               {savedPulse ? '✓ changes saved'
                 : api?.saving ? 'saving…'
-                : api?.dirty ? 'Save'
+                : !api ? 'Save'
+                : api.dirty ? 'Save'
                 : 'Close'}
             </button>
           </div>
