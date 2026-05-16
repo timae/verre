@@ -1,6 +1,5 @@
 'use client'
 import { useState, useRef, useEffect } from 'react'
-import { createPortal } from 'react-dom'
 import { motion, useMotionValue, animate } from 'framer-motion'
 import { Modal, getModalStackDepth } from '@/components/ui/Modal'
 import { UnsavedChangesConfirm } from '@/components/ui/UnsavedChangesConfirm'
@@ -10,6 +9,7 @@ import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
+import { useUndoChip } from '@/lib/undoChip'
 import { usePullToSwap } from '@/lib/usePullToSwap'
 import { useQueryClient } from '@tanstack/react-query'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
@@ -38,6 +38,7 @@ interface Props {
 // wine causes the open modal's info tab to populate without reload.
 export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   const { wines, myRatings, code, refresh, isHost, isProvider, isBlind, bookmarkedIds, isLoggedIn, sessionMeta, myId } = useSession()
+  const undo = useUndoChip()
   const qc = useQueryClient()
 
   // Prop is the entry point; once mounted the modal owns its navigation state.
@@ -72,25 +73,6 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // React commits saving=true and the buttons disable themselves.
   // The ref flips synchronously and gates entry to commitAndSwap.
   const commitInFlightRef = useRef(false)
-  // Seed passed from runUndo → the wine-change effect. When the user
-  // taps Undo from a different wine, we navigate back AND want the
-  // rate-pane to show the just-restored values. Polling hasn't landed
-  // yet, so reading `myRatings[wineId]` in the effect would show stale
-  // pre-undo data for one tick. The ref carries the canonical post-
-  // undo value through the activeWineId change. Cleared on consumption.
-  const pendingUndoSeedRef = useRef<{ wineId: string; value: RatingValue } | null>(null)
-  // Undo chip — surfaces after every commit (POST or Reset DELETE) and
-  // gives a 7s window to revert. `priorRating` is the server-state
-  // snapshot at commit time: null = no prior rating existed (undo means
-  // DELETE), non-null = restore those values (undo means re-POST).
-  // `pending` flips while the undo op is in-flight so the chip can grey
-  // itself out and reject double-tap. Replaces the legacy go-back bubble.
-  const [lastUndo, setLastUndo] = useState<{
-    wineId: string
-    name: string
-    priorRating: RatingValue | null
-    pending: boolean
-  } | null>(null)
   // Slide animation snapshot. Direction determines track order + start offset:
   //   'up'   → [OLD, NEW], y: 0 → -wrapperH. Matches pull-up gesture.
   //   'down' → [NEW, OLD], y: -wrapperH → 0. Matches pull-down gesture.
@@ -146,13 +128,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       mountedRef.current = true
       return
     }
-    // If runUndo just navigated us here with a freshly-restored value,
-    // prefer it over the polled `myRatings[activeWineId]` — polling
-    // hasn't necessarily landed the post-undo state yet.
-    const seed = pendingUndoSeedRef.current
-    if (seed && seed.wineId === activeWineId) {
-      setRating(seed.value)
-      pendingUndoSeedRef.current = null
+    // If runUndo (in lib/undoChip.tsx) just restored a value for this
+    // wine, prefer it over the polled `myRatings[activeWineId]` —
+    // polling hasn't necessarily landed the post-undo state yet.
+    // `consumeUndoSeed` returns null and self-clears after first read.
+    const seed = undo?.consumeUndoSeed(activeWineId) ?? null
+    if (seed) {
+      setRating(seed)
     } else {
       const next = myRatings[activeWineId]
       setRating({
@@ -397,13 +379,6 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     }
   }
 
-  // Publish the undo chip for the most recent commit. Latest-wins —
-  // a fresh commit replaces any prior chip, since users usually act
-  // on the LAST thing they did.
-  function publishUndoChip(c: NonNullable<typeof lastUndo>): void {
-    setLastUndo(c)
-  }
-
   // Slide the modal from the current wine to `targetWineId`. Same
   // animation primitives commitAndSwap uses, but no commit step.
   // Returns true if the slide was kicked off (caller hands gate
@@ -460,70 +435,35 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     return true
   }
 
-  // Run the inverse of the most-recent commit. priorRating=null means
-  // the commit was a first engagement → undo is DELETE. priorRating
-  // non-null means an edit/overwrite → undo re-POSTs the prior values
-  // (which the upsert will overwrite the just-committed change with).
-  // No new chip is published on undo: looping the chip would be a
-  // confusing "Undo your undo?" UX. After undo, the chip dismisses.
-  async function runUndo(c: NonNullable<typeof lastUndo>): Promise<void> {
-    setLastUndo(prev => prev && prev.wineId === c.wineId ? { ...prev, pending: true } : prev)
-    let ok = false
-    if (c.priorRating == null) {
-      // Inverse of a first-engagement POST. Mirror resetRating's wire
-      // call without the local-state side effects (the chip belongs to
-      // the wine the user may have already swapped away from).
-      try {
-        const res = await sessionFetch(code, `/api/session/${code}/rate/${c.wineId}`, {
-          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        })
-        ok = res.ok
-      } catch { ok = false }
-    } else {
-      ok = await commitWineRating(c.wineId, c.priorRating)
+  // Sync activeWineId when the `wineId` prop changes after mount. The
+  // hoisted undo chip (lib/undoChip.tsx) drives this: when the user
+  // taps Undo while the modal is open on a different wine, the chip
+  // host (WineListScreen) updates its `openWine.id` state → prop
+  // changes → this effect navigates the modal to the undone wine.
+  // Then the activeWineId-change effect reads the undo seed from
+  // useUndoChip().consumeUndoSeed and seeds the rate pane.
+  //
+  // Two guards:
+  // - Skip while a commit slide is in flight. Bumping activeWineId
+  //   mid-slide would crash through playSlide's slideOffset ordering
+  //   (see components/wine/CLAUDE.md "slideOffset-reset gotcha").
+  //   `outgoing` is the slide-active state; including it in deps lets
+  //   the effect re-fire after the slide ends with the pending nav
+  //   still pending (wineId !== activeWineId), so the openWine signal
+  //   isn't dropped permanently.
+  // - When wineId === activeWineId (chip undo on the same wine the
+  //   user is currently viewing), the activeWineId-change effect
+  //   doesn't re-fire on its own, so the seed would sit unconsumed
+  //   until the next polling refresh. Apply it inline instead.
+  useEffect(() => {
+    if (outgoing) return
+    if (wineId !== activeWineId) {
+      setActiveWineId(wineId)
+      return
     }
-    if (ok) {
-      refresh()
-      // Navigate back to the wine the user just undid. Without this,
-      // tapping Undo on a chip for wine 2 while looking at wine 3
-      // restores the server but leaves the user staring at the wrong
-      // wine — confusing.
-      //
-      // Setting `pendingUndoSeedRef` BEFORE setActiveWineId lets the
-      // wine-change effect (line 137) read it and seed the rate-pane
-      // with the restored value instead of the stale `myRatings[wineId]`
-      // (server-state polling hasn't necessarily landed yet). The ref
-      // is cleared by the effect after consumption.
-      pendingUndoSeedRef.current = { wineId: c.wineId, value: c.priorRating ?? { score: 0, flavors: {}, notes: '' } }
-      if (c.wineId !== activeWineId) {
-        // Run the slide via the same primitive commitAndSwap uses, so
-        // an undo navigates with the same visual language as a swap.
-        // The in-flight gate prevents collisions with a concurrent
-        // commitAndSwap; if a slide is already running, skip the
-        // animation (rare — user would have to tap Undo mid-swap).
-        const fromIdx = currentIndex
-        const toIdx = wines.findIndex(w => w.id === c.wineId)
-        if (!commitInFlightRef.current) {
-          commitInFlightRef.current = true
-          const slideRunning = playSlide({
-            fromWineId: activeWineId,
-            fromRating: rating,
-            fromIdx, toIdx,
-            fromPull: 0,
-          })
-          if (!slideRunning) commitInFlightRef.current = false
-        }
-        if (scrollRef.current) scrollRef.current.scrollTop = 0
-        setActiveWineId(c.wineId)
-      } else {
-        // Already viewing the wine — no navigation, apply the seed inline.
-        setRating(pendingUndoSeedRef.current.value)
-        pendingUndoSeedRef.current = null
-      }
-    }
-    setLastUndo(null)
-  }
+    const seed = undo?.consumeUndoSeed(activeWineId) ?? null
+    if (seed) setRating(seed)
+  }, [wineId, outgoing])
 
   // Primitive used by commitRating (save+close) and commitAndSwap (save+navigate).
   // Does NOT touch activeWineId / onClose / refresh — those are the caller's concern.
@@ -555,9 +495,27 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   }
 
   async function commitRating(): Promise<boolean> {
+    // Snapshot prior server state BEFORE the POST fires — undo restores
+    // this. Used by the chip even though we're about to close the modal:
+    // the chip lives in the session-shell-scoped provider and survives
+    // close. Pre-hoist, the Save & close path had no chip at all.
+    const existingPrior = existingToRatingValue(existing)
+    const closingWine = wine
     const ok = await commitWineRating(activeWineId, rating)
     if (ok) {
       refresh()
+      // Suppress the chip when the commit was a no-op (empty form on a
+      // wine that wasn't rated). Otherwise we'd publish "Saved <wine>"
+      // with priorRating=null, and Undo would DELETE an already-empty
+      // row — misleading and pointless.
+      const meaningfulCommit = hasContent(rating) || existingPrior != null
+      if (closingWine && undo && meaningfulCommit) {
+        undo.publish({
+          wineId: activeWineId,
+          wineName: closingWine.name,
+          priorRating: existingPrior,
+        })
+      }
       onClose()
     }
     return ok
@@ -662,12 +620,12 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         // captured at function entry below — see the snapshot just after
         // `fromRating`. Undo with priorRating=null = DELETE; priorRating
         // non-null = re-POST those values to overwrite the just-committed
-        // change.
-        publishUndoChip({
+        // change. Chip is hosted by UndoChipProvider in SessionShell so
+        // it survives modal close.
+        undo?.publish({
           wineId: fromWineId,
-          name: fromWine.name,
+          wineName: fromWine.name,
           priorRating: existingPrior,
-          pending: false,
         })
       }
       // No-commit swaps (browse-only) leave the existing chip alone —
@@ -678,17 +636,6 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       if (releaseInFinally) commitInFlightRef.current = false
     }
   }
-
-  // Auto-dismiss the undo chip after 7s. The timer resets whenever
-  // `lastUndo` changes — a fresh commit replaces the chip and starts
-  // a new window, so the user always has the same time to act on the
-  // most recent action. Skip while an undo op is in flight (don't yank
-  // the chip mid-op).
-  useEffect(() => {
-    if (!lastUndo || lastUndo.pending) return
-    const t = setTimeout(() => setLastUndo(null), 7000)
-    return () => clearTimeout(t)
-  }, [lastUndo])
 
   // Resolve neighbouring wine ids relative to the current position.
   // Returns null at the list bounds. Computed inline at render rather
@@ -1349,58 +1296,9 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         }}>{commitError}</div>
       )}
 
-      {/* Undo chip — portaled to document.body so it floats over the
-          modal backdrop, iOS-style. Surfaces after every commit (POST
-          via Save/swap or DELETE via Reset) and gives a 7s window to
-          revert. Tap = run inverse op (DELETE for first-engagement
-          posts, re-POST prior values for edits/resets). The wine name
-          + action label tell the user what they're about to undo.
-          z-index 60 sits above the Modal (z-50). */}
-      {lastUndo && typeof document !== 'undefined' && createPortal(
-        <div
-          role="status"
-          onClick={() => { if (!lastUndo.pending) runUndo(lastUndo) }}
-          style={{
-            position:'fixed',
-            top:'max(16px, env(safe-area-inset-top))',
-            left:'50%',
-            transform:'translateX(-50%)',
-            zIndex:60,
-            maxWidth:'min(420px, calc(100vw - 32px))',
-            width:'max-content',
-            padding:'10px 14px',
-            display:'flex',alignItems:'center',gap:12,
-            border:'1px solid rgba(200,150,60,0.4)',
-            background:'var(--bg2)',
-            backdropFilter:'blur(8px)',
-            WebkitBackdropFilter:'blur(8px)',
-            borderRadius:10,
-            boxShadow:'0 8px 24px rgba(0,0,0,0.25)',
-            fontSize:12,color:'var(--fg-warm-soft)',
-            cursor: lastUndo.pending ? 'default' : 'pointer',
-            opacity: lastUndo.pending ? 0.6 : 1,
-          }}
-        >
-          <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-            {lastUndo.priorRating == null ? 'Saved ' : 'Updated '}
-            <span style={{color:'var(--fg-warm)',fontWeight:600}}>{lastUndo.name}</span>
-          </span>
-          <span
-            style={{
-              display:'inline-flex',alignItems:'center',gap:4,
-              color:'var(--accent)',
-              border:'1px solid rgba(200,150,60,0.4)',
-              padding:'6px 10px',borderRadius:6,
-              fontSize:10,letterSpacing:'0.08em',
-              textTransform:'uppercase',fontWeight:600,
-              flexShrink:0,
-            }}
-          >
-            <span>Undo</span>
-          </span>
-        </div>,
-        document.body
-      )}
+      {/* Undo chip is rendered by UndoChipProvider (lib/undoChip.tsx)
+          mounted in SessionShell — survives modal close so the Save &
+          close path gets a chip too. */}
 
       {/* FOOTER — action bar. Different per tab. Prev/next buttons
           appear when the user has neighbouring wines; the primary CTA
