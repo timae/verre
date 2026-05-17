@@ -28,6 +28,12 @@ export type FlavorBlock = {
   // the active/lifetime delta would let a snooper compute how many
   // sessions the profile owner has had deleted.
   activeRatings?: number
+  // Coarse "has at least one active scored rating" — surfaced to BOTH
+  // owner and non-owner. Lets the empty-state on the Ratings tab tell
+  // "never tasted any flavours" / "tasted but no chip data yet" /
+  // "all rated wines have been deleted" apart without leaking the
+  // exact active count to non-owners.
+  hasActiveRatings: boolean
   // Average score across active ratings. null if no rows.
   avgScore: number | null
   fiveStar: number
@@ -58,8 +64,10 @@ export async function getProfileFlavor(userId: number): Promise<FlavorBlock> {
     const v = row[k]
     keys[k] = v == null ? null : Number(v)
   }
+  const activeRatings = Number(row.total_rated || 0)
   return {
-    activeRatings: Number(row.total_rated || 0),
+    activeRatings,
+    hasActiveRatings: activeRatings > 0,
     avgScore: row.avg_score == null ? null : Number(row.avg_score),
     fiveStar: Number(row.five_star || 0),
     keys,

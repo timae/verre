@@ -6,6 +6,8 @@ import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { decimalToNumber } from '@/lib/decimal'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
   id: number
@@ -27,17 +29,17 @@ export type LoadedCheckin = {
   tags: { id: number; name: string }[]
 }
 
-// Phase 2 stub for a session feed_item on the user's profile. Phase 3 will
-// replace this rendering with a proper SessionFeedCard that fans out the
-// wines rated by the user in the session. Until then, the profile shows a
-// minimal "[deleted session]" or "<session name>" line — enough to confirm
-// the data shape is right and give the surface something to test against.
+// Per-wine fan-out shape for a session feed_item on the profile.
+// Mirror of the API's SessionFeedPayload, plus a `createdAt` field
+// for chronological merging with standalone check-ins on the same surface.
 export type LoadedSessionPost = {
   id: number              // feed_items.id
   sessionId: number | null
   sessionName: string | null  // null when deleted (scrubbed) or unnamed
+  hostName: string | null     // null when deleted (scrubbed) or anon-host
   deleted: boolean
   blind: boolean
+  wines: SessionFeedWine[]    // empty when deleted (collapse rule)
   createdAt: Date
   likeCount: number
   liked: boolean
@@ -57,7 +59,7 @@ export type LoadedProfile = {
     followers: number
     following: number
   }
-  flavor: FlavorBlock | { avgScore: FlavorBlock['avgScore']; fiveStar: FlavorBlock['fiveStar']; keys: FlavorBlock['keys'] }
+  flavor: FlavorBlock | { hasActiveRatings: boolean; avgScore: FlavorBlock['avgScore']; fiveStar: FlavorBlock['fiveStar']; keys: FlavorBlock['keys'] }
   isFollowing: boolean
   recentCheckins: LoadedCheckin[]
   // Phase 2 addition: session feed_items, rendered as stubs. Phase 3 ships
@@ -93,14 +95,14 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   })
   if (!user) return null
 
-  // Count standalone feed_items as the source of truth for the profile's
-  // "check-ins" stat post-rewire. Pre-rewire used `_count.checkins`. The
-  // data migration backfills feed_items.kind='standalone' to match the
-  // legacy count on first run; after that, every new standalone POST
-  // writes a feed_item but not a checkins row (slice 3).
-  const standaloneCount = await prisma.feedItem.count({
-    where: { userId, kind: 'standalone' },
-  })
+  // "Check-ins" tile counts EVERY tasting (per-wine), not per-post —
+  // a session with 4 rated wines + 1 standalone = 5 check-ins.
+  // Sourced directly from `ratings` so it stays correct today regardless
+  // of the lifetime_ratings parity gap (today's session-rate bumps it,
+  // standalone POST doesn't — captured in .local/future-work-rewire.md).
+  // Cheap on Tim+Simon scale; revisit if the user grows a six-figure
+  // rating history.
+  const tastingCount = await prisma.rating.count({ where: { userId } })
 
   // Block-pair counts: subtract any follower/following edge where the
   // other end is in a block-pair with the profile owner. Locked design:
@@ -136,7 +138,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   const isOwner = viewerId !== null && viewerId === userId
   const flavor = isOwner
     ? flavorFull
-    : { avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
+    : { hasActiveRatings: flavorFull.hasActiveRatings, avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   // Standalone feed_items — the post-rewire shape. Each has a rating + wine
   // + optional rating_image attached. The profile renders these as the
@@ -164,10 +166,9 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     },
   })
 
-  // Session feed_items (kind='session'). Stub-rendered until phase 3.
-  // Include the session row to read deletedAt (tombstone label) + name +
-  // blind. Soft-deleted sessions have name=NULL (§8 scrub); the renderer
-  // collapses to "[deleted session]".
+  // Session feed_items (kind='session'). Phase 3 ships per-wine fan-out:
+  // the same SessionFeedCard the social feed renders. Soft-deleted sessions
+  // collapse to deleted=true with wines=[] (§3 collapse rule).
   //
   // Take a wider window than 10 because the two arrays are merged
   // chronologically at the render layer (ProfileCheckins). Pulling 10 of
@@ -181,9 +182,29 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     select: {
       id: true, createdAt: true,
       _count: { select: { likes: true } },
-      session: { select: { id: true, name: true, deletedAt: true, blind: true } },
+      session: {
+        select: {
+          id: true, name: true, deletedAt: true, blind: true,
+          hostName: true, hostUserId: true,
+        },
+      },
     },
   })
+
+  // Per-wine bulk-load for the session feed_items, mirroring /api/feed.
+  // Tombstoned sessions surface their wines fully (the live blind
+  // invariant ends at delete — see SessionFeedPair comment).
+  const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f => {
+    if (!f.session) return []
+    return [{
+      authorId: userId,
+      sessionId: f.session.id,
+      blind: !!f.session.blind,
+      deleted: !!f.session.deletedAt,
+      hostUserId: f.session.hostUserId ?? null,
+    }]
+  })
+  const sessionWines = await loadSessionFeedWines(sessionPairs, viewerId)
 
   // Hydrate viewer's "liked" state across BOTH standalone and session
   // feed_items in one batch lookup.
@@ -252,7 +273,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       ratings: user.lifetimeRatings,
       sessions: user.lifetimeSessionsJoined,
       badges: user._count.earnedBadges,
-      checkins: standaloneCount,
+      checkins: tastingCount,
       followers: adjustedFollowers,
       following: adjustedFollowing,
     },
@@ -286,17 +307,26 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
         tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
       }]
     }),
-    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => ({
-      id: f.id,
-      sessionId: f.session?.id ?? null,
-      // §8 contract: when soft-deleted, the session's name is scrubbed
-      // (NULL). Renderer collapses to "[deleted session]" without a link.
-      sessionName: f.session?.deletedAt ? null : (f.session?.name ?? null),
-      deleted: !!f.session?.deletedAt,
-      blind: !!f.session?.blind,
-      createdAt: f.createdAt,
-      likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
-      liked: likedSet.has(f.id),
-    })),
+    recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => {
+      const deleted = !!f.session?.deletedAt
+      const wines = !f.session
+        ? []
+        : (sessionWines.get(pairKey(userId, f.session.id)) ?? [])
+      return {
+        id: f.id,
+        sessionId: f.session?.id ?? null,
+        // §8 contract: when soft-deleted, the session's name + hostName
+        // are scrubbed (NULL). Renderer collapses to "[deleted session]"
+        // without a link or per-wine enumeration.
+        sessionName: deleted ? null : (f.session?.name ?? null),
+        hostName: deleted ? null : (f.session?.hostName ?? null),
+        deleted,
+        blind: !!f.session?.blind,
+        wines,
+        createdAt: f.createdAt,
+        likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
+        liked: likedSet.has(f.id),
+      }
+    }),
   }
 }

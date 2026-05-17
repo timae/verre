@@ -253,7 +253,20 @@ function clean(v: unknown): string {
 function cleanUrl(v: unknown): string {
   const s = clean(v)
   if (!s) return ''
-  return /^https?:\/\/\S+$/i.test(s) ? s : ''
+  // Auto-prepend https:// when the user typed a bare domain ("example.com").
+  // Avoids the silent-drop trap where a paste without scheme would appear
+  // saved but never render. URL-validate the result — without this,
+  // `javascript:alert(1)` would prepend to `https://javascript:alert(1)`,
+  // a non-navigable string that browsers reject on click but pollutes
+  // the DB.
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`
+  try {
+    const u = new URL(candidate)
+    if ((u.protocol !== 'https:' && u.protocol !== 'http:') || !u.hostname) return ''
+    return u.toString()
+  } catch {
+    return ''
+  }
 }
 
 // ISO 3166-1 alpha-2 allow-list. Normalize and validate at the write
@@ -387,8 +400,20 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
       hostName: meta.host,
       hostUserId: meta.hostUserId,
       name: meta.name || null,
+      // `blind` must round-trip to Postgres for the SessionFeedCard
+      // redaction predicate (lib/sessionFeedWines.ts). Pre-rewire the
+      // column existed but was never written, so every Postgres-side
+      // read of `blind` came back NULL and redaction silently no-op'd
+      // on the feed / profile surfaces. Live session route reads from
+      // Redis where blind WAS set — that's why the bug stayed dormant.
+      blind: !!meta.blind,
       createdAt: new Date(meta.createdAt),
     },
+    // Note: `blind` is intentionally NOT in the update path. Sessions
+    // can't be toggled blind ↔ non-blind mid-flight (no UI for it),
+    // and the create path already captures the right value at session
+    // birth. Leaving it out of update avoids accidentally flipping it
+    // if a future meta-update code path forgets to carry it.
     update: { name: meta.name || undefined },
     select: { id: true },
   })

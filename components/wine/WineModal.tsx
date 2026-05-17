@@ -72,11 +72,24 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
   // React commits saving=true and the buttons disable themselves.
   // The ref flips synchronously and gates entry to commitAndSwap.
   const commitInFlightRef = useRef(false)
-  // `kind` drives the copy variant of the go-back bubble (rating / note / both).
-  const [lastSwap, setLastSwap] = useState<{
-    fromWineId: string
-    kind: 'rating-and-note' | 'rating' | 'note'
+  // Seed passed from runUndo → the wine-change effect. When the user
+  // taps Undo from a different wine, we navigate back AND want the
+  // rate-pane to show the just-restored values. Polling hasn't landed
+  // yet, so reading `myRatings[wineId]` in the effect would show stale
+  // pre-undo data for one tick. The ref carries the canonical post-
+  // undo value through the activeWineId change. Cleared on consumption.
+  const pendingUndoSeedRef = useRef<{ wineId: string; value: RatingValue } | null>(null)
+  // Undo chip — surfaces after every commit (POST or Reset DELETE) and
+  // gives a 7s window to revert. `priorRating` is the server-state
+  // snapshot at commit time: null = no prior rating existed (undo means
+  // DELETE), non-null = restore those values (undo means re-POST).
+  // `pending` flips while the undo op is in-flight so the chip can grey
+  // itself out and reject double-tap. Replaces the legacy go-back bubble.
+  const [lastUndo, setLastUndo] = useState<{
+    wineId: string
     name: string
+    priorRating: RatingValue | null
+    pending: boolean
   } | null>(null)
   // Slide animation snapshot. Direction determines track order + start offset:
   //   'up'   → [OLD, NEW], y: 0 → -wrapperH. Matches pull-up gesture.
@@ -133,12 +146,21 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       mountedRef.current = true
       return
     }
-    const next = myRatings[activeWineId]
-    setRating({
-      score: next?.score || 0,
-      flavors: (next?.flavors as Record<string, number>) || {},
-      notes: next?.notes || '',
-    })
+    // If runUndo just navigated us here with a freshly-restored value,
+    // prefer it over the polled `myRatings[activeWineId]` — polling
+    // hasn't necessarily landed the post-undo state yet.
+    const seed = pendingUndoSeedRef.current
+    if (seed && seed.wineId === activeWineId) {
+      setRating(seed.value)
+      pendingUndoSeedRef.current = null
+    } else {
+      const next = myRatings[activeWineId]
+      setRating({
+        score: next?.score || 0,
+        flavors: (next?.flavors as Record<string, number>) || {},
+        notes: next?.notes || '',
+      })
+    }
     setBookmarked(bookmarkedIds?.has(activeWineId) || false)
     setCommitError(null)
     setProvenanceOpen(false)
@@ -350,6 +372,147 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     return unregister
   })
 
+  // Convert a server-side RatingMeta (or undefined for "no prior rating")
+  // into the RatingValue shape used by the rate pane + commit body. The
+  // shapes differ only by `at` (server-side write timestamp), which is
+  // irrelevant for re-POSTing.
+  function existingToRatingValue(e: typeof existing): RatingValue | null {
+    if (!e) return null
+    return {
+      score: e.score ?? 0,
+      flavors: (e.flavors as Record<string, number>) ?? {},
+      notes: e.notes ?? '',
+    }
+  }
+
+  // Publish the undo chip for the most recent commit. Latest-wins —
+  // a fresh commit replaces any prior chip, since users usually act
+  // on the LAST thing they did.
+  function publishUndoChip(c: NonNullable<typeof lastUndo>): void {
+    setLastUndo(c)
+  }
+
+  // Slide the modal from the current wine to `targetWineId`. Same
+  // animation primitives commitAndSwap uses, but no commit step.
+  // Returns true if the slide was kicked off (caller hands gate
+  // ownership to onComplete); false if reduced-motion / edge / no
+  // scrollRef (caller releases the gate itself). MUST be called with
+  // commitInFlightRef already true — the caller owns the in-flight
+  // gate; this helper just decides whether to keep it through the
+  // animation or hand it back.
+  function playSlide(args: {
+    fromWineId: string
+    fromRating: RatingValue
+    fromIdx: number
+    toIdx: number
+    fromPull: number
+  }): boolean {
+    const { fromWineId, fromRating, fromIdx, toIdx, fromPull } = args
+    const reduced = typeof window !== 'undefined'
+      && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
+      && fromIdx !== toIdx && scrollRef.current != null
+    if (!willAnimate) {
+      slideOffset.set(0)
+      return false
+    }
+    const axis: 'x' | 'y' = window.matchMedia('(max-width: 639px)').matches ? 'y' : 'x'
+    const S = axis === 'y' ? scrollRef.current!.clientHeight : scrollRef.current!.clientWidth
+    slideSizeRef.current = S
+    const direction = toIdx > fromIdx ? 'up' : 'down'
+    const startOffset = axis === 'y'
+      ? (direction === 'up' ? fromPull : -S + fromPull)
+      : (direction === 'up' ? 0 : -S)
+    setOutgoing({
+      wineId: fromWineId,
+      pane,
+      rating: fromRating,
+      direction,
+      fromPullDistance: axis === 'y' ? fromPull : 0,
+      axis,
+    })
+    const endOffset = direction === 'up' ? -S : 0
+    if (slideAnimRef.current) slideAnimRef.current.stop()
+    slideOffset.set(startOffset)
+    slideAnimRef.current = animate(slideOffset, endOffset, {
+      duration: 0.3,
+      ease: [0.25, 0.1, 0.25, 1],
+      onComplete: () => {
+        slideOffset.set(0)
+        if (scrollRef.current) scrollRef.current.scrollTop = 0
+        setOutgoing(null)
+        slideAnimRef.current = null
+        commitInFlightRef.current = false
+      },
+    })
+    return true
+  }
+
+  // Run the inverse of the most-recent commit. priorRating=null means
+  // the commit was a first engagement → undo is DELETE. priorRating
+  // non-null means an edit/overwrite → undo re-POSTs the prior values
+  // (which the upsert will overwrite the just-committed change with).
+  // No new chip is published on undo: looping the chip would be a
+  // confusing "Undo your undo?" UX. After undo, the chip dismisses.
+  async function runUndo(c: NonNullable<typeof lastUndo>): Promise<void> {
+    setLastUndo(prev => prev && prev.wineId === c.wineId ? { ...prev, pending: true } : prev)
+    let ok = false
+    if (c.priorRating == null) {
+      // Inverse of a first-engagement POST. Mirror resetRating's wire
+      // call without the local-state side effects (the chip belongs to
+      // the wine the user may have already swapped away from).
+      try {
+        const res = await sessionFetch(code, `/api/session/${code}/rate/${c.wineId}`, {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        ok = res.ok
+      } catch { ok = false }
+    } else {
+      ok = await commitWineRating(c.wineId, c.priorRating)
+    }
+    if (ok) {
+      refresh()
+      // Navigate back to the wine the user just undid. Without this,
+      // tapping Undo on a chip for wine 2 while looking at wine 3
+      // restores the server but leaves the user staring at the wrong
+      // wine — confusing.
+      //
+      // Setting `pendingUndoSeedRef` BEFORE setActiveWineId lets the
+      // wine-change effect (line 137) read it and seed the rate-pane
+      // with the restored value instead of the stale `myRatings[wineId]`
+      // (server-state polling hasn't necessarily landed yet). The ref
+      // is cleared by the effect after consumption.
+      pendingUndoSeedRef.current = { wineId: c.wineId, value: c.priorRating ?? { score: 0, flavors: {}, notes: '' } }
+      if (c.wineId !== activeWineId) {
+        // Run the slide via the same primitive commitAndSwap uses, so
+        // an undo navigates with the same visual language as a swap.
+        // The in-flight gate prevents collisions with a concurrent
+        // commitAndSwap; if a slide is already running, skip the
+        // animation (rare — user would have to tap Undo mid-swap).
+        const fromIdx = currentIndex
+        const toIdx = wines.findIndex(w => w.id === c.wineId)
+        if (!commitInFlightRef.current) {
+          commitInFlightRef.current = true
+          const slideRunning = playSlide({
+            fromWineId: activeWineId,
+            fromRating: rating,
+            fromIdx, toIdx,
+            fromPull: 0,
+          })
+          if (!slideRunning) commitInFlightRef.current = false
+        }
+        if (scrollRef.current) scrollRef.current.scrollTop = 0
+        setActiveWineId(c.wineId)
+      } else {
+        // Already viewing the wine — no navigation, apply the seed inline.
+        setRating(pendingUndoSeedRef.current.value)
+        pendingUndoSeedRef.current = null
+      }
+    }
+    setLastUndo(null)
+  }
+
   // Primitive used by commitRating (save+close) and commitAndSwap (save+navigate).
   // Does NOT touch activeWineId / onClose / refresh — those are the caller's concern.
   async function commitWineRating(targetWineId: string, value: RatingValue): Promise<boolean> {
@@ -425,6 +588,11 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       const fromWineId = activeWineId
       const fromWine = wine
       const fromRating = rating
+      // Snapshot the server's view of the rating BEFORE the POST fires.
+      // Undo restores this. `existing` is fresh from polling so this
+      // captures the canonical pre-commit state. null when no rating
+      // existed yet (first engagement) — undo path will then DELETE.
+      const existingPrior = existingToRatingValue(existing)
       const fromIdx = currentIndex
       const toIdx = wines.findIndex(w => w.id === targetWineId)
       // Snapshot pull-distance NOW, before any await. usePullToSwap's
@@ -441,96 +609,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       // under our control across the commit await — no snap-back, no
       // visible glitch on slow networks. If the commit later FAILS we
       // abort the slide and surface the error inline.
-      const reduced = typeof window !== 'undefined'
-        && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-      const willAnimate = !reduced && fromIdx >= 0 && toIdx >= 0
-        && fromIdx !== toIdx && scrollRef.current != null
-      if (willAnimate) {
-        // Pick the slide axis from viewport width. Mobile (≤639px)
-        // keeps the original vertical conveyor that matches the touch
-        // pull gesture. Desktop (>639px) uses a horizontal page-turn
-        // — pull is touch-only and won't fire there anyway, so the
-        // axis is governed entirely by the navigation source (footer
-        // buttons / arrow keys). 639px is the same breakpoint as the
-        // .hide-narrow class in globals.css for consistency.
-        // No `typeof window` guard needed: willAnimate already required
-        // `scrollRef.current != null`, which is browser-only.
-        const axis: 'x' | 'y' = window.matchMedia('(max-width: 639px)').matches ? 'y' : 'x'
-        // Capture the track's size along the active axis at slide
-        // start. Stays stable across the 300ms animation even if the
-        // user resizes the browser (rare; recoverable on next slide).
-        const S = axis === 'y' ? scrollRef.current!.clientHeight : scrollRef.current!.clientWidth
-        slideSizeRef.current = S
-        const direction = toIdx > fromIdx ? 'up' : 'down'
-        // The pull-rubber-band offset only makes sense on a vertical
-        // slide (pull is vertical-only by design). For horizontal
-        // slides on desktop, pulling-then-arrow-keying is an edge
-        // case; carrying the vertical pull offset into a horizontal
-        // start position would translate the pane SIDEWAYS from
-        // where the user just visually pulled it down. Zero it.
-        const startOffset = axis === 'y'
-          ? (direction === 'up' ? fromPull : -S + fromPull)
-          : (direction === 'up' ? 0 : -S)
-        setOutgoing({
-          wineId: fromWineId,
-          pane,
-          rating: fromRating,
-          direction,
-          fromPullDistance: axis === 'y' ? fromPull : 0,
-          axis,
-        })
-        // Track layout in the JSX (identical math for both axes,
-        // just swap "track-y" for "track-x" and H for W):
-        //   - direction='up' → [OLD pane, NEW pane]. OLD at 0..S,
-        //     NEW at S..2S. Offset starts at fromPull (continuing
-        //     pull motion) and animates to -S (OLD exits leading,
-        //     NEW arrives from trailing).
-        //   - direction='down' → [NEW pane, OLD pane]. NEW at 0..S,
-        //     OLD at S..2S. Offset starts at -S+fromPull and
-        //     animates to 0 (NEW arrives from leading, OLD exits
-        //     trailing).
-        // Both panes are framer flex children (column for 'y', row
-        // for 'x'). They cannot drift apart.
-        const endOffset = direction === 'up' ? -S : 0
-        // Stop any prior in-flight slide before starting a new one.
-        // Framer's animate() does NOT preempt concurrent animations
-        // on the same motion value — both keep ticking and the late
-        // finisher's onComplete (slideOffset.set(0)+setOutgoing(null)) can
-        // nuke a fresh slide. (Defensive: with the in-flight gate
-        // held through onComplete, this path should be unreachable.
-        // Kept as a belt-and-braces invariant.)
-        if (slideAnimRef.current) slideAnimRef.current.stop()
-        slideOffset.set(startOffset)
-        slideAnimRef.current = animate(slideOffset, endOffset, {
-          duration: 0.3,
-          ease: [0.25, 0.1, 0.25, 1],  // ease-out
-          onComplete: () => {
-            // ⚠️ Reset slideOffset BEFORE clearing outgoing. When `outgoing`
-            // clears, the track collapses from 2 children (OLD pane +
-            // scrollRef) back to 1 (scrollRef occupying full wrapper
-            // via flex:1). The translate must be 0 at that moment, or
-            // scrollRef sits off-screen (shifted by ±H) for one frame;
-            // then the pull-sync effect detects pullDistance=0 + slideOffset≠0
-            // and spring-animates back to 0 — visible as a "rubber-band
-            // in from above" glitch right after settle.
-            slideOffset.set(0)
-            // Defensive scrollTop=0 in case the user managed to touch
-            // scrollRef mid-slide and trigger a native iOS scroll. The
-            // earlier reset (before setActiveWineId) wouldn't catch a
-            // scroll initiated AFTER setActiveWineId fired.
-            if (scrollRef.current) scrollRef.current.scrollTop = 0
-            setOutgoing(null)
-            slideAnimRef.current = null
-            commitInFlightRef.current = false
-          },
-        })
-        releaseInFinally = false
-      } else {
-        // Reduced-motion or first/last edge: no slide. Make sure slideOffset
-        // is at 0 in case a prior slide / pull left it non-zero (rare,
-        // but defensive).
-        slideOffset.set(0)
-      }
+      // Fire the slide BEFORE the network commit (see comment above —
+      // awaiting the POST first would let usePullToSwap.reset() flush
+      // pullDistance=0 to React before the slide takes ownership of
+      // slideOffset, producing a visible spring-back). On commit
+      // failure below we abort the slide before the user sees it.
+      const slideRunning = playSlide({ fromWineId, fromRating, fromIdx, toIdx, fromPull })
+      if (slideRunning) releaseInFinally = false
       let didCommit = false
       if (dirty) {
         const ok = await commitWineRating(fromWineId, fromRating)
@@ -561,39 +646,37 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       if (scrollRef.current) scrollRef.current.scrollTop = 0
       setActiveWineId(targetWineId)
       if (didCommit && fromWine) {
-        // Copy variant depends on what the user actually committed:
-        // - score > 0 + non-empty notes → "Rating & note saved"
-        // - score > 0 + no notes        → "Rating saved"
-        // - score === 0 + non-empty notes → "Note saved"
-        // The "note saved" case is intentional — we DO let the user
-        // commit a note without a score. The dirty gate ensures we
-        // only POST when something actually changed.
-        const hasScore = fromRating.score > 0
-        const hasNote = fromRating.notes.trim() !== ''
-        const kind: 'rating-and-note' | 'rating' | 'note' =
-          hasScore && hasNote ? 'rating-and-note'
-          : hasScore         ? 'rating'
-          :                    'note'
-        setLastSwap({ fromWineId, kind, name: fromWine.name })
-      } else {
-        setLastSwap(null)
+        // Snapshot the prior server state for undo. `existingPrior` is
+        // captured at function entry below — see the snapshot just after
+        // `fromRating`. Undo with priorRating=null = DELETE; priorRating
+        // non-null = re-POST those values to overwrite the just-committed
+        // change.
+        publishUndoChip({
+          wineId: fromWineId,
+          name: fromWine.name,
+          priorRating: existingPrior,
+          pending: false,
+        })
       }
+      // No-commit swaps (browse-only) leave the existing chip alone —
+      // the user might still want to undo a prior commit while flipping
+      // through wines they aren't editing.
     } finally {
       // Only release here if the slide didn't take ownership.
       if (releaseInFinally) commitInFlightRef.current = false
     }
   }
 
-  // Auto-dismiss the Go-back bubble after 8s. Reset whenever
-  // `lastSwap` changes (covers both "set to a fresh swap" and "user
-  // cleared it via Go back"). 8s gives a glanceable window for a
-  // distracted taster — short enough not to linger, long enough that
-  // a mid-pour conversation doesn't time it out.
+  // Auto-dismiss the undo chip after 7s. The timer resets whenever
+  // `lastUndo` changes — a fresh commit replaces the chip and starts
+  // a new window, so the user always has the same time to act on the
+  // most recent action. Skip while an undo op is in flight (don't yank
+  // the chip mid-op).
   useEffect(() => {
-    if (!lastSwap) return
-    const t = setTimeout(() => setLastSwap(null), 8000)
+    if (!lastUndo || lastUndo.pending) return
+    const t = setTimeout(() => setLastUndo(null), 7000)
     return () => clearTimeout(t)
-  }, [lastSwap])
+  }, [lastUndo])
 
   // Resolve neighbouring wine ids relative to the current position.
   // Returns null at the list bounds. Computed inline at render rather
@@ -694,7 +777,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
       }
       setSaving(false)
       refresh()
+      // Snapshot for undo BEFORE clearing — `existing` is still the
+      // pre-DELETE rating at this point.
+      const restoreTo = existingToRatingValue(existing)
       setRating({ score: 0, flavors: {}, notes: '' })
+      if (wine && restoreTo) {
+        publishUndoChip({ wineId: activeWineId, name: wine.name, priorRating: restoreTo, pending: false })
+      }
     } catch {
       setCommitError('Network error. Check your connection and try again.')
       setSaving(false)
@@ -1270,24 +1359,17 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         }}>{commitError}</div>
       )}
 
-      {/* Go-back toast portaled to document.body — floats at top of
-          viewport over the modal backdrop, iOS-style. Surfaces after
-          a successful auto-commit + swap so the user can return to
-          the wine they just left if the navigation was accidental.
-          Auto-dismisses after 5s. Whole toast is clickable (more tap
-          area on mobile). "Go back" fires commitAndSwap so any in-
-          progress edits on the new wine are saved too (or silent if
-          empty). Copy variant matches what was actually committed.
+      {/* Undo chip — portaled to document.body so it floats over the
+          modal backdrop, iOS-style. Surfaces after every commit (POST
+          via Save/swap or DELETE via Reset) and gives a 7s window to
+          revert. Tap = run inverse op (DELETE for first-engagement
+          posts, re-POST prior values for edits/resets). The wine name
+          + action label tell the user what they're about to undo.
           z-index 60 sits above the Modal (z-50). */}
-      {lastSwap && typeof document !== 'undefined' && createPortal(
+      {lastUndo && typeof document !== 'undefined' && createPortal(
         <div
           role="status"
-          onClick={() => {
-            if (saving) return
-            const target = lastSwap.fromWineId
-            setLastSwap(null)
-            commitAndSwap(target)
-          }}
+          onClick={() => { if (!lastUndo.pending) runUndo(lastUndo) }}
           style={{
             position:'fixed',
             top:'max(16px, env(safe-area-inset-top))',
@@ -1305,15 +1387,13 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
             borderRadius:10,
             boxShadow:'0 8px 24px rgba(0,0,0,0.25)',
             fontSize:12,color:'var(--fg-warm-soft)',
-            cursor: saving ? 'default' : 'pointer',
-            opacity: saving ? 0.6 : 1,
+            cursor: lastUndo.pending ? 'default' : 'pointer',
+            opacity: lastUndo.pending ? 0.6 : 1,
           }}
         >
           <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-            {lastSwap.kind === 'rating-and-note' && 'Rating & note saved on '}
-            {lastSwap.kind === 'rating'          && 'Rating saved on '}
-            {lastSwap.kind === 'note'            && 'Note saved on '}
-            <span style={{color:'var(--fg-warm)',fontWeight:600}}>{lastSwap.name}</span>
+            {lastUndo.priorRating == null ? 'Saved ' : 'Updated '}
+            <span style={{color:'var(--fg-warm)',fontWeight:600}}>{lastUndo.name}</span>
           </span>
           <span
             style={{
@@ -1326,8 +1406,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
               flexShrink:0,
             }}
           >
-            <ArrowLeftIcon size={11} />
-            <span>Go back</span>
+            <span>Undo</span>
           </span>
         </div>,
         document.body

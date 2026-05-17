@@ -35,6 +35,10 @@ Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ..
 
 The `session_id` is the only natural grouping key for "all my ratings from this tasting" and "all wines on this post." Nulling it on ratings/feed_items would collapse a user's three deleted-session posts into one indistinguishable bucket of orphaned ratings. Soft-delete preserves grouping for free, without any new column on either child table.
 
+### Blind-redaction short-circuit on tombstoned sessions
+
+Per `lib/sessionFeedWines.ts` (the bulk loader powering `<SessionFeedCard>`), the per-wine redaction predicate is `redacted = !meta.deleted && meta.blind && !revealed && !isHost && !ownsWine`. The `!meta.deleted` short-circuit means a soft-deleted blind session reveals wine identity to every viewer who could see the post — regardless of `wines.revealedAt`. Trade-off accepted: a host who deletes a blind session pre-reveal has authorised the reveal, and the alternative ("treat scrubbed-`blind` as blind") would over-redact non-blind tombstoned sessions forever (non-blind wines never have `revealedAt` set, so they'd render as "Wine #N" placeholders permanently). Cross-cutting: any new surface that renders per-wine session data MUST use `loadSessionFeedWines` and not roll its own join — the short-circuit lives in that helper and nowhere else.
+
 ## Cohost behaviour after soft-delete
 
 A deleted session is gone for everyone, including cohosts. The session-existence reads in `lib/session.ts` resolvers and `/api/session/[code]` endpoints filter `WHERE deleted_at IS NULL`, so cohost links 404 the same as everyone else's. Soft-delete is final from the user perspective; nothing about the cohost role grants visibility into tombstoned sessions.

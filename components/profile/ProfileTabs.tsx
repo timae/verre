@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import { motion, useMotionValue, animate, type PanInfo } from 'framer-motion'
 import { ProfileCheckins } from '@/components/social/ProfileCheckins'
 import { ProfilePanelBadges } from './ProfilePanelBadges'
@@ -7,13 +8,14 @@ import { ProfilePanelPeople } from './ProfilePanelPeople'
 import { ProfilePanelRatings } from './ProfilePanelRatings'
 import type { FlavorBlock } from '@/lib/profileFlavor'
 
-type Tab = 'checkins' | 'ratings' | 'badges' | 'people'
+type Tab = 'tastes' | 'ratings' | 'badges' | 'people'
 const TABS: { key: Tab; label: string }[] = [
-  { key: 'checkins', label: 'Check-ins' },
-  { key: 'ratings',  label: 'Ratings' },
-  { key: 'badges',   label: 'Badges' },
-  { key: 'people',   label: 'People' },
+  { key: 'tastes',  label: 'Tastes' },
+  { key: 'ratings', label: 'Ratings' },
+  { key: 'badges',  label: 'Badges' },
+  { key: 'people',  label: 'People' },
 ]
+const TAB_KEYS = new Set<Tab>(TABS.map(t => t.key))
 
 type CheckinSeed = Parameters<typeof ProfileCheckins>[0]['initialCheckins']
 type SessionPostSeed = NonNullable<Parameters<typeof ProfileCheckins>[0]['initialSessionPosts']>
@@ -37,19 +39,53 @@ interface Props {
   initialTab?: Tab
   stats: Stats
   flavor: FlavorBlock
+  // Mirror the active tab into ?tab=... on the URL — only meaningful
+  // on the standalone /u/[id] page. When ProfileTabs is mounted inside
+  // a modal (UserProfileModal opens over /session/[code]/wines etc.),
+  // rewriting the underlying page's URL is a leak: the URL is for the
+  // OTHER page, not this overlay. Default true; set false from modal.
+  syncToUrl?: boolean
 }
 
 const SWIPE_THRESHOLD = 60
 const SWIPE_VELOCITY = 400
 
 export function ProfileTabs({
-  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialSessionPosts, initialTab = 'checkins', stats, flavor,
+  profileUserId, profileUserName, profileUserXp, profileUserImageUrl, myId, viewerFollowsProfile, initialCheckins, initialSessionPosts, initialTab, stats, flavor, syncToUrl = true,
 }: Props) {
-  const [tab, setTab] = useState<Tab>(initialTab)
+  // URL-param tab selection: ?tab=ratings deep-links straight to that
+  // panel. Read at mount; updates flow back to the URL via router.replace
+  // on every tab change so deep-link state survives reload + back-button
+  // navigation. Falls back to the prop, then to the first tab.
+  //
+  // syncToUrl=false (e.g. when mounted inside UserProfileModal) skips
+  // both the URL read AND the write — the modal sits on top of an
+  // unrelated page whose URL we mustn't pollute.
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+  const paramTab = syncToUrl ? searchParams.get('tab') : null
+  const seedTab: Tab = (paramTab && TAB_KEYS.has(paramTab as Tab))
+    ? paramTab as Tab
+    : (initialTab ?? TABS[0].key)
+  const [tab, setTab] = useState<Tab>(seedTab)
   // Track which tabs have ever been active so adjacent panels can lazy-mount
   // without losing state when the user swipes away and back.
-  const [visited, setVisited] = useState<Set<Tab>>(() => new Set([initialTab]))
+  const [visited, setVisited] = useState<Set<Tab>>(() => new Set([seedTab]))
   useEffect(() => { setVisited(prev => prev.has(tab) ? prev : new Set(prev).add(tab)) }, [tab])
+  // Mirror the active tab into the URL. `replace` (not `push`) keeps the
+  // back button on the previous PAGE, not on each tab toggle. Skip the
+  // initial render — the URL already has the value we read.
+  const firstRunRef = useRef(true)
+  useEffect(() => {
+    if (!syncToUrl) return
+    if (firstRunRef.current) { firstRunRef.current = false; return }
+    const params = new URLSearchParams(searchParams.toString())
+    if (tab === TABS[0].key) params.delete('tab')
+    else params.set('tab', tab)
+    const qs = params.toString()
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+  }, [tab, pathname, router, searchParams, syncToUrl])
   const containerRef = useRef<HTMLDivElement>(null)
   const [width, setWidth] = useState(0)
   const x = useMotionValue(0)
@@ -89,7 +125,7 @@ export function ProfileTabs({
   }
 
   const tiles: { label: string; value: number; tab: Tab }[] = [
-    { label: 'check-ins', value: stats.checkins,  tab: 'checkins' },
+    { label: 'tastes',    value: stats.checkins,  tab: 'tastes' },
     { label: 'ratings',   value: stats.ratings,   tab: 'ratings' },
     { label: 'badges',    value: stats.badges,    tab: 'badges' },
     { label: 'followers', value: stats.followers, tab: 'people' },
@@ -133,8 +169,8 @@ export function ProfileTabs({
           dragElastic={0.12}
           onDragEnd={onDragEnd}
         >
-          <PaneShell active={tab === 'checkins'} width={width}>
-            {visited.has('checkins') && (
+          <PaneShell active={tab === 'tastes'} width={width}>
+            {visited.has('tastes') && (
               <ProfileCheckins
                 profileUserId={profileUserId}
                 profileUserName={profileUserName}

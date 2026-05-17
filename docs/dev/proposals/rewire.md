@@ -611,19 +611,26 @@ This is the highest-risk phase. **Rollback (current scale):** restore the `pg_du
 - **Golden-set diff**: snapshot `/api/feed?cursor=now` JSON for 5–10 representative users pre-migration; replay post-migration; diff. Expected differences: standalone check-ins now appearing as `feed_items` with same content; session feed_items appearing as stubs.
 
 
-### Phase 3 — UI rewire (aggregate session card)
+### Phase 3 — UI rewire (aggregate session card) — SHIPPED
 **Branch**: `feature/rewire-p3-aggregate-card`
 
 (Was phase 4 in earlier drafts; renumbered after the 2+3 merge.)
 
-- New `<SessionFeedCard>` component for `feed_items.kind='session'` — renders the host name + session name + a list/grid of wines rated by the user, with their scores. Likes + tags on the card, not per-wine. Tombstoned-session variant renders "[deleted session]" and unlinks.
-- `<CheckinCard>` (the existing one) handles `feed_items.kind='standalone'`.
-- `FeedClient` switches on `kind` to pick the renderer.
-- Profile gets the three-tab split (Posts / Tastes / Wishlist). Tastes-tab UI shape kept minimal — chronological list is fine for the rewire; richer grouping is future work. Each Tastes row shows session context: live session → link, deleted session → "[deleted session]" label, no session → "standalone."
-- **Ship the in-session rating-page undo affordance** (per `.local/future-work-rewire.md`). This is a hard prerequisite for the engagement-deletion auto-delete rule from §3 — without undo, a tap-fumble destroys data. Undo lives on the rating page; pattern is a 5–10 second snackbar with the deletion deferred until the window expires.
-- Pre-reveal blind-session rating display: wire the existing redaction helper (used by the live session view) into the Tastes tab and the Posts tab so blind ratings render with all wine-identifying fields hidden until reveal. The user's own score/flavours/notes/images stay visible.
+What shipped, with the divergences from the original spec called out:
 
-This phase is pure frontend; no schema, no API.
+- **`<SessionFeedCard>`** (`components/social/SessionFeedCard.tsx`) renders `feed_items.kind='session'` with per-wine fan-out, author byline, host name, session name, and a card-level Like button. Wire shape in `lib/feedTypes.ts` (`SessionFeedPayload` + `SessionFeedWine`). Bulk loader in `lib/sessionFeedWines.ts` runs ONE Prisma query per feed page across all session posts.
+- **Tombstoned-session render diverges from the §3 collapse rule** as originally stated. The original §3 said "the post collapses to a single '[deleted session]' tombstone card with no per-wine enumeration." Shipped behaviour: "[deleted session]" replaces the session-level identity in the header, but the per-wine list still renders. The blind-redaction predicate short-circuits on `meta.deleted` — a post-delete blind tasting reveals wine identity regardless of `wines.revealedAt`. Trade-off accepted: a host who deletes a blind session pre-reveal authorises the reveal; participants engaged with the wine; the alternative ("treat scrubbed-blind as blind") over-redacts non-blind tombstoned sessions forever because non-blind wines never have `revealedAt` set.
+- **`<CheckinCard>`** (the existing one) continues to handle `feed_items.kind='standalone'`. `FeedClient` and `ProfileCheckins` switch on `type`.
+- **Profile rename, not three-tab split.** The original spec said "Posts / Tastes / Wishlist". Shipped: rename the existing "Check-ins" tab to "Tastes" (same content — feed_items merged chronologically), keep Ratings (flavour wheel viz), keep Badges, keep People. Wishlist stays at `/me/saved` for now. Stat tile now sources `prisma.rating.count` (every rating row including chips-only and score-zero) instead of standalone-only — semantic mismatch with `users.lifetime_ratings` captured in `.local/future-work-rewire.md`. Future Tastes-tab work (search field, style filter, group-by-wine) all in `.local/future-work-rewire.md`.
+- **Tab URL params** (`?tab=ratings/badges/people`) for deep links. `?tab=tastes` is the default and gets stripped. `UserProfileModal` passes `syncToUrl={false}` so opening a profile preview over `/session/<code>/wines` doesn't rewrite the underlying page's URL.
+- **Engagement-deletion cascade** (`lib/engagementCascade.ts`) fires from two trigger sites: the POST handler when the upsert lands an empty payload (`empty-only` mode — safe predicate gates the destruction) and the DELETE handler (Reset path — `force` mode). Both wipe the Redis per-rating placeholder, gated on the cascade's `boolean` return so a concurrent engaged POST from another tab doesn't lose its Redis state. The lifetime-counter bump skips when the cascade reaped to avoid permanent drift.
+- **Undo chip in WineModal** replaces the legacy go-back bubble in the same portal slot. 7s auto-dismiss. Surfaces after every commit (Save, swap-while-dirty, Reset). `priorRating` snapshot drives the inverse op: null → DELETE; non-null → re-POST. Tap navigates back to the just-acted wine with the same slide animation a swap uses. Hoist to a session-scoped provider (so modal close doesn't dismiss the chip) is captured in `.local/future-work-rewire.md`.
+- **Pre-reveal blind-session rating display** wires through `lib/sessionFeedWines.ts` server-side redaction. The user's own score/chips/notes/`rating_images` stay visible regardless; only wine identity hides.
+- **Pre-existing bug surfaced**: `pgUpsertSession` never wrote the `blind` column to Postgres. Live session view reads from Redis, so the bug was dormant — until the feed/profile started reading `blind` from Postgres for the redaction predicate. Fixed in chunk E (write on create; intentionally NOT in the update path — no UI to toggle mid-flight).
+
+Cross-cutting invariants added to `docs/dev/social-feed.md` and `docs/dev/session-deletion.md`. New regression smoketests at `.local/test-env/scripts/section-rewire-p3-*.sh`.
+
+This phase is pure frontend + the engagement-deletion handler + the pgUpsertSession blind-column fix. No schema, no migration.
 
 ### Phase 4 — drop the old tables
 **Branch**: `feature/rewire-p4-drop-checkins`

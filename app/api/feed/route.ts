@@ -11,6 +11,8 @@ import {
 } from '@/lib/profileVisibility'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds } from '@/lib/userBlock'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
 
@@ -126,9 +128,15 @@ export async function GET(req: NextRequest) {
         },
       },
       // Session is included for kind='session' rendering — we read
-      // deletedAt (tombstone label), name, blind (phase 3 redaction).
-      // Standalone rows have sessionId=NULL so this is undefined for them.
-      session: { select: { id: true, deletedAt: true, name: true, blind: true } },
+      // deletedAt (tombstone label), name, blind (phase 3 redaction),
+      // hostName + hostUserId (header byline + own-host bypass for the
+      // SessionFeedCard wine join).
+      session: {
+        select: {
+          id: true, deletedAt: true, name: true, blind: true,
+          hostName: true, hostUserId: true,
+        },
+      },
     },
     orderBy: { createdAt: 'desc' },
     take: PAGE,
@@ -208,6 +216,24 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  // Per-wine ratings for kind='session' feed_items, in one bulk query
+  // (one query per page, not per session post). Server-side redaction
+  // applied — never ship unrevealed blind-wine identity over the wire.
+  // Tombstoned sessions short-circuit redaction (see SessionFeedPair
+  // comment for the trade-off); the session-level identity (name + host)
+  // is still scrubbed at the payload layer below.
+  const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f => {
+    if (f.kind !== 'session' || !f.session) return []
+    return [{
+      authorId: f.user.id,
+      sessionId: f.session.id,
+      blind: !!f.session.blind,
+      deleted: !!f.session.deletedAt,
+      hostUserId: f.session.hostUserId ?? null,
+    }]
+  })
+  const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
+
   // Badge unlocks (last 30 days). Same allowed-author filter — a badge
   // unlock is metadata about a user, so a `public-mutual` profile's badge
   // shouldn't show up in a non-mutual's feed.
@@ -224,16 +250,15 @@ export async function GET(req: NextRequest) {
   //     via the existing CheckinCard. checkin.id is now the feed_item.id;
   //     the migration preserves id-equality with the legacy checkins.id
   //     so cached client URLs (PATCH/DELETE, like) keep working.
-  //   - 'session_stub' — session feed_items (kind='session'). Phase 2
-  //     emits a minimal stub shape; phase 3 ships SessionFeedCard which
-  //     will fan-out to the wines rated by the user in that session.
-  //     Deleted-session collapse: if session.deletedAt is non-null, the
-  //     stub renders as "[deleted session]" with no link.
+  //   - 'session' — session feed_items (kind='session'). Phase 3 carries
+  //     a per-wine `wines: SessionFeedWine[]` array (server-side redacted
+  //     for blind sessions). Tombstoned sessions collapse to deleted=true
+  //     with wines=[] and the renderer shows "[deleted session]".
   //   - 'badge' — user_badges (unchanged).
   type OutgoingItem =
-    | { type: 'checkin';      createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
-    | { type: 'session_stub'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: Record<string, unknown> }
-    | { type: 'badge';        createdAt: Date; author: { id: number; name: string; imageUrl: string | null }; badge: { id: string; name: string; icon: string; description: string; category: string; rarity: string; xp_reward: number } }
+    | { type: 'checkin'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
+    | { type: 'session'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: SessionFeedPayload }
+    | { type: 'badge';   createdAt: Date; author: { id: number; name: string; imageUrl: string | null }; badge: { id: string; name: string; icon: string; description: string; category: string; rarity: string; xp_reward: number } }
   const items: OutgoingItem[] = [
     ...feedItems.flatMap((f): OutgoingItem[] => {
       if (f.kind === 'standalone') {
@@ -273,26 +298,28 @@ export async function GET(req: NextRequest) {
         }]
       }
       if (f.kind === 'session') {
-        // Session stub. Phase 3 will replace this with a real aggregate
-        // card. For now: surface enough for the client to render "X had
-        // a tasting" plus a tombstone label when the session is deleted.
         const s = f.session
+        const deleted = !!s?.deletedAt
+        // Tombstoned sessions still ship their per-wine list (the post
+        // is a preserved record); only the session-level identity
+        // (name + host) is scrubbed. Per-wine identity is still gated
+        // by the blind/revealed predicate inside loadSessionFeedWines.
+        const wines = !s ? [] : (sessionWines.get(pairKey(f.user.id, s.id)) ?? [])
         return [{
-          type: 'session_stub' as const,
+          type: 'session' as const,
           createdAt: f.createdAt,
           author: f.user,
           session: {
             id: f.id,
             sessionId: s?.id ?? null,
-            // §8 contract: when soft-deleted, name + code are scrubbed
-            // and deletedAt is set. Renderer collapses to "[deleted
-            // session]" without a link.
-            sessionName: s?.deletedAt ? null : (s?.name ?? null),
-            deleted: !!s?.deletedAt,
-            // blind/redaction handling is phase 3 work (per-wine redaction
-            // via lib/wineRedaction.ts). The stub doesn't enumerate wines
-            // yet, so blind is forwarded but unused here.
+            // §8 contract: when soft-deleted, name + hostName + code are
+            // scrubbed. Renderer shows the "[deleted session]" header in
+            // place of the live name; the wine list still renders.
+            sessionName: deleted ? null : (s?.name ?? null),
+            hostName: deleted ? null : (s?.hostName ?? null),
+            deleted,
             blind: !!s?.blind,
+            wines,
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             liked: myLikes.has(f.id),
           },
