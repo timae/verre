@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { BADGE_MAP } from '@/lib/badges'
 import { decimalToNumber } from '@/lib/decimal'
 import {
   batchLoadVisibilities,
@@ -133,7 +132,7 @@ export async function GET(req: NextRequest) {
       // SessionFeedCard wine join).
       session: {
         select: {
-          id: true, deletedAt: true, name: true, blind: true,
+          id: true, deletedAt: true, name: true, blind: true, blindForEveryone: true,
           hostName: true, hostUserId: true,
         },
       },
@@ -228,24 +227,20 @@ export async function GET(req: NextRequest) {
       authorId: f.user.id,
       sessionId: f.session.id,
       blind: !!f.session.blind,
+      blindForEveryone: !!f.session.blindForEveryone,
       deleted: !!f.session.deletedAt,
       hostUserId: f.session.hostUserId ?? null,
     }]
   })
   const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
 
-  // Badge unlocks (last 30 days). Same allowed-author filter — a badge
-  // unlock is metadata about a user, so a `public-mutual` profile's badge
-  // shouldn't show up in a non-mutual's feed.
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600 * 1000)
-  const badges = await prisma.userBadge.findMany({
-    where: { userId: { in: allowedNetworkIds }, earnedAt: { lt: cursor, gt: thirtyDaysAgo } },
-    include: { user: { select: { id: true, name: true, imageUrl: true } } },
-    orderBy: { earnedAt: 'desc' },
-    take: PAGE,
-  })
+  // Badge unlocks used to merge in as standalone 'badge' feed items.
+  // Removed: they cluttered the feed and didn't carry the context of
+  // which post triggered them. The /me/badges surface remains the
+  // canonical place to see what someone has earned. Inline badge
+  // attribution on the triggering post is tracked as a follow-up.
 
-  // Merge and sort. Three discriminated payload shapes:
+  // Merge and sort. Two discriminated payload shapes:
   //   - 'checkin' — standalone feed_items (kind='standalone'). Renders
   //     via the existing CheckinCard. checkin.id is now the feed_item.id;
   //     the migration preserves id-equality with the legacy checkins.id
@@ -254,11 +249,9 @@ export async function GET(req: NextRequest) {
   //     a per-wine `wines: SessionFeedWine[]` array (server-side redacted
   //     for blind sessions). Tombstoned sessions collapse to deleted=true
   //     with wines=[] and the renderer shows "[deleted session]".
-  //   - 'badge' — user_badges (unchanged).
   type OutgoingItem =
     | { type: 'checkin'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
     | { type: 'session'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: SessionFeedPayload }
-    | { type: 'badge';   createdAt: Date; author: { id: number; name: string; imageUrl: string | null }; badge: { id: string; name: string; icon: string; description: string; category: string; rarity: string; xp_reward: number } }
   const items: OutgoingItem[] = [
     ...feedItems.flatMap((f): OutgoingItem[] => {
       if (f.kind === 'standalone') {
@@ -327,12 +320,6 @@ export async function GET(req: NextRequest) {
       }
       return []  // unknown kind — drop defensively
     }),
-    ...badges.map(b => ({
-      type: 'badge' as const,
-      createdAt: b.earnedAt,
-      author: b.user,
-      badge: BADGE_MAP[b.badgeId] ?? { id: b.badgeId, name: b.badgeId, icon: '🏅', description: '', category: '', rarity: 'common', xp_reward: 0 },
-    })),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, PAGE)
 
   const nextCursor = items.length === PAGE

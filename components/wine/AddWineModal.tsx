@@ -229,13 +229,38 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
   }
 
   return (
-    <Modal onClose={requestClose} maxWidth={600} maxHeight="90vh">
-        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
+    <Modal onClose={requestClose} maxWidth={600} minHeight="90svh" maxHeight="90svh">
+      <div style={{
+        display:'flex',flexDirection:'column',
+        flex:1,minHeight:0,
+      }}>
+        <div style={{
+          display:'flex',alignItems:'center',justifyContent:'space-between',
+          flexShrink:0,
+          marginBottom:14,paddingBottom:14,
+          borderBottom:'1px solid var(--border)',
+        }}>
           <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em'}}>
             {isEdit ? 'Edit wine' : 'Add wine'}
           </div>
-          <button className="btn-s" onClick={requestClose} style={{fontSize:9}}>close</button>
+          <button
+            onClick={requestClose}
+            aria-label="Close"
+            style={{
+              background:'transparent',border:'none',
+              width:32,height:32,borderRadius:8,
+              color:'var(--fg-dim)',cursor:'pointer',
+              display:'inline-flex',alignItems:'center',justifyContent:'center',
+              flexShrink:0,fontSize:18,lineHeight:1,
+            }}
+          >×</button>
         </div>
+
+        {/* Scrollable body */}
+        <div style={{
+          flex:1,minHeight:0,overflowY:'auto',
+          marginRight:-8,paddingRight:8,
+        }}>
 
         {/* Photo + scan */}
         <div style={{marginBottom:14,border:'1px solid var(--border)',borderRadius:12,padding:12,background:'var(--bg3)'}}>
@@ -371,9 +396,26 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
           )}
         </div>
 
-        {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
-        <button className="btn-p" onClick={save} disabled={saving}>{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>
-        <button className="btn-g" onClick={requestClose}>cancel</button>
+        </div>{/* /scrollable body */}
+
+        {/* Sticky footer — error banner stays visible regardless of scroll
+            position; Save is the only action (close paths: X / Escape /
+            backdrop / dirty-confirm). The cancel ghost button was dropped
+            as redundant. */}
+        <div style={{
+          marginTop:14,paddingTop:14,
+          borderTop:'1px solid var(--border)',
+          display:'flex',flexDirection:'column',gap:8,flexShrink:0,
+        }}>
+          {error && <p style={{color:'#e07070',fontSize:11,margin:0}}>{error}</p>}
+          <button
+            className="btn-p"
+            onClick={save}
+            disabled={saving}
+            style={{marginTop:0}}
+          >{saving ? 'saving…' : isEdit ? '→ save changes' : '→ add to session'}</button>
+        </div>
+      </div>
 
         {/* Uncommitted-edits confirm. Save success unmounts via the
             existing onSaved() in save(); we just need to fire

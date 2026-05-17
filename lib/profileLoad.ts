@@ -184,7 +184,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       _count: { select: { likes: true } },
       session: {
         select: {
-          id: true, name: true, deletedAt: true, blind: true,
+          id: true, name: true, deletedAt: true, blind: true, blindForEveryone: true,
           hostName: true, hostUserId: true,
         },
       },
@@ -200,6 +200,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       authorId: userId,
       sessionId: f.session.id,
       blind: !!f.session.blind,
+      blindForEveryone: !!f.session.blindForEveryone,
       deleted: !!f.session.deletedAt,
       hostUserId: f.session.hostUserId ?? null,
     }]

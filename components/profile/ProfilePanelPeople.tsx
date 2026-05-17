@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getLevel } from '@/lib/badges'
 import { FollowButton } from '@/components/social/FollowButton'
+import { ProfileActionsMenu } from './ProfileActionsMenu'
 import { Avatar } from './Avatar'
 
 type Direction = 'followers' | 'following'
@@ -12,6 +13,7 @@ type PersonRow = {
   id: number; name: string; xp: number
   imageUrl: string | null
   isFollowing: boolean
+  viewerMutes: boolean
   profileFollowsThem: boolean | null
 }
 
@@ -142,6 +144,7 @@ function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; m
         <div style={{ minWidth:0, flex:1 }}>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
             {row.name}
+            {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
           </div>
           <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:2, display:'flex', gap:8 }}>
             <span>{level.icon} {level.name}</span>
@@ -152,7 +155,30 @@ function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; m
         </div>
       </Link>
       {myId !== null && !isMe && (
-        <FollowButton userId={row.id} initialFollowing={row.isFollowing} onToggle={onFollowToggle} />
+        row.isFollowing
+          // Following → status pill ("following", non-interactive) + kebab
+          // menu (Unfollow / Mute / Block, all two-tap). The pill mirrors
+          // the old single-button look as a read-only indicator; the kebab
+          // is the only way to act on the relationship. Tapping anywhere
+          // else on the row navigates to the profile via the Link above.
+          ? <div style={{ display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
+              <span style={{
+                fontFamily:'var(--mono)', fontSize:11, letterSpacing:'0.06em',
+                color:'var(--fg-dim)', padding:'4px 8px',
+                border:'1px solid var(--border)', borderRadius:6,
+              }}>following</span>
+              <ProfileActionsMenu
+                userId={row.id}
+                viewerMutes={row.viewerMutes}
+                viewerFollowing={true}
+                onUnfollowToggle={onFollowToggle}
+                onMuteToggle={onFollowToggle}
+                onBlockToggle={onFollowToggle}
+              />
+            </div>
+          // Not following → keep the one-tap +follow affordance. Following
+          // is non-destructive so a single tap is fine.
+          : <FollowButton userId={row.id} initialFollowing={row.isFollowing} onToggle={onFollowToggle} />
       )}
     </div>
   )

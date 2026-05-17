@@ -31,3 +31,9 @@ State-changing fetches against session endpoints go through `lib/sessionFetch.ts
 ## Bootstrap URL params (presentation-only)
 
 Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed client UI on first render after a redirect from create/join. They must be captured synchronously into `useState` initializers (so the first render has the value) and stripped from the URL via `router.replace` in a mount effect — see `SessionShell.tsx`. Never branch authorization on a URL param; never leave one in the URL where copy-paste turns it into a confused-UI bug for the recipient. Server trust still flows only through the NextAuth cookie or the `x-vr-anon-token` header.
+
+## `router.refresh()` fallback on SSR-rendered surfaces
+
+`/u/[id]` is a Server Component that calls `resolveProfileViewer(userId, viewerId)` at request time and branches to `<ProfileShell>` (tier-gated) / `<ProfileBlockedView>` (blocker-side) / full profile (`<ProfileHeader>` + `<ProfileTabs>`). When the viewer follows or unfollows a tier-gated profile, the gate result flips but the SSR'd shell wouldn't re-evaluate without a navigation.
+
+**Pattern**: `<ProfileShell>` and `<ProfileHeader>` are client components (`'use client'`). Their follow/mute/block toggle callbacks default to `router.refresh()` when no caller-supplied callback is wired — so the SSR /u/[id] path re-runs the server gate after every relationship change without the user navigating. Client-cached callers (`UserProfileModal`, `ProfilePreviewInline`) pass their own TanStack invalidation callbacks instead; the fallback only fires when no callback is provided. Apply the same pattern on any other server component that hosts an interactive relationship-toggle.

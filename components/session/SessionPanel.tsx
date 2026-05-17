@@ -543,7 +543,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
                 <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
                 <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
-                  Delete this session permanently. Wines stay saved for participants who bookmarked them; everyone else&apos;s ratings, notes and Hall of Fame entries from this session are removed. This cannot be undone.
+                  Close this session for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted. This cannot be undone.
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
@@ -567,7 +567,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           <div style={{maxWidth:420,width:'100%',background:'var(--bg2)',borderRadius:16,padding:20,border:'1px solid rgba(224,112,112,0.3)'}}>
             <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'#e07070'}}>Delete this session?</div>
             <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.6,marginBottom:14}}>
-              This permanently removes the session and its wine list. Bookmarked wines stay saved with their ratings, notes and flavour wheel intact for those who bookmarked them. Every other rating and Hall of Fame entry from this session is removed.
+              The session closes for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted.
               <div style={{marginTop:8,color:'#e07070',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
             </div>
             {deleteError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{deleteError}</p>}

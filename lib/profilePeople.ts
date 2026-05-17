@@ -113,6 +113,17 @@ export async function listProfilePeople(
       )
     : new Set<number>()
 
+  // Viewer→listed-user mute state, for the per-row kebab menu's
+  // Mute/Unmute label. Same shape as the follow lookup.
+  const myMutes = viewerId && sliceIds.length
+    ? new Set(
+        (await prisma.userMute.findMany({
+          where: { muterId: viewerId, mutedId: { in: sliceIds } },
+          select: { mutedId: true },
+        })).map(m => m.mutedId)
+      )
+    : new Set<number>()
+
   // Profile→listed-user follow state — only meaningful on the followers tab,
   // where it powers the "Follows you" label (someone follows the profile but
   // the profile doesn't follow them back).
@@ -135,6 +146,7 @@ export async function listProfilePeople(
         xp: r.xp,
         imageUrl: r.image_url,
         isFollowing: myFollowing.has(r.id),
+        viewerMutes: myMutes.has(r.id),
         profileFollowsThem: profileFollows ? profileFollows.has(r.id) : null,
       })),
       nextCursor,

@@ -27,7 +27,7 @@ Per `proposals/rewire.md` §3: anonymous ratings never create feed_items (schema
 
 ## Network query
 
-`/api/feed` resolves the caller's "network" as the union of: the caller themselves, everyone they follow, and everyone they share a session with (via `session_members` self-join). The query merges feed_items + badge unlocks (last 30 days) ordered by createdAt, paginated by cursor.
+`/api/feed` resolves the caller's "network" as the union of: the caller themselves, everyone they follow, and everyone they share a session with (via `session_members` self-join). The query returns feed_items ordered by createdAt, paginated by cursor.
 
 Visibility / mute / block filtering composes multiplicatively per author: block-pair authors are dropped first (strictest), then muted authors, then the author's profile-visibility tier is gated via `canViewProfile`. The viewer always sees their own content (self-block and self-mute are rejected at the API + DB level).
 
@@ -37,9 +37,10 @@ The feed response carries items tagged by `type`:
 
 - `type: 'checkin'` — standalone feed_items. Renders via the existing `<CheckinCard>`. `checkin.id` is now the `feed_items.id` (migration-preserved id-equality means cached client URLs keep working).
 - `type: 'session'` — session feed_items. Renders via `<SessionFeedCard>` with per-wine fan-out. Wire shape declared in `lib/feedTypes.ts` (`SessionFeedPayload` + `SessionFeedWine`). The bulk loader `lib/sessionFeedWines.ts` runs ONE Prisma query per feed page across all session posts on the page (OR-of-AND on `(userId, sessionId)` pairs, backed by the composite index).
-- `type: 'badge'` — user_badges (unchanged).
 
-Soft-deleted sessions show "[deleted session]" in the card header but still render the per-wine list (only the session-level identity scrubs). The blind-redaction predicate `!meta.deleted && meta.blind && !revealed && !isHost && !ownsWine` short-circuits on `deleted` — a post-delete blind tasting reveals wine identity regardless of `wines.revealedAt`. **Cross-cutting rule**: any new surface that renders per-wine session data must use `loadSessionFeedWines` (server-side redaction) and NOT roll its own join — the blind invariant lives in that helper and nowhere else.
+Badge unlocks used to merge in as a third `'badge'` discriminant. Removed: they cluttered the feed and didn't carry post-context. `/me/badges` remains the canonical surface; inline badge attribution on the triggering post is tracked as a follow-up.
+
+Soft-deleted sessions show "[deleted session]" in the card header but still render the per-wine list (only the session-level identity scrubs). The blind-redaction predicate is `!meta.deleted && meta.blind && !revealed && !(!meta.blindForEveryone && (isHost || ownsWine))` — short-circuits on `deleted` (a post-delete blind tasting reveals wine identity regardless of `wines.revealedAt`); the host/own-wine bypass is suppressed when `meta.blindForEveryone` is on (then only `revealed` un-redacts). **Cross-cutting rule**: any new surface that renders per-wine session data must use `loadSessionFeedWines` (server-side redaction) and NOT roll its own join — the blind invariant lives in that helper and nowhere else.
 
 See [session-deletion.md](session-deletion.md) for the full soft-delete contract and the DB-level trigger that enforces it.
 

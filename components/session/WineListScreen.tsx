@@ -100,6 +100,24 @@ export function WineListScreen() {
     refresh()
   }
 
+  // "Blind for everyone" — toggles whether the host/cohost/provider/wine-
+  // adder bypass is in effect for blind redaction. When ON, even the host
+  // sees redacted wines (until they reveal). PATCHes the session settings;
+  // the next refresh pulls the new meta and the server-side wine GET
+  // applies the redaction accordingly. No optimistic update — the toggle
+  // is rare and the visual change is global, so wait for the round-trip.
+  // Label uses "everyone" instead of "all" to avoid colliding with the
+  // adjacent "reveal all" button.
+  async function toggleBlindForEveryone() {
+    const next = !sessionMeta?.blindForEveryone
+    await sessionFetch(code, `/api/session/${code}/settings`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blindForEveryone: next }),
+    })
+    refresh()
+  }
+  const blindForEveryone = !!sessionMeta?.blindForEveryone
+
   // Optimistic drag-reorder. We override the displayed wine order with
   // `pendingOrder` while a reorder POST is in flight; on success we drop
   // the override and let the next refresh's order win, on failure we
@@ -211,6 +229,31 @@ export function WineListScreen() {
             </div>
           </div>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            {isHost && isBlind && (
+              // "Blind for everyone" toggle — sits beside reveal-all so it
+              // reads as a per-session control on the blind state. Visible
+              // to host/cohost in any blind session; rendering doesn't
+              // depend on wines.length so the host can pre-arm it before
+              // adding wines. When ON, the host also sees redacted wines
+              // until reveal — including their own and providers'. Tap
+              // to flip; the next refresh applies the new redaction.
+              // Label is "for everyone" (not "for all") so it doesn't
+              // collide visually with the neighbouring "reveal all" button.
+              <button
+                className="btn-s"
+                onClick={toggleBlindForEveryone}
+                title={blindForEveryone
+                  ? 'You see redacted wines too. Tap to see the lineup again (still hidden from tasters).'
+                  : 'Hide wines from yourself too. Even you won\'t know the lineup until reveal.'}
+                style={blindForEveryone ? {
+                  borderColor: 'rgba(200,150,60,0.5)',
+                  background: 'rgba(200,150,60,0.12)',
+                  color: 'var(--accent)',
+                } : undefined}
+              >
+                🙈 blind for everyone{blindForEveryone ? ' ✓' : ''}
+              </button>
+            )}
             {isHost && isBlind && wines.length > 0 && (
               allRevealed
                 ? <button className="btn-s" onClick={hideAll}>hide all</button>
@@ -362,14 +405,15 @@ function WineRow({
             at the same x across all row variants (rated/unrated ×
             host/taster). Width is tight on the widest realistic
             score chip so narrow viewports don't lose wine-title
-            space to slack. */}
-        {(rating?.score || !isRedacted) && (
-          <div style={{
-            width: 80,
-            display:'flex',alignItems:'center',justifyContent:'flex-end',
-            paddingRight: 1,
-            flexShrink:0,
-          }}>
+            space to slack. Slot is always rendered — rating a
+            redacted blind wine is exactly the point of blind
+            tasting, so the Rate button must be reachable inline. */}
+        <div style={{
+          width: 80,
+          display:'flex',alignItems:'center',justifyContent:'flex-end',
+          paddingRight: 1,
+          flexShrink:0,
+        }}>
             {rating?.score ? (
               <button
                 type="button"
@@ -407,7 +451,6 @@ function WineRow({
               </button>
             )}
           </div>
-        )}
         {showHostControls && (
           // Activator pattern: spread `attributes` + `listeners` and set
           // the node ref on the handle (NOT the row), so dnd-kit knows

@@ -34,6 +34,11 @@ type SessionCtx = {
     hostUserId: number | null
     hostIdentityId?: string
     blind?: boolean
+    // "Blind for all" — when true the host/cohost/provider/wine-adder
+    // bypasses are disabled and even the host sees redacted wines. Per-
+    // session, host/cohost-toggleable, not pro-gated (only meta.blind
+    // itself is pro). See lib/wineRedaction.ts.
+    blindForEveryone?: boolean
     participants: Participant[]
     coHostIds: string[]
     providerIds?: string[]

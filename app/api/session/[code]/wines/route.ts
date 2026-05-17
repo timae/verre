@@ -46,7 +46,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup(wines, identities)
 
-  if (meta.blind && !isUserHost) {
+  // Enter the redaction branch when:
+  //   - session is blind AND the caller isn't host (the default rule), OR
+  //   - session is blind AND meta.blindForEveryone is on (then redact even
+  //     hosts — the helper itself decides per-wine whether to short-
+  //     circuit on `revealed`).
+  if (meta.blind && (!isUserHost || meta.blindForEveryone)) {
     // Per-wine redaction: see lib/wineRedaction.ts for the full rule.
     // Pre-feature wines have NULL `addedByIdentityId` and never match
     // the provider exception — they redact like any other wine the
@@ -58,6 +63,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
           isHost: isUserHost,
           ownsWine: !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
           index: i,
+          blindForEveryone: !!meta.blindForEveryone,
         })
         return redacted ?? wineToWire(w, identity.id, identities, userNameLookup)
       }),
