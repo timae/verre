@@ -2,12 +2,11 @@
 import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
 import { getFL, detectFL, FL, type FlItem } from '@/lib/flavours'
+import type { RatingValue } from '@/lib/rating'
 
-export type RatingValue = {
-  score: number
-  flavors: Record<string, number>
-  notes: string
-}
+// Re-exported for back-compat — callers historically imported from this
+// file. Canonical definition lives in lib/rating.ts.
+export type { RatingValue }
 
 interface BasePaneProps {
   // Wine type drives the flavour-dimension set (red vs white vs spark…).

@@ -12,6 +12,7 @@ import { useSession as useAuthSession } from 'next-auth/react'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { normalizeCode, formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
 import { DirtyGuardProvider, useDirtyGuard } from '@/lib/dirtyGuard'
+import { UndoChipProvider } from '@/lib/undoChip'
 
 // Server returns ratings id-keyed: { [identityId]: { displayName, ratings } }.
 // Iterators (compare screen) use Object.entries; lookups (WineModal,
@@ -314,30 +315,32 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // shouldn't pop a confirm.
   return (
     <DirtyGuardProvider>
-      <Ctx.Provider value={ctx}>
-        <SessionShellChrome
-          authUser={authSession?.user as { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined}
-          displayName={displayName}
-          code={C}
-          myRole={myRole}
-          sessionLabel={sessionLabel}
-          showSessionPanel={showSessionPanel}
-          setShowSessionPanel={setShowSessionPanel}
-          navItems={navItems}
-          pathname={pathname}
-          router={router}
-          onAnonRenamed={(newName: string) => {
-            // Server rename succeeded — persist to localStorage and
-            // update state so the header label, dropdown, and any
-            // descendant reading `displayName` from context re-render.
-            // Polling (refresh) keeps the participants list / ratings
-            // wired to the same identity-id, so just refresh after.
-            localStorage.setItem(`vr_name_${C}`, newName)
-            setStoredName(newName)
-            refresh()
-          }}
-        >{children}</SessionShellChrome>
-      </Ctx.Provider>
+      <UndoChipProvider code={C} refresh={refresh}>
+        <Ctx.Provider value={ctx}>
+          <SessionShellChrome
+            authUser={authSession?.user as { id?: string; name?: string | null; email?: string | null; pro?: boolean } | undefined}
+            displayName={displayName}
+            code={C}
+            myRole={myRole}
+            sessionLabel={sessionLabel}
+            showSessionPanel={showSessionPanel}
+            setShowSessionPanel={setShowSessionPanel}
+            navItems={navItems}
+            pathname={pathname}
+            router={router}
+            onAnonRenamed={(newName: string) => {
+              // Server rename succeeded — persist to localStorage and
+              // update state so the header label, dropdown, and any
+              // descendant reading `displayName` from context re-render.
+              // Polling (refresh) keeps the participants list / ratings
+              // wired to the same identity-id, so just refresh after.
+              localStorage.setItem(`vr_name_${C}`, newName)
+              setStoredName(newName)
+              refresh()
+            }}
+          >{children}</SessionShellChrome>
+        </Ctx.Provider>
+      </UndoChipProvider>
     </DirtyGuardProvider>
   )
 }

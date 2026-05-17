@@ -6,6 +6,7 @@ import { WineIdentity } from '@/components/wine/WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
 import { LineupLocked } from './LineupLocked'
 import { WineModal } from '@/components/wine/WineModal'
+import { useUndoChip } from '@/lib/undoChip'
 import { useState, useEffect } from 'react'
 import type { WireWine } from '@/lib/session'
 import { sessionFetch } from '@/lib/sessionFetch'
@@ -39,11 +40,21 @@ function formatDate(dt: string) {
 // drag-to-reorder); tasters see a plain list.
 export function WineListScreen() {
   const { wines, myRatings, isHost, isProvider, code, refresh, isBlind, sessionMeta, winesLoading } = useSession()
+  const undo = useUndoChip()
   const [showAdd, setShowAdd] = useState(false)
   // When opening the wine modal, track which pane to start on so the
   // row-body tap (info) and the inline Rate button (rate) can share
   // one modal-open path.
   const [openWine, setOpenWine] = useState<{ id: string; pane: 'info' | 'rate' } | null>(null)
+
+  // Register an "open this wine in the modal" callback with the chip
+  // provider so a tap on the chip after the modal has closed re-opens
+  // it on the undone wine. When the modal is already open, the prop-
+  // sync effect inside WineModal navigates to the new wineId.
+  useEffect(() => {
+    if (!undo) return
+    return undo.registerOpenWine((wineId) => setOpenWine({ id: wineId, pane: 'rate' }))
+  }, [undo])
   const canManage = isHost || isProvider
 
   const m = sessionMeta as typeof sessionMeta & {
