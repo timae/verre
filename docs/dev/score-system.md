@@ -4,7 +4,7 @@ Scores are decimal `0..5` in `0.25` steps (quarter-stars). `0` means "not rated"
 
 ## Storage
 
-Post-rewire, all scores live in `ratings.score` (`Decimal(3,2)` in Postgres) — in-session AND standalone. `ratings.origin` distinguishes the two (`'session'` vs `'standalone'`); `ratings.sessionId` is set for the former and NULL for the latter. The same value lives transiently in Redis as a JSON number under `s:{CODE}:r:{IDENTITYID}:{WINEID}` while a session is live, then gets archived to the relational column on commit. The legacy `checkins.score` column exists until phase 4 drops the table but is no longer written (slice 3 of the rewire stopped writes).
+All scores live in `ratings.score` (`Decimal(3,2)` in Postgres) — in-session AND standalone. `ratings.origin` distinguishes the two (`'session'` vs `'standalone'`); `ratings.sessionId` is set for the former and NULL for the latter. The same value lives transiently in Redis as a JSON number under `s:{CODE}:r:{IDENTITYID}:{WINEID}` while a session is live, then gets archived to the relational column on commit.
 
 ## Validation
 

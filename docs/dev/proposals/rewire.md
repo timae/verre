@@ -1,6 +1,6 @@
 # The big rewire — unifying ratings, check-ins, and the feed
 
-**Status**: phases 1, 1.5, and 2 shipped (2026-05). Phase 3 (UI rewire with aggregate session card + engagement-deletion undo) and phase 4 (drop legacy `checkins*` tables) still to come. This doc remains the authoritative source for design rationale (the *why*); the per-feature impl docs (`session-deletion.md`, `account-deletion.md`, `social-feed.md`, etc.) describe the shipped behaviour.
+**Status**: phases 1, 1.5, 2, and 3 shipped (2026-05). Phase 4 (drop legacy `checkins*` tables) prepped on `feature/rewire-p4-drop-checkins` 2026-05-16 — held from merge until at least one production deploy cycle has elapsed post-phase-3. This doc remains the authoritative source for design rationale (the *why*); the per-feature impl docs (`session-deletion.md`, `account-deletion.md`, `social-feed.md`, etc.) describe the shipped behaviour.
 **Branch**: `feature/rewire-plan` for this doc; subsequent phases each got their own branch.
 
 This is the architecture and migration plan for unifying the two parallel rating systems (in-session ratings + standalone feed check-ins) into a single normalised model, and reshaping the feed to render sessions as aggregate "posts" rather than one-card-per-rating.
@@ -632,16 +632,26 @@ Cross-cutting invariants added to `docs/dev/social-feed.md` and `docs/dev/sessio
 
 This phase is pure frontend + the engagement-deletion handler + the pgUpsertSession blind-column fix. No schema, no migration.
 
-### Phase 4 — drop the old tables
+### Phase 4 — drop the old tables — PREPPED, HOLDING FOR COOLING PERIOD
 **Branch**: `feature/rewire-p4-drop-checkins`
 
 (Was phase 5.)
 
-- Wait at least one production deploy cycle after phase 3 ships, ideally a week, so we can revert phase 3 without losing data.
-- Drop `checkins` / `checkin_likes` / `checkin_tags` / `_migration_checkpoints` in a destructive migration (per `prisma/CLAUDE.md`: explicit human confirmation, `pg_dump` first).
-- Remove the `Checkin*` Prisma models, dead code.
+What landed on the branch (2026-05-16):
 
-This is the irreversible step. Everything before it can be rolled back.
+- `prisma/migrations/20260516125827_rewire_phase4_drop_checkins/migration.sql` — drops `checkins` / `checkin_likes` / `checkin_tags` / `_migration_checkpoints` with explicit `DROP CONSTRAINT IF EXISTS` + `DROP TABLE IF EXISTS` (matches `project-verre-deploy-constraint-vs-index` memory pattern for prod-vs-local materialisation differences).
+- `prisma/schema.prisma` — `Checkin`, `CheckinLike`, `CheckinTag`, `MigrationCheckpoint` models removed; three `User` backrefs gone.
+- `lib/accountDelete.ts` — the `prisma.checkin.findMany` capture-and-reclaim block + the cascade-list comment block updated for the new model only. Standalone rating-image reclaim continues via the existing `rating_images` JOIN.
+- `app/api/checkins/route.ts` and `app/api/checkins/[id]/route.ts` — kept (URL preserved for client compat; already writing to feed_items as of phase 2).
+- `.local/test-env/scripts/section-rewire-p4-drop-checkins.sh` — regression net asserting the 4 tables are gone, the URL surface still works, account-delete still completes, and the phase-3 engagement-deletion cascade still reaps. 23/23 ✅ locally.
+
+Held from merge until at least one production deploy cycle has elapsed post-phase-3 (per the original cooling-period rule below). Merge sequence at deploy time:
+
+1. `pg_dump` of prod, checksum recorded in the PR description.
+2. Verify `feed_items` row count matches expectation; verify no production code path reads from the legacy tables.
+3. Merge → Deploio runs `prisma migrate deploy` → tables drop atomically.
+
+This is the irreversible step. Everything before it can be rolled back; this can't.
 
 ---
 

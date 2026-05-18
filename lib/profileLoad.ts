@@ -85,11 +85,6 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     select: {
       id: true, name: true, xp: true, imageUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
-      // _count.checkins is the legacy table count — kept until phase 4
-      // drops the table. The user-facing "check-ins" stat is sourced
-      // from feed_items kind='standalone' below (which the data migration
-      // backfills to match the legacy count, and which new POSTs write
-      // to from slice 3 onward).
       _count: { select: { earnedBadges: true, followers: true, following: true } },
     },
   })

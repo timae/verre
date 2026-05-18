@@ -246,10 +246,6 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
 //   - HoF rows: tombstone (today's behaviour preserved).
 //
 //   - Sessions hosted: tombstone host fields. Cohosts can administer.
-//
-//   - Old `checkins` table: cascade via FK on user delete. Their imageUrls
-//     are captured below from `prisma.checkin.findMany` so S3 reclaims
-//     after commit. The old table goes away in phase 4.
 export async function executeAccountDelete(userId: number): Promise<DeletePlan> {
   // Capture image URLs before the cascade fires. Reclaim happens AFTER commit
   // — fire-and-forget; if the transaction rolls back we haven't deleted any
@@ -257,14 +253,12 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
   // bytes that a future cleanup can sweep, never a broken DB state).
   //
   // Three sources of user-owned images to reclaim:
-  //   1. Standalone rating_images (new model — the user's photos attached to
-  //      their own standalone ratings; cascade on rating delete).
-  //   2. Legacy checkins.imageUrl (old model — still has rows until phase 4
-  //      migration completes and the table is dropped).
-  //   3. Wines added by sessions the user hosted (the host's "added wine"
+  //   1. Standalone rating_images (the user's photos attached to their own
+  //      standalone ratings; cascade on rating delete).
+  //   2. Wines added by sessions the user hosted (the host's "added wine"
   //      photos — orphan when the host's account dies, separate path from
   //      rating photos).
-  //   4. The user's own avatar.
+  //   3. The user's own avatar.
   //
   // Session-rating images are NOT captured: those ratings tombstone (the
   // rating stays alive, image stays attached, neither row goes away).
@@ -275,10 +269,6 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     WHERE r.user_id = ${userId}
       AND r.session_id IS NULL
       AND ri.image_url IS NOT NULL`
-  const checkinImages = await prisma.checkin.findMany({
-    where: { userId, imageUrl: { not: null } },
-    select: { imageUrl: true },
-  })
   const hostedWineImages = await prisma.wine.findMany({
     where: { imageUrl: { not: null }, session: { hostUserId: userId } },
     select: { imageUrl: true },
@@ -319,9 +309,6 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     //   - feed_items.user_id CASCADE (all the user's session feed_items —
     //     standalone feed_items already gone above with their ratings)
     //   - bookmarks.user_id CASCADE
-    //   - checkins.user_id CASCADE (legacy table)
-    //   - checkin_likes.user_id CASCADE
-    //   - checkin_tags.user_id CASCADE
     //   - feed_item_likes.user_id CASCADE
     //   - feed_item_tags.user_id CASCADE
     //   - follows.followerId / followeeId CASCADE (both directions)
@@ -332,7 +319,6 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
   })
 
   for (const ri of standaloneRatingImages) reclaimImage(ri.image_url)
-  for (const c of checkinImages) reclaimImage(c.imageUrl)
   for (const w of hostedWineImages) reclaimImage(w.imageUrl)
   if (userRow?.imageUrl) reclaimImage(userRow.imageUrl)
 

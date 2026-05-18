@@ -15,9 +15,7 @@ Tables and their roles:
 - `ratings(id, wineId, userId, sessionId, origin, raterName, score, flavors, notes, ratedAt)` — every rating row, session or standalone. `origin='session'|'standalone'`. Partial unique on `(user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL` — multiple standalone tastings of the same wine are legal (aging-bottle case), but in-session ratings are at-most-one per `(user, wine)`.
 - `rating_images(id, ratingId, imageUrl, sortOrder, createdAt)` — per-tasting photo album. Cascade on rating delete. S3 reclaim is INDEPENDENT of the FK cascade — every rating-delete code path follows the capture-before-delete / commit / reclaim-after pattern.
 
-Legacy `checkins / checkin_likes / checkin_tags` tables still exist until phase 4. Phase 2's data migration backfilled feed_items + likes + tags from them; phase 2's write paths stopped writing to them. Phase 4 drops them.
-
-**ID-equality preservation**: the data migration mints `feed_items.id = source.checkins.id` for backfilled standalone rows, so any cached client URL with `/api/checkins/<id>/...` shape resolves to the same logical row before and after the cutover. The `feed_items_id_seq` is bumped past `MAX(checkins.id)` afterward so new POSTs don't collide.
+Phase 4 dropped the legacy `checkins / checkin_likes / checkin_tags` tables. The `/api/checkins` URL surface is preserved for client compatibility — both `POST /api/checkins` and `PATCH/DELETE /api/checkins/:id` write to the new model (`feed_items` + `ratings` + `wines` + `rating_images`). The `:id` path segment is now a `feed_items.id` of `kind='standalone'`; phase 2's migration mint of `feed_items.id = source.checkins.id` plus the `feed_items_id_seq` bump means cached client URLs still resolve.
 
 ## Engagement trigger (the rule for session feed_items)
 
