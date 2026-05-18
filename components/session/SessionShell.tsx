@@ -191,13 +191,20 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
       // Clear any local cached state for this code so the user can't
       // get stuck in a redirect loop, then bounce to /join/<code> so
       // they see the "Session not found" page with the code shown.
+      //
+      // Use router.replace (client-side nav), NOT window.location.href.
+      // A hard nav triggers the browser's beforeunload popup if any
+      // descendant has unsaved edits (e.g. an open WineModal with a
+      // dirty rate pane) — and the session is genuinely gone, so the
+      // popup would be a meaningless "do you want to leave?" prompt.
+      // Client-side nav unmounts the React tree cleanly without it.
       if (r.status === 404 && typeof window !== 'undefined') {
         try {
           localStorage.removeItem(`vr_anon_${C}`)
           localStorage.removeItem(`vr_name_${C}`)
           localStorage.removeItem(`vr_id_${C}`)
         } catch {}
-        window.location.href = joinPath(C)
+        router.replace(joinPath(C))
         return []
       }
       return r.ok ? r.json() : []

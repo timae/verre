@@ -435,35 +435,32 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     return true
   }
 
-  // Sync activeWineId when the `wineId` prop changes after mount. The
-  // hoisted undo chip (lib/undoChip.tsx) drives this: when the user
-  // taps Undo while the modal is open on a different wine, the chip
-  // host (WineListScreen) updates its `openWine.id` state → prop
-  // changes → this effect navigates the modal to the undone wine.
-  // Then the activeWineId-change effect reads the undo seed from
-  // useUndoChip().consumeUndoSeed and seeds the rate pane.
-  //
-  // Two guards:
-  // - Skip while a commit slide is in flight. Bumping activeWineId
-  //   mid-slide would crash through playSlide's slideOffset ordering
-  //   (see components/wine/CLAUDE.md "slideOffset-reset gotcha").
-  //   `outgoing` is the slide-active state; including it in deps lets
-  //   the effect re-fire after the slide ends with the pending nav
-  //   still pending (wineId !== activeWineId), so the openWine signal
-  //   isn't dropped permanently.
-  // - When wineId === activeWineId (chip undo on the same wine the
-  //   user is currently viewing), the activeWineId-change effect
-  //   doesn't re-fire on its own, so the seed would sit unconsumed
-  //   until the next polling refresh. Apply it inline instead.
+  // Subscribe to the undo chip's one-shot nav signal. When the user
+  // taps Undo on a chip published for a wine other than the one
+  // currently active, navigate there with the same slide animation as
+  // Save & next. Dep is the nonce specifically — NOT the wineId — so
+  // the effect only re-fires on a chip tap, never on internal modal
+  // navigation. (A `wineId` prop dep would snap us back to the
+  // parent's stale prop every time a slide ends.)
+  const navNonce = undo?.navTo?.nonce ?? null
   useEffect(() => {
-    if (outgoing) return
-    if (wineId !== activeWineId) {
-      setActiveWineId(wineId)
-      return
+    const t = undo?.navTo
+    if (!t || t.wineId === activeWineId) return
+    const fromIdx = currentIndex
+    const toIdx = wines.findIndex(w => w.id === t.wineId)
+    if (!commitInFlightRef.current && fromIdx >= 0 && toIdx >= 0 && fromIdx !== toIdx) {
+      commitInFlightRef.current = true
+      const slideRunning = playSlide({
+        fromWineId: activeWineId,
+        fromRating: rating,
+        fromIdx, toIdx, fromPull: 0,
+      })
+      if (!slideRunning) commitInFlightRef.current = false
     }
-    const seed = undo?.consumeUndoSeed(activeWineId) ?? null
-    if (seed) setRating(seed)
-  }, [wineId, outgoing])
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+    setActiveWineId(t.wineId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navNonce])
 
   // Primitive used by commitRating (save+close) and commitAndSwap (save+navigate).
   // Does NOT touch activeWineId / onClose / refresh — those are the caller's concern.
