@@ -49,9 +49,6 @@ model User {
   earnedBadges              UserBadge[]
   followers                 Follow[]               @relation("UserFollowing")
   following                 Follow[]               @relation("UserFollowers")
-  checkins                  Checkin[]
-  checkinLikes              CheckinLike[]
-  checkinTags               CheckinTag[]
   visibilityLog             ProfileVisibilityLog[]
   mutes                     UserMute[]             @relation("UserMuter")
   mutedBy                   UserMute[]             @relation("UserMuted")
@@ -357,58 +354,6 @@ model Follow {
   @@map("follows")
 }
 
-// Standalone wine check-ins — log a bottle outside a session.
-model Checkin {
-  id        Int           @id @default(autoincrement())
-  userId    Int           @map("user_id")
-  wineName  String        @map("wine_name") @db.VarChar(255)
-  producer  String?       @db.VarChar(255)
-  vintage   String?       @db.Char(4)
-  grape     String?       @db.VarChar(255)
-  type      String?       @db.VarChar(16)
-  // Quarter-stars: 0.00 through 5.00 in 0.25 steps; null when the
-  // user hasn't rated this check-in yet (the check-in row exists for
-  // the wine identity + flavors + notes alone).
-  score     Decimal?      @db.Decimal(3, 2)
-  flavors   Json          @default("{}")
-  notes     String?
-  imageUrl  String?       @map("image_url")
-  venueName String?       @map("venue_name") @db.VarChar(255)
-  city      String?       @db.VarChar(100)
-  country   String?       @db.Char(2)
-  lat       Decimal?      @db.Decimal(9, 6)
-  lng       Decimal?      @db.Decimal(9, 6)
-  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  likes     CheckinLike[]
-  tags      CheckinTag[]
-
-  @@index([userId, createdAt(sort: Desc)])
-  @@map("checkins")
-}
-
-model CheckinTag {
-  checkinId Int     @map("checkin_id")
-  userId    Int     @map("user_id")
-  checkin   Checkin @relation(fields: [checkinId], references: [id], onDelete: Cascade)
-  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@id([checkinId, userId])
-  @@index([userId])
-  @@map("checkin_tags")
-}
-
-model CheckinLike {
-  userId    Int      @map("user_id")
-  checkinId Int      @map("checkin_id")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  checkin   Checkin  @relation(fields: [checkinId], references: [id], onDelete: Cascade)
-
-  @@id([userId, checkinId])
-  @@map("checkin_likes")
-}
-
 // ── Rewire phase 1: unified rating / feed model ───────────────────
 // See docs/dev/proposals/rewire.md for the architecture and migration plan.
 // Phase 1 ships these new tables purely additively — no read or write path
@@ -522,15 +467,3 @@ model FeedItemTag {
   @@map("feed_item_tags")
 }
 
-// Checkpoint tracker for the phase 2 data-migration script. Lets the
-// batched migration resume from where it crashed/stopped instead of
-// reprocessing already-migrated rows. Phase 1 ships the empty table;
-// phase 2's script is the first writer. Dropped in phase 4 alongside
-// checkins/.
-model MigrationCheckpoint {
-  name      String   @id @db.VarChar(64)
-  lastRowId Int      @map("last_row_id")
-  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
-
-  @@map("_migration_checkpoints")
-}

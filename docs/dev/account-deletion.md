@@ -8,7 +8,6 @@ The rewire phase 2 cutover split rating treatment by `session_id`. Pipeline:
 
 1. **Capture image URLs BEFORE the transaction** (capture / commit / reclaim-after, per root CLAUDE.md):
    - Standalone `rating_images.image_url` for ratings where `userId = $id AND sessionId IS NULL`. These cascade with the rating below.
-   - Legacy `checkins.imageUrl` rows owned by the user (the legacy table is read-only as of phase 2; rows persist until phase 4 drops it).
    - `wines.imageUrl` for wines hosted in sessions the user hosted (host-curated bottle shots).
    - The user's own avatar (`users.imageUrl`).
    - Session ratings (`sessionId IS NOT NULL`) are NOT captured — their rating_images survive with the tombstoned rating (other tasters' compare views still need them).
@@ -45,7 +44,6 @@ Per the cross-cutting rule in root CLAUDE.md:
   - `feed_items` (kind='session') — the user's session posts. Cascade via `feed_items.user_id`.
   - `feed_item_likes`, `feed_item_tags` — both sides cascade via the user FK.
   - `bookmarks`, `user_badges`, `session_members`, `user_mutes`, `user_blocks`, `follows` — all cascade.
-  - Legacy `checkins`, `checkin_likes`, `checkin_tags` — still cascade; the legacy table is read-only post-rewire but its FKs remain wired until phase 4 drops the table.
 
 When adding a new table tied to users, decide which side it falls on using the test in root CLAUDE.md.
 

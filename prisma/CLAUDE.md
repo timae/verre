@@ -43,11 +43,9 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 
 `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations directory disagree. Don't bypass — either generate the migration via `prisma migrate dev` or roll back the schema change.
 
-## Phase 2 data migration (rewire)
+## Phase 2 data migration (rewire) — historical
 
-`prisma/migrations/20260515011038_rewire_phase2_data/migration.sql` backfills the new `feed_items` model from the legacy `checkins` tables. Idempotent via the `_migration_checkpoints` table — each step writes a checkpoint row on completion, and re-running the SQL finds the checkpoints and no-ops. The self-guard at the top aborts if `feed_items` is non-empty without a checkpoint (protects the `feed_items.id = source.checkins.id` ID-equality invariant against stray writes).
-
-Deploy story (scale to 0 replicas, push merge commit, Deploio runs `prisma migrate deploy`, scale back up) lives in `docs/dev/proposals/rewire.md` §5 + §6 phase 2. Re-run / partial-failure recovery: `prisma migrate resolve --rolled-back <migration_name>` clears the gate; the SQL is safe to re-apply.
+`prisma/migrations/20260515011038_rewire_phase2_data/migration.sql` backfilled the new `feed_items` model from the (then-existing) `checkins` tables. Idempotency was guarded via a `_migration_checkpoints` scratch table — both that table and the source `checkins*` tables were dropped in phase 4 (`20260516125827_rewire_phase4_drop_checkins`). The migration file remains in history for audit; do not re-run it. Re-run / partial-failure recovery within its deploy window: `prisma migrate resolve --rolled-back <migration_name>` was the documented escape hatch. Full deploy story (scale to 0 replicas, push merge commit, Deploio runs `prisma migrate deploy`, scale back up): `docs/dev/proposals/rewire.md` §5 + §6 phase 2.
 
 ## Schema notes for future features
 

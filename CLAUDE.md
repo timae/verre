@@ -120,7 +120,7 @@ Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUD
 
 When adding a table that references `users.id`, pick one:
 
-- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `checkins` (legacy), `checkin_likes` (legacy), `checkin_tags` (legacy), `follows`, `bookmarks`, `user_badges`, `session_members`. **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
+- **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`. **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
 - **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings` where `session_id IS NOT NULL`, `hall_of_fame`, `sessions.host_user_id`.
 - **Split rule on `ratings`** — standalone ratings (`session_id IS NULL`) hard-cascade in the account-delete path (their feed_items go with them via downstream cascade); session ratings tombstone (other tasters' compare views need them). See `lib/accountDelete.ts` for the implementation.
 
