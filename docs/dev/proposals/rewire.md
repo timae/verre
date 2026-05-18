@@ -1,6 +1,6 @@
 # The big rewire — unifying ratings, check-ins, and the feed
 
-**Status**: phases 1, 1.5, 2, and 3 shipped (2026-05). Phase 4 (drop legacy `checkins*` tables) prepped on `feature/rewire-p4-drop-checkins` 2026-05-16 — held from merge until at least one production deploy cycle has elapsed post-phase-3. This doc remains the authoritative source for design rationale (the *why*); the per-feature impl docs (`session-deletion.md`, `account-deletion.md`, `social-feed.md`, etc.) describe the shipped behaviour.
+**Status**: phases 1, 1.5, 2, 3, and 4 all shipped (2026-05). The big rewire is complete. This doc remains the authoritative source for design rationale (the *why*); the per-feature impl docs (`session-deletion.md`, `account-deletion.md`, `social-feed.md`, etc.) describe the shipped behaviour.
 **Branch**: `feature/rewire-plan` for this doc; subsequent phases each got their own branch.
 
 This is the architecture and migration plan for unifying the two parallel rating systems (in-session ratings + standalone feed check-ins) into a single normalised model, and reshaping the feed to render sessions as aggregate "posts" rather than one-card-per-rating.
@@ -319,7 +319,7 @@ Both follow today's `checkin_likes` / `checkin_tags` cascade pattern: when the t
 
 #### `checkins` and friends — dropped in phase 4
 
-Until then they coexist with the new model. Note: today's `checkins.isPublic` no longer exists (already dropped, per `lib/profileLoad.ts:56`); every check-in is feed-eligible and gated only by profile-visibility tier. Migration treats every check-in as feed-eligible accordingly.
+During phases 1–3 they coexisted with the new model. Phase 4 dropped them on 2026-05-18. Aside — `checkins.isPublic` had already been dropped before the rewire started; every check-in was feed-eligible and gated only by profile-visibility tier, so the migration treated every check-in as feed-eligible accordingly.
 
 ---
 
@@ -632,26 +632,26 @@ Cross-cutting invariants added to `docs/dev/social-feed.md` and `docs/dev/sessio
 
 This phase is pure frontend + the engagement-deletion handler + the pgUpsertSession blind-column fix. No schema, no migration.
 
-### Phase 4 — drop the old tables — PREPPED, HOLDING FOR COOLING PERIOD
-**Branch**: `feature/rewire-p4-drop-checkins`
+### Phase 4 — drop the old tables — SHIPPED 2026-05-18 (PR #28)
+**Branch**: `feature/rewire-p4-drop-checkins` (deleted after merge).
 
 (Was phase 5.)
 
-What landed on the branch (2026-05-16):
+What landed:
 
-- `prisma/migrations/20260516125827_rewire_phase4_drop_checkins/migration.sql` — drops `checkins` / `checkin_likes` / `checkin_tags` / `_migration_checkpoints` with explicit `DROP CONSTRAINT IF EXISTS` + `DROP TABLE IF EXISTS` (matches `project-verre-deploy-constraint-vs-index` memory pattern for prod-vs-local materialisation differences).
+- `prisma/migrations/20260516125827_rewire_phase4_drop_checkins/migration.sql` — dropped `checkins` / `checkin_likes` / `checkin_tags` / `_migration_checkpoints` with explicit `DROP CONSTRAINT IF EXISTS` + `DROP TABLE IF EXISTS` (matches the `project-verre-deploy-constraint-vs-index` memory pattern for prod-vs-local materialisation differences).
 - `prisma/schema.prisma` — `Checkin`, `CheckinLike`, `CheckinTag`, `MigrationCheckpoint` models removed; three `User` backrefs gone.
 - `lib/accountDelete.ts` — the `prisma.checkin.findMany` capture-and-reclaim block + the cascade-list comment block updated for the new model only. Standalone rating-image reclaim continues via the existing `rating_images` JOIN.
 - `app/api/checkins/route.ts` and `app/api/checkins/[id]/route.ts` — kept (URL preserved for client compat; already writing to feed_items as of phase 2).
 - `.local/test-env/scripts/section-rewire-p4-drop-checkins.sh` — regression net asserting the 4 tables are gone, the URL surface still works, account-delete still completes, and the phase-3 engagement-deletion cascade still reaps. 23/23 ✅ locally.
 
-Held from merge until at least one production deploy cycle has elapsed post-phase-3 (per the original cooling-period rule below). Merge sequence at deploy time:
+The merge sequence followed was:
 
-1. `pg_dump` of prod, checksum recorded in the PR description.
-2. Verify `feed_items` row count matches expectation; verify no production code path reads from the legacy tables.
-3. Merge → Deploio runs `prisma migrate deploy` → tables drop atomically.
+1. Fresh `pg_dump -Fc` of prod taken immediately before merge (the rollback artifact).
+2. End-to-end validation against a local restore of that dump (account-delete on a real test user, profile + feed reads, POST/PATCH/DELETE on `/api/checkins`) — all clean.
+3. Merge → Deploio ran `prisma migrate deploy` → tables dropped atomically.
 
-This is the irreversible step. Everything before it can be rolled back; this can't.
+This was the irreversible step. Everything before it could be rolled back; this couldn't. Recovery path (if it had been needed): re-create the four tables via a new additive migration (Prisma model bodies recoverable from this PR's git history), then `pg_restore --data-only --disable-triggers` the targeted 4-table dump. `--disable-triggers` is required because `pg_restore` loads tables alphabetically and `checkin_likes` would otherwise fail its `checkin_id_fkey` before `checkins` is loaded — drill-tested against the prod dump.
 
 ---
 

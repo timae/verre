@@ -49,7 +49,8 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 
 - **Cross-cutting invariant** (rule that can be hit without touching its canonical subtree — e.g. trust model, score coercion, cascade-vs-tombstone) → root (this file).
 - **Area-scoped guidance** (rule tied to a directory) → nearest `<area>/CLAUDE.md`. Create one if missing. Loads lazily when Claude touches that subtree.
-- **Self-contained feature deep-dive** → `docs/dev/<feature>.md`. The bar is "deserves its own section" — e.g. the social feed earned its own doc because it added `/api/feed` + `/api/checkins/*` + `/api/users/*` + a follow graph. A single new route doesn't. Add a 1-line pointer to the index below.
+- **Self-contained feature deep-dive (shipped)** → `docs/dev/<feature>.md`. The bar is "deserves its own section" — e.g. the social feed earned its own doc because it added `/api/feed` + `/api/checkins/*` + `/api/users/*` + a follow graph. A single new route doesn't. Add a 1-line pointer to the index below.
+- **Plans for new features / non-trivial changes (not yet shipped)** → `docs/dev/proposals/<name>.md`. Bar is the same as the deep-dive bar; use the proposal to align on the *why* and the migration shape before code. If the design conversation would be longer than the diff itself, write the proposal. See `docs/dev/proposals/README.md` for the post-ship lifecycle.
 - **env var added/changed** → `docs/dev/deployment.md` (and README.md if the local dev story changes).
 - **User-facing feature scope changes** → README.md (`What it does` list + API table).
 - **API request/response shape changes for a route already documented in README** → update the README API table (example body shapes must stay accurate).
