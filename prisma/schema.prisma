@@ -354,11 +354,11 @@ model Follow {
   @@map("follows")
 }
 
-// ── Rewire phase 1: unified rating / feed model ───────────────────
-// See docs/dev/proposals/rewire.md for the architecture and migration plan.
-// Phase 1 ships these new tables purely additively — no read or write path
-// in the application uses them yet. Phase 2 cuts over the feed; phase 4
-// drops the legacy Checkin* tables.
+// ── Unified rating / feed model ───────────────────
+// Shipped via the rewire phases 1, 1.5, 2, 3, 4 (2026-05). The legacy
+// `Checkin*` tables were dropped in phase 4 (migration
+// `20260516125827_rewire_phase4_drop_checkins`). Design rationale:
+// docs/dev/proposals/rewire.md.
 
 // Lookup table that constrains (wines.category, wines.style) to a known set.
 // Soft-deletable (`active=false`) because dropping a style row would break
