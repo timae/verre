@@ -20,3 +20,16 @@ export function parsePathId(raw: string | undefined | null): number | null {
   if (!Number.isInteger(n) || n < 1 || n > PG_INT4_MAX) return null
   return n
 }
+
+// Strict uuid path-segment parser, same canonicalisation-attack posture as
+// parsePathId. Accepts only the canonical lowercase 8-4-4-4-12 hex form — no
+// uppercase, no braces, no surrounding whitespace, no percent-encoded tricks.
+// Used for uuid-keyed path params (user_sessions.id). Returns the uuid string
+// unchanged on match, or null. The Postgres `::uuid` cast would also reject
+// garbage, but parsing here keeps a bad segment from ever reaching a query and
+// from skewing any url-keyed rate limit.
+export function parsePathUuid(raw: string | undefined | null): string | null {
+  if (raw == null) return null
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(raw)) return null
+  return raw
+}

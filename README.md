@@ -159,8 +159,11 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET | /api/me/bookmarks | Saved wines |
 | GET | /api/me/ratings | This user's rating history |
 | GET / POST / PATCH | /api/me/badges | Earned badges, XP, manual recheck, mark-as-seen |
-| PATCH | /api/me/account | Edit own name / email / password |
+| PATCH | /api/me/account | Edit own name / email / password (pw change revokes other devices) |
 | DELETE | /api/me/account | Delete own account (password re-auth required) |
+| GET | /api/me/devices | List own active device sessions; 60/min |
+| DELETE | /api/me/devices/:id | Revoke one device; cross-device needs password; 30/h |
+| DELETE | /api/me/devices | Revoke all other devices; password re-auth; 10/h |
 | POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
 | GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |

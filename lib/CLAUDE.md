@@ -33,6 +33,14 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 
 `participantOrBanned(code, identity)` returns `'ok' | 'banned' | 'kicked' | 'invalid'` — used by removed-bounce-aware endpoints. `authRemoved()` builds the `X-Vr-Auth: removed` response.
 
+## Per-device sessions (logged-in revocation gate)
+
+Logged-in sessions are gated per-device via the `user_sessions` table (one row per credential login). The signed JWT carries an opaque `userSessionId`; the `auth.ts` `jwt()` callback looks up `user_sessions.revokedAt` on **every authenticated request** and strips identity on a revoked/missing row. This replaced the never-written `users.tokenVersion`. Full design + as-built deviations: `docs/dev/proposals/auth-sessions.md`.
+
+- 🔒 **SECURITY — never cache `auth()`.** The revocation gate is only as fast as the next request that hits Postgres. **Never wrap `auth()` in `unstable_cache`, React `cache`, or a `revalidate`-tagged fetch** — any cache TTL becomes a window where a revoked cookie still resolves, which IS the security hole. The DB lookup must run every authenticated request, same cost as the old `tokenVersion` read. (The Edge `middleware.ts` deliberately only checks JWT signature/presence, not revocation — the real gate is the Node-runtime `auth()` in the `/me` layout and every `/api/me/*` handler. Don't move a Prisma call into the Edge config.)
+- **`lastSeenAt` is self-only.** Queryable only via `WHERE userId = $self` (the `GET /api/me/devices` path). No analytics / other-user / aggregate surface. Stored bucketed to 5-min wall-clock edges (the value at rest is the bucket *start*, not the request time) so an exfiltrated DB can't reconstruct precise activity timelines. `createdAt` stays precise (one-shot, useful for disambiguating same-label devices).
+- **`userSessionId` is JWT-only**, like all identity — never read it from a request body/header. The password re-auth on cross-device/revoke-all DELETEs goes through `lib/verifyPassword.ts`, which charges the shared `rl:account` counter (see `app/api/CLAUDE.md` shared-counter pattern).
+
 ## Defensive helpers (apply on every state-changing API route)
 
 - **`lib/csrf.ts` `isSameOrigin(req)`** — origin/referer check. **First guard on every POST/PATCH/DELETE/PUT.** Allows same-origin + origins in `SERVER_ACTIONS_ALLOWED_ORIGINS` env. See `app/api/CLAUDE.md` "Origin guard" for the rule.

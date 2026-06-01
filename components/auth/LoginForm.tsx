@@ -1,8 +1,26 @@
 'use client'
 import { useState } from 'react'
 import { signIn } from 'next-auth/react'
-import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+
+// Record the just-used credential with the browser's password manager via the
+// Credential Management API. Needed because the form submits via JS (so the
+// browser never sees the values in a native submit). Feature-detected and
+// fully best-effort: PasswordCredential is unavailable in some browsers (e.g.
+// Firefox) and requires a secure context (https or localhost); any absence or
+// failure is swallowed so login is never blocked.
+async function storeCredential(email: string, password: string): Promise<void> {
+  try {
+    const PasswordCredentialCtor = (window as unknown as {
+      PasswordCredential?: new (data: { id: string; password: string }) => Credential
+    }).PasswordCredential
+    if (!PasswordCredentialCtor || !navigator.credentials?.store) return
+    const cred = new PasswordCredentialCtor({ id: email, password })
+    await navigator.credentials.store(cred)
+  } catch {
+    // Best-effort — never block login on a credential-store failure.
+  }
+}
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -17,8 +35,7 @@ function EyeIcon({ open }: { open: boolean }) {
   )
 }
 
-export function LoginForm({ redirectTo }: { redirectTo?: string }) {
-  const router = useRouter()
+export function LoginForm({ redirectTo, notice }: { redirectTo?: string; notice?: string }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -61,24 +78,45 @@ export function LoginForm({ redirectTo }: { redirectTo?: string }) {
     }
 
     const res = await signIn('credentials', { email, password, redirect: false })
-    setLoading(false)
     if (res?.error) {
+      setLoading(false)
       setError('Invalid email or password')
       return
     }
-    router.push(redirectTo || '/me'); router.refresh()
+    // Explicitly hand the credential to the browser's password manager. The
+    // login submits via JS (preventDefault, for the precheck + inline errors),
+    // so the browser never witnesses a native form submission carrying these
+    // values — which means the email/password are never recorded into autofill.
+    // The Credential Management API records them directly. Best-effort and
+    // feature-detected: PasswordCredential is absent in some browsers (e.g.
+    // Firefox) and requires a secure context (https or localhost). Awaited so
+    // the store lands before the hard navigation unloads the page; never blocks
+    // login on failure.
+    await storeCredential(email, password)
+    // Hard navigation (not router.push) on success. A full document load is the
+    // signal browsers use to detect a completed login and offer to save the
+    // credential — a client-side route swap (router.push) leaves the password
+    // field mounted with no navigation. Combined with name= + autocomplete= on
+    // the inputs, this restores native autofill/save. Keep `loading` true
+    // through the navigation so the button stays disabled until the page unloads.
+    window.location.assign(redirectTo || '/me')
   }
 
   return (
     <form onSubmit={handleSubmit}>
+      {notice && (
+        <div style={{fontSize:11,lineHeight:1.5,color:'var(--fg-dim)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:6,padding:'10px 12px',marginBottom:16}}>
+          {notice}
+        </div>
+      )}
       <div className="field">
         <div className="fl">email</div>
-        <input className="fi" type="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
+        <input className="fi" type="email" name="email" value={email} onChange={e => setEmail(e.target.value)} required placeholder="you@example.com" autoComplete="email" />
       </div>
       <div className="field">
         <div className="fl">password</div>
         <div style={{position:'relative'}}>
-          <input className="fi" type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+          <input className="fi" type={showPw ? 'text' : 'password'} name="password" value={password} onChange={e => setPassword(e.target.value)}
             required placeholder="••••••••" autoComplete="current-password" style={{paddingRight:36}} />
           <button type="button" onClick={() => setShowPw(s => !s)}
             style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',cursor:'pointer',color:'var(--fg-dim)',padding:2,lineHeight:0}}

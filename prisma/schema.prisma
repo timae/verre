@@ -57,6 +57,7 @@ model User {
   feedItems                 FeedItem[]
   feedItemLikes             FeedItemLike[]
   feedItemTags              FeedItemTag[]
+  userSessions              UserSession[]
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -83,6 +84,41 @@ model ProfileVisibilityLog {
 
   @@index([userId, changedAt])
   @@map("profile_visibility_log")
+}
+
+// One row per active credential login (the "Connected devices" feature). The
+// signed JWT carries this row's `id`; the auth.ts jwt() revalidation callback
+// looks up `revokedAt` on every authenticated request, so per-device sign-out
+// and revoke-on-password-change become a single UPDATE. Replaces the never-
+// written `users.tokenVersion` revocation mechanism (column kept in v1, dropped
+// in v1.1). See docs/dev/proposals/auth-sessions.md.
+model UserSession {
+  // uuid v4 ONLY (NOT v7). The id is baked into the signed JWT; v4's 122 bits
+  // of randomness keep it unguessable even under a hypothetical AUTH_SECRET
+  // leak. v7 would leak creation time + reduce tail randomness. gen_random_uuid()
+  // (what @default(uuid()) resolves to) is v4.
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      Int       @map("user_id")
+  // Derived labels parsed at authorize() time — raw User-Agent and raw IP are
+  // NEVER persisted (privacy minimisation, see proposal §4). deviceLabel from
+  // lib/userAgent.ts; geoLabel is country-only from lib/geo.ts (null on miss).
+  deviceLabel String?   @map("device_label") @db.VarChar(64)
+  geoLabel    String?   @map("geo_label") @db.VarChar(64)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Bumped at coarse 5-min wall-clock buckets by the jwt() revalidation branch.
+  // Self-only field: queryable only via WHERE userId = $self. No analytics /
+  // other-user / aggregate surface (proposal §10).
+  lastSeenAt  DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+  // Why the session was revoked, set alongside revokedAt. Lets the login page
+  // show a tailored message (e.g. "your password was changed") when a device
+  // whose session was killed by a password change next hits the app. Values:
+  // 'password_change' | 'manual' | 'revoke_all' | 'logout'. Null when active.
+  revocationReason String? @map("revocation_reason") @db.VarChar(32)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@map("user_sessions")
 }
 
 // Per-pair soft-hide. A mutes B → A no longer sees B's content in

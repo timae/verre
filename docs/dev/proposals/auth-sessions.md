@@ -1,6 +1,11 @@
 # Per-device session tracking + revocation
 
-**Status**: proposal. Not yet implemented.
+**Status**: SHIPPED. This file stays as the design rationale-of-record; the as-built behaviour is the code (`auth.ts`, `app/api/me/devices/*`, `lib/verifyPassword.ts`, `lib/revocationNotice.ts`). Cross-cutting invariants live in `lib/CLAUDE.md` ("never cache `auth()`", `lastSeenAt` self-only).
+
+**As-built deviations from this proposal** (the proposal text below is the original plan, not the shipped shape):
+- **Legacy tokens are hard-stripped, not soft-rolled.** §5/§6/§9 describe legacy tokens (no `userSessionId`) continuing to work ~30 days. Shipped behaviour: the `jwt()` gate treats any token without a `userSessionId` as invalid → logged out on the next request. The app has two users; a one-time re-login is a non-issue, and it keeps the gate single-path (a valid session always has a live `user_sessions` row). The `currentSessionTracked` field (§6) and the §9 legacy-branch are therefore absent — they'd be dead code under hard-strip.
+- **`revocationReason` added** (not in the proposal): each revoke tags `'password_change' | 'manual' | 'revoke_all' | 'logout'`. The login page shows a tailored notice for `password_change`, a "session expired" notice for a present-but-undecodable cookie, nothing otherwise. See `lib/revocationNotice.ts`.
+- **geo is country-only** (RIR-derivable, no licensing) and ships as a null stub (`lib/geo.ts`); the 90-day revoked-row cleanup is deferred.
 
 This adds a "Connected devices" panel in account settings, per-device sign-out, and proper password-change session revocation, while staying on NextAuth's JWT strategy.
 

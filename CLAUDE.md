@@ -193,6 +193,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Session codes](docs/dev/session-codes.md) — Crockford alphabet, 4/8-char canonical forms, three-forms rule, collision check
 - [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, Redis wipe, participant bounce
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning
+- [Per-device sessions](docs/dev/proposals/auth-sessions.md) — `user_sessions` revocation gate (never-cache-`auth()`), Connected-devices panel, password-change + signOut revoke, revocation-reason login notices. Cross-cutting invariants in `lib/CLAUDE.md`. (Doc is the shipped proposal w/ as-built deviations noted.)
 - [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap, HoF trigger
 - [Social feed](docs/dev/social-feed.md) — unified `feed_items` model, follow graph, engagement trigger + auto-deletion cascade, mutual-follow tag gating, "had a sip" S3 copy flow, `<SessionFeedCard>` aggregate render with server-side blind redaction
 - [Avatars](docs/dev/avatars.md) — upload pipeline, MIME allow-list + magic-byte signatures, JPEG EXIF strip, account-delete reclaim

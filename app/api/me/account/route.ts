@@ -69,7 +69,22 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
   }
 
-  return NextResponse.json({ ok: true })
+  // After a password change, revoke every OTHER device's session — the user
+  // who just re-authed keeps their current session (no annoying bounce to
+  // login; standard GitHub/Google/Slack behaviour). The current session id
+  // comes ONLY from the signed JWT, never the request body. The userSessionId
+  // truthiness check is defensive type-narrowing (a valid session always has
+  // one — the auth gate strips any token without it).
+  const responseBody: { ok: true; otherDevicesSignedOut?: number } = { ok: true }
+  if (updates.passwordHash && session.user.userSessionId) {
+    const revoked = await prisma.userSession.updateMany({
+      where: { userId, id: { not: session.user.userSessionId }, revokedAt: null },
+      data: { revokedAt: new Date(), revocationReason: 'password_change' },
+    })
+    responseBody.otherDevicesSignedOut = revoked.count
+  }
+
+  return NextResponse.json(responseBody)
 }
 
 export async function DELETE(req: NextRequest) {
