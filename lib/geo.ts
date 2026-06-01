@@ -13,8 +13,8 @@
 // binary-searches by SEEKING to a byte offset and reading one record (a few
 // bytes). The OS page cache keeps hot pages warm. Only the tiny country-index
 // (239 codes, ~1KB) is held in memory. See scripts/generate-geo-table.mjs for
-// the record layout and how the files get to disk (deploy job → S3 → app
-// downloads to GEO_DATA_DIR at boot; see lib/geoData.ts).
+// the record layout and how the files get to disk (weekly scheduledJob / boot
+// cold-start seed → S3 → app downloads to GEO_DATA_DIR at boot; see lib/geoData.ts).
 //
 // HARD CONTRACT (proposal §5) — login must NEVER fail because geo errors:
 // resolveGeoLabel resolves to null on any throw (and the caller in auth.ts also

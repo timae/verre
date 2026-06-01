@@ -17,10 +17,11 @@
 //   v4: startUInt32 (4) | endUInt32 (4) | ccIndex UInt8 (1)        = 9 bytes
 //   v6: start 16 bytes  | end 16 bytes  | ccIndex UInt8 (1)        = 33 bytes
 //
-// Delivery (see lib/geo.ts + the deploy job): the deploy job runs this, uploads
-// the files to S3; the app downloads them to local disk at boot and queries the
-// on-disk files. At REQUEST time nothing is fetched and the IP never leaves the
-// server. Run monthly-ish (country allocations barely drift).
+// Delivery (see lib/geo.ts): the weekly `refresh-geo-data` scheduledJob (and the
+// cold-start boot seed in lib/geoData.ts) runs this + uploads the files to S3;
+// the app downloads them to local disk at boot and queries the on-disk files. At
+// REQUEST time nothing is fetched and the IP never leaves the server. Refreshed
+// weekly (country allocations barely drift).
 //
 // Data source: the NRO publishes a single daily-merged file combining all five
 // RIRs. Falls back to per-RIR fetch if the combined URL is unreachable.
@@ -114,9 +115,9 @@ function main(text, outDir) {
 
   // Sanity floor BEFORE writing. A successful-but-truncated fetch (200 with a
   // partial body) parses without error into a tiny table; without this guard
-  // we'd write it and the deploy job would upload it, overwriting the good S3
-  // copy and blanking geo globally. Real data is ~256k v4 / ~70k v6 / 239
-  // countries; these floors are far below real values but far above any
+  // we'd write it and the caller (refresh-geo-data.mjs) would upload it,
+  // overwriting the good S3 copy and blanking geo globally. Real data is ~256k
+  // v4 / ~70k v6 / 239 countries; these floors are far below real values but far above any
   // truncated/garbage parse. Throwing here makes the refresh script keep the
   // existing S3 copy (it only overwrites on a clean exit). These floors are a
   // deliberate static safety net, NOT a moving target — RIR allocations only

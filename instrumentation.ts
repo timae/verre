@@ -7,6 +7,6 @@ export async function register() {
   // Only the Node.js server runtime can touch fs / S3 (not the Edge runtime,
   // which also loads instrumentation). Guard on the runtime flag.
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
-  const { downloadGeoData } = await import('@/lib/geoData')
-  await downloadGeoData()
+  const { ensureGeoData } = await import('@/lib/geoData')
+  await ensureGeoData()
 }

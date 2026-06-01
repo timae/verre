@@ -43,6 +43,19 @@ This rule applies regardless of how much "easier" it would be to just drop and r
 
 `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations directory disagree. Don't bypass — either generate the migration via `prisma migrate dev` or roll back the schema change.
 
+## `prisma/maintenance/` — recurring SQL (NOT migrations)
+
+`prisma/maintenance/*.sql` holds idempotent housekeeping SQL run on a schedule via `prisma db execute --file`, distinct from `prisma/migrations/`:
+
+| | `prisma/migrations/` | `prisma/maintenance/` |
+|---|---|---|
+| Runs | once, in order, tracked in `_prisma_migrations` | recurring, on a schedule, untracked |
+| Triggered by | deploy job (`migrate deploy`) | a `scheduledJob` cron in `.deploio.yaml` |
+| Gates the deploy | yes (`migrate deploy` failure fails the release) | no (a scheduled-job failure never fails the release) |
+| Purpose | schema + one-shot data migrations | recurring idempotent housekeeping (e.g. retention pruning) |
+
+So a maintenance file MUST be idempotent and safe to re-run any number of times — it is NOT a versioned one-shot. Don't put schema changes here (those are migrations). Current file: `cleanup-revoked-sessions.sql` (prunes `user_sessions` revoked >90 days, daily). pg_cron isn't available on Nine's managed Postgres, but Deplo.io's native `scheduledJobs` (cron, same image + env as the app) is — the job `cd /migrate`s like the deploy job. Wired in `.deploio.yaml`; see `docs/dev/deployment.md`.
+
 ## Phase 2 data migration (rewire) — historical
 
 `prisma/migrations/20260515011038_rewire_phase2_data/migration.sql` backfilled the new `feed_items` model from the (then-existing) `checkins` tables. Idempotency was guarded via a `_migration_checkpoints` scratch table — both that table and the source `checkins*` tables were dropped in phase 4 (`20260516125827_rewire_phase4_drop_checkins`). The migration file remains in history for audit; do not re-run it. Re-run / partial-failure recovery within its deploy window: `prisma migrate resolve --rolled-back <migration_name>` was the documented escape hatch. Full deploy story (scale to 0 replicas, push merge commit, Deploio runs `prisma migrate deploy`, scale back up): `docs/dev/proposals/rewire.md` §5 + §6 phase 2.

@@ -1,15 +1,14 @@
-// Deploy-job geo refresh. Runs the generator to produce fresh binary tables,
-// then uploads them to the fixed S3 keys the app downloads at boot.
+// Geo refresh. Runs the generator to produce fresh binary tables, then uploads
+// them to the fixed S3 keys the app downloads at boot.
 //
 // Usage:   node scripts/refresh-geo-data.mjs
 //
-// BEST-EFFORT — this must NEVER fail a deploy. Any error (RIR source down,
-// timeout, S3 unreachable) is logged and the script exits 0, leaving the
-// existing S3 copy in place. The app degrades to "Unknown location" only if S3
-// has nothing at all (cold start) — never a broken deploy or login.
+// BEST-EFFORT — any error (RIR source down, timeout, S3 unreachable) is logged
+// and the script exits 0, leaving the existing S3 copy in place.
 //
-// Wired into .deploio.yaml's deployJob AFTER `prisma migrate deploy`. Migrations
-// remain the only thing that can fail a deploy; geo is additive and optional.
+// Wired as the weekly `refresh-geo-data` scheduledJob in .deploio.yaml (a
+// scheduled-job failure never affects the release). Also invoked by the boot-
+// time cold-start seed (lib/geoData.ts ensureGeoData) when S3 is empty.
 //
 // Reads S3 config from the same env as the app: S3_ENDPOINT, S3_BUCKET,
 // S3_ACCESS_KEY, S3_SECRET_KEY, S3_REGION.
@@ -32,8 +31,8 @@ function log(msg) { process.stderr.write(`[geo-refresh] ${msg}\n`) }
 // on success, throws on failure/timeout.
 function runGenerator(outDir) {
   return new Promise((resolve, reject) => {
-    // process.execPath, not bare 'node' — the deploy job runs under sh -c where
-    // PATH resolution is implicit; use the exact node binary running this
+    // process.execPath, not bare 'node' — the scheduled job runs under sh -c
+    // where PATH resolution is implicit; use the exact node binary running this
     // script (same posture as .deploio.yaml calling Prisma's JS entry directly).
     const child = spawn(process.execPath, [GENERATOR, outDir], { stdio: ['ignore', 'ignore', 'inherit'] })
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('generator timed out')) }, FETCH_TIMEOUT_MS)
@@ -73,9 +72,9 @@ async function main() {
 }
 
 // Overall deadline. runGenerator has its own fetch timeout, but the S3 uploads
-// don't — a half-open connection could hang `await upload()` and stall the
-// whole deploy (this runs in the deployJob chain). Cap the entire refresh so it
-// can never block the release; on timeout we keep the existing S3 copy.
+// don't — a half-open connection could hang `await upload()` indefinitely. Cap
+// the entire refresh so a stuck run can't pin the scheduled job past its
+// timeout; on timeout we keep the existing S3 copy.
 const OVERALL_TIMEOUT_MS = 120_000
 const deadline = new Promise((_, reject) =>
   setTimeout(() => reject(new Error('overall refresh timed out')), OVERALL_TIMEOUT_MS).unref(),

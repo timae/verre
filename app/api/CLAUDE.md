@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
 
 - **`{status: 'gone'}` from `resolveProfileViewer` → 404**, never 403 or 401. The caller can't distinguish "no such user" from "exists but tier denies you."
 - **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/feed-items/[id]/like/route.ts` for the canonical pattern.
+- **Owner-scoped uuid resources → 404 on wrong-owner/missing.** `DELETE /api/me/devices/[id]` scopes the revoke `UPDATE` with `WHERE id = $uuid AND user_id = $me`; a uuid belonging to another user matches zero rows → 404, indistinguishable from "no such uuid". 403 is reserved for the wrong-password case. uuid keys make enumeration infeasible regardless. (Per-device session revocation lives under `/api/me/devices` — the gate is `user_sessions.revokedAt`, see `app/api/auth/CLAUDE.md` + `lib/CLAUDE.md`.)
 - **403 reserved for permission-denied with identity AND visibility both resolved** ("only host can…", "pro required"). Never use 403 to indicate "you can't see this resource exists."
 
 ## Cache-Control on viewer-dependent responses
@@ -56,7 +57,7 @@ For removed-bounce-aware endpoints, use `participantOrBanned(code, identity)` wh
 Limit policy table lives in root CLAUDE.md. Helper API in `lib/CLAUDE.md`. Per-endpoint guidance:
 
 - **Successful operations should not pollute the failure counter.** For login, use `peekRate` in the precheck and `checkRate` only on bcrypt failure. For visibility PATCH, use `peekRate` to detect no-op submits and only `checkRate` when the value actually changes.
-- **Shared-counter pairs**: account PATCH+DELETE, mutes POST+DELETE, bans POST+DELETE — both endpoints call `checkRate` with the **same Redis key string** (e.g. `rl:account:user:${userId}:1h` shared by PATCH + DELETE in `app/api/me/account/route.ts`) so an attacker can't get `N+N` budget. No special parameter; just literally the same key.
+- **Shared-counter pairs**: account PATCH+DELETE, mutes POST+DELETE, bans POST+DELETE — both endpoints call `checkRate` with the **same Redis key string** (e.g. `rl:account:user:${userId}:1h` shared by PATCH + DELETE in `app/api/me/account/route.ts`) so an attacker can't get `N+N` budget. No special parameter; just literally the same key. **The device sign-out endpoints' password re-auth extends this**: `lib/verifyPassword.ts` (used by `DELETE /api/me/devices/[id]` cross-device + `DELETE /api/me/devices` revoke-all) charges the *same* `rl:account` key, so a stolen cookie can't stack brute-force budget across account + device endpoints. Those endpoints ALSO keep a separate per-endpoint counter (`rl:devices`/`rl:devices-all`) bounding revoke-thrashing — distinct concern from the password-guess budget.
 - **Recovery paths** (block DELETE): intentionally uncapped. A burst-block attack must always leave the unblock path open.
 - **Multi-window batches** (login: 10/min/email + 20/h/email + 100/10min/IP): use `peekRates([...])` / `checkRates([...])` so all windows check together and 429 surfaces the longest wait.
 

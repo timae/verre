@@ -161,8 +161,8 @@ export const deleteImage = async (wineId: string): Promise<void> => {
 // Generic raw-bytes get for arbitrary keys (the image helpers above are
 // MIME/magic-byte gated and not suitable for binary data files). Used by the
 // geo-data delivery: the app downloads the lookup tables from S3 at boot. (The
-// matching upload runs in the deploy job's standalone .mjs with its own S3
-// client — it can't import this TS module — so there's no put helper here.)
+// matching upload runs in `scripts/refresh-geo-data.mjs` with its own S3 client
+// — it can't import this TS module — so there's no put helper here.)
 // Returns null when S3 isn't configured or the object is missing/unreadable.
 export const getObjectBytes = async (key: string): Promise<Buffer | null> => {
   if (!s3 || !BUCKET) return null
