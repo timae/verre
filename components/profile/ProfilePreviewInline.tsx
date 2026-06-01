@@ -5,6 +5,7 @@ import { FollowButton } from '@/components/social/FollowButton'
 import { UserProfileModal } from './UserProfileModal'
 import { AccountSettingsModal } from '@/components/me/AccountSettingsModal'
 import { Avatar } from './Avatar'
+import { formatNumber } from '@/lib/formatNumber'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
@@ -24,7 +25,7 @@ interface Props {
 //   - tier-gated:    `{id, name, gated: true, isFollowing}`
 //   - full payload:  LoadedProfile + `viewerMutes`
 // Discriminate before reading content fields, otherwise `data.level.icon`
-// / `data.xp.toLocaleString()` throw. The full payload also includes
+// / `data.xp` access throws. The full payload also includes
 // `viewerMutes` (handled in the modal, not surfaced here — the inline
 // preview doesn't render a mute button).
 type ProfileResponse =
@@ -173,7 +174,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId, ind
                 ) : null}
               </div>
               <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
-                {data.level.icon} {data.level.name} · {data.xp.toLocaleString()} XP
+                {data.level.icon} {data.level.name} · {formatNumber(data.xp)} XP
               </div>
               <button className="btn-s" onClick={() => setOpenProfile(true)} style={{ alignSelf: 'flex-start', marginTop: 4 }}>
                 visit profile

@@ -1,6 +1,7 @@
 'use client'
 import { useRouter } from 'next/navigation'
 import { getLevel } from '@/lib/badges'
+import { formatNumber } from '@/lib/formatNumber'
 import { ProfileSettingsButton } from './ProfileSettingsButton'
 import { FollowButton } from '@/components/social/FollowButton'
 import { ProfileActionsMenu } from './ProfileActionsMenu'
@@ -63,7 +64,7 @@ export function ProfileHeader({ userId, userName, userXp, userImageUrl, myId, is
         }
         <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, marginBottom: 4 }}>{userName}</h1>
-          <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{level.icon} {level.name} · {userXp.toLocaleString()} XP</div>
+          <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>{level.icon} {level.name} · {formatNumber(userXp)} XP</div>
           <div style={{ height: 3, background: 'var(--bg3)', borderRadius: 2, marginTop: 6, overflow: 'hidden' }}>
             <div style={{ height: '100%', width: `${Math.min(100, progress)}%`, background: 'var(--accent)', borderRadius: 2 }} />
           </div>
