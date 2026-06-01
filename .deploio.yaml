@@ -18,4 +18,9 @@ deployJob:
   # Migration tooling lives at /migrate (see Dockerfile). Calling the
   # Prisma CLI's JS entry directly avoids any reliance on .bin symlinks
   # or PATH munging.
-  command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy"'
+  #
+  # After migrations, refresh the geo IP→country tables into S3 (best-effort —
+  # the script swallows all errors and exits 0, so a flaky RIR source or S3 can
+  # never fail the deploy; migrations remain the only gating step). The app
+  # downloads the tables from S3 at boot (instrumentation.ts → lib/geoData.ts).
+  command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy && node scripts/refresh-geo-data.mjs"'

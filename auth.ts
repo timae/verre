@@ -93,8 +93,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         // revalidation gate below looks up revokedAt on every authenticated
         // request. deviceLabel + geoLabel are derived at write time — the raw
         // User-Agent and raw IP are NEVER persisted (proposal §4).
-        // Geo is best-effort and NEVER blocks login: resolveGeoLabel has an
-        // internal 200ms timeout + null-on-error, and we still wrap in catch.
+        // Geo is best-effort and NEVER blocks login: resolveGeoLabel is an
+        // in-process disk lookup (no network — the IP never leaves the server)
+        // that returns null on any miss/error, and we still wrap in catch.
         // The create() itself, by contrast, is a HARD dependency: if it throws,
         // the login fails (NextAuth turns it into a credentials error). This is
         // deliberate fail-closed — a login with no session row would be an

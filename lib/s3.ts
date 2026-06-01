@@ -1,4 +1,4 @@
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3'
 import { Upload } from '@aws-sdk/lib-storage'
 
 const BUCKET = process.env.S3_BUCKET
@@ -155,6 +155,23 @@ export const deleteImage = async (wineId: string): Promise<void> => {
     } catch (err) {
       console.warn('[s3] deleteImage failed:', { key, err })
     }
+  }
+}
+
+// Generic raw-bytes get for arbitrary keys (the image helpers above are
+// MIME/magic-byte gated and not suitable for binary data files). Used by the
+// geo-data delivery: the app downloads the lookup tables from S3 at boot. (The
+// matching upload runs in the deploy job's standalone .mjs with its own S3
+// client — it can't import this TS module — so there's no put helper here.)
+// Returns null when S3 isn't configured or the object is missing/unreadable.
+export const getObjectBytes = async (key: string): Promise<Buffer | null> => {
+  if (!s3 || !BUCKET) return null
+  try {
+    const res = await s3.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }))
+    const bytes = await res.Body?.transformToByteArray()
+    return bytes ? Buffer.from(bytes) : null
+  } catch {
+    return null
   }
 }
 
