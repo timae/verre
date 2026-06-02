@@ -1,12 +1,12 @@
-// Next.js instrumentation hook — runs once when the server process starts.
-// We use it to download the geo IP→country tables from S3 to local disk so
-// lib/geo.ts can query them (see lib/geoData.ts for the why/how). Best-effort:
-// a failure just means geo labels are unavailable ("Unknown location"), never a
-// boot failure.
+// Next.js instrumentation hook — runs once when the server process starts, in
+// EVERY runtime (Node + Edge). Keep this file runtime-agnostic: it must NOT
+// statically or dynamically pull in Node-only modules, or webpack tries to
+// bundle them for the Edge runtime and the build fails (UnhandledSchemeError on
+// node:fs etc.). The geo boot work (fs / S3 / child_process) therefore lives in
+// instrumentation-node.ts, imported ONLY inside the nodejs branch so the
+// bundler keeps it out of the Edge graph.
 export async function register() {
-  // Only the Node.js server runtime can touch fs / S3 (not the Edge runtime,
-  // which also loads instrumentation). Guard on the runtime flag.
-  if (process.env.NEXT_RUNTIME !== 'nodejs') return
-  const { ensureGeoData } = await import('@/lib/geoData')
-  await ensureGeoData()
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    await import('./instrumentation-node').then((m) => m.register())
+  }
 }
