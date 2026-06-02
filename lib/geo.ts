@@ -46,11 +46,11 @@ function init(): GeoState | null {
   if (initTried) return state
   try {
     // Don't latch when the files simply aren't here YET — the boot download
-    // (instrumentation.ts → downloadGeoData) may still be in flight. Latching
-    // here on a files-absent first lookup would disable geo for the whole
-    // process life. Return null without latching so a later lookup retries
-    // once the files land. Only a successful open or a genuine parse/open
-    // error latches.
+    // (instrumentation.ts → instrumentation-node.ts → ensureGeoData) may still
+    // be in flight. Latching on a files-absent first lookup would disable geo
+    // for the whole process life. Return null without latching so a later
+    // lookup retries once the files land. Only a successful open or a genuine
+    // parse/open error latches.
     if (!existsSync(V4_PATH) || !existsSync(V6_PATH) || !existsSync(CC_PATH)) return null
     initTried = true
     const cc = JSON.parse(readFileSync(CC_PATH, 'utf8')) as string[]
