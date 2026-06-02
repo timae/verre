@@ -114,7 +114,7 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
         <div style={{ width: '100%', maxWidth: 400 }}>
           {state.kind === 'loading' && (
             <div style={{ textAlign: 'center', padding: '32px 0', color: 'var(--fg-dim)' }}>
-              <p style={{ fontSize: 11, fontFamily: 'var(--mono)', letterSpacing: '0.1em' }}>// checking your status…</p>
+              <p style={{ fontSize: 11, fontFamily: 'var(--mono)', letterSpacing: '0.1em' }}>{'// checking your status…'}</p>
             </div>
           )}
 
@@ -144,7 +144,7 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
               {state.hasRatings ? (
                 <div className="lobby-card lobby-form">
                   <div style={{ fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--fg-dim)', marginBottom: 12 }}>
-                    // your ratings and notes
+                    {'// your ratings and notes'}
                   </div>
                   <p style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 16, lineHeight: 1.5 }}>
                     Keep them in your tasting history, or delete them entirely.
@@ -159,7 +159,7 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
               ) : (
                 <div className="lobby-card lobby-form">
                   <p style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 16, textAlign: 'center' }}>
-                    You hadn't added any ratings yet, so there's nothing to keep or delete.
+                    You hadn&apos;t added any ratings yet, so there&apos;s nothing to keep or delete.
                   </p>
                   <button className="btn-p" onClick={() => pick('keep')} disabled={acting}>
                     {acting ? '…' : '← back to home'}
@@ -171,7 +171,7 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
 
           {state.kind === 'unknown' && (
             <div className="lobby-card lobby-form" style={{ textAlign: 'center' }}>
-              <p style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 16 }}>You're no longer part of this session.</p>
+              <p style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 16 }}>You&apos;re no longer part of this session.</p>
               <Link href={homePath(isLoggedIn)} className="btn-p" style={{ textDecoration: 'none', display: 'block', textAlign: 'center' }}>← back to {isLoggedIn ? 'dashboard' : 'home'}</Link>
             </div>
           )}

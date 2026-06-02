@@ -157,7 +157,7 @@ export default function ComparePage() {
       )}
       <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:12,marginBottom:16,flexWrap:'wrap'}}>
         <div>
-          <p style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:4}}>// Compare</p>
+          <p style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:4}}>{'// Compare'}</p>
           <h2 style={{fontSize:24,fontWeight:700,color:'#F0E3C6'}}>Tasting comparison</h2>
         </div>
         <button className="btn-s" onClick={() => window.print()}>export PDF</button>

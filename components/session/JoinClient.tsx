@@ -97,7 +97,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
           ) : (
             <div style={{textAlign:'center',marginBottom:24}}>
               <div style={{fontSize:48,marginBottom:12}}>🍷</div>
-              <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:8}}>you've been invited</p>
+              <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:8}}>you&apos;ve been invited</p>
               <h1 style={{fontSize:26,fontWeight:800,color:'#F0E3C6',lineHeight:1.1,marginBottom:8}}>{sessionLabel}</h1>
               {sessionMeta?.host && (
                 <p style={{fontSize:12,color:'var(--fg-dim)'}}>Hosted by <strong style={{color:'var(--fg)'}}>{sessionMeta.host}</strong></p>
@@ -114,7 +114,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
             ) : isLoggedIn ? (
               <>
                 <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>
-                  // joining as <span style={{color:'var(--fg)'}}>{defaultName}</span>
+                  {'// joining as '}<span style={{color:'var(--fg)'}}>{defaultName}</span>
                 </div>
                 {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
                 <button className="btn-p" onClick={() => join(defaultName)} disabled={loading}>
@@ -124,7 +124,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
             ) : (
               <>
                 <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>
-                  // enter your name to join
+                  {'// enter your name to join'}
                 </div>
 
                 <div className="field">

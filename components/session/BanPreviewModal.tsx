@@ -94,12 +94,12 @@ export function BanPreviewModal({ code, identityId, displayName, mode, onClose, 
 
       {mode === 'ban' && (
         <p style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-          They'll be removed from this tasting and prevented from rejoining. Their ratings, hall-of-fame entries, and bookmarks from this session will be deleted.
+          They&apos;ll be removed from this tasting and prevented from rejoining. Their ratings, hall-of-fame entries, and bookmarks from this session will be deleted.
         </p>
       )}
       {mode === 'kick' && (
         <p style={{ fontSize: 12, color: 'var(--fg-dim)', marginBottom: 14, lineHeight: 1.5 }}>
-          They'll be removed from this tasting. They can rejoin if they have the code. They'll choose later whether to keep their ratings in their personal history.
+          They&apos;ll be removed from this tasting. They can rejoin if they have the code. They&apos;ll choose later whether to keep their ratings in their personal history.
         </p>
       )}
 
@@ -130,7 +130,7 @@ export function BanPreviewModal({ code, identityId, displayName, mode, onClose, 
               </label>
               {deleteWines && (
                 <p style={{ fontSize: 10, color: 'var(--fg-dim)', marginTop: 4, lineHeight: 1.4 }}>
-                  Other tasters' ratings on these wines will also be cleared from the live tasting. Bookmarks on the wines stay reachable from <code>/me/saved</code>.
+                  Other tasters&apos; ratings on these wines will also be cleared from the live tasting. Bookmarks on the wines stay reachable from <code>/me/saved</code>.
                 </p>
               )}
             </div>
@@ -141,7 +141,7 @@ export function BanPreviewModal({ code, identityId, displayName, mode, onClose, 
           )}
         </>
       ) : (
-        <p style={{ fontSize: 11, color: 'var(--fg-dim)', textAlign: 'center', padding: '16px 0' }}>// loading…</p>
+        <p style={{ fontSize: 11, color: 'var(--fg-dim)', textAlign: 'center', padding: '16px 0' }}>{'// loading…'}</p>
       )}
 
       {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}

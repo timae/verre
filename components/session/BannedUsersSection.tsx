@@ -96,7 +96,7 @@ export function BannedUsersSection({ code, count }: Props) {
       {open && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 12 }}>
           {rows === null ? (
-            <span style={{ fontSize: 11, color: 'var(--fg-dim)', padding: '4px 0' }}>// loading…</span>
+            <span style={{ fontSize: 11, color: 'var(--fg-dim)', padding: '4px 0' }}>{'// loading…'}</span>
           ) : rows.map(r => (
             <div
               key={r.identityId}
