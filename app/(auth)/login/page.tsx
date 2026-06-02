@@ -18,7 +18,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
           <div style={{fontSize:10,color:'var(--fg-dim)',letterSpacing:'0.14em',textTransform:'uppercase',marginTop:4}}>Wine Tasting OS</div>
         </div>
         <div className="lobby-card lobby-form" style={{padding:22}}>
-          <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>// Sign in to your account</div>
+          <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>{'// Sign in to your account'}</div>
           <LoginForm redirectTo={redirectTo} notice={notice} />
         </div>
       </div>
