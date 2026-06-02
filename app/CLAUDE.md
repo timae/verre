@@ -37,3 +37,20 @@ Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed client UI
 `/u/[id]` is a Server Component that calls `resolveProfileViewer(userId, viewerId)` at request time and branches to `<ProfileShell>` (tier-gated) / `<ProfileBlockedView>` (blocker-side) / full profile (`<ProfileHeader>` + `<ProfileTabs>`). When the viewer follows or unfollows a tier-gated profile, the gate result flips but the SSR'd shell wouldn't re-evaluate without a navigation.
 
 **Pattern**: `<ProfileShell>` and `<ProfileHeader>` are client components (`'use client'`). Their follow/mute/block toggle callbacks default to `router.refresh()` when no caller-supplied callback is wired — so the SSR /u/[id] path re-runs the server gate after every relationship change without the user navigating. Client-cached callers (`UserProfileModal`, `ProfilePreviewInline`) pass their own TanStack invalidation callbacks instead; the fallback only fires when no callback is provided. Apply the same pattern on any other server component that hosts an interactive relationship-toggle.
+
+## `instrumentation.ts` — keep Node-only code out of the Edge bundle
+
+`instrumentation.ts`'s `register()` is analyzed and **bundled for BOTH runtimes** (Node *and* Edge — `middleware.ts` makes the Edge runtime real). A `NEXT_RUNTIME === 'nodejs'` runtime guard does **not** stop webpack from *bundling* a module — including a `await import(...)`'d one — for the Edge target. So importing anything that pulls in `node:fs` / `node:path` / `node:child_process` (etc.) directly from `instrumentation.ts` fails the **build** with `UnhandledSchemeError: Reading from "node:fs"…`, even though it would never *run* on Edge. (`tsc` won't catch this — it doesn't bundle; only `npm run build` does.)
+
+**Pattern**: put the Node-only boot work in a separate root file `instrumentation-node.ts` and import it ONLY inside the nodejs branch:
+
+```ts
+// instrumentation.ts
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    await import('./instrumentation-node').then((m) => m.register())
+  }
+}
+```
+
+The bundler keeps `instrumentation-node.ts` (and its `node:*` transitive imports — here `lib/geoData.ts` for the geo boot seed) out of the Edge graph. `instrumentation-node.ts` is a plain module, NOT a Next-recognized special file (Next's detection regex is anchored to `^instrumentation\.…$`), so there's no double-register. Any future Node-only instrumentation work goes there, not in `instrumentation.ts`.
