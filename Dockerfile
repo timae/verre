@@ -25,6 +25,9 @@ COPY --from=builder /app/public ./public
 # before invoking the Prisma CLI's JS entry directly.
 COPY --from=builder /app/prisma /migrate/prisma
 COPY --from=builder /app/node_modules /migrate/node_modules
+# Geo-data refresh script runs from the deploy job alongside migrations
+# (best-effort; see scripts/refresh-geo-data.mjs + .deploio.yaml).
+COPY --from=builder /app/scripts /migrate/scripts
 
 EXPOSE 8080
 CMD ["node", "server.js"]

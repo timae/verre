@@ -315,6 +315,9 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     //   - user_badges.user_id CASCADE
     //   - session_members.user_id CASCADE
     //   - user_mutes / user_blocks both directions CASCADE
+    //   - user_sessions.user_id CASCADE (the "Connected devices" rows; their
+    //     cookies still validate signature-wise but the jwt() gate finds no
+    //     row → identity stripped on the next request)
     await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
   })
 

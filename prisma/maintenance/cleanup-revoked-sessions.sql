@@ -1,0 +1,20 @@
+-- Bounded retention for user_sessions: delete sessions that have been REVOKED
+-- (logout, password change, manual/revoke-all device sign-out) for longer than
+-- 90 days. Active sessions (revoked_at IS NULL) are never touched.
+--
+-- WHY: a revoked row keeps the device label + country + login/revoke timestamps
+-- forever. Kept indefinitely that becomes a per-user login ledger — the same
+-- "long-lived activity log" liability this codebase deliberately avoids (it
+-- dropped its audit-log table for the reason). 90-day bounded retention keeps
+-- the table to recent + active sessions only.
+--
+-- HOW IT RUNS: pg_cron isn't on Nine's managed Postgres, but Deplo.io has
+-- native scheduled jobs (cron). This runs as a DAILY scheduledJob in
+-- .deploio.yaml via `prisma db execute --file` — so retention is a real 90-day
+-- floor (not deploy-cadence-dependent). A failed run doesn't affect the release.
+--
+-- Idempotent — safe to run any number of times. NOTE: this filters on
+-- revoked_at alone (no user_id), so the (user_id, revoked_at) composite index
+-- can't serve it — it's a seq scan. Irrelevant at this scale; if user_sessions
+-- ever grows large, add a standalone (revoked_at) index.
+DELETE FROM user_sessions WHERE revoked_at < NOW() - INTERVAL '90 days';

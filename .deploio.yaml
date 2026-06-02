@@ -2,20 +2,47 @@
 # (Cockpit) and `nctl` command-line take precedence. Documented at
 # https://guides.deplo.io/user-guide/configuring-your-application.html
 
-# Deploy Job: runs once before each new release goes live. We use it to
-# apply pending Prisma migrations (`prisma migrate deploy` is idempotent —
-# already-applied migrations are skipped). If the job fails, the release
-# is marked failed and the previous release keeps serving production, so
-# a broken migration doesn't take the app down.
+# Deploy Job: runs once before each new release goes live. Sole job: apply
+# pending Prisma migrations (`prisma migrate deploy` is idempotent — already-
+# applied migrations are skipped). If it fails, the release is marked failed and
+# the previous release keeps serving, so a broken migration can't take the app
+# down. (Maintenance tasks moved to scheduledJobs below — they shouldn't gate or
+# ride on deploys.)
+#
+# Wrapped in `sh -c` because Deploio execs the command directly (no shell), so
+# `cd /migrate && …` needs a real shell. Migration tooling lives at /migrate
+# (see Dockerfile); calling Prisma's JS entry directly avoids .bin/PATH reliance.
 deployJob:
   name: "migrate"
-  # Wrapped in `sh -c` because Deploio executes the command via exec(), not
-  # via a shell — so without `sh -c`, `cd /migrate && …` gets word-split
-  # and `cd` is run as if it were a binary. With `sh -c`, the full string
-  # is passed to a real shell which handles `cd`, `&&`, and PATH lookup
-  # the way you'd expect.
-  #
-  # Migration tooling lives at /migrate (see Dockerfile). Calling the
-  # Prisma CLI's JS entry directly avoids any reliance on .bin symlinks
-  # or PATH munging.
   command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy"'
+
+# Scheduled Jobs: cron-style, run in the SAME image as the app with the SAME
+# env (DATABASE_URL, S3_*) and binaries — so they `cd /migrate` exactly like the
+# deploy job. A failure does NOT fail the release. If a run overruns its
+# interval the next is skipped. Schedule is standard cron (crontab.guru).
+scheduledJobs:
+  # Prune user_sessions revoked >90 days. Bounded retention so revoked rows (a
+  # per-user login ledger) don't accumulate — same privacy reason the audit log
+  # was dropped. Daily ~03:00 (cron runs in the platform's timezone, assume UTC;
+  # exact hour is irrelevant for this off-peak best-effort job). Active sessions
+  # (revoked_at NULL) are never matched. SQL in prisma/maintenance/ (in git).
+  - name: "cleanup-revoked-sessions"
+    command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js db execute --schema prisma/schema.prisma --file prisma/maintenance/cleanup-revoked-sessions.sql"'
+    schedule: "0 3 * * *"
+    size: micro
+    retries: 0
+    timeout: 5m0s
+  # Refresh the geo IP→country tables into S3 from public RIR data. Weekly
+  # (Sunday 04:00) — country allocations barely drift. Best-effort: the script
+  # swallows errors and keeps the existing S3 copy. The app downloads the tables
+  # at boot (instrumentation.ts → lib/geoData.ts), which also seeds S3 in the
+  # background on a cold start before the first run here.
+  - name: "refresh-geo-data"
+    command: 'sh -c "cd /migrate && node scripts/refresh-geo-data.mjs"'
+    schedule: "0 4 * * 0"
+    # `mini`, not `micro`: the generator builds ~256k IPv4 + ~70k IPv6 records as
+    # in-memory JS arrays before writing (~hundreds of MB peak heap), so the
+    # smallest tier risks OOM. Cleanup above stays micro (trivial DELETE).
+    size: mini
+    retries: 0
+    timeout: 10m0s

@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { LEVELS, getLevel, RARITY_ORDER, type Rarity } from '@/lib/badges'
 import { authedFetch } from '@/lib/authedFetch'
+import { formatNumber } from '@/lib/formatNumber'
 import { BadgeCard } from './BadgeCard'
 
 type BadgeWithStatus = {
@@ -70,7 +71,7 @@ export function BadgesClient() {
           <div style={{flex:1}}>
             <p style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:4}}>current level</p>
             <h2 style={{fontSize:22,fontWeight:800,color:'var(--accent)',lineHeight:1}}>{level.name}</h2>
-            <p style={{fontSize:11,color:'var(--fg-dim)',marginTop:3}}>{data.xp.toLocaleString()} XP{nextXP ? ` · ${(nextXP - data.xp).toLocaleString()} to ${LEVELS[level.index + 1]?.name}` : ' · Max level'}</p>
+            <p style={{fontSize:11,color:'var(--fg-dim)',marginTop:3}}>{formatNumber(data.xp)} XP{nextXP ? ` · ${formatNumber(nextXP - data.xp)} to ${LEVELS[level.index + 1]?.name}` : ' · Max level'}</p>
           </div>
           <div style={{textAlign:'right'}}>
             <p style={{fontSize:22,fontWeight:800,color:'var(--fg)'}}>{earnedCount}</p>
