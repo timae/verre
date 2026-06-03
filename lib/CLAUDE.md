@@ -17,6 +17,14 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 
 **All writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create MUST use `{ KEEPTTL: true }`** so the session's lifespan (default 48h, pro 72h/1w/unlimited) isn't reset by routine edits. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session on every role-toggle, name change, or wipe.
 
+## Wine-list writes go through `mutateWines`
+
+The whole wine list is one Redis string (`s:{CODE}:wines`, a JSON array), so a raw read→edit→`set` lets two concurrent host/cohost/provider edits clobber each other (lost update). **Never `redis.set(k.wines(...))` directly** — route every wine-list mutation through `mutateWines(code, transform)` in `lib/session.ts`. It wraps the read-modify-write in WATCH/MULTI optimistic concurrency on an isolated connection (`redis.executeIsolated` — WATCH is connection-scoped, so the shared singleton can't be used), retries on conflict, and preserves `KEEPTTL`.
+
+- The `transform` **must be pure** — it re-runs on each retry. Keep side effects (S3 upload, Postgres, response building) in the caller, before/after the call, using the returned array. The `wines` POST and `[wineId]` PATCH do their `addWineToSession` S3 upload outside the transform and splice the result in by id.
+- Return a `MutateReject` (`{ reject: string }`) from the transform for current-state validation that depends on the watched value (e.g. the target wine was concurrently deleted → caller maps the reject to 404/400 via `isMutateReject`).
+- The ban-wipe wines write-back (`lib/sessionWipe.ts`) uses it too — that's why the `banLock` only serializes ban-vs-ban, not wine writes.
+
 ## SCAN helpers
 
 `lib/redis.ts` provides `scanKeys(pattern)` and `hasKey(key)` SCAN-based helpers — prefer these for new code instead of `redis.keys`, which blocks the Redis event loop.

@@ -83,7 +83,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 
 **Lifetime counter snapshots on `users`**: rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.). Never decrement — protects badge progression and gives O(1) reads on the badge hot path.
 
-**`KEEPTTL` is mandatory** on all writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session's lifespan (72h / 1w / unlimited) on every role-toggle, rename, or wipe. Easy to violate from `app/api/session/[code]/route.ts`.
+**`KEEPTTL` is mandatory** on all writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session's lifespan (72h / 1w / unlimited) on every role-toggle, rename, or wipe. Wine-list writes go through `mutateWines` (`lib/session.ts`), which preserves it — easy to violate from `app/api/session/[code]/route.ts`.
 
 Redis key namespace, SCAN helpers (`scanKeys`, `hasKey`, preferred over `redis.keys` which blocks the event loop): see `lib/CLAUDE.md`.
 
