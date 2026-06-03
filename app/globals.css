@@ -191,6 +191,13 @@
      vinification, tasting notes) — feels candlelit. */
   --fg-warm: #EBE1CC; --fg-warm-soft: #C8BBA1;
   --accent: #C8963C; --accent2: #8FB87A;
+  /* Error / destructive-action red. --danger is the standard error-text
+     and destructive-affordance color; --danger-strong is the deeper tone
+     for emphasis (e.g. the active state of a destructive confirm button). */
+  --danger: #e07070; --danger-strong: #c75660;
+  /* Liked-heart color for the feed Like button. Its own token (not
+     --danger) so the two can diverge — a "like" is not an error. */
+  --like: #e07070;
   /* Provider role chip color — third accent slot alongside host (gold)
      and co-host (green). Used by RoleBadge in the user menu and the
      participants list in SessionPanel. */
@@ -219,6 +226,11 @@
      serif copy, slightly lighter for soft secondary text. */
   --fg-warm: #1A140F; --fg-warm-soft: #4A3F33;
   --accent: #9A5F1D; --accent2: #4B7750;
+  /* Error / destructive red — deeper tones for adequate contrast on the
+     cream light-mode background. */
+  --danger: #C0392B; --danger-strong: #A32B20;
+  /* Liked-heart color — deeper red for the cream light-mode background. */
+  --like: #C0392B;
   /* Provider role chip — deeper blue for the light-mode background. */
   --accent-provider: rgba(40,110,160,0.95);
   /* Glassmorphic shell chrome — cream tones with similar opacity as

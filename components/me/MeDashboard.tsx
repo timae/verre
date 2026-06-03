@@ -139,7 +139,7 @@ export function MeDashboard({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : blind ? '→ create blind tasting' : '→ create new tasting'}
           </button>
-          {createError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{createError}</p>}
+          {createError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{createError}</p>}
           <div className="lobby-divider">or join an existing room</div>
           <div className="field">
             <div className="fl">session code</div>
@@ -149,7 +149,7 @@ export function MeDashboard({ user }: { user: User }) {
               style={{textTransform:'uppercase',textAlign:'center',fontSize:18,letterSpacing:'0.3em'}} />
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
-          {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
+          {joinError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{joinError}</p>}
         </div>}
 
         {/* Right column */}

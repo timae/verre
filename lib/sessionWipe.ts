@@ -1,4 +1,5 @@
 import { redis, k, scanKeys } from '@/lib/redis'
+import { mutateWines } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
 
@@ -211,13 +212,8 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
   // doesn't keep showing wines that no longer belong to it. The
   // orphaned Postgres rows still hold the wine bytes for /me/saved.
   if (deleteAddedWines) {
-    const rawWines = await redis.get(k.wines(code))
-    if (rawWines) {
-      const wines = JSON.parse(rawWines) as Array<{ addedByIdentityId?: string }>
-      const filtered = wines.filter(w => w.addedByIdentityId !== identityId)
-      if (filtered.length !== wines.length) {
-        await redis.set(k.wines(code), JSON.stringify(filtered), { KEEPTTL: true })
-      }
-    }
+    // Atomic read-modify-write like every other wines mutator — a concurrent
+    // wine add/edit/reorder must not clobber this filter (and vice versa).
+    await mutateWines(code, (wines) => wines.filter(w => w.addedByIdentityId !== identityId))
   }
 }

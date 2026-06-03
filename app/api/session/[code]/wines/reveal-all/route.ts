@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -26,11 +26,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can reveal all wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
   const nowDate = new Date()
   const now = nowDate.toISOString()
-  const updated = wines.map(w => w.revealedAt ? w : { ...w, revealedAt: now })
-  await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
+  const updated = await mutateWines(c, (wines) => wines.map(w => w.revealedAt ? w : { ...w, revealedAt: now }))
   await touchWithMeta(c)
 
   // Mirror to Postgres so the post-rewire feed-read path renders
@@ -49,5 +47,6 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     console.error('reveal-all pg update error:', err)
   }
 
-  return NextResponse.json({ ok: true, revealed: updated.filter(w => w.revealedAt).length })
+  const revealedCount = isMutateReject(updated) ? 0 : updated.filter(w => w.revealedAt).length
+  return NextResponse.json({ ok: true, revealed: revealedCount })
 }

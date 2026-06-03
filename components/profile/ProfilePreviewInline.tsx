@@ -78,7 +78,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId, ind
         display: 'flex', flexDirection: 'column', gap: 10,
       }}>
         {isError && (
-          <div style={{ fontSize: 11, color: '#e07070' }}>Couldn&apos;t load profile.</div>
+          <div style={{ fontSize: 11, color: 'var(--danger)' }}>Couldn&apos;t load profile.</div>
         )}
 
         {!isError && !data && (

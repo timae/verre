@@ -307,6 +307,10 @@ model SessionMember {
   // No FK to Session — session_code links to Redis; Postgres session row may not exist yet
 
   @@id([userId, sessionCode])
+  // The composite PK can't serve a filter/join on the non-leading
+  // session_code column. The feed network self-join and /me/sessions both
+  // join on session_code; without this index they degrade to seq scans.
+  @@index([sessionCode])
   @@map("session_members")
 }
 

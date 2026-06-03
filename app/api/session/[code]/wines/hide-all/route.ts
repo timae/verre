@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines } from '@/lib/session'
+import { touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity, getSessionMeta, mutateWines } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -26,13 +26,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can hide all wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
-  const updated = wines.map(w => {
+  await mutateWines(c, (wines) => wines.map(w => {
     const copy = { ...w }
     delete (copy as Partial<typeof copy>).revealedAt
     return copy
-  })
-  await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
+  }))
   await touchWithMeta(c)
 
   // Mirror to Postgres — restricted to rows that need flipping

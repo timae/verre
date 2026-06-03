@@ -1,5 +1,6 @@
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { nanoid } from 'nanoid'
+import { WatchError } from 'redis'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
@@ -195,6 +196,74 @@ export async function getWines(code: string): Promise<WineMeta[]> {
   return raw ? JSON.parse(raw) : []
 }
 
+// Sentinel a transform returns to abort the write based on the CURRENT
+// wines state (e.g. the target wine was deleted by a concurrent request
+// between read and write). Distinct from throwing — a reject is an
+// expected outcome the caller maps to a 404/400, not an error.
+export type MutateReject = { reject: string }
+export function isMutateReject(v: unknown): v is MutateReject {
+  return typeof v === 'object' && v !== null && 'reject' in v
+}
+
+// Atomic read-modify-write of the `s:{CODE}:wines` blob: the whole wine list
+// is one Redis string, so an un-guarded read→edit→write-back lets two
+// concurrent writers clobber each other (one's edit silently lost). WATCH +
+// MULTI makes the write conditional on the value being unchanged since the
+// read, retrying on conflict.
+//
+// WATCH is connection-scoped, so this MUST run on an isolated connection
+// (`executeIsolated`) — a command on the shared `redis` singleton would void
+// the WATCH. The transform MUST be pure (it re-runs on each retry): keep side
+// effects (S3, Postgres, response building) in the caller, after the commit.
+//
+// `transform` returns the new array to commit, or a MutateReject for
+// current-state validation (e.g. wine gone). KEEPTTL preserves the session's
+// lifespan per the TTL rule in lib/CLAUDE.md.
+export async function mutateWines(
+  code: string,
+  transform: (wines: WineMeta[]) => WineMeta[] | MutateReject,
+): Promise<WineMeta[] | MutateReject> {
+  const key = k.wines(code)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const result = await redis.executeIsolated(async (client) => {
+        await client.watch(key)
+        let next: WineMeta[] | MutateReject
+        try {
+          const raw = await client.get(key)
+          // A throwing transform (or malformed JSON) must release the WATCH —
+          // the connection returns to the pool, and a leaked WATCH would
+          // poison the next borrower's transaction.
+          next = transform(raw ? JSON.parse(raw) : [])
+          if (isMutateReject(next)) {
+            await client.unwatch()
+            return next
+          }
+          // Don't materialise an empty wines key that didn't exist — a bare
+          // SET with KEEPTTL on an absent key creates it with NO expiry.
+          if (raw === null && next.length === 0) {
+            await client.unwatch()
+            return next
+          }
+        } catch (inner) {
+          await client.unwatch()
+          throw inner
+        }
+        await client.multi().set(key, JSON.stringify(next), { KEEPTTL: true }).exec()
+        return next
+      })
+      return result
+    } catch (err) {
+      // node-redis throws WatchError when a WATCHed key changed before EXEC
+      // (the optimistic-lock conflict) — retry with the fresh value. Any
+      // other error propagates.
+      if (err instanceof WatchError) continue
+      throw err
+    }
+  }
+  throw new Error(`mutateWines: too much contention on ${key}`)
+}
+
 // Host check by stable identity id. Returns true for the strict host AND
 // for any cohost — both are allowed to do host-equivalent actions like
 // editing wines and settings. Strict-host-only actions (cohost role
@@ -258,7 +327,7 @@ function clean(v: unknown): string {
 // empty. This protects any future render path (or third-party consumer
 // like /api/me/bookmarks which already surfaces purchase_url) from
 // being tricked into clickable scheme-injection links.
-function cleanUrl(v: unknown): string {
+export function cleanUrl(v: unknown): string {
   const s = clean(v)
   if (!s) return ''
   // Auto-prepend https:// when the user typed a bare domain ("example.com").

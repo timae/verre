@@ -137,7 +137,7 @@ export function LobbyClient({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : '→ create new tasting'}
           </button>
-          {createError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{createError}</p>}
+          {createError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{createError}</p>}
 
           <div className="lobby-divider">or join an existing room</div>
 
@@ -159,7 +159,7 @@ export function LobbyClient({ user }: { user: User }) {
           </div>
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
 
-          {joinError && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{joinError}</p>}
+          {joinError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{joinError}</p>}
 
           <button className="btn-g" onClick={() => router.push('/hof')} style={{marginTop:20}}>★ hall of fame</button>
         </div>

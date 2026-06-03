@@ -84,7 +84,7 @@ export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; f
       </div>
       <PasswordField label="password" value={password} onChange={setPassword} placeholder="min 8 characters" autoComplete="new-password" hint="Use at least 8 characters." />
       <PasswordField label="confirm password" value={confirmPw} onChange={setConfirmPw} placeholder="retype password" autoComplete="new-password" />
-      {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+      {error && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{error}</p>}
       <button className="btn-p" type="submit" disabled={loading}>{loading ? 'creating account…' : '→ create account'}</button>
       <p style={{textAlign:'center',marginTop:12,fontSize:11,color:'var(--fg-dim)'}}>
         Already have an account?{' '}

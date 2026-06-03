@@ -4,6 +4,7 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
+import { parsePathId } from '@/lib/parsePathId'
 
 const PAGE = 30
 const SEARCH_MIN = 2
@@ -34,8 +35,8 @@ export async function listProfilePeople(
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const { id } = await params
-  const profileId = Number(id)
-  if (!Number.isInteger(profileId) || profileId < 1) {
+  const profileId = parsePathId(id)
+  if (profileId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 

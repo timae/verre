@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, isMutateReject, addWineToSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
@@ -40,11 +40,21 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can edit it' }, { status: 403 })
   }
 
+  // addWineToSession may do an S3 upload — a side effect that must run
+  // OUTSIDE the WATCH/MULTI transform (the transform can run multiple
+  // times on retry and must stay pure). Build the result here against the
+  // wine we read, then atomically splice it in by id below.
   const result = await addWineToSession(c, body, wines[idx])
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
-  wines[idx] = result
-  await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
+  const out = await mutateWines(c, (current) => {
+    const i = current.findIndex(w => w.id === wineId)
+    if (i === -1) return { reject: 'wine not found' }
+    const next = current.slice()
+    next[i] = result
+    return next
+  })
+  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
   await touchWithMeta(c)
 
   if (session?.user) {
@@ -86,10 +96,13 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can delete it' }, { status: 403 })
   }
 
-  const updated = wines.filter(w => w.id !== wineId)
-  await redis.set(k.wines(c), JSON.stringify(updated), { KEEPTTL: true })
-  const ratingKeys = await redis.keys(`s:${c}:r:*:${wineId}`)
-  for (const rk of ratingKeys) await redis.del(rk)
+  const out = await mutateWines(c, (current) => {
+    if (!current.some(w => w.id === wineId)) return { reject: 'wine not found' }
+    return current.filter(w => w.id !== wineId)
+  })
+  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
+  const ratingKeys = await scanKeys(`s:${c}:r:*:${wineId}`)
+  if (ratingKeys.length > 0) await redis.del(ratingKeys)
   deleteImage(wineId).catch(() => {})
   await touchWithMeta(c)
 

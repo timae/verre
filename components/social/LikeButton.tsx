@@ -34,7 +34,7 @@ export function LikeButton({ feedItemId, initialLiked, initialCount }: Props) {
       style={{
         display: 'flex', alignItems: 'center', gap: 4,
         background: 'none', border: 'none', cursor: 'pointer',
-        fontSize: 12, color: liked ? '#e07070' : 'var(--fg-dim)',
+        fontSize: 12, color: liked ? 'var(--like)' : 'var(--fg-dim)',
         fontFamily: 'var(--mono)', transition: 'color .15s',
         padding: '4px 8px', borderRadius: 6,
       }}

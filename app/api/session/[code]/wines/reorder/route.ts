@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -25,19 +25,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     return NextResponse.json({ error: 'only the host can reorder wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
   const orderedIds: string[] = Array.isArray(body.orderedIds) ? body.orderedIds.map(String) : []
-  if (orderedIds.length !== wines.length) {
-    return NextResponse.json({ error: 'orderedIds length mismatch' }, { status: 400 })
-  }
 
-  const byId = new Map(wines.map(w => [w.id, w]))
-  if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
-    return NextResponse.json({ error: 'invalid orderedIds' }, { status: 400 })
-  }
-
-  const reordered = orderedIds.map(id => byId.get(id)!)
-  await redis.set(k.wines(c), JSON.stringify(reordered), { KEEPTTL: true })
+  // Reorder is a pure permutation of the CURRENT list, so the validity
+  // checks (length + id-set match) run inside the transform against the
+  // watched value — a wine added/removed by a concurrent request would
+  // otherwise pass a stale check and then clobber that change.
+  const out = await mutateWines(c, (wines) => {
+    if (orderedIds.length !== wines.length) return { reject: 'orderedIds length mismatch' }
+    const byId = new Map(wines.map(w => [w.id, w]))
+    if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
+      return { reject: 'invalid orderedIds' }
+    }
+    return orderedIds.map(id => byId.get(id)!)
+  })
+  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 400 })
   await touchWithMeta(c)
   // Same wire shape as the wines GET — strip `addedByIdentityId` and
   // synthesize `isMine`. Without this, the reorder response would leak
@@ -45,9 +47,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Identities + kicked-user fallback ensure `addedByDisplayName` resolves
   // to the same value the polling GET would produce.
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup(reordered, identities)
+  const userNameLookup = await buildKickedUserNameLookup(out, identities)
   return NextResponse.json(
-    reordered.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
+    out.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

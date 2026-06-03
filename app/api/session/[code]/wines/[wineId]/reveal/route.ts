@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, getWines, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -26,13 +26,16 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can reveal wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
-  const idx = wines.findIndex(w => w.id === wineId)
-  if (idx === -1) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-
   const revealedAt = new Date()
-  wines[idx] = { ...wines[idx], revealedAt: revealedAt.toISOString() }
-  await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
+  const out = await mutateWines(c, (wines) => {
+    const idx = wines.findIndex(w => w.id === wineId)
+    if (idx === -1) return { reject: 'wine not found' }
+    const next = wines.slice()
+    next[idx] = { ...next[idx], revealedAt: revealedAt.toISOString() }
+    return next
+  })
+  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
+  const revealedWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
   // Mirror the reveal to Postgres so the post-rewire feed-read path
@@ -48,9 +51,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
 
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([wines[idx]], identities)
+  const userNameLookup = await buildKickedUserNameLookup([revealedWine], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(wines[idx], identity.id, identities, userNameLookup) },
+    { ok: true, wine: wineToWire(revealedWine, identity.id, identities, userNameLookup) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }
@@ -72,14 +75,17 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host can hide wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
-  const idx = wines.findIndex(w => w.id === wineId)
-  if (idx === -1) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-
-  const updated = { ...wines[idx] }
-  delete (updated as Partial<typeof updated>).revealedAt
-  wines[idx] = updated
-  await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
+  const out = await mutateWines(c, (wines) => {
+    const idx = wines.findIndex(w => w.id === wineId)
+    if (idx === -1) return { reject: 'wine not found' }
+    const next = wines.slice()
+    const updated = { ...next[idx] }
+    delete (updated as Partial<typeof updated>).revealedAt
+    next[idx] = updated
+    return next
+  })
+  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
+  const hiddenWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
   // Mirror the un-reveal to Postgres — same rationale as the POST path.
@@ -90,9 +96,9 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   }
 
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([wines[idx]], identities)
+  const userNameLookup = await buildKickedUserNameLookup([hiddenWine], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(wines[idx], identity.id, identities, userNameLookup) },
+    { ok: true, wine: wineToWire(hiddenWine, identity.id, identities, userNameLookup) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

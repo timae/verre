@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { redis, k, lifespanTTL } from '@/lib/redis'
-import { getSessionMeta, isHostByIdentity } from '@/lib/session'
+import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
+import { getSessionMeta, isHostByIdentity, cleanUrl } from '@/lib/session'
 import { normalizeCode } from '@/lib/sessionCode'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -34,7 +34,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (body.dateTo !== undefined)      meta.dateTo      = body.dateTo      || null
   if (body.timezone !== undefined)    meta.timezone    = String(body.timezone    || '').trim().slice(0, 64)
   if (body.description !== undefined) meta.description = String(body.description || '').trim().slice(0, 1000)
-  if (body.link !== undefined)               meta.link                    = String(body.link || '').trim().slice(0, 512)
+  // cleanUrl enforces http(s)-only — without it a host could store a
+  // `javascript:`/`data:` URL that renders as a clickable scheme-injection
+  // link to every participant (the link is shown as a bare <a href> in the
+  // session panel + wine list). Same guard wine purchaseUrl already uses.
+  if (body.link !== undefined)               meta.link                    = cleanUrl(body.link).slice(0, 512)
   // Pro-gated settings (blind, lifespan): a non-pro caller may submit
   // the current value (no-op, e.g. a cohost saving unrelated edits with
   // the full settings payload) but cannot change it in either direction.
@@ -73,8 +77,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 
   const ttl = lifespanTTL(meta.lifespan)
   await redis.set(k.meta(c), JSON.stringify(meta), { EX: ttl })
-  const keys = await redis.keys(`s:${c}:*`)
-  for (const key of keys) await redis.expire(key, ttl)
+  // Re-applying the full TTL here is intended: a settings save may change
+  // the lifespan, and re-stamping all keys keeps the session's expiry
+  // coherent.
+  const keys = await scanKeys(`s:${c}:*`)
+  if (keys.length > 0) {
+    const tx = redis.multi()
+    for (const key of keys) tx.expire(key, ttl)
+    await tx.exec()
+  }
 
   try {
     // Soft-deleted sessions have `code = NULL` (§8 contract), so the

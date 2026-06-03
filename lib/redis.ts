@@ -39,8 +39,12 @@ export const k = {
   // from identities, so the only other anchor for "you were removed"
   // would be lost). Removed when the user re-joins or chooses Delete.
   kicked:     (c: string) => `s:${c}:kicked`,
-  // Short-lived advisory lock taken during a kick/ban wipe so concurrent
-  // host actions don't clobber the wines JSON write-back.
+  // Short-lived advisory lock serializing concurrent kick/ban wipes against
+  // each other (the bans/kicked set + identities + meta write-back during a
+  // wipe). The wines JSON write-back is NOT guarded by this lock — it goes
+  // through `mutateWines`' WATCH/MULTI optimistic concurrency like every
+  // other wine mutator, which is safe against writers that never take this
+  // lock (the wine CRUD routes don't).
   banLock:    (c: string) => `s:${c}:lock:ban`,
 }
 
@@ -57,12 +61,18 @@ export function lifespanTTL(lifespan?: string): number {
   return LIFESPAN[lifespan || '48h'] ?? TTL
 }
 
+// Refresh the TTL on every key of a session so routine activity (a rating,
+// a wine edit) keeps the whole session alive for its full lifespan. SCAN +
+// pipelined EXPIRE keeps this off `redis.keys` — it's on the rate hot path.
 export async function touchWithMeta(code: string) {
   const raw = await redis.get(k.meta(code))
   const meta = raw ? JSON.parse(raw) : {}
   const ttl = lifespanTTL(meta.lifespan)
-  const keys = await redis.keys(`s:${code}:*`)
-  for (const key of keys) await redis.expire(key, ttl)
+  const keys = await scanKeys(`s:${code}:*`)
+  if (keys.length === 0) return
+  const tx = redis.multi()
+  for (const key of keys) tx.expire(key, ttl)
+  await tx.exec()
 }
 
 // Non-blocking key enumeration via SCAN. KEYS holds the server thread for
