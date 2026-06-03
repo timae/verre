@@ -111,7 +111,7 @@ export function AccountSettingsModal({ onClose }: Props) {
             display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0,
           }}>
             {api?.error && (
-              <p style={{ color: '#e07070', fontSize: 11, margin: 0 }}>{api.error}</p>
+              <p style={{ color: 'var(--danger)', fontSize: 11, margin: 0 }}>{api.error}</p>
             )}
             <button
               type="button"

@@ -407,7 +407,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
           borderTop:'1px solid var(--border)',
           display:'flex',flexDirection:'column',gap:8,flexShrink:0,
         }}>
-          {error && <p style={{color:'#e07070',fontSize:11,margin:0}}>{error}</p>}
+          {error && <p style={{color:'var(--danger)',fontSize:11,margin:0}}>{error}</p>}
           <button
             className="btn-p"
             onClick={save}

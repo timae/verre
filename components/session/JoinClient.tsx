@@ -116,7 +116,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                 <div style={{fontSize:9,letterSpacing:'0.14em',textTransform:'uppercase',color:'var(--fg-dim)',marginBottom:16}}>
                   {'// joining as '}<span style={{color:'var(--fg)'}}>{defaultName}</span>
                 </div>
-                {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+                {error && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{error}</p>}
                 <button className="btn-p" onClick={() => join(defaultName)} disabled={loading}>
                   {loading ? 'joining…' : `→ join ${sessionLabel}`}
                 </button>
@@ -139,7 +139,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
                   />
                 </div>
 
-                {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+                {error && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{error}</p>}
 
                 <button className="btn-p" onClick={() => join()} disabled={loading}>
                   {loading ? 'joining…' : `→ join ${sessionLabel}`}

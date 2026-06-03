@@ -1682,7 +1682,7 @@ function DeleteMenuItem({ onConfirm }: { onConfirm: () => void }) {
         background: armed ? 'rgba(199,86,96,0.12)' : 'transparent',
         border:'none',cursor:'pointer',borderRadius:6,
         fontSize:13,textAlign:'left',
-        color: '#c75660',
+        color: 'var(--danger-strong)',
         fontWeight: armed ? 700 : 400,
         transition:'background .12s',
       }}
@@ -1710,7 +1710,7 @@ function MenuItem({ icon, onClick, danger, children }: {
         background:'transparent',border:'none',
         cursor:'pointer',borderRadius:6,
         fontSize:13,textAlign:'left',
-        color: danger ? '#c75660' : 'var(--fg)',
+        color: danger ? 'var(--danger-strong)' : 'var(--fg)',
         transition:'background .12s',
       }}
       onMouseEnter={e => { e.currentTarget.style.background = danger ? 'rgba(199,86,96,0.1)' : 'var(--bg4)' }}

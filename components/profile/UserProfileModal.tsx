@@ -89,7 +89,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
       </div>
 
       {isError && (
-        <div style={{ fontSize: 12, color: '#e07070', padding: '12px 0' }}>
+        <div style={{ fontSize: 12, color: 'var(--danger)', padding: '12px 0' }}>
           Couldn&apos;t load profile.
         </div>
       )}

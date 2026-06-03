@@ -161,7 +161,7 @@ export function AvatarEditor({ name, currentUrl, onClose, onSaved }: Props) {
       )}
 
       {error && (
-        <p style={{ color: '#e07070', fontSize: 11, marginTop: 12 }}>{error}</p>
+        <p style={{ color: 'var(--danger)', fontSize: 11, marginTop: 12 }}>{error}</p>
       )}
     </Modal>
   )

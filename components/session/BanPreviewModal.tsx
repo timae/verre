@@ -144,7 +144,7 @@ export function BanPreviewModal({ code, identityId, displayName, mode, onClose, 
         <p style={{ fontSize: 11, color: 'var(--fg-dim)', textAlign: 'center', padding: '16px 0' }}>{'// loading…'}</p>
       )}
 
-      {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
+      {error && <p style={{ color: 'var(--danger)', fontSize: 11, marginTop: 8 }}>{error}</p>}
 
       <button
         className="btn-p"

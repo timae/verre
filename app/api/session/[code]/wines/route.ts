@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { redactWine } from '@/lib/wineRedaction'
 import { normalizeCode } from '@/lib/sessionCode'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -106,33 +106,37 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'only the host or a provider can add wines' }, { status: 403 })
   }
 
-  const wines = await getWines(c)
   // Pass the adder's identity so the wine record carries provenance
   // (used by ban-with-delete-wines to identify which wines to orphan).
   // Snapshot the adder's current display name from the live identities
   // map so it survives a future kick/ban. Lookup happens here (not in
   // addWineToSession) because the helper is shared with the PATCH
   // route where snapshot freezing means we never re-resolve.
+  // addWineToSession may upload to S3 — a side effect, so it runs OUTSIDE
+  // the WATCH/MULTI transform below (which must stay pure across retries).
   const identities = await redis.hGetAll(k.identities(c))
   const adderDisplayName = identities[identity.id] || identity.displayName
   const result = await addWineToSession(c, body, undefined, identity.id, adderDisplayName)
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
-  wines.push(result)
   // Optional one-shot insert position (1-indexed). Out-of-range silently
   // falls through to "append at end" — frontend validates the range.
   // Host-only: the standalone reorder endpoint is host-only, and we don't
   // want providers driving a partial reorder via the POST back door
   // (they're documented as unable to reorder wines). Ignored for
-  // non-host callers — appends at end.
-  if (isHostByIdentity(meta, identity)) {
-    const pos = Number(body.position)
-    if (Number.isInteger(pos) && pos >= 1 && pos < wines.length) {
-      const inserted = wines.pop()!
-      wines.splice(pos - 1, 0, inserted)
+  // non-host callers — appends at end. Resolved against the CURRENT list
+  // inside the transform so a concurrent add doesn't shift the position.
+  const callerIsHost = isHostByIdentity(meta, identity)
+  const pos = Number(body.position)
+  await mutateWines(c, (current) => {
+    const next = current.slice()
+    next.push(result)
+    if (callerIsHost && Number.isInteger(pos) && pos >= 1 && pos < next.length) {
+      next.pop()
+      next.splice(pos - 1, 0, result)
     }
-  }
-  await redis.set(k.wines(c), JSON.stringify(wines), { KEEPTTL: true })
+    return next
+  })
   await touchWithMeta(c)
 
   if (session?.user) {

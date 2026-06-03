@@ -278,7 +278,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
         </div>
         {showLocation && <LocationPicker key={locationVersion} value={location} onChange={setLocation} />}
 
-        {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 8 }}>{error}</p>}
+        {error && <p style={{ color: 'var(--danger)', fontSize: 11, marginTop: 8 }}>{error}</p>}
         <button className="btn-p" onClick={submit} disabled={saving} style={{ marginTop: 14 }}>{saving ? (isEdit ? 'saving…' : 'posting…') : (isEdit ? '→ save changes' : '→ post check-in')}</button>
         <button className="btn-g" onClick={onClose}>cancel</button>
         {isEdit && onDelete && (

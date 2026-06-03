@@ -532,7 +532,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
             <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
-            {saveError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{saveError}</p>}
+            {saveError && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{saveError}</p>}
             <button
               onClick={saveSettings} disabled={saving}
               style={{width:'100%',padding:'12px 0',borderRadius:8,border:'1px solid var(--accent2)',background:'rgba(143,184,122,0.15)',color:'var(--accent2)',fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer',marginTop:4}}
@@ -541,13 +541,13 @@ export function SessionPanel({ onClose, onLeave }: Props) {
             {/* Danger zone — strict host only (not co-hosts). */}
             {canDeleteSession && (
               <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
-                <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'#e07070',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
+                <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--danger)',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
                 <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
                   Close this session for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted. This cannot be undone.
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
-                  style={{width:'100%',padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.4)',background:'rgba(224,112,112,0.08)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+                  style={{width:'100%',padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.4)',background:'rgba(224,112,112,0.08)',color:'var(--danger)',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
                 >⌫ delete this session</button>
               </div>
             )}
@@ -565,12 +565,12 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           style={{position:'fixed',inset:0,zIndex:60,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(6px)',padding:16}}
         >
           <div style={{maxWidth:420,width:'100%',background:'var(--bg2)',borderRadius:16,padding:20,border:'1px solid rgba(224,112,112,0.3)'}}>
-            <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'#e07070'}}>Delete this session?</div>
+            <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'var(--danger)'}}>Delete this session?</div>
             <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.6,marginBottom:14}}>
               The session closes for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted.
-              <div style={{marginTop:8,color:'#e07070',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
+              <div style={{marginTop:8,color:'var(--danger)',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
             </div>
-            {deleteError && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{deleteError}</p>}
+            {deleteError && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{deleteError}</p>}
             <div style={{display:'flex',gap:8}}>
               <button
                 onClick={() => setShowDeleteConfirm(false)}
@@ -580,7 +580,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <button
                 onClick={deleteSession}
                 disabled={deleting}
-                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.5)',background:'rgba(224,112,112,0.15)',color:'#e07070',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
+                style={{flex:1,padding:'10px 0',borderRadius:6,border:'1px solid rgba(224,112,112,0.5)',background:'rgba(224,112,112,0.15)',color:'var(--danger)',fontFamily:'var(--mono)',fontSize:12,fontWeight:700,letterSpacing:'0.06em',cursor:'pointer'}}
               >{deleting ? 'deleting…' : 'delete'}</button>
             </div>
           </div>

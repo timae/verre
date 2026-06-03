@@ -118,7 +118,7 @@ export function BannedUsersSection({ code, count }: Props) {
               </button>
             </div>
           ))}
-          {error && <p style={{ color: '#e07070', fontSize: 11, marginTop: 4 }}>{error}</p>}
+          {error && <p style={{ color: 'var(--danger)', fontSize: 11, marginTop: 4 }}>{error}</p>}
         </div>
       )}
     </div>

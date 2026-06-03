@@ -275,7 +275,7 @@ function BlockedUsersSection() {
           ))}
         </div>
       )}
-      {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+      {error && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{error}</p>}
     </div>
   )
 }
@@ -463,7 +463,7 @@ function ConnectedDevicesSection() {
                 <div className="fl">password</div>
                 <input className="fi" type="password" value={allPw} onChange={e => setAllPw(e.target.value)} autoComplete="current-password" />
               </div>
-              {allErr && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{allErr}</p>}
+              {allErr && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{allErr}</p>}
               <div style={{display:'flex',gap:8}}>
                 <button onClick={() => { setAllOpen(false); setAllPw(''); setAllErr('') }} className="btn-s" style={{flex:1}}>cancel</button>
                 <button onClick={revokeAll} disabled={allPw.length === 0 || allBusy} className="btn-s"
@@ -477,7 +477,7 @@ function ConnectedDevicesSection() {
       )}
 
       {okMsg && <p style={{color:'var(--accent2)',fontSize:11,marginTop:8}}>✓ {okMsg}</p>}
-      {error && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+      {error && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{error}</p>}
     </div>
   )
 }
@@ -536,7 +536,7 @@ function ProfileVisibilitySection() {
       {loading ? (
         <div style={{fontSize:11,color:'var(--fg-dim)'}}>loading…</div>
       ) : tier === null ? (
-        <div style={{fontSize:11,color:'#e07070'}}>could not load settings</div>
+        <div style={{fontSize:11,color:'var(--danger)'}}>could not load settings</div>
       ) : (
         <>
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
@@ -573,7 +573,7 @@ function ProfileVisibilitySection() {
               </div>
             </div>
           )}
-          {error   && <p style={{color:'#e07070',fontSize:11,marginTop:8}}>{error}</p>}
+          {error   && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{error}</p>}
           {success && <p style={{color:'var(--accent2)',fontSize:11,marginTop:8}}>✓ {success}</p>}
         </>
       )}
@@ -609,10 +609,10 @@ function DangerZone({ email }: { email: string }) {
 
   return (
     <div style={{marginTop:32,paddingTop:20,borderTop:'1px solid rgba(224,112,112,0.18)'}}>
-      <div style={{fontSize:9,color:'#e07070',letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:8}}>danger zone</div>
+      <div style={{fontSize:9,color:'var(--danger)',letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:8}}>danger zone</div>
       {!open ? (
         <button onClick={() => setOpen(true)}
-          style={{background:'transparent',border:'1px solid rgba(224,112,112,0.4)',color:'#e07070',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:'pointer',borderRadius:3}}>
+          style={{background:'transparent',border:'1px solid rgba(224,112,112,0.4)',color:'var(--danger)',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:'pointer',borderRadius:3}}>
           delete account
         </button>
       ) : (
@@ -631,14 +631,14 @@ function DangerZone({ email }: { email: string }) {
             <div className="fl">password</div>
             <input className="fi" type="password" value={pw} onChange={e => setPw(e.target.value)} autoComplete="current-password" />
           </div>
-          {err && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{err}</p>}
+          {err && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{err}</p>}
           <div style={{display:'flex',gap:8}}>
             <button onClick={() => { setOpen(false); setPw(''); setErr('') }}
               style={{background:'transparent',border:'1px solid var(--border2)',color:'var(--fg-dim)',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:'pointer',borderRadius:3,flex:1}}>
               cancel
             </button>
             <button onClick={deleteAccount} disabled={!canSubmit}
-              style={{background:canSubmit?'#e07070':'rgba(224,112,112,0.3)',border:'none',color:canSubmit?'#1a0a0a':'rgba(255,255,255,0.4)',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:canSubmit?'pointer':'not-allowed',borderRadius:3,flex:1,fontWeight:700}}>
+              style={{background:canSubmit?'var(--danger)':'rgba(224,112,112,0.3)',border:'none',color:canSubmit?'#1a0a0a':'rgba(255,255,255,0.4)',padding:'8px 14px',fontFamily:'var(--mono)',fontSize:11,letterSpacing:'0.06em',cursor:canSubmit?'pointer':'not-allowed',borderRadius:3,flex:1,fontWeight:700}}>
               {busy ? 'deleting…' : '→ delete forever'}
             </button>
           </div>

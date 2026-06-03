@@ -125,7 +125,7 @@ export function LoginForm({ redirectTo, notice }: { redirectTo?: string; notice?
           </button>
         </div>
       </div>
-      {error && <p style={{color:'#e07070',fontSize:11,marginBottom:8}}>{error}</p>}
+      {error && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{error}</p>}
       <button className="btn-p" type="submit" disabled={loading}>{loading ? 'signing in…' : '→ sign in'}</button>
       <p style={{textAlign:'center',marginTop:12,fontSize:11,color:'var(--fg-dim)'}}>
         No account?{' '}
