@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 
@@ -11,7 +11,7 @@ type Ctx = { params: Promise<{ wineId: string }> }
 // session code that no longer exists.
 export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const { wineId } = await params
   await prisma.bookmark.deleteMany({

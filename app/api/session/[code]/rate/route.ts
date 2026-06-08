@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
@@ -15,7 +15,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   // Reject malformed bodies up front so a stray empty/garbage POST
   // doesn't produce a 500. The validators below also reject negatives,
   // floats, strings, arrays and objects masquerading as numbers — the

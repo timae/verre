@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
 import { checkRate } from '@/lib/rateLimit'
@@ -12,7 +12,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // viewer-dependent (gate state), so a shared cache must never serve
   // one viewer's response to another.
   const noStore = { 'Cache-Control': 'private, no-store' }
-  const session = await auth()
+  const session = await resolveUser(req)
   const { id } = await params
   const userId = parsePathId(id)
   if (userId === null) {

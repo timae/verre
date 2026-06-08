@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { checkRate } from '@/lib/rateLimit'
 import { prisma } from '@/lib/prisma'
 import {
@@ -25,7 +25,7 @@ import { blockPairIds } from '@/lib/userBlock'
 // only — enough to render a follow button against, no content leak.
 
 export async function GET(req: NextRequest) {
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) {
     return NextResponse.json({ error: 'auth required' }, { status: 401 })
   }

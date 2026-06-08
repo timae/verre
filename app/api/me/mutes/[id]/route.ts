@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { isSameOrigin } from '@/lib/csrf'
 import { parsePathId } from '@/lib/parsePathId'
 import { formatWait } from '@/lib/rateLimit'
@@ -12,7 +12,7 @@ type Ctx = { params: Promise<{ id: string }> }
 // or path — the path :id is the target.
 export async function POST(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const muterId = Number(session.user.id)
   const mutedId = parsePathId((await params).id)
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const muterId = Number(session.user.id)
   const mutedId = parsePathId((await params).id)

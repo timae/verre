@@ -1,10 +1,10 @@
-import { NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { NextRequest, NextResponse } from 'next/server'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { redis, k } from '@/lib/redis'
 
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
   const userId = Number(session.user.id)

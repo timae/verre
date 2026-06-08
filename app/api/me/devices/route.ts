@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
@@ -8,8 +8,8 @@ import { verifyPassword } from '@/lib/verifyPassword'
 // GET — list the caller's active per-device sessions ("Connected devices").
 // Self-only by construction: WHERE userId = $me. Viewer-dependent, so the
 // response is Cache-Control: private, no-store per app/api/CLAUDE.md.
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   const currentSessionId = session.user.userSessionId
@@ -50,7 +50,7 @@ export async function GET() {
 // the signed JWT (never body/header).
 export async function DELETE(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   // A valid session always carries a userSessionId (the auth gate strips any

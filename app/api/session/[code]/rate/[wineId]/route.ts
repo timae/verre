@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@verre/core'
@@ -13,7 +13,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const { code, wineId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   const p = await participantOrBanned(c, req, session)
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')

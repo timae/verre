@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { parsePathUuid } from '@/lib/parsePathId'
@@ -21,7 +21,7 @@ type Ctx = { params: Promise<{ id: string }> }
 // the leak-prevention posture in app/api/CLAUDE.md.
 export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   const currentSessionId = session.user.userSessionId

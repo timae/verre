@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
@@ -33,7 +33,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   // Participant gate first — must be in the identities map. Banned /
   // kicked / unknown identity all reject before we touch the name.

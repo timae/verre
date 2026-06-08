@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { validateDisplayName } from '@verre/core'
@@ -16,7 +16,7 @@ import {
 
 export async function POST(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   // Rate limit invalid session-code attempts: 30 per minute per IP.
   // Counter is cleared on a successful join (real users with a typo

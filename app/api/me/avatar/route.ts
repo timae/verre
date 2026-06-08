@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
@@ -37,7 +37,7 @@ async function reclaimImage(url: string | null | undefined) {
 
 export async function POST(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 
@@ -76,7 +76,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 

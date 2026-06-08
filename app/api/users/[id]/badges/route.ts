@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES } from '@/lib/badges'
 import { checkRate } from '@/lib/rateLimit'
@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // varies by viewer (tier-denied vs not-exists) and must not be cached
   // cross-viewer.
   const noStore = { 'Cache-Control': 'private, no-store' }
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401, headers: noStore })
   const viewerId = Number(session.user.id)
 
