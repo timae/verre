@@ -14,7 +14,7 @@
 // host's profile / feed shows their own session post un-redacted.
 
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@/lib/decimal'
+import { decimalToNumber } from '@verre/core'
 import { existsKey, k } from '@/lib/redis'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 

@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, lifespanTTL } from '@/lib/redis'
 import { genCode } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
-import { validateDisplayName } from '@/lib/displayName'
+import { validateDisplayName } from '@verre/core'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import {

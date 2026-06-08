@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { resolveIdentity } from '@/lib/identity'
 import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'

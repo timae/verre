@@ -3,6 +3,9 @@
   "version": "3.0.0",
   "description": "Wine tasting OS — shared sessions, radar profiles, PDF export",
   "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",

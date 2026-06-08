@@ -13,7 +13,7 @@
 // will use a future StarStrip primitive; this is the read-side text+icon
 // version used everywhere else.
 
-import { formatScore } from '@/lib/formatScore'
+import { formatScore } from '@verre/core'
 
 interface Props {
   // 0..5 in 0.25 increments. null/undefined/NaN/<=0 render nothing.

@@ -68,6 +68,6 @@ Per-endpoint usage patterns (which helper for which route, shared-counter pairs)
 ## Display name disambiguation
 
 - `disambiguateDisplayName(name, identities)` (in `lib/displayName.server.ts`) — appends a random food emoji on collision. Server-side only (imports `lib/redis`).
-- `stripDisambiguationEmoji(name)` (in `lib/displayName.ts`) — client-safe helper to strip a trailing emoji from a displayed name (used to populate the rename input).
+- `stripDisambiguationEmoji(name)` + `validateDisplayName(raw)` (in `@verre/core`) — client-safe, framework-neutral display-name rules (the rename-input strip + the register/rename validator). Shared with the native app.
 
-The split prevents `lib/redis` from being bundled into client code.
+The split prevents `lib/redis` from being bundled into client code; the pure half lives in `@verre/core` so it can also be shared with non-web clients.

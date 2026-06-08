@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@/lib/decimal'
+import { decimalToNumber } from '@verre/core'
 import {
   batchLoadVisibilities,
   resolveProfileViewerBulk,

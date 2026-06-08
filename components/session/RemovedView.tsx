@@ -2,7 +2,8 @@
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { formatCode, joinPath } from '@/lib/sessionCode'
+import { formatCode } from '@verre/core'
+import { joinPath } from '@/lib/sessionCode'
 
 interface Props {
   code: string

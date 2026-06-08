@@ -2,8 +2,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
-import { formatCode, sessionPath } from '@/lib/sessionCode'
-import { formatScore } from '@/lib/formatScore'
+import { formatCode, formatScore } from '@verre/core'
+import { sessionPath } from '@/lib/sessionCode'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null

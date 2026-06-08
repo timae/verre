@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@/lib/decimal'
+import { decimalToNumber } from '@verre/core'
 
 // History endpoint: every rating the viewer has written. Post-rewire,
 // session context comes off the rating itself (rating.session) rather

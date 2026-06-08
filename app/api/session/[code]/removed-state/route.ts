@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, hasKey } from '@/lib/redis'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { resolveIdentity } from '@/lib/identity'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 

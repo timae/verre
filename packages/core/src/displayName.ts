@@ -1,3 +1,7 @@
+// Client-safe display-name rules. The `.server` half (disambiguateDisplayName
+// + its FOOD_EMOJI pool) stays in lib/displayName.server.ts because it imports
+// Redis — keeping this file import-safe for client components and native.
+
 // Reserved names — case-insensitive after lowercasing.
 // Blocks impersonation of system actors and the deletion placeholder.
 const RESERVED = new Set([
@@ -80,11 +84,6 @@ export function validateDisplayName(raw: unknown): string {
   }
   return trimmed
 }
-
-// `disambiguateDisplayName` + its FOOD_EMOJI pool live in
-// `displayName.server.ts` so this file stays import-safe for client
-// components (which pull in stripDisambiguationEmoji /
-// validateDisplayName but can't import lib/redis).
 
 // Strip a trailing " <emoji>" suffix from a display name. Used by the
 // client rename UI so users editing their name see the bare name they

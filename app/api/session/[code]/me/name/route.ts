@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k } from '@/lib/redis'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
-import { validateDisplayName } from '@/lib/displayName'
+import { validateDisplayName } from '@verre/core'
 import { disambiguateDisplayName } from '@/lib/displayName.server'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 

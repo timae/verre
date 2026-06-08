@@ -9,7 +9,8 @@
 // Logged-in users don't need a token (the auth cookie is their trust anchor),
 // so getAnonToken returns null for them and sessionFetch sends no extra header.
 
-import { normalizeCode, joinPath } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
+import { joinPath } from '@/lib/sessionCode'
 
 // Defensive: callers should pass canonical codes (post-normalizeCode), but
 // fall back to upper-case if normalize rejects so a malformed code at least

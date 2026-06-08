@@ -57,6 +57,8 @@ If we eventually choose one-codebase (O1 → yes), the web renders via React-Nat
 
 One shared package consumed by two bundlers (Next's webpack/turbopack and Expo's Metro) will surface bundler disagreements. The codebase already shows this class of pain (the inlined-S3-copy webpack workaround; the Edge-bundling instrumentation foot-gun — both in the area CLAUDE.md files). Keep `packages/core` platform-pure and dependency-light so Metro (the stricter bundler) stays happy ([00](00-shared-logic-extraction.md) §5). Budget a round of "Metro rejects what webpack tolerated." Not a blocker; not free.
 
+**Concrete first Metro task (carried from the shipped [00](00-shared-logic-extraction.md) §5 "As built"):** `packages/core` is already built and shipped, consumed by web as raw TS source (`exports` → `./src/index.ts`, no dist). That source-entry shape is the specific thing Metro is least likely to accept out of the box. When this workstream stands up the Expo app and first imports `@verre/core`, the opening move is the `metro.config.js` (`resolver.sourceExts` + `watchFolders` + maybe `unstable_enablePackageExports`) vs. add-a-`dist`-build decision — see 00 §5 for the full note. This is owned here, not in 00.
+
 ## 6. Recommendation
 
 - **Now**: shared package ([00](00-shared-logic-extraction.md)) + Expo Router for iOS. Next stays the API host as-is.
