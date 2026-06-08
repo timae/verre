@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
 import { getSessionMeta, isHostByIdentity } from '@/lib/session'

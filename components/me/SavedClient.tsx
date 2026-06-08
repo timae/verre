@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
 import { WineIdentity } from '@/components/wine/WineIdentity'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode } from '@verre/core'
 import { StarRating } from '@/components/ui/StarRating'
 import { ICO } from '@/lib/wineTypeColors'
 

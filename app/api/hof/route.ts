@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@/lib/decimal'
+import { decimalToNumber } from '@verre/core'
 
 export async function GET() {
   const entries = await prisma.hallOfFame.findMany({

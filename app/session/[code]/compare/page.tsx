@@ -8,7 +8,7 @@ import { RadarChart } from '@/components/charts/RadarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { getFL, detectFL, FL } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
-import { formatScore } from '@/lib/formatScore'
+import { formatScore } from '@verre/core'
 import { TCOL, ICO } from '@/lib/wineTypeColors'
 
 const COLORS = ['rgba(200,150,60,.85)','rgba(122,175,200,.85)','rgba(184,64,64,.85)','rgba(106,170,130,.85)','rgba(200,104,128,.85)','rgba(160,110,200,.85)']

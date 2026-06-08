@@ -5,7 +5,7 @@
 import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
-import { decimalToNumber } from '@/lib/decimal'
+import { decimalToNumber } from '@verre/core'
 import { loadSessionFeedWines, detectExpiredCodes, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 

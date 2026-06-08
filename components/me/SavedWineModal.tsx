@@ -9,7 +9,7 @@ import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
 import { StarRating } from '@/components/ui/StarRating'
-import { formatCode } from '@/lib/sessionCode'
+import { formatCode } from '@verre/core'
 import { ICO } from '@/lib/wineTypeColors'
 
 type Bookmark = {

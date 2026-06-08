@@ -1,7 +1,17 @@
 # ── Verre v3 — Next.js 15 ─────────────────────────────────────
 FROM node:20-alpine AS builder
 WORKDIR /app
+# Copy the root manifests AND every workspace package manifest before `npm ci`
+# so the install is workspace-aware and links node_modules/@verre/* . If the
+# workspace manifest isn't present at install time, `npm ci` silently skips the
+# symlink (exits 0) and the later `next build` fails with "Module not found:
+# @verre/core". Keeping just the manifests here (not the source) preserves the
+# Docker layer cache for the dependency install.
 COPY package*.json ./
+# One COPY per workspace package — a single `packages/*/package.json` glob can't
+# preserve per-package dirs (Docker flattens multiple sources into one dest file).
+# When you add a second packages/* member, add its manifest COPY line here too.
+COPY packages/core/package.json ./packages/core/
 RUN npm ci
 COPY . .
 RUN npx prisma generate

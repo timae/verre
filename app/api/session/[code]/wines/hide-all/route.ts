@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, mutateWines } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 

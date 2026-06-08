@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 import Link from 'next/link'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { stripDisambiguationEmoji } from '@/lib/displayName'
+import { stripDisambiguationEmoji } from '@verre/core'
 import { RoleBadge } from './RoleBadge'
 
 interface Props {

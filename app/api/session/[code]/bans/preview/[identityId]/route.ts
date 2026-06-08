@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@/auth'
 import { redis, k, scanKeys } from '@/lib/redis'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
 import { getSessionMeta, getWines, isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'

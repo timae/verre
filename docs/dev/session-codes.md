@@ -10,14 +10,19 @@ Two valid lengths coexist: **4-char** (legacy bare form, e.g. `B369`) and **8-ch
 
 Server entry points run `normalizeCode()` which strips hyphens and uppercases, so non-hyphenated URLs (old shared links) still resolve. Same with form input: pasting `xyzw-1234`, `XYZW1234`, or `xyzw 1234` all normalize to the same canonical key.
 
-## Helpers in `lib/sessionCode.ts`
+## Helpers
 
-- `genCode()` — produces 8-char Crockford. Caller-side collision retry handles the rare clash.
+The framework-neutral helpers live in **`@verre/core`** (`packages/core/src/sessionCode.ts`) so the native app shares them; the server-only carve-outs stay in **`lib/sessionCode.ts`**.
+
+In `@verre/core` (pure):
 - `normalizeCode(input): string | null` — server entry-point normalization. Strict; `I/L/O/U` reject (no lenient decode, since a typo could otherwise silently land on the wrong session).
 - `validateCodeInput(input)` — discriminated `{empty | invalid-length | invalid-char}` failure for user-facing forms so the UI can show specific errors instead of generic "not found."
 - `formatCode(stored)` — display rendering, accepts null/undefined (returns '' so callers can render unconditionally).
 - `formatCodeInput(raw)` — live transform for the type-a-code input field. Auto-hyphens past the 4th char.
-- `sessionPath(code, sub?)` and `joinPath(code)` — URL builders. **Use these everywhere a session URL is built**; raw `/session/${code}` interpolation creates display drift.
+
+In `lib/sessionCode.ts` (server-only carve-outs):
+- `genCode()` — produces 8-char Crockford via `node:crypto` (Metro rejects the Node built-in). Caller-side collision retry handles the rare clash.
+- `sessionPath(code, sub?)` and `joinPath(code)` — web URL builders. **Use these everywhere a session URL is built**; raw `/session/${code}` interpolation creates display drift.
 
 ## Storage
 

@@ -182,6 +182,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - `components/wine/CLAUDE.md` — wine modal: load-bearing pull-to-swap CSS (`touch-action: pan-y`, `overscroll-behavior: contain`, `overflow-y: auto`), `svh` sheet sizing, horizontal-drag pattern, slide-animation gotchas
 - `lib/CLAUDE.md` — Redis key namespace, `KEEPTTL` semantics, SCAN helpers, `resolveIdentity` + `participantOrBanned` resolvers, rate-limit helper API
 - `prisma/CLAUDE.md` — migration workflow, destructive-change procedure, schema check, schema notes for future features
+- `packages/core` (`@verre/core`) — framework-neutral domain logic shared web↔native (score validation/coercion, `formatScore`, pure session-code helpers, client-safe display-name rules). Platform-pure: no `node:*`/`next`/`@prisma/client`/React/DOM. Server-only carve-outs (`genCode`, `sessionPath`/`joinPath`, `validateFlavors`, `displayName.server`) stay in `lib/`. See `docs/dev/proposals/mobile-app/00-shared-logic-extraction.md`.
 
 ### Feature deep dives (`docs/dev/`)
 

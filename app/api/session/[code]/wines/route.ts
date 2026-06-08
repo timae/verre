@@ -3,7 +3,7 @@ import { auth } from '@/auth'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { redactWine } from '@/lib/wineRedaction'
-import { normalizeCode } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
 

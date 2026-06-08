@@ -6,7 +6,8 @@ import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCodeInput, sessionPath } from '@/lib/sessionCode'
+import { validateCodeInput, formatCodeInput } from '@verre/core'
+import { sessionPath } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
 

@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation'
-import { normalizeCode, sessionPath } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
+import { sessionPath } from '@/lib/sessionCode'
 
 // The session root redirects to the Wines tab — the sole list surface
 // after the rate-page consolidation. Tapping a wine row opens the

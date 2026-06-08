@@ -4,7 +4,8 @@ import { JoinClient } from '@/components/session/JoinClient'
 import { RemovedView } from '@/components/session/RemovedView'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
-import { normalizeCode, sessionPath, formatCode } from '@/lib/sessionCode'
+import { normalizeCode, formatCode } from '@verre/core'
+import { sessionPath } from '@/lib/sessionCode'
 
 export default async function JoinPage({
   params,

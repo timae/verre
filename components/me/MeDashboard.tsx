@@ -8,7 +8,8 @@ import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCode, formatCodeInput, sessionPath } from '@/lib/sessionCode'
+import { validateCodeInput, formatCode, formatCodeInput } from '@verre/core'
+import { sessionPath } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }

@@ -10,10 +10,12 @@
 // — Number(d) is round-trip exact.
 //
 // Use at every API edge that returns a score field.
+//
+// The input is typed structurally (`{ toString(): string } | number | null`)
+// rather than `Prisma.Decimal` so this module pulls no @prisma/client into
+// core — Prisma.Decimal satisfies the structural shape at every call site.
 
-import type { Prisma } from '@prisma/client'
-
-type Decimalish = Prisma.Decimal | number | null | undefined
+type Decimalish = { toString(): string } | number | null | undefined
 
 export function decimalToNumber(value: Decimalish): number | null {
   if (value == null) return null

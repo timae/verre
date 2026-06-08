@@ -5,10 +5,10 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
-import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+import { validateFlavors } from '@/lib/checkinValidation'
+import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
-import { decimalToNumber } from '@/lib/decimal'
 import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next

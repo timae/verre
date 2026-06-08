@@ -1,7 +1,8 @@
 import { auth } from '@/auth'
 import { redirect } from 'next/navigation'
 import { LobbyClient } from '@/components/session/LobbyClient'
-import { normalizeCode, joinPath } from '@/lib/sessionCode'
+import { normalizeCode } from '@verre/core'
+import { joinPath } from '@/lib/sessionCode'
 
 export default async function LobbyPage({
   searchParams,

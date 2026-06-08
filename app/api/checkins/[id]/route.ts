@@ -4,11 +4,11 @@ import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { validateScore, validateFlavors } from '@/lib/checkinValidation'
+import { validateFlavors } from '@/lib/checkinValidation'
+import { validateScore, decimalToNumber } from '@verre/core'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
-import { decimalToNumber } from '@/lib/decimal'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named

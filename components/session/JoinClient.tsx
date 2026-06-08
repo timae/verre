@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { formatCode, sessionPath, joinPath } from '@/lib/sessionCode'
+import { formatCode } from '@verre/core'
+import { sessionPath, joinPath } from '@/lib/sessionCode'
 
 interface Props {
   code: string
