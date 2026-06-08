@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const session = await auth()
+  const session = await resolveUser(req)
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   const identity = await resolveIdentity(c, req, session)
@@ -45,7 +45,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const session = await auth()
+  const session = await resolveUser(req)
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   const identity = await resolveIdentity(c, req, session)

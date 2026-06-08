@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
 import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, isMutateReject, addWineToSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
@@ -15,7 +15,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
@@ -76,7 +76,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })

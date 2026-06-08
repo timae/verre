@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
 import {
@@ -16,7 +16,7 @@ import type { SessionFeedPayload } from '@/lib/feedTypes'
 const PAGE = 20
 
 export async function GET(req: NextRequest) {
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   // Defense-in-depth: the SQL below uses prisma.$queryRaw's tagged template

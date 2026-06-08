@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { NextRequest, NextResponse } from 'next/server'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
 
@@ -18,8 +18,8 @@ import { decimalToNumber } from '@verre/core'
 //   - `session_id`: integer id; surfaced for cross-match against bookmarks
 //     (replaces the legacy session_code/wine_name name-based join).
 
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
   const ratings = await prisma.rating.findMany({

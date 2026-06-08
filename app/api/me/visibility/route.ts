@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import {
@@ -12,8 +12,8 @@ import {
 // is implicit: the calling user can only ever modify their own row, the
 // userId is taken from the cookie not the request body.
 
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   const rl = await checkRate(`rl:visibility-read:${userId}:1m`, 60, 60)
@@ -25,7 +25,7 @@ export async function GET() {
 
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 

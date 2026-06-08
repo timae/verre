@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { NextRequest, NextResponse } from 'next/server'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 
 // Per-bookmark session context resolves via the wine's RATINGS, not via
@@ -18,8 +18,8 @@ import { prisma } from '@/lib/prisma'
 // and a wine is decoupled from any one session), this query keeps
 // working unchanged.
 
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 

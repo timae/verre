@@ -1,5 +1,5 @@
-import { NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { NextRequest, NextResponse } from 'next/server'
+import { resolveUser } from '@/lib/resolveUser'
 import { listBlockedUsers } from '@/lib/userBlock'
 
 // List of users the calling user has blocked, newest first. Powers
@@ -10,8 +10,8 @@ import { listBlockedUsers } from '@/lib/userBlock'
 //
 // Cache-Control: private, no-store — the response is per-user and
 // must never be cached by a CDN/proxy between viewers.
-export async function GET() {
-  const session = await auth()
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const blockerId = Number(session.user.id)
   const rows = await listBlockedUsers(blockerId)

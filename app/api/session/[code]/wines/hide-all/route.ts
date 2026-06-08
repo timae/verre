@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, getSessionMeta, mutateWines } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
@@ -14,7 +14,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })

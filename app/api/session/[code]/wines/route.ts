@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { redactWine } from '@/lib/wineRedaction'
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   // Session-existence check first. If the session was deleted or never
   // existed, return 404 — distinct from 401 ("session exists but you're
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 

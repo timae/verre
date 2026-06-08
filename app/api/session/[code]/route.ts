@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -53,7 +53,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
-  const session = await auth()
+  const session = await resolveUser(req)
   const p = await participantOrBanned(c, req, session)
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
   if (p.status === 'invalid') return authInvalid('not a participant')
@@ -203,7 +203,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { targetId: targetIdFromBody, action, role: roleFromBody } = body as Record<string, unknown>
@@ -390,7 +390,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   const raw = await redis.get(k.meta(c))
   if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })

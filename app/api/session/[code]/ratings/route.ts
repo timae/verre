@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -25,7 +25,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const session = await auth()
+  const session = await resolveUser(req)
 
   // Session-existence check before participant check. 404 on a deleted /
   // never-existed session lets the client distinguish "go home" from

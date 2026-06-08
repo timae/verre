@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ ok: true })
 
   const meta = await getSessionMeta(c)

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { nanoid } from 'nanoid'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
@@ -74,7 +74,7 @@ async function copyImageFromCheckin(sourceUrl: string, userId: number): Promise<
 
 export async function POST(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
 

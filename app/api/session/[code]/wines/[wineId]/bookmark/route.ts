@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code, wineId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   // Bookmarking requires session participation. Without this, any
   // logged-in user could enumerate session codes and bookmark wines
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code: _code, wineId } = await params
-  const session = await auth()
+  const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   await prisma.bookmark.deleteMany({
     where: { userId: Number(session.user.id), wineId },

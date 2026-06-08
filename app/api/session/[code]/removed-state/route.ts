@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@/auth'
+import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, hasKey } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { resolveIdentity } from '@/lib/identity'
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   if (!(await redis.exists(k.meta(c)))) {
     return NextResponse.json({ state: 'none' }, { headers: noStore })
   }
-  const session = await auth()
+  const session = await resolveUser(req)
   const identity = await resolveIdentity(c, req, session)
   if (!identity) return NextResponse.json({ state: 'none' }, { headers: noStore })
 
