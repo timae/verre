@@ -1,165 +1,351 @@
 # 01 — Identity & auth for native clients
 
-**Status**: PROPOSED. Part of the [mobile-app meta-proposal](README.md). **The decision is settled: adopt self-hosted Logto for native (and future-redesign) clients; NextAuth stays on the existing web app.** This doc replaces an earlier draft that tried to extend NextAuth with hand-rolled bearer/opaque tokens — that approach was rejected on principle (see §1). Several reviewer corrections from the first review round are folded in and marked.
+**Status**: PROPOSED. Part of the [mobile-app meta-proposal](README.md). **The decision is settled:
+adopt [Better Auth](https://better-auth.com) (a TypeScript auth *library*) for native clients (and the
+future web redesign). NextAuth stays on the existing web app, untouched. The two coexist on a shared
+`users` table as a deliberate, indefinite steady state.**
+
+This replaces two earlier drafts: an attempt to extend NextAuth with hand-rolled native tokens, and a
+self-hosted-OIDC-provider plan (Logto/Zitadel). Both were rejected after a long provider investigation
+— see §1 and the full record in `.local/native-auth-investigation.md`. The conclusions here survived
+three multi-angle review rounds and a spike against real production data.
 
 ## 1. The decision and why
 
-**Principle (the user's, and it's the right one for auth):** *don't hand-roll or tinker a non-standard auth scheme.* Use software that has the token lifecycle baked in, audited, and standard. Building our own bearer/refresh-token issuance on top of NextAuth — which is what "native auth on NextAuth" actually requires — is exactly the tinkering this rules out. (The Auth.js maintainers themselves state NextAuth "is not intended to be used in native applications" — it's a confidential cookie client model; a React Native app is a public client with no cookie jar.)
+**The deciding fact: social login (Google + Apple) is a launch requirement, not deferred.** Dev/test
+builds on the founders' own phones can be email/password, but the **first App Store build ships with
+Google + Apple sign-in**. (Apple Guideline 4.8 since Jan-2024 requires *a privacy-preserving login
+option*, not specifically Sign in with Apple — Verre's own email/password may itself satisfy it — but
+once we offer Google, shipping SIWA is the safe, low-friction choice that clears any reviewer. A product
+choice, not a hard legal gate; we ship it.)
+There is no public email/password-only phase.
 
-**The honest justification (corrected per review):** the load-bearing reason for a provider is **"we will not hand-roll token issuance," full stop** — not "we need refresh-token rotation." Verre's existing `user_sessions.revokedAt` gate is checked uncached on *every* request (`auth.ts:146`), so a stolen token is already killable in ~0s without rotation; rotation is belt-and-suspenders on top of a gate that's already tighter. So Logto isn't bought to *get* rotation (the gate substitutes for it); it's bought because issuing/validating our own native token is the tinkering the principle forbids. **The cost we're accepting in exchange:** auth becomes the most availability-sensitive component and a self-hosted service whose CVE/patch treadmill we now own — a real maintenance liability for a 2-user app, taken on deliberately because "don't hand-roll auth" outweighs it.
+**Why this picks Better Auth specifically** — the one capability that decides it:
+- **NextAuth's Google/Apple providers are web-redirect-only** — there is no native `id_token` path
+  (verified against the provider docs; the `next-auth/expo` PR has been stalled since 2022). So
+  social-at-launch requires native-social glue from *any* option.
+- **Better Auth accepts a device-obtained `id_token` natively**: `signIn.social({ provider, idToken })`,
+  where the app gets the token from `expo-auth-session` (Google) / `expo-apple-authentication` (the
+  native Apple sheet — no webview). First-party `@better-auth/expo` SDK.
+- It is a **library that runs inside the existing Next.js backend** against the **existing managed
+  Postgres** (standard privileges, no `CREATE ROLE`), so there is **zero new infrastructure** — no
+  second service, no second database, no container.
+- Its **default session model is an opaque, DB-backed session with immediate revocation**
+  (`revokeSession`/`revokeOtherSessions`/`revokeSessions`) — which is *exactly* the per-device
+  revocation Verre already hand-built on NextAuth via `user_sessions.revokedAt`. We adopt a system
+  whose default already matches our hard-won invariant.
+- MIT, actively maintained, post-1.0, all security advisories patched promptly.
 
-**Constraints, all hard:** self-hosted only (no external SaaS auth — no third party hosts or sees logins); free + open-source; Apple + Google sign-in available *eventually*; proportionate for a small app.
+**Why not the alternatives** (full evaluation in `.local/native-auth-investigation.md`):
+- **Logto** — best native ergonomics, but its DB init *unconditionally* runs `CREATE ROLE` (per-tenant
+  roles + RLS; source-verified, no opt-out). Nine's cheap "Economy" managed Postgres user has no
+  `CREATEROLE` (reproduced `permission denied to create role`). Its only escapes are a 10×-pricier
+  Business DB or a self-managed Postgres container to operate — net-new infra for the same outcome.
+- **Zitadel** — runs on the cheap DB (verified), does native social via OIDC, but has **no first-party
+  Expo SDK** (you'd hand-roll the native client — the very work we're trying to avoid), is
+  event-sourced (unbounded DB growth, manual pruning), opaque-by-default with a per-app JWT toggle, and
+  its backend "log out everywhere" needs a Session-v2 delete loop + a long-lived high-privilege M2M
+  secret. A heavier service for less social convenience.
+- **SuperTokens** — its OIDC-provider feature is paid/licensed (the free core is a proprietary session
+  scheme, not standards).
+- **Casdoor** — ticked every technical box but had a live **unpatched 9-CVE authentication-bypass
+  batch** (CERT/CC VU#780781, vendor unreachable) plus a recurring auth-CVE pattern. Unfit for auth.
+- **No-provider (native carries the NextAuth JWT as a bearer)** — was the leading plan *while social
+  was deferred*; social-at-launch voids it, because NextAuth can't do native social and you'd hand-roll
+  a per-provider bridge anyway.
 
-**The choice: [Logto](https://logto.io), self-hosted.** It satisfies every constraint:
-- **Standard OIDC/OAuth-2.1 provider** — refresh-token rotation + reuse-detection are *baked in*, the textbook native-app token lifecycle. We use a standard, we don't build one. No SDK lock-in: any OIDC client works.
-- **Self-hosted, free, OSS (MPL-2.0)** — runs on our own infra; credentials never leave it. Email/password accounts live 100% on our side. (Apple/Google sign-in necessarily means Apple/Google know *that* a user authenticated — but that's the user's deliberate choice when they tap that button, and is true of every auth system. The privacy line we care about — no third-party *auth service* seeing all logins — is held.)
-- **First-party Expo/React Native SDK** (`@logto/rn`) with official Apple + Google sign-in tutorials. The SDK stores tokens in `expo-secure-store` (Keychain/Keystore) — the correct native secure storage.
+**The honest cost we accept:** Better Auth is a young, fast-moving auth library — a HIGH advisory
+landed the week of this investigation (patched fast). Running it is a **standing patch-tracking duty**
+a 2-founder team takes on, lighter than running a separate auth *service* but real.
 
-**Why not the alternatives** (full evaluation in the conversation that produced this; summarized): SuperTokens (self-hosted core) was the close runner-up — auth-as-SDK, can share Verre's existing Postgres. Logto was chosen for being a *standards-pure OIDC provider* (best fit for the "use standards" principle, no SDK lock-in) at comparable operational weight. Zitadel was dropped on cost/weight — its recommended DB footprint (~4 GB/core) is several× the others. Keycloak rejected outright (1.25 GB+ JVM, absurd for this scale). Staying on NextAuth-for-native rejected per §1.
+## 2. Sequencing — NEW CODE ONLY; NextAuth stays on web indefinitely
 
-## 2. Deployment shape (cost + infra)
+**Better Auth goes only where we write new code: the native app now, and the redesigned web later (as
+greenfield). The working web auth (NextAuth) is NOT rewritten.** Web stays on NextAuth indefinitely —
+**two auth systems are a deliberate permanent steady state**, not a temporary split awaiting a cutover.
 
-- **Logto runs as a second Dockerfile in the same Deplo.io project as Verre** — a co-located service, deployed alongside the app, same internal network. Not bundled into the Next.js container (Logto is a standalone OIDC service by design), but one project, one deploy surface.
-- 🔒 **Env-var scoping (two services, one project — confirm Deplo.io's model first):** the DB credentials do **not** clash — Verre reads `DATABASE_URL` (Prisma, `schema.prisma:8`), Logto reads `DB_URL` (verified, distinct name). But two env-var names **do** collide and must be resolved if Deplo.io scopes env *project-wide* rather than *per-deployment*: **`PORT`** (Verre = 8080 via `Dockerfile`; Logto's core port defaults to 3001, set by `PORT` — same name, real clash) and **`NODE_ENV`** (both read it; lower-risk, both want `production`). Fix: set Logto's `PORT`/`ADMIN_PORT` (core/admin, default 3001/3002) explicitly per-deployment, or confirm Deplo.io isolates env per service. Logto's other mandatory self-host vars (`DB_URL`, `SECRET_VAULT_KEK` base64 KEK, and `ENDPOINT`/`ADMIN_ENDPOINT` for the public URLs) are in a namespace disjoint from Verre's (`S3_*`/`REDIS_*`/`AUTH_SECRET`). Verified against Logto OSS docs 2026-06-08.
-- **Dedicated Economy-tier Postgres for Logto's store** (Nine "Economy S": 1 GB, 20 connections, CHF 5/mo). Dedicated from the start — not co-mingled with Verre's DB — for **blast-radius isolation** (an app-DB compromise can't reach the auth store) and so the future upgrade to a dedicated tier is "migrate one small isolated DB," not "extract auth tables out of Verre's DB."
-- **Cost**: ~one micro app instance (the Logto container) + CHF 5/mo Economy DB. *(Confirm the container's per-instance Deplo.io cost against the live account — the per-instance figure here is from a docs snippet, not a verified invoice. The Economy S = CHF 5 figure is confirmed.)*
-- **Connection budget**: Economy S caps at **20 connections**. Logto uses the Slonik client (default pool max 10). The cap that matters is **replicas × pool-max** (+ admin-console + migrations), not pool size alone — 2 Logto replicas × 10 = 20 = full saturation. So: pin Logto's `maximumPoolSize` low (≈5–8) AND run a **single Logto replica** on Economy. If Deplo.io ever scales Logto to 2+ instances, the 20-conn tier is the first thing that breaks (connection-count-driven, not RAM-driven) — that's the concrete trigger for the DB-tier upgrade below.
-- **Logto image discipline (the CVE/patch treadmill from §1, operationalized — a runbook item, not a v1-cutover gate)**: pin the Logto image to a known tag (never float `:latest`); read release notes before bumping; **snapshot the Economy DB before any major-version upgrade**, and **rehearse the restore once** (restore the snapshot into a throwaway DB + verify the connection-string swap-back) the first time you bump — a snapshot you've never restored is a guess. (Logto self-migrates its own schema on upgrade via its CLI — outside Verre's `prisma migrate` guardrails and schema-check CI, so the "never automate destructive schema changes" rule does NOT cover Logto's DB unless you operationalize it here.) None of this fires at stand-up; it's the first-upgrade runbook.
-- **Scaling trigger (deferred)**: auth is the most latency/availability-sensitive component, so "promote the Economy auth DB to a dedicated (Business) tier" is the natural *first* scaling step if Verre grows — triggered by connection-count (above), not load. Confirm with Nine whether tier promotion is in-place (trivial, reversible) or a dump/restore (a planned brief auth-outage cutover + connection-string swap — small in *data*, a real *cutover* in ops). Don't pre-build anything.
+- **There is no scheduled "cutover" moment** — but name a **consolidation trigger** so two-auth-systems
+  is a *decision*, not a drift. The honest carrying cost is **two patch-tracking duties + two session
+  models + two rate-limit configs, indefinitely**. Collapse onto Better Auth (retire NextAuth) when any
+  of: the web redesign ships; NextAuth/Auth.js receives a HIGH advisory we'd have to chase; or the
+  dual-store sync surface grows beyond the §3 chokepoint's reach. Absent a trigger, the realistic
+  outcome is NextAuth living forever on a few legacy `/me` SSR routes — acceptable, but choose it.
+- **Why not migrate web now ("single authority").** That means rewriting `auth.ts`, re-homing the
+  `user_sessions.revokedAt` revocation gate, the ~46 API routes + the SSR pages that read NextAuth, and
+  the Edge middleware — a multi-week rewrite of *working, security-reviewed* auth, with real regression
+  risk to
+  the one thing that currently works. Rejected as disproportionate.
+- **Both systems share one identity.** Both key on the existing `users.id Int @autoincrement` (the trust
+  anchor, ~15 FK relations). NextAuth reads `users.password_hash` + `user_sessions`; Better Auth gets
+  its own `auth_accounts` (credentials) + `auth_sessions` tables, with its `user` model **mapped onto
+  the existing `users` table** (verified — see §5).
 
-## 2a. Logto token + session configuration (verified against live Logto docs, 2026-06-08)
+## 3. The dual-store cost — measured, small, and bounded
 
-These are not defaults you can stumble into — each is a deliberate setting, and getting them wrong silently breaks validation or logout. Verified 2026-06-08 against live Logto docs: [opaque-vs-JWT](https://docs.logto.io/concepts/opaque-token) · [validate-access-tokens](https://docs.logto.io/authorization/validate-access-tokens) · [applications/refresh-TTL](https://docs.logto.io/integrate-logto/application-data-structure) · [sign-out / grant-revoke](https://docs.logto.io/end-user-flows/sign-out) · [Account API](https://docs.logto.io/end-user-flows/account-settings/by-account-api) · [`@logto/rn` Expo](https://docs.logto.io/quick-starts/expo).
+The split means two credential stores (`users.password_hash` + Better Auth's `auth_accounts`) and two
+session stores (`user_sessions` + `auth_sessions`) over one `users` table. The sync surface is tiny
+because Verre's credential + revocation paths are few and already centralized:
 
-- 🔒 **Register Verre's API as a Logto API Resource and request it by indicator — or tokens are OPAQUE and the whole JWKS plan silently can't run.** Logto issues a verifiable **JWT** access token *only* when the client requests a registered resource: `getAccessToken('https://<verre-api-resource-indicator>')`. With a bare `getAccessToken()` you get a **userinfo-bound opaque token** that `jose`/JWKS cannot validate. The `aud` claim = the resource indicator. **This is the single most likely thing to burn a day** if missed.
-- **Request `offline_access`, or users hit a hard 14-day logout cliff.** Without `offline_access`, the refresh token is bound to a session with a **fixed 14-day TTL** — forced logout every 14 days regardless of any other setting. With it, the refresh-token TTL is configurable (default 14 days, **max 180**); set it long (e.g. 90 days) for casual-use UX.
-- **Set `accessTokenTtl` deliberately — it defaults to 3600s (1 hour).** This is a **per-API-resource** field and it *is* the residual window for the not-before revocation gate (§5): a revoked native session can still act for up to `accessTokenTtl` unless the Layer-B gate catches it. Set it short (≈10 min) so even if the Layer-B gate is bypassed somewhere, the worst-case lag is 10 min, not an hour.
-- **Single-flight the refresh.** Logto rotates the refresh token on *every* refresh for public clients, with **strict** reuse-detection (any reuse → the whole grant's token chain is revoked; Logto offers **no** configurable grace/leeway window — that's an Auth0 feature, not a Logto knob). So a backgrounded-then-resumed instance retrying with a token whose rotation response was lost on a flaky network trips reuse-detection and **force-logs-out the user mid-session**. The **client-side single-flight `getValidToken()` wrapper** (see [02](02-realtime.md) §4) is the sole mitigation.
-- **Configure + TEST Logto's login throttle (identifier-lockout) to parity with Verre's `rl:login`.** Native email/password auth happens *in Logto*, so it bypasses Verre's NextAuth brute-force counters (`auth.ts:72-88`) entirely. Logto's identifier-lockout (Console › Security; default ~100 fails/60min) is configurable, but it is **not identical** to Verre's three-counter model — in particular Verre's IP counter (100/10min/IP) has no direct Logto equivalent, and Logto's *account*-lockout introduces a **victim-lockout-DoS** the web model doesn't have (an attacker can lock the real user out by failing logins). So: don't "configure to parity and done" — verify Logto's actual lockout semantics against the live Console, decide the IP-equivalent and accept/mitigate the lockout-DoS tradeoff, and put "Logto lockout configured + tested" in the §7 fence checklist.
+- **Credential writes = 2 sites**: `app/api/auth/register/route.ts` + `app/api/me/account/route.ts`
+  (password change). Each must also write the Better Auth `auth_accounts` row.
+- **Revoke-all = 2 sites**: `app/api/me/account/route.ts` (password-change-revokes-others) +
+  `app/api/me/devices/route.ts` (sign-out-all). Each must also call Better Auth's `revokeSessions`.
+  (Per-device sign-out and logout are device-specific — each device knows its own store, no fanout.)
 
-## 3. Scope: v1 is email/password only; social login is a later phase
+**Net build cost ≈ two helpers + four wirings + tests. The native *feature* (login/register UI,
+Google/Apple native sheets, nonce wiring, SecureStore token storage, the `resolveUser` web/native
+read-split) is the real multi-week work — unavoidable under any provider.**
 
-**This is the key sequencing decision and it shrinks the hardest part of the work.** Social login (Apple/Google) is deferred until *after* the app itself works. The first builds run on the developers' own iPhones via personal/dev provisioning — **not the App Store** — so Apple's "must offer Sign in with Apple alongside any third-party login" rule does not bite yet (it only triggers on an actual App Store submission *that already includes* a third-party login). So:
+🔒 **Safe-by-construction, not safe-by-discipline.** Put the credential write (`password_hash`) and
+revocation (`revokedAt`) behind a single `lib/identityStore.ts` chokepoint that is the **only** code
+allowed to touch those fields, enforced by a CI lint/grep rule that **fails the build** on any
+assignment elsewhere. Drift (a future path forgetting the fanout) becomes impossible, not merely
+test-caught. The revoke-all fanout must revoke **both** stores independently (one throwing must not skip
+the other) — with a partial-failure test. **This is a cross-cutting invariant → it belongs in root
+CLAUDE.md when implemented.**
 
-- **v1 = email/password accounts on Logto, across app + web.** Logto owns the token lifecycle; no social connectors enabled yet.
-- **Social login + account-linking = a documented later phase** (§3a). When it lands it is **cross-surface** — the web login gets the Apple/Google buttons too, because a user who signs up with Google on the phone must be able to log in with Google on the web.
+**Worst drift failures, ranked:** (a) a web password change not propagated → native login uses the old
+password (a visible bug, not a security hole); (b) "log out everywhere" missing the other store → a
+revoked device stays alive (security-relevant, but visible in the Connected-devices panel). Both are
+closed by the chokepoint + tests above.
 
-**Why this matters:** the round-2 reviews flagged a CRITICAL account-takeover risk in linking a social identity to an existing Verre account *by email* (Verre doesn't verify email at registration). That risk **is not reachable in v1** — with only one login method (email/password), there is no second method to collide. So §3a is not a v1 blocker; the only v1 obligation is to **shape the account model so social drops in later without a migration** (§3a).
+## 4. Account model
 
-| Concern | Owner |
-|---|---|
-| Native token lifecycle (issue / refresh / reuse-detection / expiry) | **Logto** — baked in, standard. (Not the *reason* we adopt it — §1 — but a property we rely on.) |
-| Email/password auth (v1) | **Logto's store** (on our dedicated Economy DB — still our infra) |
-| Apple / Google sign-in (later) | **Logto** connectors (§3a) |
-| Web session auth (existing browser app) | **NextAuth, unchanged** — see §4 |
-| Per-user app data, sessions, ratings, the trust model | **Verre's Postgres/Redis** — unchanged |
+Both systems resolve a caller to the same `users.id`. Credentials and sessions live where each system
+expects them; the `users` row is the shared identity.
 
-## 3a. Account model — built now to be social-ready, linking deferred
+- **`users.id` (Int autoincrement) is the trust anchor** — unchanged, with all ~15 FK relations. Better
+  Auth's `user` model maps onto it (`advanced.database.generateId` callback returns `false` for the
+  `user` model so Postgres owns the PK; generates ids for the other tables). Verified: Better Auth's
+  `auth_sessions.user_id` round-trips as a real Postgres `integer` FK to `users.id`.
+- **Better Auth requires two additive columns on `users`** it doesn't have today: `email_verified`
+  (boolean, `@default(false)`) and `updated_at` (timestamp, `@default(now())` / `@updatedAt`). Both
+  defaulted → additive-safe on the populated table. Authored by hand through Verre's gated Prisma
+  migration pipeline (`prisma/CLAUDE.md`); **never** let the Better Auth CLI own or migrate `users`
+  (its generated DDL would risk a `NOT NULL`-on-populated-rows violation, which `prisma/CLAUDE.md`
+  flags as a confirm-gated destructive change).
+- 🔴 **`users.password_hash` MUST become nullable — a social-only user has no password** (this is the
+  launch-blocker the spike couldn't surface, since it only tested email/password against existing
+  rows, never a fresh social-only INSERT). When a Google/Apple user signs up, Better Auth inserts a
+  `users` row writing name/email/timestamps but **never `password_hash`** (passwords live in
+  `auth_accounts`). With `password_hash NOT NULL` (today's schema, `String`, no default), that INSERT
+  **500s on the first social sign-up.** Make it nullable. Safe web-side: `auth.ts:85` already feeds
+  `?? DUMMY_HASH` on login. **BUT three other consumers do an unguarded `bcrypt.compare(pw,
+  user.passwordHash)` and break on a null hash** — `app/api/me/account/route.ts:58` (password change)
+  and `:113` (account delete), plus `lib/verifyPassword.ts:31` (guards a missing row via `user ?` but
+  NOT a null hash). **In the same migration commit, guard all three**: `if (!user?.passwordHash)
+  return <incorrect / no-password>` before the compare (never fall through to "allow"). Treat
+  "nullable `password_hash` ⇒ audit every `.passwordHash` consumer" as a hard checklist item.
+- **Credentials live in Better Auth's `auth_accounts` table** (provider `credential`), not on `users`.
+  See §5 for the bcrypt bridge.
+- **Social identities** (Google/Apple) become additional `auth_accounts` rows for the same `users.id`.
 
-The v1 email/password flow is simple, but the *schema shape* must be right now so social login is purely additive later. The rules (all standard, all what the big providers do):
+## 5. The credential bridge — bcrypt override + lazy backfill (SPIKE-VERIFIED)
 
-- **Match accounts on the provider's permanent ID, NEVER on email.** Email is mutable and (until verification ships) unverified — in Verre's own trust model that puts it in the "carries zero trust" class. A `users` row gains an optional external-identity binding (e.g. a `logto_subject`/provider-id column or a small linked-identities table). Login resolves a caller to a Verre `users.id` via that immutable id, not by string-matching email.
-- **Login method follows the *existing account*, never the email domain.** A new user with any email — including a `@gmail.com` — may freely choose a local password account; we never force Google login just because the address is Gmail. The decider is always "how was *this account* created / what methods has it linked," not "what does the email look like."
-- **An account may hold a password AND/OR linked social ids.** So `passwordHash` must become **nullable** (a future social-only user has none until they set one), and the provider-id binding is independent of it. (This corrects the earlier draft's "we do *not* make `passwordHash` nullable" — that claim was wrong: a social-only user can't satisfy NOT-NULL.)
-- **Linking happens only while already logged in** — the safe ceremony. Deferred features: **(a)** a Google-registered user sets a password in settings → gains local login; **(b)** an email/password user links Google in settings → gains social login. Both are safe *because the user is already authenticated*, so they've proven they own the account — this is exactly the "explicit linking ceremony" the security review required, and it sidesteps the takeover risk entirely (which only exists when you auto-link at login time on a matching email).
-- **Login-screen UX (when social lands): School 2** — social buttons on top, email+password below; a social-only email typed into the password form gets a "did you sign up with Google?" hint, not a silent reject.
+Better Auth hashes with **scrypt** by default; Verre uses **bcrypt cost 12**. To verify existing
+hashes, override **both** the hash and verify functions with Verre's bcrypt:
 
-**v1 obligation:** the nullable `passwordHash` + the provider-id binding column. That's the only schema work v1 needs; everything else in §3a is the later phase.
+```ts
+emailAndPassword: {
+  enabled: true,
+  password: {
+    hash:   (pw) => bcrypt.hash(pw, 12),
+    verify: ({ hash, password }) => bcrypt.compare(password, hash),
+  },
+},
+```
 
-⚠️ **`passwordHash` nullable is NOT purely additive at the code layer.** The migration is additive/safe, but three sites call `bcrypt.compare(pw, user.passwordHash)` and break when the type becomes `string | null`: `lib/verifyPassword.ts:31` (already guards a *missing row* via `user ? … : false`, but **not a null hash** — so it still breaks for a social-only user), `app/api/me/account/route.ts:58` (password change) and `:113` (account delete) — both fully unguarded. (`auth.ts:85` is already safe via `?? DUMMY_HASH`.) **In the same commit as the migration**, guard all three with a *null-hash* check: `if (!user?.passwordHash) return <incorrect / no-password>` before the compare (returning incorrect/forbidden, never falling through to "allow"). Treat "nullable column ⇒ audit every `.passwordHash` consumer" as a hard checklist item, not "mechanical."
+🔒 **Override BOTH, not just `verify`.** Overriding only `verify` ships a mixed scrypt/bcrypt table
+(new passwords scrypt, migrated bcrypt) and the built-in path errors on `$2a/$2b` hashes (GH #5016).
 
-## 3b. v1 account resolution — the Logto↔Verre binding (the one real seam; close before any authed native call)
+**No bulk credential migration. Lazy-create the `auth_accounts` row on a user's first native login** —
+copy their existing `password_hash` into a `credential` account row at that moment. Per-user, naturally
+tested, reversible — makes "new code only" true for *data*, not just control flow.
 
-Two reviewers (security, design) flagged this as the load-bearing gap: §3a says "resolve a caller to a Verre `users.id` via the immutable provider-id binding" but never said **what writes that binding, or what happens to the two existing web users.** The trap: in v1, NextAuth (web) and Logto (app) are **two credential stores against the same `users.email @unique` table**. If the same human registers email/password in both with no defined binding, they either fork into **two `users` rows** (split history + a **paid `pro` user silently dropping to free tier**) or collide on `email @unique` with no specified resolution — and the "link while logged in" ceremony (§3a) is itself deferred, so v1 has no fix path. This is not deferred by the email/password-only scope; NextAuth is a live second store the whole v1 window.
+⚠️ **`signIn.email` does NOT auto-create the account row, AND Better Auth owns the credential-account
+contract — a raw insert that misses a field produces a row that exists but never authenticates.** So
+the lazy path is an explicit step *before* the verify, and it must replicate Better Auth's exact
+`credential` account shape: **`providerId = 'credential'`, `accountId = String(users.id)`** (BA requires
+accountId == userId for credential accounts), **`password = <the existing bcrypt $2b hash>`**, plus a
+generated `id` and `created_at`/`updated_at`. Get any of these wrong and `signIn.email`'s lookup won't
+match it. Do the insert through `identityStore` (§3) so it's the one chokepoint. **Validate this exact
+shape in the build-first spike** (the prior spike inserted a hand-rolled row that *did* authenticate —
+re-confirm the field set against the installed SDK version before relying on it). The documented
+`setPassword` API doesn't fit (it takes *plaintext* + a logged-in session; we hold a pre-login hash).
+*(Fallback if the contract proves fragile: drop lazy-backfill, write the BA credential going forward at
+register/password-change via `identityStore`, and treat pre-existing users as a one-time
+forgot-password-to-set-native-credential — uglier UX, zero raw-insert risk.)*
 
-**The v1 resolution — seed, don't guess (and it's a 2-row problem):**
-- At Logto cutover, **seed Verre's existing users into Logto's store**, stamping each with its Verre `users.id` as a custom claim / and writing the `logto_subject` binding column **at seed time**. With two users (the founders), this is two signups + a one-line `UPDATE` to set the bindings — not a migration project.
-- After seeding, `resolveUser`'s Logto branch maps `sub → users.id` via the pre-written binding. **No login-time email matching ever runs.**
-- **The subtle distinction to state explicitly** (or a reader thinks §3a contradicts itself): we match on email *for one-time provisioning at seed* (the only join key that exists for pre-existing accounts), but **never** on email *for authentication*. Provisioning-time email-match (operator-run, on accounts we already own) is categorically different from auth-time email-match (attacker-reachable). The trust-model "never match on email" rule is about *auth*, and it holds.
-- **Hard v1 constraint** (state it, because it's currently nowhere): in v1, the app onboards **existing Verre users via the seed** + **brand-new email accounts**; there is **no in-app way to link a NextAuth-web account to a fresh Logto identity** until the deferred linking ceremony ships. A guard: app-registration with an email that already has a Verre `users` row must be refused with "this email already has an account — [seed/link path]", never silently duplicated.
-- **Where the guard runs + the cutover order (one ordered fence, not two notes):** the refusal can't be in `resolveUser` (by the time it sees a token, the Logto identity already exists), so it fires **at Logto registration** — a Logto custom sign-up / pre-registration hook that checks Verre's `users.email`. The guard and the seed gate the *same* window, so do them in order: **(a)** seed the existing users + write their bindings; **(b)** enable the email-collision sign-up hook; **(c)** *then* open app registration. Skip the order and a founder who self-registers between (a) and (c) gets an unbound Logto identity. At 2 known users this is a coordination step in one maintenance window, not a design gap — but state it as the ordered fence, because everything else in this doc is explicit.
-- **Race guard:** the `logto_subject` binding column is `@unique` + upsert-on-conflict, so two cold-start calls can't create two rows for one subject.
+**Verified against real production data (2026-06-09 spike, dump deleted after):** Better Auth maps onto
+the real prod `users` table; the bcrypt override signs in real users across **both cost factors present
+in prod** (`$2b$12$` and a legacy `$2b$10$` — so the override must use plain `bcrypt.compare`, no
+hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-create works. 5/5.
 
-## 4. The two-system split: Logto (new clients) + NextAuth (legacy web)
+## 5a. Session, revocation, and the never-cache invariant
 
-For the transition, two auth systems coexist, split by client generation:
-- **Existing web app** → stays on **NextAuth** (cookie/JWT + the `user_sessions` revocation gate). It's correct for a confidential browser client; there is no reason to rip it out, and doing so would be a live-web auth rewrite for zero benefit.
-- **Native apps (and the redesigned web, when it ships)** → **Logto**.
+- **Default session = opaque, DB-backed.** A session cookie maps to an `auth_sessions` row checked per
+  request. `revokeSession`/`revokeOtherSessions`/`revokeSessions` delete rows → **immediate** revocation
+  — the same model as Verre's `user_sessions.revokedAt` gate, native.
+- **"Logged in forever" = sliding session.** `expiresIn` (7d default) + `updateAge` (1d default)
+  auto-extends on activity → users stay logged in indefinitely while using the app. No hand-built
+  re-issue endpoint.
+- 🔒 **`cookieCache` MUST stay OFF — enforce with a CI test.** `cookieCache` is an opt-in cache of signed
+  session data *in the device's cookie*; the server cannot invalidate another device's cookie, so a
+  revoked session lingers up to `maxAge` on other devices — violating Verre's never-cache-`auth()`
+  invariant (`lib/CLAUDE.md`). It was also the root cause of a HIGH 2FA-bypass (`GHSA-xg6x-h9c9-2m83`).
+  Default is OFF (a DB read per request — Verre's posture; a sub-millisecond indexed lookup). **Never
+  enable the JWT plugin** either (self-contained tokens the DB can't revoke). If session-read DB load
+  ever matters (it won't at this scale), use Better Auth's `secondaryStorage` → Redis (server-side,
+  mutable, preserves instant revocation) — **not** `cookieCache`.
+- 🔒 **The `resolveUser(req)` seam must be REWRITTEN, not just "add a branch" — both auth systems are now
+  COOKIE-based, and the shipped precedence rule keys on the wrong signal.** The shipped seam (PR #37) was
+  built for a Logto-era *bearer* native path: it routes on `if (Authorization header) → native, else →
+  cookie`. But Better Auth's native client authenticates with an **opaque cookie**
+  (`better-auth.session_token`, sent via `authClient.getCookie()`), NOT a bearer. So the live
+  `Authorization`-present discriminator no longer distinguishes native from web. The seam selects between the two by
+  **attempting Better Auth's `auth.api.getSession({ headers })` and falling through to `auth()`**. ⚠️
+  **Do NOT string-match the cookie name** — in production Better Auth's cookie is
+  `__Secure-better-auth.session_token` (the `__Secure-` prefix is added when secure cookies are on), so
+  a literal name match silently fails in prod; let `getSession` parse it (it strips the prefix
+  internally). 🔒 **Deterministic, fail-closed precedence**: if `getSession` returns a session, that's
+  the caller (Better Auth wins); only on a null/absent Better Auth session do we consult the NextAuth
+  cookie via `auth()`. Never merge claims from both; never let a caller carrying two cookies pick which
+  identity runs. **NB — both cookies travel on every request** (Better Auth's cookie `path` defaults to
+  `/`, independent of the basePath), so "both present" is the *routine* case for a native-then-web
+  device, not a corner case — the precedence rule runs constantly.
+- **Mapping the Better Auth session to Verre's `Session` shape is real adapter work, not a free
+  pass-through.** Better Auth's `getSession` returns `{ user: { id, email, name, image, ... }, session }`
+  — NOT NextAuth's `{ user: { id: string, role, pro, userSessionId } }`. The native branch must build
+  the NextAuth-shaped value the API call sites expect: map `user.id` → `String(users.id)`, and do the
+  **fresh, uncached `role`/`pro` SELECT** from `users` (the same read `auth()`'s `session()` does — do
+  NOT cache it). `userSessionId` (a `user_sessions` concept) has no Better Auth analog — native callers
+  don't have one; the few handlers that read it (password-change, devices) must tolerate its absence for
+  a native caller (see the device-reauth note below). The call sites stay untouched *because the
+  adapter produces the same shape* — but writing that adapter is the work; "pass-through" only describes
+  the cookie branch. The native `getSession` path runs **uncached per request** (never-cache invariant).
+- **Connected-devices must span both stores.** `GET /api/me/devices` reads `user_sessions` only; native
+  sessions live in `auth_sessions`. So the existing panel won't show native devices (and the native app
+  won't see web devices) unless the list read **unions both stores** (keyed on `users.id`). The §3
+  revoke-fanout covers "log out everywhere"; this is the *display/list* side of the same feature and is
+  easy to miss. **Decision: union the read** (`user_sessions` ∪ `auth_sessions`, keyed on `users.id`).
+  This is load-bearing, not cosmetic: §3 downgrades a stale-revoke from "security hole" to "visible bug"
+  *because the panel shows the un-revoked device* — if the list doesn't union both stores, that
+  mitigation evaporates and the risk re-upgrades. So the union is required, not optional.
+- **Device-management password re-auth has no native credential to check** — define it. The per-device
+  `DELETE /api/me/devices/[id]` and revoke-all re-prompt for the password via `lib/verifyPassword.ts`,
+  which does `bcrypt.compare(pw, users.password_hash)`. A **native** (Better Auth) user's credential is
+  in `auth_accounts`, and with the §4 nullable change their `users.password_hash` may be NULL → the
+  re-auth returns `false` (locks them out of device management). **For a native caller, verify the
+  password against the Better Auth `credential` account** (or route the whole native device-management
+  surface through Better Auth's own session/revocation APIs). Don't leave `verifyPassword` as the only
+  gate — it's blind to native credentials.
 
-This is coherent *because both sides are off-the-shelf standards* (NextAuth and Logto) — not one standard + one hand-rolled thing (which is what made the earlier "generational split" idea bad). The redesigned web is born on Logto, so **no UI is ever migrated from one auth to another** — the split *can* retire **if and when** legacy web is eventually replaced. But that's the *last*, least-certain phase and has no scheduled date: **plan for running two auth systems as the indefinite steady state, not a transient.** The §1 CVE-treadmill cost is therefore a standing cost, not a temporary one — that honesty is the price of the "don't hand-roll auth" principle for two users.
+## 6. Security must-dos — hard gates, not optional
 
-**The API boundary that makes coexistence safe is the version handshake** ([04](04-api-versioning.md)) — it's a prerequisite of this split, not a "maybe later" (see §7 sequencing).
+From three review rounds. None of these are nice-to-haves.
 
-## 5. How Verre's API accepts a Logto-authenticated caller
+1. 🔴 **nOAuth implicit-linking (`GHSA-g38m-r43w-p2q7`) — the #1 control.** With email/password + social
+   + default linking (exactly our config), an attacker who pre-registers the victim's email gets the
+   victim's later Google/Apple identity auto-bound → account takeover. The fix is the **version pin**
+   (≥1.6.11 adds `requireLocalEmailVerified`, default true); residual vectors (link-while-authenticated,
+   email-change-post-link) need more. **Do all of: pin `better-auth >= 1.6.13`; keep
+   `requireLocalEmailVerified: true`; `account.accountLinking.disableImplicitLinking: true`;
+   `allowDifferentEmails: false`; no `trustedProviders`.** `requireEmailVerification` alone does NOT fix it.
+2. 🔴 **Rate limiting — the second-biggest gap, design before shipping.** Better Auth's native
+   email/password + social endpoints are a fresh brute-force surface with no equivalent to Verre's
+   `rl:login`. Its default limiter is **in-memory** (per-instance, useless on Deplo.io's multi-instance
+   runtime, resets every deploy) and has two HIGH bypass advisories
+   (`GHSA-p6v2-xcpg-h6xw` IPv6-prefix-rotation; `GHSA-x732-6j76-qmhm` double-slash path). **Set
+   `rateLimit.storage: "secondary-storage"` → Redis + custom rules for `/sign-in/email` and social,
+   matching Verre's posture; confirm the IP header isn't XFF-spoofable** (the same trusted-proxy caveat
+   Verre already flagged for NextAuth).
+3. 🔒 **`cookieCache` OFF, enforced by a CI test** (§5a). Never enable the JWT plugin.
+4. **Nonce on native `id_token`.** Better Auth only checks the nonce *if provided*. The device must
+   generate a nonce and pass it to **both** the native sheet and `signIn.social`, or a stolen `id_token`
+   is replayable (~1h `maxTokenAge`).
+5. **Apple config.** The native path needs `appBundleIdentifier` (the token `aud` is the iOS bundle id,
+   **not** the Service ID — wrong value throws `JWTClaimValidationFailed`) + `trustedOrigins:
+   ["https://appleid.apple.com"]`. Apple sends email/name **only on first authorization** → persist via
+   `mapProfileToUser` or re-installs orphan the account.
+6. **Native CSRF / `trustedOrigins`.** Native sends no Origin; Better Auth only validates Origin when a
+   cookie is present. Lock `trustedOrigins` to Apple + Verre's own scheme (Better Auth has a history of
+   trustedOrigins-bypass ATOs, `GHSA-vp58-j275-797x`).
+7. 🔴 **Account-deletion FK cascade — the most dangerous regression touch-point.**
+   `lib/accountDelete.ts` does a raw `DELETE FROM users` relying on Postgres `ON DELETE CASCADE`. If
+   Better Auth's `auth_accounts`/`auth_sessions` `user_id` FK is **not** `onDelete: Cascade`, every web
+   account deletion 500s the moment a user has Better Auth rows. **Hand-author both tables with
+   `onDelete: Cascade` (matching `user_sessions`) + a test deleting a user who has Better Auth rows.**
+   (Verified in the spike: tables created with the cascade.)
+8. **Table-name collision.** Verre already has `@@map("sessions")` (wine-tasting sessions) **and**
+   `user_sessions`. Better Auth's default `session` table collides → **pin** Better Auth's table names
+   (`auth_sessions`/`auth_accounts`/`auth_verifications`). All Better Auth tables must live in
+   `schema.prisma` or the schema-check CI fails every build.
+9. **Keep Better Auth + bcrypt OUT of the Edge bundle.** `middleware.ts` makes the Edge runtime real,
+   and `instrumentation.ts` is bundled for *both* runtimes. Better Auth (and bcrypt) pull `node:*`
+   imports; if anything imported by `middleware.ts` / `auth.config.ts` / `instrumentation.ts` reaches
+   the Better Auth config or `identityStore`, **`npm run build` fails with `UnhandledSchemeError`**
+   (`tsc` won't catch it — see `app/CLAUDE.md`). Mount Better Auth only in Node-runtime route handlers.
+   (The middleware `matcher` is `['/me/:path*']` — it does NOT cover `/api/auth/*`, so NextAuth's Edge
+   config won't run on Better Auth's routes; keep it that way.)
 
-This is the integration work, and the first review's corrections reshape it heavily:
+🔒 **Crash/analytics SDK scrub** (Sentry, [06](06-ios-app.md) §6): a `beforeSend`/`beforeBreadcrumb`
+denylist must strip the Better Auth session cookie/token, the password body fields
+(`password`/`currentPassword`/`newPassword`), and the never-log viewer fields
+(`viewerBlocksOut`/`viewerBlocksIn`/`viewerMutes`). Body-level redaction is insufficient — secrets leak
+via breadcrumbs/network-spans/request-bodies too.
 
-**The `/me` Edge-middleware "blocker" was a factual error — corrected.** The earlier draft claimed `middleware.ts` (Edge runtime) bounces native `/api/me/*` calls before they reach a handler, making this "structural." **That is wrong** (caught by three reviewers + the codebase's own `lib/CLAUDE.md`): the matcher is `['/me/:path*']`, which gates the **SSR `/me` pages**, NOT `/api/me/*` (those start with `/api`). Native clients call `/api/*` routes, which run in the **Node runtime** and self-gate via `auth()` in each handler. **There is no Edge bounce to fork or loosen. Leave `middleware.ts` alone.**
+## 7. Trust model — unchanged
 
-**The real work — one `resolveUser(req)` seam.** Scope-wise this is **wide but mechanical, not the long pole** the earlier draft implied: ~44 API routes call `await auth()` directly (the `/me`/`/users`/`/checkins`/`/feed` group **and** the core session routes `join`/`visit`/`rate`/`wines`/session-GET). The session routes don't consume `auth()` directly — they feed its result into `resolveIdentity(code, req, authSession)` (`lib/identity.ts:47`), which derives the `u:<userId>` trust anchor from `authSession.user.id`. So the seam is mostly a same-shape find-replace; the *risk* is concentrated in a few correctness rules below, not in the 44 edit sites.
+The native switch does not touch Verre's trust model (root CLAUDE.md). For completeness:
+- **Identity ids remain the only trust anchor** — `u:<userId>` (logged-in), `a:<uuid>` (anon). Native
+  callers resolve to `u:<userId>` via Better Auth's session → the same `users.id`. Anonymous stays
+  browser-only (D1); native is registered-only.
+- **Display names carry zero trust.** No change.
+- 🔒 **Native sends no `Origin`**, so `isSameOrigin` passes and the session is the sole trust anchor.
+  **Never relax the web cookie's `SameSite`/`httpOnly`** to accommodate native; a future social WebView
+  flow uses a separate cookie, not a relaxation of this one.
+- 🔒 **Never cache the per-request session/revocation lookup** (§5a) — the never-cache-`auth()` invariant
+  applies equally to Better Auth (`cookieCache` OFF).
 
-Design of the seam:
-- **`resolveUser(req)` returns a value shaped exactly like a NextAuth `Session`** (`user.id` = Verre's integer `users.id`, `user.name`, `user.pro`, `user.role`, `user.userSessionId`). Returning the existing `Session` shape means **`resolveIdentity` and the `u:<userId>` trust anchor stay completely untouched** — blast radius is one adapter, not the trust model.
-- **Cookie branch = delegate to the *existing, unchanged* `auth()`.** Do NOT reimplement cookie validation inside `resolveUser` — that would risk bypassing the `jwt()` revocation gate or the fresh `pro`/`role` SELECT and re-open the very holes the invariants forbid. The cookie branch is a pass-through; only the Logto branch is new code. This also keeps the whole refactor trivially reversible (delete the Logto branch → back to today).
-- 🔒 **Precedence when BOTH a cookie and a bearer are present:** deterministic rule — **`Authorization` header present ⇒ the Logto path is authoritative and the cookie is ignored entirely.** Never merge claims from the two. Without this, a caller carrying both could pick which identity to run as (reviewer Finding).
-- **The Logto subject → Verre `users.id` mapping is required, load-bearing work** (not a detail): a Logto token carries a *Logto* subject, NOT Verre's numeric `users.id`, and `Number(session.user.id)` is used in 30+ handlers. `resolveUser`'s Logto branch MUST look up the Verre `users.id` via the immutable provider-id binding (§3a) and return *that integer* — never the raw Logto subject (which would make `Number(...)` → `NaN` and silently mis-target every query). In v1 (email/password on Logto) this is the email/password user's own row; the §3a binding is what makes it robust when social arrives.
-- **Validate the Logto access token properly — full OIDC checks via `jose`** (Logto's own recommended Node lib), not a hand-assembled check:
-  - **audience pinned to Verre's API resource indicator** — this is the load-bearing check, and it **subsumes "reject ID tokens"**: an ID token's `aud` is the client_id, never the resource indicator, so strict `aud` pinning rejects ID tokens as a consequence (they're the same check, not two — don't chase a separate "token type" claim, Logto doesn't surface one),
-  - **issuer exact-match** Logto's issuer URL,
-  - **`alg` allow-list** passed explicitly to `jwtVerify` (Verre-added rigor beyond Logto's sample; reject `none`/HMAC),
-  - **signature via JWKS with `kid`-driven cache refresh on miss** (Logto rotates keys; don't pin one, don't refetch every request); `jose` checks `exp`/`nbf` by default — add bounded skew leeway.
-  - **Precondition (§2a):** this entire plan presupposes the token is a **JWT**, which only happens if the client requested Verre's registered API resource. A bare `getAccessToken()` yields an opaque token and every check here fails.
+## 8. Sequencing & gate
 
-**Mandatory invariants the seam MUST preserve (reviewer findings — hard gates):**
-- 🔒 **Fresh, uncached `pro`/`role` on both paths, every request.** `auth()`'s `session()` does a fresh `role`/`pro` SELECT (`auth.ts:169`) so a pro upgrade/downgrade lands immediately; caching it is a **paid-tier bypass** (a downgraded user keeps blind-tasting access). Logto authenticates *who*; Verre's `users` table owns `pro`/`role`, so the Logto branch does this same fresh read. **Do not add a cache to "optimize" the per-request DB reads** — that re-opens both the revocation and paid-tier holes.
-## 5a. Revocation — the two-layer standard design ("log out everywhere" must be immediate)
+What v1 needs, in order:
 
-A Logto JWT access token is self-validating until `exp` — revoking the *session* doesn't retroactively kill an access token already in hand. This is true of **every** JWT system (Okta and Auth0 say so explicitly); it's not a Logto defect. The widely-adopted standard answer — confirmed by an OIDC specialist and matching **Keycloak's named "not-before revocation policy"** — is **two layers**, both standard patterns, neither hand-rolled:
+1. **`resolveUser(req)` seam — already shipped** (PR #37 on main, `69c8240`): `lib/resolveUser.ts` +
+   all **46 API-route files / 63 call sites** swapped from `await auth()` → `await resolveUser(req)`.
+   Cookie branch = pass-through to `auth()`; the native branch is rewritten in step 5. (SSR pages —
+   `app/layout.tsx`, `app/me/*`, `app/u/[id]`, etc. — correctly keep `auth()` directly; they're not
+   native-reachable. Its current comments/stub describe a *Logto bearer* branch — superseded by this
+   decision; the code is harmless until step 5 rewrites it.) Delete the obsolete `logto/Dockerfile`
+   (also on main from PR #37, now superseded).
+2. **Schema (hand-authored, gated Prisma):** add `users.email_verified` (`@default(false)`) +
+   `users.updated_at` (`@default(now())`); **make `users.password_hash` nullable + add the 3 bcrypt
+   null-hash guards in the same commit** (§4 — without this the first social sign-up 500s); add
+   `auth_accounts` / `auth_sessions` / `auth_verifications` (pinned names, Int `user_id` FK,
+   `onDelete: Cascade`). All in `schema.prisma`.
+3. **`lib/identityStore.ts` chokepoint** + the CI lint rule (§3): the only place `password_hash` /
+   `revokedAt` may be written; `syncCredential` + `revokeAllSessions` fan-out across both stores.
+4. **Better Auth config** with all §6 guardrails: bcrypt hash+verify override, `generateId` callback,
+   table-name mapping, `cookieCache` off, `disableImplicitLinking` + the linking flags, `rateLimit`
+   → Redis, pinned `>=1.6.13`. Mount on a distinct basePath (e.g. `/api/auth/native`) so its catch-all
+   doesn't collide with `[...nextauth]`.
+5. **`resolveUser` seam rewrite** (§5a) — select on which cookie is present (Better Auth session →
+   `auth.api.getSession`, uncached; NextAuth cookie → unchanged `auth()`), with the deterministic
+   fail-closed precedence; replace the live `Authorization`-bearer discriminator. Lazy-create the
+   `auth_accounts` credential row (via `identityStore`) before the first native verify. Union the
+   Connected-devices read across both stores (§5a).
+6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
+   (§6.4–6.5).
+7. **Rate-limiting design (§6.2) — gate: do not ship native login without it.**
 
-**Layer A — kill the grant at Logto (first-party, the load-bearing action).** On "log out all devices" / password-change / compromise, **delete the Logto grant directly**: `DELETE /api/users/{userId}/grants/{grantId}` (Management API, **recommended** — see below) or `DELETE /api/my-account/grants/{grantId}` (self-service). This invalidates the grant's **refresh token + opaque tokens** and stops re-minting (rotation/reuse-detection can never issue a new token). What it does **NOT** do: retroactively kill an **already-issued JWT** access token — that stays signature-valid against JWKS until `exp`. *That residual window is exactly what Layer B closes* — the two layers' division of labor, not a redundancy. Two verified traps:
-  - 🔒 **Trap (a) — delete the grant; do NOT rely on global sign-out.** Because Verre requests `offline_access` (§2a), the **default end-session / global sign-out deliberately does NOT revoke offline_access grants** (Logto docs, verified). So a naive sign-out is a **silent no-op against exactly the native grant we care about.** There is **no `revokeGrantsTarget` parameter** in Logto (that's an Auth0-ism — verified absent). The real and only documented fix is the **grant-delete endpoint** above. Use it.
-  - **Trap (b) — the self-service Account API is a *three*-step dance; prefer Management-API M2M.** The self-service `/api/my-account/*` path requires: **(1)** a fresh **identity-verification record** (the user re-verifies via password/email/SMS; the record **expires in 10 minutes**), **(2)** a *second, different* token — an **opaque** token with empty `resource` (the Verre-API JWT can't call the Account API) — and **(3)** `UserScope.Sessions` + Account API enabled in Console. That's a lot of client moving parts for a backend-initiated action. **Recommendation: do logout-all backend-side via the Management API + an M2M credential** — `DELETE /api/users/{userId}/grants/{grantId}` **bypasses the verification-record flow**, keeps the dual-token dance and `UserScope.Sessions` off the client, and runs in the same backend operation as the Layer-B `revokedAfter` write (below) that must fire atomically with it.
+**Release fence** — before the first non-redeployable (TestFlight-external) install: the §6 🔒 must-dos
+implemented and tested (nOAuth flags, rate limiting, `cookieCache`-off CI test, account-delete cascade
+test, the dual-store fanout + partial-failure test, the **first social sign-up** creating a
+password-less `users` row without a 500); web auth demonstrably unregressed (Simon + Tim still log in on
+web, password change + account deletion still work); and a **real TestFlight (not dev-client) smoke test
+of the Apple sign-in path** — Better Auth has documented issues (e.g. #7049, #8169, now closed) where
+`signIn.social` with Apple worked in dev but hung/crashed in a production `.ipa`; the risk class is real
+even if those specific ones are fixed (pin a known-good version + test the actual build).
 
-**Layer B — the not-before gate, in `resolveUser` (makes the next native action fail immediately).** Layer A alone leaves a gap of up to `accessTokenTtl` (§2a, default 3600s, set to ≈10 min) where an already-issued JWT still works. To collapse that to zero — the intuitive, required behavior for a "kill now" action — `resolveUser` compares the token's `iat`/`auth_time` against a **per-user `revokedAfter` timestamp** (a single Postgres column on `users`; do **not** build a Redis mirror in v1 — the web `revokedAt` gate is itself a direct `findUnique` with no cache, and Layer B folds into the already-uncached per-request `pro`/`role` read, so there's nothing to optimize yet). Reject if `iat <= revokedAfter` (use `<=`, not `<`, so a token minted in the same second as the revoke can't leak — the off-by-one that makes "kill now" leak one token). Set `revokedAfter = now()` in the **same operation** that fires the Layer-A revocation. This is Keycloak's named **"not-before revocation policy"**, implemented locally — **a recognized standard pattern, not invented auth** (defining/validating the token stays 100% Logto+jose; deciding whether a valid token's subject is still authorized is application policy, exactly as the web side already does it).
-  - **Layer B is COARSE by design — per-user, not per-device.** This differs from the web `user_sessions.revokedAt` gate, which is **per-session-row** (so the web can revoke *one* device). A per-user `revokedAfter` can express only "log out **all** my devices" — setting it kills every native token issued before now. That's fine for v1, whose **only native revoke verb is logout-all** (per-device native revoke is out of v1 scope). If per-device native revoke is ever wanted, it rides on **Layer A** (each device login is its own Logto grant, so grant-delete *is* per-device) — **not** on extending `revokedAfter`. Don't seed the false "same primitive as web" mental model: Layer A is the granular source of truth; Layer B is a coarse, instant latency-collapse for the all-devices case.
-  - **Promote Layer B to v1** (the security review's correction): given the app offers "log out all my devices," the not-before gate is a **v1 requirement**, not a deferred "if ever needed." Without it, logout-all lags up to `accessTokenTtl`. **Add the `revokedAfter` column to the v1 schema checklist** (§7) alongside the binding column — it's net-new schema, easy to drop.
-  - **Fail-closed pairing:** if the Logto grant-delete (Layer A) fails, still set `revokedAfter` (Layer B holds the line locally) and retry Logto. Never let a Logto network blip leave a revoked session alive.
-
-**This resolves the revocation asymmetry the earlier draft owned.** With both layers, native logout-all is **instant on the next request** — symmetric *in effect* (for the all-devices case) with the web gate, though via a coarser per-user primitive (above), not the web's per-session one. Not "TTL-bounded, accept the lag."
-
-🔒 **Native→web revocation gap (a real regression — a native password change must revoke BOTH stores).** The existing web flows assume a `user_sessions` row: a native (Logto) caller has none, so `session.user.userSessionId` is `undefined`. Consequences in current handlers: `app/api/me/account/route.ts:79` — a **native** password change **revokes no web sessions** (the `userSessionId` guard is false), silently weakening the existing "change password ⇒ sign out everywhere" guarantee; `devices/[id]/route.ts:41` silently degrades for native (always takes the password-reauth path, then a zero-row update → 404), while `devices/route.ts:59` (revoke-all) *already* 401s a native caller cleanly — an inconsistency to make uniform. **The mandate (not an either/or): a native password change MUST revoke both stores** — `updateMany WHERE userId` on `user_sessions` (kills the user's web sessions) **AND** the Layer-A+B native revoke (set `revokedAfter` + Logto grant-delete). Picking only "gate cookie-only" would leave *web* sessions alive on a native password change — the same gap in the other direction. For the device-management *reads* (`/api/me/devices` GET), gate cookie-only with "manage devices in the app" (native sessions aren't in `user_sessions`, §5a). Don't leave any of these appearing-to-work-but-silently-degraded.
-- 🔒 **CSRF posture is deliberate.** Native sends no `Origin`, so `isSameOrigin` returns `true` (`csrf.ts:30`) — correct, the bearer token is the trust anchor. **Never relax the *web* cookie's `SameSite=Lax`/`httpOnly` to accommodate native**, and **never add a permissive `Access-Control-Allow-Origin` + `Allow-Credentials: true`** (a later CORS misconfig for the app could re-expose the cookie path to browser CSRF that `isSameOrigin` currently blocks). A future social WebView flow that needs a cookie uses a *separate* cookie, not a relaxation of this one.
-- 🔒 **Crash/analytics SDK scrubs by KEY NAME, not just by header.** Sentry ([06](06-ios-app.md) §6) captures headers, breadcrumbs, network spans, **and request bodies** by default. A `beforeSend` + `beforeBreadcrumb` denylist must strip — by key name — `Authorization`, `x-vr-anon-token`, the Logto access/refresh tokens, the **password body fields** (`password`, `currentPassword`, `newPassword`, `formToken`/honeypot — login/account-change request bodies carry plaintext passwords), and the viewer-scoped fields `viewerBlocksOut`/`viewerBlocksIn`/`viewerMutes` and gate `status` (root CLAUDE.md 🔒 never-log invariant). Body-level "don't attach these three responses" is insufficient — secrets leak via breadcrumbs/network-spans/request-bodies too.
-
-## 6. Social login & Apple obligations — the LATER phase (not v1)
-
-Social login is deferred (§3). When it ships, these apply:
-
-- **Cross-surface:** the **web** login gets the Apple/Google buttons too (§3a) — a Google-signup user must be able to log in with Google on the web, not just the app.
-- **Sign in with Apple becomes App-Store-mandatory** the moment any third-party login (Google) ships on an App-Store build. (Not yet relevant — first builds are dev-provisioned to the developers' own iPhones, §3.)
-- **Apple token-revocation on account delete:** with SIWA, Apple issues the SIWA refresh token to *Logto*, not to Verre — so on delete, Verre calls **Logto's management API** to revoke, and Logto calls Apple. **Verify Logto's Apple connector actually exposes this revoke** (some brokers store the token but don't surface a revoke call → silent non-compliance) — a "verify against live Logto" item, not a documented-and-done one. **Wire it best-effort + idempotent**, mirroring the S3 "capture/commit/reclaim-after" discipline in root CLAUDE.md: an Apple-revoke network failure must NOT abort the Postgres account delete.
-- **Native Apple sheet, not a web fallback:** confirm `@logto/rn` triggers the *native* SIWA sheet — a web Apple login inside ASWebAuthenticationSession is an App-Review 2.1 reject ("not using Sign in with Apple"). ([06](06-ios-app.md) §6.)
-- **In-app account deletion** (Apple 5.1.1(v)) — backend exists (`lib/accountDelete.ts`); native UI must expose it. This one IS relevant before any store submission.
-
-**OPEN — Apple-at-launch vs later (product decision, [README O4](README.md#3-deferred-decisions-deliberately-open)):** D1 (registered-only apps) puts a sign-in wall at the QR-scan-at-dinner moment. Reviewers argue one-tap Apple there avoids a conversion cliff. With social deferred, this is naturally a "when social lands" question — flagged for you + Tim, funnel friction not architecture.
-
-## 7. Sequencing & gate
-
-The auth long pole is **much smaller** than the earlier draft implied — no token system to build (Logto owns it), no Edge fork (a misread), and **social login deferred** so the account-linking/collision design is later, not now. What v1 needs:
-
-**Backend prerequisites that bake in prod FIRST, decoupled from any app build** (the cheapest de-risking — these have zero native dependency and are reversible):
-1. **API version boundary** ([04](04-api-versioning.md)) — server side (header ignored at first): what lets legacy-web-on-NextAuth and native-on-Logto coexist.
-2. **✅ DONE (branch `feature/resolve-user-seam`, not yet merged) — `resolveUser(req)`, cookie branch only.** Landed as a pure refactor: `lib/resolveUser.ts` cookie branch is a pass-through to `auth()`; the bearer branch **returns `null` (fail-closed → clean 401)**, not a throw — a throw would 500 a stray `Authorization` header. Swapped **all 46 API-reachable `auth()` sites** (62 invocations across 44 route files + the eight `/me` GET handlers that gained a `req` param + `lib/profilePeople.ts`, which backs `/api/users/[id]/followers|following` and was the one site an `app/api/**`-only grep missed). SSR pages keep `auth()`. Reviewed (security/correctness/convention, clean) + unit-tested (cookie path, fail-closed bearer, precedence: `auth()` not called when a header is present). *(Reversible: delete the bearer branch.)* **Empty-`Authorization` (`""`) currently falls through to the cookie** — harmless now, but the bearer branch (6) must treat empty/whitespace-only as present-but-invalid → 401.
-
-**Then the Logto-dependent v1 work:**
-3. **Stand up Logto** (Dockerfile + dedicated Economy DB), **email/password only**, with the §2a config: register Verre's API resource, `offline_access`, short `accessTokenTtl`, login-throttle parity, pinned image. **Dockerfile ✅ DONE** (`logto/Dockerfile`, pinned `svhd/logto:1.40.1`; built + booted locally, `/api/status` → 204; OIDC confirmed `issuer = <ENDPOINT>/oidc`, `jwks_uri = <ENDPOINT>/oidc/jwks`).
-   - 🔒 **Logto does NOT auto-migrate its schema on `start` — it crash-loops** with *"Found undeployed database alterations"* against an unseeded DB (verified locally on 1.40.1). The **first deploy needs an explicit one-time seed**: `npm run cli db seed` (override the image entrypoint, which is `npm run`; e.g. `--entrypoint npm … run cli db seed`). On Deplo.io this is a one-shot run against the fresh Economy DB **before** the Logto app's first real boot (a `deployJob` on the Logto app, or a manual one-shot), not the Verre `prisma migrate deploy` job. Subsequent version bumps similarly need `db alteration` run deliberately (the CVE/upgrade-discipline runbook, §2).
-   - **Admin console is non-public on Deplo.io's one-port-per-app model.** Logto is one container on **two** ports (core 3001 / admin 3002); a Deplo.io app publishes only its listen port. Chosen approach: **single app, flip the listen port 3001↔3002 + redeploy** when admin config is needed (core OIDC is briefly down during the window — acceptable at 2 users). Health probe (path + `periodSeconds`, success = 200–399, probes the listen port — verified against Deplo.io docs): leave **default** while serving the admin port; set **`/api/status`** only after flipping to core/3001 (204 ∈ success range).
-4. **Schema: `passwordHash` nullable (+ the 3 bcrypt guards, §3a) + the `@unique` provider-id binding column + the per-user `revokedAfter` column (§5a Layer B).** All additive; the bcrypt guards ship in the same commit as the nullable change. (Don't drop `revokedAfter` from this list — Layer B silently won't work without it, and logout-all then lags up to `accessTokenTtl`.)
-5. **Seed the 2 existing users into Logto with their `users.id` bindings pre-written** (§3b) — closes the account-fork hole before any native login.
-6. **Add the Logto branch to `resolveUser`** — full access-token validation (§5, jose + aud-pin), sub→`users.id` mapping, the precedence rule, fresh uncached `pro`/`role`, **and the Layer-A+B revocation** (§5a). Gate the native→web revocation handlers (§5a). **Also harden the empty/whitespace-`Authorization` case** (currently falls through to the cookie — must become present-but-invalid → 401, per item 2). The validation target is known from the local stand-up: `aud` = the registered API-resource indicator, `iss` = `<ENDPOINT>/oidc`, JWKS at `<ENDPOINT>/oidc/jwks`.
-7. **Release fence — anchored to the first NON-REDEPLOYABLE install** (not the first `.ipa`; dev builds on the founders' own phones are force-updatable and exempt). Before the first **TestFlight-external** binary, all of the following must hold (stated as *invariants*, not a duration proxy): **cookie auth demonstrably unbroken on the seam in prod** (Simon + Tim both authed through the refactored seam, nothing regressed — not "≥N deploy cycles"); a Logto token round-trips staging; and the **§5/§5a 🔒 invariants implemented and tested** — precedence rule, no-cache `pro`/`role`, **Layer-B revocation actually fires** (logout-all instant), native-pw-change revokes **both** stores, and **Logto lockout configured + tested**. Not just "resolveUser wired," or a binary passes the fence with a paid-tier-bypass cache or a non-firing kill switch.
-
-**Deferred (the later social phase):** Apple/Google connectors, cross-surface buttons, settings-based linking (§3a), the Apple revoke/native-sheet items (§6).
-
-Everything visual ([05](05-design-system.md), [06](06-ios-app.md)) proceeds in parallel against Logto's email/password flow; no *real* authed native call lands until the Logto branch (6) is in.
+Everything visual ([05](05-design-system.md), [06](06-ios-app.md)) proceeds in parallel; no real authed
+native call lands until step 5.
