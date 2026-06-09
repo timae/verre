@@ -55,6 +55,9 @@ export async function PATCH(req: NextRequest) {
     if (String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
+    // A social-only (Better Auth) user has a NULL password_hash and no current
+    // password to re-auth against — reject rather than fall through to allow.
+    if (!user.passwordHash) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     updates.passwordHash = await bcrypt.hash(String(newPassword), 12)
@@ -110,6 +113,10 @@ export async function DELETE(req: NextRequest) {
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
+  // A social-only (Better Auth) user has a NULL password_hash — no password to
+  // confirm deletion against. Reject rather than fall through to allow. Native
+  // account deletion re-auths against the Better Auth credential (proposal §5a).
+  if (!user.passwordHash) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
   const valid = await bcrypt.compare(String(password), user.passwordHash)
   if (!valid) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
 

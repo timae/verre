@@ -28,7 +28,10 @@ export async function verifyPassword(userId: number, password: string): Promise<
   const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
   if (!rl.allowed) return { ok: false, reason: 'rate-limited', retryAfter: rl.retryAfter }
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
-  const valid = user ? await bcrypt.compare(password, user.passwordHash) : false
+  // A social-only (Better Auth) user has a NULL password_hash — never fall
+  // through to "allow". Their credential lives in auth_accounts; device-mgmt
+  // re-auth for native callers is handled separately (proposal §5a).
+  const valid = user?.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false
   if (!valid) return { ok: false, reason: 'incorrect' }
   return { ok: true }
 }
