@@ -7,6 +7,7 @@ import { authConfig } from '@/auth.config'
 import { checkRate, peekRates, getClientIp } from '@/lib/rateLimit'
 import { parseUserAgent } from '@/lib/userAgent'
 import { resolveGeoLabel } from '@/lib/geo'
+import { revokeOneSession } from '@/lib/identityStore'
 
 // Constant-time guard against email enumeration via login timing.
 // Real bcrypt-12 hash that will never match any user's password.
@@ -194,13 +195,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // must always succeed even if the DB write fails, so we catch + log.
     // Idempotent via the revokedAt IS NULL guard.
     async signOut(message) {
-      const sessionId = 'token' in message ? (message.token?.userSessionId as string | undefined) : undefined
-      if (!sessionId) return
+      const token = 'token' in message ? message.token : undefined
+      const sessionId = token?.userSessionId as string | undefined
+      const userId = token?.id ? Number(token.id) : undefined
+      if (!sessionId || userId === undefined || Number.isNaN(userId)) return
+      // Best-effort: logout must always succeed even if the revoke write fails.
+      // Routed through revokeOneSession (the chokepoint — the only code allowed
+      // to write user_sessions.revokedAt; CI-enforced). Idempotent via the
+      // revokedAt IS NULL guard inside the helper.
       try {
-        await prisma.userSession.updateMany({
-          where: { id: sessionId, revokedAt: null },
-          data: { revokedAt: new Date(), revocationReason: 'logout' },
-        })
+        await revokeOneSession(userId, sessionId, 'logout')
       } catch (err) {
         console.warn('[user-session] signOut revoke failed', err)
       }

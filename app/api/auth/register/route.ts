@@ -6,6 +6,7 @@ import { validateDisplayName } from '@verre/core'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { verifyRegisterToken } from '@/lib/registerToken'
 import { isSameOrigin } from '@/lib/csrf'
+import { syncCredential } from '@/lib/identityStore'
 
 const schema = z.object({
   name:       z.string(),
@@ -61,15 +62,19 @@ export async function POST(req: NextRequest) {
   const { email, password } = parsed.data
   try {
     const hash = await bcrypt.hash(password, 12)
-    // User row + initial visibility audit log row in one transaction so a
-    // partial failure can't leave a user without an audit history. The
-    // signup row uses fromTier=NULL/fromFof=NULL — that's the convention
-    // distinguishing initial-state from user-driven changes.
+    // User row + credential + initial visibility audit log row in one
+    // transaction so a partial failure can't leave a user without a hash or
+    // audit history. The credential write goes through syncCredential (the
+    // chokepoint — the only code allowed to write password_hash; CI-enforced)
+    // with the txn client so it stays atomic. The signup audit row uses
+    // fromTier=NULL/fromFof=NULL — the convention distinguishing initial-state
+    // from user-driven changes.
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
-        data: { name, email: email.toLowerCase(), passwordHash: hash },
+        data: { name, email: email.toLowerCase() },
         select: { id: true, name: true, email: true, role: true, pro: true, profileVisibility: true, visibilityFof: true },
       })
+      await syncCredential(created.id, hash, tx)
       await tx.profileVisibilityLog.create({
         data: {
           userId: created.id,

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { parsePathUuid } from '@/lib/parsePathId'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { verifyPassword } from '@/lib/verifyPassword'
+import { revokeOneSession } from '@/lib/identityStore'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -51,13 +51,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     if (!check.ok) return NextResponse.json({ error: 'password incorrect' }, { status: 403 })
   }
 
-  // Idempotent, owner-scoped revoke. The userId in the WHERE is what makes
-  // 404-on-wrong-owner work: a target uuid belonging to another user matches
-  // zero rows → count 0 → 404, indistinguishable from "no such uuid".
-  const revoked = await prisma.userSession.updateMany({
-    where: { id: targetId, userId, revokedAt: null },
-    data: { revokedAt: new Date(), revocationReason: 'manual' },
-  })
-  if (revoked.count === 0) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Idempotent, owner-scoped revoke through revokeOneSession (the chokepoint).
+  // The userId scoping is what makes 404-on-wrong-owner work: a target uuid
+  // belonging to another user matches zero rows → count 0 → 404,
+  // indistinguishable from "no such uuid".
+  const revokedCount = await revokeOneSession(userId, targetId, 'manual')
+  if (revokedCount === 0) return NextResponse.json({ error: 'not found' }, { status: 404 })
   return NextResponse.json({ revoked: true })
 }

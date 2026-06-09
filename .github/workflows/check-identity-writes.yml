@@ -1,0 +1,31 @@
+name: Identity-store write chokepoint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: identity-writes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Fail the build if any code outside lib/identityStore.ts WRITES
+      # users.password_hash or user_sessions.revokedAt. This enforces the
+      # credential/revocation chokepoint (proposal §3, root CLAUDE.md) so the
+      # Better Auth dual-store fan-out (step 4) has exactly one home and drift
+      # between the two stores is impossible, not merely test-caught.
+      #
+      # No npm ci needed — the check is a dependency-free Node script that reads
+      # tracked files via `git ls-files`.
+      - name: Check credential/revocation writes go through identityStore
+        run: node scripts/check-identity-writes.mjs

@@ -6,6 +6,7 @@ import { validateDisplayName } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
+import { syncCredential, revokeAllSessions } from '@/lib/identityStore'
 
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -50,6 +51,11 @@ export async function PATCH(req: NextRequest) {
     updates.email = e
   }
 
+  // The new password hash is kept separate from `updates` (name/email) because
+  // the credential write goes through syncCredential (the chokepoint — the only
+  // code allowed to write password_hash; CI-enforced), not the batched
+  // prisma.user.update below.
+  let newPasswordHash: string | undefined
   if (newPassword !== undefined) {
     if (!currentPassword) return NextResponse.json({ error: 'current password required' }, { status: 400 })
     if (String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
@@ -60,13 +66,14 @@ export async function PATCH(req: NextRequest) {
     if (!user.passwordHash) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
-    updates.passwordHash = await bcrypt.hash(String(newPassword), 12)
+    newPasswordHash = await bcrypt.hash(String(newPassword), 12)
   }
 
-  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true })
+  if (Object.keys(updates).length === 0 && newPasswordHash === undefined) return NextResponse.json({ ok: true })
 
   try {
-    await prisma.user.update({ where: { id: userId }, data: updates })
+    if (Object.keys(updates).length > 0) await prisma.user.update({ where: { id: userId }, data: updates })
+    if (newPasswordHash !== undefined) await syncCredential(userId, newPasswordHash)
   } catch (e: unknown) {
     if ((e as { code?: string }).code === 'P2002') return NextResponse.json({ error: 'email already in use' }, { status: 409 })
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
@@ -77,14 +84,11 @@ export async function PATCH(req: NextRequest) {
   // login; standard GitHub/Google/Slack behaviour). The current session id
   // comes ONLY from the signed JWT, never the request body. The userSessionId
   // truthiness check is defensive type-narrowing (a valid session always has
-  // one — the auth gate strips any token without it).
+  // one — the auth gate strips any token without it). The revoke fan-out goes
+  // through revokeAllSessions (the chokepoint).
   const responseBody: { ok: true; otherDevicesSignedOut?: number } = { ok: true }
-  if (updates.passwordHash && session.user.userSessionId) {
-    const revoked = await prisma.userSession.updateMany({
-      where: { userId, id: { not: session.user.userSessionId }, revokedAt: null },
-      data: { revokedAt: new Date(), revocationReason: 'password_change' },
-    })
-    responseBody.otherDevicesSignedOut = revoked.count
+  if (newPasswordHash !== undefined && session.user.userSessionId) {
+    responseBody.otherDevicesSignedOut = await revokeAllSessions(userId, session.user.userSessionId, 'password_change')
   }
 
   return NextResponse.json(responseBody)

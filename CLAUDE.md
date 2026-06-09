@@ -106,6 +106,10 @@ Full pipeline (HoF trigger, flavour integration): see `docs/dev/score-system.md`
 
 Authorization patterns, header conventions (`X-Vr-Auth: invalid` vs `removed`), tier-resolution implementation: see `app/api/CLAUDE.md`.
 
+### Credential & revocation chokepoint
+
+🔒 **`lib/identityStore.ts` is the ONLY code allowed to write `users.password_hash` or `user_sessions.revokedAt`.** Every credential write and every session revoke routes through `syncCredential` / `revokeAllSessions` / `revokeOneSession`. A CI gate (`.github/workflows/check-identity-writes.yml` → `scripts/check-identity-writes.mjs`) **fails the build** on any such write elsewhere — safe-by-construction, not safe-by-discipline. The reason: native auth (Better Auth) adds a *second* credential + session store (`auth_accounts` / `auth_sessions`), and "log out everywhere" / a password change must hit **both** stores or they drift. Funnelling every write through one module means step 4's dual-store fan-out has exactly one home. The fan-out across stores must be independent (one store throwing must not skip the other). **Status: the `user_sessions` / `password_hash` side is live; the Better Auth fan-out is a marked `TODO(step-4)` no-op until the library lands.** See `docs/dev/proposals/mobile-app/01-identity-and-auth.md` §3.
+
 ### Authorization tier vocabulary
 
 Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUDE.md`.

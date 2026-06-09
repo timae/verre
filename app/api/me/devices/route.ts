@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { verifyPassword } from '@/lib/verifyPassword'
+import { revokeAllSessions } from '@/lib/identityStore'
 
 // GET — list the caller's active per-device sessions ("Connected devices").
 // Self-only by construction: WHERE userId = $me. Viewer-dependent, so the
@@ -77,12 +78,11 @@ export async function DELETE(req: NextRequest) {
   }
   if (!check.ok) return NextResponse.json({ error: 'password incorrect' }, { status: 403 })
 
-  // Revoke everything except the current session. currentSessionId is always
-  // present here: a valid session always carries a userSessionId (the auth gate
-  // strips any token without one), so there is no undefined-current case.
-  const revoked = await prisma.userSession.updateMany({
-    where: { userId, revokedAt: null, id: { not: currentSessionId } },
-    data: { revokedAt: new Date(), revocationReason: 'revoke_all' },
-  })
-  return NextResponse.json({ revoked: revoked.count })
+  // Revoke everything except the current session, through revokeAllSessions
+  // (the chokepoint — the only code allowed to write user_sessions.revokedAt in
+  // bulk; CI-enforced; step 4 adds the Better Auth fan-out here). currentSessionId
+  // is always present: a valid session always carries a userSessionId (the auth
+  // gate strips any token without one), so there is no undefined-current case.
+  const revokedCount = await revokeAllSessions(userId, currentSessionId, 'revoke_all')
+  return NextResponse.json({ revoked: revokedCount })
 }
