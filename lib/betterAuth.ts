@@ -11,6 +11,7 @@ import { resolveGeoLabel } from '@/lib/geo'
 import { parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
+import { bucketStart } from '@/lib/lastSeen'
 
 // Deterministic synthetic user-id for the sign-up enumeration mitigation (see
 // customSyntheticUser below). HMAC(lowercased email) → a positive integer string
@@ -312,16 +313,36 @@ export const betterAuthServer = betterAuth({
     //     (defense-in-depth + to stop reviewers re-litigating it — a raw-IP-
     //     injection flag on it was a false positive: core fields never reach
     //     parseInputData's input:false gate, they're excluded a step earlier).
-    // Precise createdAt stays (so does user_sessions'); updatedAt is BA-managed
-    // sliding-refresh state, read only as a coarse "last seen".
+    // Precise createdAt stays (so does user_sessions' — it's a one-shot value).
+    //
+    // 🔒 updatedAt is FLOORED to the 5-min bucket at WRITE time (lib/lastSeen.ts
+    // bucketStart) — at create here AND on every sliding-refresh via the
+    // update.before hook below. auth_sessions.updatedAt is the native "last seen"
+    // (the devices union surfaces it as lastSeenAt), so this gives it the SAME
+    // at-rest precision as web user_sessions.lastSeenAt, which auth.ts buckets at
+    // write time. Without this the column + its Redis copy held a precise instant
+    // (coarsened only on read), so a DB/Redis exfil could reconstruct a native
+    // activity timeline the web side already suppresses. The devices GET still
+    // buckets on read (belt) but the at-rest value is now coarse too (braces).
     session: {
       create: {
         before: async (session) => ({
           data: {
             ipAddress: (await resolveGeoLabel(session.ipAddress).catch(() => null)) ?? '',
             userAgent: parseUserAgent(session.userAgent),
+            updatedAt: new Date(bucketStart(new Date(session.updatedAt ?? Date.now()).getTime())),
           },
         }),
+      },
+      update: {
+        // Sliding-refresh updateSession writes { expiresAt, updatedAt: new Date() }
+        // (routes/session.mjs) — floor the updatedAt so the bumped value stays on
+        // the 5-min edge. Only touches updatedAt when the refresh sets it; other
+        // updates pass through unchanged.
+        before: async (data) => {
+          if (!('updatedAt' in data) || data.updatedAt == null) return
+          return { data: { updatedAt: new Date(bucketStart(new Date(data.updatedAt).getTime())) } }
+        },
       },
     },
     // 🔒 NATIVE→WEB credential mirror (§3): BA's /change-password writes
@@ -561,6 +582,18 @@ export const betterAuthServer = betterAuth({
   // the BA side. Other risky endpoints inert by default (verified vs 1.6.15
   // dist): /delete-user config-gated off, /set-password has no HTTP route
   // (genuinely SERVER_ONLY — no path string).
+  //
+  // ⚠️ disabledPaths is EXACT-match (BA's onRequest does `disabledPaths.includes
+  // (normalizedPath)`, query/trailing-slash stripped but no prefix/param match).
+  // So a denied parent does NOT cover its sub-paths: `/reset-password/:token`
+  // (GET callback), `/delete-user/callback`, and `/callback/:id` route to their
+  // handlers even though `/reset-password`, `/delete-user`, and the social paths
+  // are denied/inert. A literal `/reset-password/:token` entry here would NOT
+  // help — it'd never match the concrete `/reset-password/<actual-token>`. All
+  // three are INERT today (no reset token can be minted; delete-user + social are
+  // config-gated off). RE-AUDIT THESE SUB-PATHS the day reset-password or a
+  // social provider is wired — that's when they arm, and no disabledPaths entry
+  // will catch them (see proposal §8 step-6/step-7 re-audit obligations).
   disabledPaths: [
     '/update-user',
     '/verify-password',

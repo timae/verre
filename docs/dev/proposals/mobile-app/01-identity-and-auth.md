@@ -477,6 +477,17 @@ What v1 needs, in order:
    field can't be marked `returned:false` via config (verified), so disabling the leaking read
    endpoints is the fix, not a strip. CI gate now asserts 12 `disabledPaths` entries; e2e pins the 3
    new 404s + that `/revoke-other-sessions` stays live.
+   **Final pre-merge sweep — 5 reviewers (3 security + privacy + regression/code-quality), 2026-06-10.**
+   No CRITICAL/HIGH/MEDIUM across any angle; four angles fully clean, every load-bearing `betterAuth.ts`
+   comment re-verified against the 1.6.15 dist. Two outcomes: (a) a note that `disabledPaths` is
+   EXACT-match so `:token`/`:id`/`/callback` sub-paths (`/reset-password/:token`, `/delete-user/callback`,
+   `/callback/:id`) aren't covered by their denied parents — inert today (no reset token mintable;
+   delete-user + social config-gated off), but must be re-audited when reset/social ships (a literal
+   `:token` entry can't match the concrete request path, so the note IS the mitigation). (b) the native
+   `auth_sessions.updatedAt` (the "last seen") is now FLOORED to the 5-min bucket AT WRITE TIME via the
+   session create/update hooks (`lib/lastSeen.ts`), not only coarsened on read — so the at-rest value
+   (Postgres column + Redis copy) matches web `user_sessions.lastSeenAt`, closing a DB/Redis-exfil
+   activity-timeline divergence. `createdAt` stays precise (one-shot). Pinned in `_ba-e2e-step5.ts` §J.
 6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
    (§6.4–6.5).
    **Deferred (2026-06-10, maintainer decision).** Can land even after the first throw of the mobile

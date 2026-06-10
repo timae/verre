@@ -45,15 +45,15 @@ export async function GET(req: NextRequest) {
   // BA rows: ipAddress/userAgent hold READY-MADE labels, not raw values — the
   // session.create.before hook in lib/betterAuth.ts derives them at write time
   // (same privacy posture as user_sessions: no raw IP/UA at rest in either
-  // store). lastSeenAt maps to BA's updatedAt — but Better Auth owns that column
-  // and stores a PRECISE instant (no write-time bucketing like user_sessions).
-  // Bucket it on the way OUT (lib/lastSeen.ts, same 5-min edges auth.ts writes)
-  // so the native rows expose the same coarsened activity signal as the web rows
-  // beside them — otherwise the union would leak un-bucketed last-seen for
-  // native devices, the exact timeline signal the web design suppresses.
-  // isCurrent is always false for BA rows in step 5: the panel is web-only and a
-  // web viewer's current session is by definition a user_sessions row. (A native
-  // viewer would see no row flagged current — revisit with the native UI.)
+  // store). lastSeenAt maps to BA's updatedAt, which the session create/update
+  // hooks now FLOOR to the 5-min bucket AT WRITE TIME (lib/lastSeen.ts) — same
+  // at-rest precision as web user_sessions.lastSeenAt. We re-bucket here on the
+  // way out too (belt: the at-rest value is already on an edge, but re-flooring
+  // is cheap and keeps this surface correct even if a future BA write path bumps
+  // updatedAt without the hook). isCurrent is always false for BA rows in step 5:
+  // the panel is web-only and a web viewer's current session is by definition a
+  // user_sessions row. (A native viewer would see no row flagged current —
+  // revisit with the native UI.)
   const baDevices = baRows.map(r => ({
     id: `ba:${r.id}`,
     deviceLabel: r.userAgent || 'Unknown device',
