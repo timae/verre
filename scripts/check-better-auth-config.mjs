@@ -114,7 +114,7 @@ if (!dpMatch) {
 }
 
 if (errors.length === 0) {
-  console.log('check-better-auth-config: OK — cookieCache off, no JWT plugin, exact pin >= 1.6.13, single instance.')
+  console.log(`check-better-auth-config: OK — cookieCache off, no JWT plugin, exact pin >= 1.6.13, single instance, all ${REQUIRED_DISABLED.length} disabledPaths present.`)
   process.exit(0)
 }
 

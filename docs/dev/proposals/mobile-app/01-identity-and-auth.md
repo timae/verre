@@ -428,7 +428,9 @@ What v1 needs, in order:
    `auth_sessions` writes — previously the ONE native store it forgot, and the store where "a raw row
    delete does NOT revoke (Redis-first until TTL)" actually bites; a future `prisma.authSession.delete`
    believed to revoke would have passed a green build. (h) `check-better-auth-config.mjs` now asserts
-   all eight `disabledPaths` entries are present, so a future edit/merge dropping one re-arms a
+   all required `disabledPaths` entries are present (eight at the time of this note; `/update-session`
+   was added in pass four, making nine — the gate's `REQUIRED_DISABLED` list is the source of truth),
+   so a future edit/merge dropping one re-arms a
    dangerous endpoint with a build failure instead of silently. (i) the `account.update.after` mirror
    and the backfill drift-reconcile both now apply the log-second-error / revoke-before-hash
    independence rule (a double-failure no longer swallows the first error; a transient reconcile

@@ -2,14 +2,29 @@ import { betterAuth } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import { APIError } from 'better-auth/api'
+import { createHmac } from 'node:crypto'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
-import { scrub } from '@/lib/textSafe'
+import { validateDisplayName } from '@verre/core'
 import { resolveGeoLabel } from '@/lib/geo'
 import { parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
+
+// Deterministic synthetic user-id for the sign-up enumeration mitigation (see
+// customSyntheticUser below). HMAC(lowercased email) → a positive integer string
+// in a plausible serial-PK range, so the same email always yields the same id
+// (no repeat-probe tell) and it's indistinguishable from a real id by FORMAT.
+// Keyed on AUTH_SECRET so an attacker can't precompute the mapping. Range
+// 1..1e6 — wide enough not to be an obvious constant low band; the absolute-
+// range residual (vs the real serial sequence) is documented + accepted.
+function syntheticUserId(email: string): string {
+  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.JWT_SECRET || ''
+  const digest = createHmac('sha256', secret).update(email.trim().toLowerCase()).digest()
+  const n = digest.readUInt32BE(0) % 1_000_000
+  return String(n + 1)
+}
 
 // ── Better Auth — native-app credential layer ─────────────────────────────────
 //
@@ -189,14 +204,17 @@ export const betterAuthServer = betterAuth({
     }),
   },
 
-  // Verre invariant (lib/CLAUDE.md): scrub every free-text body field before a
-  // DB write. BA's sign-up writes `name` straight to users.name with no scrub —
-  // bidi overrides / zero-width chars would spoof display names in feeds.
-  // create: cancel (BA maps a cancelled create to 400 FAILED_TO_CREATE_USER)
-  // when the name scrubs to nothing; update: drop the field (undefined =
-  // "not provided" to Prisma). Hook contract: return { data } to MERGE into the
-  // incoming body (with-hooks.mjs spreads { ...actualData, ...result.data }),
-  // false to cancel.
+  // Name handling — PARITY with the web register (app/api/auth/register): both
+  // run validateDisplayName (@verre/core), which NFKC-normalises, enforces the
+  // 2..64-char length (so an over-64 name 400s here, not a VarChar(64) 500 at
+  // Prisma), the allowed-character set (rejecting bidi/zero-width/control — these
+  // aren't in \p{L}\p{N}), reserved names, and single-script. BA's sign-up would
+  // otherwise write `name` straight to users.name with NO validation. On invalid
+  // input validateDisplayName THROWS → we map that to `return false`, which BA
+  // turns into a 400 FAILED_TO_CREATE_USER (the create-cancel contract). update:
+  // drop the field when absent (undefined = "not provided" to Prisma). Hook
+  // contract: return { data } to MERGE into the incoming body (with-hooks.mjs
+  // spreads { ...actualData, ...result.data }), false to cancel.
   //
   // 🔒 image MUST be force-undefined on create. BA's /sign-up/email accepts an
   // `image` body field, and the `fields: { image: 'imageUrl' }` map above would
@@ -214,15 +232,17 @@ export const betterAuthServer = betterAuth({
     user: {
       create: {
         before: async (user) => {
-          const name = scrub(user.name)
-          if (name === null) return false
+          let name: string
+          try { name = validateDisplayName(user.name) }
+          catch { return false } // invalid → BA 400 FAILED_TO_CREATE_USER
           return { data: { name, image: undefined } }
         },
       },
       update: {
         before: async (data) => {
           if (!('name' in data)) return
-          return { data: { name: scrub(data.name) ?? undefined } }
+          try { return { data: { name: validateDisplayName(data.name) } } }
+          catch { return false } // invalid name on update → reject the update
         },
       },
     },
@@ -352,11 +372,16 @@ export const betterAuthServer = betterAuth({
     autoSignIn: false,
     // See the block above: return an integer-STRING id (matching a real serial PK)
     // so the synthetic-user response can't be told from a real new signup by id
-    // format. Small floor + tiny jitter — we can't know the real next id here
-    // (sync call). coreFields is the request-supplied name/email; pass it through.
+    // FORMAT. The id is DETERMINISTIC per email — an HMAC of the lowercased email
+    // (keyed on AUTH_SECRET) mapped into an integer range — so probing the SAME
+    // email twice returns the SAME id (a real account's id is stable; a per-
+    // request RANDOM id would itself be a tell). We can't read MAX(id)+1 here
+    // (customSyntheticUser is sync), so the absolute-range residual survives until
+    // the email-verification gate — but the cheap, exploitable tells (format +
+    // repeat-probe) are both closed. coreFields is the request-supplied name/email.
     customSyntheticUser: ({ coreFields }: { coreFields: Record<string, unknown> }) => ({
       ...coreFields,
-      id: String(100 + Math.floor(Math.random() * 5)),
+      id: syntheticUserId(String(coreFields.email ?? '')),
     }),
     // Override BOTH hash and verify with bcrypt (Better Auth defaults to scrypt).
     // Overriding only verify would ship a mixed scrypt/bcrypt table. verify uses

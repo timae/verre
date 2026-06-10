@@ -61,8 +61,15 @@ export async function PATCH(req: NextRequest) {
     if (String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
-    // A social-only (Better Auth) user has a NULL password_hash and no current
-    // password to re-auth against — reject rather than fall through to allow.
+    // A NATIVE-registered OR social-only (Better Auth) user has a NULL
+    // users.password_hash — their credential (if any) lives in auth_accounts.
+    // This web endpoint re-auths only against the WEB hash and rejects when it's
+    // NULL: a shipped asymmetry (verifyPassword has the auth_accounts fallback
+    // for device-revoke, this route deliberately does not). So a native-only user
+    // can't change their password or delete their account via the WEB routes —
+    // native account-management is a step-6+ surface (a deferred decision, not an
+    // oversight; unifying would mean routing through verifyPassword + minding the
+    // shared rl:account charge). Reject rather than fall through to allow.
     if (!user.passwordHash) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
@@ -129,9 +136,14 @@ export async function DELETE(req: NextRequest) {
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
-  // A social-only (Better Auth) user has a NULL password_hash — no password to
-  // confirm deletion against. Reject rather than fall through to allow. Native
-  // account deletion re-auths against the Better Auth credential (proposal §5a).
+  // A NATIVE-registered OR social-only (Better Auth) user has a NULL
+  // users.password_hash — no WEB password to confirm deletion against, so this
+  // route rejects (same asymmetry as the PATCH above: it does NOT fall back to
+  // the auth_accounts credential the way verifyPassword does). A native-only user
+  // therefore has no web deletion path, and BA's /delete-user is config-gated off
+  // (not registered — user.deleteUser.enabled is unset, distinct from the
+  // disabledPaths deny-list) — account deletion for native-only users is a
+  // step-6+ native surface (deferred, not wired today). Reject, don't allow.
   if (!user.passwordHash) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
   const valid = await bcrypt.compare(String(password), user.passwordHash)
   if (!valid) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
