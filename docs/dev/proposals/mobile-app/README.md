@@ -1,6 +1,11 @@
 # Native mobile apps — meta-proposal
 
-**Status**: PROPOSED / not started. This is the index + the load-bearing decisions; each numbered sub-proposal owns one workstream. Nothing here has shipped.
+**Status** (updated 2026-06-10): **backend auth foundation SHIPPED, app not yet started.** `00` (shared-logic extraction) and `01` (identity & auth — Better Auth, steps 1–7) are **merged to `main`** and live (dormant in prod — no native client exists). The native app itself (`02`–`06`) is not started. This is the index + the load-bearing decisions; each numbered sub-proposal owns one workstream. Per-workstream status:
+- `00` shared-logic — ✅ shipped (`@verre/core`)
+- `01` identity & auth — ✅ shipped/merged (PR #39); native social (step 6) deferred; see the doc's top status block
+- `02` realtime, `04` API versioning — ⬜ next front-loaded backend work
+- `03` topology, `05` design system, `06` iOS app — ⬜ the app, not started
+- Android phase, web redesign — ⬜ stubbed
 
 ## In plain English — what we're doing
 
@@ -65,10 +70,10 @@ This call is *defensible, not certain* — both reviewers agreed RN is reasonabl
 
 ## 5. Sequencing
 
-1. **[00 — Shared-logic extraction](00-shared-logic-extraction.md)** — *do first, independent of everything.* Zero security surface, immediate web benefit, unblocks the topology question. Every reviewer's #1 "safe move."
-2. **[01 — Identity & auth](01-identity-and-auth.md)** — adopt Better Auth (a library in the existing backend) for native, new-code-only; NextAuth stays on web. Add the additive `users` columns + Better Auth tables, the `identityStore` chokepoint, the bcrypt/lazy-backfill bridge, and the native branch in the shipped `resolveUser` seam — with the §6 security must-dos. Must be settled before any authed native screen. Spike-verified against real prod data.
-3. **[02 — Realtime](02-realtime.md)** — collapse the 3 polls (ship anytime); decide push later.
-4. **[04 — API versioning](04-api-versioning.md)** — lets the native client (Better Auth) and legacy web (NextAuth) evolve independently against one backend; the in-app update screen must ship in build #1.
+1. ✅ **[00 — Shared-logic extraction](00-shared-logic-extraction.md)** — SHIPPED (`@verre/core`). *Was the "do first" safe move.*
+2. ✅ **[01 — Identity & auth](01-identity-and-auth.md)** — SHIPPED/merged (PR #39, 2026-06-10): Better Auth for native, new-code-only; NextAuth stays on web; the `identityStore` chokepoint + 2 CI gates; bcrypt/lazy-backfill bridge; native branch in `resolveUser`. Native social (step 6) deferred. Dormant in prod (no native client yet).
+3. ⬅️ **[02 — Realtime](02-realtime.md)** — NEXT. Collapse the 3 polls (ship anytime); decide push later.
+4. ⬅️ **[04 — API versioning](04-api-versioning.md)** — NEXT (with 02). Lets the native client (Better Auth) and legacy web (NextAuth) evolve independently against one backend; the in-app update screen must ship in build #1.
 5. **[03 — Topology](03-topology.md)** — one-app-vs-separate; commit to Expo Router to keep O1 open; decide the iOS↔Android split mechanism (O5) during the iOS build.
 6. **[05 — Design system](05-design-system.md)** + **[06 — iOS app](06-ios-app.md)** — the first shippable native deliverable.
 7. *Android phase* and *web-redesign phase* — stubbed later; not written until iOS proves the shape.

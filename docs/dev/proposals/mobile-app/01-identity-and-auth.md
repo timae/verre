@@ -1,9 +1,17 @@
 # 01 — Identity & auth for native clients
 
-**Status**: PROPOSED. Part of the [mobile-app meta-proposal](README.md). **The decision is settled:
-adopt [Better Auth](https://better-auth.com) (a TypeScript auth *library*) for native clients (and the
-future web redesign). NextAuth stays on the existing web app, untouched. The two coexist on a shared
-`users` table as a deliberate, indefinite steady state.**
+**Status**: ✅ **SHIPPED — merged to `main` 2026-06-10 (PR #39).** Steps 1–7 are live (dormant in
+prod — no native client exists yet; web auth unregressed). This doc is now the **as-built
+rationale-of-record** — a long phased plan kept in place (per `docs/dev/proposals/README.md`
+lifecycle), with the §8 step entries carrying inline `**Done**` / `**Deferred**` markers and the
+later PR-review notes recording the as-built deviations. What remains before native login can ship:
+**step 6 native social (Google/Apple) — deferred**, plus the app itself. The two CI gates
+(`scripts/check-identity-writes.mjs`, `scripts/check-better-auth-config.mjs`) enforce the chokepoint +
+the `disabledPaths` clamp on every PR. Part of the [mobile-app meta-proposal](README.md).
+
+**The decision (settled, now implemented):** adopt [Better Auth](https://better-auth.com) (a TypeScript
+auth *library*) for native clients (and the future web redesign). NextAuth stays on the existing web
+app, untouched. The two coexist on a shared `users` table as a deliberate, indefinite steady state.
 
 This replaces two earlier drafts: an attempt to extend NextAuth with hand-rolled native tokens, and a
 self-hosted-OIDC-provider plan (Logto/Zitadel). Both were rejected after a long provider investigation
