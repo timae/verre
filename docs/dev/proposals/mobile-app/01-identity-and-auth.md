@@ -467,6 +467,37 @@ What v1 needs, in order:
    a concurrently-created session can be missing from the list, leaving a Redis token copy that
    authenticates but is invisible to the devices panel and to `deleteUserSessions` (BA-inherent;
    mitigation option: snapshot `auth_sessions` tokens pre-revoke and `deleteSession` each).
+   **Done (2026-06-10).** As-built (research collapsed several items — see the per-item notes):
+   - **XFF / trusted-proxy**: researched Deplo.io's proxy — it OVERWRITES `X-Forwarded-For` with the
+     real client IP (client value → `X-Original-Forwarded-For`, never read). So keying on XFF[0] is
+     NOT spoofable absent an untrusted front proxy. `getClientIp` hardened to treat a multi-entry XFF
+     as untrusted; the invariant is documented in `docs/dev/deployment.md` (load-bearing: re-audit if
+     a CDN is ever put in front). Not a code-keying rewrite as originally feared.
+   - **Silent skip-when-no-IP + non-atomic counter**: closed together by an atomic, fail-CLOSED floor
+     — a before-hook in `lib/betterAuth.ts` runs Verre's Lua `checkRate` (atomic INCR+EXPIRE) on
+     `/sign-in/email` (10/min), `/sign-up/email` (10/min), `/change-password` (20/h), keyed on
+     `getClientIp` (missing IP → shared `unknown` bucket, never a skip). BA's own limiter stays as a
+     belt. Pinned `_ba-e2e-signup.ts` §10 + `getclientip-units.ts`.
+   - **Enumeration oracle — format tell removed, residual remains (NOT fully closed)**: `autoSignIn:
+     false` flips BA to a generic synthetic-success for an existing email (sign-up.mjs:161-205), but
+     under our `generateId:'serial'` the synthetic id defaults to a random STRING vs a real integer id
+     — an `^[0-9]+$` tell (confirmed by probe). `customSyntheticUser` overrides it to an integer string,
+     closing the format tell; a sequence-correlation residual remains (synthetic id ≠ real next serial;
+     `customSyntheticUser` is sync so can't read MAX(id)+1). Fully closed only by the deferred email-
+     verification gate. Trade-off: native client signs in as a 2nd step. Pinned `_ba-e2e-signup.ts` §9
+     (compares free-vs-taken id format — the check the first cut missed). Email-verification gating is
+     the named follow-up at the release fence below.
+   - **active-sessions orphan**: mitigated — `deleteUserSessionsSwept` in `lib/identityStore.ts`
+     snapshots the user's `auth_sessions` tokens from Postgres BEFORE the revoke, then `deleteSession`
+     each after, sweeping any Redis copy BA's lossy list missed. All three bulk-revoke call sites use
+     it.
+   - **Honeypot/signed-token parity — NOT ported (intentional).** They're web-form-specific (hidden
+     DOM input; token minted on server-rendered form load); a JSON native endpoint has neither, and
+     reimplementing them badly (a "sign-up intent" token) is security theater. The correct native
+     equivalent is **App Attest (iOS) / Play Integrity (Android)** — a RELEASE-FENCE item for the
+     app-build phase (`@expo/app-integrity`, rolled out monitor→warn→enforce), NOT a backend task.
+     **Email-verification gating** (the strongest anti-spam lever) is blocked on the deferred email
+     pipeline. Social sign-up is inherently bot-resistant. Both deferrals are named below at the fence.
    **Reset-password re-enable (if ever): hard prerequisite.** `/reset-password` +
    `/request-password-reset` are in `disabledPaths` (see step 5 post-ship note). Re-enabling reset
    MUST also (i) wire `sendResetPassword` + `onPasswordReset` + `revokeSessionsOnPasswordReset`, and
@@ -483,6 +514,17 @@ web, password change + account deletion still work); and a **real TestFlight (no
 of the Apple sign-in path** — Better Auth has documented issues (e.g. #7049, #8169, now closed) where
 `signIn.social` with Apple worked in dev but hung/crashed in a production `.ipa`; the risk class is real
 even if those specific ones are fixed (pin a known-good version + test the actual build).
+
+**Carried to the app-build phase (named deferrals from the step-7 gate):**
+- **App Attest / Play Integrity** on native email/password sign-up — `@expo/app-integrity`, server-side
+  token verification, rolled out monitor→warn→enforce (never hard-enforce at launch: legit-user
+  lockout risk — GrapheneOS, emulators, CI). Build-coupled (needs a registered App ID + custom
+  dev-client), so it lands with the app, not the backend. Until then, native email/password sign-up
+  rests on the atomic IP rate limiter alone; social sign-up is inherently bot-resistant.
+- **Email-verification gating** — the strongest anti-spam lever (unverified rows inert + reaped), and
+  it ALSO flips BA's `requireEmailVerification` path so the enumeration-oracle fix no longer depends on
+  `autoSignIn: false`. Blocked on the (separate, deferred) email-pipeline feature — sequence it after
+  that lands.
 
 Everything visual ([05](05-design-system.md), [06](06-ios-app.md)) proceeds in parallel; no real authed
 native call lands until step 5.

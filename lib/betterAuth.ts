@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
+import { APIError } from 'better-auth/api'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
@@ -8,6 +9,7 @@ import { scrub } from '@/lib/textSafe'
 import { resolveGeoLabel } from '@/lib/geo'
 import { parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
+import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 
 // ── Better Auth — native-app credential layer ─────────────────────────────────
 //
@@ -137,6 +139,36 @@ export const betterAuthServer = betterAuth({
   // + the rate limiter on HTTP — so neither can be used pre-limit).
   hooks: {
     before: createAuthMiddleware(async (ctx) => {
+      // 🔒 Atomic, fail-CLOSED rate limit on the auth-critical native paths
+      // (step-7 gate). BA's own limiter (rateLimit above) is belt; this is the
+      // braces, and it closes two gaps BA's can't:
+      //   (1) BA's getIp returns null when no client IP resolves and then SKIPS
+      //       the limit entirely (rate-limiter/index.mjs — logs a one-time warning,
+      //       then fail-OPEN; a hardcoded dist behaviour with no config flag).
+      //       Here a missing IP buckets into a shared 'unknown' key (getClientIp),
+      //       so the limit still applies — fail-closed.
+      //   (2) BA's counter is a non-atomic read-modify-write (no Lua/INCR) →
+      //       concurrent requests can under-count. Verre's checkRate is an atomic
+      //       Lua INCR+EXPIRE, so the cap holds under concurrency.
+      // Same per-path limits as the documented BA rules (app/api/rate-limits.md)
+      // so behaviour is unchanged when an IP IS present — this only adds the
+      // floor. Keyed on the trusted-proxy-set client IP (getClientIp; see its
+      // header note). Throwing 429 here rejects before the handler runs.
+      const ip = getClientIp(ctx.request ?? new Request(ctx.context.baseURL, { headers: ctx.headers ?? new Headers() }))
+      const rlRule =
+        ctx.path === '/sign-in/email' ? { key: `rl:ba-signin:ip:${ip}:1m`, max: 10, window: 60 } :
+        ctx.path === '/sign-up/email' ? { key: `rl:ba-signup:ip:${ip}:1m`, max: 10, window: 60 } :
+        ctx.path === '/change-password' ? { key: `rl:ba-chgpw:ip:${ip}:1h`, max: 20, window: 3600 } :
+        null
+      if (rlRule) {
+        const rl = await checkRate(rlRule.key, rlRule.max, rlRule.window)
+        if (!rl.allowed) {
+          throw APIError.fromStatus('TOO_MANY_REQUESTS', {
+            message: `Too many attempts. Try again in ${formatWait(rl.retryAfter)}.`,
+          })
+        }
+      }
+
       // Lazy credential backfill (§5): an existing WEB user's first native
       // sign-in needs an auth_accounts credential row (BA's credential sign-in
       // fails closed without one and never reads users.password_hash). Copy the
@@ -290,6 +322,42 @@ export const betterAuthServer = betterAuth({
 
   emailAndPassword: {
     enabled: true,
+    // 🔒 Sign-up EMAIL-ENUMERATION mitigation (step-7 gate). BA's /sign-up/email
+    // otherwise throws a distinct USER_ALREADY_EXISTS (422) for a taken email —
+    // an attacker probes which emails have accounts. autoSignIn:false flips BA to
+    // a GENERIC synthetic-success response for an existing email (token:null + a
+    // synthetic user built from the REQUEST body, not the real row — no name leak;
+    // BA hashes the password to blunt timing) — verified sign-up.mjs:161-205.
+    //
+    // ⚠️ NOT fully closed — DON'T claim it is. BA's enumeration protection was
+    // designed for RANDOM-STRING ids: under our generateId:'serial' (integer PKs),
+    // BA's id generator returns false → the synthetic path falls back to a 32-char
+    // RANDOM string (sign-up.mjs:176), while a REAL new user gets an integer id
+    // ("311"). Same 200/shape, but `^[0-9]+$` on user.id distinguishes them — the
+    // oracle just moves from status code to id FORMAT. customSyntheticUser (below)
+    // overrides the synthetic id to a small integer string, killing that format
+    // tell. A RESIDUAL remains: ids are sequential, so an attacker interleaving
+    // real signups can statistically spot a synthetic id that's out-of-sequence
+    // (we can't read MAX(id)+1 — customSyntheticUser is called SYNCHRONOUSLY, no
+    // await). Closing that fully needs the deferred email-verification gate (flips
+    // requireEmailVerification, which also gates the real-row creation). The format
+    // tell is the genuinely-exploitable, embarrassing-in-a-pentest part; the
+    // sequence residual needs a deliberate interleaved-probe attack AND a free-
+    // email probe self-poisons (it creates a real account, rate-limited 10/min).
+    //
+    // Trade-off: a signup no longer auto-creates a session, so the native client
+    // calls /sign-in/email as a second step (standard two-step flow; the app
+    // doesn't exist yet, so the contract is free to set). Social sign-up is
+    // unaffected. (Web register has its own 409 oracle — out of scope here.)
+    autoSignIn: false,
+    // See the block above: return an integer-STRING id (matching a real serial PK)
+    // so the synthetic-user response can't be told from a real new signup by id
+    // format. Small floor + tiny jitter — we can't know the real next id here
+    // (sync call). coreFields is the request-supplied name/email; pass it through.
+    customSyntheticUser: ({ coreFields }: { coreFields: Record<string, unknown> }) => ({
+      ...coreFields,
+      id: String(100 + Math.floor(Math.random() * 5)),
+    }),
     // Override BOTH hash and verify with bcrypt (Better Auth defaults to scrypt).
     // Overriding only verify would ship a mixed scrypt/bcrypt table. verify uses
     // plain bcrypt.compare with NO hardcoded cost so it accepts every cost factor

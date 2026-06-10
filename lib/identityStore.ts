@@ -33,6 +33,45 @@ async function baInternalAdapter() {
   return (await betterAuthServer.$context).internalAdapter
 }
 
+// Delete ALL of a user's native sessions across both BA stores, WITH an orphan
+// sweep (step-7 hardening). BA's deleteUserSessions drives its Redis token
+// deletion off the `active-sessions-<userId>` list, which is non-atomically
+// maintained — two failure modes leave a live Redis token copy (which keeps
+// authenticating Redis-first until TTL); verified vs 1.6.15 dist
+// (internal-adapter.mjs deleteUserSessions):
+//   - list CORRUPT (safeJSONParse → null): `if (!sessions) return` fires BEFORE
+//     the Postgres delete — so BOTH the Redis copy AND the auth_sessions row
+//     survive.
+//   - list ABSENT/evicted (sessions = []): the Postgres rows ARE deleted, but a
+//     Redis copy not in the (empty) list is orphaned with no DB row left.
+// We close BOTH windows by snapshotting the user's auth_sessions tokens from
+// POSTGRES (the authoritative list) BEFORE the delete, then deleteSession() each
+// after — sweeping the leftover Redis copy (and, in the corrupt case, BA's own
+// deleteSession path also clears the still-present row). deleteSession is a
+// no-op for an already-gone token, so the sweep is safe + idempotent. Whole
+// thing best-effort: a sweep failure must not mask the primary revoke (the
+// caller's own try/catch owns the primary; the sweep swallows + logs).
+async function deleteUserSessionsSwept(userId: number): Promise<void> {
+  let tokens: string[] = []
+  try {
+    const rows = await prisma.authSession.findMany({ where: { userId }, select: { token: true } })
+    tokens = rows.map((r) => r.token)
+  } catch (e) {
+    // Snapshot failed — proceed with the list-driven delete alone (no worse than
+    // before this sweep existed); don't block the revoke on the snapshot.
+    console.error('deleteUserSessionsSwept: token snapshot failed (proceeding list-only)', e)
+  }
+  const adapter = await baInternalAdapter()
+  await adapter.deleteUserSessions(String(userId))
+  for (const token of tokens) {
+    try {
+      await adapter.deleteSession(token)
+    } catch (e) {
+      console.error('deleteUserSessionsSwept: orphan sweep deleteSession failed', e)
+    }
+  }
+}
+
 // Write a user's bcrypt password hash to BOTH credential stores. The ONE place
 // `users.password_hash` is set; the same call mirrors the hash into the Better
 // Auth credential row (auth_accounts) when one exists, so the native password
@@ -172,13 +211,10 @@ export async function backfillNativeCredential(email: string): Promise<void> {
 // cast satisfies BA's string-id types — the adapter re-coerces id-reference
 // where-values to Number under generateId 'serial'.
 //
-// ⚠️ BA-inherent edges (deleteUserSessions never throws on either):
-//  - active-sessions-<id> list CORRUPT (JSON.parse → null): silent early
-//    return — DB rows AND Redis token copies all survive until TTL. Recovery:
-//    DB-driven sweep (auth_sessions rows → deleteSession per token).
-//  - list ABSENT (e.g. evicted): treated as empty — DB rows ARE deleted, but
-//    any orphaned Redis token copies live (and authenticate, Redis-first)
-//    until TTL, with no DB row left to sweep them from.
+// BA's deleteUserSessions has an orphan edge (corrupt/absent active-sessions-<id>
+// list → a Redis token copy survives the delete and authenticates until TTL).
+// deleteUserSessionsSwept (above) closes it: snapshot the Postgres tokens first,
+// deleteSession each after. The BA leg here goes through that swept helper.
 //
 // 🔒 The two legs are INDEPENDENT: each runs in its own try/catch, both are
 // always attempted, and the first error rethrows after both ran — one store
@@ -202,7 +238,7 @@ export async function revokeAllSessions(
     webErr = e
   }
   try {
-    await (await baInternalAdapter()).deleteUserSessions(String(userId))
+    await deleteUserSessionsSwept(userId)
   } catch (e) {
     baErr = e
   }
@@ -219,11 +255,12 @@ export async function revokeAllSessions(
 // the account for up to the session TTL and keep authenticating on BA-native
 // endpoints (resolveUser fails closed via its fresh users SELECT, but BA's own
 // routes serve the cached user straight from Redis). A throw aborts the
-// deletion — safe and retryable, nothing has been deleted yet. Same
-// internalAdapter path (and same BA-inherent absent/corrupt-list edges) as
-// revokeAllSessions above.
+// deletion — safe and retryable, nothing has been deleted yet. Goes through the
+// swept helper (snapshot Postgres tokens → delete → sweep) so an orphaned Redis
+// copy can't outlive the deleted account — exactly the leak this leg exists to
+// prevent (the Redis JSON carries name + email).
 export async function deleteAllNativeSessions(userId: number): Promise<void> {
-  await (await baInternalAdapter()).deleteUserSessions(String(userId))
+  await deleteUserSessionsSwept(userId)
 }
 
 // Revoke ALL of a user's web sessions (no except) — the web-side mirror for a
@@ -278,7 +315,7 @@ export async function revokeAllForNativeCaller(userId: number): Promise<number> 
     webErr = e
   }
   try {
-    await (await baInternalAdapter()).deleteUserSessions(String(userId))
+    await deleteUserSessionsSwept(userId)
   } catch (e) {
     baErr = e
   }

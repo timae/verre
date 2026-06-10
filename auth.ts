@@ -54,10 +54,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null
 
         const email = parsed.data.email.toLowerCase()
-        // Pull client IP from forwarded headers. The `request` param is the
-        // raw NextAuth request; fall back to 'unknown' if no IP header set.
-        const xff = request?.headers?.get?.('x-forwarded-for')
-        const ip = xff ? xff.split(',')[0].trim() : (request?.headers?.get?.('x-real-ip') || 'unknown')
+        // Client IP for the login throttle — through the SHARED getClientIp (the
+        // one chokepoint with the trusted-proxy posture: single-entry XFF only,
+        // multi-entry treated as untrusted; see lib/rateLimit.ts + deployment.md).
+        // The `request` param is NextAuth's raw Request; 'unknown' when absent.
+        const ip = request ? getClientIp(request) : 'unknown'
 
         // Rate limit FAILED login attempts. Successful logins don't count.
         // Three counters: 10 fails/min per email, 20 fails/hour per email,
