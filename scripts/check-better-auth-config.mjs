@@ -74,6 +74,45 @@ for (const f of tracked) {
   }
 }
 
+// 5. The disabledPaths scope clamp must contain every endpoint we've deemed
+//    live-but-wrong. The catch-all mounts EVERY core BA endpoint; the entire
+//    "safe-by-construction" argument rests on this deny-list staying intact, so
+//    a future edit / merge that drops an entry (re-arming a dangerous endpoint:
+//    a password oracle, an avatar-pipeline bypass, a credential-store divergence
+//    primitive, an email-change+session-mint) must FAIL the build, not silently
+//    re-open the surface. Static-parse the array literal (comments already
+//    stripped from `src`); each entry must appear as a quoted string.
+//
+//    SCOPE OF THIS GUARANTEE: "the 8 endpoints we know about stay denied" — NOT
+//    "no dangerous BA endpoint is ever live." It can't detect a NEW live-but-
+//    wrong endpoint introduced by a future BA upgrade (a new /change-username,
+//    a passkey route, …). The compensating control is the EXACT version pin
+//    (check #3 above): a BA upgrade is deliberate and MUST re-audit the mounted
+//    surface (re-run the endpoint enumeration) before bumping the pin.
+const REQUIRED_DISABLED = [
+  '/update-user',
+  '/verify-password',
+  '/reset-password',
+  '/request-password-reset',
+  '/verify-email',
+  '/send-verification-email',
+  '/change-email',
+  '/unlink-account',
+  '/update-session',
+]
+const dpMatch = /disabledPaths\s*:\s*\[([\s\S]*?)\]/.exec(src)
+if (!dpMatch) {
+  errors.push('disabledPaths array not found — the scope clamp is missing (every core BA endpoint would be live).')
+} else {
+  const body = dpMatch[1]
+  for (const path of REQUIRED_DISABLED) {
+    // match the path as a quoted string element (single or double quotes)
+    if (!new RegExp(`['"]${path.replace(/[/]/g, '\\/')}['"]`).test(body)) {
+      errors.push(`disabledPaths is missing "${path}" — that endpoint is live-but-wrong and must stay 404 (see lib/betterAuth.ts scope-clamp rationale).`)
+    }
+  }
+}
+
 if (errors.length === 0) {
   console.log('check-better-auth-config: OK — cookieCache off, no JWT plugin, exact pin >= 1.6.13, single instance.')
   process.exit(0)

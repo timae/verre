@@ -50,18 +50,26 @@ async function baInternalAdapter() {
 //
 // Accepts an optional transaction client so register can write the credential
 // inside its user-create + audit-log txn (keeps "a user always has a hash"
-// atomic). Standalone (password-change) when omitted. Both legs ride the same
-// client, so a rollback rolls back both — the stores can't split mid-write.
+// atomic). When omitted (password-change), it opens its OWN $transaction —
+// either way both legs ride one client, so a rollback rolls back both and the
+// stores can't split mid-write. That atomicity is load-bearing beyond this
+// function: backfillNativeCredential's drift reconcile below infers "crashed
+// BA mirror" from a hash mismatch, which is only a safe inference because
+// syncCredential can never leave the two stores half-written.
 export async function syncCredential(
   userId: number,
   passwordHash: string,
-  tx: Prisma.TransactionClient = prisma,
+  tx?: Prisma.TransactionClient,
 ): Promise<void> {
-  await tx.user.update({ where: { id: userId }, data: { passwordHash } })
-  await tx.authAccount.updateMany({
-    where: { userId, providerId: 'credential' },
-    data: { password: passwordHash },
-  })
+  const run = async (c: Prisma.TransactionClient) => {
+    await c.user.update({ where: { id: userId }, data: { passwordHash } })
+    await c.authAccount.updateMany({
+      where: { userId, providerId: 'credential' },
+      data: { password: passwordHash },
+    })
+  }
+  if (tx) return run(tx)
+  await prisma.$transaction(run)
 }
 
 // Lazy credential backfill (§5): betterAuth.ts's before-hook calls this on
@@ -74,6 +82,28 @@ export async function syncCredential(
 // route (which stores emails lowercased), so the two lookups can't disagree.
 // Concurrent first sign-ins race on the create; @@unique([providerId,
 // accountId]) makes the loser throw P2002 — swallowed, the row exists.
+//
+// Doubles as the drift RECONCILER, since it runs before every native credential
+// sign-in. When a row exists but its hash differs from users.password_hash, the
+// only systematic cause is a /change-password whose account.update.after mirror
+// crashed before running (betterAuth.ts): BA committed the new hash to
+// auth_accounts, users.password_hash kept the OLD one. Every other writer is
+// atomic across both stores (syncCredential is transactional; register runs it
+// inside its txn), so the direction is unambiguous — complete the crashed
+// mirror: auth_accounts → users, plus the web-session revoke the hook owed.
+// Reconciling the other way would silently revert the user's password change.
+//
+// ORDER: revoke-before-hash. The web revoke runs FIRST, then the hash sync. If
+// the revoke throws, the hash is still stale, so this same branch
+// (existing.password !== users.password_hash) fires again on the next native
+// sign-in and retries the whole reconcile — self-healing. The reverse order
+// (hash then revoke) would, on a transient revoke failure, leave the hashes
+// EQUAL, so the next sign-in skips this branch entirely and the owed revoke is
+// never retried — silently degrading the guarantee to "hash done, revoke
+// dropped." (Residual window the reconcile can't see is unchanged: the crashed
+// /change-password hook itself completed its hash mirror but not its web revoke
+// → hashes equal, stale web sessions survive — that's the after-hook's own
+// double-failure case, now logged in betterAuth.ts, not this reconcile's.)
 export async function backfillNativeCredential(email: string): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
@@ -82,9 +112,23 @@ export async function backfillNativeCredential(email: string): Promise<void> {
   if (!user?.passwordHash) return
   const existing = await prisma.authAccount.findFirst({
     where: { userId: user.id, providerId: 'credential' },
-    select: { id: true },
+    select: { password: true },
   })
-  if (existing) return
+  if (existing) {
+    if (!existing.password) {
+      // A credential row should always carry a hash; heal a null one from web.
+      await prisma.authAccount.updateMany({
+        where: { userId: user.id, providerId: 'credential' },
+        data: { password: user.passwordHash },
+      })
+    } else if (existing.password !== user.passwordHash) {
+      // revoke-before-hash (see header): a revoke failure leaves hashes unequal
+      // so the next sign-in retries, instead of stranding the owed revoke.
+      await revokeAllWebSessions(user.id, 'password_change')
+      await syncCredential(user.id, existing.password)
+    }
+    return
+  }
   await prisma.authAccount
     .create({
       data: {
@@ -98,6 +142,21 @@ export async function backfillNativeCredential(email: string): Promise<void> {
     .catch((e) => {
       if (e?.code !== 'P2002') throw e
     })
+  // Stale-create race: a web password change can land between the user read
+  // above and the create, leaving the new row with the pre-change hash (the
+  // change's own mirror no-ops when it runs before the row exists). Re-read and
+  // copy the fresh hash over; with this, "row exists with a different hash"
+  // above can't be a leftover of this race.
+  const fresh = await prisma.user.findUnique({
+    where: { id: user.id },
+    select: { passwordHash: true },
+  })
+  if (fresh?.passwordHash && fresh.passwordHash !== user.passwordHash) {
+    await prisma.authAccount.updateMany({
+      where: { userId: user.id, providerId: 'credential' },
+      data: { password: fresh.passwordHash },
+    })
+  }
 }
 
 // Revoke all of a user's OTHER sessions (everything except `exceptSessionId`,
@@ -147,9 +206,24 @@ export async function revokeAllSessions(
   } catch (e) {
     baErr = e
   }
+  if (webErr && baErr) console.error('revokeAllSessions: BA leg also failed (rethrowing web error)', baErr)
   if (webErr) throw webErr
   if (baErr) throw baErr
   return count
+}
+
+// Delete ALL of a user's native sessions across both BA stores — the account-
+// deletion leg. lib/accountDelete.ts calls this BEFORE its Postgres txn: after
+// the users-row cascade no auth_sessions rows remain to sweep from, so the
+// Redis token copies (whose JSON carries the user's name + email) would outlive
+// the account for up to the session TTL and keep authenticating on BA-native
+// endpoints (resolveUser fails closed via its fresh users SELECT, but BA's own
+// routes serve the cached user straight from Redis). A throw aborts the
+// deletion — safe and retryable, nothing has been deleted yet. Same
+// internalAdapter path (and same BA-inherent absent/corrupt-list edges) as
+// revokeAllSessions above.
+export async function deleteAllNativeSessions(userId: number): Promise<void> {
+  await (await baInternalAdapter()).deleteUserSessions(String(userId))
 }
 
 // Revoke ALL of a user's web sessions (no except) — the web-side mirror for a
@@ -166,6 +240,52 @@ export async function revokeAllWebSessions(
     data: { revokedAt: new Date(), revocationReason: reason },
   })
   return revoked.count
+}
+
+// Revoke EVERY session of a user across both stores, with no exception — the
+// fan-out for a password change initiated by a NATIVE caller on a web endpoint
+// (account PATCH via resolveUser: the caller's own session is a BA session, and
+// there's no user_sessions row of theirs to spare). Distinct from
+// revokeAllSessions (which spares the web caller's own user_sessions row): here
+// EVERY web AND every native session dies, including the caller's own native one
+// — they just re-authed with their password, so a single native re-login is the
+// only cost, and it's strictly safer than leaving any session alive.
+//
+// 🔒 Same INDEPENDENCE rule as revokeAllSessions: each leg runs in its own
+// try/catch, both are always attempted, the first error rethrows after logging
+// the second. Composing the two single-store helpers sequentially+unguarded at a
+// call site (revokeAllWebSessions then deleteAllNativeSessions) would let a web-
+// leg throw skip the native leg — the exact "one store failing leaves the other
+// un-revoked" hole the fan-out exists to close. Returns the web-session count.
+//
+// The per-leg try/catch + rethrow-first scaffold is INTENTIONALLY duplicated
+// across revokeAllSessions, this function, and the betterAuth.ts account.update
+// .after mirror — three sites, so the repo's 3+-extract rule technically fires,
+// but extracting it means passing the web leg as a closure, which reads worse
+// than the inline form and each site's surrounding comment is load-bearing.
+// Deliberate, not yet-to-be-refactored.
+export async function revokeAllForNativeCaller(userId: number): Promise<number> {
+  let count = 0
+  let webErr: unknown
+  let baErr: unknown
+  try {
+    const revoked = await prisma.userSession.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date(), revocationReason: 'password_change' },
+    })
+    count = revoked.count
+  } catch (e) {
+    webErr = e
+  }
+  try {
+    await (await baInternalAdapter()).deleteUserSessions(String(userId))
+  } catch (e) {
+    baErr = e
+  }
+  if (webErr && baErr) console.error('revokeAllForNativeCaller: BA leg also failed (rethrowing web error)', baErr)
+  if (webErr) throw webErr
+  if (baErr) throw baErr
+  return count
 }
 
 // Revoke a SINGLE user_sessions row (per-device sign-out + logout). The other

@@ -6,7 +6,7 @@ import { validateDisplayName } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
-import { syncCredential, revokeAllSessions } from '@/lib/identityStore'
+import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
 
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -79,16 +79,28 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
   }
 
-  // After a password change, revoke every OTHER device's session — the user
-  // who just re-authed keeps their current session (no annoying bounce to
-  // login; standard GitHub/Google/Slack behaviour). The current session id
-  // comes ONLY from the signed JWT, never the request body. The userSessionId
-  // truthiness check is defensive type-narrowing (a valid session always has
-  // one — the auth gate strips any token without it). The revoke fan-out goes
-  // through revokeAllSessions (the chokepoint).
+  // After a password change, revoke every OTHER device's session so a stolen
+  // session can't outlive the rotation — the load-bearing invariant. This
+  // endpoint is reachable by BOTH credential types (resolveUser), so the revoke
+  // must cover both stores:
+  //   - WEB caller (has a user_sessions row → userSessionId set): keep the
+  //     caller's own session (no annoying self-logout; standard GitHub/Slack
+  //     behaviour), revoke every OTHER web session, and fan out to ALL native
+  //     sessions. revokeAllSessions does exactly this (chokepoint).
+  //   - NATIVE caller (BA cookie → userSessionId UNDEFINED): the caller has no
+  //     user_sessions row to preserve, so EVERY web + native session dies (incl.
+  //     the caller's own native one — strictly safe, they just re-authed). Via
+  //     revokeAllForNativeCaller, which fans out BOTH legs with the same per-leg-
+  //     catch-then-rethrow independence as revokeAllSessions — NOT two unguarded
+  //     sequential helper calls, which would let a web-leg throw skip the native
+  //     revoke. The native /api/auth/native/change-password path instead keeps
+  //     the current native session; this web endpoint is the cross-credential case.
+  // userSessionId comes ONLY from the signed JWT, never the request body.
   const responseBody: { ok: true; otherDevicesSignedOut?: number } = { ok: true }
-  if (newPasswordHash !== undefined && session.user.userSessionId) {
-    responseBody.otherDevicesSignedOut = await revokeAllSessions(userId, session.user.userSessionId, 'password_change')
+  if (newPasswordHash !== undefined) {
+    responseBody.otherDevicesSignedOut = session.user.userSessionId
+      ? await revokeAllSessions(userId, session.user.userSessionId, 'password_change')
+      : await revokeAllForNativeCaller(userId)
   }
 
   return NextResponse.json(responseBody)

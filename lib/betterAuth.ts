@@ -5,6 +5,8 @@ import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
 import { scrub } from '@/lib/textSafe'
+import { resolveGeoLabel } from '@/lib/geo'
+import { parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
 
 // ── Better Auth — native-app credential layer ─────────────────────────────────
@@ -32,7 +34,9 @@ import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '
 const secondaryStorage = {
   get: async (key: string) => (await redis.get(key)) ?? null,
   set: async (key: string, value: string, ttlSeconds?: number) => {
-    if (ttlSeconds) await redis.set(key, value, { EX: ttlSeconds })
+    // Floor at 1: `EX: 0` throws in node-redis, and a falsy-check fallthrough
+    // (`if (ttlSeconds)`) would turn a 0-TTL write into a PERMANENT key.
+    if (ttlSeconds !== undefined) await redis.set(key, value, { EX: Math.max(1, Math.ceil(ttlSeconds)) })
     else await redis.set(key, value)
   },
   delete: async (key: string) => {
@@ -45,9 +49,16 @@ export const betterAuthServer = betterAuth({
   // Same three-name fallback chain as lib/registerToken.ts / .env.example —
   // a prod deploy that sets only NEXTAUTH_SECRET must not hand BA undefined.
   secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.JWT_SECRET,
-  // Shared with NextAuth's AUTH_URL convention; without it Better Auth can't
-  // build callback/redirect URLs. Dev fallback keeps local boot warning-free.
-  baseURL: process.env.AUTH_URL || process.env.BETTER_AUTH_URL || 'http://localhost:3000',
+  // Shared with NextAuth's URL convention; without it Better Auth can't build
+  // callback/redirect URLs (or validate Origin against its own origin). Same
+  // multi-name chain as the secret above: prod sets NEXTAUTH_URL (the NextAuth
+  // v4 name Verre deploys with) — omitting it here would silently hand BA the
+  // localhost fallback in prod. Dev fallback keeps local boot warning-free.
+  baseURL:
+    process.env.AUTH_URL ||
+    process.env.BETTER_AUTH_URL ||
+    process.env.NEXTAUTH_URL ||
+    'http://localhost:3000',
   // Catch-all is mounted under /api/auth/native so it never collides with
   // NextAuth's [...nextauth] catch-all (Next.js forbids two at one path level).
   basePath: '/api/auth/native',
@@ -151,15 +162,29 @@ export const betterAuthServer = betterAuth({
   // bidi overrides / zero-width chars would spoof display names in feeds.
   // create: cancel (BA maps a cancelled create to 400 FAILED_TO_CREATE_USER)
   // when the name scrubs to nothing; update: drop the field (undefined =
-  // "not provided" to Prisma). Hook contract: return { data } to merge,
-  // false to cancel (better-auth/dist/db/with-hooks.mjs).
+  // "not provided" to Prisma). Hook contract: return { data } to MERGE into the
+  // incoming body (with-hooks.mjs spreads { ...actualData, ...result.data }),
+  // false to cancel.
+  //
+  // 🔒 image MUST be force-undefined on create. BA's /sign-up/email accepts an
+  // `image` body field, and the `fields: { image: 'imageUrl' }` map above would
+  // write it straight to users.image_url — bypassing the avatar pipeline
+  // (MIME/magic-byte checks, EXIF strip, S3 reclaim accounting), exactly what
+  // /update-user is 404'd to prevent. Because the hook MERGES, returning only
+  // { data: { name } } leaves a caller-supplied value in actualData; the explicit
+  // undefined drops it. ⚠️ The hook sees BA's LOGICAL model — the field is still
+  // `image` here; the `image → imageUrl` rename happens later in adapter.create
+  // (with-hooks.mjs runs the before-hook on actualData, THEN the adapter maps
+  // field names). So undefine `image`, not `imageUrl` — setting `imageUrl` here
+  // would add an unknown key and the real `image` would still map through.
+  // Native avatars set via /api/me/avatar.
   databaseHooks: {
     user: {
       create: {
         before: async (user) => {
           const name = scrub(user.name)
           if (name === null) return false
-          return { data: { name } }
+          return { data: { name, image: undefined } }
         },
       },
       update: {
@@ -167,6 +192,41 @@ export const betterAuthServer = betterAuth({
           if (!('name' in data)) return
           return { data: { name: scrub(data.name) ?? undefined } }
         },
+      },
+    },
+    // 🔒 Privacy parity with user_sessions (lib/CLAUDE.md): raw IPs are NEVER
+    // persisted — only the derived country label. BA's createSession would
+    // store the raw XFF IP + UA in auth_sessions AND the Redis session copy;
+    // this hook replaces both with the same write-time labels the web login
+    // path stores (resolveGeoLabel is in-process and never throws; the devices
+    // union GET reads these fields as ready-made labels). Hook-transformed data
+    // feeds BOTH stores (with-hooks.mjs: the secondaryStorage fn receives the
+    // created row).
+    //
+    // Create-only is sufficient because NO post-create path can write these
+    // fields (verified vs 1.6.15 dist — not just "no path does", "no path CAN"):
+    //   - sliding-refresh updateSession sends only { expiresAt, updatedAt }
+    //     (routes/session.mjs) — never ipAddress/userAgent.
+    //   - the /update-session HTTP endpoint takes an arbitrary body but routes
+    //     it through parseSessionInput → getFields(.,"session","input"), and in
+    //     any NON-output mode getFields returns coreSchema = {} (db/schema.mjs
+    //     line ~11) merged only with session.additionalFields + plugin fields —
+    //     of which Verre configures NONE. So ipAddress/userAgent are not in the
+    //     update schema at all; a caller-supplied value is dropped and the
+    //     endpoint 400s "No fields to update". It's in disabledPaths anyway
+    //     (defense-in-depth + to stop reviewers re-litigating it — a raw-IP-
+    //     injection flag on it was a false positive: core fields never reach
+    //     parseInputData's input:false gate, they're excluded a step earlier).
+    // Precise createdAt stays (so does user_sessions'); updatedAt is BA-managed
+    // sliding-refresh state, read only as a coarse "last seen".
+    session: {
+      create: {
+        before: async (session) => ({
+          data: {
+            ipAddress: (await resolveGeoLabel(session.ipAddress).catch(() => null)) ?? '',
+            userAgent: parseUserAgent(session.userAgent),
+          },
+        }),
       },
     },
     // 🔒 NATIVE→WEB credential mirror (§3): BA's /change-password writes
@@ -201,14 +261,28 @@ export const betterAuthServer = betterAuth({
           const userId = Number(account.userId)
           const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
           if (!user?.passwordHash || user.passwordHash === account.password) return
+          // Independence rule (same as revokeAllSessions): both legs are
+          // attempted, the revoke (the safety action) runs even if the hash
+          // mirror throws, and the FIRST error rethrows after logging the second
+          // — so a double failure can't silently swallow syncErr. A bare
+          // unguarded `await revokeAllWebSessions` here would drop syncErr when
+          // BOTH throw, hiding the crashed-mirror divergence the backfill
+          // reconcile then has to detect blind.
           let syncErr: unknown
+          let revokeErr: unknown
           try {
             await syncCredential(userId, account.password)
           } catch (e) {
             syncErr = e
           }
-          await revokeAllWebSessions(userId, 'password_change')
+          try {
+            await revokeAllWebSessions(userId, 'password_change')
+          } catch (e) {
+            revokeErr = e
+          }
+          if (syncErr && revokeErr) console.error('account.update.after mirror: revoke leg also failed (rethrowing sync error)', revokeErr)
           if (syncErr) throw syncErr
+          if (revokeErr) throw revokeErr
         },
       },
     },
@@ -262,25 +336,79 @@ export const betterAuthServer = betterAuth({
       .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? [],
 
   // 🔒 Scope clamp: the catch-all mounts EVERY core BA endpoint, not just the
-  // email/password + session set we use. One is live-but-wrong for Verre and
-  // must stay 404 (BA returns 404 on a disabledPaths match before rate limiting
-  // or handlers run):
+  // email/password + session set we use. BA returns 404 on a disabledPaths match
+  // BEFORE rate limiting or handlers run. The list is a DENY of every mounted
+  // path that is live-but-wrong for Verre — NOT a relied-upon "everything else
+  // is inert" assumption (a path that 404s/400s only because some config is
+  // unwired becomes live the day that config lands; we disable those explicitly
+  // so the re-enable is a deliberate decision, not a silent regression):
   //
   //  - /update-user — would write users.name + users.image_url (via the image →
   //    imageUrl mapping) directly, bypassing the avatar pipeline (MIME/magic-byte
   //    checks, EXIF strip, S3 reclaim accounting — docs/dev/avatars.md). Native
-  //    profile edits must go through Verre's /api/me/* routes instead. Re-enable
-  //    only if a native flow deliberately needs it — and then never for image.
+  //    profile edits must go through Verre's /api/me/* routes instead.
+  //  - /verify-password — `metadata.scope: 'server'` does NOT keep it off the
+  //    HTTP router (the router only skips metadata.SERVER_ONLY; scope is unused
+  //    there — verified in better-call/router.mjs against 1.6.15). It's a
+  //    bcrypt.compare password oracle behind sensitiveSessionMiddleware, gated
+  //    ONLY by BA's default 100/min/IP — it does NOT charge Verre's shared
+  //    rl:account 20/h/user budget, so leaving it live is a fresh brute-force
+  //    surface against the current password from a stolen native session,
+  //    defeating the reason rl:account is shared. Verre's own re-auth goes
+  //    through lib/verifyPassword.ts; this endpoint is never needed.
+  //  - /reset-password + /request-password-reset — reset writes
+  //    auth_accounts.password ONLY (the count-shaped updatePassword path the
+  //    account.update.after mirror can't see), so a reset would diverge the two
+  //    credential stores with NO crashed-mirror cause. That breaks the
+  //    drift-reconcile inference in backfillNativeCredential ("the only
+  //    systematic divergence is a crashed change-password mirror, so accounts →
+  //    users is unambiguously newer"): a post-reset native sign-in would copy
+  //    the reset hash into users.password_hash and revoke web sessions. Today
+  //    request-reset already 400s (no sendResetPassword), but disabling both
+  //    makes shipping reset a deliberate step that MUST also wire onPasswordReset
+  //    + revokeSessionsOnPasswordReset AND teach the reconcile about reset
+  //    (proposal §8 step-7). Don't re-enable without that.
+  //  - /verify-email + /send-verification-email + /change-email — /verify-email
+  //    is HTTP-reachable (GET, no SERVER_ONLY) and on a token carrying `updateTo`
+  //    it writes users.email + emailVerified AND mints a session (email-change +
+  //    session-mint primitive). The token is an HS256 JWT minted only by the
+  //    (unwired) verification/change-email flows, so it's inert today — but
+  //    `emailVerified` becomes load-bearing at step 6 (accountLinking's
+  //    requireLocalEmailVerified is the nOAuth fix), so a verification flow wired
+  //    later without re-auditing this would arm an ATO. Same deny-now posture as
+  //    /update-user. Native email changes must go through Verre's own routes.
+  //  - /unlink-account — calls internalAdapter.deleteAccount, a raw
+  //    auth_accounts credential-row delete OUTSIDE the chokepoint. The
+  //    last-account guard blocks it for a single-credential user today, so it's
+  //    inert until social linking (step 6) gives a user ≥2 accounts — at which
+  //    point unlinking `credential` would delete the native hash mirror while
+  //    users.password_hash survives, the exact store divergence the chokepoint
+  //    exists to prevent. Re-enable only with a deliberate native account-mgmt
+  //    surface that routes the delete through identityStore.
+  //  - /update-session — provably can't write anything (core session fields are
+  //    excluded from the update input schema, so it 400s "No fields to update";
+  //    full reasoning at the session.create.before hook above). Verre never
+  //    calls it; denied purely so it isn't a recurring "why isn't this denied?"
+  //    question for future reviewers.
   //
   // /change-password was disabled in step 4 (it writes auth_accounts.password
   // ONLY — the old password would keep working on web). Re-enabled in step 5:
   // the account.update.after hook above mirrors the hash to users.password_hash
   // + revokes web sessions, and the before-hook forces revokeOtherSessions for
-  // the BA side. The other risky endpoints are already inert by default
-  // (verified against 1.6.15 dist): /delete-user + /change-email are
-  // config-gated off, /set-password has no HTTP route (server-only),
-  // /request-password-reset 400s with no sendResetPassword wired.
-  disabledPaths: ['/update-user'],
+  // the BA side. Other risky endpoints inert by default (verified vs 1.6.15
+  // dist): /delete-user config-gated off, /set-password has no HTTP route
+  // (genuinely SERVER_ONLY — no path string).
+  disabledPaths: [
+    '/update-user',
+    '/verify-password',
+    '/reset-password',
+    '/request-password-reset',
+    '/verify-email',
+    '/send-verification-email',
+    '/change-email',
+    '/unlink-account',
+    '/update-session',
+  ],
 
   // TODO(step-6): socialProviders { google, apple } with the native id_token
   // path, nonce, and Apple appBundleIdentifier (proposal §6.4–6.5). Needs real

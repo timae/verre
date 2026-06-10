@@ -189,8 +189,11 @@ model AuthAccount {
 // own: with secondaryStorage configured (lib/betterAuth.ts), BA writes sessions
 // to BOTH this table and Redis and serves reads Redis-FIRST — so deleting a row
 // here does NOT revoke (the Redis copy stays live until TTL). Every revocation
-// must go through betterAuthServer.api, which deletes both stores. `token` is
-// the opaque session token looked up per request (unique).
+// must go through Better Auth — lib/identityStore.ts's internalAdapter legs —
+// which deletes both stores. `token` is the opaque session token looked up per
+// request (unique). ipAddress/userAgent hold DERIVED LABELS (country name,
+// "OS · Browser"), never raw values — a session.create.before hook in
+// lib/betterAuth.ts converts at write time (privacy parity with user_sessions).
 model AuthSession {
   id        Int      @id @default(autoincrement())
   token     String   @unique

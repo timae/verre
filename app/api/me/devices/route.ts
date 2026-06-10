@@ -5,8 +5,7 @@ import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { verifyPassword } from '@/lib/verifyPassword'
 import { revokeAllSessions } from '@/lib/identityStore'
-import { parseUserAgent } from '@/lib/userAgent'
-import { resolveGeoLabel } from '@/lib/geo'
+import { bucketStart } from '@/lib/lastSeen'
 
 // GET — list the caller's active per-device sessions ("Connected devices"),
 // the UNION of both session stores (§5a): web rows from user_sessions (uuid
@@ -43,24 +42,26 @@ export async function GET(req: NextRequest) {
     }),
   ])
 
-  // BA rows: label/geo are derived at READ time (web rows derive at login-write
-  // time) — BA stores the raw userAgent/ipAddress, not labels. resolveGeoLabel
-  // is in-process and never throws; lastSeenAt maps to BA's updatedAt (bumped
-  // on sliding-session refresh, so it's coarse — fine for "last seen").
-  // isCurrent is always false for BA rows in step 5: the panel is web-only and
-  // a web viewer's current session is by definition a user_sessions row. (A
-  // native viewer would see no row flagged current — revisit with the native
-  // device-management UI, step 6+.)
-  const baDevices = await Promise.all(
-    baRows.map(async r => ({
-      id: `ba:${r.id}`,
-      deviceLabel: parseUserAgent(r.userAgent),
-      geoLabel: await resolveGeoLabel(r.ipAddress).catch(() => null),
-      createdAt: r.createdAt.toISOString(),
-      lastSeenAt: r.updatedAt.toISOString(),
-      isCurrent: false,
-    })),
-  )
+  // BA rows: ipAddress/userAgent hold READY-MADE labels, not raw values — the
+  // session.create.before hook in lib/betterAuth.ts derives them at write time
+  // (same privacy posture as user_sessions: no raw IP/UA at rest in either
+  // store). lastSeenAt maps to BA's updatedAt — but Better Auth owns that column
+  // and stores a PRECISE instant (no write-time bucketing like user_sessions).
+  // Bucket it on the way OUT (lib/lastSeen.ts, same 5-min edges auth.ts writes)
+  // so the native rows expose the same coarsened activity signal as the web rows
+  // beside them — otherwise the union would leak un-bucketed last-seen for
+  // native devices, the exact timeline signal the web design suppresses.
+  // isCurrent is always false for BA rows in step 5: the panel is web-only and a
+  // web viewer's current session is by definition a user_sessions row. (A native
+  // viewer would see no row flagged current — revisit with the native UI.)
+  const baDevices = baRows.map(r => ({
+    id: `ba:${r.id}`,
+    deviceLabel: r.userAgent || 'Unknown device',
+    geoLabel: r.ipAddress || null,
+    createdAt: r.createdAt.toISOString(),
+    lastSeenAt: new Date(bucketStart(r.updatedAt.getTime())).toISOString(),
+    isCurrent: false,
+  }))
 
   const devices = [
     ...rows.map(r => ({

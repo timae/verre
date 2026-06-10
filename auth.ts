@@ -8,6 +8,7 @@ import { checkRate, peekRates, getClientIp } from '@/lib/rateLimit'
 import { parseUserAgent } from '@/lib/userAgent'
 import { resolveGeoLabel } from '@/lib/geo'
 import { revokeOneSession } from '@/lib/identityStore'
+import { bucketStart } from '@/lib/lastSeen'
 
 // Constant-time guard against email enumeration via login timing.
 // Real bcrypt-12 hash that will never match any user's password.
@@ -15,17 +16,11 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12)
 
 // lastSeenAt is bumped at coarse 5-minute WALL-CLOCK buckets (00:00, 00:05, …),
 // not a sliding window. The STORED value is the bucket START, not the precise
-// request time — so every session's lastSeenAt snaps to the same edges. This
-// is what collapses timeline-correlation signal across an exfiltrated DB: a
-// stored value of 00:05:00 reveals only "active sometime in the 00:05–00:10
-// window", never "request happened at 00:07:43". Applies ONLY to lastSeenAt;
-// createdAt stays precise (one-shot value, useful for audit). See proposal §5.
-const LAST_SEEN_BUCKET_MS = 5 * 60 * 1000
-
-function bucketStart(ms: number): number {
-  return Math.floor(ms / LAST_SEEN_BUCKET_MS) * LAST_SEEN_BUCKET_MS
-}
-
+// request time (lib/lastSeen.ts) — so every session's lastSeenAt snaps to the
+// same edges, collapsing timeline-correlation signal across an exfiltrated DB.
+// Applies ONLY to lastSeenAt; createdAt stays precise (one-shot value, useful
+// for audit). See proposal §5.
+//
 // Bump lastSeenAt only when the current bucket differs from the stored one.
 // Fire-and-forget from jwt(); the caller's .catch logs (never silences) errors
 // so DB-pool exhaustion / outage signals reach ops. Because this is `async`, a

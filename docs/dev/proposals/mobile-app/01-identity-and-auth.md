@@ -142,7 +142,9 @@ expects them; the `users` row is the shared identity.
   `20260609195038_native_auth_int_pks`). Verified e2e through `api.signUpEmail`: the Int FK
   round-trips, rows land in all three tables (`.local/test-env/scripts/_ba-e2e-signup.ts`).
 - **Better Auth requires two additive columns on `users`** it doesn't have today: `email_verified`
-  (boolean, `@default(false)`) and `updated_at` (timestamp, `@default(now())` / `@updatedAt`). Both
+  (boolean, `@default(false)`) and `updated_at` (timestamp, `@default(now())` — as built deliberately
+  WITHOUT `@updatedAt`: BA manages the value in its own writes, and Prisma's auto-bump would race it
+  on every existing `prisma.user.update`; see the schema comment). Both
   defaulted → additive-safe on the populated table. Authored by hand through Verre's gated Prisma
   migration pipeline (`prisma/CLAUDE.md`); **never** let the Better Auth CLI own or migrate `users`
   (its generated DDL would risk a `NOT NULL`-on-populated-rows violation, which `prisma/CLAUDE.md`
@@ -211,9 +213,10 @@ hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-
   — the same model as Verre's `user_sessions.revokedAt` gate, native. **As built (step 4): sessions are
   dual-store.** Configuring `secondaryStorage` (required for rate limiting, §6.2) silently moves session
   storage to Redis-ONLY unless `session.storeSessionInDatabase: true` — which `lib/betterAuth.ts` sets.
-  Reads are Redis-first with DB fallback; BA-API revocation deletes BOTH stores. ⚠️ A raw `auth_sessions`
+  Reads are Redis-first with DB fallback; BA revocation deletes BOTH stores. ⚠️ A raw `auth_sessions`
   row delete therefore does NOT revoke (the Redis copy lives until TTL) — every revocation goes through
-  `betterAuthServer.api`.
+  Better Auth (as built: `lib/identityStore.ts` via `$context.internalAdapter` — the `api.revoke*`
+  endpoints need a live BA cookie, which web-triggered revokes don't have; see §3 as-built note).
 - **"Logged in forever" = sliding session.** `expiresIn` (7d default) + `updateAge` (1d default)
   auto-extends on activity → users stay logged in indefinitely while using the app. No hand-built
   re-issue endpoint.
@@ -357,13 +360,16 @@ What v1 needs, in order:
 4. **Better Auth config** with all §6 guardrails: bcrypt hash+verify override, `generateId: "serial"`
    (NOT the callback — see §4 correction), Prisma-delegate model mapping, `cookieCache` off,
    `storeSessionInDatabase: true` (without it, configuring `secondaryStorage` silently moves sessions
-   to Redis-only — found in step 4; with it BA writes both stores and its revocation API deletes
-   both, so revocation must always go through `betterAuthServer.api`, never raw row deletes),
+   to Redis-only — found in step 4; with it BA writes both stores and BA-side revocation deletes
+   both, so revocation must always go through Better Auth — as built, `lib/identityStore.ts` via
+   `$context.internalAdapter` (§3 as-built note) — never raw row deletes),
    `disableImplicitLinking` + the linking flags, `rateLimit` → Redis, exact-pinned `1.6.15`
    (floor `>=1.6.13` CI-asserted). Mount on a distinct basePath (`/api/auth/native`) so its
    catch-all doesn't collide with `[...nextauth]`. The catch-all mounts EVERY core BA endpoint —
-   `disabledPaths: ['/update-user', '/change-password']` 404s the two that are live-but-wrong
-   before step 5 (§3 as-built constraint; full rationale in `lib/betterAuth.ts`).
+   `disabledPaths` 404s the ones that are live-but-wrong (step 4: `/update-user` + `/change-password`;
+   `/change-password` re-enabled in step 5; the step-5 post-ship pass added `/verify-password`,
+   `/reset-password`, `/request-password-reset` — see the as-built note below; full rationale in
+   `lib/betterAuth.ts`).
 5. **`resolveUser` seam rewrite** (§5a) — select on which cookie is present (Better Auth session →
    `auth.api.getSession`, uncached; NextAuth cookie → unchanged `auth()`), with the deterministic
    fail-closed precedence; replace the live `Authorization`-bearer discriminator. Lazy-create the
@@ -382,9 +388,92 @@ What v1 needs, in order:
    `ba:` row is never the web caller's own current session); `/change-password` is rate-limited
    20/h/IP (BA `customRules`, `app/api/rate-limits.md`). Coverage:
    `.local/test-env/scripts/_ba-e2e-step5.ts` via `section-native-auth-step5.sh`.
+   **Post-ship security pass (2026-06-10)** hardened the scope clamp once the catch-all's full
+   mounted surface was audited (the prior `disabledPaths` was a deny-list of only the endpoints
+   reasoned about, not an allow-list): (a) `/verify-password` — a `bcrypt.compare` password oracle
+   that `metadata.scope: 'server'` does NOT keep off the HTTP router (the router skips only
+   `metadata.SERVER_ONLY`), gated by BA's default 100/min and NOT the shared `rl:account` budget —
+   added to `disabledPaths`; (b) `/reset-password` + `/request-password-reset` — reset writes
+   `auth_accounts.password` only (the count-shaped `updatePassword` the `account.update.after`
+   mirror can't see), which would diverge the two credential stores with no crashed-mirror cause
+   and turn the drift-reconcile into an ATO primitive — added to `disabledPaths` (today inert
+   anyway: no `sendResetPassword`); (c) native `/sign-up/email` accepted an `image` body field that
+   mapped to `users.image_url`, bypassing the avatar pipeline — the `user.create.before` hook now
+   force-undefines the LOGICAL `image` field (the rename to `imageUrl` happens later in
+   `adapter.create`, so undefining `imageUrl` in the hook is a no-op — the bug the test caught).
+   Pins in `_ba-e2e-signup.ts` §6/§8.
+   **Second security + privacy pass (2026-06-10)** found three more: (d) **CRITICAL** — the WEB
+   `PATCH /api/me/account` password change is reachable by a NATIVE (BA) cookie via `resolveUser`,
+   which leaves `userSessionId` undefined; the old `if (… && session.user.userSessionId)` guard then
+   SKIPPED all session revocation for native callers, so every other web + native session survived a
+   password rotation (defeats the load-bearing "password change signs out other devices" invariant,
+   for the exact dual-credential user native auth onboards). Fixed: a native caller (no
+   `userSessionId`) revokes ALL web + ALL native sessions through `revokeAllForNativeCaller` (a
+   chokepoint helper that fans out both legs with the same per-leg-catch-then-rethrow independence as
+   `revokeAllSessions` — the first cut composed two unguarded sequential helper calls, which a later
+   reviewer flagged as defeating that independence; corrected). Web callers unchanged. Pin:
+   `_ba-e2e-step5.ts` §K. (e) `/verify-email` + `/send-verification-email` + `/change-email` added to
+   `disabledPaths` — `/verify-email` is HTTP-reachable and on a token with `updateTo` writes
+   `users.email` + `emailVerified` and mints a session; inert today (no verification-email flow wired)
+   but `emailVerified` becomes load-bearing at step 6 (`requireLocalEmailVerified`), so deny now.
+   (f) `/unlink-account` added to `disabledPaths` — `internalAdapter.deleteAccount` is a raw
+   `auth_accounts` delete outside the chokepoint; blocked by the last-account guard today, arms at
+   step 6 (social linking → ≥2 accounts). Also: the CI gate (`check-identity-writes.mjs`) now guards
+   `auth_accounts` writes (the native credential store), not just the web columns. And (privacy) the
+   devices union now buckets the native `lastSeenAt` (BA's precise `auth_sessions.updatedAt`) to the
+   same 5-min edges as web `user_sessions.lastSeenAt` (`lib/lastSeen.ts`).
+   **Third pass — six reviewers (3 security + general + privacy + regression + code-quality),
+   2026-06-10.** No CRITICAL/HIGH live holes; regression + privacy + API-authz/IDOR reviewers came
+   back clean. Acted on: (g) **HIGH** the `check-identity-writes.mjs` gate now also guards
+   `auth_sessions` writes — previously the ONE native store it forgot, and the store where "a raw row
+   delete does NOT revoke (Redis-first until TTL)" actually bites; a future `prisma.authSession.delete`
+   believed to revoke would have passed a green build. (h) `check-better-auth-config.mjs` now asserts
+   all eight `disabledPaths` entries are present, so a future edit/merge dropping one re-arms a
+   dangerous endpoint with a build failure instead of silently. (i) the `account.update.after` mirror
+   and the backfill drift-reconcile both now apply the log-second-error / revoke-before-hash
+   independence rule (a double-failure no longer swallows the first error; a transient reconcile
+   revoke failure self-heals on the next sign-in rather than stranding the owed web revoke).
+   Deferred (pre-existing, not introduced here): the `/api/me/account` PATCH email validator diverges
+   from `register`'s `z.string().email()` (accepts any `@`-containing string) — a self-inflicted
+   footgun today, but it should be unified before step 6 makes email load-bearing for
+   `requireLocalEmailVerified`. Open BA-inherent accepted risk (documented in `identityStore.ts`): a
+   corrupt/absent `active-sessions-<id>` Redis list can orphan token copies to TTL on a live-account
+   revoke; mitigation (DB-driven sweep) is not wired — track at the step-7 gate.
+   **Fourth pass — same six reviewers, 2026-06-10.** Five came back with no live holes (severity
+   calibration tightened after the third pass over-graded a CI-gate gap as HIGH); the labels held this
+   time. Only material outcome: `/update-session` added to `disabledPaths` (+ CI assertion + e2e pin).
+   A privacy reviewer flagged it as a raw-IP/UA-injection path (a session-write that skips the
+   create-only derivation hook); **verified against the 1.6.15 dist that this is a FALSE POSITIVE** —
+   `parseSessionInput` → `getFields(.,"session","input")` returns an empty core schema in any
+   non-output mode (`db/schema.mjs` line ~11), so `ipAddress`/`userAgent` aren't in the update schema
+   at all; the endpoint 400s "No fields to update" and can't write anything (a second reviewer
+   independently reached the same correct verdict). Denied anyway as defense-in-depth so it stops
+   being re-litigated; the create-before hook comment now states the stronger "no path CAN write these
+   fields" claim with the dist reasoning. Other findings were doc-only (gate KNOWN-LIMITS honesty
+   about table-write aliasing; CI-gate guarantee-scope note; a "this fan-out duplication is deliberate"
+   note) — no logic changes beyond the `/update-session` deny.
 6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
    (§6.4–6.5).
-7. **Rate-limiting design (§6.2) — gate: do not ship native login without it.**
+   **Deferred (2026-06-10, maintainer decision).** Can land even after the first throw of the mobile
+   app — email/password native auth works without it, and it needs Google/Apple console credentials
+   anyway. The step-7 gate below still blocks shipping native login; the §6.4–6.5 must-dos (nonce,
+   `appBundleIdentifier`, social-only NULL-hash guards) move with this step, and the release-fence
+   social items apply only once this lands.
+7. **Rate-limiting design (§6.2) — gate: do not ship native login without it.** Scope at the gate
+   (collected during step-5 review): XFF keying / trusted-proxy posture + the silent skip-when-no-IP;
+   sign-up enumeration oracle + missing honeypot/signed-token parity with web register;
+   `/change-password` IP-keying (BA can't key on userId); BA's non-atomic rate-limit counter
+   (read-modify-write, no Lua/INCR); and BA's non-atomic `active-sessions-<userId>` list update —
+   a concurrently-created session can be missing from the list, leaving a Redis token copy that
+   authenticates but is invisible to the devices panel and to `deleteUserSessions` (BA-inherent;
+   mitigation option: snapshot `auth_sessions` tokens pre-revoke and `deleteSession` each).
+   **Reset-password re-enable (if ever): hard prerequisite.** `/reset-password` +
+   `/request-password-reset` are in `disabledPaths` (see step 5 post-ship note). Re-enabling reset
+   MUST also (i) wire `sendResetPassword` + `onPasswordReset` + `revokeSessionsOnPasswordReset`, and
+   (ii) teach `backfillNativeCredential`'s drift-reconcile about the reset path — its current
+   "accounts → users is unambiguously newer" inference holds ONLY while a crashed `/change-password`
+   mirror is the sole divergence cause; a reset breaks that and would let a post-reset native
+   sign-in copy the reset hash into `users.password_hash` and revoke web sessions.
 
 **Release fence** — before the first non-redeployable (TestFlight-external) install: the §6 🔒 must-dos
 implemented and tested (nOAuth flags, rate limiting, `cookieCache`-off CI test, account-delete cascade

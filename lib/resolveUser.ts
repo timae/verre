@@ -45,29 +45,40 @@ import { betterAuthServer } from '@/lib/betterAuth'
 // (devices revoke-all, per-device logout) already 401/skip on a missing
 // userSessionId.
 export async function resolveUser(req: NextRequest): Promise<Session | null> {
-  const ba = await betterAuthServer.api.getSession({ headers: req.headers })
-  if (ba?.user) {
-    const userId = Number(ba.user.id)
-    if (!Number.isInteger(userId) || userId <= 0) return null
-    // Same fresh SELECT as auth.ts session(): role/pro changes and account
-    // deletion must bite on the next request, not at token mint time.
-    const dbUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true, name: true, email: true, role: true, pro: true },
-    })
-    if (!dbUser) return null
-    return {
-      user: {
-        id: String(dbUser.id),
-        name: dbUser.name,
-        email: dbUser.email,
-        role: dbUser.role,
-        pro: dbUser.pro,
-      },
-      // Date when served from Postgres, ISO string when served from Redis
-      // (JSON round-trip) — normalize.
-      expires: new Date(ba.session.expiresAt).toISOString(),
+  // Availability isolation, NOT an auth decision: a thrown BA branch (Redis
+  // down, BA internal error) falls through to auth() so a valid NextAuth
+  // cookie keeps working — otherwise a dual-cookie holder 500s on every API
+  // route during a Redis outage even though their web credential is fine.
+  // Fail-closed semantics are untouched: a revoked/invalid BA session RESOLVES
+  // to null (no throw), and the fall-through path still runs auth()'s own full
+  // validation — no claim from the failed branch is carried over.
+  try {
+    const ba = await betterAuthServer.api.getSession({ headers: req.headers })
+    if (ba?.user) {
+      const userId = Number(ba.user.id)
+      if (!Number.isInteger(userId) || userId <= 0) return null
+      // Same fresh SELECT as auth.ts session(): role/pro changes and account
+      // deletion must bite on the next request, not at token mint time.
+      const dbUser = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, email: true, role: true, pro: true },
+      })
+      if (!dbUser) return null
+      return {
+        user: {
+          id: String(dbUser.id),
+          name: dbUser.name,
+          email: dbUser.email,
+          role: dbUser.role,
+          pro: dbUser.pro,
+        },
+        // Date when served from Postgres, ISO string when served from Redis
+        // (JSON round-trip) — normalize.
+        expires: new Date(ba.session.expiresAt).toISOString(),
+      }
     }
+  } catch (e) {
+    console.error('resolveUser: Better Auth branch threw; falling through to web auth()', e)
   }
   return auth()
 }
