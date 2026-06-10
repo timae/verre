@@ -18,6 +18,9 @@
 | `/api/me/devices` GET | 60/min/user |
 | `/api/me/devices/:id` DELETE | 30/h/user (revoke) + shares `rl:account` 20/h on the cross-device password check |
 | `/api/me/devices` DELETE (revoke-all) | 10/h/user (revoke) + shares `rl:account` 20/h on the password check |
+| `/api/auth/native/*` (Better Auth, global) | 100/min/IP |
+| `/api/auth/native/sign-in/email` | 10/min/IP |
+| `/api/auth/native/sign-up/email` | 10/min/IP |
 
 **Per-endpoint rationale:**
 
@@ -35,3 +38,4 @@
 - **Devices GET**: read-side noise from a stolen cookie polling the list.
 - **Devices :id DELETE**: per-id revoke is "one user clicking through their list." 30/h is ample for normal use; the cap bounds a stolen cookie thrashing revokes. **The cross-device password re-auth additionally consumes the shared `rl:account` counter** — otherwise this endpoint would be a fresh 30/h brute-force surface against the same password hash, defeating the whole reason `rl:account` is shared. Own-current-session revoke skips both the password and the `rl:account` charge (it's just a logout).
 - **Devices DELETE (revoke-all)**: separate, lower counter (10/h) because this is a single panic-event ("sign out everywhere"), not list-clicking. Distinct from per-id so an incident-response revoke-all isn't starved by prior per-id clicks, and vice versa. **Its password check also draws from the shared `rl:account` counter** for the same brute-force reason. Net: account PATCH/DELETE + both device password gates share one 20/h budget against the password hash; the device-specific 30/h and 10/h caps independently bound revoke-thrashing.
+- **Better Auth (`/api/auth/native/*`)**: enforced by BA's built-in limiter (`rateLimit` in `lib/betterAuth.ts`), stored in Redis via `secondaryStorage` (`<ip>|<path>` keys) — NOT `lib/rateLimit.ts`. ⚠️ Keyed on the first `X-Forwarded-For` entry (client-spoofable unless the edge proxy rewrites XFF — same trusted-proxy caveat as the web login throttle) and **silently skipped when no IP header is present**. Sign-up also lacks the web register's honeypot + signed-token defenses and errors distinctly on an existing email (enumeration oracle). Accepted for step 4 (no native clients exist); MUST be revisited at the step-7 rate-limit design gate (proposal §8) before native login ships.

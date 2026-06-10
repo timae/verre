@@ -12,6 +12,7 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 - `s:{CODE}:bans` — Set of banned identity-ids (see `docs/dev/kick-ban.md`)
 - `s:{CODE}:kicked` — Set of kicked-but-not-banned identity-ids
 - `s:{CODE}:lock:ban` — short-TTL advisory lock during a ban wipe
+- **Better Auth keys (native auth, `lib/betterAuth.ts`)** — BA's `secondaryStorage` writes this same Redis DB, UNPREFIXED: `<sessionToken>` (bare opaque token → JSON session; the Redis-first read copy — see root CLAUDE.md "raw row deletes do NOT revoke"), `active-sessions-<userId>` (token list), `verification:<identifier>`, and rate-limit keys `<ip>|<path>`. Don't add new Verre keys shaped like a bare token or containing `|`, and never SCAN-delete outside the `s:`/`rl:` prefixes.
 
 ## TTL rule (`KEEPTTL`) — load-bearing
 

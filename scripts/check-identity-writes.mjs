@@ -2,7 +2,7 @@
 // CI gate: lib/identityStore.ts is the ONLY code allowed to WRITE
 // users.password_hash and user_sessions.revokedAt. This enforces the
 // safe-by-construction credential/revocation chokepoint (proposal §3, root
-// CLAUDE.md) so that when Better Auth's dual-store fan-out lands (step 4), it
+// CLAUDE.md) so that when Better Auth's dual-store fan-out lands (step 5), it
 // has exactly one home and drift between the two stores is impossible.
 //
 // Reads are fine (where/select clauses, null-guards, bcrypt.compare). Only

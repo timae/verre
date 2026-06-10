@@ -5,13 +5,20 @@ import type { Prisma } from '@prisma/client'
 //
 // 🔒 The ONLY code allowed to write `users.password_hash` and
 // `user_sessions.revokedAt`. A CI gate (check-identity-writes.yml) fails the
-// build on any such write elsewhere, so step 4's Better Auth dual-store fan-out
+// build on any such write elsewhere, so step 5's Better Auth dual-store fan-out
 // (also writing auth_accounts / auth_sessions) has exactly one home and the two
 // stores can't drift. See proposal §3 + root CLAUDE.md.
 //
-// STATUS (step 3): only the user_sessions / password_hash side is wired. The
-// Better Auth fan-out is a marked TODO(step-4) no-op — no BA library exists yet,
-// so writing it now would be untestable speculation.
+// STATUS (post step 4): the user_sessions / password_hash side is wired, and
+// the Better Auth library + config now exist (lib/betterAuth.ts) — but nothing
+// here touches the BA tables yet. The fan-out is a marked TODO(step-5) no-op;
+// BA's own /change-password endpoint is a disabledPath until it lands (a
+// BA-side password change would otherwise skip this chokepoint entirely).
+//
+// 🔒 When the fan-out lands: BA sessions live in BOTH auth_sessions and Redis
+// (secondaryStorage), reads are Redis-first — a raw prisma.authSession delete
+// does NOT revoke. The BA leg must go through betterAuthServer.api, never raw
+// row writes. See the session comment in lib/betterAuth.ts.
 
 // Write a user's bcrypt password hash. The ONE place `password_hash` is set.
 // Callers (register, password-change) pass an already-bcrypt-hashed value —
@@ -27,10 +34,11 @@ export async function syncCredential(
   tx: Prisma.TransactionClient = prisma,
 ): Promise<void> {
   await tx.user.update({ where: { id: userId }, data: { passwordHash } })
-  // TODO(step-4): upsert the Better Auth `auth_accounts` credential row
+  // TODO(step-5): upsert the Better Auth `auth_accounts` credential row
   // (providerId='credential', accountId=String(userId), password=passwordHash)
-  // through Better Auth's API so native login sees the same password. Until the
-  // BA library is wired (step 4) there is no second store to sync.
+  // through Better Auth's API so native login sees the same password. The BA
+  // library is wired (step 4, lib/betterAuth.ts); the fan-out lands with the
+  // resolveUser split in step 5 (proposal §8).
 }
 
 // Revoke all of a user's OTHER sessions (everything except `exceptSessionId`).
@@ -40,8 +48,8 @@ export async function syncCredential(
 // 🔒 The fan-out across the two session stores must be INDEPENDENT: if the
 // Better Auth revoke throws, the user_sessions revoke must still have happened
 // (and vice versa) — one store failing must not leave the other un-revoked.
-// (No BA store to fan out to until step 4; the independence is set up here so
-// step 4 only adds the second leg.)
+// (The BA store exists since step 4 but nothing logs into it yet; step 5 adds
+// the second leg here.)
 export async function revokeAllSessions(
   userId: number,
   exceptSessionId: string,
@@ -51,10 +59,13 @@ export async function revokeAllSessions(
     where: { userId, revokedAt: null, id: { not: exceptSessionId } },
     data: { revokedAt: new Date(), revocationReason: reason },
   })
-  // TODO(step-4): independently revoke the user's Better Auth `auth_sessions`
-  // rows (via Better Auth's revokeSessions). Run it in its own try/catch so a
-  // BA failure can't skip the user_sessions revoke above and vice versa; a
-  // partial-failure test must pin that both legs are attempted.
+  // TODO(step-5): independently revoke the user's Better Auth sessions — via
+  // betterAuthServer.api (revokeSessions), NEVER a raw prisma.authSession
+  // deleteMany: reads are Redis-first under secondaryStorage, so a raw row
+  // delete leaves the Redis copy live until TTL (see lib/betterAuth.ts). Run it
+  // in its own try/catch so a BA failure can't skip the user_sessions revoke
+  // above and vice versa; a partial-failure test must pin that both legs are
+  // attempted.
   return revoked.count
 }
 

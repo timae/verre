@@ -1,0 +1,26 @@
+name: Better Auth config invariants
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: better-auth-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Fail the build if Better Auth's cookieCache is ever enabled or the JWT
+      # plugin is added — both defeat the never-cache-auth revocation invariant
+      # (lib/CLAUDE.md, proposal §6.3). Dependency-free static check, no npm ci.
+      - name: Check Better Auth session invariants (cookieCache off, no JWT plugin)
+        run: node scripts/check-better-auth-config.mjs

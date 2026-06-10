@@ -80,7 +80,7 @@ export async function DELETE(req: NextRequest) {
 
   // Revoke everything except the current session, through revokeAllSessions
   // (the chokepoint — the only code allowed to write user_sessions.revokedAt in
-  // bulk; CI-enforced; step 4 adds the Better Auth fan-out here). currentSessionId
+  // bulk; CI-enforced; step 5 adds the Better Auth fan-out here). currentSessionId
   // is always present: a valid session always carries a userSessionId (the auth
   // gate strips any token without one), so there is no undefined-current case.
   const revokedCount = await revokeAllSessions(userId, currentSessionId, 'revoke_all')

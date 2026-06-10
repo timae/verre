@@ -22,7 +22,7 @@ jobs:
       # Fail the build if any code outside lib/identityStore.ts WRITES
       # users.password_hash or user_sessions.revokedAt. This enforces the
       # credential/revocation chokepoint (proposal §3, root CLAUDE.md) so the
-      # Better Auth dual-store fan-out (step 4) has exactly one home and drift
+      # Better Auth dual-store fan-out (step 5) has exactly one home and drift
       # between the two stores is impossible, not merely test-caught.
       #
       # No npm ci needed — the check is a dependency-free Node script that reads

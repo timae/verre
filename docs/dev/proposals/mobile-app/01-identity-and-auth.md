@@ -104,6 +104,15 @@ test-caught. The revoke-all fanout must revoke **both** stores independently (on
 the other) — with a partial-failure test. **This is a cross-cutting invariant → it belongs in root
 CLAUDE.md when implemented.**
 
+**As-built constraint (step 4 discovery):** the BA leg of the fan-out must go through
+`betterAuthServer.api` (`revokeSessions`), **never raw `auth_sessions` row writes** — with
+`secondaryStorage` configured, BA serves session reads Redis-first, so a raw `prisma.authSession`
+delete leaves the Redis copy live until TTL. Until the fan-out lands (step 5), BA's own
+`/change-password` and `/update-user` endpoints are `disabledPaths` (404, `lib/betterAuth.ts`):
+a BA-side password change would write `auth_accounts.password` only and skip this chokepoint —
+the old password would keep working on web, the exact drift this section exists to prevent.
+Re-enable `/change-password` only WITH the step-5 fan-out.
+
 **Worst drift failures, ranked:** (a) a web password change not propagated → native login uses the old
 password (a visible bug, not a security hole); (b) "log out everywhere" missing the other store → a
 revoked device stays alive (security-relevant, but visible in the Connected-devices panel). Both are
@@ -115,9 +124,16 @@ Both systems resolve a caller to the same `users.id`. Credentials and sessions l
 expects them; the `users` row is the shared identity.
 
 - **`users.id` (Int autoincrement) is the trust anchor** — unchanged, with all ~15 FK relations. Better
-  Auth's `user` model maps onto it (`advanced.database.generateId` callback returns `false` for the
-  `user` model so Postgres owns the PK; generates ids for the other tables). Verified: Better Auth's
-  `auth_sessions.user_id` round-trips as a real Postgres `integer` FK to `users.id`.
+  Auth's `user` model maps onto it via **`advanced.database.generateId: "serial"`** — the literal
+  string is the ONLY thing that flips the adapter's `useNumberId`, which keeps Int ids Int across the
+  FK round-trip. ⚠️ **Corrected in step 4 (2026-06-09): the per-table `generateId` callback this
+  section originally specified (return `false` for `user`, strings elsewhere) does NOT work on
+  1.6.15** — without serial mode the adapter stringifies every id on output, so the FK write fails
+  (`Argument userId: Expected Int, provided String`; GH #3450/#5081; the settable `useNumberId`
+  option was removed, #2349). Serial is global → `auth_accounts`/`auth_sessions`/`auth_verifications`
+  carry **Int autoincrement PKs** (migrated String→Int while empty,
+  `20260609195038_native_auth_int_pks`). Verified e2e through `api.signUpEmail`: the Int FK
+  round-trips, rows land in all three tables (`.local/test-env/scripts/_ba-e2e-signup.ts`).
 - **Better Auth requires two additive columns on `users`** it doesn't have today: `email_verified`
   (boolean, `@default(false)`) and `updated_at` (timestamp, `@default(now())` / `@updatedAt`). Both
   defaulted → additive-safe on the populated table. Authored by hand through Verre's gated Prisma
@@ -185,7 +201,12 @@ hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-
 
 - **Default session = opaque, DB-backed.** A session cookie maps to an `auth_sessions` row checked per
   request. `revokeSession`/`revokeOtherSessions`/`revokeSessions` delete rows → **immediate** revocation
-  — the same model as Verre's `user_sessions.revokedAt` gate, native.
+  — the same model as Verre's `user_sessions.revokedAt` gate, native. **As built (step 4): sessions are
+  dual-store.** Configuring `secondaryStorage` (required for rate limiting, §6.2) silently moves session
+  storage to Redis-ONLY unless `session.storeSessionInDatabase: true` — which `lib/betterAuth.ts` sets.
+  Reads are Redis-first with DB fallback; BA-API revocation deletes BOTH stores. ⚠️ A raw `auth_sessions`
+  row delete therefore does NOT revoke (the Redis copy lives until TTL) — every revocation goes through
+  `betterAuthServer.api`.
 - **"Logged in forever" = sliding session.** `expiresIn` (7d default) + `updateAge` (1d default)
   auto-extends on activity → users stay logged in indefinitely while using the app. No hand-built
   re-issue endpoint.
@@ -196,7 +217,8 @@ hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-
   Default is OFF (a DB read per request — Verre's posture; a sub-millisecond indexed lookup). **Never
   enable the JWT plugin** either (self-contained tokens the DB can't revoke). If session-read DB load
   ever matters (it won't at this scale), use Better Auth's `secondaryStorage` → Redis (server-side,
-  mutable, preserves instant revocation) — **not** `cookieCache`.
+  mutable, preserves instant revocation) — **not** `cookieCache`. (As built, `secondaryStorage` is
+  already on for rate limiting, so sessions already read Redis-first — see the dual-store note above.)
 - 🔒 **The `resolveUser(req)` seam must be REWRITTEN, not just "add a branch" — both auth systems are now
   COOKIE-based, and the shipped precedence rule keys on the wrong signal.** The shipped seam (PR #37) was
   built for a Logto-era *bearer* native path: it routes on `if (Authorization header) → native, else →
@@ -325,15 +347,24 @@ What v1 needs, in order:
    `onDelete: Cascade`). All in `schema.prisma`.
 3. **`lib/identityStore.ts` chokepoint** + the CI lint rule (§3): the only place `password_hash` /
    `revokedAt` may be written; `syncCredential` + `revokeAllSessions` fan-out across both stores.
-4. **Better Auth config** with all §6 guardrails: bcrypt hash+verify override, `generateId` callback,
-   table-name mapping, `cookieCache` off, `disableImplicitLinking` + the linking flags, `rateLimit`
-   → Redis, pinned `>=1.6.13`. Mount on a distinct basePath (e.g. `/api/auth/native`) so its catch-all
-   doesn't collide with `[...nextauth]`.
+4. **Better Auth config** with all §6 guardrails: bcrypt hash+verify override, `generateId: "serial"`
+   (NOT the callback — see §4 correction), Prisma-delegate model mapping, `cookieCache` off,
+   `storeSessionInDatabase: true` (without it, configuring `secondaryStorage` silently moves sessions
+   to Redis-only — found in step 4; with it BA writes both stores and its revocation API deletes
+   both, so revocation must always go through `betterAuthServer.api`, never raw row deletes),
+   `disableImplicitLinking` + the linking flags, `rateLimit` → Redis, exact-pinned `1.6.15`
+   (floor `>=1.6.13` CI-asserted). Mount on a distinct basePath (`/api/auth/native`) so its
+   catch-all doesn't collide with `[...nextauth]`. The catch-all mounts EVERY core BA endpoint —
+   `disabledPaths: ['/update-user', '/change-password']` 404s the two that are live-but-wrong
+   before step 5 (§3 as-built constraint; full rationale in `lib/betterAuth.ts`).
 5. **`resolveUser` seam rewrite** (§5a) — select on which cookie is present (Better Auth session →
    `auth.api.getSession`, uncached; NextAuth cookie → unchanged `auth()`), with the deterministic
    fail-closed precedence; replace the live `Authorization`-bearer discriminator. Lazy-create the
    `auth_accounts` credential row (via `identityStore`) before the first native verify. Union the
-   Connected-devices read across both stores (§5a).
+   Connected-devices read across both stores (§5a). Wire the `identityStore` fan-out (BA leg via
+   `betterAuthServer.api`, never raw row writes — §3) with the partial-failure test; **only then**
+   drop `/change-password` from `disabledPaths` (a BA password change without the fan-out updates
+   `auth_accounts` only — the old password keeps working on web).
 6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
    (§6.4–6.5).
 7. **Rate-limiting design (§6.2) — gate: do not ship native login without it.**

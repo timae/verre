@@ -142,10 +142,11 @@ model UserSession {
 // Hand-authored through Verre's gated Prisma pipeline — the Better Auth CLI
 // must NEVER own/migrate these (or `users`). Table names are PINNED to avoid
 // collision with the existing @@map("sessions") (wine sessions) + user_sessions.
-// PKs are String (Better Auth generates them via the generateId callback; only
-// `users.id` is the DB-serial Int). `user_id` is the one Int FK → users.id,
-// onDelete: Cascade matching user_sessions so the raw `DELETE FROM users` in
-// lib/accountDelete.ts doesn't 500 once a user has Better Auth rows.
+// PKs are Int autoincrement on all 3 tables (generateId:"serial" — see the
+// AuthAccount comment below for why no other id mode works). `user_id` is the
+// Int FK → users.id, onDelete: Cascade matching user_sessions so the raw
+// `DELETE FROM users` in lib/accountDelete.ts doesn't 500 once a user has
+// Better Auth rows.
 // See docs/dev/proposals/mobile-app/01-identity-and-auth.md §4–§6.
 //
 // String columns are intentionally bare String (→ Postgres TEXT), NOT @db.VarChar
@@ -156,8 +157,15 @@ model UserSession {
 // Credentials + linked social identities. providerId='credential' rows hold the
 // bcrypt password hash (lazily backfilled from users.password_hash on first
 // native login); providerId='google'/'apple' rows are linked social accounts.
+//
+// Int-serial PKs on all 3 auth tables: Better Auth 1.6.15 round-trips Int FKs
+// (users.id → user_id) ONLY under generateId:"serial", which is global — it
+// forces Int autoincrement ids on every BA table. Mixed-id (String PKs here,
+// Int users.id) is NOT supported: the adapter stringifies ids on output unless
+// serial mode is on, so the FK write fails (GH #3450; verified against the
+// 1.6.15 adapter source). See proposal §4.
 model AuthAccount {
-  id                    String    @id
+  id                    Int       @id @default(autoincrement())
   accountId             String    @map("account_id")
   providerId            String    @map("provider_id")
   userId                Int       @map("user_id")
@@ -177,11 +185,14 @@ model AuthAccount {
   @@map("auth_accounts")
 }
 
-// Opaque DB-backed sessions (Better Auth's default model). A revoked session is
-// a deleted row → instant revocation, the same posture as user_sessions. `token`
-// is the opaque session token looked up per request (unique).
+// Opaque Better Auth sessions. ⚠️ This table is NOT the source of truth on its
+// own: with secondaryStorage configured (lib/betterAuth.ts), BA writes sessions
+// to BOTH this table and Redis and serves reads Redis-FIRST — so deleting a row
+// here does NOT revoke (the Redis copy stays live until TTL). Every revocation
+// must go through betterAuthServer.api, which deletes both stores. `token` is
+// the opaque session token looked up per request (unique).
 model AuthSession {
-  id        String   @id
+  id        Int      @id @default(autoincrement())
   token     String   @unique
   userId    Int      @map("user_id")
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
@@ -198,7 +209,7 @@ model AuthSession {
 // Short-lived verification tokens (email verification, etc.). Keyed on
 // `identifier` (e.g. an email), NOT a user_id — so no FK / cascade here.
 model AuthVerification {
-  id         String   @id
+  id         Int      @id @default(autoincrement())
   identifier String
   value      String
   expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
