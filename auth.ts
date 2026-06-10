@@ -7,6 +7,8 @@ import { authConfig } from '@/auth.config'
 import { checkRate, peekRates, getClientIp } from '@/lib/rateLimit'
 import { parseUserAgent } from '@/lib/userAgent'
 import { resolveGeoLabel } from '@/lib/geo'
+import { revokeOneSession } from '@/lib/identityStore'
+import { bucketStart } from '@/lib/lastSeen'
 
 // Constant-time guard against email enumeration via login timing.
 // Real bcrypt-12 hash that will never match any user's password.
@@ -14,17 +16,11 @@ const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 12)
 
 // lastSeenAt is bumped at coarse 5-minute WALL-CLOCK buckets (00:00, 00:05, …),
 // not a sliding window. The STORED value is the bucket START, not the precise
-// request time — so every session's lastSeenAt snaps to the same edges. This
-// is what collapses timeline-correlation signal across an exfiltrated DB: a
-// stored value of 00:05:00 reveals only "active sometime in the 00:05–00:10
-// window", never "request happened at 00:07:43". Applies ONLY to lastSeenAt;
-// createdAt stays precise (one-shot value, useful for audit). See proposal §5.
-const LAST_SEEN_BUCKET_MS = 5 * 60 * 1000
-
-function bucketStart(ms: number): number {
-  return Math.floor(ms / LAST_SEEN_BUCKET_MS) * LAST_SEEN_BUCKET_MS
-}
-
+// request time (lib/lastSeen.ts) — so every session's lastSeenAt snaps to the
+// same edges, collapsing timeline-correlation signal across an exfiltrated DB.
+// Applies ONLY to lastSeenAt; createdAt stays precise (one-shot value, useful
+// for audit). See proposal §5.
+//
 // Bump lastSeenAt only when the current bucket differs from the stored one.
 // Fire-and-forget from jwt(); the caller's .catch logs (never silences) errors
 // so DB-pool exhaustion / outage signals reach ops. Because this is `async`, a
@@ -58,10 +54,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!parsed.success) return null
 
         const email = parsed.data.email.toLowerCase()
-        // Pull client IP from forwarded headers. The `request` param is the
-        // raw NextAuth request; fall back to 'unknown' if no IP header set.
-        const xff = request?.headers?.get?.('x-forwarded-for')
-        const ip = xff ? xff.split(',')[0].trim() : (request?.headers?.get?.('x-real-ip') || 'unknown')
+        // Client IP for the login throttle — through the SHARED getClientIp (the
+        // one chokepoint with the trusted-proxy posture: single-entry XFF only,
+        // multi-entry treated as untrusted; see lib/rateLimit.ts + deployment.md).
+        // The `request` param is NextAuth's raw Request; 'unknown' when absent.
+        const ip = request ? getClientIp(request) : 'unknown'
 
         // Rate limit FAILED login attempts. Successful logins don't count.
         // Three counters: 10 fails/min per email, 20 fails/hour per email,
@@ -194,13 +191,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // must always succeed even if the DB write fails, so we catch + log.
     // Idempotent via the revokedAt IS NULL guard.
     async signOut(message) {
-      const sessionId = 'token' in message ? (message.token?.userSessionId as string | undefined) : undefined
-      if (!sessionId) return
+      const token = 'token' in message ? message.token : undefined
+      const sessionId = token?.userSessionId as string | undefined
+      const userId = token?.id ? Number(token.id) : undefined
+      if (!sessionId || userId === undefined || Number.isNaN(userId)) return
+      // Best-effort: logout must always succeed even if the revoke write fails.
+      // Routed through revokeOneSession (the chokepoint — the only code allowed
+      // to write user_sessions.revokedAt; CI-enforced). Idempotent via the
+      // revokedAt IS NULL guard inside the helper.
       try {
-        await prisma.userSession.updateMany({
-          where: { id: sessionId, revokedAt: null },
-          data: { revokedAt: new Date(), revocationReason: 'logout' },
-        })
+        await revokeOneSession(userId, sessionId, 'logout')
       } catch (err) {
         console.warn('[user-session] signOut revoke failed', err)
       }

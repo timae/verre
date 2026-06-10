@@ -6,6 +6,7 @@ import { validateDisplayName } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
+import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
 
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -50,38 +51,63 @@ export async function PATCH(req: NextRequest) {
     updates.email = e
   }
 
+  // The new password hash is kept separate from `updates` (name/email) because
+  // the credential write goes through syncCredential (the chokepoint — the only
+  // code allowed to write password_hash; CI-enforced), not the batched
+  // prisma.user.update below.
+  let newPasswordHash: string | undefined
   if (newPassword !== undefined) {
     if (!currentPassword) return NextResponse.json({ error: 'current password required' }, { status: 400 })
     if (String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
+    // A NATIVE-registered OR social-only (Better Auth) user has a NULL
+    // users.password_hash — their credential (if any) lives in auth_accounts.
+    // This web endpoint re-auths only against the WEB hash and rejects when it's
+    // NULL: a shipped asymmetry (verifyPassword has the auth_accounts fallback
+    // for device-revoke, this route deliberately does not). So a native-only user
+    // can't change their password or delete their account via the WEB routes —
+    // native account-management is a step-6+ surface (a deferred decision, not an
+    // oversight; unifying would mean routing through verifyPassword + minding the
+    // shared rl:account charge). Reject rather than fall through to allow.
+    if (!user.passwordHash) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
-    updates.passwordHash = await bcrypt.hash(String(newPassword), 12)
+    newPasswordHash = await bcrypt.hash(String(newPassword), 12)
   }
 
-  if (Object.keys(updates).length === 0) return NextResponse.json({ ok: true })
+  if (Object.keys(updates).length === 0 && newPasswordHash === undefined) return NextResponse.json({ ok: true })
 
   try {
-    await prisma.user.update({ where: { id: userId }, data: updates })
+    if (Object.keys(updates).length > 0) await prisma.user.update({ where: { id: userId }, data: updates })
+    if (newPasswordHash !== undefined) await syncCredential(userId, newPasswordHash)
   } catch (e: unknown) {
     if ((e as { code?: string }).code === 'P2002') return NextResponse.json({ error: 'email already in use' }, { status: 409 })
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
   }
 
-  // After a password change, revoke every OTHER device's session — the user
-  // who just re-authed keeps their current session (no annoying bounce to
-  // login; standard GitHub/Google/Slack behaviour). The current session id
-  // comes ONLY from the signed JWT, never the request body. The userSessionId
-  // truthiness check is defensive type-narrowing (a valid session always has
-  // one — the auth gate strips any token without it).
+  // After a password change, revoke every OTHER device's session so a stolen
+  // session can't outlive the rotation — the load-bearing invariant. This
+  // endpoint is reachable by BOTH credential types (resolveUser), so the revoke
+  // must cover both stores:
+  //   - WEB caller (has a user_sessions row → userSessionId set): keep the
+  //     caller's own session (no annoying self-logout; standard GitHub/Slack
+  //     behaviour), revoke every OTHER web session, and fan out to ALL native
+  //     sessions. revokeAllSessions does exactly this (chokepoint).
+  //   - NATIVE caller (BA cookie → userSessionId UNDEFINED): the caller has no
+  //     user_sessions row to preserve, so EVERY web + native session dies (incl.
+  //     the caller's own native one — strictly safe, they just re-authed). Via
+  //     revokeAllForNativeCaller, which fans out BOTH legs with the same per-leg-
+  //     catch-then-rethrow independence as revokeAllSessions — NOT two unguarded
+  //     sequential helper calls, which would let a web-leg throw skip the native
+  //     revoke. The native /api/auth/native/change-password path instead keeps
+  //     the current native session; this web endpoint is the cross-credential case.
+  // userSessionId comes ONLY from the signed JWT, never the request body.
   const responseBody: { ok: true; otherDevicesSignedOut?: number } = { ok: true }
-  if (updates.passwordHash && session.user.userSessionId) {
-    const revoked = await prisma.userSession.updateMany({
-      where: { userId, id: { not: session.user.userSessionId }, revokedAt: null },
-      data: { revokedAt: new Date(), revocationReason: 'password_change' },
-    })
-    responseBody.otherDevicesSignedOut = revoked.count
+  if (newPasswordHash !== undefined) {
+    responseBody.otherDevicesSignedOut = session.user.userSessionId
+      ? await revokeAllSessions(userId, session.user.userSessionId, 'password_change')
+      : await revokeAllForNativeCaller(userId)
   }
 
   return NextResponse.json(responseBody)
@@ -110,6 +136,15 @@ export async function DELETE(req: NextRequest) {
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
+  // A NATIVE-registered OR social-only (Better Auth) user has a NULL
+  // users.password_hash — no WEB password to confirm deletion against, so this
+  // route rejects (same asymmetry as the PATCH above: it does NOT fall back to
+  // the auth_accounts credential the way verifyPassword does). A native-only user
+  // therefore has no web deletion path, and BA's /delete-user is config-gated off
+  // (not registered — user.deleteUser.enabled is unset, distinct from the
+  // disabledPaths deny-list) — account deletion for native-only users is a
+  // step-6+ native surface (deferred, not wired today). Reject, don't allow.
+  if (!user.passwordHash) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
   const valid = await bcrypt.compare(String(password), user.passwordHash)
   if (!valid) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
 

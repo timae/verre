@@ -106,6 +106,12 @@ Full pipeline (HoF trigger, flavour integration): see `docs/dev/score-system.md`
 
 Authorization patterns, header conventions (`X-Vr-Auth: invalid` vs `removed`), tier-resolution implementation: see `app/api/CLAUDE.md`.
 
+### Credential & revocation chokepoint
+
+🔒 **`lib/identityStore.ts` is the ONLY code allowed to write `users.password_hash` or `user_sessions.revokedAt`.** Every credential write and every session revoke routes through its helpers (`syncCredential`, `revokeAllSessions`, `revokeOneSession`, plus the backfill / native- / web-scoped variants — see the module header; account deletion calls `deleteAllNativeSessions` before its cascade). A CI gate (`.github/workflows/check-identity-writes.yml` → `scripts/check-identity-writes.mjs`) **fails the build** on any such write elsewhere — safe-by-construction, not safe-by-discipline. The reason: native auth (Better Auth) adds a *second* credential + session store (`auth_accounts` / `auth_sessions`), and "log out everywhere" / a password change must hit **both** stores or they drift. Funnelling every write through one module means the dual-store fan-out has exactly one home. The fan-out across stores must be independent (one store throwing must not skip the other). **Status: live end-to-end** — `syncCredential` mirrors into `auth_accounts` (update-only), `revokeAllSessions` / `revokeOneNativeSession` fan out across both stores; partial-failure pins in `.local/test-env/scripts/_ba-e2e-step5.ts`. See `docs/dev/proposals/mobile-app/01-identity-and-auth.md` §3.
+
+🔒 **Better Auth sessions are Redis-first — a raw row delete does NOT revoke.** With `secondaryStorage` configured, BA writes sessions to both `auth_sessions` and Redis and reads Redis first: a raw `prisma.authSession.delete` leaves the Redis copy live until TTL. Every BA-session revocation must go through Better Auth (`betterAuthServer.api`, or `$context.internalAdapter` as `lib/identityStore.ts` does — both delete both stores), never raw row writes. `/update-user` stays a `disabledPaths` 404 (it would bypass the avatar pipeline + name scrub); `/change-password` is live — a before-hook forces `revokeOtherSessions`, and the `account.update.after` mirror routes the new hash + web-session revoke through the chokepoint. Full rationale: comments in `lib/betterAuth.ts`.
+
 ### Authorization tier vocabulary
 
 Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUDE.md`.

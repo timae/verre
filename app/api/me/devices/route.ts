@@ -4,10 +4,15 @@ import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { verifyPassword } from '@/lib/verifyPassword'
+import { revokeAllSessions } from '@/lib/identityStore'
+import { bucketStart } from '@/lib/lastSeen'
 
-// GET — list the caller's active per-device sessions ("Connected devices").
-// Self-only by construction: WHERE userId = $me. Viewer-dependent, so the
-// response is Cache-Control: private, no-store per app/api/CLAUDE.md.
+// GET — list the caller's active per-device sessions ("Connected devices"),
+// the UNION of both session stores (§5a): web rows from user_sessions (uuid
+// ids) + native Better Auth rows from auth_sessions (`ba:<int>` ids, so the
+// per-id DELETE can route the revoke to the right store). Self-only by
+// construction: WHERE userId = $me. Viewer-dependent, so the response is
+// Cache-Control: private, no-store per app/api/CLAUDE.md.
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
@@ -22,20 +27,53 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  const rows = await prisma.userSession.findMany({
-    where: { userId, revokedAt: null },
-    orderBy: { lastSeenAt: 'desc' },
-    select: { id: true, deviceLabel: true, geoLabel: true, createdAt: true, lastSeenAt: true },
-  })
+  // Reading auth_sessions rows via Prisma is fine — only WRITES must go through
+  // Better Auth (the rows exist in both stores; the Redis copy mirrors these).
+  const [rows, baRows] = await Promise.all([
+    prisma.userSession.findMany({
+      where: { userId, revokedAt: null },
+      orderBy: { lastSeenAt: 'desc' },
+      select: { id: true, deviceLabel: true, geoLabel: true, createdAt: true, lastSeenAt: true },
+    }),
+    prisma.authSession.findMany({
+      where: { userId, expiresAt: { gt: new Date() } },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, userAgent: true, ipAddress: true, createdAt: true, updatedAt: true },
+    }),
+  ])
 
-  const devices = rows.map(r => ({
-    id: r.id,
-    deviceLabel: r.deviceLabel,
-    geoLabel: r.geoLabel,
+  // BA rows: ipAddress/userAgent hold READY-MADE labels, not raw values — the
+  // session.create.before hook in lib/betterAuth.ts derives them at write time
+  // (same privacy posture as user_sessions: no raw IP/UA at rest in either
+  // store). lastSeenAt maps to BA's updatedAt, which the session create/update
+  // hooks now FLOOR to the 5-min bucket AT WRITE TIME (lib/lastSeen.ts) — same
+  // at-rest precision as web user_sessions.lastSeenAt. We re-bucket here on the
+  // way out too (belt: the at-rest value is already on an edge, but re-flooring
+  // is cheap and keeps this surface correct even if a future BA write path bumps
+  // updatedAt without the hook). isCurrent is always false for BA rows in step 5:
+  // the panel is web-only and a web viewer's current session is by definition a
+  // user_sessions row. (A native viewer would see no row flagged current —
+  // revisit with the native UI.)
+  const baDevices = baRows.map(r => ({
+    id: `ba:${r.id}`,
+    deviceLabel: r.userAgent || 'Unknown device',
+    geoLabel: r.ipAddress || null,
     createdAt: r.createdAt.toISOString(),
-    lastSeenAt: r.lastSeenAt.toISOString(),
-    isCurrent: r.id === currentSessionId,
+    lastSeenAt: new Date(bucketStart(r.updatedAt.getTime())).toISOString(),
+    isCurrent: false,
   }))
+
+  const devices = [
+    ...rows.map(r => ({
+      id: r.id,
+      deviceLabel: r.deviceLabel,
+      geoLabel: r.geoLabel,
+      createdAt: r.createdAt.toISOString(),
+      lastSeenAt: r.lastSeenAt.toISOString(),
+      isCurrent: r.id === currentSessionId,
+    })),
+    ...baDevices,
+  ].sort((a, b) => (a.lastSeenAt < b.lastSeenAt ? 1 : a.lastSeenAt > b.lastSeenAt ? -1 : 0))
 
   return NextResponse.json(
     { devices },
@@ -77,12 +115,13 @@ export async function DELETE(req: NextRequest) {
   }
   if (!check.ok) return NextResponse.json({ error: 'password incorrect' }, { status: 403 })
 
-  // Revoke everything except the current session. currentSessionId is always
-  // present here: a valid session always carries a userSessionId (the auth gate
-  // strips any token without one), so there is no undefined-current case.
-  const revoked = await prisma.userSession.updateMany({
-    where: { userId, revokedAt: null, id: { not: currentSessionId } },
-    data: { revokedAt: new Date(), revocationReason: 'revoke_all' },
-  })
-  return NextResponse.json({ revoked: revoked.count })
+  // Revoke everything except the current session, through revokeAllSessions
+  // (the chokepoint — the only code allowed to write user_sessions.revokedAt in
+  // bulk; CI-enforced; it also fans out to ALL Better Auth sessions, both
+  // stores). currentSessionId is always present for web callers: a valid web
+  // session always carries a userSessionId (the auth gate strips any token
+  // without one). A NATIVE caller has none and 401s above — native
+  // "sign out everywhere" is a step-6+ surface.
+  const revokedCount = await revokeAllSessions(userId, currentSessionId, 'revoke_all')
+  return NextResponse.json({ revoked: revokedCount })
 }

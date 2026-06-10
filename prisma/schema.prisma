@@ -13,7 +13,22 @@ model User {
   id                        Int                    @id @default(autoincrement())
   name                      String                 @db.VarChar(64)
   email                     String                 @unique @db.VarChar(255)
-  passwordHash              String                 @map("password_hash") @db.VarChar(255)
+  // Nullable since native auth (Better Auth): a social-only user (Google/Apple)
+  // has NO password — Better Auth inserts a users row writing name/email/
+  // timestamps but never password_hash (credentials live in auth_accounts).
+  // NOT NULL would 500 the first social sign-up. Every bcrypt.compare consumer
+  // MUST guard the null hash before comparing (auth.ts feeds ?? DUMMY_HASH;
+  // account PATCH/DELETE + lib/verifyPassword guard explicitly). See
+  // docs/dev/proposals/mobile-app/01-identity-and-auth.md §4.
+  passwordHash              String?                @map("password_hash") @db.VarChar(255)
+  // Additive columns Better Auth requires on its `user` model (mapped onto this
+  // table). Both defaulted → additive-safe on the populated table; NextAuth
+  // ignores them. updated_at is @default(now()) WITHOUT @updatedAt: Better Auth
+  // manages it in its own writes, and leaving Prisma's auto-bump off keeps the
+  // dual-store decoupled (no race between BA's explicit set and a Prisma bump on
+  // every existing prisma.user.update). See proposal §4.
+  emailVerified             Boolean                @default(false) @map("email_verified")
+  updatedAt                 DateTime               @default(now()) @map("updated_at") @db.Timestamptz(6)
   role                      String                 @default("taster") @db.VarChar(16)
   pro                       Boolean                @default(false)
   createdAt                 DateTime               @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -58,6 +73,8 @@ model User {
   feedItemLikes             FeedItemLike[]
   feedItemTags              FeedItemTag[]
   userSessions              UserSession[]
+  authAccounts              AuthAccount[]
+  authSessions              AuthSession[]
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -119,6 +136,91 @@ model UserSession {
 
   @@index([userId, revokedAt])
   @@map("user_sessions")
+}
+
+// ── Better Auth (native-app auth) ─────────────────────────────
+// Hand-authored through Verre's gated Prisma pipeline — the Better Auth CLI
+// must NEVER own/migrate these (or `users`). Table names are PINNED to avoid
+// collision with the existing @@map("sessions") (wine sessions) + user_sessions.
+// PKs are Int autoincrement on all 3 tables (generateId:"serial" — see the
+// AuthAccount comment below for why no other id mode works). `user_id` is the
+// Int FK → users.id, onDelete: Cascade matching user_sessions so the raw
+// `DELETE FROM users` in lib/accountDelete.ts doesn't 500 once a user has
+// Better Auth rows.
+// See docs/dev/proposals/mobile-app/01-identity-and-auth.md §4–§6.
+//
+// String columns are intentionally bare String (→ Postgres TEXT), NOT @db.VarChar
+// — these are Better-Auth-owned shapes (ids/tokens it generates, OAuth tokens it
+// stores). Capping them risks silent truncation if BA ever emits a longer value.
+// This deliberately diverges from the schema's otherwise cap-everything convention.
+
+// Credentials + linked social identities. providerId='credential' rows hold the
+// bcrypt password hash (lazily backfilled from users.password_hash on first
+// native login); providerId='google'/'apple' rows are linked social accounts.
+//
+// Int-serial PKs on all 3 auth tables: Better Auth 1.6.15 round-trips Int FKs
+// (users.id → user_id) ONLY under generateId:"serial", which is global — it
+// forces Int autoincrement ids on every BA table. Mixed-id (String PKs here,
+// Int users.id) is NOT supported: the adapter stringifies ids on output unless
+// serial mode is on, so the FK write fails (GH #3450; verified against the
+// 1.6.15 adapter source). See proposal §4.
+model AuthAccount {
+  id                    Int       @id @default(autoincrement())
+  accountId             String    @map("account_id")
+  providerId            String    @map("provider_id")
+  userId                Int       @map("user_id")
+  accessToken           String?   @map("access_token")
+  refreshToken          String?   @map("refresh_token")
+  idToken               String?   @map("id_token")
+  accessTokenExpiresAt  DateTime? @map("access_token_expires_at") @db.Timestamptz(6)
+  refreshTokenExpiresAt DateTime? @map("refresh_token_expires_at") @db.Timestamptz(6)
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt             DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("auth_accounts")
+}
+
+// Opaque Better Auth sessions. ⚠️ This table is NOT the source of truth on its
+// own: with secondaryStorage configured (lib/betterAuth.ts), BA writes sessions
+// to BOTH this table and Redis and serves reads Redis-FIRST — so deleting a row
+// here does NOT revoke (the Redis copy stays live until TTL). Every revocation
+// must go through Better Auth — lib/identityStore.ts's internalAdapter legs —
+// which deletes both stores. `token` is the opaque session token looked up per
+// request (unique). ipAddress/userAgent hold DERIVED LABELS (country name,
+// "OS · Browser"), never raw values — a session.create.before hook in
+// lib/betterAuth.ts converts at write time (privacy parity with user_sessions).
+model AuthSession {
+  id        Int      @id @default(autoincrement())
+  token     String   @unique
+  userId    Int      @map("user_id")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+// Short-lived verification tokens (email verification, etc.). Keyed on
+// `identifier` (e.g. an email), NOT a user_id — so no FK / cascade here.
+model AuthVerification {
+  id         Int      @id @default(autoincrement())
+  identifier String
+  value      String
+  expiresAt  DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@index([identifier])
+  @@map("auth_verifications")
 }
 
 // Per-pair soft-hide. A mutes B → A no longer sees B's content in

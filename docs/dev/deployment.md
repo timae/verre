@@ -3,10 +3,23 @@
 - Hosted on Deploio, deployed from `main` on push (Dockerfile build).
 - Postgres + Redis + S3-compatible Object Storage all on Nine. Specific app names, project IDs, hostnames, and live URLs are intentionally not in this file — see the Deploio dashboard.
 
+## 🔒 Trusted-proxy / client-IP posture (load-bearing for rate limiting)
+
+Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp` — used by the web **login** throttle (`auth.ts`), register, session create/join, AND Better Auth's native atomic floor). The IP is trustworthy **only because Deplo.io's TLS-termination proxy overwrites `X-Forwarded-For` with the real connecting client IP** and parks any client-supplied value in a *separate* header `X-Original-Forwarded-For` ([docs.nine.ch HTTP headers](https://docs.nine.ch/docs/deplo-io/http-headers/)). So `X-Forwarded-For` as the app receives it is a **single trusted IP**; the leftmost entry is set by the proxy, not the client. `getClientIp` reads it accordingly and treats a *multi-entry* XFF as untrusted (falls back to `X-Real-Ip`, then a shared `unknown` bucket).
+
+**Invariant — do not violate without re-auditing rate-limit keying:**
+
+1. **No untrusted CDN/proxy in front of Deplo.io.** Today Verre is served directly by Deplo.io's ingress (no Cloudflare etc.). Putting an untrusted proxy in front would let a client spoof `X-Forwarded-For`, and rate-limit/geo keying would trust the forged value. If a CDN is ever added, it must be a *trusted* proxy and `getClientIp` must be updated to skip the now-additional hop.
+2. **Never read `X-Original-Forwarded-For`** as the client IP — that header IS the client-supplied (untrusted) value Deplo.io deliberately moved aside.
+3. **The `unknown` fallback is fail-safe ONLY while the overwrite invariant holds.** Behind Deplo.io a multi-entry XFF can't occur (proxy overwrites → single entry), so `getClientIp` never actually reaches the shared `unknown` bucket on a real request. If multi-entry XFF ever becomes reachable in prod (a CDN added, the proxy reconfigured), the `unknown` fallback turns into a shared-bucket lever an attacker can deliberately land in to exhaust the limit for other `unknown`-bucketed callers — re-audit the fallback then (prefer per-trusted-hop keying over `unknown`).
+
+⚠️ **Two-layer native limiter, different keying on the untrusted edge.** Better Auth's *own* limiter (the belt) uses its `getIp`, which trusts the **leftmost** XFF entry even on a multi-entry header — it was NOT hardened like `getClientIp`. Verre's atomic floor (the braces, the before-hook in `lib/betterAuth.ts`) uses the hardened `getClientIp`. On the expected single-entry XFF both agree; they diverge only on a (currently-unreachable) multi-entry XFF, where the belt keys on the spoofable leftmost and the floor keys on `unknown`. Harmless to the cap — the floor still applies and fails closed — but the two layers are NOT identical in keying; don't assume the belt inherits the hardened posture.
+
 ## Env vars set on Deploio (values not stored in repo)
 
 - `REDIS_URL`, `DATABASE_URL` — service connections.
-- `AUTH_SECRET` — NextAuth + register-token HMAC. (`NEXTAUTH_SECRET` / `JWT_SECRET` accepted as fallback names by `auth.ts` and `lib/registerToken.ts`.)
+- `AUTH_SECRET` — NextAuth + register-token HMAC. (`NEXTAUTH_SECRET` / `JWT_SECRET` accepted as fallback names by `auth.ts` and `lib/registerToken.ts`.) Better Auth (`lib/betterAuth.ts`) signs with the same secret.
+- `AUTH_URL` — public base URL; Better Auth builds callback/redirect URLs from it (fallback chain: `AUTH_URL` → `BETTER_AUTH_URL` → `NEXTAUTH_URL` → dev `http://localhost:3000`). Prod already sets `NEXTAUTH_URL`, which the chain picks up; setting `AUTH_URL` explicitly is still preferred.
 - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` — Object Storage.
 - `SERVER_ACTIONS_ALLOWED_ORIGINS` — comma-separated extra origins for Server Actions CSRF (deployed hostname; `localhost:8080` always allowed; no scheme).
 - `PUBLIC_HOSTNAME` — used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.

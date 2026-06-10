@@ -2,6 +2,7 @@ import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { prisma } from '@/lib/prisma'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { userIdentityId } from '@/lib/identity'
+import { deleteAllNativeSessions } from '@/lib/identityStore'
 import type { SessionMeta } from '@/lib/session'
 
 export const TOMBSTONE_NAME = '[deleted]'
@@ -278,6 +279,16 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     select: { imageUrl: true },
   })
 
+  // 🔒 Native sessions die FIRST, through Better Auth (never raw row deletes —
+  // the Redis copies are the live read path). Must run BEFORE the txn: the
+  // users cascade below removes the auth_sessions rows, after which there is
+  // nothing left to sweep the Redis token copies from — they would outlive the
+  // account (name + email in the session JSON) and keep authenticating on
+  // BA-native endpoints until TTL. Revoke-first is the safe failure order: a
+  // throw aborts the deletion with the account intact (retryable), and a txn
+  // rollback after a successful revoke merely costs native re-logins.
+  await deleteAllNativeSessions(userId)
+
   await prisma.$transaction(async (tx) => {
     // Standalone ratings hard-cascade (no other user depends). Their
     // feed_items (kind='standalone', FK to ratings.id ON DELETE CASCADE)
@@ -318,6 +329,9 @@ export async function executeAccountDelete(userId: number): Promise<DeletePlan> 
     //   - user_sessions.user_id CASCADE (the "Connected devices" rows; their
     //     cookies still validate signature-wise but the jwt() gate finds no
     //     row → identity stripped on the next request)
+    //   - auth_accounts.user_id / auth_sessions.user_id CASCADE (Better Auth
+    //     credential + session rows; the Redis session copies were already
+    //     deleted by deleteAllNativeSessions above, BEFORE this txn)
     await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
   })
 

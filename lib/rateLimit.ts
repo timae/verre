@@ -108,15 +108,44 @@ export async function peekRates(checks: RateCheck[]): Promise<RateResult> {
   return worst
 }
 
-// Pull the client IP from forwarding headers. Deploio's reverse proxy
-// sets X-Forwarded-For; X-Real-IP as a fallback. 'unknown' if neither
-// (rate-limits then bucket every unknown caller into one shared bucket,
-// which is more permissive but safer than crashing).
+// Pull the client IP from forwarding headers, for rate-limit keying.
+//
+// 🔒 Trusted-proxy posture (verified 2026-06-10, see docs/dev/deployment.md):
+// Deplo.io's TLS-termination proxy OVERWRITES X-Forwarded-For with the real
+// connecting client IP and parks any client-supplied XFF value in a SEPARATE
+// header (X-Original-Forwarded-For, which we never read). So as Verre receives
+// it, X-Forwarded-For is a SINGLE trusted IP — the leftmost entry is set by the
+// trusted proxy, not the client. This holds ONLY while there is no untrusted
+// CDN/proxy in front of Deplo.io (today: none — served directly by Deplo.io's
+// ingress).
+//
+// A MULTI-entry XFF (contains a comma) therefore should not happen in prod, and
+// if it does it's the signal that an untrusted hop was added — in that case the
+// leftmost entry is attacker-controllable (the classic append-spoofing case), so
+// we must NOT trust it. We fall back to X-Real-Ip (Deplo.io also sets this to the
+// real IP; a client can't make the proxy append to a single-valued header it
+// overwrites), then to a shared 'unknown' bucket. Never return a caller-supplied
+// value as if it were trusted.
+//
+// 'unknown' buckets every unresolved caller into one shared rate-limit key —
+// more permissive (one bucket for all) but safe: it fails CLOSED into a limit,
+// never bypasses it.
 export function getClientIp(req: Request): string {
   const xff = req.headers.get('x-forwarded-for')
-  if (xff) return xff.split(',')[0].trim()
+  if (xff) {
+    // Single entry = the trusted-proxy-set real IP (the expected prod shape).
+    // Multiple entries = an untrusted hop was added; the leftmost is spoofable,
+    // so don't trust XFF at all — fall through to x-real-ip.
+    if (!xff.includes(',')) {
+      const ip = xff.trim()
+      if (ip) return ip
+    }
+  }
   const real = req.headers.get('x-real-ip')
-  if (real) return real.trim()
+  if (real) {
+    const ip = real.trim()
+    if (ip) return ip
+  }
   return 'unknown'
 }
 
