@@ -1,7 +1,7 @@
 import { betterAuth } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
-import { APIError } from 'better-auth/api'
+import { APIError, getSessionFromCtx } from 'better-auth/api'
 import { createHmac } from 'node:crypto'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
@@ -181,6 +181,49 @@ export const betterAuthServer = betterAuth({
           throw APIError.fromStatus('TOO_MANY_REQUESTS', {
             message: `Too many attempts. Try again in ${formatWait(rl.retryAfter)}.`,
           })
+        }
+      }
+
+      // 🔒 /change-password is a CURRENT-PASSWORD reauth surface from an already-
+      // stolen native session — the same threat as the web account PATCH/DELETE.
+      // The IP counter above bounds spray from one IP, but an attacker with one
+      // stolen cookie can ROTATE IPs to bypass it. So ALSO charge the PER-USER
+      // budget — the SAME `rl:account:user:<id>:1h` key (20/h) the web account
+      // routes + verifyPassword use — so the password-guess budget is shared
+      // across web and native and a stolen native cookie can't get a fresh 20/h.
+      // The user comes from the session cookie (getSessionFromCtx — the global
+      // before-hook runs before sensitiveSessionMiddleware populates
+      // ctx.context.session, so resolve it directly). The per-user charge is
+      // skipped in exactly two cases, both safe: (a) NO session → the charge is
+      // skipped here, and sensitiveSessionMiddleware 401s the request right after
+      // this hook, so no password guess reaches bcrypt; (b) a present session
+      // with a non-positive/NaN id → that branch is UNREACHABLE (Verre ids are
+      // always positive Postgres serials), so it can't actually skip a charge for
+      // a real session. So a skipped charge never lets a guess through.
+      //
+      // ⚠️ getSessionFromCtx caches its result on ctx.context.session, which the
+      // endpoint's sensitiveSessionMiddleware then reuses (no double-resolve).
+      // That's only SAFE because cookieCache.enabled is false (see the session
+      // config above + its CI gate): we pre-populate WITHOUT disableCookieCache,
+      // and the middleware passes disableCookieCache:true — if cookie cache were
+      // ever turned on, our cache-hit would silently defeat the middleware's
+      // freshness intent (a revoked-session gap). The cookieCache-off invariant
+      // is what keeps this harmless; don't enable it without revisiting this.
+      if (ctx.path === '/change-password') {
+        const sess = await getSessionFromCtx(ctx).catch(() => null)
+        // Number(...) to match the web routes' EXACT key shape — they do
+        // `Number(session.user.id)` (account/route.ts, verifyPassword.ts), so the
+        // budget is genuinely the SAME key, not a string-vs-number twin that would
+        // silently split the budget. The guard skips a non-positive/NaN id — see
+        // the two skip cases (both safe) in the block comment above.
+        const uid = Number(sess?.user?.id)
+        if (Number.isInteger(uid) && uid > 0) {
+          const rl = await checkRate(`rl:account:user:${uid}:1h`, 20, 3600)
+          if (!rl.allowed) {
+            throw APIError.fromStatus('TOO_MANY_REQUESTS', {
+              message: `Too many attempts. Try again in ${formatWait(rl.retryAfter)}.`,
+            })
+          }
         }
       }
 
