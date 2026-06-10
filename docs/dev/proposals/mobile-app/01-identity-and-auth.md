@@ -454,6 +454,29 @@ What v1 needs, in order:
    fields" claim with the dist reasoning. Other findings were doc-only (gate KNOWN-LIMITS honesty
    about table-write aliasing; CI-gate guarantee-scope note; a "this fan-out duplication is deliberate"
    note) — no logic changes beyond the `/update-session` deny.
+   **PR #39 review (Tim + agents), two rounds, 2026-06-10.** Round 1: name-validation parity
+   (validateDisplayName on the native sign-up hook), deterministic synthetic id (HMAC, closes the
+   repeat-probe tell), comment-accuracy fixes. Round 2 — two findings:
+   (i) **HIGH** native `/change-password` was IP-keyed only → an attacker with a stolen native cookie
+   could rotate IPs to bypass the 20/h current-password brute-force cap. Fixed: the before-hook now
+   also charges the shared per-user `rl:account:user:<id>:1h` budget (the same key the web account
+   routes + verifyPassword use), resolved via `getSessionFromCtx`. 5-reviewer-clean + e2e pin.
+   (ii) **MEDIUM, re-scoped** native session-management endpoints. A reviewer flagged that a stolen
+   native cookie could enumerate/revoke other native sessions with no password reauth (web gates device
+   revoke behind verifyPassword), AND that `/list-sessions`+`/get-session` return the raw session token
+   in the body. Investigation (probe-verified): the revoke-without-password is the LEGITIMATE "log out
+   everywhere" feature and the victim's own panic button — web's password-gate is conservative, not
+   load-bearing — so native staying password-free there is an INTENTIONAL, documented divergence. The
+   token-in-body is the real (minor) issue: the leaked token is NOT replayable as a credential (a
+   cookie is `token.<HMAC-sig>`; the bare token resolves no session — proven), so no hijack, but it
+   diverges from web and would let a cookie-thief target a specific device. Fix: `/list-sessions`,
+   `/get-session`, `/revoke-session` added to `disabledPaths` (closes the cross-device token leak +
+   de-fangs targeted revoke; `resolveUser` uses the api.getSession METHOD which bypasses disabledPaths,
+   so identity resolution is unaffected — verified). The COARSE `/revoke-sessions` +
+   `/revoke-other-sessions` stay LIVE as the password-free native logout-all. BA's session `token`
+   field can't be marked `returned:false` via config (verified), so disabling the leaking read
+   endpoints is the fix, not a strip. CI gate now asserts 12 `disabledPaths` entries; e2e pins the 3
+   new 404s + that `/revoke-other-sessions` stays live.
 6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
    (§6.4–6.5).
    **Deferred (2026-06-10, maintainer decision).** Can land even after the first throw of the mobile

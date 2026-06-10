@@ -83,7 +83,7 @@ for (const f of tracked) {
 //    re-open the surface. Static-parse the array literal (comments already
 //    stripped from `src`); each entry must appear as a quoted string.
 //
-//    SCOPE OF THIS GUARANTEE: "the 8 endpoints we know about stay denied" — NOT
+//    SCOPE OF THIS GUARANTEE: "the endpoints in REQUIRED_DISABLED stay denied" — NOT
 //    "no dangerous BA endpoint is ever live." It can't detect a NEW live-but-
 //    wrong endpoint introduced by a future BA upgrade (a new /change-username,
 //    a passkey route, …). The compensating control is the EXACT version pin
@@ -99,6 +99,9 @@ const REQUIRED_DISABLED = [
   '/change-email',
   '/unlink-account',
   '/update-session',
+  '/list-sessions',
+  '/get-session',
+  '/revoke-session',
 ]
 const dpMatch = /disabledPaths\s*:\s*\[([\s\S]*?)\]/.exec(src)
 if (!dpMatch) {

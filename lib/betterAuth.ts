@@ -526,6 +526,33 @@ export const betterAuthServer = betterAuth({
   //    full reasoning at the session.create.before hook above). Verre never
   //    calls it; denied purely so it isn't a recurring "why isn't this denied?"
   //    question for future reviewers.
+  //  - /list-sessions + /get-session — BA's parseSessionOutput does NOT strip the
+  //    session `token` field (it has no returned:false flag, and that flag is not
+  //    config-overridable — verified 1.6.15), so both endpoints return the raw
+  //    session token in the JSON body. /list-sessions returns it for the user's
+  //    OTHER sessions — a cross-device token leak (web's GET /api/me/devices
+  //    deliberately strips it). The leaked token is NOT directly replayable as a
+  //    credential (a session cookie is token.<HMAC-sig>; the bare token resolves
+  //    no session — empirically verified), so it's not a hijack — but it diverges
+  //    from the web posture and would let a cookie-thief TARGET a specific device
+  //    for /revoke-session. Disabling /list-sessions closes the cross-device leak;
+  //    /get-session only ever returned the caller's OWN current token (which they
+  //    already hold as a cookie) but is disabled too for parity — resolveUser uses
+  //    the api.getSession METHOD, which bypasses disabledPaths (HTTP-router only),
+  //    so this doesn't break identity resolution. Native "am I logged in?" uses
+  //    the same method path or Verre's /api/me/*.
+  //  - /revoke-session — targeted single-session revoke; takes a token in the body.
+  //    With /list-sessions gone there's no way for a native client to obtain
+  //    another device's token, so it's de-fanged; disabled for cleanliness. The
+  //    COARSE revokes (/revoke-sessions, /revoke-other-sessions) stay LIVE — they
+  //    need no token and are the legitimate native "log out everywhere" feature
+  //    (also the victim's own panic button). They are password-free by design: an
+  //    INTENTIONAL divergence from web's password-gated device revoke. Web gates
+  //    it conservatively; native treats "sign out other devices" as a safe
+  //    defensive action (no password prompt for a frictionless logout-all). A
+  //    stolen cookie can coarsely revoke-all, but that's marginal over the full
+  //    account access the cookie already grants, and symmetric with the owner's
+  //    own panic button. (PR #39 review round 2.)
   //
   // /change-password was disabled in step 4 (it writes auth_accounts.password
   // ONLY — the old password would keep working on web). Re-enabled in step 5:
@@ -544,6 +571,9 @@ export const betterAuthServer = betterAuth({
     '/change-email',
     '/unlink-account',
     '/update-session',
+    '/list-sessions',
+    '/get-session',
+    '/revoke-session',
   ],
 
   // TODO(step-6): socialProviders { google, apple } with the native id_token
