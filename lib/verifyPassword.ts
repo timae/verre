@@ -28,10 +28,22 @@ export async function verifyPassword(userId: number, password: string): Promise<
   const rl = await checkRate(`rl:account:user:${userId}:1h`, 20, 3600)
   if (!rl.allowed) return { ok: false, reason: 'rate-limited', retryAfter: rl.retryAfter }
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
-  // A social-only (Better Auth) user has a NULL password_hash — never fall
-  // through to "allow". Their credential lives in auth_accounts; device-mgmt
-  // re-auth for native callers is handled separately (proposal §5a).
-  const valid = user?.passwordHash ? await bcrypt.compare(password, user.passwordHash) : false
+  // ONE hash is authoritative per user, tried at most once per attempt:
+  // users.password_hash when present (web-credentialed; the §3 mirror keeps the
+  // native copy equal, so checking both would just double the guesses a stolen
+  // cookie gets per rate-limit slot). Only when it's NULL (native-registered
+  // user, step-5 asymmetry) fall back to the auth_accounts credential row —
+  // a READ, so the identity-writes gate is untouched. A user with neither
+  // (social-only, step 6) never falls through to "allow".
+  let hash = user?.passwordHash ?? null
+  if (user && !hash) {
+    const cred = await prisma.authAccount.findFirst({
+      where: { userId, providerId: 'credential' },
+      select: { password: true },
+    })
+    hash = cred?.password ?? null
+  }
+  const valid = hash ? await bcrypt.compare(password, hash) : false
   if (!valid) return { ok: false, reason: 'incorrect' }
   return { ok: true }
 }

@@ -1,21 +1,24 @@
 import { betterAuth } from 'better-auth'
+import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import bcrypt from 'bcrypt'
 import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
 import { scrub } from '@/lib/textSafe'
+import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
 
-// ── Better Auth — native-app credential layer (step 4) ────────────────────────
+// ── Better Auth — native-app credential layer ─────────────────────────────────
 //
 // 🔒 NODE-RUNTIME ONLY. better-auth + bcrypt pull `node:*` imports. This module
 // must NEVER be reached from middleware.ts / auth.config.ts / instrumentation.ts
 // or `npm run build` fails with UnhandledSchemeError (Edge bundle). It is mounted
 // only in the Node-runtime route handler at app/api/auth/native/[...all].
 //
-// SCOPE (step 4): email/password only. Social providers (Google/Apple) are a
+// SCOPE (step 5): email/password only. Social providers (Google/Apple) are a
 // TODO(step-6) — they need real client credentials + the native nonce/Apple
-// config (proposal §6.4–6.5). The resolveUser web/native read-split + the lazy
-// auth_accounts credential backfill are step 5. Nothing reads these tables yet.
+// config (proposal §6.4–6.5). The resolveUser web/native read-split, the lazy
+// auth_accounts credential backfill (hooks.before below), and the identityStore
+// dual-store fan-out are live.
 //
 // Maps onto Verre's EXISTING tables (pinned in schema.prisma): user → `users`
 // (Int autoincrement PK), plus `auth_accounts` / `auth_sessions` /
@@ -103,8 +106,11 @@ export const betterAuthServer = betterAuth({
     // posture is gone. With it, BA writes BOTH stores and serves reads Redis-
     // first. ⚠️ Consequence: a raw prisma.authSession.delete does NOT revoke
     // (the Redis copy stays live until TTL) — every revocation must go through
-    // Better Auth's API, which deletes both stores. The identityStore fan-out
-    // (step 5) must use betterAuthServer.api, never raw row deletes.
+    // Better Auth, which deletes both stores. The identityStore fan-out uses
+    // $context.internalAdapter (deleteUserSessions/deleteSession — the same
+    // both-store path BA's own endpoints use) because the api.revoke* endpoints
+    // sit behind sessionMiddleware and need a live BA cookie, which web-
+    // triggered revokes don't have. Never raw row deletes.
     storeSessionInDatabase: true,
   },
   verification: {
@@ -114,6 +120,30 @@ export const betterAuthServer = betterAuth({
     // stays permanently empty (internal-adapter.mjs gates the DB write on
     // verification.storeInDatabase, same executeMainFn mechanism as sessions).
     storeInDatabase: true,
+  },
+
+  // Global request hooks (run for HTTP AND auth.api.* calls, after disabledPaths
+  // + the rate limiter on HTTP — so neither can be used pre-limit).
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      // Lazy credential backfill (§5): an existing WEB user's first native
+      // sign-in needs an auth_accounts credential row (BA's credential sign-in
+      // fails closed without one and never reads users.password_hash). Copy the
+      // web hash on first contact. Throws fail the sign-in — fail-closed.
+      if (ctx.path === '/sign-in/email') {
+        const email = ctx.body?.email
+        if (typeof email === 'string' && email) await backfillNativeCredential(email)
+        return
+      }
+      // Force Verre's password-change posture: a password change revokes every
+      // OTHER session (web does this via revokeAllSessions). Don't trust the
+      // native client to pass revokeOtherSessions — inject it server-side.
+      // The WEB-side revoke for this flow lives in the account.update.after
+      // hook below; this flag covers the BA-side sessions.
+      if (ctx.path === '/change-password') {
+        return { context: { body: { ...ctx.body, revokeOtherSessions: true } } }
+      }
+    }),
   },
 
   // Verre invariant (lib/CLAUDE.md): scrub every free-text body field before a
@@ -136,6 +166,49 @@ export const betterAuthServer = betterAuth({
         before: async (data) => {
           if (!('name' in data)) return
           return { data: { name: scrub(data.name) ?? undefined } }
+        },
+      },
+    },
+    // 🔒 NATIVE→WEB credential mirror (§3): BA's /change-password writes
+    // auth_accounts.password only. This after-hook (runs post-commit) fans the
+    // new hash out to users.password_hash and kills every web session, so the
+    // old password can't keep working on web — the exact drift /change-password
+    // was disabledPaths'd to prevent until now.
+    //
+    // ⚠️ Covers /change-password ONLY — a future reset-password flow would NOT
+    // hit this hook: BA's reset path goes through updatePassword → updateMany,
+    // whose after-hook receives the adapter's COUNT, not the row, so the
+    // providerId guard below silently skips. Inert today (no sendResetPassword
+    // configured → no reset token can exist). When reset ships, wire
+    // emailAndPassword.onPasswordReset + revokeSessionsOnPasswordReset and pin
+    // a test — do not rely on this hook.
+    //
+    //  - Fires on ANY credential-account row update, so it self-discriminates:
+    //    skip unless the row's hash actually differs from users.password_hash.
+    //  - Skip when users.password_hash is NULL: a native-registered user has no
+    //    web password and no web sessions — mirroring would silently grant web
+    //    login. They stay native-only (the documented step-5 asymmetry).
+    //  - No recursion: syncCredential writes auth_accounts via raw Prisma,
+    //    which skips BA's databaseHooks.
+    //  - Same independence rule as identityStore: the web-session revoke is
+    //    attempted even if the hash mirror throws (revoking is the safety
+    //    action), then the first error rethrows.
+    account: {
+      update: {
+        after: async (account) => {
+          // optional-chain: updateMany-shaped hook payloads are a count, not a row
+          if (account?.providerId !== 'credential' || !account.password) return
+          const userId = Number(account.userId)
+          const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
+          if (!user?.passwordHash || user.passwordHash === account.password) return
+          let syncErr: unknown
+          try {
+            await syncCredential(userId, account.password)
+          } catch (e) {
+            syncErr = e
+          }
+          await revokeAllWebSessions(userId, 'password_change')
+          if (syncErr) throw syncErr
         },
       },
     },
@@ -166,6 +239,10 @@ export const betterAuthServer = betterAuth({
     customRules: {
       '/sign-in/email': { window: 60, max: 10 },
       '/sign-up/email': { window: 60, max: 10 },
+      // Current-password brute-force surface, same threat as the web account
+      // PATCH (rl:account 20/h/user) — mirrored here as 20/h, though per-IP
+      // since BA keys on IP (step-7 gate revisits the keying).
+      '/change-password': { window: 3600, max: 20 },
     },
   },
 
@@ -184,10 +261,10 @@ export const betterAuthServer = betterAuth({
       .filter(Boolean)
       .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? [],
 
-  // 🔒 Step-4 scope clamp: the catch-all mounts EVERY core BA endpoint, not just
-  // the email/password + session set we use. Two are live-but-wrong for Verre
-  // and must stay 404 (BA returns 404 on a disabledPaths match before rate
-  // limiting or handlers run):
+  // 🔒 Scope clamp: the catch-all mounts EVERY core BA endpoint, not just the
+  // email/password + session set we use. One is live-but-wrong for Verre and
+  // must stay 404 (BA returns 404 on a disabledPaths match before rate limiting
+  // or handlers run):
   //
   //  - /update-user — would write users.name + users.image_url (via the image →
   //    imageUrl mapping) directly, bypassing the avatar pipeline (MIME/magic-byte
@@ -195,18 +272,15 @@ export const betterAuthServer = betterAuth({
   //    profile edits must go through Verre's /api/me/* routes instead. Re-enable
   //    only if a native flow deliberately needs it — and then never for image.
   //
-  //  - /change-password — writes auth_accounts.password ONLY: users.password_hash
-  //    and user_sessions stay untouched, so the OLD password would still log in
-  //    on web — exactly the cross-store credential drift the identityStore
-  //    chokepoint exists to prevent (root CLAUDE.md). 🔓 Re-enable in step 5,
-  //    when the credential + revocation fan-out routes through
-  //    lib/identityStore.ts using betterAuthServer.api (proposal §8 step 5).
-  //
-  // The other risky endpoints are already inert by default (verified against
-  // 1.6.15 dist): /delete-user + /change-email are config-gated off,
-  // /set-password has no HTTP route (server-only), /request-password-reset
-  // 400s with no sendResetPassword wired.
-  disabledPaths: ['/update-user', '/change-password'],
+  // /change-password was disabled in step 4 (it writes auth_accounts.password
+  // ONLY — the old password would keep working on web). Re-enabled in step 5:
+  // the account.update.after hook above mirrors the hash to users.password_hash
+  // + revokes web sessions, and the before-hook forces revokeOtherSessions for
+  // the BA side. The other risky endpoints are already inert by default
+  // (verified against 1.6.15 dist): /delete-user + /change-email are
+  // config-gated off, /set-password has no HTTP route (server-only),
+  // /request-password-reset 400s with no sendResetPassword wired.
+  disabledPaths: ['/update-user'],
 
   // TODO(step-6): socialProviders { google, apple } with the native id_token
   // path, nonce, and Apple appBundleIdentifier (proposal §6.4–6.5). Needs real

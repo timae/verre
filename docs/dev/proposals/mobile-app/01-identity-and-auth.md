@@ -105,13 +105,20 @@ the other) — with a partial-failure test. **This is a cross-cutting invariant 
 CLAUDE.md when implemented.**
 
 **As-built constraint (step 4 discovery):** the BA leg of the fan-out must go through
-`betterAuthServer.api` (`revokeSessions`), **never raw `auth_sessions` row writes** — with
-`secondaryStorage` configured, BA serves session reads Redis-first, so a raw `prisma.authSession`
-delete leaves the Redis copy live until TTL. Until the fan-out lands (step 5), BA's own
-`/change-password` and `/update-user` endpoints are `disabledPaths` (404, `lib/betterAuth.ts`):
-a BA-side password change would write `auth_accounts.password` only and skip this chokepoint —
-the old password would keep working on web, the exact drift this section exists to prevent.
-Re-enable `/change-password` only WITH the step-5 fan-out.
+Better Auth, **never raw `auth_sessions` row writes** — with `secondaryStorage` configured, BA
+serves session reads Redis-first, so a raw `prisma.authSession` delete leaves the Redis copy
+live until TTL.
+
+**As built (step 5, 2026-06-10):** the BA leg uses `$context.internalAdapter`
+(`deleteUserSessions` / `deleteSession` — the same both-store deletion path BA's own endpoints
+use), not `api.revokeSessions` as sketched above: the `api.revoke*` endpoints sit behind
+`sessionMiddleware` and need a live BA cookie, which a web-triggered revoke doesn't have.
+`/change-password` is re-enabled WITH the fan-out: a `hooks.before` forces
+`revokeOtherSessions: true` server-side, and a `databaseHooks.account.update.after` mirror routes
+the new hash through `syncCredential` + revokes all web sessions (reason `password_change`) —
+skipping users whose `password_hash` is NULL, so native-registered users stay native-only (no
+silent web-login grant). `/update-user` stays `disabledPaths` (it would bypass the avatar
+pipeline + name scrub).
 
 **Worst drift failures, ranked:** (a) a web password change not propagated → native login uses the old
 password (a visible bug, not a security hole); (b) "log out everywhere" missing the other store → a
@@ -361,10 +368,20 @@ What v1 needs, in order:
    `auth.api.getSession`, uncached; NextAuth cookie → unchanged `auth()`), with the deterministic
    fail-closed precedence; replace the live `Authorization`-bearer discriminator. Lazy-create the
    `auth_accounts` credential row (via `identityStore`) before the first native verify. Union the
-   Connected-devices read across both stores (§5a). Wire the `identityStore` fan-out (BA leg via
-   `betterAuthServer.api`, never raw row writes — §3) with the partial-failure test; **only then**
+   Connected-devices read across both stores (§5a). Wire the `identityStore` fan-out (BA leg
+   through Better Auth, never raw row writes — §3) with the partial-failure test; **only then**
    drop `/change-password` from `disabledPaths` (a BA password change without the fan-out updates
    `auth_accounts` only — the old password keeps working on web).
+   **Done (2026-06-10).** As-built deviations from this sketch: the BA revoke leg uses
+   `$context.internalAdapter` (the `api.revoke*` endpoints need a live BA cookie — §3 as-built
+   note); the backfill runs in a global `hooks.before` on `/sign-in/email` (behind BA's 10/min/IP
+   limiter; idempotent; create-race-safe via the `[providerId, accountId]` unique);
+   `verifyPassword` (device-revoke re-auth) falls back to the `auth_accounts` credential row only
+   when `users.password_hash` is NULL; the devices GET lists native sessions as `ba:<int>` ids and
+   the per-id DELETE routes those through `revokeOneNativeSession` (always password-gated — a
+   `ba:` row is never the web caller's own current session); `/change-password` is rate-limited
+   20/h/IP (BA `customRules`, `app/api/rate-limits.md`). Coverage:
+   `.local/test-env/scripts/_ba-e2e-step5.ts` via `section-native-auth-step5.sh`.
 6. **Native social** — `signIn.social({ idToken })` for Google + Apple, with the nonce + Apple config
    (§6.4–6.5).
 7. **Rate-limiting design (§6.2) — gate: do not ship native login without it.**
