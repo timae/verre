@@ -36,7 +36,7 @@ Optional label scan:
 ## Architecture
 
 ```
-Browser ──→ Next.js 15 (Node 20) ──→ Redis     (live session state, 48h+ TTL)
+Browser ──→ Next.js 15 (Node 24) ──→ Redis     (live session state, 48h+ TTL)
                                   ─→ Postgres  (accounts, history, bookmarks, HoF)
                                   ─→ S3        (bottle photos)
 ```

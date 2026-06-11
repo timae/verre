@@ -1,5 +1,5 @@
 # ── Verre v3 — Next.js 15 ─────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:24-alpine AS builder
 WORKDIR /app
 # Copy the root manifests AND every workspace package manifest before `npm ci`
 # so the install is workspace-aware and links node_modules/@verre/* . If the
@@ -17,7 +17,7 @@ COPY . .
 RUN npx prisma generate
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080

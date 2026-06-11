@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
       # Fail the build if Better Auth's cookieCache is ever enabled or the JWT
       # plugin is added — both defeat the never-cache-auth revocation invariant
