@@ -36,7 +36,7 @@ interface Props {
   // disappears (or reappears) without a page reload.
   onMuteToggle?: () => void
   // Block toggle invalidates user-profile, feed, profile-people,
-  // session-meta caches — block affects every viewer surface.
+  // session-state caches — block affects every viewer surface.
   onBlockToggle?: () => void
 }
 

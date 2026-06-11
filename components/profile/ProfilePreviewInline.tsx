@@ -104,7 +104,7 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId, ind
                     a blocked-pair participant row. Surfaces the unblock
                     affordance directly so the flow doesn't require
                     navigating to settings. Invalidates queries so the
-                    next session-meta + user-profile polls reflect the
+                    next session-state + user-profile polls reflect the
                     new state. */}
                 <button
                   className="btn-s"
@@ -113,9 +113,9 @@ export function ProfilePreviewInline({ userId, isSelf, viewerLoggedIn, myId, ind
                     if (res.ok) {
                       qc.invalidateQueries({ queryKey: ['user-profile', userId] })
                       qc.invalidateQueries({ queryKey: ['feed'] })
-                      // session-meta is fetched via a different key shape per route;
-                      // a generic invalidation hits any active session meta query.
-                      qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-meta' })
+                      // session state is fetched via a per-session key shape;
+                      // a generic invalidation hits any active session query.
+                      qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-state' })
                     }
                   }}
                   style={{

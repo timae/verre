@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
-import { redactWine } from '@/lib/wineRedaction'
+import { isHostByIdentity, isProviderById, getSessionMeta, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire } from '@/lib/session'
+import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -29,55 +29,19 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   if (p.status === 'invalid') return authInvalid('not a participant')
   const identity = p.identity
 
-  const wines = await getWines(c)
   const meta = await getSessionMeta(c)
   if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const isUserHost = isHostByIdentity(meta, identity)
 
-  // Lineup hidden until X minutes before start
-  if (meta.hideLineup && meta.dateFrom && !isUserHost) {
-    const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
-    if (Date.now() < revealAt) return NextResponse.json([])
-  }
-
-  // Hybrid resolution for `addedByDisplayName`: live identities map →
-  // users.name fallback for kicked logged-in adders → snapshot on the
-  // wine itself → null. Fetch once per request and thread through.
+  // Wire-shape assembly (hideLineup gate, blind redaction branch,
+  // wineToWire) lives in lib/sessionState.ts buildWinesView — shared with
+  // /api/session/:code/state.
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup(wines, identities)
-
-  // Enter the redaction branch when:
-  //   - session is blind AND the caller isn't host (the default rule), OR
-  //   - session is blind AND meta.blindForEveryone is on (then redact even
-  //     hosts — the helper itself decides per-wine whether to short-
-  //     circuit on `revealed`).
-  if (meta.blind && (!isUserHost || meta.blindForEveryone)) {
-    // Per-wine redaction: see lib/wineRedaction.ts for the full rule.
-    // Pre-feature wines have NULL `addedByIdentityId` and never match
-    // the provider exception — they redact like any other wine the
-    // caller didn't add.
-    return NextResponse.json(
-      wines.map((w, i) => {
-        const redacted = redactWine(w, {
-          revealed: !!w.revealedAt,
-          isHost: isUserHost,
-          ownsWine: !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
-          index: i,
-          blindForEveryone: !!meta.blindForEveryone,
-        })
-        return redacted ?? wineToWire(w, identity.id, identities, userNameLookup)
-      }),
-      // Response varies per viewer (provider sees own un-redacted; the
-      // isMine flag is per-caller). Force private, no-store so no
-      // intermediary cache can serve one viewer's payload to another.
-      { headers: { 'Cache-Control': 'private, no-store' } },
-    )
-  }
-
+  const wines = await buildWinesView(c, meta, identity, identities)
   return NextResponse.json(
-    wines.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
-    // Non-blind path: isMine still varies per viewer, so same cache
-    // posture applies.
+    wines,
+    // Response varies per viewer (blind redaction, the isMine flag). Force
+    // private, no-store so no intermediary cache can serve one viewer's
+    // payload to another.
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

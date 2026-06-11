@@ -4,18 +4,12 @@ import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
-import { type SessionMeta, isHostByIdentity } from '@/lib/session'
+import { type SessionMeta } from '@/lib/session'
 import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { normalizeCode } from '@verre/core'
 import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
-import { blockPairIds } from '@/lib/userBlock'
-import {
-  batchLoadVisibilities,
-  resolveProfileViewerBulk,
-  viewerFofAuthorSet,
-  canViewProfile,
-} from '@/lib/profileVisibility'
+import { buildMetaView, viewerUserIdFrom } from '@/lib/sessionState'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -59,143 +53,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   if (p.status === 'invalid') return authInvalid('not a participant')
   const caller = p.identity
 
-  // Participants come from the identities map (id-keyed, the authoritative
-  // source). The legacy `users` set is no longer written to.
-  const idsByName = await redis.hGetAll(k.identities(c))
-  // Logged-in participants — their numeric userIds drive both block
-  // resolution (below) and the brought-by-avatar gate.
-  const participantUserIds: number[] = []
-  for (const id of Object.keys(idsByName)) {
-    if (id.startsWith('u:')) {
-      const n = Number(id.slice(2))
-      if (Number.isInteger(n) && n > 0) participantUserIds.push(n)
-    }
-  }
-  const ttlSeconds = await redis.ttl(k.meta(c))
-
-  // Ban count: only sent to host/cohost callers (others have no UI for
-  // it). Drives the conditional render of the BannedUsersSection on the
-  // client — section appears the moment a ban exists, disappears when
-  // the last unban happens. Polled via the existing 5s session GET
-  // refetch, so cross-host ban events propagate without a dedicated
-  // socket. Free for non-pro sessions (default 48h TTL); also works for
-  // pro lifespans (72h/1w/unlimited) — the polling cadence is
-  // client-side and independent of session TTL.
-  const meta = JSON.parse(raw) as SessionMeta
-  const isHost = isHostByIdentity(meta, caller)
-  const banCount = isHost ? await redis.sCard(k.bans(c)) : 0
-
-  // Viewer's block-pair set, scoped to identity-ids of participants in
-  // this session. Sent to the client so the participants list and
-  // Compare screen can apply the block render rules (anon-style for
-  // blocker-as-host, 🚫 prefix for blocked-as-host, hide non-host
-  // participants in either direction). Only logged-in viewers have a
-  // block-pair set — anon viewers never appear in user_blocks.
+  // Body assembly (participants, ttl, host-gated banCount, the viewer's
+  // session-scoped block-pair arrays, tier-gated avatar resolution) lives in
+  // lib/sessionState.ts buildMetaView — shared with /api/session/:code/state.
   //
-  // SECURITY: these arrays carry the viewer's block-pair list (scoped
-  // to this session). They MUST NOT be logged, mirrored to analytics,
-  // or stored in any shared cache. The Cache-Control header below
-  // forces a private no-store on the whole response for this reason.
-  const viewerUserId = session?.user
-    ? (() => {
-        const n = Number(session.user.id)
-        return Number.isInteger(n) && n > 0 ? n : null
-      })()
-    : null
-
-  const blockPairs = viewerUserId !== null ? await blockPairIds(viewerUserId) : null
-
-  const viewerBlocksOut: string[] = []
-  const viewerBlocksIn: string[] = []
-  if (blockPairs) {
-    // Translate user-ids to identity-ids; only logged-in participants
-    // (u:<id>) participate in blocks. Filter to participants actually
-    // in this session so the client's render filter doesn't have to.
-    const participantUserIdSet = new Set(participantUserIds)
-    for (const uid of blockPairs.blockedByMe) {
-      if (participantUserIdSet.has(uid)) viewerBlocksOut.push(`u:${uid}`)
-    }
-    for (const uid of blockPairs.blockingMe) {
-      if (participantUserIdSet.has(uid)) viewerBlocksIn.push(`u:${uid}`)
-    }
-  }
-
-  // Brought-by avatar imageUrl resolution. We deliberately DO NOT extend
-  // the "session participation > profile tier" exception that already
-  // applies to display names + ratings: avatars are stronger identity
-  // than a session-chosen display name, and a user's tier choice should
-  // hold here. Block beats tier (handled first via blockPairs); tier
-  // gates via the same batch composition used by /api/feed. Anon viewer
-  // (viewerUserId === null) only sees `public-internet` avatars. Self
-  // always sees their own. When the gate denies, imageUrl stays null and
-  // the client falls back to the initial letter (same render as today).
-  const imageUrlByUserId = new Map<number, string>()
-  if (participantUserIds.length > 0) {
-    const [visMap, viewerMap, users] = await Promise.all([
-      batchLoadVisibilities(participantUserIds),
-      resolveProfileViewerBulk(participantUserIds, viewerUserId),
-      prisma.user.findMany({
-        where: { id: { in: participantUserIds } },
-        select: { id: true, imageUrl: true },
-      }),
-    ])
-    const fofCandidates = participantUserIds.filter(id => visMap.get(id)?.fofEnabled === true)
-    const fofSet = fofCandidates.length > 0 && viewerUserId !== null
-      ? await viewerFofAuthorSet(viewerUserId, fofCandidates)
-      : new Set<number>()
-    const urlById = new Map<number, string>()
-    for (const u of users) {
-      if (u.imageUrl) urlById.set(u.id, u.imageUrl)
-    }
-    for (const profileId of participantUserIds) {
-      const url = urlById.get(profileId)
-      if (!url) continue
-      // Self: always visible.
-      if (viewerUserId !== null && profileId === viewerUserId) {
-        imageUrlByUserId.set(profileId, url)
-        continue
-      }
-      // Block beats tier — block-pair (either direction) drops the avatar.
-      if (blockPairs && (blockPairs.blockedByMe.has(profileId) || blockPairs.blockingMe.has(profileId))) continue
-      const settings = visMap.get(profileId)
-      if (!settings) continue
-      const base = viewerMap.get(profileId) ?? { id: viewerUserId, followsProfile: false, profileFollowsViewer: false }
-      const viewer = {
-        id: base.id ?? viewerUserId,
-        followsProfile: base.followsProfile,
-        profileFollowsViewer: base.profileFollowsViewer,
-        isFofOfProfile: settings.fofEnabled ? fofSet.has(profileId) : undefined,
-      }
-      if (canViewProfile(settings.visibility, viewer, settings.fofEnabled)) {
-        imageUrlByUserId.set(profileId, url)
-      }
-    }
-  }
-
-  const participants = Object.entries(idsByName).map(([id, displayName]) => {
-    let imageUrl: string | null = null
-    if (id.startsWith('u:')) {
-      const n = Number(id.slice(2))
-      if (Number.isInteger(n)) {
-        const url = imageUrlByUserId.get(n)
-        if (url) imageUrl = url
-      }
-    }
-    return { id, displayName, imageUrl }
-  })
-
-  return NextResponse.json(
-    {
-      ...meta,
-      code: c,
-      participants,
-      ttlSeconds,
-      viewerBlocksOut,
-      viewerBlocksIn,
-      banCount,
-    },
-    { headers: { 'Cache-Control': 'private, no-store' } },
-  )
+  // SECURITY: viewerBlocksOut/In carry the viewer's block-pair list. They
+  // MUST NOT be logged or mirrored anywhere shared; the Cache-Control header
+  // below forces private no-store on the whole response for this reason.
+  const meta = JSON.parse(raw) as SessionMeta
+  const identities = await redis.hGetAll(k.identities(c))
+  const body = await buildMetaView(c, meta, caller, viewerUserIdFrom(session), identities)
+  return NextResponse.json(body, { headers: { 'Cache-Control': 'private, no-store' } })
 }
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {

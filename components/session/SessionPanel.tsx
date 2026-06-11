@@ -58,7 +58,7 @@ const HIDE_OPTIONS = [
 ]
 
 export function SessionPanel({ onClose, onLeave }: Props) {
-  const { code, myId, isHost, sessionMeta, refresh } = useSession()
+  const { code, myId, isHost, sessionMeta } = useSession()
   const { data: authSession } = useAuthSession()
   const queryClient = useQueryClient()
   const isPro = !!(authSession?.user as { pro?: boolean })?.pro
@@ -174,8 +174,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     })
     setSaving(false)
     if (res.ok) {
-      await queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
-      refresh()
+      // One aggregate query — invalidation already refetches it; a
+      // refresh() on top would double-fetch.
+      await queryClient.invalidateQueries({ queryKey: ['session-state', code] })
       onClose()
     } else { const d = await res.json(); setSaveError(d.error || 'save failed') }
   }
@@ -185,12 +186,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setCopied(true); setTimeout(() => setCopied(false), 2000)
   }
 
-  // Invalidate the cached session meta after a role change so the
+  // Invalidate the cached session state after a role change so the
   // actor sees the new role instantly. Other participants pick it up
   // on their own next poll tick.
   function onRoleChanged() {
-    queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
-    refresh()
+    queryClient.invalidateQueries({ queryKey: ['session-state', code] })
   }
 
   const ttlLabel = formatTTL(m?.ttlSeconds ?? -1, m?.lifespan)
@@ -590,7 +590,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
       {/* Kick/Ban preview modal. Renders when the host picks an action
           from a participant row's ⋯ menu. Closes after a successful
-          ban/kick; we invalidate session-meta so the participants list
+          ban/kick; we invalidate session-state so the participants list
           re-fetches with the now-absent target. */}
       {removeTarget && (
         <BanPreviewModal
@@ -601,10 +601,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           onClose={() => setRemoveTarget(null)}
           onConfirmed={() => {
             setRemoveTarget(null)
-            queryClient.invalidateQueries({ queryKey: ['session-meta', code] })
-            queryClient.invalidateQueries({ queryKey: ['wines', code] })
-            queryClient.invalidateQueries({ queryKey: ['ratings', code] })
-            refresh()
+            // One aggregate query carries meta + wines + ratings — the
+            // invalidation refetches all three sections.
+            queryClient.invalidateQueries({ queryKey: ['session-state', code] })
           }}
         />
       )}

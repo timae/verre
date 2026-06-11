@@ -15,7 +15,8 @@ export async function POST(req: NextRequest) {
 
 ## Authorization patterns
 
-- **Session reads** (`GET /api/session/:code`, `/wines`, `/ratings`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
+- **Session reads** (`GET /api/session/:code`, `/wines`, `/ratings`, `/state`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
+- **Session read bodies are built ONLY by the `lib/sessionState.ts` builders** (`buildMetaView` / `buildWinesView` / `buildRatingsView`), shared by the three standalone GETs and the aggregate `GET /:code/state`. Never re-derive the per-viewer transforms (block-pair arrays, avatar tier gate, blind/hideLineup redaction) in a route body — a drifted copy silently leaks (a blind wine identity, a block pair). `/state` degrades per-section: a failed builder returns `null` for that section, all-three-failed → 500.
 - **Session existence is checked first**; nonexistent/deleted sessions return 404 (no auth header) so the client can distinguish "session is gone, go home" from "your token is bad, retry join."
 - **Host actions** (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)`, which matches `meta.hostIdentityId` first, then `meta.hostUserId` (logged-in fallback), then any entry in `meta.coHostIds`. Pure id-based; no display-name fallback.
 - **Strict-host actions** (cohost role assignment, session delete) bypass the cohost check — only the actual session host can perform them.

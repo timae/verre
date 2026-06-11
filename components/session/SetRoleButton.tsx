@@ -17,7 +17,7 @@ interface Props {
   // role changes are strict-host only).
   viewerIsStrictHost: boolean
   // Called after a successful role change so the parent can invalidate
-  // cached session-meta / refetch.
+  // cached session-state / refetch.
   onChanged: () => void
 }
 
