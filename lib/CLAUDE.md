@@ -26,6 +26,10 @@ The whole wine list is one Redis string (`s:{CODE}:wines`, a JSON array), so a r
 - Return a `MutateReject` (`{ reject: string }`) from the transform for current-state validation that depends on the watched value (e.g. the target wine was concurrently deleted → caller maps the reject to 404/400 via `isMutateReject`).
 - The ban-wipe wines write-back (`lib/sessionWipe.ts`) uses it too — that's why the `banLock` only serializes ban-vs-ban, not wine writes.
 
+## Session read views go through `lib/sessionState.ts`
+
+The per-viewer session read bodies (meta / wines / ratings) are built only by `buildMetaView` / `buildWinesView` / `buildRatingsView` — shared by the three standalone session GETs and the aggregate `GET /api/session/:code/state`. The rule (never re-derive the per-viewer transforms in a route body) lives in `app/api/CLAUDE.md`.
+
 ## SCAN helpers
 
 `lib/redis.ts` provides `scanKeys(pattern)` and `hasKey(key)` SCAN-based helpers — prefer these for new code instead of `redis.keys`, which blocks the Redis event loop.

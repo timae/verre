@@ -76,7 +76,7 @@ export function UserProfileModal({ userId, myId, onClose }: Props) {
     qc.invalidateQueries({ queryKey: ['user-profile', userId] })
     qc.invalidateQueries({ queryKey: ['feed'] })
     qc.invalidateQueries({ queryKey: ['profile-people'] })
-    qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-meta' })
+    qc.invalidateQueries({ predicate: q => Array.isArray(q.queryKey) && q.queryKey[0] === 'session-state' })
   }
 
   return (

@@ -1,6 +1,6 @@
 # 02 — Realtime for native
 
-**Status**: PROPOSED. Part of the [mobile-app meta-proposal](README.md). The second review corrected the optimistic "version-cursor sidesteps push" framing — this doc keeps the cheap win, but is honest that polling is not realtime on native.
+**Status**: step 1 (§2, the `/state` collapse) **SHIPPED** — `GET /api/session/:code/state` composes the extracted builders in `lib/sessionState.ts`, and the web `SessionShell` polls it as a single `['session-state', code, myId]` query (3→1 requests). Steps 2–4 (native poll hardening, push-vs-SSE, change-cursor cut) unchanged — step 2 lands with the iOS app. Part of the [mobile-app meta-proposal](README.md). The second review corrected the optimistic "version-cursor sidesteps push" framing — this doc keeps the cheap win, but is honest that polling is not realtime on native.
 
 ## 1. Today
 

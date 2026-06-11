@@ -181,6 +181,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?}`) → `{code, id, displayName, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
+| GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
 | PATCH | /api/session/:code | Role assignment via `action: 'set-role'` (host or cohost, with strict-host required for transitions touching `co_host`) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |

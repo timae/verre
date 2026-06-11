@@ -1,6 +1,6 @@
 'use client'
 import { use, createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams, useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import type { WireWine, RatingMeta } from '@/lib/session'
@@ -70,6 +70,15 @@ type SessionCtx = {
   // identical otherwise, but the message should differ.
   winesLoading: boolean
 }
+// Wire shape of GET /api/session/:code/state — the aggregate poll. Each
+// section is null when that section failed server-side (partial
+// degradation); the queryFn substitutes the previous data in that case.
+type SessionStateData = {
+  meta: SessionCtx['sessionMeta']
+  wines: WireWine[] | null
+  ratings: RatingsByIdentity | null
+}
+
 const Ctx = createContext<SessionCtx | null>(null)
 export const useSession = () => {
   const ctx = useContext(Ctx)
@@ -174,20 +183,19 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const [visitResolved, setVisitResolved] = useState(false)
   const readyToFetch = !isLoggedIn || visitResolved
 
-  // Polled every 5s so participant joins/leaves and cohost role changes
-  // surface in the UI without a manual reload. Same cadence as wines /
-  // ratings so the whole session view stays consistent.
-  const { data: metaData } = useQuery({
-    queryKey: ['session-meta', C],
-    queryFn: () => sessionFetch(C, `/api/session/${C}`).then(r => r.ok ? r.json() : null),
-    refetchInterval: 5000,
-    enabled: readyToFetch,
-  })
-
-  const { data: winesData = [], refetch: refetchWines, isPending: winesPending } = useQuery<WireWine[]>({
-    queryKey: ['wines', C, myId],
+  // Single aggregate poll every 5s: GET /api/session/:code/state returns
+  // { meta, wines, ratings } in one request (was three independent 5s
+  // polls). Key includes myId because the wines section is viewer-dependent
+  // (blind redaction, isMine). A null section means that section failed
+  // server-side (partial degradation) — keep the previous data for it
+  // instead of blanking the UI.
+  const queryClient = useQueryClient()
+  const { data: stateData, refetch: refetchState, isPending: statePending } = useQuery<SessionStateData>({
+    queryKey: ['session-state', C, myId],
     queryFn: async () => {
-      const r = await sessionFetch(C, `/api/session/${C}/wines`)
+      const prev = queryClient.getQueryData<SessionStateData>(['session-state', C, myId])
+      const empty: SessionStateData = { meta: null, wines: null, ratings: null }
+      const r = await sessionFetch(C, `/api/session/${C}/state`)
       // Session is gone (deleted by host, expired, or never existed).
       // Clear any local cached state for this code so the user can't
       // get stuck in a redirect loop, then bounce to /join/<code> so
@@ -206,22 +214,29 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
           localStorage.removeItem(`vr_id_${C}`)
         } catch {}
         router.replace(joinPath(C))
-        return []
+        return prev ?? empty
       }
-      return r.ok ? r.json() : []
+      if (!r.ok) return prev ?? empty
+      const next: SessionStateData = await r.json()
+      // Accepted trade-off: keeping prev on a failed section can hold data
+      // that a just-flipped setting would now redact (e.g. blind toggled on
+      // while the wines section errors). Blind is spoiler protection, not
+      // retroactive secrecy — the data was already delivered to this viewer
+      // — and the next successful poll re-redacts.
+      return {
+        meta: next.meta ?? prev?.meta ?? null,
+        wines: next.wines ?? prev?.wines ?? null,
+        ratings: next.ratings ?? prev?.ratings ?? null,
+      }
     },
     refetchInterval: 5000,
     enabled: readyToFetch,
   })
+  const metaData = stateData?.meta ?? null
+  const winesData = stateData?.wines ?? []
+  const ratingsData = stateData?.ratings ?? ({} as RatingsByIdentity)
 
-  const { data: ratingsData = {} as RatingsByIdentity, refetch: refetchRatings } = useQuery<RatingsByIdentity>({
-    queryKey: ['ratings', C],
-    queryFn: () => sessionFetch(C, `/api/session/${C}/ratings`).then(r => r.ok ? r.json() : {}),
-    refetchInterval: 5000,
-    enabled: readyToFetch,
-  })
-
-  const refresh = useCallback(() => { refetchWines(); refetchRatings() }, [refetchWines, refetchRatings])
+  const refresh = useCallback(() => { refetchState() }, [refetchState])
 
   const { data: bookmarksData = [] } = useQuery<{wine_id: string}[]>({
     queryKey: ['bookmarks'],
@@ -298,8 +313,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     // Loading is true until the first fetch resolves; the gate
     // (`enabled: readyToFetch`) keeps it pending while we resolve
     // the identity, which is exactly the period a user sees a
-    // session URL with no wines yet rendered.
-    winesLoading: winesPending,
+    // session URL with no wines yet rendered. A null wines section
+    // (degraded response before any successful one) also counts as
+    // loading — [] would falsely render "no wines yet".
+    winesLoading: statePending || !stateData?.wines,
   }
 
   // Bottom-nav tab order. Wines is the default landing (session root

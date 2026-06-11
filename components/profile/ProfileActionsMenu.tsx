@@ -8,7 +8,7 @@ interface Props {
   viewerMutes: boolean
   // Optional callbacks — wired by callers in a TanStack Query context
   // so a state change invalidates the relevant caches (feed, user
-  // profile, session-meta, etc.). SSR usage can omit them.
+  // profile, session-state, etc.). SSR usage can omit them.
   onMuteToggle?: () => void
   onBlockToggle?: () => void
   // Unfollow row (opt-in). When omitted the menu shows only Mute + Block —
