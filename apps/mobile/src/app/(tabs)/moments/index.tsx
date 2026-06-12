@@ -42,7 +42,9 @@ export default function Moments() {
     <ScrollView
       style={{ flex: 1 }}
       contentContainerStyle={{
-        paddingTop: insets.top + 8,
+        // The tab host auto-insets this ScrollView below the status bar —
+        // adding insets.top here double-counts and sinks the title.
+        paddingTop: 8,
         paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
       }}
     >

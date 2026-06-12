@@ -284,14 +284,14 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
               <View
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 6,
-                  // Optical nudge — the mock seats the pill slightly lower
-                  // against the text line (flagged for Simulator check).
+                  // Seats slightly lower than the text line and SHORTER than
+                  // it (tight label line-height) — per mock.
                   marginTop: 2,
-                  paddingVertical: 3, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
+                  paddingVertical: 2, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
                 }}
               >
-                <Icon name="pin" size={12} color={theme.accent} />
-                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12 }} color="accent">Map</VText>
+                <Icon name="pin" size={11} color={theme.accent} />
+                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, lineHeight: 14 }} color="accent">Map</VText>
               </View>
             </>,
             'loc',
@@ -310,7 +310,9 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
       {meta.link
         ? line(
             <>
-              <Icon name="link" size={16} color={theme.accent} />
+              {/* .ovc-line svg is ink-soft even on the accent line — only
+                  the label text carries accent. */}
+              <Icon name="link" size={16} color={theme.inkSoft} />
               <VText variant="small" color="accent">Event link</VText>
             </>,
             'link',
