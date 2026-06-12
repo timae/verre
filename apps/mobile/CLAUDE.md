@@ -87,7 +87,13 @@ per-element on mixed screens; ask when unsure):
 - **brand-custom** — the mock is the pixel spec, tokens apply fully, identical
   across platforms: all scoring widgets, buttons, fields (incl. join-code
   auto-format + score slider), cards, chips, avatars, the wine modal, empty
-  states.
+  states. ⚠️ "Pixel spec" is literal: before building a brand-custom screen,
+  open its `vero-screens.js` template + the CSS classes it uses and translate
+  them class-by-class to RN styles (paddings, type sizes, separators-vs-cards,
+  icon paths). Approximating the layout from generic primitives — even with
+  correct tokens and copy — got the M2 line-up rejected; deviations must be
+  explicit and flagged, never silent simplifications. In-flow screens use the
+  shared `VBar` (the design's variant-B bar), not the native stack header.
 
 Consequence for this app: the bottom nav IS `NativeTabs`
 (`expo-router/unstable-native-tabs`, swapped in milestone 2 — PillTabBar is
