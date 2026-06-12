@@ -7,6 +7,7 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
+import { propagateDisplayNameToSessions } from '@/lib/displayName.server'
 
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -84,6 +85,22 @@ export async function PATCH(req: NextRequest) {
   } catch (e: unknown) {
     if ((e as { code?: string }).code === 'P2002') return NextResponse.json({ error: 'email already in use' }, { status: 409 })
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
+  }
+
+  // After commit: push the new name into the session name snapshots — live
+  // Redis (identities roster + meta.host) AND the Postgres sessions.host_name
+  // mirror that feed/profile session cards read. Best-effort — a propagation
+  // failure must not fail the rename itself.
+  if (updates.name !== undefined) {
+    const newName = updates.name as string
+    try { await propagateDisplayNameToSessions(userId, newName) }
+    catch (e) { console.error('rename propagation failed:', e) }
+    try {
+      await prisma.session.updateMany({
+        where: { hostUserId: userId, deletedAt: null },
+        data: { hostName: newName },
+      })
+    } catch (e) { console.error('rename host_name mirror failed:', e) }
   }
 
   // After a password change, revoke every OTHER device's session so a stolen

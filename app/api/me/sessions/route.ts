@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { redis, k } from '@/lib/redis'
@@ -12,11 +13,13 @@ export async function GET(req: NextRequest) {
     Array<{
       id: number; code: string; host_name: string; name: string | null
       created_at: Date; joined_at: Date; wines_rated: bigint; avg_score: number | null
-      date_from: Date | null; address: string | null
+      date_from: Date | null; date_to: Date | null; address: string | null
+      host_user_id: number | null; wine_count: bigint
     }>
   >`
     SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
-           s.date_from, s.address,
+           s.date_from, s.date_to, s.address, s.host_user_id,
+           COUNT(DISTINCT w.id) AS wine_count,
            COUNT(DISTINCT r.id) AS wines_rated,
            ROUND(AVG(r.score)::numeric, 1) AS avg_score
     FROM session_members sm
@@ -28,15 +31,28 @@ export async function GET(req: NextRequest) {
     -- explicit deleted_at filter documents intent and survives any future
     -- change to the scrub or member-wipe paths.
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
-    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.address
+    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id
     ORDER BY sm.joined_at DESC
     LIMIT 50
   `
 
-  // Enrich each row with live Redis TTL + lifespan from the meta key.
+  // Enrich each row with live Redis TTL + lifespan from the meta key, plus
+  // live taster count, the caller's role (id-based, never display names),
+  // and a live/past status for the Moments-home pinning.
+  const myIdentityId = `u:${userId}`
+  // "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
+  // session to past the moment it passes — no grace. With only a start time
+  // we have to assume a duration; 8h keeps an evening tasting pinned through
+  // the night and nothing more. Date-less sessions stay live for their whole
+  // Redis lifespan.
+  const ASSUMED_DURATION_MS = 8 * 3600 * 1000
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
+    let taster_count: number | null = null
+    let participant = false
+    let role: 'host' | 'cohost' | 'provider' | null =
+      r.host_user_id === userId ? 'host' : null
     try {
       const [t, raw] = await Promise.all([
         redis.ttl(k.meta(r.code)),
@@ -44,17 +60,48 @@ export async function GET(req: NextRequest) {
       ])
       ttl_seconds = t
       if (raw) {
-        try { lifespan = JSON.parse(raw).lifespan ?? null } catch {}
+        try {
+          const meta = JSON.parse(raw)
+          lifespan = meta.lifespan ?? null
+          if (meta.hostIdentityId === myIdentityId || meta.hostUserId === userId) role = 'host'
+          else if (Array.isArray(meta.coHostIds) && meta.coHostIds.includes(myIdentityId)) role = 'cohost'
+          else if (Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId)) role = 'provider'
+        } catch {}
+        try {
+          ;[taster_count, participant] = await Promise.all([
+            redis.hLen(k.identities(r.code)),
+            redis.hExists(k.identities(r.code), myIdentityId),
+          ])
+        } catch {}
       }
     } catch {}
+    // live = session still in Redis AND the caller is still a participant
+    // (kicked/banned users drop out of identities — their Moments home must
+    // not pin the session) AND any set date isn't clearly over.
+    const ttlAlive = ttl_seconds > 0 || ttl_seconds === -1
+    const endsAt =
+      r.date_to !== null ? r.date_to.getTime()
+      : r.date_from !== null ? r.date_from.getTime() + ASSUMED_DURATION_MS
+      : null
+    const datePast = endsAt !== null && Date.now() > endsAt
+    const status: 'live' | 'past' = ttlAlive && participant && !datePast ? 'live' : 'past'
     return {
       ...r,
       wines_rated: Number(r.wines_rated),
+      wine_count: Number(r.wine_count),
+      // Decimal wire-format trap (root CLAUDE.md): raw numeric serializes as
+      // a JSON string without this coercion.
+      avg_score: decimalToNumber(r.avg_score),
       date_from: r.date_from ? r.date_from.toISOString() : null,
+      date_to: r.date_to ? r.date_to.toISOString() : null,
       ttl_seconds,
       lifespan,
+      taster_count,
+      role,
+      status,
     }
   }))
 
-  return NextResponse.json(enriched)
+  // Viewer-dependent body (role, own counts) — never shared-cacheable.
+  return NextResponse.json(enriched, { headers: { 'Cache-Control': 'private, no-store' } })
 }

@@ -3,9 +3,9 @@
 **Status** (updated 2026-06-10): **backend auth foundation SHIPPED, app not yet started.** `00` (shared-logic extraction) and `01` (identity & auth — Better Auth, steps 1–7) are **merged to `main`** and live (dormant in prod — no native client exists). The native app itself (`02`–`06`) is not started. This is the index + the load-bearing decisions; each numbered sub-proposal owns one workstream. Per-workstream status:
 - `00` shared-logic — ✅ shipped (`@verre/core`)
 - `01` identity & auth — ✅ shipped/merged (PR #39); native social (step 6) deferred; see the doc's top status block
-- `02` realtime — 🟨 step 1 shipped (`/state` aggregate poll, web on it); native poll hardening + push decision remain with the app
+- `02` realtime — 🟨 steps 1–2 shipped (`/state` aggregate poll, web on it; native poll hardening — AppState→focusManager, NetInfo→onlineManager, fetch timeouts — landed with mobile milestone 2); push decision remains (O3)
 - `04` API versioning — ✅ shipped with the first native client: `X-Verre-Client` header on every native call, structured 426 + blocking update screen in build #1, floor envs (`NATIVE_MIN_VERSION_*`, unset in prod) enforced at the native-auth chokepoint (`lib/clientVersion.ts`)
-- `03` topology, `05` design system, `06` iOS app — 🟨 milestone 1: Expo (SDK 56) skeleton at `apps/mobile` — Expo Router + tab shell, vero-tokens theme layer, native email/password auth (Better Auth), update-screen protocol. Sessions/scoring/feed screens + social sign-in not started
+- `03` topology, `05` design system, `06` iOS app — 🟨 milestone 2: sessions core — Moments home (02s: live strip, join-by-code, recents), session line-up (02b read-only) on the hardened `/state` poll, read-only scoring widgets (Vero wheel geometry → `@verre/core`, `react-native-svg` render), NativeTabs swap (PillTabBar deleted). Score INPUT + wine modal gestures = milestone 3 (preconditions in [interaction-spec.md](interaction-spec.md) — the 03 §2a recognizer convergence comes first); flavour colours for the real FL sets pending a design decision. Feed screens + social sign-in not started
 - Android phase, web redesign — ⬜ stubbed
 
 ## In plain English — what we're doing

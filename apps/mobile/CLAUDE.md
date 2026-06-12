@@ -54,8 +54,22 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
 - Sign-up is a **two-step flow** (signUp then signIn) because the server sets
   `autoSignIn: false` for enumeration posture — don't "fix" it.
 - All Verre API calls go through **`src/lib/apiFetch.ts`** (cookie +
-  `X-Verre-Client` header + the 426 update-required handshake). Never bare
+  `X-Verre-Client` header + the 426 update-required handshake + an
+  AbortController timeout, default 12s — RN fetch has none). Never bare
   `fetch` against the backend.
+
+## Server state (TanStack Query, hardened per proposal 02 §4)
+
+- `src/lib/query.tsx` owns the QueryClient + the native poll hardening:
+  `AppState → focusManager` (only `'active'` counts, debounced 300ms —
+  `'inactive'` fires for control-center/app-switcher and is NOT background),
+  `NetInfo → onlineManager`, and `useIsOnline()` for reconnecting affordances.
+- Session fetchers + wire types live in `src/lib/api/sessions.ts`
+  (`ApiError.kind` maps 404 / `X-Vr-Auth: invalid|removed` / 403-banned / 429).
+  Wire types mirror `lib/sessionState.ts` + `wineToWire` — keep in sync.
+- The line-up screen polls `GET /api/session/:code/state` at 5s with
+  per-section graceful degradation, and MUST `POST /visit` first (the state
+  route 401s for non-participants).
 
 ## Native-chrome vs brand-custom (locked design ruling, 2026-06-12)
 
@@ -73,15 +87,23 @@ per-element on mixed screens; ask when unsure):
 - **brand-custom** — the mock is the pixel spec, tokens apply fully, identical
   across platforms: all scoring widgets, buttons, fields (incl. join-code
   auto-format + score slider), cards, chips, avatars, the wine modal, empty
-  states.
+  states. ⚠️ "Pixel spec" is literal: before building a brand-custom screen,
+  open its `vero-screens.js` template + the CSS classes it uses and translate
+  them class-by-class to RN styles (paddings, type sizes, separators-vs-cards,
+  icon paths). Approximating the layout from generic primitives — even with
+  correct tokens and copy — got the M2 line-up rejected; deviations must be
+  explicit and flagged, never silent simplifications. In-flow screens use the
+  shared `VBar` (the design's variant-B bar), not the native stack header.
 
-Consequence for this app: **`PillTabBar` is interim** — the design's floating
-pill mimics the native iOS 26 tab bar, and the locked ruling is to use the real
-one (`expo-router/unstable-native-tabs`, tint-only: bg + label colors from
-theme tokens). Swap planned with the next milestone after a theming spike
-(verify each theme's accent/bg survives the limited NativeTabs knobs; the
-"Soon" placeholder slot needs a NativeTabs answer too). Sheets, menus, alerts,
-pickers: reach for the native primitive first when those screens land.
+Consequence for this app: the bottom nav IS `NativeTabs`
+(`expo-router/unstable-native-tabs`, swapped in milestone 2 — PillTabBar is
+gone). Tint-only knobs from theme tokens: `tintColor`=accent,
+`backgroundColor`=surface, label/icon colors; SF Symbols for icons (OS
+iconography is part of the native-chrome ruling). The undecided 4th slot is a
+tappable "Soon" tab (`(tabs)/soon.tsx`) until explore-vs-notifications is
+decided. `TAB_BAR_CLEARANCE` (now in `src/lib/layout.ts`) is breathing room
+only — the react-native-screens tab host auto-insets content. Sheets, menus,
+alerts, pickers: reach for the native primitive first when those screens land.
 
 ## Theme / design
 

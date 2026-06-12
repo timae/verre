@@ -1,0 +1,62 @@
+import Svg, { Circle, Path } from 'react-native-svg';
+import { useTheme } from '@/theme';
+
+// Vero icon set — paths vendored from the design's SVG defs
+// (.local/design/Vero - Screens.html / Components.html). 24×24 viewBox,
+// stroke icons at the design's per-icon stroke widths, currentColor → color.
+type Seg =
+  | { d: string; sw?: number; fill?: boolean; cap?: boolean; join?: boolean }
+  | { cx: number; cy: number; r: number; sw?: number };
+
+const ICONS: Record<string, Seg[]> = {
+  glass: [
+    { d: 'M7 3h10l-1 7a4 4 0 0 1-8 0L7 3Z', sw: 1.5, join: true },
+    { d: 'M12 14v6M9 20h6', sw: 1.5, cap: true },
+  ],
+  clock: [
+    { cx: 12, cy: 12, r: 8.5, sw: 1.5 },
+    { d: 'M12 7.5V12l3 2', sw: 1.5, cap: true, join: true },
+  ],
+  pin: [
+    { d: 'M12 21s6.5-5.4 6.5-10.5A6.5 6.5 0 0 0 5.5 10.5C5.5 15.6 12 21 12 21Z', sw: 1.5, join: true },
+    { cx: 12, cy: 10.5, r: 2.4, sw: 1.5 },
+  ],
+  link: [
+    { d: 'M9.5 14.5l5-5M8 11l-2 2a3 3 0 0 0 4.2 4.2l2-2M16 13l2-2a3 3 0 0 0-4.2-4.2l-2 2', sw: 1.5, cap: true, join: true },
+  ],
+  eyeoff: [
+    { d: 'M4 4l16 16', sw: 1.5, cap: true },
+    { d: 'M9.5 5.6A10.4 10.4 0 0 1 12 5.5C18.5 5.5 22 12 22 12a14 14 0 0 1-3 3.7M6.3 7.3A14 14 0 0 0 2 12s3.5 6.5 10 6.5a10 10 0 0 0 3.3-.5', sw: 1.5, cap: true, join: true },
+  ],
+  plus: [{ d: 'M12 5v14M5 12h14', sw: 1.6, cap: true }],
+  starf: [{ d: 'M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z', fill: true }],
+  'chevron-right': [{ d: 'M9.5 6l6 6-6 6', sw: 1.6, cap: true, join: true }],
+  'chevron-down': [{ d: 'M6 9.5l6 6 6-6', sw: 1.6, cap: true, join: true }],
+  back: [{ d: 'M15 5l-7 7 7 7', sw: 1.7, cap: true, join: true }],
+};
+
+export type IconName = keyof typeof ICONS;
+
+export function Icon({ name, size = 18, color }: { name: IconName; size?: number; color?: string }) {
+  const { theme } = useTheme();
+  const c = color ?? theme.ink;
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      {ICONS[name].map((s, i) =>
+        'cx' in s ? (
+          <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} />
+        ) : (
+          <Path
+            key={i}
+            d={s.d}
+            fill={s.fill ? c : 'none'}
+            stroke={s.fill ? undefined : c}
+            strokeWidth={s.fill ? undefined : (s.sw ?? 1.5)}
+            strokeLinecap={s.cap ? 'round' : undefined}
+            strokeLinejoin={s.join ? 'round' : undefined}
+          />
+        ),
+      )}
+    </Svg>
+  );
+}
