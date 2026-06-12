@@ -128,12 +128,12 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                   <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
                   {/* .sh-livetag: 12/700 */}
-                  <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12 }}>
+                  <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
                     Still ongoing
                   </VText>
                 </View>
                 {/* .sh-livename: 18/600/-0.015em */}
-                <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, letterSpacing: -0.27 }}>
+                <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
                   {m.name || m.host_name}
                 </VText>
                 <VText variant="small" color="inkSoft">{liveMeta(m.wine_count, m.taster_count)}</VText>
@@ -201,7 +201,7 @@ function JoinBlock() {
     // .sh-joinblock: gap 10, margin-top 6
     <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
       {/* .sh-sheettitle: 18/600 */}
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, letterSpacing: -0.27 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
         Join a moment
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
@@ -255,7 +255,7 @@ function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) 
         })}
       >
         <Icon name="clock" size={18} color={theme.inkSoft} />
-        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15 }}>Recent moments</VText>
+        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>Recent moments</VText>
         <VText variant="small" color="inkSoft">{count}</VText>
         <Icon name="chevron-right" size={18} color={theme.inkFaint} />
       </Pressable>

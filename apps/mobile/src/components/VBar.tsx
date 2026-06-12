@@ -24,7 +24,7 @@ export function VBar({ title, right }: { title: string; right?: React.ReactNode 
       </Pressable>
       <VText
         numberOfLines={1}
-        style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, letterSpacing: -0.36 }}
+        style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.36 }}
       >
         {title}
       </VText>

@@ -213,8 +213,8 @@ function FatalView({
   }
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, textAlign: 'center' }}>{title}</VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 19, maxWidth: 260 }}>{body}</VText>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, textAlign: 'center' }}>{title}</VText>
+      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 20, maxWidth: 260 }}>{body}</VText>
       {fatal.kind === 'http' ? <Button title="Try again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
       <Button title="Back to Moments" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
     </View>
@@ -237,7 +237,7 @@ function TabStrip() {
       }}
     >
       <VText
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}
         color={on ? 'ink' : disabled ? 'inkFaint' : 'inkSoft'}
       >
         {label}
@@ -284,6 +284,9 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
               <View
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 6,
+                  // Optical nudge — the mock seats the pill slightly lower
+                  // against the text line (flagged for Simulator check).
+                  marginTop: 2,
                   paddingVertical: 3, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
                 }}
               >
@@ -322,23 +325,35 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
             variant="small"
             pointerEvents="none"
             onTextLayout={(e) => setDescClamped(e.nativeEvent.lines.length > 3)}
-            style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 19 }}
+            style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 20 }}
           >
             {meta.description}
           </VText>
-          <VText
-            variant="small"
-            color="inkSoft"
-            numberOfLines={descOpen ? undefined : 3}
-            style={{ marginTop: 10, lineHeight: 19 }}
-          >
-            {meta.description}
-          </VText>
-          {descClamped ? (
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, alignSelf: 'flex-end' }} color="accent">
-              {descOpen ? 'less' : 'more'}
+          {descOpen ? (
+            // Expanded: "less" flows inline at the end of the last line.
+            <VText variant="small" color="inkSoft" style={{ marginTop: 10, lineHeight: 20 }}>
+              {meta.description}
+              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+                {'  less'}
+              </VText>
             </VText>
-          ) : null}
+          ) : (
+            // Collapsed: per the .ovc-more spec, "more" overlays the end of
+            // the truncated third line (bg-filled, left padding standing in
+            // for the CSS fade), not a line of its own.
+            <View>
+              <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10, lineHeight: 20 }}>
+                {meta.description}
+              </VText>
+              {descClamped ? (
+                <View style={{ position: 'absolute', right: 0, bottom: 0, backgroundColor: theme.bg, paddingLeft: 18 }}>
+                  <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+                    more
+                  </VText>
+                </View>
+              ) : null}
+            </View>
+          )}
         </Pressable>
       ) : null}
       <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
@@ -446,10 +461,10 @@ function LockCard({ revealAt }: { revealAt: number }) {
       <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="eyeoff" size={24} color={theme.inkSoft} />
       </View>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, letterSpacing: -0.27 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
         Something good awaits you
       </VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 19, maxWidth: 250, marginTop: 8, marginBottom: 22 }}>
+      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 20, maxWidth: 250, marginTop: 8, marginBottom: 22 }}>
         The host has kept the line-up under wraps. It opens when the reveal time arrives.
       </VText>
       <View style={{ flexDirection: 'row', gap: 8 }}>
@@ -480,8 +495,8 @@ function EmptyLineup({ canAdd }: { canAdd: boolean }) {
       <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="glass" size={30} color={theme.inkSoft} />
       </View>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18 }}>Nothing in the line-up yet</VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', maxWidth: 230, lineHeight: 19, marginTop: 6 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23 }}>Nothing in the line-up yet</VText>
+      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', maxWidth: 230, lineHeight: 20, marginTop: 6 }}>
         {canAdd
           ? "Add the first thing you're tasting — a bottle, a cup, a plate."
           : 'The host is still putting the line-up together.'}
@@ -544,7 +559,7 @@ function LuRow({
       <View style={{ flex: 1, minWidth: 0 }}>
         {blind ? (
           <>
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
               Impression {index + 1}
             </VText>
             <VText variant="small" color="inkSoft" style={{ marginTop: 1 }}>To be revealed</VText>
@@ -552,10 +567,10 @@ function LuRow({
         ) : (
           <>
             {/* .lu-name: "Oslavje - 2018", vintage ink-soft regular */}
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
               {wine.name}
               {wine.vintage ? (
-                <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 15 }}>{` - ${wine.vintage}`}</VText>
+                <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 15, lineHeight: 23 }}>{` - ${wine.vintage}`}</VText>
               ) : null}
             </VText>
             {wine.producer ? (

@@ -75,7 +75,7 @@ function RecentRow({ row }: { row: MySessionRow }) {
     >
       <Thumb46 uri={null} />
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }}>
+        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
           {row.name || row.host_name}
         </VText>
         <VText variant="small" color="inkSoft">

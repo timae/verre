@@ -19,7 +19,7 @@ export function StarScore({ value, size = 15 }: { value: number; size?: number }
       </Svg>
       <VText
         color="accent"
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: size, lineHeight: Math.round(size * 1.2) }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: size, lineHeight: Math.round(size * 1.55) }}
       >
         {formatScore(value)}
       </VText>
