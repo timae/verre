@@ -16,9 +16,9 @@ import { elevation, radius, useTheme } from '@/theme';
 
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
-// the live strip bleeds to the screen edges. Deviations (flagged): no
-// "+ New" pill (creation is a later milestone), no QR button in the code
-// field (camera lands with deep linking), carousel doesn't loop (v1).
+// the live strip bleeds to the screen edges. Deviations (flagged): no QR
+// button in the code field (camera lands with deep linking), carousel
+// doesn't loop (v1).
 const GUTTER = 22;
 
 export default function Moments() {
@@ -48,9 +48,11 @@ export default function Moments() {
         paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
       }}
     >
-      {/* .vbar-root */}
-      <View style={{ paddingHorizontal: GUTTER, paddingTop: 6, paddingBottom: 2, flexDirection: 'row', alignItems: 'center' }}>
+      {/* .vbar-root — top-right carries the page's primary action as the
+          .hv-add accent pill ("+ New" → 02a creation). */}
+      <View style={{ paddingHorizontal: GUTTER, paddingTop: 6, paddingBottom: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <VText variant="title" style={{ paddingTop: 2 }}>Moments</VText>
+        <NewPill onPress={() => router.push('/moments/create')} />
       </View>
 
       {sessions.isPending ? (
@@ -71,6 +73,34 @@ export default function Moments() {
         </View>
       )}
     </ScrollView>
+  );
+}
+
+// .hv-add — accent pill: 34h, plus 17 + label 13/600, pad 0 14 0 11.
+function NewPill({ onPress }: { onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="New moment"
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        height: 34,
+        paddingLeft: 11,
+        paddingRight: 14,
+        borderRadius: radius.pill,
+        backgroundColor: theme.accent,
+        opacity: pressed ? 0.8 : 1,
+      })}
+    >
+      <Icon name="plus" size={17} color={theme.accentInk} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: theme.accentInk }}>
+        New
+      </VText>
+    </Pressable>
   );
 }
 
@@ -124,7 +154,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
             }}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Thumb uri={null} size={56} r={radius.md} />
+              <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
               <View style={{ flex: 1, gap: 2 }}>
                 {/* .sh-livetag */}
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>

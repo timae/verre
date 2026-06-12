@@ -44,7 +44,14 @@ import { betterAuthServer } from '@/lib/betterAuth'
 // store, not user_sessions. Routes that operate on the CALLER'S OWN device row
 // (devices revoke-all, per-device logout) already 401/skip on a missing
 // userSessionId.
-export async function resolveUser(req: NextRequest): Promise<Session | null> {
+// `authSource: 'native'` iff the Better Auth cookie validated — the
+// UNSPOOFABLE caller-class signal (set by which credential authenticated,
+// never by a client-controlled header like X-Verre-Client). Absent on the
+// web auth() pass-through. Used for native-only policy (e.g. app-created
+// sessions default to unlimited lifespan); never for authorization tiers.
+export type ResolvedSession = Session & { authSource?: 'native' }
+
+export async function resolveUser(req: NextRequest): Promise<ResolvedSession | null> {
   // Availability isolation, NOT an auth decision: a thrown BA branch (Redis
   // down, BA internal error) falls through to auth() so a valid NextAuth
   // cookie keeps working — otherwise a dual-cookie holder 500s on every API
@@ -75,6 +82,7 @@ export async function resolveUser(req: NextRequest): Promise<Session | null> {
         // Date when served from Postgres, ISO string when served from Redis
         // (JSON round-trip) — normalize.
         expires: new Date(ba.session.expiresAt).toISOString(),
+        authSource: 'native',
       }
     }
   } catch (e) {

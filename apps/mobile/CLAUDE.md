@@ -138,15 +138,34 @@ alerts, pickers: reach for the native primitive first when those screens land.
   unnavigable-tab trap from M2).
 - **Haptics** (`expo-haptics`): selection tick per 0.25 step while dragging,
   light impact on commit. No-ops in the Simulator — verify on device.
-- **New native modules this milestone**: `expo-haptics`, `expo-linear-gradient`
-  (hero scrim) — pinned from `bundledNativeModules.json`; re-run
-  `npx expo run:ios` after pulling.
+- **New native modules (M3)**: `expo-haptics`, `expo-linear-gradient`
+  (hero scrim); **(M4)**: `expo-image-picker` (cover photo; config plugin
+  carries the photosPermission copy in app.json),
+  `@react-native-community/datetimepicker` (02a From–To, no plugin) — all
+  pinned from `bundledNativeModules.json`; re-run `npx expo run:ios` after
+  pulling.
 - **Rate flow** (`moments/session/[code]/impression/[wineId]`): local-until-
   commit like the web Rate pane — the POST fires on Save & next/finish (and
   Previous, a flagged deviation to avoid silent edit loss). "Clear my rating"
   is local too; an empty save triggers the server's engagement-deletion
   cascade. Existing flavour chip data passes through saves untouched until
   the fill-track input lands (palette-gated — see the flavour-colours brief).
+
+## Moment creation (milestone 4, 02a)
+
+- `moments/create.tsx` to the tCreate pixel spec. Rulings: category is
+  wine-only v1 (field renders per spec, non-interactive, sends
+  `category:'wine'`); From–To optional via the OS compact datetime picker
+  (native-chrome; tap seeds a default, × clears); no lifespan row — native
+  creates default to `unlimited` SERVER-side (`resolveUser` `authSource`,
+  unspoofable; see root CLAUDE.md freemium note); blind toggle renders
+  disabled + PRO badge for non-pro (`GET /api/me/account` → `pro`).
+- Cover photo: `expo-image-picker` base64 → data URL in the create POST
+  (server runs the avatar-grade image pipeline). Keep `quality` low enough
+  to stay under the server's 2MB decoded cap; the client pre-checks the
+  data URL at 2.6MB.
+- Covers surface from `MySessionRow.cover_photo_url` (02s live cards 56px +
+  recents 46px thumbs).
 
 ## Theme / design
 

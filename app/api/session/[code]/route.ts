@@ -313,6 +313,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
     console.error('session delete (redis) error:', err)
   }
 
+  // Cover capture (capture/commit/reclaim-after): the Redis meta was read
+  // before the wipe above; the pg row is the fallback for drift. Reclaim
+  // fires only after the transaction commits.
+  const coverFromMeta = meta.coverPhotoUrl || null
+
   let reclaimUrls: string[] = []
   try {
     reclaimUrls = await prisma.$transaction(async (tx): Promise<string[]> => {
@@ -322,10 +327,15 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
       // future change that re-populates `code` on a tombstoned row.
       const sessionRow = await tx.session.findFirst({
         where: { code: c, deletedAt: null },
-        select: { id: true },
+        select: { id: true, coverPhotoUrl: true },
       })
-      if (!sessionRow) return []
+      // No live pg row (anon-hosted session): Redis is already wiped, so a
+      // meta-held cover has no remaining owner — release the bytes.
+      if (!sessionRow) return coverFromMeta ? [coverFromMeta] : []
       const sessionId = sessionRow.id
+      // Union of pg + meta covers: a silently-failed settings mirror can
+      // leave the two diverged — reclaim both rather than orphan one.
+      const coverUrls = [...new Set([sessionRow.coverPhotoUrl, coverFromMeta].filter((u): u is string => !!u))]
 
       // Capture image URLs of wines nobody bookmarked. Bookmarked wines stay
       // reachable from /me/saved so we keep their image; orphans lose their
@@ -400,11 +410,13 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
               date_to = NULL,
               timezone = NULL,
               description = NULL,
-              link = NULL
+              link = NULL,
+              cover_photo_url = NULL,
+              category = NULL
          WHERE id = ${sessionId}
       `
 
-      return orphanImages.map(r => r.image_url).filter(Boolean)
+      return [...orphanImages.map(r => r.image_url).filter(Boolean), ...coverUrls]
     })
   } catch (err) {
     console.error('session delete (postgres) error:', err)

@@ -73,7 +73,7 @@ function RecentRow({ row }: { row: MySessionRow }) {
         opacity: pressed ? 0.6 : 1,
       })}
     >
-      <Thumb46 uri={null} />
+      <Thumb46 uri={row.cover_photo_url} />
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
           {row.name || row.host_name}

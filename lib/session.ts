@@ -182,6 +182,13 @@ export type SessionMeta = {
   link?: string
   hideLineup?: boolean
   hideLineupMinutesBefore?: number
+  // Host-chosen cover photo (S3 URL). Deliberately NOT blind-redacted — it
+  // brands the moment, not a wine. S3 bytes reclaimed in every deletion path.
+  coverPhotoUrl?: string
+  // Session category ('wine' for now) — the future contract for what
+  // impressions can be added + the category vocabulary. Mirrors
+  // sessions.category.
+  category?: string
 }
 
 export { genCode } from '@/lib/sessionCode'
@@ -491,6 +498,12 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
       // redaction predicate reads this column.
       blindForEveryone: !!meta.blindForEveryone,
       createdAt: new Date(meta.createdAt),
+      // Cover + category mirror what's in Redis at archive time (the
+      // anon-host-later-archives path; the logged-in create writes them
+      // directly). Like blind, NOT in the update path — the settings
+      // PATCH's updateMany is the writer for changes.
+      coverPhotoUrl: meta.coverPhotoUrl || null,
+      category: meta.category || 'wine',
     },
     // Note: `blind` and `blindForEveryone` are intentionally NOT in the
     // update path. Settings changes route through a separate

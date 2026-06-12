@@ -15,7 +15,7 @@ After the soft-delete commits, the only data guaranteed to survive on the `sessi
 - `id` — the grouping key; children (wines, ratings, feed_items) keep their FK references.
 - `deleted_at` — the tombstone marker.
 
-**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, `blind_for_everyone`, and anything else added later. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more.
+**Every other column is scrubbed to NULL**: `name`, `description`, `link`, `code`, `host_user_id`, `host_name`, `timezone`, `created_at`, `archived_at`, `address`, `date_from`, `date_to`, `blind`, `blind_for_everyone`, `cover_photo_url`, `category`, and anything else added later. The tombstone is genuinely empty — you can tell the row exists and that it was deleted, nothing more. The cover photo's S3 bytes are additionally reclaimed (captured before the txn, reclaimed after commit) in both delete paths — the scrub alone would orphan them.
 
 The minimal contract is the easiest to audit for privacy and forces explicit doc + schema updates the day someone wants a specific field to survive. Cost is small: tombstoned-session UX in user history shows just "[deleted session]" with no extra context.
 
