@@ -13,6 +13,7 @@
 | `/api/me/blocks/:id` POST | 30/h/user |
 | `/api/me/blocks/:id` DELETE | uncapped |
 | `/api/session` POST | 10/10min/user-or-IP |
+| `/api/session/:code/settings` PATCH (cover) | 10/h/user (`rl:cover`, charged only on an actual cover upload) |
 | `/api/session/join` POST | 30 invalid/min/IP |
 | Bans POST+DELETE | 60/10min/caller (shared) |
 | `/api/me/devices` GET | 60/min/user |
@@ -34,7 +35,8 @@
 - **Visibility PATCH (inner)**: stolen-cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-`checkRate`-on-change so no-op submits don't burn slots.
 - **Mutes POST+DELETE**: stolen cookie thrashing the table or generating noise. Shared.
 - **Blocks POST**: stolen-cookie burst-blocking. DELETE intentionally **uncapped** — recovery path from a burst-block attack must always stay open.
-- **Session POST**: code-space exhaustion (8-char Crockford, but mass enumeration would crowd legitimate creates).
+- **Session POST**: code-space exhaustion (8-char Crockford, but mass enumeration would crowd legitimate creates). The create-time cover upload rides this same 10/10min counter (one create = at most one cover), so it needs no separate limit.
+- **Settings PATCH cover** (`rl:cover`): storage abuse from a stolen host cookie thrashing cover replaces. Mirrors the avatar POST limit; charged only when a data URL is present so no-op settings saves don't burn slots. Removal (`coverPhoto: null`) is uncharged — like avatar DELETE, it reclaims S3 rather than consuming it.
 - **Session join POST**: code-guessing. Counter cleared on a valid code so legitimate joiners aren't penalized.
 - **Bans POST+DELETE (kick/ban + unban)**: bounded moderation in both directions. DELETE shares the budget (unlike block DELETE, which is uncapped) — moderation actions are not a recovery path.
 - **Devices GET**: read-side noise from a stolen cookie polling the list.

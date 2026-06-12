@@ -191,7 +191,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?}`) → `{code, id, displayName, anonToken?}` |
+| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?, category?, coverPhoto?, dateFrom?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `coverPhoto` is a base64 data URL, logged-in only; native callers default to unlimited lifespan) → `{code, id, displayName, category, coverPhotoUrl?, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
@@ -199,7 +199,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
-| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan) |
+| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
 | PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
 | GET | /api/session/:code/bans | List banned identities (host + cohost) |

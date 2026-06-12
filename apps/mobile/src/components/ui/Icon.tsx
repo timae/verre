@@ -45,6 +45,11 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 19, cy: 12, r: 1.6, fill: true },
   ],
   undo: [{ d: 'M9 7H5V3M5 7a8 8 0 1 1-2 5', sw: 1.6, cap: true, join: true }],
+  cam: [
+    { d: 'M4 8.5h3L8.4 6.4h7.2L17 8.5h3v11H4z', sw: 1.5, join: true },
+    { cx: 12, cy: 13.5, r: 3.3, sw: 1.5 },
+  ],
+  x: [{ d: 'M6 6l12 12M18 6L6 18', sw: 1.7, cap: true }],
 };
 
 export type IconName = keyof typeof ICONS;

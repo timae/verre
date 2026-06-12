@@ -1,11 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
-import { getSessionMeta, isHostByIdentity, cleanUrl } from '@/lib/session'
+import { getSessionMeta, isHostByIdentity } from '@/lib/session'
+import { applySessionFields } from '@/lib/sessionFields'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
+import { checkRate, formatWait } from '@/lib/rateLimit'
+import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
+
+// Inlined S3 reclaim — same workaround as app/api/me/avatar/route.ts (a
+// third lib/s3.ts export gets dropped by webpack). Reclaims the PRIOR cover
+// bytes after a replace/remove commits.
+const ENDPOINT = process.env.S3_ENDPOINT
+const BUCKET = process.env.S3_BUCKET
+const s3 = ENDPOINT
+  ? new S3Client({
+      endpoint: ENDPOINT,
+      region: process.env.S3_REGION || 'us-east-1',
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY || '',
+        secretAccessKey: process.env.S3_SECRET_KEY || '',
+      },
+      forcePathStyle: true,
+    })
+  : null
+async function reclaimImage(url: string | null | undefined) {
+  if (!s3 || !BUCKET || !url || !ENDPOINT) return
+  const prefix = `${ENDPOINT}/${BUCKET}/`
+  if (!url.startsWith(prefix)) return
+  const key = url.slice(prefix.length)
+  if (!key) return
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }))
+  } catch (err) {
+    console.warn('[s3] session cover reclaim failed:', { key, err })
+  }
+}
 
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -28,17 +61,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 
   const isPro = !!(session?.user as { pro?: boolean })?.pro
 
-  if (body.name !== undefined)        meta.name        = String(body.name        || '').trim().slice(0, 80)
-  if (body.address !== undefined)     meta.address     = String(body.address     || '').trim().slice(0, 255)
-  if (body.dateFrom !== undefined)    meta.dateFrom    = body.dateFrom    || null
-  if (body.dateTo !== undefined)      meta.dateTo      = body.dateTo      || null
-  if (body.timezone !== undefined)    meta.timezone    = String(body.timezone    || '').trim().slice(0, 64)
-  if (body.description !== undefined) meta.description = String(body.description || '').trim().slice(0, 1000)
-  // cleanUrl enforces http(s)-only — without it a host could store a
-  // `javascript:`/`data:` URL that renders as a clickable scheme-injection
-  // link to every participant (the link is shown as a bare <a href> in the
-  // session panel + wine list). Same guard wine purchaseUrl already uses.
-  if (body.link !== undefined)               meta.link                    = cleanUrl(body.link).slice(0, 512)
+  // Detail fields (name/address/dates/timezone/description/link/hideLineup)
+  // apply via the helper shared with POST /api/session — validators (scrub,
+  // cleanUrl scheme guard, length caps) live in lib/sessionFields.ts.
+  const fieldError = applySessionFields(meta, body)
+  if (fieldError) return NextResponse.json({ error: fieldError }, { status: 400 })
+
   // Pro-gated settings (blind, lifespan): a non-pro caller may submit
   // the current value (no-op, e.g. a cohost saving unrelated edits with
   // the full settings payload) but cannot change it in either direction.
@@ -58,8 +86,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     // scope strictly within an active blind session.
     if (!newBlind) meta.blindForEveryone = false
   }
-  if (body.hideLineup !== undefined)         meta.hideLineup              = !!body.hideLineup
-  if (body.hideLineupMinutesBefore !== undefined) meta.hideLineupMinutesBefore = Number(body.hideLineupMinutesBefore) || 0
   // "Blind for all" — composes on top of meta.blind. NOT pro-gated
   // (running a blind tasting is fine for free hosts who happen to flip
   // an existing pro-blind session; only flipping a session TO blind needs
@@ -69,10 +95,54 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (body.blindForEveryone !== undefined)        meta.blindForEveryone             = !!body.blindForEveryone
 
   if (body.lifespan !== undefined) {
+    // Same allow-list as create — without it a pro caller could persist a
+    // junk string that lifespanTTL silently maps to 48h while meta records
+    // the junk.
+    if (typeof body.lifespan !== 'string' || !['48h', '72h', '1w', 'unlimited'].includes(body.lifespan)) {
+      return NextResponse.json({ error: 'unsupported lifespan' }, { status: 400 })
+    }
     if (body.lifespan !== meta.lifespan && !isPro) {
       return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
     }
     meta.lifespan = body.lifespan
+  }
+
+  // Cover photo LAST among the gates: every rejection path above is pure
+  // (no side effects), so a 403 on blind/lifespan can't orphan an already-
+  // uploaded cover. Data URL = replace, explicit null = remove. The prior
+  // bytes are reclaimed only AFTER the meta + Postgres mirror writes
+  // succeed (capture/commit/reclaim-after, root CLAUDE.md). Logged-in
+  // hosts only — an anon-hosted session has no Postgres row, so its TTL
+  // expiry would orphan the S3 bytes with no deletion path.
+  let priorCoverUrl: string | null = null
+  let coverChanged = false
+  if (body.coverPhoto !== undefined) {
+    if (!session?.user) {
+      // Identity resolved (participant+host above) but the caller class
+      // lacks the capability — permission-denied, not auth-invalid.
+      return NextResponse.json({ error: 'sign in to change the cover photo' }, { status: 403 })
+    }
+    priorCoverUrl = meta.coverPhotoUrl || null
+    if (body.coverPhoto === null) {
+      meta.coverPhotoUrl = undefined
+      coverChanged = !!priorCoverUrl
+    } else {
+      if (typeof body.coverPhoto !== 'string' || body.coverPhoto.length > MAX_IMAGE_DATA_URL_BYTES) {
+        return NextResponse.json({ error: 'image too large' }, { status: 400 })
+      }
+      // Charged only on an actual upload, not on no-op settings saves.
+      const rl = await checkRate(`rl:cover:user:${session.user.id}:1h`, 10, 3600)
+      if (!rl.allowed) {
+        return NextResponse.json(
+          { error: `Too many cover uploads. Try again in ${formatWait(rl.retryAfter)}.`, retryAfter: rl.retryAfter },
+          { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
+        )
+      }
+      const newUrl = await uploadImage(`sessions/${c}_${Date.now()}`, body.coverPhoto).catch(() => '')
+      if (!newUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
+      meta.coverPhotoUrl = newUrl
+      coverChanged = priorCoverUrl !== newUrl
+    }
   }
 
   const ttl = lifespanTTL(meta.lifespan)
@@ -103,9 +173,15 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         timezone:    meta.timezone    || null,
         description: meta.description || null,
         link:        meta.link        || null,
+        coverPhotoUrl: meta.coverPhotoUrl || null,
       },
     })
   } catch {}
+
+  // Commit done (meta written, mirror attempted) — now reclaim the replaced
+  // or removed cover bytes. Fire-and-forget; a transient S3 error must not
+  // fail the settings save.
+  if (coverChanged && priorCoverUrl) reclaimImage(priorCoverUrl).catch(() => {})
 
   return NextResponse.json({ ok: true, meta })
 }

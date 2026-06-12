@@ -9,6 +9,23 @@ import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
 import { propagateDisplayNameToSessions } from '@/lib/displayName.server'
 
+// Minimal self profile for clients that can't read the web session shape —
+// the native app uses `pro` to render pro-gated affordances (02a blind
+// toggle) disabled instead of discovering the 403 on submit. resolveUser
+// already runs a fresh users SELECT on both branches, so this is
+// revocation/upgrade-correct on every request. No rate limit: cheap read,
+// same class as /api/me/sessions.
+export async function GET(req: NextRequest) {
+  const session = await resolveUser(req)
+  if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  const u = session.user as { name?: string | null; email?: string | null; pro?: boolean }
+  return NextResponse.json(
+    { name: u.name ?? null, email: u.email ?? null, pro: !!u.pro },
+    // Viewer-dependent body — never shared-cacheable.
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  )
+}
+
 export async function PATCH(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await resolveUser(req)

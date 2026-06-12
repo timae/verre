@@ -15,10 +15,11 @@ export async function GET(req: NextRequest) {
       created_at: Date; joined_at: Date; wines_rated: bigint; avg_score: number | null
       date_from: Date | null; date_to: Date | null; address: string | null
       host_user_id: number | null; wine_count: bigint
+      cover_photo_url: string | null
     }>
   >`
     SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
-           s.date_from, s.date_to, s.address, s.host_user_id,
+           s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url,
            COUNT(DISTINCT w.id) AS wine_count,
            COUNT(DISTINCT r.id) AS wines_rated,
            ROUND(AVG(r.score)::numeric, 1) AS avg_score
@@ -31,7 +32,7 @@ export async function GET(req: NextRequest) {
     -- explicit deleted_at filter documents intent and survives any future
     -- change to the scrub or member-wipe paths.
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
-    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id
+    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url
     ORDER BY sm.joined_at DESC
     LIMIT 50
   `

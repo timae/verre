@@ -26,6 +26,7 @@ export type MySessionRow = {
   // Server-computed Moments-home pinning: live = Redis alive + caller still
   // a participant + any set date not clearly over.
   status: 'live' | 'past';
+  cover_photo_url: string | null;
 };
 
 export const isLiveSession = (r: MySessionRow) => r.status === 'live';
@@ -190,6 +191,34 @@ export async function setBookmark(code: string, wineId: string, on: boolean): Pr
     { method: on ? 'POST' : 'DELETE' },
   );
   if (!res.ok) await throwApiError(res);
+}
+
+export type CreateMomentBody = {
+  hostDisplayName: string;
+  sessionName?: string;
+  category?: 'wine'; // v1 allow-list — widens with future category sets
+  coverPhoto?: string; // base64 data URL; server runs the hardened image pipeline
+  dateFrom?: string;
+  dateTo?: string;
+  timezone?: string;
+  hideLineup?: boolean;
+  hideLineupMinutesBefore?: number;
+  address?: string;
+  description?: string;
+  link?: string;
+  blind?: boolean; // pro-gated server-side
+  // No lifespan: native creates default to 'unlimited' server-side (keyed on
+  // the Better Auth session — the unspoofable caller class).
+};
+
+export async function createMoment(body: CreateMomentBody): Promise<{ code: string }> {
+  const res = await apiFetch('/api/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
 }
 
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {
