@@ -1,4 +1,4 @@
-import { Redirect, Stack } from 'expo-router';
+import { Redirect } from 'expo-router';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FlavourWheel, type WheelAxis } from '@/components/scoring/FlavourWheel';
@@ -29,7 +29,6 @@ export default function DevGallery() {
 
   return (
     <>
-      <Stack.Screen options={{ headerShown: true, title: 'Dev gallery', headerStyle: { backgroundColor: theme.bg }, headerTintColor: theme.ink }} />
       <ScrollView
         style={{ flex: 1, backgroundColor: theme.bg }}
         contentContainerStyle={{ padding: space.lg, paddingBottom: insets.bottom + space.xl, gap: space.lg }}

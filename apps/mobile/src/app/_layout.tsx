@@ -2,6 +2,7 @@ import {
   InstrumentSans_400Regular,
   InstrumentSans_500Medium,
   InstrumentSans_600SemiBold,
+  InstrumentSans_700Bold,
   useFonts,
 } from '@expo-google-fonts/instrument-sans';
 import { Stack } from 'expo-router';
@@ -52,6 +53,7 @@ export default function RootLayout() {
     InstrumentSans_400Regular,
     InstrumentSans_500Medium,
     InstrumentSans_600SemiBold,
+    InstrumentSans_700Bold,
   });
 
   if (!fontsLoaded) return null;

@@ -1,0 +1,22 @@
+import { Stack } from 'expo-router';
+import { textStyle, useTheme } from '@/theme';
+
+export default function YouStack() {
+  const { theme } = useTheme();
+  return (
+    <Stack
+      screenOptions={{
+        headerShadowVisible: false,
+        headerStyle: { backgroundColor: theme.bg },
+        headerTintColor: theme.ink,
+        headerTitleStyle: { ...textStyle('subhead'), color: theme.ink },
+        headerBackButtonDisplayMode: 'minimal',
+        contentStyle: { backgroundColor: theme.bg },
+      }}
+    >
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      {/* In-tab so the native tab bar stays visible while theme-testing. */}
+      <Stack.Screen name="dev-gallery" options={{ title: 'Dev gallery' }} />
+    </Stack>
+  );
+}

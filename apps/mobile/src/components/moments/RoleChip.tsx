@@ -19,8 +19,9 @@ export function RoleChip({ role }: { role: SessionRole }) {
     role === 'host'
       ? { bg: theme.accentTint, text: theme.accent }
       : role === 'provider'
-        ? { bg: alpha(theme.positive, 0.14), text: theme.positive }
+        ? { bg: alpha(theme.positive, 0.16), text: theme.positive }
         : { bg: theme.surfaceSunk, text: theme.inkSoft };
+  // .pl-role pixel spec: 10.5/600, uppercase, 0.04em tracking, 2×8 padding.
   return (
     <View
       style={{
@@ -31,7 +32,15 @@ export function RoleChip({ role }: { role: SessionRole }) {
         paddingVertical: 2,
       }}
     >
-      <VText variant="caption" color={tone.text} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+      <VText
+        color={tone.text}
+        style={{
+          fontFamily: 'InstrumentSans_600SemiBold',
+          fontSize: 10.5,
+          letterSpacing: 0.42,
+          textTransform: 'uppercase',
+        }}
+      >
         {LABELS[role]}
       </VText>
     </View>

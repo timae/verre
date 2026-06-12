@@ -1,4 +1,6 @@
+import { usePathname, useRouter } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
+import { useEffect, useRef } from 'react';
 import { useTheme } from '@/theme';
 
 // The real OS tab bar (locked design ruling, 2026-06-12: bottom nav is
@@ -6,13 +8,26 @@ import { useTheme } from '@/theme';
 // the genuine one, tint-only: accent/bg/label colors from theme tokens, OS
 // physics and iconography). The 4th slot's purpose (explore vs notifications)
 // is undecided — it ships as a tappable "Soon" tab with an empty state.
-// There is no index route in (tabs) — "/" resolves to the guard-blocked
-// (auth) index when logged in, and the router redirects into this navigator
-// at its anchor. The anchor must be Moments, not the first trigger (Feed).
-export const unstable_settings = { initialRouteName: 'moments' };
-
 export default function TabsLayout() {
   const { theme } = useTheme();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  // Cold-start anchor. NativeTabs honors neither initialRouteName nor
+  // unstable_settings (verified in the SDK 56 navigator source — the options
+  // are never forwarded), so with no index route "/" lands on the first
+  // trigger (Feed). Snap the very first mount to Moments; any real deep link
+  // (session URL etc.) has a different pathname and is left alone. Caveat: a
+  // genuine /feed deep link at cold start would be snapped too — acceptable
+  // until feed deep links exist; revisit with the Universal-Links milestone.
+  const anchored = useRef(false);
+  useEffect(() => {
+    if (anchored.current) return;
+    anchored.current = true;
+    if (pathname === '/' || pathname === '/feed') router.replace('/moments');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <NativeTabs
       tintColor={theme.accent}

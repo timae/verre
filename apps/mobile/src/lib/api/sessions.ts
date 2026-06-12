@@ -15,6 +15,7 @@ export type MySessionRow = {
   wines_rated: number;
   avg_score: number | null;
   date_from: string | null;
+  date_to: string | null;
   address: string | null;
   host_user_id: number | null;
   wine_count: number;
@@ -22,10 +23,12 @@ export type MySessionRow = {
   lifespan: string | null;
   taster_count: number | null;
   role: SessionRole;
+  // Server-computed Moments-home pinning: live = Redis alive + caller still
+  // a participant + any set date not clearly over.
+  status: 'live' | 'past';
 };
 
-// ttl -1 = no expiry (pro unlimited), > 0 = counting down, -2 = key gone.
-export const isLiveSession = (r: MySessionRow) => r.ttl_seconds > 0 || r.ttl_seconds === -1;
+export const isLiveSession = (r: MySessionRow) => r.status === 'live';
 
 export type WireWine = {
   id: string;
@@ -141,6 +144,15 @@ export async function getSessionState(code: string): Promise<SessionState> {
 export async function postVisit(code: string): Promise<void> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/visit`, { method: 'POST' });
   if (!res.ok) await throwApiError(res);
+}
+
+// Distinguishes kicked (can rejoin by code) from banned (cannot) after a
+// removed bounce — same endpoint the web RemovedView uses.
+export async function getRemovedState(code: string): Promise<'banned' | 'kicked' | 'none'> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/removed-state`);
+  if (!res.ok) return 'none';
+  const j = await res.json().catch(() => null);
+  return j?.state === 'banned' || j?.state === 'kicked' ? j.state : 'none';
 }
 
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {

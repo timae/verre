@@ -19,6 +19,26 @@ export function recentMeta(dateIso: string | null, wineCount: number): string {
   return parts.join(' · ');
 }
 
+const fmtTime = (d: Date) =>
+  d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+const fmtDayShort = (d: Date) =>
+  d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+
+// The ovc "when" line: "Fri 20 Jun · 7:00 PM – 1:00 AM" single-day,
+// "Fri 20 Jun – Sun 22 Jun · from 7:00 PM" multi-day.
+export function sessionWhen(fromIso: string | null | undefined, toIso: string | null | undefined): string | null {
+  const from = fromIso ? new Date(fromIso) : null;
+  if (!from || Number.isNaN(from.getTime())) return null;
+  const to = toIso ? new Date(toIso) : null;
+  const day = formatDay(from) ?? fmtDayShort(from);
+  if (to && !Number.isNaN(to.getTime())) {
+    const sameDay = from.toDateString() === to.toDateString();
+    if (sameDay) return `${day} · ${fmtTime(from)} – ${fmtTime(to)}`;
+    return `${fmtDayShort(from)} – ${fmtDayShort(to)} · from ${fmtTime(from)}`;
+  }
+  return `${day} · ${fmtTime(from)}`;
+}
+
 function formatDay(d: Date): string | null {
   if (Number.isNaN(d.getTime())) return null;
   const now = new Date();
