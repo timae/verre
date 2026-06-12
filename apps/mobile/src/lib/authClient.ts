@@ -1,3 +1,12 @@
+// Side-effect imports — load-bearing. @better-auth/expo's client lazily does
+// `import("expo-network")` (and `import("expo-web-browser")` for social),
+// which Metro's dev `lazy` mode turns into async split chunks; under the
+// bytecode+lazy param set the entry bundle's chunk-path map misses the entry
+// and the require dies with "Requiring unknown module N". Importing them
+// statically here pulls both into the entry bundle, so Metro dedupes the
+// dynamic import into a plain in-bundle require.
+import 'expo-network';
+import 'expo-web-browser';
 import { expoClient } from '@better-auth/expo/client';
 import { createAuthClient } from 'better-auth/react';
 import { CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
