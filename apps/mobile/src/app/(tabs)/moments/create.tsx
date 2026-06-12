@@ -46,8 +46,10 @@ export default function CreateMoment() {
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
-  const [dateFrom, setDateFrom] = useState<Date | null>(null);
-  const [dateTo, setDateTo] = useState<Date | null>(null);
+  // Pickers are visible and seeded from the start (Simon's ruling — matches
+  // the mock's prefilled values); the × clears back to a date-less moment.
+  const [dateFrom, setDateFrom] = useState<Date | null>(() => nextFullHour());
+  const [dateTo, setDateTo] = useState<Date | null>(() => new Date(nextFullHour().getTime() + 6 * 3600_000));
   const [hideLineup, setHideLineup] = useState(false);
   const [hideMinutes, setHideMinutes] = useState(0);
   const [blind, setBlind] = useState(false);
@@ -340,8 +342,10 @@ function CoverPicker({
   );
 }
 
-// From/To — optional dates: placeholder field until tapped, then the OS
-// compact datetime picker (native-chrome) with a × to clear.
+// From/To — the OS combined datetime control (mode="datetime", which iOS
+// renders as adjacent date + time pills per OS convention), visible and
+// seeded from the start. × clears back to a date-less moment; the cleared
+// placeholder re-seeds on tap.
 function DateField({
   label, value, onChange, defaultValue,
 }: {
@@ -360,7 +364,7 @@ function DateField({
             value={value}
             mode="datetime"
             display="compact"
-            onChange={(_e, d) => { if (d) onChange(d); }}
+            onValueChange={(_e, d) => { if (d) onChange(d); }}
             style={{ flexShrink: 1 }}
           />
           <Pressable accessibilityRole="button" accessibilityLabel={`Clear ${label.toLowerCase()} date`} onPress={() => onChange(null)} hitSlop={8}>
@@ -381,7 +385,7 @@ function DateField({
             borderRadius: radius.sm,
           }}
         >
-          <VText variant="body" color="inkFaint">Optional</VText>
+          <VText variant="body" color="inkFaint">No date</VText>
         </Pressable>
       )}
     </View>
