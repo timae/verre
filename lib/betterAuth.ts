@@ -345,38 +345,71 @@ export const betterAuthServer = betterAuth({
         },
       },
     },
-    // 🔒 NATIVE→WEB credential mirror (§3): BA's /change-password writes
-    // auth_accounts.password only. This after-hook (runs post-commit) fans the
-    // new hash out to users.password_hash and kills every web session, so the
-    // old password can't keep working on web — the exact drift /change-password
-    // was disabledPaths'd to prevent until now.
+    // 🔒 NATIVE→WEB credential mirror (§3), TWO hooks:
     //
-    // ⚠️ Covers /change-password ONLY — a future reset-password flow would NOT
-    // hit this hook: BA's reset path goes through updatePassword → updateMany,
-    // whose after-hook receives the adapter's COUNT, not the row, so the
-    // providerId guard below silently skips. Inert today (no sendResetPassword
-    // configured → no reset token can exist). When reset ships, wire
-    // emailAndPassword.onPasswordReset + revokeSessionsOnPasswordReset and pin
-    // a test — do not rely on this hook.
+    // create.after — a NATIVE SIGN-UP writes its bcrypt hash to
+    // auth_accounts.password only; without this mirror the user has
+    // users.password_hash = NULL and can't log in on web (the original "step-5
+    // asymmetry", reversed by security review 2026-06-12: it was a front-door
+    // distinction with no capability behind it — a BA session already reaches
+    // every API route via resolveUser — and it broke the one-identity product
+    // promise for every app-registered user). Fill-NULL-ONLY: an existing web
+    // user can never reach this hook with a different hash (a taken email gets
+    // the synthetic-success path and creates NO row — see autoSignIn below),
+    // and backfillNativeCredential's row-create is raw Prisma (skips BA hooks),
+    // so the only callers are genuine BA-created rows. Social rows (step 6)
+    // are guarded out by providerId/password. No revoke leg: a NULL-hash user
+    // can have no credential web sessions to kill.
+    // ⚠️ Runs POST-COMMIT — a throw here strands the user web-less with
+    // nothing else able to heal (the update-mirror needs a non-NULL hash to
+    // engage). backfillNativeCredential's NULL-heal branch (identityStore)
+    // exists exactly for that: it completes this crashed mirror on the next
+    // native sign-in. Ship/modify the two together.
     //
-    //  - Fires on ANY credential-account row update, so it self-discriminates:
-    //    skip unless the row's hash actually differs from users.password_hash.
-    //  - Skip when users.password_hash is NULL: a native-registered user has no
-    //    web password and no web sessions — mirroring would silently grant web
-    //    login. They stay native-only (the documented step-5 asymmetry).
+    // update.after — BA's /change-password writes auth_accounts.password only.
+    // This after-hook (runs post-commit) fans the new hash out to
+    // users.password_hash and kills every web session, so the old password
+    // can't keep working on web — the exact drift /change-password was
+    // disabledPaths'd to prevent until now.
+    //
+    // ⚠️ update covers /change-password ONLY — a future reset-password flow
+    // would NOT hit it: BA's reset path goes through updatePassword →
+    // updateMany, whose after-hook receives the adapter's COUNT, not the row,
+    // so the providerId guard below silently skips. Inert today (no
+    // sendResetPassword configured → no reset token can exist). When reset
+    // ships, wire emailAndPassword.onPasswordReset +
+    // revokeSessionsOnPasswordReset and pin a test — do not rely on this hook.
+    //
+    //  - update fires on ANY credential-account row update, so it self-
+    //    discriminates: skip unless the row's hash differs from
+    //    users.password_hash. A NULL users.password_hash no longer skips —
+    //    since the create-mirror, NULL means a crashed create-mirror, so
+    //    mirroring here is a second heal point (the revoke leg is a harmless
+    //    0-row update for a user who could never log in on web).
     //  - No recursion: syncCredential writes auth_accounts via raw Prisma,
     //    which skips BA's databaseHooks.
     //  - Same independence rule as identityStore: the web-session revoke is
     //    attempted even if the hash mirror throws (revoking is the safety
     //    action), then the first error rethrows.
     account: {
+      create: {
+        after: async (account) => {
+          if (account?.providerId !== 'credential' || !account.password) return
+          const userId = Number(account.userId)
+          if (!Number.isInteger(userId) || userId <= 0) return
+          const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
+          if (!user || user.passwordHash) return // fill-NULL-only — never overwrite a web hash
+          await syncCredential(userId, account.password)
+        },
+      },
       update: {
         after: async (account) => {
           // optional-chain: updateMany-shaped hook payloads are a count, not a row
           if (account?.providerId !== 'credential' || !account.password) return
           const userId = Number(account.userId)
+          if (!Number.isInteger(userId) || userId <= 0) return
           const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
-          if (!user?.passwordHash || user.passwordHash === account.password) return
+          if (!user || user.passwordHash === account.password) return
           // Independence rule (same as revokeAllSessions): both legs are
           // attempted, the revoke (the safety action) runs even if the hash
           // mirror throws, and the FIRST error rethrows after logging the second
@@ -569,9 +602,9 @@ export const betterAuthServer = betterAuth({
   //    auth_accounts.password ONLY (the count-shaped updatePassword path the
   //    account.update.after mirror can't see), so a reset would diverge the two
   //    credential stores with NO crashed-mirror cause. That breaks the
-  //    drift-reconcile inference in backfillNativeCredential ("the only
-  //    systematic divergence is a crashed change-password mirror, so accounts →
-  //    users is unambiguously newer"): a post-reset native sign-in would copy
+  //    drift-reconcile inference in backfillNativeCredential (each divergence
+  //    state maps to exactly one known crashed mirror, so accounts → users is
+  //    unambiguously the newer direction): a post-reset native sign-in would copy
   //    the reset hash into users.password_hash and revoke web sessions. Today
   //    request-reset already 400s (no sendResetPassword), but disabling both
   //    makes shipping reset a deliberate step that MUST also wire onPasswordReset
