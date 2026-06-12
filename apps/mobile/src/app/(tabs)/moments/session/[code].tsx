@@ -257,8 +257,23 @@ function TabStrip() {
 function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string }) {
   const { theme } = useTheme();
   const [descOpen, setDescOpen] = useState(false);
-  const [descClamped, setDescClamped] = useState(false);
+  // Character count of the first three laid-out lines (from the invisible
+  // measurer), or null when the description fits unclamped.
+  const [clampLen, setClampLen] = useState<number | null>(null);
   if (!meta) return null;
+
+  // Word-boundary truncation: slice the original string at the 3-line break,
+  // walk back to a word end (freeing room for "… more" on the same line),
+  // append the ellipsis. " more" then flows inline — never mid-word, never
+  // its own line.
+  let truncated: string | null = null;
+  if (clampLen !== null && meta.description) {
+    let txt = meta.description.slice(0, clampLen).replace(/\s+$/, '');
+    let cut = txt.lastIndexOf(' ');
+    while (cut > 0 && txt.length - cut < 9) cut = txt.lastIndexOf(' ', cut - 1);
+    if (cut > 0) txt = txt.slice(0, cut);
+    truncated = txt.replace(/[\s,.;:]+$/, '') + ' …';
+  }
   const when = sessionWhen(meta.dateFrom, meta.dateTo);
   const hasAny = meta.address || when || meta.link || meta.description || meta.participants.length > 0;
   if (!hasAny) return null;
@@ -320,13 +335,18 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
           )
         : null}
       {meta.description ? (
-        <Pressable onPress={() => setDescOpen((o) => !o)} disabled={!descClamped && !descOpen}>
-          {/* Invisible un-clamped twin measures the real line count — "more"
-              only appears when the 3-line clamp actually cuts content. */}
+        <Pressable onPress={() => setDescOpen((o) => !o)} disabled={truncated === null && !descOpen}>
+          {/* Invisible un-clamped twin: reports the laid-out lines so the
+              visible text can be cut at the real 3-line break. */}
           <VText
             variant="small"
             pointerEvents="none"
-            onTextLayout={(e) => setDescClamped(e.nativeEvent.lines.length > 3)}
+            onTextLayout={(e) => {
+              const lines = e.nativeEvent.lines;
+              setClampLen(
+                lines.length > 3 ? lines.slice(0, 3).reduce((n, l) => n + l.text.length, 0) : null,
+              );
+            }}
             style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 20 }}
           >
             {meta.description}
@@ -340,21 +360,14 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
               </VText>
             </VText>
           ) : (
-            // Collapsed: per the .ovc-more spec, "more" overlays the end of
-            // the truncated third line (bg-filled, left padding standing in
-            // for the CSS fade), not a line of its own.
-            <View>
-              <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10, lineHeight: 20 }}>
-                {meta.description}
-              </VText>
-              {descClamped ? (
-                <View style={{ position: 'absolute', right: 0, bottom: 0, backgroundColor: theme.bg, paddingLeft: 18 }}>
-                  <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
-                    more
-                  </VText>
-                </View>
+            <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10, lineHeight: 20 }}>
+              {truncated ?? meta.description}
+              {truncated !== null ? (
+                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+                  {' more'}
+                </VText>
               ) : null}
-            </View>
+            </VText>
           )}
         </Pressable>
       ) : null}
