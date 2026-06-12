@@ -29,11 +29,12 @@ const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
 
 type MetaView = SessionState['meta'];
 
-// 02b line-up, read-only milestone, to the vero-screens pixel spec: .sess-meta
-// line, .ovc about block, .vtabs, .lurow anatomy, .lock-card with countdown
-// cells, .tempty. Rating input, host actions, Compare, and the ⋯ menu land in
-// later milestones (Compare tab renders disabled; unrated rows show no Rate
-// pill yet — flagged deviations).
+// 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
+// block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
+// Milestone 3: rows open the impression detail (02e); unrated rows carry the
+// .lu-rate pill, rated rows the score chip. Host actions, Compare, and the
+// session ⋯ menu land in later milestones (Compare tab renders disabled —
+// flagged deviation).
 export default function SessionLineup() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
@@ -175,7 +176,18 @@ export default function SessionLineup() {
             contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
             renderItem={({ item, index }) => (
-              <LuRow wine={item} index={index} myIdentityId={myIdentityId} ratings={ratings} />
+              <LuRow
+                wine={item}
+                index={index}
+                myIdentityId={myIdentityId}
+                ratings={ratings}
+                onPress={() =>
+                  router.push({
+                    pathname: '/(tabs)/moments/session/[code]/impression/[wineId]',
+                    params: { code, wineId: item.id },
+                  })
+                }
+              />
             )}
             ListEmptyComponent={<EmptyLineup canAdd={canAdd} />}
           />
@@ -533,13 +545,16 @@ function ratersFor(wineId: string, ratings: RatingsView | null): number {
 }
 
 // .lurow: idx · thumb · name/vintage + maker + style · score/rated column.
+// The whole row opens the impression detail (02e); unrated rows carry the
+// .lu-rate pill, rated rows the one-star score chip.
 function LuRow({
-  wine, index, myIdentityId, ratings,
+  wine, index, myIdentityId, ratings, onPress,
 }: {
   wine: WireWine;
   index: number;
   myIdentityId: string;
   ratings: RatingsView | null;
+  onPress: () => void;
 }) {
   const { theme } = useTheme();
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
@@ -547,7 +562,16 @@ function LuRow({
   const blind = !!wine._blind;
 
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 }}>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 12,
+        opacity: pressed ? 0.6 : 1,
+      })}
+    >
       {/* .lu-idx: 18w, 13/600, ink-faint, tabular */}
       <VText
         color="inkFaint"
@@ -583,11 +607,15 @@ function LuRow({
           </>
         ) : (
           <>
-            {/* .lu-name: "Oslavje - 2018", vintage ink-soft regular */}
+            {/* .lu-name: "Oslavje - 2018" — the dash stays in the name
+                colour; only the year itself is ink-soft regular */}
             <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
               {wine.name}
               {wine.vintage ? (
-                <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 15, lineHeight: 23 }}>{` - ${wine.vintage}`}</VText>
+                <>
+                  {' - '}
+                  <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 15, lineHeight: 23 }}>{wine.vintage}</VText>
+                </>
               ) : null}
             </VText>
             {wine.producer ? (
@@ -601,13 +629,29 @@ function LuRow({
           </>
         )}
       </View>
-      {/* .lu-right2 */}
+      {/* .lu-right2: score chip when rated, .lu-rate pill when not */}
       <View style={{ alignItems: 'flex-end', gap: 4 }}>
-        {myScore > 0 ? <StarScore value={myScore} /> : null}
-        <VText variant="caption" color="inkFaint">
-          {raters > 0 ? `Rated by ${raters}` : 'Awaiting'}
-        </VText>
+        {myScore > 0 ? (
+          <StarScore value={myScore} />
+        ) : (
+          <View
+            style={{
+              borderWidth: 1,
+              borderColor: theme.accentLine,
+              borderRadius: radius.pill,
+              paddingVertical: 5,
+              paddingHorizontal: 13,
+            }}
+          >
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16 }} color="accent">
+              Rate
+            </VText>
+          </View>
+        )}
+        {raters > 0 ? (
+          <VText variant="caption" color="inkFaint">{`Rated by ${raters}`}</VText>
+        ) : null}
       </View>
-    </View>
+    </Pressable>
   );
 }

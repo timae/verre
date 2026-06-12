@@ -105,6 +105,49 @@ decided. `TAB_BAR_CLEARANCE` (now in `src/lib/layout.ts`) is breathing room
 only — the react-native-screens tab host auto-insets content. Sheets, menus,
 alerts, pickers: reach for the native primitive first when those screens land.
 
+## Scoring input (milestone 3)
+
+- **Native-first input ruling (Simon, 2026-06-12)**: use the OS input
+  machinery, never port the web's gesture-mimicry JS. Drag-vs-scroll intent =
+  gesture-handler `activeOffsetX(±6)` / `failOffsetY(±8)` (what the web's 6px
+  SLOP dance imitates); editable score number = native decimal-pad
+  `TextInput`; VoiceOver = `adjustable` role with increment/decrement
+  actions. **Exception (Simon, 2026-06-12): the 02e ⋯ menu is the BRAND
+  `.ir-menu` anchored dropdown, not a native action sheet** — a per-element
+  flip of the native-chrome "context menus" tag; alerts/sheets stay native. Only pure value policy comes from
+  `@verre/core` `scoringInput.ts` (`snapScore`, `scoreFromFraction`,
+  `stepScore`, flavour level fns) — it must stay behavior-equal to the web's
+  inline copies (web stays untouched until its redesign; the 03 §2a
+  convergence precondition is rescinded).
+- `GestureHandlerRootView` wraps the root layout — gestures fail silently
+  without it.
+- ⚠️ **Full-bleed scroll content vs react-native-screens**: a pushed RNSScreen
+  (and the tabs host) force-flips the FIRST descendant-chain ScrollView's
+  `contentInsetAdjustmentBehavior` from `never` back to `automatic`
+  (`RNSScreen.mm` → `RNSScrollViewHelper.mm`, override on by default) — iOS
+  then top-insets the content and a full-bleed hero starts below the status
+  bar. Fix: a zero-size `<View collapsable={false}>` as the first sibling
+  dead-ends the `subviews[0]` walk (see 02e). `collapsable={false}` is
+  load-bearing — Fabric flattens layout-only views out of the native
+  hierarchy, and a flattened dead-end never exists for the finder to hit.
+  Applies to any future edge-to-edge screen (feed hero cards). The per-tab
+  `disableAutomaticContentInsets` would flip the whole tab — don't.
+- **Tab bar hiding**: `NativeTabs` host prop `hidden` (pathname-keyed in
+  `(tabs)/_layout.tsx`) — 02e hides the bar (footer action bar replaces the
+  nav per design). Do NOT use the per-trigger `hidden` (that's the
+  unnavigable-tab trap from M2).
+- **Haptics** (`expo-haptics`): selection tick per 0.25 step while dragging,
+  light impact on commit. No-ops in the Simulator — verify on device.
+- **New native modules this milestone**: `expo-haptics`, `expo-linear-gradient`
+  (hero scrim) — pinned from `bundledNativeModules.json`; re-run
+  `npx expo run:ios` after pulling.
+- **Rate flow** (`moments/session/[code]/impression/[wineId]`): local-until-
+  commit like the web Rate pane — the POST fires on Save & next/finish (and
+  Previous, a flagged deviation to avoid silent edit loss). "Clear my rating"
+  is local too; an empty save triggers the server's engagement-deletion
+  cascade. Existing flavour chip data passes through saves untouched until
+  the fill-track input lands (palette-gated — see the flavour-colours brief).
+
 ## Theme / design
 
 - `src/theme/vero-tokens.js` is a **verbatim vendored copy** of

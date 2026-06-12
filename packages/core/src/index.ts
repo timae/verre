@@ -31,6 +31,16 @@ export {
   type WheelLabelAnchor,
   type WheelGeometry,
 } from './scoringGeometry'
+export {
+  SCORE_MAX,
+  SCORE_STEP,
+  FLAVOUR_MAX,
+  snapScore,
+  scoreFromFraction,
+  stepScore,
+  flavourLevelFromFraction,
+  toggleFlavourLevel,
+} from './scoringInput'
 export { formatScore } from './formatScore'
 export { decimalToNumber } from './decimal'
 export {

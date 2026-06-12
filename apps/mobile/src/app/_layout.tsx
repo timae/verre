@@ -9,6 +9,7 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
 import { QueryProvider } from '@/lib/query';
 import { consumePendingUpdateRequired } from '@/lib/updateGate';
@@ -59,10 +60,14 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    <ThemeProvider>
-      <QueryProvider>
-        <RootNavigator />
-      </QueryProvider>
-    </ThemeProvider>
+    // Gesture-handler requires the root wrapper to register its native
+    // gesture system — the score-input Pan/Tap gestures depend on it.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+        <QueryProvider>
+          <RootNavigator />
+        </QueryProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

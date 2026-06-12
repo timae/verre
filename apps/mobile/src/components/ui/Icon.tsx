@@ -6,7 +6,7 @@ import { useTheme } from '@/theme';
 // stroke icons at the design's per-icon stroke widths, currentColor → color.
 type Seg =
   | { d: string; sw?: number; fill?: boolean; cap?: boolean; join?: boolean }
-  | { cx: number; cy: number; r: number; sw?: number };
+  | { cx: number; cy: number; r: number; sw?: number; fill?: boolean };
 
 const ICONS: Record<string, Seg[]> = {
   glass: [
@@ -33,6 +33,18 @@ const ICONS: Record<string, Seg[]> = {
   'chevron-right': [{ d: 'M9.5 6l6 6-6 6', sw: 1.6, cap: true, join: true }],
   'chevron-down': [{ d: 'M6 9.5l6 6 6-6', sw: 1.6, cap: true, join: true }],
   back: [{ d: 'M15 5l-7 7 7 7', sw: 1.7, cap: true, join: true }],
+  heart: [
+    { d: 'M12 20s-7-4.6-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7-2.5C19 10.4 12 20 12 20Z', sw: 1.6, join: true },
+  ],
+  'heart-fill': [
+    { d: 'M12 20s-7-4.6-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7-2.5C19 10.4 12 20 12 20Z', fill: true },
+  ],
+  more: [
+    { cx: 5, cy: 12, r: 1.6, fill: true },
+    { cx: 12, cy: 12, r: 1.6, fill: true },
+    { cx: 19, cy: 12, r: 1.6, fill: true },
+  ],
+  undo: [{ d: 'M9 7H5V3M5 7a8 8 0 1 1-2 5', sw: 1.6, cap: true, join: true }],
 };
 
 export type IconName = keyof typeof ICONS;
@@ -44,7 +56,11 @@ export function Icon({ name, size = 18, color }: { name: IconName; size?: number
     <Svg width={size} height={size} viewBox="0 0 24 24">
       {ICONS[name].map((s, i) =>
         'cx' in s ? (
-          <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} />
+          s.fill ? (
+            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill={c} />
+          ) : (
+            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} />
+          )
         ) : (
           <Path
             key={i}

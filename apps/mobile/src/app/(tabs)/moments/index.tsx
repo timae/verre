@@ -222,7 +222,7 @@ function JoinBlock() {
             style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, letterSpacing: 2.1 }}
           />
         </View>
-        <Button title="Join" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20 }} />
+        <Button title="Join" loadingTitle="Joining…" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20 }} />
       </View>
       {error ? <VText variant="caption" color="critical">{error}</VText> : null}
     </View>

@@ -61,7 +61,7 @@ export default function SignUp() {
         <TextField ref={passwordRef} label="Password" value={password} onChangeText={setPassword} autoComplete="new-password" textContentType="newPassword" secureTextEntry returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => confirmRef.current?.focus()} />
         <TextField ref={confirmRef} label="Confirm password" value={confirm} onChangeText={setConfirm} autoComplete="new-password" textContentType="newPassword" secureTextEntry returnKeyType="go" onSubmitEditing={submit} />
         {error ? <VText variant="small" color="critical">{error}</VText> : null}
-        <Button title="Create account" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
+        <Button title="Create account" loadingTitle="Creating account…" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
         <Pressable onPress={() => router.replace('/sign-in')} style={{ alignItems: 'center', marginTop: space.md }}>
           <VText variant="small" color="inkSoft">
             Already have an account? <VText variant="small" color="accent">Sign in</VText>

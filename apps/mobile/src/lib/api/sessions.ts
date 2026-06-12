@@ -155,6 +155,43 @@ export async function getRemovedState(code: string): Promise<'banned' | 'kicked'
   return j?.state === 'banned' || j?.state === 'kicked' ? j.state : 'none';
 }
 
+export type RateBody = {
+  wineId: string;
+  score: number; // 0..5 in 0.25 steps; 0 = not rated
+  flavors: Record<string, number>; // whole steps 1..5, zero levels omitted
+  notes: string;
+};
+
+// Upserts the caller's rating. Server side-effects (no client work):
+// Postgres archival, the feed_item on first engagement, and the
+// engagement-deletion cascade when score+flavors+notes are all empty —
+// so "clear my rating" is just an empty rate POST.
+export async function rateWine(code: string, body: RateBody): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Saved-wine ids for the Crave toggle — same shape the web SessionShell
+// consumes ([{ wine_id }] from /api/me/bookmarks).
+export async function getBookmarkedWineIds(): Promise<Set<string>> {
+  const res = await apiFetch('/api/me/bookmarks');
+  if (!res.ok) await throwApiError(res);
+  const rows: Array<{ wine_id: string }> = await res.json();
+  return new Set(rows.map((r) => r.wine_id));
+}
+
+export async function setBookmark(code: string, wineId: string, on: boolean): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/bookmark`,
+    { method: on ? 'POST' : 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {
   const res = await apiFetch('/api/session/join', {
     method: 'POST',

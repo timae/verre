@@ -34,6 +34,10 @@ export default function TabsLayout() {
       backgroundColor={theme.surface}
       iconColor={theme.inkSoft}
       labelStyle={{ default: { color: theme.inkSoft }, selected: { color: theme.accent } }}
+      // 02e replaces the bottom nav with its own Previous / Save & next
+      // action bar (design: "in-flow footer actions replace the nav while
+      // rating") — hide the OS tab bar while an impression screen is up.
+      hidden={pathname.includes('/impression/')}
     >
       <NativeTabs.Trigger name="feed">
         <NativeTabs.Trigger.Label>Feed</NativeTabs.Trigger.Label>
