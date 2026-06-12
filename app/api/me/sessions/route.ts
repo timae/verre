@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { redis, k } from '@/lib/redis'
@@ -67,7 +68,7 @@ export async function GET(req: NextRequest) {
       wine_count: Number(r.wine_count),
       // Decimal wire-format trap (root CLAUDE.md): raw numeric serializes as
       // a JSON string without this coercion.
-      avg_score: r.avg_score === null ? null : Number(r.avg_score),
+      avg_score: decimalToNumber(r.avg_score),
       date_from: r.date_from ? r.date_from.toISOString() : null,
       ttl_seconds,
       lifespan,
