@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, View } from 'react-native';
@@ -345,7 +346,9 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
               <VText variant="small" color="accent">Event link</VText>
             </>,
             'link',
-            () => Linking.openURL(meta.link!).catch(() => {}),
+            // In-app browser — keep the user inside the moment (the Map
+            // line above stays Linking: it should open the Maps app).
+            () => WebBrowser.openBrowserAsync(meta.link!).catch(() => {}),
           )
         : null}
       {meta.description ? (
