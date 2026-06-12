@@ -69,7 +69,9 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
             flexDirection: 'row',
             gap: 8,
             opacity: disabled ? 0.4 : 1,
-            transform: pressed ? [{ scale: 0.975 }] : undefined,
+            // Always an array — a conditional `undefined` transform key reaches
+            // RN's _validateTransforms as null and crashes (processTransform:142).
+            transform: [{ scale: pressed ? 0.975 : 1 }],
           },
           block ? { width: '100%' } : null,
           style,

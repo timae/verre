@@ -26,6 +26,17 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   and resolves `@verre/core`'s raw-TS `exports` (package-exports on by default
   since SDK 53). No metro.config.js exists — don't add one just to "fix"
   resolution, and never set `unstable_enablePackageExports: false`.
+- **React is pinned EXACTLY (`19.2.3`) in BOTH package.jsons — root web app
+  included.** RN's bundled `react-native-renderer` demands the exact same react
+  version at runtime (its loose `^` peer range is a lie); a second react
+  version anywhere also forces npm to nest the expo subtree under
+  `apps/mobile/node_modules`, where the root-hoisted `@expo/router-server`
+  can't resolve `expo-router` (the typed-routes crash). When bumping react:
+  bump both pins together to the version RN's release ships its renderer for.
+- ⚠️ **NEVER run `npm audit fix --force` in this repo.** It "fixes" advisories
+  by jumping ranges in either direction — observed downgrading `next` 15→9 and
+  `expo` 56→46, wrecking the whole tree. Recovery: `git checkout --` the
+  package manifests, delete `node_modules` + `package-lock.json`, `npm install`.
 
 ## Auth (Better Auth client)
 
