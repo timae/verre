@@ -57,6 +57,32 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   `X-Verre-Client` header + the 426 update-required handshake). Never bare
   `fetch` against the backend.
 
+## Native-chrome vs brand-custom (locked design ruling, 2026-06-12)
+
+Every design-handoff element carries one of two tags (recorded in
+`.local/design/CLAUDE.md` "Native-chrome vs brand-custom"; tagging is
+per-element on mixed screens; ask when unsure):
+
+- **native-chrome** — the mock is an INTENT reference; implementation uses the
+  real OS component (iOS/Android diverge deliberately — this IS the O5 split
+  axis). Spec covers content/copy + tint tokens (bg + label colors held to the
+  theme); gesture physics and exact paddings belong to the OS. Applies to:
+  bottom nav, sheet SHELLS (presentation/dismiss/scrim — contents stay
+  brand-custom), switches, context menus, alerts, pickers/dropdowns, date
+  pickers, search, share, large-title bars.
+- **brand-custom** — the mock is the pixel spec, tokens apply fully, identical
+  across platforms: all scoring widgets, buttons, fields (incl. join-code
+  auto-format + score slider), cards, chips, avatars, the wine modal, empty
+  states.
+
+Consequence for this app: **`PillTabBar` is interim** — the design's floating
+pill mimics the native iOS 26 tab bar, and the locked ruling is to use the real
+one (`expo-router/unstable-native-tabs`, tint-only: bg + label colors from
+theme tokens). Swap planned with the next milestone after a theming spike
+(verify each theme's accent/bg survives the limited NativeTabs knobs; the
+"Soon" placeholder slot needs a NativeTabs answer too). Sheets, menus, alerts,
+pickers: reach for the native primitive first when those screens land.
+
 ## Theme / design
 
 - `src/theme/vero-tokens.js` is a **verbatim vendored copy** of
