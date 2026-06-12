@@ -1,4 +1,4 @@
-import { betterAuth } from 'better-auth'
+import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import { APIError, getSessionFromCtx } from 'better-auth/api'
@@ -345,38 +345,74 @@ export const betterAuthServer = betterAuth({
         },
       },
     },
-    // 🔒 NATIVE→WEB credential mirror (§3): BA's /change-password writes
-    // auth_accounts.password only. This after-hook (runs post-commit) fans the
-    // new hash out to users.password_hash and kills every web session, so the
-    // old password can't keep working on web — the exact drift /change-password
-    // was disabledPaths'd to prevent until now.
+    // 🔒 NATIVE→WEB credential mirror (§3), TWO hooks:
     //
-    // ⚠️ Covers /change-password ONLY — a future reset-password flow would NOT
-    // hit this hook: BA's reset path goes through updatePassword → updateMany,
-    // whose after-hook receives the adapter's COUNT, not the row, so the
-    // providerId guard below silently skips. Inert today (no sendResetPassword
-    // configured → no reset token can exist). When reset ships, wire
-    // emailAndPassword.onPasswordReset + revokeSessionsOnPasswordReset and pin
-    // a test — do not rely on this hook.
+    // create.after — a NATIVE SIGN-UP writes its bcrypt hash to
+    // auth_accounts.password only; without this mirror the user has
+    // users.password_hash = NULL and can't log in on web (the original "step-5
+    // asymmetry", reversed by security review 2026-06-12: it was a front-door
+    // distinction with no capability behind it — a BA session already reaches
+    // every API route via resolveUser — and it broke the one-identity product
+    // promise for every app-registered user). Fill-NULL-ONLY: an existing web
+    // user can never reach this hook with a different hash (a taken email gets
+    // the synthetic-success path and creates NO row — see autoSignIn below),
+    // and backfillNativeCredential's row-create is raw Prisma (skips BA hooks),
+    // so the only callers are genuine BA-created rows. Social rows (step 6)
+    // are guarded out by providerId/password. No revoke leg: a NULL-hash user
+    // can have no credential web sessions to kill.
+    // ⚠️ Runs POST-COMMIT — a throw here strands the user web-less with
+    // nothing else able to heal (the update-mirror needs a non-NULL hash to
+    // engage). backfillNativeCredential's NULL-heal branch (identityStore)
+    // exists exactly for that: it completes this crashed mirror on the next
+    // native sign-in. Ship/modify the two together.
     //
-    //  - Fires on ANY credential-account row update, so it self-discriminates:
-    //    skip unless the row's hash actually differs from users.password_hash.
-    //  - Skip when users.password_hash is NULL: a native-registered user has no
-    //    web password and no web sessions — mirroring would silently grant web
-    //    login. They stay native-only (the documented step-5 asymmetry).
+    // update.after — BA's /change-password writes auth_accounts.password only.
+    // This after-hook (runs post-commit) fans the new hash out to
+    // users.password_hash and kills every web session, so the old password
+    // can't keep working on web — the exact drift /change-password was
+    // disabledPaths'd to prevent until now.
+    //
+    // ⚠️ update covers /change-password ONLY — a future reset-password flow
+    // would NOT hit it: BA's reset path goes through updatePassword →
+    // updateMany, whose after-hook receives the adapter's COUNT, not the row,
+    // so the providerId guard below silently skips. Inert today (no
+    // sendResetPassword configured → no reset token can exist). When reset
+    // ships, wire emailAndPassword.onPasswordReset +
+    // revokeSessionsOnPasswordReset and pin a test — do not rely on this hook.
+    //
+    //  - update fires on ANY credential-account row update, so it self-
+    //    discriminates: skip unless the row's hash differs from
+    //    users.password_hash. A NULL users.password_hash no longer skips —
+    //    since the create-mirror, NULL means a crashed create-mirror, so
+    //    mirroring here is a second heal point (the revoke leg is a harmless
+    //    0-row update for a user who could never log in on web).
     //  - No recursion: syncCredential writes auth_accounts via raw Prisma,
     //    which skips BA's databaseHooks.
     //  - Same independence rule as identityStore: the web-session revoke is
     //    attempted even if the hash mirror throws (revoking is the safety
     //    action), then the first error rethrows.
     account: {
+      create: {
+        after: async (account) => {
+          if (account?.providerId !== 'credential' || !account.password) return
+          const userId = Number(account.userId)
+          if (!Number.isInteger(userId) || userId <= 0) return
+          const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
+          if (!user || user.passwordHash) return // fill-NULL-only — never overwrite a web hash
+          // syncCredential's auth_accounts leg re-writes the just-created row
+          // with the same value — deliberately redundant: one chokepoint code
+          // path for every credential write beats a special-cased variant.
+          await syncCredential(userId, account.password)
+        },
+      },
       update: {
         after: async (account) => {
           // optional-chain: updateMany-shaped hook payloads are a count, not a row
           if (account?.providerId !== 'credential' || !account.password) return
           const userId = Number(account.userId)
+          if (!Number.isInteger(userId) || userId <= 0) return
           const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
-          if (!user?.passwordHash || user.passwordHash === account.password) return
+          if (!user || user.passwordHash === account.password) return
           // Independence rule (same as revokeAllSessions): both legs are
           // attempted, the revoke (the safety action) runs even if the hash
           // mirror throws, and the FIRST error rethrows after logging the second
@@ -479,6 +515,50 @@ export const betterAuthServer = betterAuth({
 
   secondaryStorage,
 
+  // The server half of the Expo integration: maps the Expo client's
+  // `expo-origin` header onto `origin` so the trustedOrigins check below
+  // applies to native requests (only when no Origin header is present — a
+  // browser's real Origin always wins), and auto-trusts `exp://` in
+  // NODE_ENV=development ONLY (never in prod).
+  //
+  // ⚠️ VENDORED (verbatim behavior) from @better-auth/expo@1.6.15's expo()
+  // plugin (dist/index.js src/index.ts region), NOT imported: that package's
+  // dependency tree (@better-auth/core peer → better-call peer → zod ^4) can't
+  // resolve at the repo root next to the web app's zod 3 — npm refuses to nest
+  // a peer-of-a-peer (ERESOLVE), and forcing it via overrides fails too. The
+  // pieces deliberately DROPPED are all social-OAuth machinery, dead until
+  // step 6: the expoAuthorizationProxy endpoint, the OAuth-callback
+  // cookie-in-redirect after-hooks, and the disableOriginOverride option.
+  // TODO(step-6): when social lands, replace this bridge with the real
+  // @better-auth/expo plugin and solve the zod4-at-root resolution then (by
+  // then the web app may be on zod 4, or BA's tree may have moved).
+  plugins: [
+    {
+      id: 'expo',
+      init: () => ({
+        options: { trustedOrigins: process.env.NODE_ENV === 'development' ? ['exp://'] : [] },
+      }),
+      onRequest: async (request) => {
+        if (request.headers.get('origin')) return
+        const expoOrigin = request.headers.get('expo-origin')
+        if (!expoOrigin) return
+        // Verbatim dist order — mutate-first is LOAD-BEARING here: Next's
+        // NextRequest cannot be rebuilt via `new Request(request, …)` (undici
+        // throws "Cannot read private member #state"); its headers ARE mutable
+        // in route handlers, so the try path is the one that runs. The rebuild
+        // fallback only serves runtimes with immutable headers.
+        try {
+          request.headers.set('origin', expoOrigin)
+          return { request }
+        } catch {
+          const headers = new Headers(request.headers)
+          headers.set('origin', expoOrigin)
+          return { request: new Request(request, { headers }) }
+        }
+      },
+    } satisfies BetterAuthPlugin,
+  ],
+
   // Native sends no Origin; Better Auth validates Origin only when a cookie is
   // present. Lock trustedOrigins (§6.6 — BA has a history of trustedOrigins-bypass
   // ATOs). ⚠️ BA compares non-wildcard entries as FULL ORIGINS (scheme://host) —
@@ -486,11 +566,19 @@ export const betterAuthServer = betterAuth({
   // convention), so prepend https:// or every entry silently never matches (the
   // baseURL's own origin is auto-trusted, which is why this stayed invisible
   // locally). Apple's origin gets added in step 6 with the social config.
-  trustedOrigins:
-    process.env.SERVER_ACTIONS_ALLOWED_ORIGINS?.split(',')
+  //
+  // 'io.verre.app://' is the native app's custom URL scheme (apps/mobile
+  // app.json `scheme`): non-http(s) entries match by string PREFIX
+  // (matchesOriginPattern in trusted-origins.mjs does url.startsWith(pattern)
+  // for custom schemes — verified 1.6.15), so the trailing :// is load-bearing;
+  // a bare 'io.verre.app' would also prefix-match 'io.verre.appevil://'.
+  trustedOrigins: [
+    'io.verre.app://',
+    ...(process.env.SERVER_ACTIONS_ALLOWED_ORIGINS?.split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-      .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? [],
+      .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? []),
+  ],
 
   // 🔒 Scope clamp: the catch-all mounts EVERY core BA endpoint, not just the
   // email/password + session set we use. BA returns 404 on a disabledPaths match
@@ -517,9 +605,9 @@ export const betterAuthServer = betterAuth({
   //    auth_accounts.password ONLY (the count-shaped updatePassword path the
   //    account.update.after mirror can't see), so a reset would diverge the two
   //    credential stores with NO crashed-mirror cause. That breaks the
-  //    drift-reconcile inference in backfillNativeCredential ("the only
-  //    systematic divergence is a crashed change-password mirror, so accounts →
-  //    users is unambiguously newer"): a post-reset native sign-in would copy
+  //    drift-reconcile inference in backfillNativeCredential (each divergence
+  //    state maps to exactly one known crashed mirror, so accounts → users is
+  //    unambiguously the newer direction): a post-reset native sign-in would copy
   //    the reset hash into users.password_hash and revoke web sessions. Today
   //    request-reset already 400s (no sendResetPassword), but disabling both
   //    makes shipping reset a deliberate step that MUST also wire onPasswordReset
@@ -547,21 +635,24 @@ export const betterAuthServer = betterAuth({
   //    full reasoning at the session.create.before hook above). Verre never
   //    calls it; denied purely so it isn't a recurring "why isn't this denied?"
   //    question for future reviewers.
-  //  - /list-sessions + /get-session — BA's parseSessionOutput does NOT strip the
-  //    session `token` field (it has no returned:false flag, and that flag is not
-  //    config-overridable — verified 1.6.15), so both endpoints return the raw
-  //    session token in the JSON body. /list-sessions returns it for the user's
-  //    OTHER sessions — a cross-device token leak (web's GET /api/me/devices
-  //    deliberately strips it). The leaked token is NOT directly replayable as a
-  //    credential (a session cookie is token.<HMAC-sig>; the bare token resolves
-  //    no session — empirically verified), so it's not a hijack — but it diverges
-  //    from the web posture and would let a cookie-thief TARGET a specific device
-  //    for /revoke-session. Disabling /list-sessions closes the cross-device leak;
-  //    /get-session only ever returned the caller's OWN current token (which they
-  //    already hold as a cookie) but is disabled too for parity — resolveUser uses
-  //    the api.getSession METHOD, which bypasses disabledPaths (HTTP-router only),
-  //    so this doesn't break identity resolution. Native "am I logged in?" uses
-  //    the same method path or Verre's /api/me/*.
+  //  - /list-sessions — BA's parseSessionOutput does NOT strip the session
+  //    `token` field (it has no returned:false flag, and that flag is not
+  //    config-overridable — verified 1.6.15), so it returns the raw session
+  //    token of the user's OTHER sessions — a cross-device token leak (web's
+  //    GET /api/me/devices deliberately strips it). The leaked token is NOT
+  //    directly replayable as a credential (a session cookie is
+  //    token.<HMAC-sig>; the bare token resolves no session — empirically
+  //    verified), so it's not a hijack — but it diverges from the web posture
+  //    and would let a cookie-thief TARGET a specific device for
+  //    /revoke-session. Stays denied.
+  //    ⚠️ /get-session was denied "for parity" until the iOS app (PR #39 note);
+  //    RE-ENABLED with the first native client: @better-auth/expo's useSession
+  //    + sliding-refresh fetch `/get-session` over HTTP (session-atom.mjs /
+  //    session-refresh.mjs — the client has no method-call path), so the deny
+  //    broke the SDK's entire session lifecycle. Risk delta of re-enabling:
+  //    none beyond posture — it returns only the CALLER'S OWN current token,
+  //    which the caller already holds as its cookie. The cross-device leak
+  //    (/list-sessions) is what mattered, and that stays denied.
   //  - /revoke-session — targeted single-session revoke; takes a token in the body.
   //    With /list-sessions gone there's no way for a native client to obtain
   //    another device's token, so it's de-fanged; disabled for cleanliness. The
@@ -605,7 +696,6 @@ export const betterAuthServer = betterAuth({
     '/unlink-account',
     '/update-session',
     '/list-sessions',
-    '/get-session',
     '/revoke-session',
   ],
 

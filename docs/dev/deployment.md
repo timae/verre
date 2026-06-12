@@ -26,6 +26,8 @@ Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp`
 - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places; when unset, falls back to OSM Overpass + Nominatim.
 - `NEXT_TELEMETRY_DISABLED=1` — opts out of Next.js anonymous build/usage telemetry.
 - `GEO_DATA_DIR` (optional) — where the app keeps the downloaded IP→country lookup files; defaults to `/tmp/verre-geo`. Must be a writable dir. Override only if `/tmp` isn't writable on the runner.
+- `NATIVE_MIN_VERSION_IOS` / `NATIVE_MIN_VERSION_ANDROID` (optional — **unset in prod until a non-redeployable install exists**) — min-supported native client version (`lib/clientVersion.ts`). When set, native requests whose `X-Verre-Client` header reports an older version get a structured 426 at the `/api/auth/native/*` chokepoint and the app shows its blocking update screen. Unset ⇒ no enforcement (web traffic is never affected — it sends no header).
+- `NATIVE_STORE_URL_IOS` / `NATIVE_STORE_URL_ANDROID` (optional) — App Store / Play link embedded in the 426 body; the update screen's button. Meaningless until the app is in a store.
 
 ## Geo IP→country data (Connected-devices labels)
 

@@ -144,6 +144,19 @@ To test from a phone on the LAN, replace `localhost:9000` with your host's LAN I
 
 Open `http://localhost:3000`, create a session, and join from a second device if you want to test the shared flow.
 
+### Native iOS app (apps/mobile)
+
+The Expo (React Native) app lives in `apps/mobile` (npm workspace). It talks to the same backend over `/api/*` + Better Auth (`/api/auth/native`). Requires macOS + Xcode for the native build:
+
+```bash
+cd apps/mobile
+npx expo run:ios            # builds the dev client, opens the iOS Simulator
+# physical device (backend on your Mac's LAN IP):
+EXPO_PUBLIC_API_URL=http://192.168.1.42:3000 npx expo run:ios --device
+```
+
+Day-to-day JS iteration after the first build: `npx expo start`. See `apps/mobile/CLAUDE.md` for toolchain rules (SDK pinning, auth-version lockstep, design tokens).
+
 ## API
 
 Authentication: logged-in users carry a NextAuth session cookie; anonymous users carry a per-session `x-vr-anon-token` header. See `CLAUDE.md` for the full authorization rules per endpoint.

@@ -4,8 +4,8 @@
 - `00` shared-logic — ✅ shipped (`@verre/core`)
 - `01` identity & auth — ✅ shipped/merged (PR #39); native social (step 6) deferred; see the doc's top status block
 - `02` realtime — 🟨 step 1 shipped (`/state` aggregate poll, web on it); native poll hardening + push decision remain with the app
-- `04` API versioning — ⬜ next front-loaded backend work
-- `03` topology, `05` design system, `06` iOS app — ⬜ the app, not started
+- `04` API versioning — ✅ shipped with the first native client: `X-Verre-Client` header on every native call, structured 426 + blocking update screen in build #1, floor envs (`NATIVE_MIN_VERSION_*`, unset in prod) enforced at the native-auth chokepoint (`lib/clientVersion.ts`)
+- `03` topology, `05` design system, `06` iOS app — 🟨 milestone 1: Expo (SDK 56) skeleton at `apps/mobile` — Expo Router + tab shell, vero-tokens theme layer, native email/password auth (Better Auth), update-screen protocol. Sessions/scoring/feed screens + social sign-in not started
 - Android phase, web redesign — ⬜ stubbed
 
 ## In plain English — what we're doing
