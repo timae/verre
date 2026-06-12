@@ -46,10 +46,11 @@ export default function CreateMoment() {
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
-  // Pickers are visible and seeded from the start (Simon's ruling — matches
-  // the mock's prefilled values); the × clears back to a date-less moment.
-  const [dateFrom, setDateFrom] = useState<Date | null>(() => nextFullHour());
-  const [dateTo, setDateTo] = useState<Date | null>(() => new Date(nextFullHour().getTime() + 6 * 3600_000));
+  // Dates start EMPTY (Simon: no prefilled values). The OS compact picker
+  // can't render an empty state — it always shows some date — so empty is
+  // a placeholder field and the picker appears once a date is added.
+  const [dateFrom, setDateFrom] = useState<Date | null>(null);
+  const [dateTo, setDateTo] = useState<Date | null>(null);
   const [hideLineup, setHideLineup] = useState(false);
   const [hideMinutes, setHideMinutes] = useState(0);
   const [blind, setBlind] = useState(false);
@@ -377,10 +378,13 @@ function DateField({
       ) : (
         <Pressable
           accessibilityRole="button"
+          accessibilityLabel={`Add ${label.toLowerCase()} date`}
           onPress={() => onChange(defaultValue())}
           style={{
             height: 44,
-            justifyContent: 'center',
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
             paddingHorizontal: 14,
             backgroundColor: theme.surface,
             borderWidth: 1,
@@ -388,7 +392,8 @@ function DateField({
             borderRadius: radius.sm,
           }}
         >
-          <VText variant="body" color="inkFaint">No date</VText>
+          <Icon name="plus" size={14} color={theme.inkFaint} />
+          <VText variant="body" color="inkFaint">Add</VText>
         </Pressable>
       )}
     </View>
