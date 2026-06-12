@@ -178,7 +178,11 @@ export default function CreateMoment() {
           onChange={setHasDates}
         />
         {hasDates ? (
-          <View style={{ flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 4 }}>
+          // Calendar-style Starts/Ends rows (label left, pills right): a
+          // datetime compact control is ~200pt+ wide and doesn't shrink —
+          // two never fit side by side (the mock's 2-col layout assumed
+          // narrow text fields; flagged deviation).
+          <View style={{ marginTop: 4, marginBottom: 4 }}>
             <DateField label="From" value={dateFrom} onChange={setDateFrom} />
             <DateField label="To" value={dateTo} onChange={setDateTo} />
           </View>
@@ -354,9 +358,10 @@ function CoverPicker({
   );
 }
 
-// From/To — the OS combined datetime control (mode="datetime"; iOS renders
-// it as adjacent date + time pills per OS convention). Only rendered after
-// the "When" switch opts in, so it always has a value.
+// From/To — Calendar-style "Starts/Ends" row: label left, the OS combined
+// datetime control (mode="datetime", adjacent date + time pills) right.
+// Full-width row so the control keeps its intrinsic width — never clips.
+// Only rendered after the "When" switch opts in, so it always has a value.
 function DateField({
   label, value, onChange,
 }: {
@@ -366,7 +371,7 @@ function DateField({
 }) {
   const { theme } = useTheme();
   return (
-    <View style={{ flex: 1, gap: 7 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingVertical: 5 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
       <DateTimePicker
         value={value}
@@ -376,7 +381,6 @@ function DateField({
         // customizable, only the selection tint.
         accentColor={theme.accent}
         onValueChange={(_e, d) => { if (d) onChange(d); }}
-        style={{ alignSelf: 'flex-start' }}
       />
     </View>
   );
