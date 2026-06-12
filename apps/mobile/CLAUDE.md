@@ -141,9 +141,12 @@ alerts, pickers: reach for the native primitive first when those screens land.
 - **New native modules (M3)**: `expo-haptics`, `expo-linear-gradient`
   (hero scrim); **(M4)**: `expo-image-picker` (cover photo; config plugin
   carries the photosPermission copy in app.json),
-  `@react-native-community/datetimepicker` (02a From–To, no plugin) — all
-  pinned from `bundledNativeModules.json`; re-run `npx expo run:ios` after
-  pulling.
+  `@react-native-community/datetimepicker` (02a From–To, no plugin),
+  `expo-blur` (the .ir-foot glass — the .vfoot Create bar is spec'd as a
+  plain gradient, no blur) — all pinned from `bundledNativeModules.json`;
+  re-run `npx expo run:ios` after pulling.
+- **External links** open via `expo-web-browser` (in-app sheet), never
+  `Linking.openURL` — except OS-app hand-offs (the Map line opens Maps).
 - **Rate flow** (`moments/session/[code]/impression/[wineId]`): local-until-
   commit like the web Rate pane — the POST fires on Save & next/finish (and
   Previous, a flagged deviation to avoid silent edit loss). "Clear my rating"

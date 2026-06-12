@@ -1,14 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
   Image,
   Keyboard,
-  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -58,10 +59,9 @@ const FOOT_CLEARANCE = 130; // .vbody bottom padding clears the .ir-foot bar
 //   saves untouched. The ⋯ "Edit/Delete impression" host items wait for the
 //   host-CRUD milestone (menu carries Clear my rating only, via the native
 //   action sheet per the native-chrome ruling).
-// - .ir-foot uses a near-opaque theme.bg wash instead of backdrop-blur
-//   (expo-blur not installed); Previous also saves pending edits (the mock
-//   leaves unsaved-edit handling unspecified; silent discard would lose
-//   data and the web's dirty-guard modal is a web pattern).
+// - Previous also saves pending edits (the mock leaves unsaved-edit
+//   handling unspecified; silent discard would lose data and the web's
+//   dirty-guard modal is a web pattern).
 export default function ImpressionDetail() {
   const { code: rawCode, wineId: rawWineId } = useLocalSearchParams<{ code: string; wineId: string }>();
   const code = String(rawCode ?? '');
@@ -803,7 +803,9 @@ function AboutBlock({ wine }: { wine: WireWine }) {
       {wine.purchaseUrl ? (
         <Pressable
           accessibilityRole="link"
-          onPress={() => Linking.openURL(wine.purchaseUrl!).catch(() => {})}
+          // In-app browser (not Safari hand-off) — the user stays in the
+          // tasting context; sheet dismisses back to the impression.
+          onPress={() => WebBrowser.openBrowserAsync(wine.purchaseUrl!).catch(() => {})}
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}
         >
           <Icon name="link" size={15} color={theme.accent} />
@@ -867,20 +869,25 @@ function FootBar({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    <View
-      style={{
-        position: 'absolute',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: 6,
-        paddingTop: 10,
-        paddingHorizontal: 16,
-        paddingBottom: insets.bottom + 12,
-        backgroundColor: theme.bg + 'E6', // ≈90% bg wash (no backdrop blur — flagged)
-      }}
-    >
-      <View style={{ flexDirection: 'row', gap: 10 }}>
+    // .ir-foot: 90% bg wash over backdrop-filter blur(12px) — BlurView
+    // glasses the content scrolling beneath, the wash holds the theme tone.
+    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6 }}>
+      <BlurView
+        intensity={40}
+        tint={theme.scheme === 'dark' ? 'dark' : 'light'}
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: theme.bg + 'CC', // ≈80% wash; blur supplies the rest
+        }}
+      />
+      <View style={{ flexDirection: 'row', gap: 10, paddingTop: 10, paddingHorizontal: 16, paddingBottom: insets.bottom + 12 }}>
         <View style={{ flex: 1 }}>
           <Button title="Previous" variant="secondary" bar block disabled={variant === 'first' || saving} onPress={onPrevious} />
         </View>

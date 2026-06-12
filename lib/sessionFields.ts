@@ -56,6 +56,10 @@ export function applySessionFields(meta: SessionFieldsTarget, body: Record<strin
   // link to every participant. Same guard wine purchaseUrl uses.
   if (body.link !== undefined)        meta.link        = cleanUrl(body.link).slice(0, 512)
   if (body.hideLineup !== undefined)  meta.hideLineup  = !!body.hideLineup
-  if (body.hideLineupMinutesBefore !== undefined) meta.hideLineupMinutesBefore = Number(body.hideLineupMinutesBefore) || 0
+  // Clamped to a sane day-bounded window — an extreme/negative value would
+  // skew the reveal-countdown math on every client.
+  if (body.hideLineupMinutesBefore !== undefined) {
+    meta.hideLineupMinutesBefore = Math.max(0, Math.min(1440, Math.floor(Number(body.hideLineupMinutesBefore) || 0)))
+  }
   return null
 }
