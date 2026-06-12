@@ -123,14 +123,20 @@ export async function syncCredential(
 // accountId]) makes the loser throw P2002 — swallowed, the row exists.
 //
 // Doubles as the drift RECONCILER, since it runs before every native credential
-// sign-in. When a row exists but its hash differs from users.password_hash, the
-// only systematic cause is a /change-password whose account.update.after mirror
-// crashed before running (betterAuth.ts): BA committed the new hash to
-// auth_accounts, users.password_hash kept the OLD one. Every other writer is
-// atomic across both stores (syncCredential is transactional; register runs it
-// inside its txn), so the direction is unambiguous — complete the crashed
-// mirror: auth_accounts → users, plus the web-session revoke the hook owed.
-// Reconciling the other way would silently revert the user's password change.
+// sign-in. Two distinguishable crashed-mirror states, each with an unambiguous
+// direction (every healthy writer is atomic across both stores — syncCredential
+// is transactional; register runs it inside its txn):
+//  - users.password_hash NULL + credential row WITH a hash → a native sign-up
+//    whose post-commit account.create.after mirror (betterAuth.ts) crashed.
+//    Complete it: auth_accounts → users. No revoke — a NULL-hash user could
+//    never log in on web, so no credential web session can exist. Without this
+//    branch the user is PERMANENTLY web-less: the create-mirror never re-fires
+//    and the update-mirror engages only on a password change.
+//  - row hash ≠ users.password_hash (both non-NULL) → a /change-password whose
+//    account.update.after mirror crashed: BA committed the new hash to
+//    auth_accounts, users.password_hash kept the OLD one. Complete the crashed
+//    mirror: auth_accounts → users, plus the web-session revoke the hook owed.
+//    Reconciling the other way would silently revert the user's password change.
 //
 // ORDER: revoke-before-hash. The web revoke runs FIRST, then the hash sync. If
 // the revoke throws, the hash is still stale, so this same branch
@@ -148,7 +154,18 @@ export async function backfillNativeCredential(email: string): Promise<void> {
     where: { email: email.toLowerCase() },
     select: { id: true, passwordHash: true },
   })
-  if (!user?.passwordHash) return
+  if (!user) return
+  if (!user.passwordHash) {
+    // NULL-heal branch (see header): complete a crashed create-mirror. A user
+    // with no hash in EITHER store (social-only, once step 6 ships) has no
+    // credential row with a password → no-op.
+    const orphan = await prisma.authAccount.findFirst({
+      where: { userId: user.id, providerId: 'credential', password: { not: null } },
+      select: { password: true },
+    })
+    if (orphan?.password) await syncCredential(user.id, orphan.password)
+    return
+  }
   const existing = await prisma.authAccount.findFirst({
     where: { userId: user.id, providerId: 'credential' },
     select: { password: true },
