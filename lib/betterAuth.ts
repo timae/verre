@@ -1,4 +1,4 @@
-import { betterAuth } from 'better-auth'
+import { betterAuth, type BetterAuthPlugin } from 'better-auth'
 import { createAuthMiddleware } from 'better-auth/api'
 import { prismaAdapter } from 'better-auth/adapters/prisma'
 import { APIError, getSessionFromCtx } from 'better-auth/api'
@@ -479,6 +479,50 @@ export const betterAuthServer = betterAuth({
 
   secondaryStorage,
 
+  // The server half of the Expo integration: maps the Expo client's
+  // `expo-origin` header onto `origin` so the trustedOrigins check below
+  // applies to native requests (only when no Origin header is present — a
+  // browser's real Origin always wins), and auto-trusts `exp://` in
+  // NODE_ENV=development ONLY (never in prod).
+  //
+  // ⚠️ VENDORED (verbatim behavior) from @better-auth/expo@1.6.15's expo()
+  // plugin (dist/index.js src/index.ts region), NOT imported: that package's
+  // dependency tree (@better-auth/core peer → better-call peer → zod ^4) can't
+  // resolve at the repo root next to the web app's zod 3 — npm refuses to nest
+  // a peer-of-a-peer (ERESOLVE), and forcing it via overrides fails too. The
+  // pieces deliberately DROPPED are all social-OAuth machinery, dead until
+  // step 6: the expoAuthorizationProxy endpoint, the OAuth-callback
+  // cookie-in-redirect after-hooks, and the disableOriginOverride option.
+  // TODO(step-6): when social lands, replace this bridge with the real
+  // @better-auth/expo plugin and solve the zod4-at-root resolution then (by
+  // then the web app may be on zod 4, or BA's tree may have moved).
+  plugins: [
+    {
+      id: 'expo',
+      init: () => ({
+        options: { trustedOrigins: process.env.NODE_ENV === 'development' ? ['exp://'] : [] },
+      }),
+      onRequest: async (request) => {
+        if (request.headers.get('origin')) return
+        const expoOrigin = request.headers.get('expo-origin')
+        if (!expoOrigin) return
+        // Verbatim dist order — mutate-first is LOAD-BEARING here: Next's
+        // NextRequest cannot be rebuilt via `new Request(request, …)` (undici
+        // throws "Cannot read private member #state"); its headers ARE mutable
+        // in route handlers, so the try path is the one that runs. The rebuild
+        // fallback only serves runtimes with immutable headers.
+        try {
+          request.headers.set('origin', expoOrigin)
+          return { request }
+        } catch {
+          const headers = new Headers(request.headers)
+          headers.set('origin', expoOrigin)
+          return { request: new Request(request, { headers }) }
+        }
+      },
+    } satisfies BetterAuthPlugin,
+  ],
+
   // Native sends no Origin; Better Auth validates Origin only when a cookie is
   // present. Lock trustedOrigins (§6.6 — BA has a history of trustedOrigins-bypass
   // ATOs). ⚠️ BA compares non-wildcard entries as FULL ORIGINS (scheme://host) —
@@ -486,11 +530,19 @@ export const betterAuthServer = betterAuth({
   // convention), so prepend https:// or every entry silently never matches (the
   // baseURL's own origin is auto-trusted, which is why this stayed invisible
   // locally). Apple's origin gets added in step 6 with the social config.
-  trustedOrigins:
-    process.env.SERVER_ACTIONS_ALLOWED_ORIGINS?.split(',')
+  //
+  // 'io.verre.app://' is the native app's custom URL scheme (apps/mobile
+  // app.json `scheme`): non-http(s) entries match by string PREFIX
+  // (matchesOriginPattern in trusted-origins.mjs does url.startsWith(pattern)
+  // for custom schemes — verified 1.6.15), so the trailing :// is load-bearing;
+  // a bare 'io.verre.app' would also prefix-match 'io.verre.appevil://'.
+  trustedOrigins: [
+    'io.verre.app://',
+    ...(process.env.SERVER_ACTIONS_ALLOWED_ORIGINS?.split(',')
       .map((s) => s.trim())
       .filter(Boolean)
-      .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? [],
+      .map((h) => (h.includes('://') ? h : `https://${h}`)) ?? []),
+  ],
 
   // 🔒 Scope clamp: the catch-all mounts EVERY core BA endpoint, not just the
   // email/password + session set we use. BA returns 404 on a disabledPaths match
@@ -547,21 +599,24 @@ export const betterAuthServer = betterAuth({
   //    full reasoning at the session.create.before hook above). Verre never
   //    calls it; denied purely so it isn't a recurring "why isn't this denied?"
   //    question for future reviewers.
-  //  - /list-sessions + /get-session — BA's parseSessionOutput does NOT strip the
-  //    session `token` field (it has no returned:false flag, and that flag is not
-  //    config-overridable — verified 1.6.15), so both endpoints return the raw
-  //    session token in the JSON body. /list-sessions returns it for the user's
-  //    OTHER sessions — a cross-device token leak (web's GET /api/me/devices
-  //    deliberately strips it). The leaked token is NOT directly replayable as a
-  //    credential (a session cookie is token.<HMAC-sig>; the bare token resolves
-  //    no session — empirically verified), so it's not a hijack — but it diverges
-  //    from the web posture and would let a cookie-thief TARGET a specific device
-  //    for /revoke-session. Disabling /list-sessions closes the cross-device leak;
-  //    /get-session only ever returned the caller's OWN current token (which they
-  //    already hold as a cookie) but is disabled too for parity — resolveUser uses
-  //    the api.getSession METHOD, which bypasses disabledPaths (HTTP-router only),
-  //    so this doesn't break identity resolution. Native "am I logged in?" uses
-  //    the same method path or Verre's /api/me/*.
+  //  - /list-sessions — BA's parseSessionOutput does NOT strip the session
+  //    `token` field (it has no returned:false flag, and that flag is not
+  //    config-overridable — verified 1.6.15), so it returns the raw session
+  //    token of the user's OTHER sessions — a cross-device token leak (web's
+  //    GET /api/me/devices deliberately strips it). The leaked token is NOT
+  //    directly replayable as a credential (a session cookie is
+  //    token.<HMAC-sig>; the bare token resolves no session — empirically
+  //    verified), so it's not a hijack — but it diverges from the web posture
+  //    and would let a cookie-thief TARGET a specific device for
+  //    /revoke-session. Stays denied.
+  //    ⚠️ /get-session was denied "for parity" until the iOS app (PR #39 note);
+  //    RE-ENABLED with the first native client: @better-auth/expo's useSession
+  //    + sliding-refresh fetch `/get-session` over HTTP (session-atom.mjs /
+  //    session-refresh.mjs — the client has no method-call path), so the deny
+  //    broke the SDK's entire session lifecycle. Risk delta of re-enabling:
+  //    none beyond posture — it returns only the CALLER'S OWN current token,
+  //    which the caller already holds as its cookie. The cross-device leak
+  //    (/list-sessions) is what mattered, and that stays denied.
   //  - /revoke-session — targeted single-session revoke; takes a token in the body.
   //    With /list-sessions gone there's no way for a native client to obtain
   //    another device's token, so it's de-fanged; disabled for cleanliness. The
@@ -605,7 +660,6 @@ export const betterAuthServer = betterAuth({
     '/unlink-account',
     '/update-session',
     '/list-sessions',
-    '/get-session',
     '/revoke-session',
   ],
 
