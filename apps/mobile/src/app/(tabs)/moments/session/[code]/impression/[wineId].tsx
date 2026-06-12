@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -35,6 +35,9 @@ import { motion, radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22)
+// Direction of the last sibling-wine replace — read by the incoming screen
+// to pick the replace animation (push for next, pop for previous).
+let navDir: 'next' | 'prev' = 'next';
 // .ir-screen-hero .ir-hero is 280px in a 744px mock screen (360×760 phone
 // frame, Vero - Screens.html) — ≈37.6% of the screen. A flat 280pt reads
 // noticeably smaller on real devices, so the hero scales with the window.
@@ -166,6 +169,10 @@ export default function ImpressionDetail() {
       router.back();
       return;
     }
+    // Sibling replace animates as a push by default; Previous must read as
+    // going back. navDir is module-scoped so the INCOMING screen instance
+    // (same route, new params) picks it up in its Stack.Screen options.
+    navDir = i < index ? 'prev' : 'next';
     seededFor.current = null;
     router.replace({
       pathname: '/(tabs)/moments/session/[code]/impression/[wineId]',
@@ -270,6 +277,9 @@ export default function ImpressionDetail() {
 
   return (
     <View style={{ flex: 1 }}>
+      {/* Previous replaces with the pop animation so the slide reads as
+          going back; next keeps push. */}
+      <Stack.Screen options={{ animationTypeForReplace: navDir === 'prev' ? 'pop' : 'push' }} />
       {/* Always rendered: expo-status-bar doesn't restore on unmount, so a
           photo→no-photo sibling swap must explicitly reassert the theme
           style. Over the hero (pre-solid) the bar is white. */}
