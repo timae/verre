@@ -364,6 +364,9 @@ function DateField({
             value={value}
             mode="datetime"
             display="compact"
+            // The OS draws the compact pills — shape/typography aren't
+            // customizable, only the selection tint.
+            accentColor={theme.accent}
             onValueChange={(_e, d) => { if (d) onChange(d); }}
             style={{ flexShrink: 1 }}
           />
