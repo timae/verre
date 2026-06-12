@@ -399,6 +399,9 @@ export const betterAuthServer = betterAuth({
           if (!Number.isInteger(userId) || userId <= 0) return
           const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
           if (!user || user.passwordHash) return // fill-NULL-only — never overwrite a web hash
+          // syncCredential's auth_accounts leg re-writes the just-created row
+          // with the same value — deliberately redundant: one chokepoint code
+          // path for every credential write beats a special-cased variant.
           await syncCredential(userId, account.password)
         },
       },
