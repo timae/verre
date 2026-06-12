@@ -363,6 +363,9 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId }: { meta: NonNullable<Me
   const shown = ordered.slice(0, 3);
   const extra = ordered.length - shown.length;
   const isSelfHost = hostId === myIdentityId && isHostViewer;
+  // Prefer the roster entry (kept fresh by rename propagation) over the
+  // create-time meta.host snapshot.
+  const hostName = ordered.find((p) => p.id === hostId)?.displayName ?? meta.host;
 
   const chip = (p: { id: string; displayName: string; imageUrl: string | null }, i: number) => {
     const isHost = p.id === hostId;
@@ -405,7 +408,7 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId }: { meta: NonNullable<Me
         ) : null}
       </View>
       <VText variant="small" color="inkSoft">
-        Hosted by <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{isSelfHost ? 'you' : meta.host}</VText>
+        Hosted by <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{isSelfHost ? 'you' : hostName}</VText>
       </VText>
     </View>
   );
