@@ -299,10 +299,12 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
               <View
                 style={{
                   flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 6,
-                  // Seats slightly lower than the text line and SHORTER than
-                  // it (tight label line-height) — per mock.
+                  // Tuned against the mock with Simon (2026-06-12): tight
+                  // 14px label line box + spec 3px v-padding (~20px pill),
+                  // seated 2px low. The rendered mock, not the CSS literal,
+                  // was the tiebreaker here.
                   marginTop: 2,
-                  paddingVertical: 2, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
+                  paddingVertical: 3, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: theme.accentTint,
                 }}
               >
                 <Icon name="pin" size={11} color={theme.accent} />
