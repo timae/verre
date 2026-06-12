@@ -7,7 +7,7 @@ import { sessionPath } from '@/lib/sessionCode'
 
 type Session = {
   id: number; code: string; host_name: string; name: string | null
-  created_at: string; joined_at: string; wines_rated: number; avg_score: string | null
+  created_at: string; joined_at: string; wines_rated: number; avg_score: number | null
   date_from: string | null; address: string | null
   ttl_seconds: number; lifespan: string | null
 }

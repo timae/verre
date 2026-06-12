@@ -1,7 +1,8 @@
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { TAB_BAR_CLEARANCE } from '@/components/PillTabBar';
+import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { authClient } from '@/lib/authClient';
@@ -9,6 +10,7 @@ import { space } from '@/theme';
 
 export default function You() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
   const { data: session } = authClient.useSession();
   const [busy, setBusy] = useState(false);
 
@@ -27,6 +29,9 @@ export default function You() {
         <VText variant="body" color="inkSoft">{session?.user.email ?? ''}</VText>
       </View>
       <View style={{ flex: 1 }} />
+      {__DEV__ ? (
+        <Button title="Dev gallery" variant="tertiary" onPress={() => router.push('/dev-gallery')} />
+      ) : null}
       <Button title="Sign out" variant="secondary" block loading={busy} onPress={signOut} style={{ marginBottom: insets.bottom + TAB_BAR_CLEARANCE }} />
     </View>
   );

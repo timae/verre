@@ -13,7 +13,7 @@ import { sessionPath } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
-type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: string | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
+type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: number | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
 type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string | null }
 
 export function MeDashboard({ user }: { user: User }) {

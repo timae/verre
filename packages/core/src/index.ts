@@ -15,6 +15,22 @@ export {
 } from './sessionCode'
 
 export { validateScore } from './checkinValidation'
+export {
+  WHEEL_MAX,
+  HUB_FRACTION,
+  GAP_DEG,
+  RADIUS_FRACTION,
+  LABEL_OFFSET,
+  STAR_PATH,
+  wheelEase,
+  wheelRadius,
+  flavourWheelGeometry,
+  starFills,
+  type WheelWedge,
+  type WheelLabel,
+  type WheelLabelAnchor,
+  type WheelGeometry,
+} from './scoringGeometry'
 export { formatScore } from './formatScore'
 export { decimalToNumber } from './decimal'
 export {

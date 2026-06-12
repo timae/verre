@@ -9,6 +9,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { authClient } from '@/lib/authClient';
+import { QueryProvider } from '@/lib/query';
 import { consumePendingUpdateRequired } from '@/lib/updateGate';
 import { ThemeProvider, useTheme } from '@/theme';
 
@@ -57,7 +58,9 @@ export default function RootLayout() {
 
   return (
     <ThemeProvider>
-      <RootNavigator />
+      <QueryProvider>
+        <RootNavigator />
+      </QueryProvider>
     </ThemeProvider>
   );
 }
