@@ -4,8 +4,12 @@
   "description": "Wine tasting OS — shared sessions, radar profiles, PDF export",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
+  "overrides": {
+    "@better-auth/core": "1.6.15"
+  },
   "engines": {
     "node": ">=24"
   },
