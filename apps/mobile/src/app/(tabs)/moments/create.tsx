@@ -46,11 +46,14 @@ export default function CreateMoment() {
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
-  // Dates start EMPTY (Simon: no prefilled values). The OS compact picker
-  // can't render an empty state — it always shows some date — so empty is
-  // a placeholder field and the picker appears once a date is added.
-  const [dateFrom, setDateFrom] = useState<Date | null>(null);
-  const [dateTo, setDateTo] = useState<Date | null>(null);
+  // Optional dates use the Reminders pattern: a "When" switch row reveals
+  // the pickers (the OS compact control can't render empty, and prefilled
+  // values were rejected — the switch is the honest empty state; values
+  // only exist after the user opts in). Toggling off keeps the values
+  // around but they aren't sent.
+  const [hasDates, setHasDates] = useState(false);
+  const [dateFrom, setDateFrom] = useState<Date>(() => nextFullHour());
+  const [dateTo, setDateTo] = useState<Date>(() => new Date(nextFullHour().getTime() + 6 * 3600_000));
   const [hideLineup, setHideLineup] = useState(false);
   const [hideMinutes, setHideMinutes] = useState(0);
   const [blind, setBlind] = useState(false);
@@ -90,9 +93,13 @@ export default function CreateMoment() {
         sessionName: name.trim() || undefined,
         category: 'wine',
         ...(cover ? { coverPhoto: cover.dataUrl } : {}),
-        ...(dateFrom ? { dateFrom: dateFrom.toISOString() } : {}),
-        ...(dateTo ? { dateTo: dateTo.toISOString() } : {}),
-        ...(dateFrom || dateTo ? { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}),
+        ...(hasDates
+          ? {
+              dateFrom: dateFrom.toISOString(),
+              dateTo: dateTo.toISOString(),
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+            }
+          : {}),
         hideLineup,
         ...(hideLineup ? { hideLineupMinutesBefore: hideMinutes } : {}),
         ...(blind ? { blind: true } : {}),
@@ -162,16 +169,20 @@ export default function CreateMoment() {
           <VText variant="caption" color="inkFaint">More categories soon</VText>
         </View>
 
-        {/* .trow2-even From–To, OS compact pickers (native-chrome) */}
-        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} />
-          <DateField
-            label="To"
-            value={dateTo}
-            onChange={setDateTo}
-            defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)}
-          />
-        </View>
+        {/* Optional dates — Reminders-style switch row revealing the
+            .trow2-even From–To compact pickers (native-chrome). */}
+        <ToggleRow
+          title="When"
+          subtitle="Set a start and end time for the moment"
+          value={hasDates}
+          onChange={setHasDates}
+        />
+        {hasDates ? (
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 4 }}>
+            <DateField label="From" value={dateFrom} onChange={setDateFrom} />
+            <DateField label="To" value={dateTo} onChange={setDateTo} />
+          </View>
+        ) : null}
 
         {/* .trow Hide line-up */}
         <ToggleRow
@@ -343,59 +354,30 @@ function CoverPicker({
   );
 }
 
-// From/To — the OS combined datetime control (mode="datetime", which iOS
-// renders as adjacent date + time pills per OS convention), visible and
-// seeded from the start. × clears back to a date-less moment; the cleared
-// placeholder re-seeds on tap.
+// From/To — the OS combined datetime control (mode="datetime"; iOS renders
+// it as adjacent date + time pills per OS convention). Only rendered after
+// the "When" switch opts in, so it always has a value.
 function DateField({
-  label, value, onChange, defaultValue,
+  label, value, onChange,
 }: {
   label: string;
-  value: Date | null;
-  onChange: (d: Date | null) => void;
-  defaultValue: () => Date;
+  value: Date;
+  onChange: (d: Date) => void;
 }) {
   const { theme } = useTheme();
   return (
     <View style={{ flex: 1, gap: 7 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
-      {value ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <DateTimePicker
-            value={value}
-            mode="datetime"
-            display="compact"
-            // The OS draws the compact pills — shape/typography aren't
-            // customizable, only the selection tint.
-            accentColor={theme.accent}
-            onValueChange={(_e, d) => { if (d) onChange(d); }}
-            style={{ flexShrink: 1 }}
-          />
-          <Pressable accessibilityRole="button" accessibilityLabel={`Clear ${label.toLowerCase()} date`} onPress={() => onChange(null)} hitSlop={8}>
-            <Icon name="x" size={14} color={theme.inkFaint} />
-          </Pressable>
-        </View>
-      ) : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Add ${label.toLowerCase()} date`}
-          onPress={() => onChange(defaultValue())}
-          style={{
-            height: 44,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 6,
-            paddingHorizontal: 14,
-            backgroundColor: theme.surface,
-            borderWidth: 1,
-            borderColor: theme.rule,
-            borderRadius: radius.sm,
-          }}
-        >
-          <Icon name="plus" size={14} color={theme.inkFaint} />
-          <VText variant="body" color="inkFaint">Add</VText>
-        </Pressable>
-      )}
+      <DateTimePicker
+        value={value}
+        mode="datetime"
+        display="compact"
+        // The OS draws the compact pills — shape/typography aren't
+        // customizable, only the selection tint.
+        accentColor={theme.accent}
+        onValueChange={(_e, d) => { if (d) onChange(d); }}
+        style={{ alignSelf: 'flex-start' }}
+      />
     </View>
   );
 }
