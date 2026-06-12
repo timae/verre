@@ -1,9 +1,10 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, View } from 'react-native';
+import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
+import { VBar } from '@/components/VBar';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
@@ -123,16 +124,6 @@ export default function SessionLineup() {
   }
   const { meta, wines, ratings } = lastRef.current;
 
-  if (fatal) {
-    return (
-      <>
-        <Stack.Screen options={{ title: '' }} />
-        <FatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
-          onRetry={() => setVisitAttempt((n) => n + 1)} onBack={() => router.back()} />
-      </>
-    );
-  }
-
   const isHostViewer =
     !!meta &&
     (meta.hostIdentityId === myIdentityId ||
@@ -146,43 +137,51 @@ export default function SessionLineup() {
   const lock = !isHostViewer && wines !== null && wines.length === 0 ? lockState(meta) : null;
   const showReconnecting = !online || (state.isError && (wines !== null || meta !== null));
 
+  // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
+  // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
   return (
-    <>
-      <Stack.Screen options={{ title: meta?.name ?? '' }} />
+    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
+      <View style={{ paddingHorizontal: GUTTER }}>
+        <VBar title={meta?.name ?? ''} />
+      </View>
       {showReconnecting ? (
         <View style={{ backgroundColor: theme.surfaceSunk, paddingVertical: 6, alignItems: 'center' }}>
           <VText variant="caption" color="inkSoft">Reconnecting…</VText>
         </View>
       ) : null}
-      {!visited || (state.isPending && wines === null) ? (
+      {fatal ? (
+        <FatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
+          onRetry={() => setVisitAttempt((n) => n + 1)} onBack={() => router.back()} />
+      ) : !visited || (state.isPending && wines === null) ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
       ) : lock ? (
-        <View style={{ flex: 1, paddingHorizontal: GUTTER }}>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
           <LockCard revealAt={lock} />
           <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
-        </View>
+        </ScrollView>
       ) : (
-        <FlatList
-          data={wines ?? []}
-          keyExtractor={(w) => w.id}
-          ListHeaderComponent={
-            <>
-              <SessMetaLine meta={meta} />
+        <>
+          <View style={{ paddingHorizontal: GUTTER }}>
+            <TabStrip />
+          </View>
+          <FlatList
+            data={wines ?? []}
+            keyExtractor={(w) => w.id}
+            ListHeaderComponent={
               <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
-              <TabStrip />
-            </>
-          }
-          contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
-          ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
-          renderItem={({ item, index }) => (
-            <LuRow wine={item} index={index} myIdentityId={myIdentityId} ratings={ratings} />
-          )}
-          ListEmptyComponent={<EmptyLineup canAdd={canAdd} />}
-        />
+            }
+            contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
+            renderItem={({ item, index }) => (
+              <LuRow wine={item} index={index} myIdentityId={myIdentityId} ratings={ratings} />
+            )}
+            ListEmptyComponent={<EmptyLineup canAdd={canAdd} />}
+          />
+        </>
       )}
-    </>
+    </View>
   );
 }
 
@@ -219,21 +218,6 @@ function FatalView({
       {fatal.kind === 'http' ? <Button title="Try again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
       <Button title="Back to Moments" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
     </View>
-  );
-}
-
-// .sess-meta: "Tonight · 7:00 PM · 3 tasting"
-function SessMetaLine({ meta }: { meta: MetaView }) {
-  if (!meta) return null;
-  const parts: string[] = [];
-  const when = sessionWhen(meta.dateFrom, meta.dateTo);
-  if (when) parts.push(when);
-  if (meta.participants.length > 0) parts.push(`${meta.participants.length} tasting`);
-  if (parts.length === 0) return null;
-  return (
-    <VText variant="small" color="inkSoft" style={{ marginBottom: 12 }}>
-      {parts.join(' · ')}
-    </VText>
   );
 }
 
@@ -331,17 +315,26 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
           )
         : null}
       {meta.description ? (
-        <Pressable onPress={() => setDescOpen((o) => !o)}>
+        <Pressable onPress={() => setDescOpen((o) => !o)} disabled={!descClamped && !descOpen}>
+          {/* Invisible un-clamped twin measures the real line count — "more"
+              only appears when the 3-line clamp actually cuts content. */}
+          <VText
+            variant="small"
+            pointerEvents="none"
+            onTextLayout={(e) => setDescClamped(e.nativeEvent.lines.length > 3)}
+            style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 19 }}
+          >
+            {meta.description}
+          </VText>
           <VText
             variant="small"
             color="inkSoft"
             numberOfLines={descOpen ? undefined : 3}
-            onTextLayout={(e) => { if (!descOpen) setDescClamped(e.nativeEvent.lines.length >= 3); }}
             style={{ marginTop: 10, lineHeight: 19 }}
           >
             {meta.description}
           </VText>
-          {descClamped || descOpen ? (
+          {descClamped ? (
             <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, alignSelf: 'flex-end' }} color="accent">
               {descOpen ? 'less' : 'more'}
             </VText>

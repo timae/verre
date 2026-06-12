@@ -40,13 +40,12 @@ export async function GET(req: NextRequest) {
   // live taster count, the caller's role (id-based, never display names),
   // and a live/past status for the Moments-home pinning.
   const myIdentityId = `u:${userId}`
-  // A session with a date stops being "ongoing" this long after its end.
-  // date_to is a real end → short grace; date_from-only means "started
-  // then" with no stated end → longer grace so an evening tasting keeps
-  // its pin overnight. Date-less sessions stay live for their whole Redis
-  // lifespan.
-  const DATE_TO_GRACE_MS = 6 * 3600 * 1000
-  const DATE_FROM_GRACE_MS = 12 * 3600 * 1000
+  // "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
+  // session to past the moment it passes — no grace. With only a start time
+  // we have to assume a duration; 8h keeps an evening tasting pinned through
+  // the night and nothing more. Date-less sessions stay live for their whole
+  // Redis lifespan.
+  const ASSUMED_DURATION_MS = 8 * 3600 * 1000
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
@@ -80,9 +79,11 @@ export async function GET(req: NextRequest) {
     // (kicked/banned users drop out of identities — their Moments home must
     // not pin the session) AND any set date isn't clearly over.
     const ttlAlive = ttl_seconds > 0 || ttl_seconds === -1
-    const dateAnchor = r.date_to ?? r.date_from
-    const grace = r.date_to !== null ? DATE_TO_GRACE_MS : DATE_FROM_GRACE_MS
-    const datePast = dateAnchor !== null && Date.now() - dateAnchor.getTime() > grace
+    const endsAt =
+      r.date_to !== null ? r.date_to.getTime()
+      : r.date_from !== null ? r.date_from.getTime() + ASSUMED_DURATION_MS
+      : null
+    const datePast = endsAt !== null && Date.now() > endsAt
     const status: 'live' | 'past' = ttlAlive && participant && !datePast ? 'live' : 'past'
     return {
       ...r,
