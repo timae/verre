@@ -2,20 +2,25 @@
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-export function liveMeta(wineCount: number, tasterCount: number | null): string {
-  const parts = [plural(wineCount, 'impression')];
+// "Hosted by X". Pass null to omit (e.g. when the host name already serves as
+// the card title on a name-less moment) so it isn't repeated.
+const hostedBy = (hostName: string) => `Hosted by ${hostName}`;
+
+export function liveMeta(hostName: string | null, tasterCount: number | null): string {
+  const parts: string[] = [];
+  if (hostName) parts.push(hostedBy(hostName));
   if (tasterCount !== null) parts.push(plural(tasterCount, 'taster'));
   return parts.join(' · ');
 }
 
 // "Today" / "Yesterday" / "Sat 7 Jun" / "17 May 2025", per the prototype rows.
-export function recentMeta(dateIso: string | null, wineCount: number): string {
+export function recentMeta(dateIso: string | null, hostName: string | null): string {
   const parts: string[] = [];
   if (dateIso) {
     const day = formatDay(new Date(dateIso));
     if (day) parts.push(day);
   }
-  parts.push(plural(wineCount, 'impression'));
+  if (hostName) parts.push(hostedBy(hostName));
   return parts.join(' · ');
 }
 

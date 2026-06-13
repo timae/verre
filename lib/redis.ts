@@ -51,6 +51,12 @@ export const k = {
   // other wine mutator, which is safe against writers that never take this
   // lock (the wine CRUD routes don't).
   banLock:    (c: string) => `s:${c}:lock:ban`,
+  // USER-scoped (NOT s:{CODE}: — the first user-scoped session-related key):
+  // the set of session codes this user dismissed from the Moments-home
+  // highlight carousel. Must outlive any single session, so it can't ride a
+  // session TTL; it carries its own rolling TTL (see hideCarousel). A hidden
+  // code for a dead session is a harmless no-op against live rows.
+  carouselHidden: (userId: number) => `u:${userId}:carouselhidden`,
 }
 
 export const TTL = 48 * 60 * 60  // default 48h
@@ -108,6 +114,37 @@ export async function getLastSeen(code: string, userId: number): Promise<number>
     return v ? Number(v) : 0
   } catch {
     return 0
+  }
+}
+
+// Carousel-hidden set: codes the user dismissed from the home highlight strip
+// (they stay in "All moments"). Rolling 60-day TTL refreshed on each hide so
+// an abandoned entry self-cleans. All self-catching — a hide/unhide failure
+// must never break the visit/rate/settings response that triggered it.
+const CAROUSEL_HIDDEN_TTL = 60 * 24 * 60 * 60
+
+export async function hideCarousel(userId: number, code: string) {
+  try {
+    await redis.sAdd(k.carouselHidden(userId), code)
+    await redis.expire(k.carouselHidden(userId), CAROUSEL_HIDDEN_TTL)
+  } catch (err) {
+    console.error('[redis] hideCarousel failed:', err)
+  }
+}
+
+export async function unhideCarousel(userId: number, code: string) {
+  try {
+    await redis.sRem(k.carouselHidden(userId), code)
+  } catch (err) {
+    console.error('[redis] unhideCarousel failed:', err)
+  }
+}
+
+export async function getHiddenCarousel(userId: number): Promise<Set<string>> {
+  try {
+    return new Set(await redis.sMembers(k.carouselHidden(userId)))
+  } catch {
+    return new Set()
   }
 }
 

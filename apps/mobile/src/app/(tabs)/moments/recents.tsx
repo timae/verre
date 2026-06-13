@@ -95,8 +95,9 @@ function RecentRow({ row }: { row: MySessionRow }) {
         <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
           {row.name || row.host_name}
         </VText>
+        {/* "Hosted by" suppressed when host_name is already the title above. */}
         <VText variant="small" color="inkSoft">
-          {recentMeta(row.date_from ?? row.created_at, row.wine_count)}
+          {recentMeta(row.date_from ?? row.created_at, row.name ? row.host_name : null)}
         </VText>
         {row.role ? (
           <View style={{ marginTop: 5, flexDirection: 'row' }}>
