@@ -24,10 +24,16 @@ export type MySessionRow = {
   taster_count: number | null;
   role: SessionRole;
   // Server-computed Moments-home pinning: live = Redis alive + caller still
-  // a participant + any set date not clearly over.
+  // a participant + not clearly over (date past, or date-less + idle >1h).
   status: 'live' | 'past';
   cover_photo_url: string | null;
 };
+
+// Label for a live card, derived client-side (not sent): a session within a
+// stated date window is genuinely "ongoing"; a date-less live one is only
+// "recently visited" (we can't assert it's happening now).
+export const liveKind = (r: MySessionRow): 'scheduled' | 'recent' =>
+  r.date_from || r.date_to ? 'scheduled' : 'recent';
 
 export const isLiveSession = (r: MySessionRow) => r.status === 'live';
 

@@ -9,6 +9,7 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 - `s:{CODE}:r:{IDENTITYID}:{WINEID}` — per-rating JSON (score, flavors, notes). Identity-id keyed (`u:<userId>` or `a:<uuid>`), never display name
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
 - `s:{CODE}:tokens` — hash of anon-token → identity-id (used by the resolver)
+- `s:{CODE}:lastseen` — hash of userId → ms timestamp of that user's last activity (visit + rate). Read by `/api/me/sessions` to pin a date-less session as "Just visited" for 1h since the user's last touch. Bumped via `bumpLastSeen` (`lib/redis.ts`), inherits the session TTL (dies with it; `touchWithMeta` re-stamps it). Ephemeral by design — never archived to Postgres.
 - `s:{CODE}:bans` — Set of banned identity-ids (see `docs/dev/kick-ban.md`)
 - `s:{CODE}:kicked` — Set of kicked-but-not-banned identity-ids
 - `s:{CODE}:lock:ban` — short-TTL advisory lock during a ban wipe

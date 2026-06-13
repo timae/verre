@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
-import { redis, k } from '@/lib/redis'
+import { redis, k, getLastSeen } from '@/lib/redis'
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -44,14 +44,21 @@ export async function GET(req: NextRequest) {
   // "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
   // session to past the moment it passes — no grace. With only a start time
   // we have to assume a duration; 8h keeps an evening tasting pinned through
-  // the night and nothing more. Date-less sessions stay live for their whole
-  // Redis lifespan.
+  // the night and nothing more.
   const ASSUMED_DURATION_MS = 8 * 3600 * 1000
+  // A DATE-LESS session can't be claimed "ongoing" — we only know THIS user
+  // touched it recently. Keep it pinned (as a "Just visited" card) for 1h
+  // since their last activity (Redis s:{CODE}:lastseen, bumped on visit +
+  // rate — per-user, NOT session-wide), then drop it to recents. The
+  // ephemeral nature (dies with the session) is why it lives in Redis, not
+  // a Postgres column.
+  const DATELESS_IDLE_CUTOFF_MS = 3600 * 1000
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
     let taster_count: number | null = null
     let participant = false
+    let lastSeen = 0
     let role: 'host' | 'cohost' | 'provider' | null =
       r.host_user_id === userId ? 'host' : null
     try {
@@ -69,23 +76,35 @@ export async function GET(req: NextRequest) {
           else if (Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId)) role = 'provider'
         } catch {}
         try {
-          ;[taster_count, participant] = await Promise.all([
+          ;[taster_count, participant, lastSeen] = await Promise.all([
             redis.hLen(k.identities(r.code)),
             redis.hExists(k.identities(r.code), myIdentityId),
+            getLastSeen(r.code, userId),
           ])
         } catch {}
       }
     } catch {}
     // live = session still in Redis AND the caller is still a participant
     // (kicked/banned users drop out of identities — their Moments home must
-    // not pin the session) AND any set date isn't clearly over.
+    // not pin the session) AND it's not clearly over.
     const ttlAlive = ttl_seconds > 0 || ttl_seconds === -1
+    const hasDate = r.date_from !== null || r.date_to !== null
     const endsAt =
       r.date_to !== null ? r.date_to.getTime()
       : r.date_from !== null ? r.date_from.getTime() + ASSUMED_DURATION_MS
       : null
     const datePast = endsAt !== null && Date.now() > endsAt
-    const status: 'live' | 'past' = ttlAlive && participant && !datePast ? 'live' : 'past'
+    // Date-less: drop from live once THIS user hasn't touched the moment
+    // (visit OR an in-moment action, both bump lastSeen) for the cutoff
+    // window. lastSeen 0 (never recorded — pre-feature session) counts as
+    // stale so an old date-less session doesn't resurrect as "Just visited".
+    const idleMs = lastSeen > 0 ? Date.now() - lastSeen : Infinity
+    const datelessStale = !hasDate && idleMs > DATELESS_IDLE_CUTOFF_MS
+    const status: 'live' | 'past' =
+      ttlAlive && participant && !datePast && !datelessStale ? 'live' : 'past'
+    // The "ongoing vs just-visited" label is NOT sent — the client derives
+    // it from `status === 'live'` + whether date_from/date_to is present (a
+    // pure restatement of fields already on the wire).
     return {
       ...r,
       wines_rated: Number(r.wines_rated),
