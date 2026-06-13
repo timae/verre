@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useMemo } from 'react';
 import { ActivityIndicator, FlatList, Image, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
@@ -8,23 +7,25 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { getMySessions, isLiveSession, type MySessionRow } from '@/lib/api/sessions';
+import { getMySessions, type MySessionRow } from '@/lib/api/sessions';
 import { recentMeta } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 
 const GUTTER = 22;
 
-// 02s·2 — pushed list of past moments to the .sh-row pixel spec: flat rows
+// 02s·2 — pushed "All moments" list to the .sh-row pixel spec: flat rows
 // with rule-soft separators (no cards), 46px thumb, name 15/600, meta 13,
-// role chip on its own line, chevron. Rows push back into the session: a
-// date-past session is often still Redis-alive and opens normally; a truly
-// expired one lands on the session screen's "This moment has ended" state.
-// (The Postgres-backed archive view is a later milestone.)
-export default function Recents() {
+// role chip on its own line, chevron. Shows EVERY moment (incl. the ones
+// surfaced in the home carousel), server-sorted most-recently-active first
+// — no per-row status tag. Rows push back into the session: a date-past
+// session is often still Redis-alive and opens normally; a truly expired one
+// lands on the session screen's "This moment has ended" state.
+export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
-  const recents = useMemo(() => (sessions.data ?? []).filter((r) => !isLiveSession(r)), [sessions.data]);
+  // No filter — every moment; the server already sorts by activity.
+  const moments = sessions.data ?? [];
 
   if (sessions.isPending) {
     return (
@@ -37,10 +38,10 @@ export default function Recents() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Recent moments" />
+        <VBar title="All moments" />
       </View>
       <FlatList
-        data={recents}
+        data={moments}
         keyExtractor={(r) => String(r.id)}
         contentContainerStyle={{
           paddingHorizontal: GUTTER,
@@ -50,7 +51,7 @@ export default function Recents() {
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
         renderItem={({ item }) => <RecentRow row={item} />}
         ListEmptyComponent={
-          <VText variant="small" color="inkSoft">No past moments yet.</VText>
+          <VText variant="small" color="inkSoft">No moments yet.</VText>
         }
       />
     </View>

@@ -48,7 +48,9 @@ export default function Moments() {
   }, []);
 
   const live = useMemo(() => (sessions.data ?? []).filter(isLiveSession), [sessions.data]);
-  const recentCount = (sessions.data?.length ?? 0) - live.length;
+  // "All moments" = the complete list (incl. carousel items). The carousel is
+  // a highlight of the active ones, not a separate set.
+  const totalCount = sessions.data?.length ?? 0;
 
   return (
     <ScrollView
@@ -82,13 +84,13 @@ export default function Moments() {
         <View style={{ paddingTop: 12, gap: 14 }}>
           {live.length > 0 ? <LiveStrip moments={live} /> : null}
           <JoinBlock />
-          {recentCount > 0 ? (
-            <RecentsRow count={recentCount} onPress={() => router.push('/moments/recents')} />
-          ) : live.length === 0 ? (
+          {totalCount > 0 ? (
+            <RecentsRow count={totalCount} onPress={() => router.push('/moments/recents')} />
+          ) : (
             <VText variant="small" color="inkSoft" style={{ paddingHorizontal: GUTTER }}>
               No moments yet.
             </VText>
-          ) : null}
+          )}
         </View>
       )}
     </ScrollView>
@@ -330,7 +332,8 @@ function JoinBlock() {
   );
 }
 
-// .setgroup + .setnav — the "Recent moments" push-row.
+// .setgroup + .setnav — the "All moments" push-row (was "Recent moments";
+// the list is now the complete set, the carousel a highlight of it).
 function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) {
   const { theme } = useTheme();
   return (
@@ -358,7 +361,7 @@ function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) 
         })}
       >
         <Icon name="clock" size={18} color={theme.inkSoft} />
-        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>Recent moments</VText>
+        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>All moments</VText>
         <VText variant="small" color="inkSoft">{count}</VText>
         <Icon name="chevron-right" size={18} color={theme.inkFaint} />
       </Pressable>
