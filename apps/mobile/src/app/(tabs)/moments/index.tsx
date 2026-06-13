@@ -9,7 +9,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isLiveSession, joinMoment, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isLiveSession, joinMoment, liveKind, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -162,8 +162,10 @@ function LiveCard({ m, width }: { m: MySessionRow; width: number }) {
         <View style={{ flex: 1, gap: 2 }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
             <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
+            {/* 'scheduled' = within its date window → genuinely ongoing;
+                'recent' = date-less, recently visited → don't claim live. */}
             <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-              Still ongoing
+              {liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
             </VText>
           </View>
           <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>

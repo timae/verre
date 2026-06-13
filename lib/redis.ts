@@ -31,6 +31,11 @@ export const k = {
   // current display name; tokens maps an anon token to its identity id.
   identities: (c: string) => `s:${c}:identities`,
   tokens:     (c: string) => `s:${c}:tokens`,
+  // Per-user last-activity in this session: userId → ms timestamp. Bumped on
+  // visit + any in-moment action (rate). Read by /me/sessions to pin a
+  // date-less session as "Just visited" for 1h since the user's last touch.
+  // Ephemeral by design — inherits the session TTL, dies with it, no cleanup.
+  lastSeen:   (c: string) => `s:${c}:lastseen`,
   // Banned identity-ids for this session. Set membership; SISMEMBER on
   // every requireParticipant + join attempt. Expires with the session TTL.
   bans:       (c: string) => `s:${c}:bans`,
@@ -73,6 +78,37 @@ export async function touchWithMeta(code: string) {
   const tx = redis.multi()
   for (const key of keys) tx.expire(key, ttl)
   await tx.exec()
+}
+
+// Record THIS user's last activity in a session (visit + in-moment actions).
+// Hash userId → ms timestamp. The first write sets the hash's TTL to the
+// session lifespan so it dies with the session — no cleanup. `touchWithMeta`
+// also re-stamps it on later activity.
+//
+// `skipExpire` is for callers that run `touchWithMeta` right after (the rate
+// path) — that re-expires every session key incl. this hash, so the
+// meta-read + EXPIRE here would be pure duplicate work. They write the hSet
+// only; touchWithMeta handles the TTL.
+export async function bumpLastSeen(code: string, userId: number, skipExpire = false) {
+  try {
+    await redis.hSet(k.lastSeen(code), String(userId), Date.now())
+    if (skipExpire) return
+    const raw = await redis.get(k.meta(code))
+    await redis.expire(k.lastSeen(code), lifespanTTL(raw ? JSON.parse(raw).lifespan : undefined))
+  } catch (err) {
+    console.error('[redis] bumpLastSeen failed:', err)
+  }
+}
+
+// Read a single user's last-seen ms for a session (0 = never / absent / on
+// error — a missing signal correctly reads as "not recently seen").
+export async function getLastSeen(code: string, userId: number): Promise<number> {
+  try {
+    const v = await redis.hGet(k.lastSeen(code), String(userId))
+    return v ? Number(v) : 0
+  } catch {
+    return 0
+  }
 }
 
 // Non-blocking key enumeration via SCAN. KEYS holds the server thread for

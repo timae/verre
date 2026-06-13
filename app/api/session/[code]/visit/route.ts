@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, touchWithMeta } from '@/lib/redis'
+import { redis, k, touchWithMeta, bumpLastSeen } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -64,6 +64,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   try {
     await pgUpsertSession(c, meta)
     const userId = Number(session.user.id)
+    // Pin this session as "Just visited" on the user's Moments home.
+    await bumpLastSeen(c, userId)
     const existing = await prisma.sessionMember.findUnique({
       where: { userId_sessionCode: { userId, sessionCode: c } },
     })
