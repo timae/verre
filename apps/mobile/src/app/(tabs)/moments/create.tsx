@@ -1,9 +1,11 @@
 import DateTimePicker from '@react-native-community/datetimepicker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
-import { Image, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Image, Modal, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
@@ -14,7 +16,7 @@ import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { radius, useTheme } from '@/theme';
+import { motion, radius, useTheme } from '@/theme';
 
 const GUTTER = 22;
 const FOOT_CLEARANCE = 120; // .vbody bottom padding clears the .vfoot bar
@@ -46,39 +48,61 @@ export default function CreateMoment() {
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
-  // Optional dates use the Reminders pattern: a "When" switch row reveals
-  // the pickers (the OS compact control can't render empty, and prefilled
-  // values were rejected — the switch is the honest empty state; values
-  // only exist after the user opts in). Toggling off keeps the values
-  // around but they aren't sent.
-  const [hasDates, setHasDates] = useState(false);
-  const [dateFrom, setDateFrom] = useState<Date>(() => nextFullHour());
-  const [dateTo, setDateTo] = useState<Date>(() => new Date(nextFullHour().getTime() + 6 * 3600_000));
+  // Optional dates, finally settled: brand fields are visible from the
+  // start AND empty by default (our own field can render empty — the
+  // native control couldn't, which drove the earlier switch/placeholder
+  // rounds). A seed only appears inside the picker sheet after a
+  // deliberate tap, and commits only on Done.
+  const [dateFrom, setDateFrom] = useState<Date | null>(null);
+  const [dateTo, setDateTo] = useState<Date | null>(null);
   const [hideLineup, setHideLineup] = useState(false);
   const [hideMinutes, setHideMinutes] = useState(0);
   const [blind, setBlind] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
   const [address, setAddress] = useState('');
   const [description, setDescription] = useState('');
   const [link, setLink] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [coverError, setCoverError] = useState<string | null>(null);
+
+  // Downscale + recompress rather than rejecting a big photo (a cover never
+  // needs full resolution). Mirrors the web pipeline (AddWineModal /
+  // AvatarEditor): resize the long edge to 1200, re-encode JPEG ~0.82. The
+  // canvas/manipulator re-encode also STRIPS EXIF/GPS as a side effect; the
+  // server's stripJpegMetadata (lib/s3.ts) is the backstop on every upload.
+  // If 0.82 still exceeds the cap (huge dimensions), step quality down.
+  const MAX_COVER_BYTES = 2_600_000; // base64 length; ≈2MB decoded server cap
+  const fitCover = async (uri: string, srcW: number, srcH: number): Promise<string | null> => {
+    // Clamp the LONG edge to 1200 (web parity); pass the matching axis so a
+    // tall portrait isn't left huge. Only downscale, never upscale.
+    const resize: ImageManipulator.ActionResize['resize'] =
+      srcW >= srcH ? { width: Math.min(1200, srcW) } : { height: Math.min(1200, srcH) };
+    for (const quality of [0.82, 0.6, 0.45, 0.32]) {
+      const out = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize }],
+        { compress: quality, format: ImageManipulator.SaveFormat.JPEG, base64: true },
+      ).catch(() => null);
+      if (!out?.base64) return null;
+      const dataUrl = `data:image/jpeg;base64,${out.base64}`;
+      if (dataUrl.length <= MAX_COVER_BYTES) return dataUrl;
+    }
+    return null;
+  };
 
   const pickCover = async () => {
-    setError(null);
+    setCoverError(null);
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
-      quality: 0.6, // re-encodes to JPEG — keeps phone photos under the 3MB data-URL cap
-      base64: true,
+      quality: 1, // full quality from the picker; fitCover does the compression
     }).catch(() => null);
     const asset = result && !result.canceled ? result.assets[0] : null;
-    if (!asset?.base64) return;
-    const mime = asset.mimeType && asset.mimeType.startsWith('image/') ? asset.mimeType : 'image/jpeg';
-    const dataUrl = `data:${mime};base64,${asset.base64}`;
-    // Server cap is 2MB DECODED (≈2.67MB as base64); pre-check below that
-    // so nothing passes here only to bounce off uploadImage.
-    if (dataUrl.length > 2_600_000) {
-      setError('That photo is too large — try a smaller one.');
+    if (!asset?.uri) return;
+    const dataUrl = await fitCover(asset.uri, asset.width ?? 1200, asset.height ?? 1200);
+    if (!dataUrl) {
+      setCoverError("Couldn't use that photo — try another.");
       return;
     }
     setCover({ dataUrl, previewUri: asset.uri });
@@ -93,13 +117,9 @@ export default function CreateMoment() {
         sessionName: name.trim() || undefined,
         category: 'wine',
         ...(cover ? { coverPhoto: cover.dataUrl } : {}),
-        ...(hasDates
-          ? {
-              dateFrom: dateFrom.toISOString(),
-              dateTo: dateTo.toISOString(),
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-            }
-          : {}),
+        ...(dateFrom ? { dateFrom: dateFrom.toISOString() } : {}),
+        ...(dateTo ? { dateTo: dateTo.toISOString() } : {}),
+        ...(dateFrom || dateTo ? { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}),
         hideLineup,
         ...(hideLineup ? { hideLineupMinutesBefore: hideMinutes } : {}),
         ...(blind ? { blind: true } : {}),
@@ -138,90 +158,111 @@ export default function CreateMoment() {
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
-        <CoverPicker cover={cover} onPick={pickCover} onClear={() => setCover(null)} />
+        <CoverPicker cover={cover} onPick={pickCover} onClear={() => { setCover(null); setCoverError(null); }} />
+        {coverError ? (
+          <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{coverError}</VText>
+        ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment name" value={name} onChangeText={setName} autoCorrect={false} />
+          <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
         </View>
 
         {/* "What are you tasting?" — wine-only v1, field per spec but
-            non-interactive until a second category goes live. */}
+            Wine is preselected; the others sit in the sheet disabled
+            ("soon") and aren't choosable. */}
         <View style={{ gap: 7, marginBottom: 14 }}>
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>
             What are you tasting?
           </VText>
-          <View
-            style={{
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="What are you tasting? Wine"
+            onPress={() => setCategoryOpen(true)}
+            style={({ pressed }) => ({
               height: 44,
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
               paddingHorizontal: 14,
-              backgroundColor: theme.surface,
+              backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
               borderWidth: 1,
               borderColor: theme.rule,
               borderRadius: radius.sm,
-            }}
+            })}
           >
             <VText variant="body">Wine</VText>
             <Icon name="chevron-down" size={18} color={theme.inkFaint} />
-          </View>
-          <VText variant="caption" color="inkFaint">More categories soon</VText>
+          </Pressable>
         </View>
 
-        {/* Optional dates — Reminders-style switch row revealing the
-            .trow2-even From–To compact pickers (native-chrome). */}
-        <ToggleRow
-          title="When"
-          subtitle="Set a start and end time for the moment"
-          value={hasDates}
-          onChange={setHasDates}
-        />
-        {hasDates ? (
-          // .trow2-even From–To side by side per the mock. flexShrink on
-          // the picker is load-bearing: it lets the compact control
-          // compress into the half-width column (without it the pills'
-          // intrinsic width clips the screen edge).
-          <View style={{ flexDirection: 'row', gap: 12, marginTop: 10, marginBottom: 4 }}>
-            <DateField label="From" value={dateFrom} onChange={setDateFrom} />
-            <DateField label="To" value={dateTo} onChange={setDateTo} />
-          </View>
-        ) : null}
+        {/* .trow2-even From–To per the mock — empty brand fields, picker
+            sheet on tap. */}
+        <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
+          <DateField
+            label="From"
+            value={dateFrom}
+            onChange={(d) => {
+              setDateFrom(d);
+              // Hide line-up needs a start time — clearing From retracts the
+              // row, so reset its state too (else a stale `true` would ship
+              // with no date).
+              if (!d) setHideLineup(false);
+            }}
+            defaultValue={() => nextFullHour()}
+          />
+          <DateField
+            label="To"
+            value={dateTo}
+            onChange={setDateTo}
+            defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)}
+          />
+        </View>
 
-        {/* .trow Hide line-up */}
-        <ToggleRow
-          title="Hide line-up"
-          subtitle="Keep what's being tasted a surprise until before the start"
-          value={hideLineup}
-          onChange={setHideLineup}
-        />
-        {hideLineup ? (
-          <View style={{ flexDirection: 'row', gap: 7, marginTop: 10, flexWrap: 'wrap' }}>
-            {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
-              const on = hideMinutes === mins;
-              return (
-                <Pressable
-                  key={label}
-                  onPress={() => setHideMinutes(mins)}
-                  style={{
-                    paddingVertical: 7,
-                    paddingHorizontal: 13,
-                    borderRadius: radius.pill,
-                    borderWidth: 1,
-                    borderColor: on ? 'transparent' : theme.rule,
-                    backgroundColor: on ? theme.accent : theme.bg,
-                  }}
-                >
-                  <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: on ? theme.accentInk : theme.inkSoft }}>
-                    {label}
-                  </VText>
-                </Pressable>
-              );
-            })}
-          </View>
-        ) : null}
+        {/* .trow Hide line-up — only meaningful with a start time (the
+            reveal countdown is relative to "From"), so the block appears
+            once a From date is set. SpawnedRow self-manages the fade-out →
+            then-collapse on removal (content below waits for the fade) and
+            an accent glow on add. */}
+        <SpawnedRow show={!!dateFrom}>
+          <ToggleRow
+            title="Hide line-up"
+            subtitle="Keep what's being tasted a surprise until before the start"
+            value={hideLineup}
+            onChange={setHideLineup}
+          />
+          {hideLineup ? (
+            <View style={{ flexDirection: 'row', gap: 7, marginTop: 10, flexWrap: 'wrap' }}>
+              {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
+                const on = hideMinutes === mins;
+                return (
+                  <Pressable
+                    key={label}
+                    onPress={() => setHideMinutes(mins)}
+                    style={{
+                      paddingVertical: 7,
+                      paddingHorizontal: 13,
+                      borderRadius: radius.pill,
+                      borderWidth: 1,
+                      borderColor: on ? 'transparent' : theme.rule,
+                      backgroundColor: on ? theme.accent : theme.bg,
+                    }}
+                  >
+                    <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: on ? theme.accentInk : theme.inkSoft }}>
+                      {label}
+                    </VText>
+                  </Pressable>
+                );
+              })}
+            </View>
+          ) : null}
+        </SpawnedRow>
 
-        {/* .trow Blind tasting [PRO] */}
+        {/* .trow Blind tasting [PRO]. No layout animation on INSERT — the
+            Hide row's space opens instantly so Blind is already in its
+            final (lower) position when Done is tapped, and only the new row
+            fades into the gap (no Blind movement on add). On REMOVE the
+            collapse is handled by the exiting row holding its space while it
+            fades; Blind then settles without a visible slide. */}
         <ToggleRow
           title="Blind tasting"
           proBadge
@@ -273,7 +314,10 @@ export default function CreateMoment() {
         ) : null}
       </ScrollView>
 
-      {/* .vfoot — sticky Create bar over a bg fade */}
+      {/* .vfoot — sticky Create bar over a bg fade (transparent at top →
+          solid bg by 38%, so scrolling content dissolves rather than
+          hitting a hard edge). Full-width button, 52pt, Apple's 16pt gap
+          above the safe-area inset. */}
       <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
         <LinearGradient
           colors={['transparent', theme.bg]}
@@ -281,10 +325,12 @@ export default function CreateMoment() {
           style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           pointerEvents="none"
         />
-        <View style={{ alignItems: 'center', paddingTop: 14, paddingHorizontal: 18, paddingBottom: insets.bottom + 24 }} pointerEvents="box-none">
-          <Button title="Create" loadingTitle="Creating…" loading={creating} onPress={onCreate} style={{ minWidth: 220 }} />
+        <View style={{ paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }} pointerEvents="box-none">
+          <Button title="Create" loadingTitle="Creating…" loading={creating} onPress={onCreate} bar block />
         </View>
       </View>
+
+      <CategorySheet open={categoryOpen} onClose={() => setCategoryOpen(false)} />
     </View>
   );
 }
@@ -358,32 +404,250 @@ function CoverPicker({
   );
 }
 
-// From/To — label above the OS combined datetime control (mode="datetime",
-// adjacent date + time pills), half-width columns per the mock. Only
-// rendered after the "When" switch opts in, so it always has a value.
+// A block that appears/disappears on a user action, with a controlled
+// "fade fully, THEN collapse" exit. We can't use Reanimated's exiting
+// lifecycle: it detaches the view into an overlay and reclaims its layout
+// slot in the SAME frame `show` flips false, so siblings slide up DURING the
+// fade — a FadeOut/Keyframe only animates the overlay copy, never the real
+// slot. So we keep the row mounted and drive height+opacity ourselves:
+//  - ADD: opacity 0→1 (+ accent glow). No height animation — the slot is at
+//    full height from frame 1, so siblings are already in their final
+//    position and never appear to move; only this row fades in.
+//  - REMOVE: opacity 1→0 first (maxHeight held), THEN maxHeight collapses to
+//    0 — rows below ease up only after the fade is done.
+// maxHeight (vs a measured height) needs no onLayout pass: a large cap lets
+// the content size itself open, and animating the cap to 0 collapses it.
+const SPAWN_MAX_H = 400; // safely taller than the Hide-line-up block ever is
+function SpawnedRow({ show, children }: { show: boolean; children: React.ReactNode }) {
+  const { theme } = useTheme();
+  // mounted stays true through the exit animation; flipped off when it ends.
+  const [mounted, setMounted] = useState(show);
+  const opacity = useSharedValue(show ? 1 : 0);
+  const maxH = useSharedValue(show ? SPAWN_MAX_H : 0);
+  const glow = useSharedValue(0);
+
+  useEffect(() => {
+    if (show) {
+      setMounted(true);
+      maxH.value = SPAWN_MAX_H; // open instantly — siblings are already final, no slide
+      opacity.value = withTiming(1, { duration: motion.dur3 });
+      glow.value = withSequence(withTiming(1, { duration: motion.dur2 }), withTiming(0, { duration: motion.dur3 * 2 }));
+    } else {
+      opacity.value = withTiming(0, { duration: motion.dur2 });
+      maxH.value = withDelay(
+        motion.dur2, // hold full height until the fade finishes, then collapse
+        withTiming(0, { duration: motion.dur2 }, (done) => {
+          if (done) runOnJS(setMounted)(false);
+        }),
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show]);
+
+  const containerStyle = useAnimatedStyle(() => ({ maxHeight: maxH.value, opacity: opacity.value }));
+  const glowStyle = useAnimatedStyle(() => ({ opacity: glow.value }));
+
+  if (!mounted) return null;
+  return (
+    // Outer wrapper does NOT clip — it hosts the glow, which is bigger than
+    // the row and bleeds over neighbouring content. The inner view keeps
+    // overflow:hidden for the height collapse.
+    <View>
+      {/* Accent glow with a VERTICAL falloff: transparent → tint → tint →
+          transparent top-to-bottom, so it's strong through the middle of the
+          row and fades out at the top/bottom edges — a hue, not a flat block. */}
+      <Animated.View pointerEvents="none" style={[{ position: 'absolute', top: -44, left: -52, right: -52, bottom: -60 }, glowStyle]}>
+        <LinearGradient
+          colors={['transparent', theme.accentTint, theme.accentTint, 'transparent']}
+          locations={[0, 0.28, 0.72, 1]}
+          start={{ x: 0.5, y: 0 }}
+          end={{ x: 0.5, y: 1 }}
+          style={{ position: 'absolute', inset: 0, borderRadius: radius.lg }}
+        />
+      </Animated.View>
+      <Animated.View style={[{ overflow: 'hidden' }, containerStyle]}>
+        {children}
+      </Animated.View>
+    </View>
+  );
+}
+
+// "What are you tasting?" picker — brand bottom sheet (same shell as the
+// date picker). Wine is the only choosable row; the rest are disabled
+// "soon" rows shown so users see what's coming. v1 always commits 'wine'
+// (no other category has a flavour set yet), so selecting Wine just closes.
+const CATEGORIES: Array<{ key: string; label: string; enabled: boolean }> = [
+  { key: 'wine', label: 'Wine', enabled: true },
+  { key: 'coffee', label: 'Coffee', enabled: false },
+  { key: 'beer', label: 'Beer', enabled: false },
+  { key: 'spirits', label: 'Spirits', enabled: false },
+  { key: 'food', label: 'Food', enabled: false },
+  { key: 'mixed', label: 'Mixed', enabled: false },
+];
+
+function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  return (
+    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
+      <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={onClose}>
+        <Pressable
+          style={{
+            backgroundColor: theme.surface,
+            borderTopLeftRadius: radius.xl,
+            borderTopRightRadius: radius.xl,
+            paddingTop: 8,
+            paddingBottom: insets.bottom + 8,
+          }}
+        >
+          <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+              What are you tasting?
+            </VText>
+          </View>
+          {CATEGORIES.map((c) => (
+            <Pressable
+              key={c.key}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !c.enabled, selected: c.key === 'wine' }}
+              disabled={!c.enabled}
+              onPress={onClose}
+              style={({ pressed }) => ({
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 20,
+                paddingVertical: 14,
+                backgroundColor: pressed && c.enabled ? theme.surfaceSunk : 'transparent',
+              })}
+            >
+              <VText variant="body" color={c.enabled ? 'ink' : 'inkFaint'}>{c.label}</VText>
+              {c.key === 'wine' ? (
+                <Icon name="check" size={18} color={theme.accent} />
+              ) : !c.enabled ? (
+                <VText variant="caption" color="inkFaint">Soon</VText>
+              ) : null}
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// The mock's year-less field format ("Fri 20 Jun · 19:00"), device-locale
+// ordering for the date words.
+function formatWhen(d: Date): string {
+  const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${date} · ${time}`;
+}
+
+// From/To — brand .field box, EMPTY by default (our own field can render
+// empty; the OS compact pills couldn't, and allowed no format control).
+// Set state shows the year-less mock format + an × to clear. Tapping
+// presents the OS INLINE picker (calendar + time) in a native pageSheet —
+// the seed exists only inside the sheet and commits only on Done;
+// swipe-dismiss discards.
 function DateField({
-  label, value, onChange,
+  label, value, onChange, defaultValue,
 }: {
   label: string;
-  value: Date;
-  onChange: (d: Date) => void;
+  value: Date | null;
+  onChange: (d: Date | null) => void;
+  defaultValue: () => Date;
 }) {
   const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
   return (
     <View style={{ flex: 1, gap: 7 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
-      <DateTimePicker
-        value={value}
-        mode="datetime"
-        display="compact"
-        // The OS draws the compact pills — shape/typography aren't
-        // customizable, only the selection tint.
-        accentColor={theme.accent}
-        onValueChange={(_e, d) => { if (d) onChange(d); }}
-        // Load-bearing: bounds the native control to the column width so
-        // it compresses instead of clipping the screen edge.
-        style={{ flexShrink: 1 }}
-      />
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${label} date and time`}
+        accessibilityValue={{ text: value ? formatWhen(value) : 'not set' }}
+        onPress={() => setDraft(value ?? defaultValue())}
+        style={({ pressed }) => ({
+          height: 44,
+          flexDirection: 'row',
+          alignItems: 'center',
+          paddingHorizontal: 14,
+          backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
+          borderWidth: 1,
+          borderColor: theme.rule,
+          borderRadius: radius.sm,
+        })}
+      >
+        <VText variant="body" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
+          {value ? formatWhen(value) : 'Optional'}
+        </VText>
+        {value ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Clear ${label.toLowerCase()} date`}
+            onPress={() => onChange(null)}
+            hitSlop={10}
+          >
+            <Icon name="x" size={13} color={theme.inkFaint} />
+          </Pressable>
+        ) : null}
+      </Pressable>
+      {/* Content-sized bottom sheet (NOT pageSheet, which fills the
+          screen): a dim scrim with a card pinned to the bottom that's only
+          as tall as the picker + header. Tap-scrim or Done dismisses. */}
+      <Modal
+        visible={draft !== null}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setDraft(null)}
+      >
+        <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={() => setDraft(null)}>
+          {/* Inner Pressable swallows taps so they don't bubble to the
+              scrim and close the sheet. */}
+          <Pressable
+            style={{
+              backgroundColor: theme.surface,
+              borderTopLeftRadius: radius.xl,
+              borderTopRightRadius: radius.xl,
+              paddingBottom: insets.bottom + 8,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 20,
+                paddingTop: 16,
+                paddingBottom: 4,
+              }}
+            >
+              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+                {label}
+              </VText>
+              <Button
+                title="Done"
+                size="sm"
+                onPress={() => {
+                  if (draft) onChange(draft);
+                  setDraft(null);
+                }}
+              />
+            </View>
+            {draft ? (
+              <DateTimePicker
+                value={draft}
+                mode="datetime"
+                display="inline"
+                accentColor={theme.accent}
+                onValueChange={(_e, d) => { if (d) setDraft(d); }}
+                style={{ alignSelf: 'center' }}
+              />
+            ) : null}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -409,7 +673,10 @@ function ToggleRow({
             {title}
           </VText>
           {proBadge ? (
-            <View style={{ backgroundColor: theme.accent, borderRadius: radius.xs, paddingVertical: 2, paddingHorizontal: 6 }}>
+            // letterSpacing adds trailing space after the last glyph, which
+            // shoves the text optically left — pull the right padding in by
+            // that amount so PRO sits centered.
+            <View style={{ backgroundColor: theme.accent, borderRadius: radius.xs, paddingVertical: 2, paddingLeft: 6, paddingRight: 4 }}>
               <VText style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 9, lineHeight: 11, letterSpacing: 1.08, color: theme.accentInk }}>
                 PRO
               </VText>

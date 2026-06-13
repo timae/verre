@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { normalizeCode, formatCodeInput } from '@verre/core';
@@ -117,70 +117,120 @@ function Thumb({ uri, size, r }: { uri?: string | null; size: number; r: number 
   );
 }
 
-function LiveStrip({ moments }: { moments: MySessionRow[] }) {
+// .sh-live2 .sh-liveB card. Pulled out so the loop can render the real
+// cards plus a clone of the first/last without duplicating JSX.
+function LiveCard({ m, width }: { m: MySessionRow; width: number }) {
   const { theme } = useTheme();
   const router = useRouter();
+  return (
+    <View
+      style={{
+        width,
+        backgroundColor: theme.surface,
+        borderRadius: radius.lg,
+        paddingVertical: 12,
+        paddingHorizontal: 14,
+        gap: 12,
+        shadowColor: '#000',
+        shadowOpacity: elevation.sm.ios.shadowOpacity,
+        shadowRadius: elevation.sm.ios.shadowRadius,
+        shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
+        elevation: elevation.sm.android.elevation,
+      }}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
+        <View style={{ flex: 1, gap: 2 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
+            <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+              Still ongoing
+            </VText>
+          </View>
+          <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+            {m.name || m.host_name}
+          </VText>
+          <VText variant="small" color="inkSoft">{liveMeta(m.wine_count, m.taster_count)}</VText>
+        </View>
+      </View>
+      <Button
+        title="Rejoin"
+        block
+        onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: m.code } })}
+      />
+    </View>
+  );
+}
+
+function LiveStrip({ moments }: { moments: MySessionRow[] }) {
+  const { theme } = useTheme();
   const { width } = useWindowDimensions();
   const [page, setPage] = useState(0);
   const cardWidth = width - GUTTER * 2;
+  const step = cardWidth + 12;
+  const scrollRef = useRef<ScrollView>(null);
+
+  const loop = moments.length > 1;
+  // Loop track: [clone(last), ...real, clone(first)]. Start parked on the
+  // first REAL card (index 1). When momentum lands on a clone, silently jump
+  // to its real twin so it scrolls endlessly both ways.
+  const data = loop ? [moments[moments.length - 1], ...moments, moments[0]] : moments;
+
+  // Park on the first real card ONCE per card-set, not on every content-size
+  // change — otherwise the 15s poll adding/removing a live moment would
+  // re-fire this and yank the user back to card 1 mid-scroll. Reset the
+  // latch (+ clamp the dot) only when the live COUNT actually changes.
+  const parkedRef = useRef(false);
+  useEffect(() => {
+    parkedRef.current = false;
+    setPage((p) => (p < moments.length ? p : 0));
+  }, [moments.length]);
+  const onContentSized = () => {
+    if (loop && !parkedRef.current) {
+      scrollRef.current?.scrollTo({ x: step, animated: false });
+      parkedRef.current = true;
+    }
+  };
+
+  // Dots track the swipe LIVE (on scroll, not just on settle) so they don't
+  // lag. Map the raw track index → real dot index, wrapping for the clones.
+  const onScroll = (x: number) => {
+    const i = Math.round(x / step);
+    const dot = loop ? (i - 1 + moments.length) % moments.length : i;
+    setPage((p) => (p === dot ? p : dot));
+  };
+
+  const onMomentumEnd = (x: number) => {
+    if (!loop) return;
+    const i = Math.round(x / step);
+    if (i === 0) {
+      // leading clone (of the last real) → jump to the last real card
+      scrollRef.current?.scrollTo({ x: moments.length * step, animated: false });
+    } else if (i === data.length - 1) {
+      // trailing clone (of the first real) → jump to the first real card
+      scrollRef.current?.scrollTo({ x: step, animated: false });
+    }
+  };
 
   return (
-    // .sh-livewrap: gap 8, margin 12 0 14 — outer gap comes from the parent.
     <View style={{ gap: 8 }}>
       <ScrollView
+        ref={scrollRef}
         horizontal
         showsHorizontalScrollIndicator={false}
-        snapToInterval={cardWidth + 12}
+        snapToInterval={step}
         decelerationRate="fast"
         contentContainerStyle={{ paddingHorizontal: GUTTER, gap: 12 }}
-        onMomentumScrollEnd={(e) => setPage(Math.round(e.nativeEvent.contentOffset.x / (cardWidth + 12)))}
+        onContentSizeChange={onContentSized}
+        scrollEventThrottle={16}
+        onScroll={(e) => onScroll(e.nativeEvent.contentOffset.x)}
+        onMomentumScrollEnd={(e) => onMomentumEnd(e.nativeEvent.contentOffset.x)}
       >
-        {moments.map((m) => (
-          // .sh-live2 .sh-liveB: surface, r-lg 16, shadow-sm, 12×14 padding, no border.
-          <View
-            key={m.id}
-            style={{
-              width: cardWidth,
-              backgroundColor: theme.surface,
-              borderRadius: radius.lg,
-              paddingVertical: 12,
-              paddingHorizontal: 14,
-              gap: 12,
-              shadowColor: '#000',
-              shadowOpacity: elevation.sm.ios.shadowOpacity,
-              shadowRadius: elevation.sm.ios.shadowRadius,
-              shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
-              elevation: elevation.sm.android.elevation,
-            }}
-          >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-              <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
-              <View style={{ flex: 1, gap: 2 }}>
-                {/* .sh-livetag */}
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                  <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
-                  {/* .sh-livetag: 12/700 */}
-                  <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-                    Still ongoing
-                  </VText>
-                </View>
-                {/* .sh-livename: 18/600/-0.015em */}
-                <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
-                  {m.name || m.host_name}
-                </VText>
-                <VText variant="small" color="inkSoft">{liveMeta(m.wine_count, m.taster_count)}</VText>
-              </View>
-            </View>
-            <Button
-              title="Rejoin"
-              block
-              onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: m.code } })}
-            />
-          </View>
+        {data.map((m, i) => (
+          <LiveCard key={`${m.id}-${i}`} m={m} width={cardWidth} />
         ))}
       </ScrollView>
       {moments.length > 1 ? (
-        // .sh-dots / .sh-dot
         <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 5 }}>
           {moments.map((m, i) => (
             <View
