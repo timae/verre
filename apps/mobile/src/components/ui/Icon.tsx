@@ -32,6 +32,7 @@ const ICONS: Record<string, Seg[]> = {
   starf: [{ d: 'M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z', fill: true }],
   'chevron-right': [{ d: 'M9.5 6l6 6-6 6', sw: 1.6, cap: true, join: true }],
   'chevron-down': [{ d: 'M6 9.5l6 6 6-6', sw: 1.6, cap: true, join: true }],
+  check: [{ d: 'M5 12.5l4.5 4.5L19 7', sw: 1.8, cap: true, join: true }],
   back: [{ d: 'M15 5l-7 7 7 7', sw: 1.7, cap: true, join: true }],
   heart: [
     { d: 'M12 20s-7-4.6-7-9.5A3.8 3.8 0 0 1 12 8a3.8 3.8 0 0 1 7-2.5C19 10.4 12 20 12 20Z', sw: 1.6, join: true },

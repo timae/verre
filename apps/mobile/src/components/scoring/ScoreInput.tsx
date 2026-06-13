@@ -120,9 +120,13 @@ export function ScoreInput({ value, onChange }: Props) {
             onChangeText={setDraft}
             onEndEditing={commitDraft}
             keyboardType="decimal-pad"
-            returnKeyType="done"
             accessibilityLabel="Score out of 5"
             selectTextOnFocus
+            // The big 40px field renders a tall caret + selection handle that
+            // pops out oddly bottom-right; the value's short and selected on
+            // focus, so the caret adds nothing — hide it and tint selection.
+            caretHidden
+            selectionColor={theme.accent}
             style={{
               width: 92,
               fontFamily: 'InstrumentSans_600SemiBold',

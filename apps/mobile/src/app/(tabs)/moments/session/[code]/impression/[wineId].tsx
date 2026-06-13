@@ -887,7 +887,7 @@ function FootBar({
           backgroundColor: theme.bg + 'CC', // ≈80% wash; blur supplies the rest
         }}
       />
-      <View style={{ flexDirection: 'row', gap: 10, paddingTop: 10, paddingHorizontal: 16, paddingBottom: insets.bottom + 12 }}>
+      <View style={{ flexDirection: 'row', gap: 10, paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }}>
         <View style={{ flex: 1 }}>
           <Button title="Previous" variant="secondary" bar block disabled={variant === 'first' || saving} onPress={onPrevious} />
         </View>
