@@ -232,6 +232,12 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
       console.error(`[accountDelete] redis cleanup failed code=${code}`, err)
     }
   }
+  // User-scoped Redis keys are NOT under any `s:{code}:*` pattern, so the
+  // session loop above doesn't reach them — delete them explicitly. (The 60d
+  // TTL would self-clean eventually, but account-delete should leave nothing.)
+  // Any future `u:{userId}:*` key MUST be added here — see lib/CLAUDE.md.
+  try { await redis.del(k.carouselHidden(userId)) }
+  catch (err) { console.error('[accountDelete] carousel-hidden cleanup failed', err) }
   return plan
 }
 

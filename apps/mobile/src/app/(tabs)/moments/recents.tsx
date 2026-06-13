@@ -38,7 +38,7 @@ export default function AllMoments() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="All moments" />
+        <VBar title="Moments you've had" />
       </View>
       <FlatList
         data={moments}

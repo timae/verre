@@ -14,6 +14,7 @@
 | `/api/me/blocks/:id` DELETE | uncapped |
 | `/api/session` POST | 10/10min/user-or-IP |
 | `/api/session/:code/settings` PATCH (cover) | 10/h/user (`rl:cover`, charged only on an actual cover upload) |
+| `/api/session/:code/carousel-hidden` POST+DELETE | 30/10min/user (shared) |
 | `/api/session/join` POST | 30 invalid/min/IP |
 | Bans POST+DELETE | 60/10min/caller (shared) |
 | `/api/me/devices` GET | 60/min/user |

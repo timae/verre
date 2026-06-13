@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
-import { redis, k, getLastSeen } from '@/lib/redis'
+import { redis, k, getLastSeen, getHiddenCarousel } from '@/lib/redis'
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -41,6 +41,10 @@ export async function GET(req: NextRequest) {
   // live taster count, the caller's role (id-based, never display names),
   // and a live/past status for the Moments-home pinning.
   const myIdentityId = `u:${userId}`
+  // Codes the user dismissed from the highlight carousel — forced to 'past'
+  // below so they drop from the carousel (still shown in "All moments").
+  // One Redis call for the whole list, not per row.
+  const hiddenCarousel = await getHiddenCarousel(userId)
   // "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
   // session to past the moment it passes — no grace. With only a start time
   // we have to assume a duration; 8h keeps an evening tasting pinned through
@@ -100,8 +104,10 @@ export async function GET(req: NextRequest) {
     // stale so an old date-less session doesn't resurrect as "Just visited".
     const idleMs = lastSeen > 0 ? Date.now() - lastSeen : Infinity
     const datelessStale = !hasDate && idleMs > DATELESS_IDLE_CUTOFF_MS
+    // Carousel-hidden → never live (drops to "All moments" only).
+    const hidden = hiddenCarousel.has(r.code)
     const status: 'live' | 'past' =
-      ttlAlive && participant && !datePast && !datelessStale ? 'live' : 'past'
+      ttlAlive && participant && !datePast && !datelessStale && !hidden ? 'live' : 'past'
     // The "ongoing vs just-visited" label is NOT sent — the client derives
     // it from `status === 'live'` + whether date_from/date_to is present (a
     // pure restatement of fields already on the wire).
