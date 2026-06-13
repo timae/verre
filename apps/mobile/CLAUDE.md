@@ -143,8 +143,28 @@ alerts, pickers: reach for the native primitive first when those screens land.
   carries the photosPermission copy in app.json),
   `@react-native-community/datetimepicker` (02a From–To, no plugin),
   `expo-blur` (the .ir-foot glass — the .vfoot Create bar is spec'd as a
-  plain gradient, no blur) — all pinned from `bundledNativeModules.json`;
+  plain gradient, no blur); **(02s carousel)**: `@expo/ui` (ships WITH the SDK,
+  pinned `~56.0.17` — declared in package.json so an expo-router bump can't
+  silently drop the transitive) — all pinned from `bundledNativeModules.json`;
   re-run `npx expo run:ios` after pulling.
+- **`@expo/ui` SwiftUI primitives (iOS-only)**: the Moments-home carousel
+  "Remove from home" uses the native `ContextMenu` from `@expo/ui/swift-ui`
+  (long-press → OS lift + dim + tap-away; the OS suspends the strip, so it
+  can't desync over the looping/re-parking carousel — this replaced a
+  hand-rolled `measureInWindow`+dim-`Modal` overlay that did desync). Two
+  load-bearing rules when using ANY `@expo/ui/swift-ui` component:
+  (1) it MUST be mounted under a `<Host>` (else the runtime throws "a SwiftUI
+  view … is being mounted inside a standard UIView"); (2) RN content placed
+  inside the SwiftUI tree (e.g. a brand-custom card as a `ContextMenu.Trigger`
+  or `.Preview`) MUST be wrapped in `<RNHostView matchContents>` — without
+  `matchContents` on BOTH the Host and the RNHostView the lifted/preview view
+  renders oversized (SwiftUI proposes a huge frame when it can't infer the RN
+  content's size). `.Items` are SwiftUI `Button`s (`role="destructive"` for the
+  red item, `systemImage` is an SF Symbol). Carousel clones (no stable
+  identity) skip the menu. **Android is deferred** — `swift-ui` is iOS-only;
+  Android needs the `@expo/ui/jetpack-compose` equivalent (or a fallback)
+  before this screen ships there. See memory note on the decision (zeego
+  rejected as a 15-month-stale wrapper; `@expo/ui` is first-party).
 - **External links** open via `expo-web-browser` (in-app sheet), never
   `Linking.openURL` — except OS-app hand-offs (the Map line opens Maps).
 - **Rate flow** (`moments/session/[code]/impression/[wineId]`): local-until-
