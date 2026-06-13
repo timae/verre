@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon } from '@/components/ui/Icon';
@@ -24,6 +24,7 @@ const GUTTER = 22;
 export default function Moments() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { theme } = useTheme();
   const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
 
   // Coming back from a session must reflect the just-joined/just-ended state
@@ -34,6 +35,17 @@ export default function Moments() {
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []),
   );
+
+  // The RefreshControl spinner must show ONLY for a user pull — binding it to
+  // the query's isRefetching also fires for the focus refetch above, which
+  // would animate the spinner in (and shove the title down) on every back
+  // navigation. Track the pull explicitly.
+  const [pulling, setPulling] = useState(false);
+  const onPullRefresh = useCallback(() => {
+    setPulling(true);
+    sessions.refetch().finally(() => setPulling(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const live = useMemo(() => (sessions.data ?? []).filter(isLiveSession), [sessions.data]);
   const recentCount = (sessions.data?.length ?? 0) - live.length;
@@ -47,6 +59,13 @@ export default function Moments() {
         paddingTop: 8,
         paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
       }}
+      refreshControl={
+        // Pull-to-refresh re-pulls the whole list: live/past status, taster +
+        // wine counts, recents. `pulling` (not isRefetching) so the spinner
+        // shows ONLY for a user-initiated pull — never the focus/background
+        // refetch, which would otherwise animate on every back navigation.
+        <RefreshControl refreshing={pulling} onRefresh={onPullRefresh} tintColor={theme.inkSoft} />
+      }
     >
       {/* .vbar-root — top-right carries the page's primary action as the
           .hv-add accent pill ("+ New" → 02a creation). */}
