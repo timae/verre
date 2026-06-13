@@ -105,6 +105,15 @@ export async function GET(req: NextRequest) {
     // The "ongoing vs just-visited" label is NOT sent — the client derives
     // it from `status === 'live'` + whether date_from/date_to is present (a
     // pure restatement of fields already on the wire).
+    // Activity recency for the "All moments" default sort (most-recently-
+    // active on top): the strongest of this user's last touch, the session's
+    // scheduled start, and when it was created. Internal — not serialized.
+    const lastActiveMs = Math.max(
+      lastSeen,
+      r.date_from ? r.date_from.getTime() : 0,
+      r.created_at ? r.created_at.getTime() : 0,
+      r.joined_at ? r.joined_at.getTime() : 0,
+    )
     return {
       ...r,
       wines_rated: Number(r.wines_rated),
@@ -119,9 +128,19 @@ export async function GET(req: NextRequest) {
       taster_count,
       role,
       status,
+      _lastActiveMs: lastActiveMs,
     }
   }))
 
+  // "All moments" default sort — most recently active first (live carousel
+  // items + just-visited float to the top). The SQL pre-filtered to the 50
+  // most-recently-JOINED; this re-sorts that page by true activity. At >50
+  // sessions an old-by-join-but-recently-active one could fall off the page
+  // — accepted at current scale (lastSeen lives in Redis, not sortable in SQL).
+  enriched.sort((a, b) => b._lastActiveMs - a._lastActiveMs)
+  // Strip the internal sort key before sending.
+  const body = enriched.map(({ _lastActiveMs, ...rest }) => rest)
+
   // Viewer-dependent body (role, own counts) — never shared-cacheable.
-  return NextResponse.json(enriched, { headers: { 'Cache-Control': 'private, no-store' } })
+  return NextResponse.json(body, { headers: { 'Cache-Control': 'private, no-store' } })
 }
