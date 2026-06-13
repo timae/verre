@@ -1,7 +1,10 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
+import * as Haptics from 'expo-haptics';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon } from '@/components/ui/Icon';
@@ -9,7 +12,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isLiveSession, joinMoment, liveKind, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isLiveSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -48,8 +51,8 @@ export default function Moments() {
   }, []);
 
   const live = useMemo(() => (sessions.data ?? []).filter(isLiveSession), [sessions.data]);
-  // "All moments" = the complete list (incl. carousel items). The carousel is
-  // a highlight of the active ones, not a separate set.
+  // "Moments you've had" = the full list incl. carousel items (the carousel
+  // is a highlight, not a separate set). Upcoming moments split out in Part C.
   const totalCount = sessions.data?.length ?? 0;
 
   return (
@@ -140,58 +143,151 @@ function Thumb({ uri, size, r }: { uri?: string | null; size: number; r: number 
 
 // .sh-live2 .sh-liveB card. Pulled out so the loop can render the real
 // cards plus a clone of the first/last without duplicating JSX.
-function LiveCard({ m, width }: { m: MySessionRow; width: number }) {
+//
+// Long-press → manage mode (iPhone-homescreen idiom): the card lifts + idle-
+// wobbles and a × appears to dismiss it from the carousel. A clone (isClone)
+// never triggers manage mode or hide — it has no stable identity.
+function LiveCard({
+  m, width, manageMode, isClone, onEnterManage, onHide,
+}: {
+  m: MySessionRow;
+  width: number;
+  manageMode: boolean;
+  isClone: boolean;
+  onEnterManage: () => void;
+  onHide: () => void;
+}) {
   const { theme } = useTheme();
   const router = useRouter();
+  const wobble = useSharedValue(0);
+
+  useEffect(() => {
+    if (manageMode && !isClone) {
+      // Subtle continuous tilt — the "jiggle". Small angle, eased, infinite.
+      wobble.value = withRepeat(
+        withSequence(
+          withTiming(1, { duration: 120 }),
+          withTiming(-1, { duration: 240 }),
+          withTiming(0, { duration: 120 }),
+        ),
+        -1,
+        false,
+      );
+    } else {
+      wobble.value = withTiming(0, { duration: 120 });
+    }
+  }, [manageMode, isClone, wobble]);
+
+  const wobbleStyle = useAnimatedStyle(() => ({
+    transform: [{ rotateZ: `${wobble.value * 0.5}deg` }, { scale: manageMode && !isClone ? 0.98 : 1 }],
+  }));
+
+  // runOnJS(true): the callback runs on the JS thread, so it can call JS
+  // (haptics, setState) directly without a runOnJS hop.
+  const longPress = Gesture.LongPress()
+    .minDuration(350)
+    .runOnJS(true)
+    .onStart(() => {
+      if (isClone || manageMode) return;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+      onEnterManage();
+    });
+
   return (
-    <View
-      style={{
-        width,
-        backgroundColor: theme.surface,
-        borderRadius: radius.lg,
-        paddingVertical: 12,
-        paddingHorizontal: 14,
-        gap: 12,
-        shadowColor: '#000',
-        shadowOpacity: elevation.sm.ios.shadowOpacity,
-        shadowRadius: elevation.sm.ios.shadowRadius,
-        shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
-        elevation: elevation.sm.android.elevation,
-      }}
-    >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
-        <View style={{ flex: 1, gap: 2 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-            <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
-            {/* 'scheduled' = within its date window → genuinely ongoing;
-                'recent' = date-less, recently visited → don't claim live. */}
-            <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-              {liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
+    <GestureDetector gesture={longPress}>
+      <Animated.View
+        exiting={FadeOut.duration(180)}
+        style={[
+          {
+            width,
+            backgroundColor: theme.surface,
+            borderRadius: radius.lg,
+            paddingVertical: 12,
+            paddingHorizontal: 14,
+            gap: 12,
+            shadowColor: '#000',
+            shadowOpacity: elevation.sm.ios.shadowOpacity,
+            shadowRadius: elevation.sm.ios.shadowRadius,
+            shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
+            elevation: elevation.sm.android.elevation,
+          },
+          wobbleStyle,
+        ]}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
+          <View style={{ flex: 1, gap: 2 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
+              {/* 'scheduled' = within its date window → genuinely ongoing;
+                  'recent' = date-less, recently visited → don't claim live. */}
+              <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+                {liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
+              </VText>
+            </View>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+              {m.name || m.host_name}
             </VText>
+            <VText variant="small" color="inkSoft">{liveMeta(m.wine_count, m.taster_count)}</VText>
           </View>
-          <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
-            {m.name || m.host_name}
-          </VText>
-          <VText variant="small" color="inkSoft">{liveMeta(m.wine_count, m.taster_count)}</VText>
         </View>
-      </View>
-      <Button
-        title="Rejoin"
-        block
-        onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: m.code } })}
-      />
-    </View>
+        <Button
+          title="Rejoin"
+          block
+          disabled={manageMode}
+          onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: m.code } })}
+        />
+        {/* × dismiss — only in manage mode, only on real cards. Corner-
+            anchored, hit-slop padded; tapping it hides the moment. */}
+        {manageMode && !isClone ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Remove ${m.name || m.host_name} from highlights`}
+            onPress={onHide}
+            hitSlop={10}
+            style={{
+              position: 'absolute',
+              top: -8,
+              right: -8,
+              width: 28,
+              height: 28,
+              borderRadius: 14,
+              backgroundColor: theme.ink,
+              alignItems: 'center',
+              justifyContent: 'center',
+              shadowColor: '#000',
+              shadowOpacity: 0.25,
+              shadowRadius: 4,
+              shadowOffset: { width: 0, height: 1 },
+            }}
+          >
+            <Icon name="x" size={15} color={theme.bg} />
+          </Pressable>
+        ) : null}
+      </Animated.View>
+    </GestureDetector>
   );
 }
 
 function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   const { theme } = useTheme();
   const { width } = useWindowDimensions();
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
+  const [manageMode, setManageMode] = useState(false);
   const cardWidth = width - GUTTER * 2;
   const step = cardWidth + 12;
   const scrollRef = useRef<ScrollView>(null);
+
+  // Exit manage mode automatically if the strip empties (last card hidden).
+  useEffect(() => {
+    if (moments.length === 0) setManageMode(false);
+  }, [moments.length]);
+
+  const hideMut = useMutation({
+    mutationFn: (code: string) => setMomentHidden(code, true),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['my-sessions'] }),
+  });
 
   const loop = moments.length > 1;
   // Loop track: [clone(last), ...real, clone(first)]. Start parked on the
@@ -249,11 +345,38 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         onScroll={(e) => onScroll(e.nativeEvent.contentOffset.x)}
         onMomentumScrollEnd={(e) => onMomentumEnd(e.nativeEvent.contentOffset.x)}
       >
-        {data.map((m, i) => (
-          <LiveCard key={`${m.id}-${i}`} m={m} width={cardWidth} />
-        ))}
+        {data.map((m, i) => {
+          // Loop clones are the first (i=0) and last (i=len-1) entries.
+          const isClone = loop && (i === 0 || i === data.length - 1);
+          return (
+            <LiveCard
+              key={`${m.id}-${i}`}
+              m={m}
+              width={cardWidth}
+              manageMode={manageMode}
+              isClone={isClone}
+              onEnterManage={() => setManageMode(true)}
+              onHide={() => hideMut.mutate(m.code)}
+            />
+          );
+        })}
       </ScrollView>
-      {moments.length > 1 ? (
+      {/* Manage mode shows a "Done" exit in place of the dots; otherwise the
+          page dots. (Swiping between cards still works in manage mode.) */}
+      {manageMode ? (
+        <View style={{ alignItems: 'center' }}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setManageMode(false)}
+            hitSlop={8}
+            style={({ pressed }) => ({ paddingVertical: 2, paddingHorizontal: 14, opacity: pressed ? 0.6 : 1 })}
+          >
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 17 }} color="accent">
+              Done
+            </VText>
+          </Pressable>
+        </View>
+      ) : moments.length > 1 ? (
         <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 5 }}>
           {moments.map((m, i) => (
             <View
@@ -361,7 +484,7 @@ function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) 
         })}
       >
         <Icon name="clock" size={18} color={theme.inkSoft} />
-        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>All moments</VText>
+        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>Moments you've had</VText>
         <VText variant="small" color="inkSoft">{count}</VText>
         <Icon name="chevron-right" size={18} color={theme.inkFaint} />
       </Pressable>

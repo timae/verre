@@ -227,6 +227,15 @@ export async function createMoment(body: CreateMomentBody): Promise<{ code: stri
   return res.json();
 }
 
+// Hide / un-hide a moment from the home highlight carousel (personal view
+// pref; it stays in "All moments"). Re-engaging (visit/rate) auto-un-hides.
+export async function setMomentHidden(code: string, hidden: boolean): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/carousel-hidden`, {
+    method: hidden ? 'POST' : 'DELETE',
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {
   const res = await apiFetch('/api/session/join', {
     method: 'POST',
