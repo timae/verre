@@ -125,8 +125,13 @@ const CAROUSEL_HIDDEN_TTL = 60 * 24 * 60 * 60
 
 export async function hideCarousel(userId: number, code: string) {
   try {
-    await redis.sAdd(k.carouselHidden(userId), code)
-    await redis.expire(k.carouselHidden(userId), CAROUSEL_HIDDEN_TTL)
+    // MULTI so the SADD and its TTL land atomically — a crash between them
+    // would leave the set with no expiry, leaking it forever (the rolling TTL
+    // is the ONLY thing that GCs an abandoned user's hidden set; see lib/CLAUDE.md).
+    await redis.multi()
+      .sAdd(k.carouselHidden(userId), code)
+      .expire(k.carouselHidden(userId), CAROUSEL_HIDDEN_TTL)
+      .exec()
   } catch (err) {
     console.error('[redis] hideCarousel failed:', err)
   }
