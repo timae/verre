@@ -93,21 +93,32 @@ export async function GET(req: NextRequest) {
     // not pin the session) AND it's not clearly over.
     const ttlAlive = ttl_seconds > 0 || ttl_seconds === -1
     const hasDate = r.date_from !== null || r.date_to !== null
+    const startsAt = r.date_from !== null ? r.date_from.getTime() : null
     const endsAt =
       r.date_to !== null ? r.date_to.getTime()
       : r.date_from !== null ? r.date_from.getTime() + ASSUMED_DURATION_MS
       : null
     const datePast = endsAt !== null && Date.now() > endsAt
+    // Scheduled-but-not-started: a session whose start is in the future is
+    // UPCOMING, not live — it must not show as "ongoing" before it begins.
+    const dateFuture = startsAt !== null && Date.now() < startsAt
     // Date-less: drop from live once THIS user hasn't touched the moment
     // (visit OR an in-moment action, both bump lastSeen) for the cutoff
     // window. lastSeen 0 (never recorded — pre-feature session) counts as
     // stale so an old date-less session doesn't resurrect as "Just visited".
     const idleMs = lastSeen > 0 ? Date.now() - lastSeen : Infinity
     const datelessStale = !hasDate && idleMs > DATELESS_IDLE_CUTOFF_MS
-    // Carousel-hidden → never live (drops to "All moments" only).
+    // Carousel-hidden → never live (drops to the list only).
     const hidden = hiddenCarousel.has(r.code)
-    const status: 'live' | 'past' =
-      ttlAlive && participant && !datePast && !datelessStale && !hidden ? 'live' : 'past'
+    // Buckets: upcoming (future start, still in Redis, participant, not
+    // hidden) takes precedence over live; otherwise live by the usual rules;
+    // else past. `!hidden` gates BOTH live and upcoming so a dismissed moment
+    // is suppressed everywhere (a hidden future session drops to past →
+    // "Moments you've had", consistent with hide on a live one).
+    const status: 'live' | 'upcoming' | 'past' =
+      ttlAlive && participant && dateFuture && !hidden ? 'upcoming'
+      : ttlAlive && participant && !datePast && !datelessStale && !hidden ? 'live'
+      : 'past'
     // The "ongoing vs just-visited" label is NOT sent — the client derives
     // it from `status === 'live'` + whether date_from/date_to is present (a
     // pure restatement of fields already on the wire).

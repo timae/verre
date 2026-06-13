@@ -12,7 +12,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isLiveSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isLiveSession, isUpcomingSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -51,9 +51,11 @@ export default function Moments() {
   }, []);
 
   const live = useMemo(() => (sessions.data ?? []).filter(isLiveSession), [sessions.data]);
-  // "Moments you've had" = the full list incl. carousel items (the carousel
-  // is a highlight, not a separate set). Upcoming moments split out in Part C.
-  const totalCount = sessions.data?.length ?? 0;
+  const upcomingCount = useMemo(() => (sessions.data ?? []).filter(isUpcomingSession).length, [sessions.data]);
+  // "Moments you've had" = everything that ISN'T upcoming (incl. the live
+  // carousel items — the carousel is a highlight, not a separate set).
+  // Upcoming sits in its own row above.
+  const hadCount = (sessions.data?.length ?? 0) - upcomingCount;
 
   return (
     <ScrollView
@@ -87,13 +89,25 @@ export default function Moments() {
         <View style={{ paddingTop: 12, gap: 14 }}>
           {live.length > 0 ? <LiveStrip moments={live} /> : null}
           <JoinBlock />
-          {totalCount > 0 ? (
-            <RecentsRow count={totalCount} onPress={() => router.push('/moments/recents')} />
-          ) : (
+          {/* Upcoming sits above "had" and only when non-empty. */}
+          {upcomingCount > 0 ? (
+            <PushRow
+              label="Upcoming moments"
+              count={upcomingCount}
+              onPress={() => router.push({ pathname: '/moments/recents', params: { filter: 'upcoming' } })}
+            />
+          ) : null}
+          {hadCount > 0 ? (
+            <PushRow
+              label="Moments you've had"
+              count={hadCount}
+              onPress={() => router.push('/moments/recents')}
+            />
+          ) : upcomingCount === 0 ? (
             <VText variant="small" color="inkSoft" style={{ paddingHorizontal: GUTTER }}>
               No moments yet.
             </VText>
-          )}
+          ) : null}
         </View>
       )}
     </ScrollView>
@@ -455,9 +469,9 @@ function JoinBlock() {
   );
 }
 
-// .setgroup + .setnav — the "All moments" push-row (was "Recent moments";
-// the list is now the complete set, the carousel a highlight of it).
-function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) {
+// .setgroup + .setnav — a labelled push-row into a moments sub-list (reused
+// for "Upcoming moments" + "Moments you've had").
+function PushRow({ label, count, onPress }: { label: string; count: number; onPress: () => void }) {
   const { theme } = useTheme();
   return (
     <View
@@ -484,7 +498,7 @@ function RecentsRow({ count, onPress }: { count: number; onPress: () => void }) 
         })}
       >
         <Icon name="clock" size={18} color={theme.inkSoft} />
-        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>Moments you've had</VText>
+        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>{label}</VText>
         <VText variant="small" color="inkSoft">{count}</VText>
         <Icon name="chevron-right" size={18} color={theme.inkFaint} />
       </Pressable>

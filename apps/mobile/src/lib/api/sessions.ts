@@ -23,9 +23,11 @@ export type MySessionRow = {
   lifespan: string | null;
   taster_count: number | null;
   role: SessionRole;
-  // Server-computed Moments-home pinning: live = Redis alive + caller still
-  // a participant + not clearly over (date past, or date-less + idle >1h).
-  status: 'live' | 'past';
+  // Server-computed Moments-home bucket:
+  // - 'upcoming' = scheduled, start in the future (not yet begun)
+  // - 'live' = Redis alive + participant + not over (date past / date-less idle)
+  // - 'past' = everything else
+  status: 'live' | 'upcoming' | 'past';
   cover_photo_url: string | null;
 };
 
@@ -36,6 +38,7 @@ export const liveKind = (r: MySessionRow): 'scheduled' | 'recent' =>
   r.date_from || r.date_to ? 'scheduled' : 'recent';
 
 export const isLiveSession = (r: MySessionRow) => r.status === 'live';
+export const isUpcomingSession = (r: MySessionRow) => r.status === 'upcoming';
 
 export type WireWine = {
   id: string;

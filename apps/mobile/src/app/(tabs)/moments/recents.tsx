@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useMemo } from 'react';
 import { ActivityIndicator, FlatList, Image, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
@@ -7,7 +8,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { getMySessions, type MySessionRow } from '@/lib/api/sessions';
+import { getMySessions, isUpcomingSession, type MySessionRow } from '@/lib/api/sessions';
 import { recentMeta } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
 
@@ -23,9 +24,24 @@ const GUTTER = 22;
 export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
+  const { filter } = useLocalSearchParams<{ filter?: string }>();
+  const upcoming = filter === 'upcoming';
   const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
-  // No filter — every moment; the server already sorts by activity.
-  const moments = sessions.data ?? [];
+  // 'upcoming' filter → only future-start sessions, re-sorted SOONEST-first
+  // (the server's activity sort puts the furthest-out date on top, which is
+  // backwards for an agenda); default → everything that isn't upcoming
+  // ("Moments you've had"), keeping the server's most-recently-active order.
+  const moments = useMemo(() => {
+    const rows = (sessions.data ?? []).filter((r) => (upcoming ? isUpcomingSession(r) : !isUpcomingSession(r)));
+    if (upcoming) {
+      return [...rows].sort((a, b) => {
+        const ta = a.date_from ? new Date(a.date_from).getTime() : Infinity;
+        const tb = b.date_from ? new Date(b.date_from).getTime() : Infinity;
+        return ta - tb; // soonest start first
+      });
+    }
+    return rows;
+  }, [sessions.data, upcoming]);
 
   if (sessions.isPending) {
     return (
@@ -38,7 +54,7 @@ export default function AllMoments() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Moments you've had" />
+        <VBar title={upcoming ? 'Upcoming moments' : "Moments you've had"} />
       </View>
       <FlatList
         data={moments}
@@ -51,7 +67,7 @@ export default function AllMoments() {
         ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
         renderItem={({ item }) => <RecentRow row={item} />}
         ListEmptyComponent={
-          <VText variant="small" color="inkSoft">No moments yet.</VText>
+          <VText variant="small" color="inkSoft">{upcoming ? 'Nothing upcoming.' : 'No moments yet.'}</VText>
         }
       />
     </View>
