@@ -248,3 +248,36 @@ export async function joinMoment(code: string, displayName: string): Promise<{ c
   if (!res.ok) await throwApiError(res);
   return res.json();
 }
+
+// People-management actions (host/cohost). The server is the authority on the
+// tier gates (cohost role = strict-host only; banning a cohost = strict-host;
+// provider ⊥ cohost) — the People UI mirrors them only to avoid offering dead
+// actions, and surfaces the server's 403 message if a race slips through.
+
+// Set a participant's role. 'taster' clears cohost/provider. The wire role
+// values are snake_case to match the backend (PATCH /api/session/:code).
+export type WireRole = 'taster' | 'co_host' | 'provider';
+export async function setParticipantRole(code: string, targetId: string, role: WireRole): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'set-role', targetId, role }),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Kick (can rejoin) or ban (cannot) a participant. Ban deletes their data;
+// deleteAddedWines additionally removes wines they added (default false).
+export async function removeParticipant(
+  code: string,
+  identityId: string,
+  mode: 'kick' | 'ban',
+  deleteAddedWines = false,
+): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/bans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identityId, mode, deleteAddedWines }),
+  });
+  if (!res.ok) await throwApiError(res);
+}
