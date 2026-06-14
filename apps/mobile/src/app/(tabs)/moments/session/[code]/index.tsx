@@ -2,11 +2,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
+import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
@@ -23,7 +25,7 @@ import {
 import { authClient } from '@/lib/authClient';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
-import { radius, useTheme } from '@/theme';
+import { motion, radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
 const GUTTER = 22;
@@ -59,6 +61,8 @@ export default function SessionLineup() {
   const [fatal, setFatal] = useState<ApiError | null>(null);
   const [removedKind, setRemovedKind] = useState<'banned' | 'kicked' | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [sessMenuTop, setSessMenuTop] = useState<number | null>(null); // ⋯ menu anchor
   const [visitAttempt, setVisitAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -144,43 +148,54 @@ export default function SessionLineup() {
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
   return (
+    // BottomSheetModalProvider lives INSIDE the screen (not the root _layout):
+    // with expo-router/react-native-screens a root provider's gorhom host gets
+    // zero height across the Stack boundary and sheets never present (gorhom
+    // #1884/#2035). Hosting it in this screen's flex:1 View gives the sheets a
+    // sized provider + portal host.
+    <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar
           title={meta?.name ?? ''}
-          right={
-            meta ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Invite people"
-                hitSlop={8}
-                onPress={() => setInviteOpen(true)}
-                style={({ pressed }) => ({ width: 30, height: 30, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
-              >
-                <Icon name="share" size={20} color={theme.ink} />
-              </Pressable>
-            ) : undefined
-          }
+          right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
         />
       </View>
+      {/* Session ⋯ menu (.sess-menu): Blind-for-all + Settings land later. */}
+      <SessionMenu
+        anchorTop={sessMenuTop}
+        onClose={() => setSessMenuTop(null)}
+        onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
+        onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
+      />
       {meta ? (
-        <InviteSheet
-          open={inviteOpen}
-          onClose={() => setInviteOpen(false)}
-          code={code}
-          momentName={meta.name}
-          // Block-scrub before deriving "Joined": meta.participants ships the
-          // FULL list; per-viewer block filtering is client-side via
-          // viewerBlocksOut/In (mirrors web SessionPanel). Without this, a
-          // blocked friend could light up as "Joined" — a block-boundary leak.
-          participantIds={
-            new Set(
-              (meta.participants ?? [])
-                .filter((p) => !meta.viewerBlocksOut.includes(p.id) && !meta.viewerBlocksIn.includes(p.id))
-                .map((p) => p.id),
-            )
-          }
-        />
+        <>
+          <InviteSheet
+            open={inviteOpen}
+            onClose={() => setInviteOpen(false)}
+            code={code}
+            momentName={meta.name}
+            // Block-scrub before deriving "Joined": meta.participants ships the
+            // FULL list; per-viewer block filtering is client-side via
+            // viewerBlocksOut/In (mirrors web SessionPanel). Without this, a
+            // blocked friend could light up as "Joined" — a block-boundary leak.
+            participantIds={
+              new Set(
+                (meta.participants ?? [])
+                  .filter((p) => !meta.viewerBlocksOut.includes(p.id) && !meta.viewerBlocksIn.includes(p.id))
+                  .map((p) => p.id),
+              )
+            }
+          />
+          <PeopleSheet
+            open={peopleOpen}
+            onClose={() => setPeopleOpen(false)}
+            code={code}
+            meta={meta}
+            myIdentityId={myIdentityId}
+            onInvite={() => setInviteOpen(true)}
+          />
+        </>
       ) : null}
       {showReconnecting ? (
         <View style={{ backgroundColor: theme.surfaceSunk, paddingVertical: 6, alignItems: 'center' }}>
@@ -197,7 +212,7 @@ export default function SessionLineup() {
       ) : lock ? (
         <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
           <LockCard revealAt={lock} />
-          <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
+          <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
         </ScrollView>
       ) : (
         <>
@@ -208,10 +223,10 @@ export default function SessionLineup() {
             data={wines ?? []}
             keyExtractor={(w) => w.id}
             ListHeaderComponent={
-              <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
+              <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
             }
-            // flexGrow lets the empty state fill the space below the header and
-            // center in it (vs sitting high). Harmless when the list has rows.
+            // flexGrow:1 gives the empty state a flex slot; EmptyLineup freezes its
+            // own height there so its centering doesn't jump when the tab bar hides.
             contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
             renderItem={({ item, index }) => (
@@ -233,6 +248,7 @@ export default function SessionLineup() {
         </>
       )}
     </View>
+    </BottomSheetModalProvider>
   );
 }
 
@@ -305,7 +321,7 @@ function TabStrip() {
 
 // .ovc — the session about block: location + Map pill, when, event link,
 // clamped description, avatar-stack foot.
-function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string }) {
+function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaView; isHostViewer: boolean; myIdentityId: string; onPeople: () => void }) {
   const { theme } = useTheme();
   const [descOpen, setDescOpen] = useState(false);
   // Character count of the first three laid-out lines (from the invisible
@@ -426,7 +442,7 @@ function OvcAbout({ meta, isHostViewer, myIdentityId }: { meta: MetaView; isHost
           )}
         </Pressable>
       ) : null}
-      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
+      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} />
     </View>
   );
 }
@@ -440,7 +456,7 @@ function initials(name: string): string {
 
 // .ovc-foot + .ovc-chip: 28px initials circles, -8 overlap, host = accent,
 // overflow chip = accent tint, "Hosted by <b>…</b>".
-function AvatarFoot({ meta, isHostViewer, myIdentityId }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string }) {
+function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void }) {
   const { theme } = useTheme();
   if (meta.participants.length === 0) return null;
   const hostId = meta.hostIdentityId ?? (meta.hostUserId !== null ? `u:${meta.hostUserId}` : null);
@@ -477,7 +493,13 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId }: { meta: NonNullable<Me
   };
 
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
+    // Tapping the avatar stack opens People (design behaviour).
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="View people"
+      onPress={onPress}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14, opacity: pressed ? 0.6 : 1 })}
+    >
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         {shown.map(chip)}
         {extra > 0 ? (
@@ -495,7 +517,7 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId }: { meta: NonNullable<Me
       <VText variant="small" color="inkSoft">
         Hosted by <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{isSelfHost ? 'you' : hostName}</VText>
       </VText>
-    </View>
+    </Pressable>
   );
 }
 
@@ -560,10 +582,17 @@ function LockCard({ revealAt }: { revealAt: number }) {
 // thing" invitation (guest copy is unspecced in the handoff; flagged).
 function EmptyLineup({ canAdd }: { canAdd: boolean }) {
   const { theme } = useTheme();
+  // The empty state lives in a flex:1 slot. When the tab bar hides for a sheet,
+  // that slot grows (the freed bar space), and center-justified content would
+  // shift down by half the delta — then back on close: the "jump". Fix: freeze
+  // this view's FIRST measured height (bar present) and pin it as a FIXED height.
+  // A fixed-height block doesn't grow with the slot, so the centering holds.
+  const [h, setH] = useState(0);
   return (
-    // flex:1 + center so it sits in the MIDDLE of the space below the header
-    // (the FlatList's contentContainer has flexGrow:1 to give it that space).
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 32 }}>
+    <View
+      onLayout={(e) => { const m = e.nativeEvent.layout.height; if (h === 0 && m > 0) setH(m); }}
+      style={[h > 0 ? { height: h } : { flex: 1 }, { alignItems: 'center', justifyContent: 'center', paddingVertical: 32 }]}
+    >
       <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="glass" size={30} color={theme.inkSoft} />
       </View>
@@ -696,5 +725,71 @@ function LuRow({
         ) : null}
       </View>
     </Pressable>
+  );
+}
+
+// VBar ⋯ button — measures its position so the menu anchors under it.
+function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void }) {
+  const { theme } = useTheme();
+  const ref = useRef<View>(null);
+  return (
+    <View ref={ref} collapsable={false}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Session menu"
+        hitSlop={8}
+        onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen(y + h))}
+        style={({ pressed }) => ({ width: 30, height: 30, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+      >
+        <Icon name="more" size={20} color={theme.ink} />
+      </Pressable>
+    </View>
+  );
+}
+
+// Session ⋯ menu (.sess-menu): Blind-for-all + Settings are later milestones, so
+// they render disabled ("Soon") for now; People + Share invite are active.
+// Anchored dropdown (the 02e .ir-menu pattern).
+function SessionMenu({ anchorTop, onClose, onPeople, onShare }: { anchorTop: number | null; onClose: () => void; onPeople: () => void; onShare: () => void }) {
+  const { theme } = useTheme();
+  const anim = useRef(new Animated.Value(0)).current;
+  const lastTop = useRef(0);
+  if (anchorTop !== null) lastTop.current = anchorTop;
+  useEffect(() => {
+    if (anchorTop === null) { anim.setValue(0); return; }
+    Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
+  }, [anchorTop, anim]);
+  const Item = ({ icon, label, onPress, disabled }: { icon: 'eyeoff' | 'user' | 'glass' | 'share'; label: string; onPress?: () => void; disabled?: boolean }) => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: pressed && !disabled ? theme.surfaceSunk : 'transparent' })}
+    >
+      <Icon name={icon} size={18} color={disabled ? theme.inkFaint : theme.ink} />
+      <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }} color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
+      {disabled ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
+    </Pressable>
+  );
+  return (
+    <Modal transparent visible={anchorTop !== null} animationType="none" onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent>
+      <Pressable style={{ flex: 1 }} accessibilityLabel="Close menu" onPress={onClose}>
+        <Animated.View
+          style={{
+            position: 'absolute', top: lastTop.current + 6, right: GUTTER, minWidth: 200,
+            backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 6,
+            opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-4, 0] }) }],
+            shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8,
+          }}
+        >
+          <Item icon="eyeoff" label="Blind for all" disabled />
+          <View style={{ height: 1, backgroundColor: theme.ruleSoft, marginVertical: 4 }} />
+          <Item icon="user" label="People" onPress={onPeople} />
+          <Item icon="share" label="Share invite" onPress={onShare} />
+          <Item icon="glass" label="Settings" disabled />
+        </Animated.View>
+      </Pressable>
+    </Modal>
   );
 }

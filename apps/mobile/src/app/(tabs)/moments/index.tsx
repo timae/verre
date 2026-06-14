@@ -229,14 +229,25 @@ function LiveCard({
   onRemove: () => void;
 }) {
   const router = useRouter();
+  // Acknowledge the tap immediately. The session screen's first GET/visit can be
+  // slow (cold server route, a stale Redis connection), and inside the SwiftUI
+  // ContextMenu the first tap can be eaten by the long-press recognizer — both
+  // make a plain navigate look like "nothing happened" until the second tap.
+  // Dimming + "Opening…" on press (and a re-entry guard) makes the first tap
+  // unmistakable. `navigating` resets on screen blur/refocus via the key remount.
+  const [navigating, setNavigating] = useState(false);
+  // Clear the dim when the user comes BACK to the home screen (the card doesn't
+  // unmount on push), so a returned-to "Rejoin" isn't stuck showing "Opening…".
+  useFocusEffect(useCallback(() => { setNavigating(false); }, []));
+  const open = () => {
+    if (navigating) return;
+    setNavigating(true);
+    router.push({ pathname: '/moments/session/[code]', params: { code: m.code } });
+  };
   const card = (
     <CardSurface width={width}>
       <LiveCardBody m={m} />
-      <Button
-        title="Rejoin"
-        block
-        onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: m.code } })}
-      />
+      <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} />
     </CardSurface>
   );
   if (isClone) return card;

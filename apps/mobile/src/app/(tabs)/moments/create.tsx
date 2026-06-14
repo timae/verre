@@ -8,8 +8,10 @@ import { Image, Modal, Pressable, ScrollView, Switch, TextInput, View } from 're
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BottomSheetModalProvider, BottomSheetView } from '@gorhom/bottom-sheet';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
+import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -143,6 +145,9 @@ export default function CreateMoment() {
   };
 
   return (
+    // BottomSheetModalProvider INSIDE the screen (see session/[code]/index.tsx)
+    // so the @gorhom/bottom-sheet category sheet has a sized provider/portal host.
+    <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title="Create a moment" />
@@ -191,7 +196,7 @@ export default function CreateMoment() {
             })}
           >
             <VText variant="body">Wine</VText>
-            <Icon name="chevron-down" size={18} color={theme.inkFaint} />
+            <Icon name="chevron-down" size={18} color={theme.inkSoft} />
           </Pressable>
         </View>
 
@@ -332,6 +337,7 @@ export default function CreateMoment() {
 
       <CategorySheet open={categoryOpen} onClose={() => setCategoryOpen(false)} />
     </View>
+    </BottomSheetModalProvider>
   );
 }
 
@@ -489,49 +495,39 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={onClose}>
-        <Pressable
-          style={{
-            backgroundColor: theme.surface,
-            borderTopLeftRadius: radius.xl,
-            borderTopRightRadius: radius.xl,
-            paddingTop: 8,
-            paddingBottom: insets.bottom + 8,
-          }}
-        >
-          <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
-              What are you tasting?
-            </VText>
-          </View>
-          {CATEGORIES.map((c) => (
-            <Pressable
-              key={c.key}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !c.enabled, selected: c.key === 'wine' }}
-              disabled={!c.enabled}
-              onPress={onClose}
-              style={({ pressed }) => ({
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingHorizontal: 20,
-                paddingVertical: 14,
-                backgroundColor: pressed && c.enabled ? theme.surfaceSunk : 'transparent',
-              })}
-            >
-              <VText variant="body" color={c.enabled ? 'ink' : 'inkFaint'}>{c.label}</VText>
-              {c.key === 'wine' ? (
-                <Icon name="check" size={18} color={theme.accent} />
-              ) : !c.enabled ? (
-                <VText variant="caption" color="inkFaint">Soon</VText>
-              ) : null}
-            </Pressable>
-          ))}
-        </Pressable>
-      </Pressable>
-    </Modal>
+    <Sheet open={open} onClose={onClose}>
+      <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+            What are you tasting?
+          </VText>
+        </View>
+        {CATEGORIES.map((c) => (
+          <Pressable
+            key={c.key}
+            accessibilityRole="button"
+            accessibilityState={{ disabled: !c.enabled, selected: c.key === 'wine' }}
+            disabled={!c.enabled}
+            onPress={onClose}
+            style={({ pressed }) => ({
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              paddingHorizontal: 20,
+              paddingVertical: 14,
+              backgroundColor: pressed && c.enabled ? theme.surfaceSunk : 'transparent',
+            })}
+          >
+            <VText variant="body" color={c.enabled ? 'ink' : 'inkFaint'}>{c.label}</VText>
+            {c.key === 'wine' ? (
+              <Icon name="check" size={18} color={theme.accent} />
+            ) : !c.enabled ? (
+              <VText variant="caption" color="inkFaint">Soon</VText>
+            ) : null}
+          </Pressable>
+        ))}
+      </BottomSheetView>
+    </Sheet>
   );
 }
 

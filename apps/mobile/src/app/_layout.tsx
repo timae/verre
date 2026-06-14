@@ -74,8 +74,13 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    // Gesture-handler requires the root wrapper to register its native
-    // gesture system — the score-input Pan/Tap gestures depend on it.
+    // Gesture-handler requires the root wrapper to register its native gesture
+    // system — the score-input Pan/Tap gestures (and @gorhom/bottom-sheet's pan)
+    // depend on it. The BottomSheetModalProvider is NOT here: it's mounted
+    // per-screen (see moments/session/[code] + moments/create), because a root
+    // provider's gorhom host measures zero height across the expo-router/
+    // react-native-screens Stack boundary and sheets never present (gorhom
+    // #1884/#2035).
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
         <QueryProvider>

@@ -1,25 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, Share, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, Share, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
-import BottomSheet, { BottomSheetTextInput, BottomSheetView } from '@expo/ui/community/bottom-sheet';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BottomSheetScrollView, BottomSheetTextInput, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
+import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
 import { WEB_BASE } from '@/lib/config';
 import { alpha } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
-// 02c·I1 — the invite sheet (design 6a hybrid), in a native @expo/ui BottomSheet
-// (fitToContents). Mockup-faithful: codecard (QR flat + code + copy), then a
+// 02c·I1 — the invite sheet (design 6a hybrid), in the shared @gorhom/bottom-
+// sheet <Sheet>. Mockup-faithful: codecard (QR flat + code + copy), then a
 // friends group ("Quick add · not in yet" chips led by a Browse chip + a
 // "Search and browse friends" field) and a Share footer. The Browse/search
-// affordance swaps the sheet to a full friends-list pane (one sheet — two native
-// sheets can't stack on iOS). No invite backend (Simon, milestone 5): all
-// "Invite"/share affordances open the OS share sheet; only "Joined" is truthful
-// (block-scrubbed participant ids passed by the caller).
+// affordance swaps the sheet to a full friends-list pane (one sheet). No invite
+// backend (Simon, milestone 5): all "Invite"/share affordances open the OS
+// share sheet; only "Joined" is truthful (block-scrubbed participant ids).
 
 export function InviteSheet({
   open,
@@ -35,7 +36,7 @@ export function InviteSheet({
   participantIds: Set<string>;
 }) {
   const { theme } = useTheme();
-  const { height: windowH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   const [q, setQ] = useState('');
   const [copied, setCopied] = useState(false);
@@ -99,22 +100,22 @@ export function InviteSheet({
   );
 
   return (
-    // @expo/ui community BottomSheet (native SwiftUI): measures content via
-    // RNHostView (RN/Yoga layout), which KVO-observes content bounds — so the
-    // sheet RE-MEASURES when the pane swaps. Both panes use dynamic sizing (NO
-    // per-pane snapPoints toggle: changing detents on a presented sheet leaves it
-    // stuck at the old height — that was the browse→back void bug). The browse
-    // list is height-capped so a long list scrolls inside a bounded sheet.
-    // backgroundStyle → presentationBackground paints the whole chrome (no seam).
-    <BottomSheet
-      index={open ? 0 : -1}
+    // @gorhom/bottom-sheet (pure-JS, no native overlay — the @expo/ui sheet's
+    // Host blocked header taps).
+    //  - INVITE pane: dynamic-sized (BottomSheetView of plain content) — fits
+    //    snugly to the QR + chips.
+    //  - BROWSE pane: a FIXED snap point, NOT dynamic. Its friends list is a
+    //    BottomSheetScrollView, and dynamic sizing can't measure a scroll view's
+    //    content (it collapses the sheet to a sliver — the same trap PeopleSheet
+    //    avoids with a plain View). A fixed height lets the list scroll inside.
+    <Sheet
+      open={open}
       onClose={onClose}
-      enablePanDownToClose
-      backgroundStyle={{ backgroundColor: theme.surface }}
-      handleIndicatorStyle={{ backgroundColor: theme.rule }}
+      enableDynamicSizing={pane === 'invite'}
+      snapPoints={pane === 'browse' ? ['85%'] : undefined}
     >
       {pane === 'invite' ? (
-        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 8, gap: 16 }}>
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 16 }}>
           {header}
           {/* QR + code + copy — FLAT on the sheet (Simon: no codecard panel). */}
           <View style={{ alignItems: 'center', gap: 12 }}>
@@ -167,18 +168,18 @@ export function InviteSheet({
           <Pressable
             accessibilityRole="button"
             onPress={() => shareInvite()}
-            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent, borderRadius: radius.pill, paddingVertical: 14, opacity: pressed ? 0.85 : 1 })}
+            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent, borderRadius: radius.pill, paddingVertical: 13, opacity: pressed ? 0.85 : 1 })}
           >
             <Icon name="share" size={18} color={theme.accentInk} />
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, color: theme.accentInk }}>Share invite link</VText>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, color: theme.accentInk }}>Share</VText>
           </Pressable>
         </BottomSheetView>
       ) : (
-        // Browse pane — also dynamic-sized (BottomSheetView). Header + search are
-        // fixed; the list scrolls inside a height cap so a long list doesn't make
-        // the sheet exceed the screen. `width: '100%'` keeps content full-width
-        // (dynamic sizing strips flex, which can otherwise collapse to a corner).
-        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: 24, gap: 14 }}>
+        // Browse pane — FIXED-height sheet (snapPoints above), so the container
+        // fills the sheet (flex:1) and the friends list scrolls within it. Header
+        // + search stay fixed at the top; the BottomSheetScrollView flexes to the
+        // remaining space.
+        <BottomSheetView style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {header}
           {/* .fr-search */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14 }}>
@@ -202,18 +203,18 @@ export function InviteSheet({
               {allFriends.length === 0 ? 'No friends yet.' : 'No matches.'}
             </VText>
           ) : (
-            <View>
+            <View style={{ flex: 1 }}>
               <VText variant="label" color="inkSoft" style={{ marginBottom: 4, letterSpacing: 1.54 }}>ALL FRIENDS · {allFriends.length}</VText>
-              <ScrollView style={{ maxHeight: windowH * 0.5 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 {browseMatches.map((f, i) => (
                   <FriendRow key={f.id} friend={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
                 ))}
-              </ScrollView>
+              </BottomSheetScrollView>
             </View>
           )}
         </BottomSheetView>
       )}
-    </BottomSheet>
+    </Sheet>
   );
 }
 
@@ -238,9 +239,13 @@ function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`Invite ${friend.name}`} onPress={onPress} style={{ alignItems: 'center', gap: 6, width: 60 }}>
       <View>
-        <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 16, color: theme.inkSoft }}>{initials}</VText>
-        </View>
+        {friend.imageUrl ? (
+          <Image source={{ uri: friend.imageUrl }} style={{ width: 52, height: 52, borderRadius: 26 }} />
+        ) : (
+          <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 16, color: theme.inkSoft }}>{initials}</VText>
+          </View>
+        )}
         <View style={{ position: 'absolute', right: -2, bottom: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: theme.surface }}>
           <Icon name="plus" size={11} color={theme.accentInk} />
         </View>
@@ -256,9 +261,13 @@ function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first:
   const initials = friend.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
-      <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, color: theme.inkSoft }}>{initials}</VText>
-      </View>
+      {friend.imageUrl ? (
+        <Image source={{ uri: friend.imageUrl }} style={{ width: 42, height: 42, borderRadius: 21 }} />
+      ) : (
+        <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, color: theme.inkSoft }}>{initials}</VText>
+        </View>
+      )}
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }} numberOfLines={1}>{friend.name}</VText>
         <VText variant="small" color="inkSoft">Friend</VText>
