@@ -1,10 +1,7 @@
-import DateTimePicker from '@react-native-community/datetimepicker';
-import * as ImageManipulator from 'expo-image-manipulator';
-import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, Switch, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, Switch, View } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
+import { DateField, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
@@ -69,45 +67,15 @@ export default function CreateMoment() {
   const [error, setError] = useState<string | null>(null);
   const [coverError, setCoverError] = useState<string | null>(null);
 
-  // Downscale + recompress rather than rejecting a big photo (a cover never
-  // needs full resolution). Mirrors the web pipeline (AddWineModal /
-  // AvatarEditor): resize the long edge to 1200, re-encode JPEG ~0.82. The
-  // canvas/manipulator re-encode also STRIPS EXIF/GPS as a side effect; the
-  // server's stripJpegMetadata (lib/s3.ts) is the backstop on every upload.
-  // If 0.82 still exceeds the cap (huge dimensions), step quality down.
-  const MAX_COVER_BYTES = 2_600_000; // base64 length; ≈2MB decoded server cap
-  const fitCover = async (uri: string, srcW: number, srcH: number): Promise<string | null> => {
-    // Clamp the LONG edge to 1200 (web parity); pass the matching axis so a
-    // tall portrait isn't left huge. Only downscale, never upscale.
-    const resize: ImageManipulator.ActionResize['resize'] =
-      srcW >= srcH ? { width: Math.min(1200, srcW) } : { height: Math.min(1200, srcH) };
-    for (const quality of [0.82, 0.6, 0.45, 0.32]) {
-      const out = await ImageManipulator.manipulateAsync(
-        uri,
-        [{ resize }],
-        { compress: quality, format: ImageManipulator.SaveFormat.JPEG, base64: true },
-      ).catch(() => null);
-      if (!out?.base64) return null;
-      const dataUrl = `data:image/jpeg;base64,${out.base64}`;
-      if (dataUrl.length <= MAX_COVER_BYTES) return dataUrl;
-    }
-    return null;
-  };
-
-  const pickCover = async () => {
+  const onPickCover = async () => {
     setCoverError(null);
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 1, // full quality from the picker; fitCover does the compression
-    }).catch(() => null);
-    const asset = result && !result.canceled ? result.assets[0] : null;
-    if (!asset?.uri) return;
-    const dataUrl = await fitCover(asset.uri, asset.width ?? 1200, asset.height ?? 1200);
-    if (!dataUrl) {
+    const picked = await pickCover();
+    if (!picked) return; // user cancelled
+    if ('failed' in picked) {
       setCoverError("Couldn't use that photo — try another.");
       return;
     }
-    setCover({ dataUrl, previewUri: asset.uri });
+    setCover(picked);
   };
 
   const onCreate = async () => {
@@ -163,7 +131,7 @@ export default function CreateMoment() {
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
-        <CoverPicker cover={cover} onPick={pickCover} onClear={() => { setCover(null); setCoverError(null); }} />
+        <CoverPicker cover={cover} onPick={onPickCover} onClear={() => { setCover(null); setCoverError(null); }} />
         {coverError ? (
           <VText variant="small" style={{ marginTop: -8, marginBottom: 8, color: theme.critical }}>{coverError}</VText>
         ) : null}
@@ -339,13 +307,6 @@ export default function CreateMoment() {
     </View>
     </BottomSheetModalProvider>
   );
-}
-
-function nextFullHour(): Date {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  d.setHours(d.getHours() + 1);
-  return d;
 }
 
 // .at-photo — dashed add affordance; picked image previews in place
@@ -531,123 +492,6 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
   );
 }
 
-// The mock's year-less field format ("Fri 20 Jun · 19:00"), device-locale
-// ordering for the date words.
-function formatWhen(d: Date): string {
-  const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${date} · ${time}`;
-}
-
-// From/To — brand .field box, EMPTY by default (our own field can render
-// empty; the OS compact pills couldn't, and allowed no format control).
-// Set state shows the year-less mock format + an × to clear. Tapping
-// presents the OS INLINE picker (calendar + time) in a native pageSheet —
-// the seed exists only inside the sheet and commits only on Done;
-// swipe-dismiss discards.
-function DateField({
-  label, value, onChange, defaultValue,
-}: {
-  label: string;
-  value: Date | null;
-  onChange: (d: Date | null) => void;
-  defaultValue: () => Date;
-}) {
-  const { theme } = useTheme();
-  const insets = useSafeAreaInsets();
-  const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
-  return (
-    <View style={{ flex: 1, gap: 7 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${label} date and time`}
-        accessibilityValue={{ text: value ? formatWhen(value) : 'not set' }}
-        onPress={() => setDraft(value ?? defaultValue())}
-        style={({ pressed }) => ({
-          height: 44,
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingHorizontal: 14,
-          backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
-          borderWidth: 1,
-          borderColor: theme.rule,
-          borderRadius: radius.sm,
-        })}
-      >
-        <VText variant="body" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
-          {value ? formatWhen(value) : 'Optional'}
-        </VText>
-        {value ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Clear ${label.toLowerCase()} date`}
-            onPress={() => onChange(null)}
-            hitSlop={10}
-          >
-            <Icon name="x" size={13} color={theme.inkFaint} />
-          </Pressable>
-        ) : null}
-      </Pressable>
-      {/* Content-sized bottom sheet (NOT pageSheet, which fills the
-          screen): a dim scrim with a card pinned to the bottom that's only
-          as tall as the picker + header. Tap-scrim or Done dismisses. */}
-      <Modal
-        visible={draft !== null}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setDraft(null)}
-      >
-        <Pressable style={{ flex: 1, backgroundColor: theme.scrim, justifyContent: 'flex-end' }} onPress={() => setDraft(null)}>
-          {/* Inner Pressable swallows taps so they don't bubble to the
-              scrim and close the sheet. */}
-          <Pressable
-            style={{
-              backgroundColor: theme.surface,
-              borderTopLeftRadius: radius.xl,
-              borderTopRightRadius: radius.xl,
-              paddingBottom: insets.bottom + 8,
-            }}
-          >
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                paddingHorizontal: 20,
-                paddingTop: 16,
-                paddingBottom: 4,
-              }}
-            >
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
-                {label}
-              </VText>
-              <Button
-                title="Done"
-                size="sm"
-                onPress={() => {
-                  if (draft) onChange(draft);
-                  setDraft(null);
-                }}
-              />
-            </View>
-            {draft ? (
-              <DateTimePicker
-                value={draft}
-                mode="datetime"
-                display="inline"
-                accentColor={theme.accent}
-                onValueChange={(_e, d) => { if (d) setDraft(d); }}
-                style={{ alignSelf: 'center' }}
-              />
-            ) : null}
-          </Pressable>
-        </Pressable>
-      </Modal>
-    </View>
-  );
-}
-
 // .trow — switch rows. Switch itself is native-chrome (OS physics), tinted
 // from theme tokens; disabled rows dim per .is-disabled.
 function ToggleRow({
@@ -689,48 +533,6 @@ function ToggleRow({
         disabled={disabled}
         trackColor={{ true: theme.accent }}
         accessibilityLabel={title}
-      />
-    </View>
-  );
-}
-
-// Description textarea (.field, 2 rows) — same focus convention as TextField.
-function NotesField({
-  label, placeholder, value, onChange,
-}: {
-  label: string;
-  placeholder: string;
-  value: string;
-  onChange: (s: string) => void;
-}) {
-  const { theme } = useTheme();
-  const [focused, setFocused] = useState(false);
-  return (
-    <View style={{ gap: 7 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        multiline
-        placeholder={placeholder}
-        placeholderTextColor={theme.inkFaint}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        style={{
-          minHeight: 64,
-          fontFamily: 'InstrumentSans_400Regular',
-          fontSize: 15,
-          lineHeight: 21,
-          color: theme.ink,
-          backgroundColor: theme.surface,
-          borderWidth: focused ? 2 : 1,
-          borderColor: focused ? theme.accent : theme.rule,
-          borderRadius: radius.sm,
-          paddingHorizontal: focused ? 13 : 14,
-          paddingTop: focused ? 9 : 10,
-          paddingBottom: 10,
-          textAlignVertical: 'top',
-        }}
       />
     </View>
   );

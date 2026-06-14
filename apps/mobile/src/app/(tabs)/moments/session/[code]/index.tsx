@@ -2,10 +2,10 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { Icon } from '@/components/ui/Icon';
+import { Icon, type IconName } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
@@ -18,6 +18,7 @@ import {
   getRemovedState,
   getSessionState,
   postVisit,
+  updateMomentSettings,
   type RatingsView,
   type SessionState,
   type WireWine,
@@ -36,9 +37,9 @@ type MetaView = SessionState['meta'];
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
 // block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
 // Milestone 3: rows open the impression detail (02e); unrated rows carry the
-// .lu-rate pill, rated rows the score chip. Host actions, Compare, and the
-// session ⋯ menu land in later milestones (Compare tab renders disabled —
-// flagged deviation).
+// .lu-rate pill, rated rows the score chip. The ⋯ menu wires People + Share
+// (sheets), a live Blind-for-all toggle, and Settings (02f, a pushed screen
+// stack under settings/); the Compare tab still renders disabled (flagged).
 export default function SessionLineup() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
@@ -139,6 +140,34 @@ export default function SessionLineup() {
       (meta.coHostIds ?? []).includes(myIdentityId));
   const canAdd = isHostViewer || !!meta?.providerIds?.includes(myIdentityId);
 
+  // Blind-for-all inline toggle (⋯ menu). Optimistically flip the cached meta
+  // so the switch responds immediately, PATCH, then let the 5s poll reconcile;
+  // roll back + alert on failure. blindForEveryone is NOT pro-gated server-side
+  // (it composes on an already-blind session — root freemium note), so any
+  // host/cohost on a blind session may flip it. The menu only renders the
+  // toggle enabled when meta.blind is true.
+  const [bfaBusy, setBfaBusy] = useState(false);
+  const stateKey = ['session-state', code, myIdentityId];
+  const toggleBlindForEveryone = useCallback(async (next: boolean) => {
+    if (bfaBusy) return;
+    setBfaBusy(true);
+    const prev = queryClient.getQueryData<SessionState>(stateKey);
+    if (prev?.meta) {
+      queryClient.setQueryData<SessionState>(stateKey, { ...prev, meta: { ...prev.meta, blindForEveryone: next } });
+    }
+    try {
+      await updateMomentSettings(code, { blindForEveryone: next });
+      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+    } catch (e) {
+      if (prev) queryClient.setQueryData<SessionState>(stateKey, prev); // roll back
+      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+      Alert.alert('Could not update', msg || 'Check your connection and try again.');
+    } finally {
+      setBfaBusy(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bfaBusy, code, myIdentityId]);
+
   // Hosts/cohosts are exempt from the hide-lineup gate (the server returns
   // their wines) — only treat it as locked for non-host viewers whose list
   // came back empty.
@@ -161,12 +190,22 @@ export default function SessionLineup() {
           right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
         />
       </View>
-      {/* Session ⋯ menu (.sess-menu): Blind-for-all + Settings land later. */}
+      {/* Session ⋯ menu (.sess-menu): Blind-for-all lands later (disabled).
+          People + Share + Settings are active. Share intentionally lives in
+          BOTH the menu and the Settings hub (Simon's ruling). */}
       <SessionMenu
         anchorTop={sessMenuTop}
         onClose={() => setSessMenuTop(null)}
+        // Blind-for-all is a host/cohost control that only appears when the
+        // session is ACTUALLY blind (design: the .sess-menu-mode row is absent
+        // otherwise). A press-to-activate field, not a switch.
+        showBlindForEveryone={isHostViewer && !!meta?.blind}
+        blindForEveryone={!!meta?.blindForEveryone}
+        bfaBusy={bfaBusy}
+        onToggleBlindForEveryone={toggleBlindForEveryone}
         onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
         onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
+        onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
       />
       {meta ? (
         <>
@@ -450,8 +489,13 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
 function initials(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return '?';
-  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
-  return (words[0][0] + words[1][0]).toUpperCase();
+  // Code-point-aware (`[...word]`, not `word[i]`): a disambiguated name can
+  // carry an emoji suffix (e.g. "Simon 🍇"), and indexing UTF-16 units would
+  // split the surrogate pair into a broken "?" glyph. Array spread yields whole
+  // code points, so an emoji renders as itself.
+  const cp = (w: string) => [...w];
+  if (words.length === 1) return cp(words[0]).slice(0, 2).join('').toUpperCase();
+  return (cp(words[0])[0] + cp(words[1])[0]).toUpperCase();
 }
 
 // .ovc-foot + .ovc-chip: 28px initials circles, -8 overlap, host = accent,
@@ -747,10 +791,23 @@ function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void
   );
 }
 
-// Session ⋯ menu (.sess-menu): Blind-for-all + Settings are later milestones, so
-// they render disabled ("Soon") for now; People + Share invite are active.
-// Anchored dropdown (the 02e .ir-menu pattern).
-function SessionMenu({ anchorTop, onClose, onPeople, onShare }: { anchorTop: number | null; onClose: () => void; onPeople: () => void; onShare: () => void }) {
+// Session ⋯ menu (.sess-menu): Blind-for-all is a press-to-activate mode row
+// (.sess-menu-mode) shown only on a blind session for hosts/cohosts; People +
+// Share invite + Settings are active. Anchored dropdown (the 02e .ir-menu pattern).
+function SessionMenu({
+  anchorTop, onClose, onPeople, onShare, onSettings,
+  showBlindForEveryone, blindForEveryone, bfaBusy, onToggleBlindForEveryone,
+}: {
+  anchorTop: number | null;
+  onClose: () => void;
+  onPeople: () => void;
+  onShare: () => void;
+  onSettings: () => void;
+  showBlindForEveryone: boolean;
+  blindForEveryone: boolean;
+  bfaBusy: boolean;
+  onToggleBlindForEveryone: (next: boolean) => void;
+}) {
   const { theme } = useTheme();
   const anim = useRef(new Animated.Value(0)).current;
   const lastTop = useRef(0);
@@ -759,7 +816,7 @@ function SessionMenu({ anchorTop, onClose, onPeople, onShare }: { anchorTop: num
     if (anchorTop === null) { anim.setValue(0); return; }
     Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
   }, [anchorTop, anim]);
-  const Item = ({ icon, label, onPress, disabled }: { icon: 'eyeoff' | 'user' | 'glass' | 'share'; label: string; onPress?: () => void; disabled?: boolean }) => (
+  const Item = ({ icon, label, onPress, disabled }: { icon: IconName; label: string; onPress?: () => void; disabled?: boolean }) => (
     <Pressable
       accessibilityRole="button"
       accessibilityState={{ disabled }}
@@ -770,6 +827,30 @@ function SessionMenu({ anchorTop, onClose, onPeople, onShare }: { anchorTop: num
       <Icon name={icon} size={18} color={disabled ? theme.inkFaint : theme.ink} />
       <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }} color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
       {disabled ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
+    </Pressable>
+  );
+  // .sess-menu-mode — Blind-for-all is a press-to-activate field (NOT a switch):
+  // tapping flips blindForEveryone, and the ACTIVE state styles the whole row
+  // accent (accent text + accent-tint bg + semibold + accent icon). Inactive =
+  // muted ink-soft. The parent only renders this on a blind session.
+  const BlindForAllItem = () => (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ selected: blindForEveryone }}
+      disabled={bfaBusy}
+      onPress={() => onToggleBlindForEveryone(!blindForEveryone)}
+      style={({ pressed }) => ({
+        flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12,
+        backgroundColor: blindForEveryone ? theme.accentTint : pressed ? theme.surfaceSunk : 'transparent',
+      })}
+    >
+      <Icon name="eyeoff" size={18} color={blindForEveryone ? theme.accent : theme.inkSoft} />
+      <VText
+        style={{ fontFamily: blindForEveryone ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }}
+        color={blindForEveryone ? 'accent' : 'inkSoft'}
+      >
+        Blind for all
+      </VText>
     </Pressable>
   );
   return (
@@ -783,11 +864,15 @@ function SessionMenu({ anchorTop, onClose, onPeople, onShare }: { anchorTop: num
             shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8,
           }}
         >
-          <Item icon="eyeoff" label="Blind for all" disabled />
-          <View style={{ height: 1, backgroundColor: theme.ruleSoft, marginVertical: 4 }} />
+          {showBlindForEveryone ? (
+            <>
+              <BlindForAllItem />
+              <View style={{ height: 1, backgroundColor: theme.ruleSoft, marginVertical: 4 }} />
+            </>
+          ) : null}
           <Item icon="user" label="People" onPress={onPeople} />
           <Item icon="share" label="Share invite" onPress={onShare} />
-          <Item icon="glass" label="Settings" disabled />
+          <Item icon="settings" label="Settings" onPress={onSettings} />
         </Animated.View>
       </Pressable>
     </Modal>

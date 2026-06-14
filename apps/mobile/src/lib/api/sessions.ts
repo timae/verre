@@ -83,6 +83,10 @@ export type SessionMetaView = {
   link?: string;
   hideLineup?: boolean;
   hideLineupMinutesBefore?: number;
+  // Spread from the server SessionMeta (lib/session.ts) via buildMetaView's
+  // `{ ...meta }` — present whenever the host set a cover. Used by the 02f
+  // Moment-details settings sheet to preview/replace/remove the cover.
+  coverPhotoUrl?: string;
   participants: SessionParticipant[];
   ttlSeconds: number;
   viewerBlocksOut: string[];
@@ -228,6 +232,43 @@ export async function createMoment(body: CreateMomentBody): Promise<{ code: stri
   });
   if (!res.ok) await throwApiError(res);
   return res.json();
+}
+
+// 02f settings edit. Host-only PATCH; every field is optional — send only
+// what changed. The server (app/api/session/[code]/settings) shares the detail
+// validators with create via lib/sessionFields.ts, pro-gates blind + lifespan,
+// and runs the hardened image pipeline on coverPhoto. coverPhoto: null removes
+// the cover (reclaims the prior S3 bytes); a data URL replaces it. Mobile never
+// sends lifespan (native creates stay 'unlimited' — create parity).
+export type MomentSettingsBody = {
+  name?: string;
+  address?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  timezone?: string;
+  description?: string;
+  link?: string;
+  hideLineup?: boolean;
+  hideLineupMinutesBefore?: number;
+  blind?: boolean; // pro-gated server-side
+  blindForEveryone?: boolean;
+  coverPhoto?: string | null; // data URL = replace; null = remove
+};
+
+export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Soft-deletes the moment (host/cohost-gated server-side). Bounces every
+// participant on their next poll (the session 404s). Irreversible from the UI.
+export async function deleteMoment(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}`, { method: 'DELETE' });
+  if (!res.ok) await throwApiError(res);
 }
 
 // Hide / un-hide a moment from the home highlight carousel (personal view
