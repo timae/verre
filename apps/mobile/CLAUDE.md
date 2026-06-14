@@ -215,5 +215,14 @@ alerts, pickers: reach for the native primitive first when those screens land.
 - Backend URL: Simulator uses `http://localhost:3000`; a physical device needs
   the Mac's LAN IP via `EXPO_PUBLIC_API_URL` (e.g.
   `EXPO_PUBLIC_API_URL=http://192.168.1.x:3000 npx expo start`).
+- **Env** lives in `apps/mobile/.env.local` (gitignored; `.env.example` is the
+  committed template). `EXPO_PUBLIC_*` vars are **inlined into the bundle at
+  build/export time**, not read at runtime — change one ⇒ rebuild/restart Metro.
+  - `EXPO_PUBLIC_WEB_URL` — public web origin for shareable links (the
+    `/join/<code>` invite URL, built in `src/lib/config.ts` `WEB_BASE`). Falls
+    back through `app.json` `extra.webBaseUrl` → `API_BASE`, so local-deployment
+    links resolve against the same backend with no override. Set it to the real
+    domain for prod/TestFlight builds. (Deviation from the design mock, which
+    shows `vero.app/j/<code>`: the real web route is `/join/<code>`, no `/j/`.)
 - Typecheck: `npm run typecheck -w mobile`. Root `tsconfig.json` excludes
   `apps/` — the app typechecks with its own config only.

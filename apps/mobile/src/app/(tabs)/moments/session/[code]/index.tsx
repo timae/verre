@@ -6,6 +6,7 @@ import { ActivityIndicator, FlatList, Image, Linking, Pressable, ScrollView, Vie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
+import { InviteSheet } from '@/components/moments/InviteSheet';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
@@ -57,6 +58,7 @@ export default function SessionLineup() {
   const [visited, setVisited] = useState(false);
   const [fatal, setFatal] = useState<ApiError | null>(null);
   const [removedKind, setRemovedKind] = useState<'banned' | 'kicked' | null>(null);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [visitAttempt, setVisitAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -144,8 +146,42 @@ export default function SessionLineup() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title={meta?.name ?? ''} />
+        <VBar
+          title={meta?.name ?? ''}
+          right={
+            meta ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Invite people"
+                hitSlop={8}
+                onPress={() => setInviteOpen(true)}
+                style={({ pressed }) => ({ width: 30, height: 30, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+              >
+                <Icon name="share" size={20} color={theme.ink} />
+              </Pressable>
+            ) : undefined
+          }
+        />
       </View>
+      {meta ? (
+        <InviteSheet
+          open={inviteOpen}
+          onClose={() => setInviteOpen(false)}
+          code={code}
+          momentName={meta.name}
+          // Block-scrub before deriving "Joined": meta.participants ships the
+          // FULL list; per-viewer block filtering is client-side via
+          // viewerBlocksOut/In (mirrors web SessionPanel). Without this, a
+          // blocked friend could light up as "Joined" — a block-boundary leak.
+          participantIds={
+            new Set(
+              (meta.participants ?? [])
+                .filter((p) => !meta.viewerBlocksOut.includes(p.id) && !meta.viewerBlocksIn.includes(p.id))
+                .map((p) => p.id),
+            )
+          }
+        />
+      ) : null}
       {showReconnecting ? (
         <View style={{ backgroundColor: theme.surfaceSunk, paddingVertical: 6, alignItems: 'center' }}>
           <VText variant="caption" color="inkSoft">Reconnecting…</VText>
@@ -174,7 +210,9 @@ export default function SessionLineup() {
             ListHeaderComponent={
               <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} />
             }
-            contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+            // flexGrow lets the empty state fill the space below the header and
+            // center in it (vs sitting high). Harmless when the list has rows.
+            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
             renderItem={({ item, index }) => (
               <LuRow
@@ -523,7 +561,9 @@ function LockCard({ revealAt }: { revealAt: number }) {
 function EmptyLineup({ canAdd }: { canAdd: boolean }) {
   const { theme } = useTheme();
   return (
-    <View style={{ alignItems: 'center', paddingTop: 56, paddingBottom: 64 }}>
+    // flex:1 + center so it sits in the MIDDLE of the space below the header
+    // (the FlatList's contentContainer has flexGrow:1 to give it that space).
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingVertical: 32 }}>
       <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="glass" size={30} color={theme.inkSoft} />
       </View>

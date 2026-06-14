@@ -10,3 +10,14 @@ export async function getMyAccount(): Promise<MyAccount> {
   if (!res.ok) throw new Error(`account fetch failed (${res.status})`);
   return res.json();
 }
+
+export type Friend = { id: number; name: string };
+
+// Mutual follows (you follow each other), block-pair members already dropped
+// server-side. Used by the invite sheet's friend chips / browse list. The
+// identity id for matching against session participants is `u:${id}`.
+export async function getMyFriends(): Promise<Friend[]> {
+  const res = await apiFetch('/api/me/friends');
+  if (!res.ok) throw new Error(`friends fetch failed (${res.status})`);
+  return res.json();
+}

@@ -51,6 +51,24 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 12, cy: 13.5, r: 3.3, sw: 1.5 },
   ],
   x: [{ d: 'M6 6l12 12M18 6L6 18', sw: 1.7, cap: true }],
+  share: [
+    { cx: 6.5, cy: 12, r: 2.4, sw: 1.6 },
+    { cx: 17.5, cy: 6.5, r: 2.4, sw: 1.6 },
+    { cx: 17.5, cy: 17.5, r: 2.4, sw: 1.6 },
+    { d: 'M8.7 10.9l6.6-3.3M8.7 13.1l6.6 3.3', sw: 1.6, cap: true },
+  ],
+  copy: [
+    { d: 'M8 8h11v11H8z', sw: 1.6, join: true },
+    { d: 'M16 5.5H6.5A1.5 1.5 0 0 0 5 7v9.5', sw: 1.6, cap: true, join: true },
+  ],
+  search: [
+    { cx: 11, cy: 11, r: 6, sw: 1.6 },
+    { d: 'M15.5 15.5L20 20', sw: 1.6, cap: true },
+  ],
+  user: [
+    { cx: 12, cy: 8.5, r: 3.5, sw: 1.5 },
+    { d: 'M5.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6', sw: 1.5, cap: true },
+  ],
 };
 
 export type IconName = keyof typeof ICONS;

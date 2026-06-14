@@ -150,10 +150,16 @@ The Expo (React Native) app lives in `apps/mobile` (npm workspace). It talks to 
 
 ```bash
 cd apps/mobile
+cp .env.example .env.local  # then fill in (gitignored) — see below
 npx expo run:ios            # builds the dev client, opens the iOS Simulator
 # physical device (backend on your Mac's LAN IP):
 EXPO_PUBLIC_API_URL=http://192.168.1.42:3000 npx expo run:ios --device
 ```
+
+**Env vars** (`apps/mobile/.env.local`, gitignored; `EXPO_PUBLIC_*` are inlined into the bundle at build time):
+
+- `EXPO_PUBLIC_API_URL` — backend the app talks to. Simulator defaults to `http://localhost:3000`; a physical device needs the Mac's LAN IP.
+- `EXPO_PUBLIC_WEB_URL` — public web origin for shareable links (the `/join/<code>` invite URL). Set to the real domain in prod. If unset, falls back to the API URL so local-deployment links resolve against the same backend.
 
 Day-to-day JS iteration after the first build: `npx expo start`. See `apps/mobile/CLAUDE.md` for toolchain rules (SDK pinning, auth-version lockstep, design tokens).
 

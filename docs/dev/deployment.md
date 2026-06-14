@@ -29,6 +29,13 @@ Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp`
 - `NATIVE_MIN_VERSION_IOS` / `NATIVE_MIN_VERSION_ANDROID` (optional — **unset in prod until a non-redeployable install exists**) — min-supported native client version (`lib/clientVersion.ts`). When set, native requests whose `X-Verre-Client` header reports an older version get a structured 426 at the `/api/auth/native/*` chokepoint and the app shows its blocking update screen. Unset ⇒ no enforcement (web traffic is never affected — it sends no header).
 - `NATIVE_STORE_URL_IOS` / `NATIVE_STORE_URL_ANDROID` (optional) — App Store / Play link embedded in the 426 body; the update screen's button. Meaningless until the app is in a store.
 
+### Mobile app build-time env (`apps/mobile`, NOT Deploio server vars)
+
+`EXPO_PUBLIC_*` vars are **inlined into the JS bundle at build/export time** — set in `apps/mobile/.env.local` (gitignored; `.env.example` is the template) or per build command, never on the server. Change one ⇒ rebuild.
+
+- `EXPO_PUBLIC_API_URL` — backend the app talks to (Simulator → `localhost:3000`; device → Mac LAN IP).
+- `EXPO_PUBLIC_WEB_URL` — public web origin for shareable links (the `/join/<code>` invite). Set to the real domain for prod/TestFlight builds; falls back through `app.json` `extra.webBaseUrl` → `EXPO_PUBLIC_API_URL` so local-deployment links resolve against the same backend.
+
 ## Geo IP→country data (Connected-devices labels)
 
 The "logged in from <country>" labels resolve IPs to countries **in-process** from a self-hosted dataset — the IP never leaves the server (no geo API). Delivery:

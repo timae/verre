@@ -30,8 +30,25 @@ export default function TabsLayout() {
 
   return (
     <NativeTabs
+      // KNOWN iOS-26 LIMITATION (parked — revisit after core screens): the
+      // native UITabBar is OS-controlled "Liquid Glass" on iOS 26. It is
+      // translucent, frosts whatever content scrolls under it (so the tint
+      // varies per tab), and recomputes its light/dark on tab re-entry
+      // (expo/expo #40389). This is documented UIKit behavior — backgroundColor
+      // / blurEffect:'none' do NOT force opacity on iOS 26 (verified on-device
+      // after a clean rebuild). The only true fix for full consistency is a
+      // custom JS tab bar (would reverse the native-chrome design ruling),
+      // deferred until the core screens exist and we can judge it in use.
+      // Props below are best-effort tint + the pre-26 fallback.
+      // ALSO parked here: the per-tab label baseline differs because the OS
+      // renders each SF symbol with its own optical box (hourglass/person sit
+      // lower than house/wineglass) and NativeTabs exposes no icon-size/offset
+      // prop — a custom bar would fix this alignment too.
       tintColor={theme.accent}
       backgroundColor={theme.surface}
+      // Removes one source of variation: stops the scroll-edge appearance going
+      // fully transparent (correct regardless of the glass-override above).
+      disableTransparentOnScrollEdge
       iconColor={theme.inkSoft}
       labelStyle={{ default: { color: theme.inkSoft }, selected: { color: theme.accent } }}
       // The design ruling "in-flow footer actions replace the nav while
@@ -39,7 +56,12 @@ export default function TabsLayout() {
       // carry their own action bars — hide the OS tab bar there.
       hidden={pathname.includes('/impression/') || pathname.endsWith('/moments/create')}
     >
-      <NativeTabs.Trigger name="feed">
+      {/* contentStyle themes each leaf tab's SCREEN background. Feed/Soon have
+          no Stack _layout, so without this they'd render on react-navigation's
+          default near-white; Moments/You get theme.bg from their inner Stack
+          _layout. (Also makes the glass bar frost theme.bg rather than white on
+          these screens — partial mitigation, not a full fix per the note above.) */}
+      <NativeTabs.Trigger name="feed" contentStyle={{ backgroundColor: theme.bg }}>
         <NativeTabs.Trigger.Label>Feed</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf={{ default: 'house', selected: 'house.fill' }} />
       </NativeTabs.Trigger>
@@ -47,7 +69,7 @@ export default function TabsLayout() {
         <NativeTabs.Trigger.Label>Moments</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="wineglass" />
       </NativeTabs.Trigger>
-      <NativeTabs.Trigger name="soon">
+      <NativeTabs.Trigger name="soon" contentStyle={{ backgroundColor: theme.bg }}>
         <NativeTabs.Trigger.Label>Soon</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon sf="hourglass" />
       </NativeTabs.Trigger>
