@@ -1,5 +1,4 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,8 +8,9 @@ import { VText } from '@/components/ui/VText';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
-import { ApiError, deleteMoment, getSessionState } from '@/lib/api/sessions';
+import { ApiError, deleteMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { useSettingsSession } from '@/lib/useSettingsSession';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 
 const GUTTER = 22;
@@ -31,12 +31,10 @@ export default function SettingsHub() {
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  const state = useQuery({
-    queryKey: ['session-state', code, myIdentityId],
-    queryFn: () => getSessionState(code),
-    refetchInterval: 5000,
-  });
-  const meta = state.data?.meta ?? null;
+  // Live role pill rides the line-up's 5s poll via the shared cache (no own
+  // interval — see useSettingsSession). The line-up stays mounted under this
+  // pushed screen and keeps refetching this exact key.
+  const { meta, isError } = useSettingsSession(code);
 
   const hostId = meta?.hostIdentityId ?? (meta?.hostUserId != null ? `u:${meta.hostUserId}` : null);
   const isHostViewer = !!meta && (
@@ -163,7 +161,7 @@ export default function SettingsHub() {
           </>
         ) : (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-            {state.isError ? (
+            {isError ? (
               <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
             ) : (
               <ActivityIndicator />

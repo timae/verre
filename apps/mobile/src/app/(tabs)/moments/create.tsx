@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, Switch, View } from 'react-native';
+import { Image, Pressable, ScrollView, View } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +11,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { DateField, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
+import { ToggleRow } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
@@ -492,48 +493,3 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
   );
 }
 
-// .trow — switch rows. Switch itself is native-chrome (OS physics), tinted
-// from theme tokens; disabled rows dim per .is-disabled.
-function ToggleRow({
-  title, subtitle, value, onChange, disabled, proBadge,
-}: {
-  title: string;
-  subtitle: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-  disabled?: boolean;
-  proBadge?: boolean;
-}) {
-  const { theme } = useTheme();
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14, paddingTop: 18, paddingBottom: 2 }}>
-      <View style={{ flexShrink: 1 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }} color={disabled ? 'inkFaint' : 'ink'}>
-            {title}
-          </VText>
-          {proBadge ? (
-            // letterSpacing adds trailing space after the last glyph, which
-            // shoves the text optically left — pull the right padding in by
-            // that amount so PRO sits centered.
-            <View style={{ backgroundColor: theme.accent, borderRadius: radius.xs, paddingVertical: 2, paddingLeft: 6, paddingRight: 4 }}>
-              <VText style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 9, lineHeight: 11, letterSpacing: 1.08, color: theme.accentInk }}>
-                PRO
-              </VText>
-            </View>
-          ) : null}
-        </View>
-        <VText variant="caption" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: 2, maxWidth: 210 }}>
-          {subtitle}
-        </VText>
-      </View>
-      <Switch
-        value={value}
-        onValueChange={onChange}
-        disabled={disabled}
-        trackColor={{ true: theme.accent }}
-        accessibilityLabel={title}
-      />
-    </View>
-  );
-}

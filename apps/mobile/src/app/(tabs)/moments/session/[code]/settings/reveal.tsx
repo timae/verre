@@ -9,12 +9,11 @@ import { SettingsFooter, ToggleRow } from '@/components/moments/settingsParts';
 import { getMyAccount } from '@/lib/api/me';
 import {
   ApiError,
-  getSessionState,
   updateMomentSettings,
   type MomentSettingsBody,
   type SessionMetaView,
 } from '@/lib/api/sessions';
-import { authClient } from '@/lib/authClient';
+import { useSettingsSession } from '@/lib/useSettingsSession';
 import { radius, useTheme } from '@/theme';
 
 const GUTTER = 22;
@@ -30,16 +29,9 @@ export default function RevealBlind() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { data: auth } = authClient.useSession();
-  const myIdentityId = auth ? `u:${auth.user.id}` : '';
   const account = useQuery({ queryKey: ['my-account'], queryFn: getMyAccount });
   const pro = account.data?.pro ?? false;
-
-  const state = useQuery({
-    queryKey: ['session-state', code, myIdentityId],
-    queryFn: () => getSessionState(code),
-  });
-  const meta = state.data?.meta ?? null;
+  const { meta, isError } = useSettingsSession(code);
 
   return meta ? (
     <RevealForm
@@ -59,7 +51,7 @@ export default function RevealBlind() {
         <VBar title="Reveal & blind" />
       </View>
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        {state.isError ? (
+        {isError ? (
           <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
         ) : (
           <ActivityIndicator />

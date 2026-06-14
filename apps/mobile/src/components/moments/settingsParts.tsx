@@ -156,6 +156,9 @@ export function ToggleRow({
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }} color={disabled ? 'inkFaint' : 'ink'}>{title}</VText>
           {proBadge ? (
+            // letterSpacing adds trailing space after the last glyph, shoving
+            // the text optically left — pull the right padding in by that amount
+            // (6 left / 4 right) so PRO reads centered.
             <View style={{ backgroundColor: theme.accent, borderRadius: radius.xs, paddingVertical: 2, paddingLeft: 6, paddingRight: 4 }}>
               <VText style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 9, lineHeight: 11, letterSpacing: 1.08, color: theme.accentInk }}>PRO</VText>
             </View>
