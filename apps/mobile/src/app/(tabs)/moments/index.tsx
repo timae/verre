@@ -173,8 +173,9 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
           {m.name || m.host_name}
         </VText>
         {/* "Hosted by" is suppressed when the moment has no name (host_name
-            is already the title above), so we don't repeat the host. */}
-        <VText variant="small" color="inkSoft">{liveMeta(m.name ? m.host_name : null, m.taster_count)}</VText>
+            is already the title above); "you" when the viewer is the host
+            (id-resolved role, never a name). */}
+        <VText variant="small" color="inkSoft">{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
       </View>
     </View>
   );

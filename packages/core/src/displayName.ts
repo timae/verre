@@ -8,6 +8,9 @@ const RESERVED = new Set([
   'admin', 'verre', 'support', 'host', 'system',
   '[deleted]', 'deleted', 'moderator', 'mod', 'help', 'api',
   'staff', 'official', 'team', 'root', 'null', 'undefined',
+  // 'you' would collide with the "Hosted by you" self-host label rendered
+  // on moment cards/rows when role === 'host'.
+  'you',
 ])
 
 // Letters / digits / space / apostrophe / underscore / period / hyphen.

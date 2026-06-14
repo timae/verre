@@ -3,9 +3,11 @@ import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FlavourWheel, type WheelAxis } from '@/components/scoring/FlavourWheel';
 import { StarScore } from '@/components/scoring/StarScore';
+import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
-import { space, themes, useTheme, type ThemeChoice } from '@/theme';
+import { contrastRatio } from '@/lib/contrast';
+import { radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
 
 // Dev-only widget gallery + theme switcher: the Simulator verification surface
 // for the read-only scoring widgets and the NativeTabs/theming spike. Not a
@@ -60,6 +62,32 @@ export default function DevGallery() {
             <FlavourWheel axes={SAMPLE} size={72} labels={false} />
             <VText variant="small" color="inkSoft">mini (feed-card scale)</VText>
           </View>
+        </View>
+
+        <View style={{ gap: space.xs }}>
+          <VText variant="heading">QR code</VText>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
+            <View style={{ gap: 4 }}>
+              <View style={{ padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+                <QrCode value="https://verre.app/join/7F3K-9QX2" size={156} />
+              </View>
+              <VText variant="caption" color="inkSoft">
+                {contrastRatio(theme.ink, theme.surface) >= 3 ? 'auto: themed' : 'auto: fallback (white)'}
+              </VText>
+            </View>
+            <View style={{ gap: 4 }}>
+              <View style={{ padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+                <QrCode value="https://verre.app/join/7F3K-9QX2" size={156} forceThemed />
+              </View>
+              <VText variant="caption" color="inkSoft">forced: theme colors</VText>
+            </View>
+          </View>
+          <VText variant="small" color="inkSoft">
+            {`ink/surface contrast ${contrastRatio(theme.ink, theme.surface).toFixed(2)} (clamp at 3.0)`}
+          </VText>
+          <VText variant="caption" color="inkFaint">
+            Left = the real component (clamps to white below 3.0; all current themes pass). Right = forced theme colors, no clamp. Scan each with the Camera app.
+          </VText>
         </View>
       </ScrollView>
     </>

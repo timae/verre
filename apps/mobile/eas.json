@@ -1,0 +1,32 @@
+{
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": { "simulator": true }
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": { "simulator": false },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://tasting.tgweb.li",
+        "EXPO_PUBLIC_WEB_URL": "https://tasting.tgweb.li"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "ios": { "simulator": false },
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://tasting.tgweb.li",
+        "EXPO_PUBLIC_WEB_URL": "https://tasting.tgweb.li"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

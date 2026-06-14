@@ -4,7 +4,8 @@ import { VText } from '@/components/ui/VText';
 import { space } from '@/theme';
 
 // The undecided 4th tab (explore vs notifications — handoff §12). A calm
-// placeholder until that decision lands.
+// placeholder until that decision lands. Scene background (frosted by the glass
+// bar) is set on this tab's <NativeTabs.Trigger> contentStyle in the layout.
 export default function Soon() {
   const insets = useSafeAreaInsets();
   return (
