@@ -190,9 +190,9 @@ export default function SessionLineup() {
           right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
         />
       </View>
-      {/* Session ⋯ menu (.sess-menu): Blind-for-all lands later (disabled).
-          People + Share + Settings are active. Share intentionally lives in
-          BOTH the menu and the Settings hub (Simon's ruling). */}
+      {/* Session ⋯ menu (.sess-menu): Blind-for-all (live toggle), People,
+          Share, Settings. Share intentionally lives in BOTH the menu and the
+          Settings hub (Simon's ruling). */}
       <SessionMenu
         anchorTop={sessMenuTop}
         onClose={() => setSessMenuTop(null)}
@@ -824,7 +824,8 @@ function SessionMenu({
       onPress={onPress}
       style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: pressed && !disabled ? theme.surfaceSunk : 'transparent' })}
     >
-      <Icon name={icon} size={18} color={disabled ? theme.inkFaint : theme.ink} />
+      {/* .sess-menu-item svg is ink-soft; only the label carries full ink. */}
+      <Icon name={icon} size={18} color={disabled ? theme.inkFaint : theme.inkSoft} />
       <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }} color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
       {disabled ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
     </Pressable>

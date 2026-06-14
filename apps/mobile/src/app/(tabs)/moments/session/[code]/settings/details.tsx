@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,12 +11,11 @@ import { DateField, NotesField, nextFullHour, pickCover } from '@/components/mom
 import { GlassButton, SettingsFooter } from '@/components/moments/settingsParts';
 import {
   ApiError,
-  getSessionState,
   updateMomentSettings,
   type MomentSettingsBody,
   type SessionMetaView,
 } from '@/lib/api/sessions';
-import { authClient } from '@/lib/authClient';
+import { useSettingsSession } from '@/lib/useSettingsSession';
 import { radius, useTheme } from '@/theme';
 
 const GUTTER = 22;
@@ -32,14 +31,7 @@ export default function MomentDetails() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { data: auth } = authClient.useSession();
-  const myIdentityId = auth ? `u:${auth.user.id}` : '';
-
-  const state = useQuery({
-    queryKey: ['session-state', code, myIdentityId],
-    queryFn: () => getSessionState(code),
-  });
-  const meta = state.data?.meta ?? null;
+  const { meta, isError } = useSettingsSession(code);
 
   return meta ? (
     <DetailsForm
@@ -58,7 +50,7 @@ export default function MomentDetails() {
         <VBar title="Moment details" />
       </View>
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        {state.isError ? (
+        {isError ? (
           <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
         ) : (
           <ActivityIndicator />
@@ -132,7 +124,7 @@ function DetailsForm({
     if (coverData) body.coverPhoto = coverData;
     else if (!coverUrl && meta.coverPhotoUrl) body.coverPhoto = null; // removed
 
-    if (Object.keys(body).length === 0) { onDiscard(); return; } // nothing changed
+    if (Object.keys(body).length === 0) { onDiscard(); return; }
     try {
       await updateMomentSettings(code, body);
       onSaved();
