@@ -816,6 +816,17 @@ function SessionMenu({
     if (anchorTop === null) { anim.setValue(0); return; }
     Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
   }, [anchorTop, anim]);
+  // Auto-dismiss the menu shortly after a Blind-for-all toggle so the user
+  // sees the row flip to active, then it closes itself. Cleared on unmount /
+  // manual close so the timer can't fire late.
+  const bfaCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (anchorTop === null && bfaCloseTimer.current) {
+      clearTimeout(bfaCloseTimer.current);
+      bfaCloseTimer.current = null;
+    }
+  }, [anchorTop]);
+  useEffect(() => () => { if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current); }, []);
   const Item = ({ icon, label, onPress, disabled }: { icon: IconName; label: string; onPress?: () => void; disabled?: boolean }) => (
     <Pressable
       accessibilityRole="button"
@@ -839,7 +850,11 @@ function SessionMenu({
       accessibilityRole="button"
       accessibilityState={{ selected: blindForEveryone }}
       disabled={bfaBusy}
-      onPress={() => onToggleBlindForEveryone(!blindForEveryone)}
+      onPress={() => {
+        onToggleBlindForEveryone(!blindForEveryone);
+        if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current);
+        bfaCloseTimer.current = setTimeout(onClose, 300);
+      }}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12,
         backgroundColor: blindForEveryone ? theme.accentTint : pressed ? theme.surfaceSunk : 'transparent',
