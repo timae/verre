@@ -8,6 +8,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
+import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { getMySessions, isUpcomingSession, type MySessionRow } from '@/lib/api/sessions';
 import { recentMeta } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
@@ -64,33 +65,46 @@ export default function AllMoments() {
     return [...rows].sort((a, b) => effectiveDate(b) - effectiveDate(a));
   }, [sessions.data, upcoming]);
 
-  if (sessions.isPending) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
+  // Connection failure: full ErrorState when the filtered list is empty AND the
+  // fetch errored (nothing to show); a top banner when we still have rows.
+  const conn = connectionView(sessions.isError, moments.length > 0);
 
+  // The VBar always renders (back-nav stays available); the body below it
+  // switches between spinner / error / banner+list.
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title={upcoming ? 'Upcoming moments' : 'Recent moments'} />
       </View>
-      <FlatList
-        data={moments}
-        keyExtractor={(r) => String(r.id)}
-        contentContainerStyle={{
-          paddingHorizontal: GUTTER,
-          paddingTop: 4,
-          paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
-        }}
-        ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
-        renderItem={({ item }) => <RecentRow row={item} />}
-        ListEmptyComponent={
-          <VText variant="small" color="inkSoft">{upcoming ? 'Nothing upcoming.' : 'No moments yet.'}</VText>
-        }
-      />
+      {sessions.isPending ? (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator />
+        </View>
+      ) : conn === 'error' ? (
+        <ErrorState onRetry={() => sessions.refetch()} retrying={sessions.isFetching} />
+      ) : (
+        <>
+          {conn === 'banner' ? (
+            <View style={{ paddingTop: 6 }}>
+              <ConnectionBanner onRetry={() => sessions.refetch()} />
+            </View>
+          ) : null}
+          <FlatList
+            data={moments}
+            keyExtractor={(r) => String(r.id)}
+            contentContainerStyle={{
+              paddingHorizontal: GUTTER,
+              paddingTop: 4,
+              paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
+            }}
+            ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
+            renderItem={({ item }) => <RecentRow row={item} />}
+            ListEmptyComponent={
+              <VText variant="small" color="inkSoft">{upcoming ? 'Nothing upcoming.' : 'No moments yet.'}</VText>
+            }
+          />
+        </>
+      )}
     </View>
   );
 }

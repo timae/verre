@@ -1,14 +1,14 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, View } from 'react-native';
+import { Image, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { DateField, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
-import { GlassButton, SettingsFooter } from '@/components/moments/settingsParts';
+import { GlassButton, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
 import {
   ApiError,
   updateMomentSettings,
@@ -28,10 +28,9 @@ const FOOT_CLEARANCE = 120; // .vbody bottom padding clears the sticky footer
 export default function MomentDetails() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { meta, isError } = useSettingsSession(code);
+  const { meta, isError, isFetching, refetch } = useSettingsSession(code);
 
   return meta ? (
     <DetailsForm
@@ -45,18 +44,7 @@ export default function MomentDetails() {
       onDiscard={() => router.back()}
     />
   ) : (
-    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
-      <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Moment details" />
-      </View>
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        {isError ? (
-          <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
-        ) : (
-          <ActivityIndicator />
-        )}
-      </View>
-    </View>
+    <SettingsScreenFallback title="Moment details" isError={isError} retrying={isFetching} onRetry={refetch} />
   );
 }
 

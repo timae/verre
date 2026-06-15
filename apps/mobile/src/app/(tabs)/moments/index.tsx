@@ -8,6 +8,7 @@ import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
+import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { ApiError, getMySessions, isPinnedSession, isUpcomingSession, joinMoment, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
@@ -59,6 +60,12 @@ export default function Moments() {
   // Upcoming sits in its own row above.
   const recentCount = (sessions.data?.length ?? 0) - upcomingCount;
 
+  // Connection failure: full ErrorState only when we have NOTHING to show; a
+  // top banner (keep the stale list) when a prior fetch left data. A non-empty
+  // list is "data" — an errored fetch that only ever yielded [] falls to the
+  // full state rather than a banner floating over emptiness.
+  const conn = connectionView(sessions.isError, (sessions.data?.length ?? 0) > 0);
+
   return (
     <ScrollView
       style={{ flex: 1 }}
@@ -83,9 +90,24 @@ export default function Moments() {
         <NewPill onPress={() => router.push('/moments/create')} />
       </View>
 
+      {/* Stale-data warning: the list below is the last good fetch; the strip
+          taps to retry and clears itself on the next success. */}
+      {conn === 'banner' ? (
+        <View style={{ paddingTop: 6 }}>
+          <ConnectionBanner onRetry={() => sessions.refetch()} />
+        </View>
+      ) : null}
+
       {sessions.isPending ? (
         <View style={{ paddingVertical: 48, alignItems: 'center' }}>
           <ActivityIndicator />
+        </View>
+      ) : conn === 'error' ? (
+        // Errored with nothing cached — full message in place of the list.
+        // minHeight (not flex:1, which collapses inside a ScrollView) keeps it
+        // roughly centered while staying pull-to-refreshable.
+        <View style={{ minHeight: 320 }}>
+          <ErrorState onRetry={() => sessions.refetch()} retrying={sessions.isFetching} />
         </View>
       ) : (
         <View style={{ paddingTop: 12, gap: 14 }}>

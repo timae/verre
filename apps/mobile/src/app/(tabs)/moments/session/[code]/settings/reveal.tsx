@@ -1,11 +1,11 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { SettingsFooter, ToggleRow } from '@/components/moments/settingsParts';
+import { SettingsFooter, SettingsScreenFallback, ToggleRow } from '@/components/moments/settingsParts';
 import { getMyAccount } from '@/lib/api/me';
 import {
   ApiError,
@@ -26,12 +26,11 @@ const FOOT_CLEARANCE = 120;
 export default function RevealBlind() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
-  const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
   const account = useQuery({ queryKey: ['my-account'], queryFn: getMyAccount });
   const pro = account.data?.pro ?? false;
-  const { meta, isError } = useSettingsSession(code);
+  const { meta, isError, isFetching, refetch } = useSettingsSession(code);
 
   return meta ? (
     <RevealForm
@@ -46,18 +45,7 @@ export default function RevealBlind() {
       onDiscard={() => router.back()}
     />
   ) : (
-    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
-      <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Reveal & blind" />
-      </View>
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-        {isError ? (
-          <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
-        ) : (
-          <ActivityIndicator />
-        )}
-      </View>
-    </View>
+    <SettingsScreenFallback title="Reveal & blind" isError={isError} retrying={isFetching} onRetry={refetch} />
   );
 }
 

@@ -1,8 +1,13 @@
-import { Pressable, Switch, View } from 'react-native';
+import { ActivityIndicator, Pressable, Switch, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
+import { ErrorState } from '@/components/ui/ConnectionState';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { radius, useTheme } from '@/theme';
+
+const GUTTER = 22;
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
 // details + Reveal & blind). Pixel-spec from the design's inline CSS
@@ -168,6 +173,42 @@ export function ToggleRow({
         {reason ? <VText variant="caption" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 3 }}>{reason}</VText> : null}
       </View>
       <Switch value={value} onValueChange={onChange} disabled={disabled} trackColor={{ true: theme.accent }} accessibilityLabel={title} />
+    </View>
+  );
+}
+
+// Shared loading/error body for the 02f settings screens (hub + Moment details
+// + Reveal & blind) when `useSettingsSession` has no `meta` yet. All three had
+// the identical VBar + spinner-or-"Couldn't load" block; this collapses them to
+// one line and upgrades the error case to a retryable <ErrorState>. The fatal
+// auth/existence kinds bounce to the line-up inside the hook, so the only error
+// that reaches here is a network/5xx — Retry is the right action.
+export function SettingsScreenFallback({
+  title, isError, retrying, onRetry,
+}: {
+  title: string;
+  isError: boolean;
+  retrying?: boolean;
+  onRetry: () => void;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
+      <View style={{ paddingHorizontal: GUTTER }}>
+        <VBar title={title} />
+      </View>
+      {isError ? (
+        <ErrorState
+          title="Couldn’t load this moment"
+          message="Check your connection and try again."
+          onRetry={onRetry}
+          retrying={retrying}
+        />
+      ) : (
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator />
+        </View>
+      )}
     </View>
   );
 }

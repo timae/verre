@@ -20,7 +20,12 @@ import { authClient } from '@/lib/authClient';
 // /state 401s as `invalid`. Rather than duplicate the line-up's visit + rejoin
 // machinery into each settings screen, we send the user to the line-up, which
 // owns that flow (it POSTs /visit, then bounces to /join on a hard failure).
-export function useSettingsSession(code: string): { meta: SessionMetaView | null; isError: boolean } {
+export function useSettingsSession(code: string): {
+  meta: SessionMetaView | null;
+  isError: boolean;
+  isFetching: boolean;
+  refetch: () => void;
+} {
   const router = useRouter();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
@@ -37,5 +42,8 @@ export function useSettingsSession(code: string): { meta: SessionMetaView | null
     if (fatal) router.replace({ pathname: '/(tabs)/moments/session/[code]', params: { code } });
   }, [fatal, code, router]);
 
-  return { meta: state.data?.meta ?? null, isError: state.isError };
+  // Only a network/5xx (`http`) error survives as `isError` here — the fatal
+  // kinds bounce above. So Retry is the right affordance for the error the
+  // settings ErrorState shows.
+  return { meta: state.data?.meta ?? null, isError: state.isError, isFetching: state.isFetching, refetch: () => state.refetch() };
 }
