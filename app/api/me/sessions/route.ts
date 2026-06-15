@@ -65,6 +65,15 @@ export async function GET(req: NextRequest) {
     let lastSeen = 0
     let role: 'host' | 'cohost' | 'provider' | null =
       r.host_user_id === userId ? 'host' : null
+    // The host's CURRENT display name from the live identities hash — same
+    // source the line-up + settings hub resolve from (participants[].displayName
+    // ?? meta.host). The card's SQL host_name is a create-time snapshot that
+    // goes stale when the host renames (esp. an anon host via the per-session
+    // rename, which only writes the identities hash). Falls back to the SQL
+    // snapshot when the hash has no entry (archived/expired session — not the
+    // carousel case, which is always alive).
+    let host_name_live: string | null = null
+    let hostId: string | null = null
     try {
       const [t, raw] = await Promise.all([
         redis.ttl(k.meta(r.code)),
@@ -75,15 +84,17 @@ export async function GET(req: NextRequest) {
         try {
           const meta = JSON.parse(raw)
           lifespan = meta.lifespan ?? null
+          hostId = meta.hostIdentityId ?? (meta.hostUserId != null ? `u:${meta.hostUserId}` : null)
           if (meta.hostIdentityId === myIdentityId || meta.hostUserId === userId) role = 'host'
           else if (Array.isArray(meta.coHostIds) && meta.coHostIds.includes(myIdentityId)) role = 'cohost'
           else if (Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId)) role = 'provider'
         } catch {}
         try {
-          ;[taster_count, participant, lastSeen] = await Promise.all([
+          ;[taster_count, participant, lastSeen, host_name_live] = await Promise.all([
             redis.hLen(k.identities(r.code)),
             redis.hExists(k.identities(r.code), myIdentityId),
             getLastSeen(r.code, userId),
+            hostId ? redis.hGet(k.identities(r.code), hostId).then((v) => v ?? null) : Promise.resolve(null),
           ])
         } catch {}
       }
@@ -173,6 +184,9 @@ export async function GET(req: NextRequest) {
     )
     return {
       ...r,
+      // Live host name (identities hash) over the create-time SQL snapshot, so
+      // a host rename shows on the card like it does in-moment.
+      host_name: host_name_live ?? r.host_name,
       wines_rated: Number(r.wines_rated),
       wine_count: Number(r.wine_count),
       // Decimal wire-format trap (root CLAUDE.md): raw numeric serializes as

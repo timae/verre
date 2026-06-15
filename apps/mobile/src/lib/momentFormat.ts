@@ -1,16 +1,36 @@
 // Display formatting for moment cards/rows (02s). Presentation-only.
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
-
 // "Hosted by X". Pass null to omit (e.g. when the host name already serves as
 // the card title on a name-less moment) so it isn't repeated.
 const hostedBy = (hostName: string) => `Hosted by ${hostName}`;
 
-export function liveMeta(hostName: string | null, tasterCount: number | null): string {
+// Carousel-card meta line. A still-future moment leads with "Starts …" (the
+// date, or just the time when it starts today), then "Hosted by …". A
+// live/started or date-less card shows "Hosted by …" alone. `hostName` is
+// already resolved by the caller ("you" for the viewer-host, null to omit when
+// the host name is the card title).
+export function liveMeta(dateFromIso: string | null, hostName: string | null): string {
   const parts: string[] = [];
+  const starts = startsLabel(dateFromIso);
+  if (starts) parts.push(starts);
   if (hostName) parts.push(hostedBy(hostName));
-  if (tasterCount !== null) parts.push(plural(tasterCount, 'taster'));
   return parts.join(' · ');
+}
+
+// "Starts 13:00" when date_from is today, "Starts Sat 7 Jun" otherwise.
+// Null unless date_from is in the future (a started/past date isn't a "Starts").
+// Locale-less (undefined) so time + date render in the VIEWER's own locale and
+// 12/24h preference — a European device shows 13:00, a US one 1:00 PM.
+function startsLabel(dateFromIso: string | null): string | null {
+  if (!dateFromIso) return null;
+  const from = new Date(dateFromIso);
+  if (Number.isNaN(from.getTime()) || from.getTime() <= Date.now()) return null;
+  const now = new Date();
+  const sameDay = from.toDateString() === now.toDateString();
+  const label = sameDay
+    ? from.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+    : from.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  return `Starts ${label}`;
 }
 
 // "Today" / "Yesterday" / "Sat 7 Jun" / "17 May 2025", per the prototype rows.
