@@ -111,8 +111,9 @@ export default function Moments() {
         </View>
       ) : (
         <View style={{ paddingTop: 12, gap: 14 }}>
-          {pinned.length > 0 ? <LiveStrip moments={pinned} /> : null}
           <JoinBlock />
+          {/* Highlight carousel sits between Join and the lists. */}
+          {pinned.length > 0 ? <LiveStrip moments={pinned} /> : null}
           {/* Upcoming + "Recent moments" share one carded group (hairline-
               divided, like the settings hub). Each row renders only when non-
               empty; the group itself shows only when at least one row does. */}
@@ -442,14 +443,13 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   return (
     <View style={{ gap: 8 }}>
       {/* Section title — the strip mixes now / starting-soon / recently-visited
-          moments, so a tense-neutral "Moments of interest" rather than a
-          status word. Gutter-padded to align with the cards (the ScrollView
-          pads itself). */}
+          moments, so a tense-neutral "Moments of interest" rather than a status
+          word. Same heading style as "Join a moment" (18/600, -0.27 tracking).
+          Gutter-padded to align with the cards (the ScrollView pads itself). */}
       <VText
-        color="inkSoft"
         numberOfLines={1}
         maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}
-        style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase' }}
+        style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}
       >
         Moments of interest
       </VText>
@@ -459,7 +459,10 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         showsHorizontalScrollIndicator={false}
         snapToInterval={step}
         decelerationRate="fast"
-        contentContainerStyle={{ paddingHorizontal: GUTTER, gap: 12 }}
+        // paddingVertical leaves room for the cards' drop shadow (elevation.sm
+        // bleeds ~4px below the box) — without it the ScrollView's content box
+        // hugs the card height and clips the shadow's bottom falloff.
+        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingVertical: 6, gap: 12 }}
         onContentSizeChange={onContentSized}
         scrollEventThrottle={16}
         onScroll={(e) => onScroll(e.nativeEvent.contentOffset.x)}
