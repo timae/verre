@@ -187,7 +187,7 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
         <VText color="positive" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
           {/* The nested ● needs its OWN cap — maxFontSizeMultiplier doesn't
               inherit to a nested Text in RN. */}
-          <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
+          <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Happening now'}
         </VText>
         <VText numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
           {m.name || m.host_name}
