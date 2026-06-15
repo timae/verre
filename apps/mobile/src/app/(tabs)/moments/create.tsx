@@ -282,15 +282,14 @@ export default function CreateMoment() {
             />
           </View>
         ) : null}
-
-        {error ? (
-          <VText variant="small" style={{ marginTop: 16, color: theme.critical }}>{error}</VText>
-        ) : null}
       </ScrollView>
 
       {/* Sticky Create bar — SOLID theme.bg fill, no gradient fade (Simon's
           call, matching SettingsFooter + add.tsx). Full-width button, 52pt,
-          Apple's 16pt gap above the safe-area inset. */}
+          Apple's 16pt gap above the safe-area inset. The error banner lives HERE
+          (above the button), not in the scroll body — the body scrolls (small
+          screen / "Add more details" expanded) and an error at its end would
+          land below the fold; a footer banner is always visible. */}
       <View
         style={{
           position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -298,6 +297,9 @@ export default function CreateMoment() {
           backgroundColor: theme.bg,
         }}
       >
+        {error ? (
+          <VText variant="small" style={{ marginBottom: 10, color: theme.critical }}>{error}</VText>
+        ) : null}
         <Button title="Create" loadingTitle="Creating…" loading={creating} onPress={onCreate} bar block />
       </View>
 

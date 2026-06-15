@@ -184,10 +184,9 @@ function DetailsForm({
         <View style={{ marginBottom: 14 }}>
           <TextField label="Event link" placeholder="Menu, event page…" value={link} onChangeText={setLink} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
         </View>
-        {error ? <VText variant="small" style={{ marginTop: 2, color: theme.critical }}>{error}</VText> : null}
       </ScrollView>
 
-      <SettingsFooter saving={saving} onDiscard={onDiscard} onSave={onSave} bottomInset={insets.bottom} />
+      <SettingsFooter saving={saving} error={error} onDiscard={onDiscard} onSave={onSave} bottomInset={insets.bottom} />
     </View>
   );
 }
