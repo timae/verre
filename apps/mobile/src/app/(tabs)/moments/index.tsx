@@ -159,6 +159,14 @@ function Thumb({ uri, size, r }: { uri?: string | null; size: number; r: number 
 
 // The card's inner content (thumb + status + name + meta), shared between the
 // live card and the focused copy drawn in the remove overlay so they match.
+//
+// Every text here is capped + single-line because the live card is FIXED height
+// (LIVE_CARD_HEIGHT): an uncapped OS Dynamic-Type scale would grow the body past
+// the 64px budget and clip. The cap bounds the growth; numberOfLines={1} stops
+// any line wrapping (incl. the status line, whose inline 14px ● can lift the
+// used line-height). The Rejoin button is already height-safe — its pill height
+// is fixed by control.h, so its label scales/clips within, never grows the card.
+const CARD_TEXT_MAX_SCALE = 1.3;
 function LiveCardBody({ m }: { m: MySessionRow }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -166,16 +174,18 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
       <View style={{ flex: 1, gap: 2 }}>
         {/* 'scheduled' = within its date window → genuinely ongoing;
             'recent' = date-less, recently visited → don't claim live. */}
-        <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-          <VText color="positive" style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
+        <VText color="positive" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+          {/* The nested ● needs its OWN cap — maxFontSizeMultiplier doesn't
+              inherit to a nested Text in RN. */}
+          <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
         </VText>
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+        <VText numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
           {m.name || m.host_name}
         </VText>
         {/* "Hosted by" is suppressed when the moment has no name (host_name
             is already the title above); "you" when the viewer is the host
             (id-resolved role, never a name). */}
-        <VText variant="small" color="inkSoft" numberOfLines={1}>{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
+        <VText variant="small" color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}>{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
       </View>
     </View>
   );
@@ -319,30 +329,42 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   // place and can't disagree.
   const offsetForPage = (p: number) => (loop ? (p + 1) * step : p * step);
 
+  // The card the viewport is currently centred on, tracked by IDENTITY (id),
+  // not numeric index. The list is server-sorted by activity, so the 15s poll
+  // can REORDER it without changing its length — index-based tracking would
+  // then leave the dot/viewport pointing at a different moment. Following the
+  // id keeps the same card under the viewport across reorders, removals, and
+  // additions. Updated on every scroll settle (onScroll).
+  const focusedId = useRef<number | null>(moments[0]?.id ?? null);
+
   // Scroll re-anchoring funnels through ONE post-layout positioner. The trap we
   // avoid: scrollTo() called from a commit-phase effect targets an offset the
   // native ScrollView can't honour yet (new content not laid out), then the
   // settle fires onScroll and clobbers the dot. So both the initial park AND a
-  // mid-session count change just record the WANTED offset; onContentSizeChange
+  // mid-session list change just record the WANTED offset; onContentSizeChange
   // (which fires AFTER native content is sized) applies it.
   //
   // Previously a single latch conflated "park once" with "never re-anchor",
   // which (a) let onContentSizeChange yank the viewport back to card 1 on every
   // removal and (b) never reset the offset when the strip collapsed to 1 card.
   const pendingScrollX = useRef<number | null>(offsetForPage(0));
+  // A signature of the id ORDER, so the effect re-anchors on a reorder too, not
+  // just a length change (a same-length reorder must still follow focusedId).
+  const orderSig = moments.map((m) => m.id).join(',');
   useEffect(() => {
-    // Count changed mid-session: clamp the dot into the new range and KEEP the
-    // user's position (don't reset to card 1) — removing a card leaves the
-    // viewport on the card now in that slot; a 2→1 drop snaps the lone card
-    // flush (offsetForPage(0) is 0 once loop is false).
-    const clamped = Math.min(page, Math.max(0, moments.length - 1));
-    if (clamped !== page) setPage(clamped);
-    pendingScrollX.current = offsetForPage(clamped);
+    // List changed mid-session (removal, addition, or reorder): re-find the
+    // focused card by id and KEEP the viewport on it. If it's gone (removed),
+    // clamp to the nearest valid index. Never reset to card 1.
+    const byId = focusedId.current === null ? -1 : moments.findIndex((m) => m.id === focusedId.current);
+    const target = byId >= 0 ? byId : Math.min(page, Math.max(0, moments.length - 1));
+    focusedId.current = moments[target]?.id ?? null;
+    if (target !== page) setPage(target);
+    pendingScrollX.current = offsetForPage(target);
     // Nudge immediately too; if content isn't laid out yet, onContentSized
     // re-applies. Harmless double-apply to the same offset.
     scrollRef.current?.scrollTo({ x: pendingScrollX.current, animated: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [moments.length]);
+  }, [orderSig]);
 
   const onContentSized = () => {
     if (pendingScrollX.current === null) return;
@@ -353,8 +375,14 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   // Dots track the swipe LIVE (on scroll, not just on settle) so they don't
   // lag. Map the raw track index → real dot index, wrapping for the clones.
   const onScroll = (x: number) => {
+    // Skip while a re-anchor is mid-flight: the programmatic scrollTo fires
+    // onScroll against the OLD (not-yet-relaid-out) content, where `i` can land
+    // on a clone and wrap the dot to the wrong real → a one-frame flicker.
+    // onContentSized will null this once the new layout settles.
+    if (pendingScrollX.current !== null) return;
     const i = Math.round(x / step);
     const dot = loop ? (i - 1 + moments.length) % moments.length : i;
+    focusedId.current = moments[dot]?.id ?? focusedId.current;
     setPage((p) => (p === dot ? p : dot));
   };
 
