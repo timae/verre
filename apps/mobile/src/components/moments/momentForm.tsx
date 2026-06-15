@@ -91,12 +91,18 @@ export async function pickCover(maxBytes = MAX_COVER_BYTES): Promise<{ dataUrl: 
 // seed exists only inside the sheet and commits only on Done; swipe-dismiss
 // discards.
 export function DateField({
-  label, value, onChange, defaultValue,
+  label, value, onChange, defaultValue, minimumDate, maximumDate,
 }: {
   label: string;
   value: Date | null;
   onChange: (d: Date | null) => void;
   defaultValue: () => Date;
+  // Bound the picker so an invalid window can't be chosen at all (the OS greys
+  // out out-of-range dates): To passes minimumDate=From, From passes
+  // maximumDate=To. Server is the real authority (applySessionFields), this is
+  // the UX guard.
+  minimumDate?: Date;
+  maximumDate?: Date;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -108,7 +114,14 @@ export function DateField({
         accessibilityRole="button"
         accessibilityLabel={`${label} date and time`}
         accessibilityValue={{ text: value ? formatWhen(value) : 'not set' }}
-        onPress={() => setDraft(value ?? defaultValue())}
+        onPress={() => {
+          // Seed the picker, clamped into [min, max] so it never opens on an
+          // out-of-range value (which the OS picker would otherwise snap).
+          let seed = value ?? defaultValue();
+          if (minimumDate && seed < minimumDate) seed = minimumDate;
+          if (maximumDate && seed > maximumDate) seed = maximumDate;
+          setDraft(seed);
+        }}
         style={({ pressed }) => ({
           height: 44,
           flexDirection: 'row',
@@ -182,6 +195,8 @@ export function DateField({
                 mode="datetime"
                 display="inline"
                 accentColor={theme.accent}
+                minimumDate={minimumDate}
+                maximumDate={maximumDate}
                 onValueChange={(_e, d) => { if (d) setDraft(d); }}
                 style={{ alignSelf: 'center' }}
               />
