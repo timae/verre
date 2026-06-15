@@ -37,6 +37,10 @@ export function RoleChip({ role }: { role: SessionRole }) {
         style={{
           fontFamily: 'InstrumentSans_600SemiBold',
           fontSize: 10.5,
+          // Tight line box so the 2px padding hugs the glyphs (flat chip, like
+          // the .ovc-map pill). Without an explicit lineHeight, VText's default
+          // multiplier inflates the text box and the chip reads tall.
+          lineHeight: 13,
           letterSpacing: 0.42,
           textTransform: 'uppercase',
         }}

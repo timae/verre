@@ -1,8 +1,11 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
+import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon, type IconName } from '@/components/ui/Icon';
@@ -31,6 +34,16 @@ import { motion, radius, useTheme } from '@/theme';
 const POLL_MS = 5000;
 const GUTTER = 22;
 const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
+// 02b·10 cover hero (Vero - Screens.html .hero-bleed-top): full-bleed photo
+// that scrolls under the status bar, with a collapsing top bar. The mock's
+// 248px bleed is measured in its 800px phone-screen frame (≈31%); a flat
+// 248pt reads short on real devices, so the hero scales with the window like
+// the impression hero does.
+const HERO_RATIO = 248 / 800;
+// .hero-topfix collapse: the floating bar gets its blur bg + title once scrolled
+// past this point (the on-photo title isn't faded — it scrolls off with the
+// photo and the bar title snaps in, mirroring the impression hero's feel).
+const HERO_COLLAPSE_Y = 150;
 
 type MetaView = SessionState['meta'];
 
@@ -45,6 +58,7 @@ export default function SessionLineup() {
   const code = String(raw ?? '');
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: windowH } = useWindowDimensions();
   const router = useRouter();
   const online = useIsOnline();
   const queryClient = useQueryClient();
@@ -174,8 +188,30 @@ export default function SessionLineup() {
   const lock = !isHostViewer && wines !== null && wines.length === 0 ? lockState(meta) : null;
   const showReconnecting = !online || (state.isError && (wines !== null || meta !== null));
 
+  // 02b·10: a moment WITH a cover photo gets the full-bleed collapsing hero
+  // (the photo runs under the status bar, no VBar). Without a cover the screen
+  // keeps its plain VBar layout untouched. The hero shows on the normal AND
+  // lock states once we're past loading and not in a fatal state.
+  const hasCover = !!meta?.coverPhotoUrl;
+  const heroShown = hasCover && !fatal && visited && !(state.isPending && wines === null);
+  // Only the .hero-topfix collapse (bar bg + title past 150px) needs to live
+  // in React state — and it flips at most once per scroll direction, so the
+  // child reports it as a boolean that we set ONLY on change (a raw scrollY in
+  // state would re-render the whole screen every frame). The on-photo title
+  // fade is a native-driven Animated.Value owned by the child — no re-render.
+  const [heroCollapsed, setHeroCollapsed] = useState(false);
+
+  // Shared OvcAbout — same props in both layouts.
+  const ovc = meta ? (
+    <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
+  ) : null;
+  const openImpression = (wineId: string) =>
+    router.push({ pathname: '/(tabs)/moments/session/[code]/impression/[wineId]', params: { code, wineId } });
+
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
+  // The cover-hero variant (02b·10) replaces the vbar with a full-bleed photo
+  // header + a collapsing top bar, with the tabs + body inside one scroll view.
   return (
     // BottomSheetModalProvider lives INSIDE the screen (not the root _layout):
     // with expo-router/react-native-screens a root provider's gorhom host gets
@@ -183,13 +219,24 @@ export default function SessionLineup() {
     // #1884/#2035). Hosting it in this screen's flex:1 View gives the sheets a
     // sized provider + portal host.
     <BottomSheetModalProvider>
-    <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
-      <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar
-          title={meta?.name ?? ''}
-          right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
-        />
-      </View>
+    {/* The hero variant runs the photo under the status bar, so its container
+        drops the safe-area top padding (the floating bar re-applies it). */}
+    <View style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }}>
+      {/* Always mounted (expo-status-bar is last-mounted-wins and does NOT
+          restore on unmount — a conditional bar would leave white glyphs stuck
+          if the cover is removed mid-screen). White only over the hero photo
+          pre-collapse; the theme default everywhere else. */}
+      <StatusBar
+        style={heroShown && !heroCollapsed ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
+      />
+      {!heroShown ? (
+        <View style={{ paddingHorizontal: GUTTER }}>
+          <VBar
+            title={meta?.name ?? ''}
+            right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
+          />
+        </View>
+      ) : null}
       {/* Session ⋯ menu (.sess-menu): Blind-for-all (live toggle), People,
           Share, Settings. Share intentionally lives in BOTH the menu and the
           Settings hub (Simon's ruling). */}
@@ -236,7 +283,7 @@ export default function SessionLineup() {
           />
         </>
       ) : null}
-      {showReconnecting ? (
+      {showReconnecting && !heroShown ? (
         <View style={{ backgroundColor: theme.surfaceSunk, paddingVertical: 6, alignItems: 'center' }}>
           <VText variant="caption" color="inkSoft">Reconnecting…</VText>
         </View>
@@ -248,10 +295,27 @@ export default function SessionLineup() {
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
+      ) : heroShown && meta ? (
+        // 02b·10 — cover-hero layout. The photo, tabs, ovc + rows live in ONE
+        // scroll view (small wine lists, like the impression screen); the
+        // collapsing bar floats above it.
+        <CoverHeroLineup
+          meta={meta}
+          coverUrl={meta.coverPhotoUrl!}
+          lock={lock}
+          wines={wines}
+          ratings={ratings}
+          myIdentityId={myIdentityId}
+          canAdd={canAdd}
+          windowH={windowH}
+          ovc={ovc}
+          onCollapsedChange={setHeroCollapsed}
+          onPressWine={openImpression}
+        />
       ) : lock ? (
         <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
           <LockCard revealAt={lock} />
-          <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
+          {ovc}
         </ScrollView>
       ) : (
         <>
@@ -261,9 +325,7 @@ export default function SessionLineup() {
           <FlatList
             data={wines ?? []}
             keyExtractor={(w) => w.id}
-            ListHeaderComponent={
-              <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
-            }
+            ListHeaderComponent={ovc}
             // flexGrow:1 gives the empty state a flex slot; EmptyLineup freezes its
             // own height there so its centering doesn't jump when the tab bar hides.
             contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
@@ -274,20 +336,215 @@ export default function SessionLineup() {
                 index={index}
                 myIdentityId={myIdentityId}
                 ratings={ratings}
-                onPress={() =>
-                  router.push({
-                    pathname: '/(tabs)/moments/session/[code]/impression/[wineId]',
-                    params: { code, wineId: item.id },
-                  })
-                }
+                onPress={() => openImpression(item.id)}
               />
             )}
             ListEmptyComponent={<EmptyLineup canAdd={canAdd} />}
           />
         </>
       )}
+      {/* .hero-topfix — floats over the hero: transparent with glass back+⋯
+          while the photo title is visible, then a blurred theme bar carrying
+          the moment name once scrolled past the collapse point. Sits last so
+          it paints above the scroll content; below the SessionMenu Modal. */}
+      {heroShown && meta ? (
+        <HeroTopBar
+          title={meta.name}
+          collapsed={heroCollapsed}
+          onBack={() => router.back()}
+          onMenu={(top) => setSessMenuTop(top)}
+        />
+      ) : null}
     </View>
     </BottomSheetModalProvider>
+  );
+}
+
+// 02b·10 cover-hero body. One ScrollView so the photo scrolls away under the
+// content; the Line-up/Compare tabs are the sticky header (index 1). Mirrors
+// the impression hero's react-native-screens defenses: a zero-size
+// collapsable={false} dead-end as the first sibling stops RNSScreen's
+// subviews[0] finder from force-flipping contentInsetAdjustmentBehavior
+// never→automatic (which would top-inset the photo below the status bar).
+function CoverHeroLineup({
+  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, onCollapsedChange, onPressWine,
+}: {
+  meta: NonNullable<MetaView>;
+  coverUrl: string;
+  lock: number | null;
+  wines: WireWine[] | null;
+  ratings: RatingsView | null;
+  myIdentityId: string;
+  canAdd: boolean;
+  windowH: number;
+  ovc: React.ReactNode;
+  onCollapsedChange: (collapsed: boolean) => void;
+  onPressWine: (wineId: string) => void;
+}) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const heroH = Math.round(windowH * HERO_RATIO);
+  // Mirror the collapse boolean locally so the parent setter fires only when it
+  // actually flips (a real flip re-renders the whole screen — a raw scrollY in
+  // parent state would do that every frame).
+  const collapsedRef = useRef(false);
+  const rows = wines ?? [];
+  return (
+    <>
+      <View collapsable={false} style={{ width: 0, height: 0 }} />
+      <ScrollView
+        onScroll={(e) => {
+          const y = e.nativeEvent.contentOffset.y;
+          const next = y > HERO_COLLAPSE_Y;
+          if (next !== collapsedRef.current) {
+            collapsedRef.current = next;
+            onCollapsedChange(next);
+          }
+        }}
+        scrollEventThrottle={16}
+        contentInsetAdjustmentBehavior="never"
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+      >
+        {/* index 0 — .hero-bleed-top: full-bleed photo, scrim, white title */}
+        <View style={{ height: heroH, overflow: 'hidden' }}>
+          <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          {/* .hero-bleed-scrim — top tint keeps the white status-bar glyphs +
+              glass controls legible; the stronger bottom carries the title. */}
+          <LinearGradient
+            colors={['rgba(15,12,10,0.28)', 'rgba(15,12,10,0.05)', 'rgba(15,12,10,0.72)']}
+            locations={[0, 0.45, 1]}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          />
+          {/* .hero-bleed-title — white moment name, bottom-left. Like the
+              impression hero, it does NOT fade: it just scrolls off with the
+              photo, and the bar title snaps in at the collapse point. The
+              earlier opacity fade read mushy; the static title is snappier. */}
+          <View style={{ position: 'absolute', left: 18, right: 18, bottom: 14 }}>
+            <VText
+              numberOfLines={2}
+              style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 30, letterSpacing: -0.5, color: '#fff' }}
+            >
+              {meta.name}
+            </VText>
+          </View>
+        </View>
+        {/* Tabs. FLAGGED DEVIATION from the mock's `.hero-sticky` (sticky
+            top:0): a sticky row under a full-bleed hero would park behind the
+            floating collapse bar (sticky always pins to scroll-offset 0, which
+            sits under the absolute bar), and the contentInset workaround can't
+            be verified from the sandbox. Tabs scroll with the about block for
+            now — near-zero functional cost while Compare is disabled. Revisit
+            for sticky once testable on device. */}
+        <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+          <TabStrip />
+        </View>
+        {/* body — Lock card replaces the rows when the line-up is still under
+            wraps (a hidden line-up keeps its cover). */}
+        {lock ? (
+          <View style={{ paddingHorizontal: GUTTER }}>
+            <LockCard revealAt={lock} />
+            {ovc}
+          </View>
+        ) : (
+          <View style={{ paddingHorizontal: GUTTER }}>
+            {ovc}
+            {rows.length === 0 ? (
+              <EmptyLineup canAdd={canAdd} />
+            ) : (
+              rows.map((item, index) => (
+                <View key={item.id}>
+                  {index > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                  <LuRow
+                    wine={item}
+                    index={index}
+                    myIdentityId={myIdentityId}
+                    ratings={ratings}
+                    onPress={() => onPressWine(item.id)}
+                  />
+                </View>
+              ))
+            )}
+          </View>
+        )}
+      </ScrollView>
+    </>
+  );
+}
+
+// .hero-topfix — the floating collapsing bar over the cover hero. Pre-collapse:
+// transparent, glass back + ⋯ circles, white icons. Collapsed (past 150px):
+// blurred theme bg, rule underline, the moment name, ink icons. The ⋯ anchors
+// the shared SessionMenu via measureInWindow (same protocol as SessionMenuButton).
+function HeroTopBar({
+  title, collapsed, onBack, onMenu,
+}: {
+  title: string;
+  collapsed: boolean;
+  onBack: () => void;
+  onMenu: (anchorBottomY: number) => void;
+}) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const moreRef = useRef<View>(null);
+  const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(anim, {
+      toValue: collapsed ? 1 : 0,
+      duration: motion.dur2,
+      easing: Easing.bezier(...motion.ease),
+      useNativeDriver: true,
+    }).start();
+  }, [collapsed, anim]);
+
+  const iconColor = collapsed ? theme.ink : '#fff';
+  const circle = collapsed
+    ? { width: 34, height: 34, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(20,18,15,0.5)', alignItems: 'center' as const, justifyContent: 'center' as const };
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 8 }}
+    >
+      {/* Blurred theme bar — its whole opacity fades in on collapse (the blur
+          runs at constant intensity; the fade is what reads, so the blur pop
+          stays hidden behind it). */}
+      <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: anim }}>
+        <BlurView
+          intensity={24}
+          tint={theme.scheme === 'dark' ? 'dark' : 'light'}
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+        />
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.bg + 'DB', borderBottomWidth: 1, borderBottomColor: theme.rule }} />
+      </Animated.View>
+      <View style={{ paddingTop: insets.top, paddingHorizontal: 14, paddingBottom: 6 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', height: 34 }}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
+            style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
+            <Icon name="back" size={20} color={iconColor} />
+          </Pressable>
+          {/* Title appears only collapsed (fades in with a 4px rise). */}
+          <Animated.View
+            style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
+          >
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27, color: theme.ink }}>
+              {title}
+            </VText>
+          </Animated.View>
+          <View ref={moreRef} collapsable={false}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Session menu"
+              hitSlop={8}
+              onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
+              style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
+            >
+              <Icon name="more" size={20} color={iconColor} />
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </View>
   );
 }
 
