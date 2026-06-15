@@ -47,3 +47,9 @@ export {
   validateDisplayName,
   stripDisambiguationEmoji,
 } from './displayName'
+export {
+  COUNTRIES,
+  COUNTRY_CODES,
+  countryName,
+  type Country,
+} from './countries'

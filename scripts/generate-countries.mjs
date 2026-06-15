@@ -1,7 +1,8 @@
-// Regenerate `lib/countries.ts` from the ISO 3166-1 alpha-2 list,
-// pulling English display names from `Intl.DisplayNames`.
+// Regenerate `packages/core/src/countries.ts` from the ISO 3166-1 alpha-2
+// list, pulling English display names from `Intl.DisplayNames`. (The web
+// re-exports this from lib/countries.ts; native imports it from @verre/core.)
 //
-// Usage:  node scripts/generate-countries.mjs > lib/countries.ts
+// Usage:  node scripts/generate-countries.mjs > packages/core/src/countries.ts
 //
 // When to run:
 //   - ISO assigns a new alpha-2 code (rare — most recently RS/ME in 2006,
@@ -62,6 +63,11 @@ const entries = codes
 
 const header = `// ISO 3166-1 alpha-2 country list with English display names.
 //
+// Framework-neutral display data shared web↔native (lives in @verre/core for
+// the same reason as displayName / formatScore: pure, no node:*/next/React).
+// The web re-exports it from lib/countries.ts so existing \`@/lib/countries\`
+// imports stay unchanged; the native impression view imports countryName here.
+//
 // Generated once via \`Intl.DisplayNames(['en'], { type: 'region' })\` and
 // embedded here as a static array so we don't re-derive on every render.
 // \`TW\` is overridden to "Taiwan" — Intl's value can vary across browsers
@@ -69,7 +75,7 @@ const header = `// ISO 3166-1 alpha-2 country list with English display names.
 // stable display label.
 //
 // To regenerate this list when the ISO assignments change:
-//   node scripts/generate-countries.mjs > lib/countries.ts
+//   node scripts/generate-countries.mjs > packages/core/src/countries.ts
 //
 // \`COUNTRY_CODES\` is a Set of the alpha-2 codes for O(1) server-side
 // validation. \`countryName(code)\` returns the English display name for

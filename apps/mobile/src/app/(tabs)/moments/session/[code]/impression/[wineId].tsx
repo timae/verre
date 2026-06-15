@@ -18,7 +18,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { validateScore } from '@verre/core';
+import { countryName, validateScore } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
@@ -763,7 +763,11 @@ function ClampText({ text, lines, medium }: { text: string; lines: number; mediu
 // whole block drops away when there's no metadata at all.
 function AboutBlock({ wine }: { wine: WireWine }) {
   const { theme } = useTheme();
-  const origin = [wine.region, wine.country].filter(Boolean).join(' · ');
+  // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
+  // name ("Italy"), falling back to the raw code for anything off-list —
+  // mirrors the web WineInfoPane's `countryName(country) || country`.
+  const country = wine.country ? countryName(wine.country) || wine.country : '';
+  const origin = [wine.region, country].filter(Boolean).join(' · ');
   const rows: Array<[string, React.ReactNode]> = [];
   if (origin) rows.push(['Origin', <VText key="v" variant="small" style={{ fontFamily: 'InstrumentSans_500Medium' }}>{origin}</VText>]);
   if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
