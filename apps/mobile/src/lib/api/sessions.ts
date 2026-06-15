@@ -35,7 +35,7 @@ export type MySessionRow = {
   cover_photo_url: string | null;
 };
 
-// Carousel-card label, derived client-side (not sent): "Still ongoing" only
+// Carousel-card label, derived client-side (not sent): "Happening now" only
 // when the moment is dated AND has actually started; otherwise "Just visited"
 // (a date-less live card, or an upcoming+pinned one that hasn't begun — we
 // can't claim a not-yet-started moment is happening now).

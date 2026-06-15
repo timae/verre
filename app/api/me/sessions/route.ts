@@ -140,12 +140,12 @@ export async function GET(req: NextRequest) {
     //    whichever list its `status` puts it in.
     //
     // The cross-product the client must handle:
-    //   live + pinned        → carousel + had-list. Label: dated→"Still
-    //                          ongoing", date-less→"Just visited".
+    //   live + pinned        → carousel + had-list. Label: dated→"Happening
+    //                          now", date-less→"Just visited".
     //   upcoming + pinned    → carousel + Upcoming row, AT ONCE (you visited a
     //                          not-yet-started moment <1h ago). Label is
     //                          "Just visited" (it hasn't begun, so never
-    //                          "Still ongoing"). THIS is the overlap that makes
+    //                          "Happening now"). THIS is the overlap that makes
     //                          `pinned` a separate signal — one enum can't say
     //                          "carousel AND Upcoming".
     //   past / not-pinned    → list only, no carousel.
@@ -154,7 +154,7 @@ export async function GET(req: NextRequest) {
     // Dismissing from the carousel affects ONLY `pinned` (below), never which
     // LIST a moment lands in. An earlier version gated the upcoming branch on
     // `!hidden`; dismissing a future moment then fell through to `past` and the
-    // moment jumped out of Upcoming into "Your moments" — a bug, because an
+    // moment jumped out of Upcoming into "Recent moments" — a bug, because an
     // upcoming moment's list is the Upcoming row, not the had-list (whereas a
     // live moment's list IS the had-list, so demoting it there was invisible
     // and masked the issue). Keep `hidden` out of this ternary.
@@ -169,9 +169,10 @@ export async function GET(req: NextRequest) {
     const pinned =
       ttlAlive && participant && !hidden &&
       (status === 'live' || (status === 'upcoming' && recentlyVisited))
-    // The "ongoing vs just-visited" carousel label is NOT sent — the client
-    // derives it from fields already on the wire: "Still ongoing" only when the
-    // moment is dated AND has actually started; otherwise "Just visited" (a
+    // The "happening-now vs just-visited" carousel label is NOT sent — the
+    // client derives it from fields already on the wire: "Happening now" only
+    // when the moment is dated AND has actually started; otherwise "Just
+    // visited" (a
     // date-less live one, or an upcoming+pinned one that hasn't begun).
     // Activity recency for the "All moments" default sort (most-recently-
     // active on top): the strongest of this user's last touch, the session's
