@@ -42,9 +42,7 @@ export default function AllMoments() {
   // backwards for an agenda); default → everything that isn't upcoming
   // ("Recent moments"), re-sorted by EFFECTIVE DATE newest-first.
   // Both filters key on `status`, NOT `pinned` — the carousel (pinned) overlaps
-  // both lists: a 'live' moment shows in the had-list AND carousel; an
-  // upcoming+pinned moment shows in the Upcoming filter AND carousel. Full
-  // routing model: app/api/me/sessions/route.ts "Moments-home routing".
+  // both lists. Full routing model: docs/dev/moments-home.md.
   //
   // The server sorts the raw payload by ACTIVITY (max of last-visit, start,
   // created) so the carousel can float "just visited" cards up. That bump is
