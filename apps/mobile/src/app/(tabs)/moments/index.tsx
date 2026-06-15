@@ -5,7 +5,7 @@ import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, View, 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
 import { normalizeCode, formatCodeInput } from '@verre/core';
-import { Icon } from '@/components/ui/Icon';
+import { Icon, type IconName } from '@/components/ui/Icon';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
@@ -54,10 +54,10 @@ export default function Moments() {
   // moments (the documented overlap). See app/api/me/sessions/route.ts.
   const pinned = useMemo(() => (sessions.data ?? []).filter(isPinnedSession), [sessions.data]);
   const upcomingCount = useMemo(() => (sessions.data ?? []).filter(isUpcomingSession).length, [sessions.data]);
-  // "Moments you've had" = everything that ISN'T upcoming (incl. the pinned
+  // "Recent moments" = everything that ISN'T upcoming (incl. the pinned
   // carousel items — the carousel is a highlight, not a separate set).
   // Upcoming sits in its own row above.
-  const hadCount = (sessions.data?.length ?? 0) - upcomingCount;
+  const recentCount = (sessions.data?.length ?? 0) - upcomingCount;
 
   return (
     <ScrollView
@@ -91,25 +91,35 @@ export default function Moments() {
         <View style={{ paddingTop: 12, gap: 14 }}>
           {pinned.length > 0 ? <LiveStrip moments={pinned} /> : null}
           <JoinBlock />
-          {/* Upcoming sits above "had" and only when non-empty. */}
-          {upcomingCount > 0 ? (
-            <PushRow
-              label="Upcoming moments"
-              count={upcomingCount}
-              onPress={() => router.push({ pathname: '/moments/recents', params: { filter: 'upcoming' } })}
-            />
-          ) : null}
-          {hadCount > 0 ? (
-            <PushRow
-              label="Moments you've had"
-              count={hadCount}
-              onPress={() => router.push('/moments/recents')}
-            />
-          ) : upcomingCount === 0 ? (
+          {/* Upcoming + "Recent moments" share one carded group (hairline-
+              divided, like the settings hub). Each row renders only when non-
+              empty; the group itself shows only when at least one row does. */}
+          {upcomingCount > 0 || recentCount > 0 ? (
+            <PushGroup>
+              {upcomingCount > 0 ? (
+                <PushRow
+                  first
+                  icon="clock"
+                  label="Upcoming moments"
+                  count={upcomingCount}
+                  onPress={() => router.push({ pathname: '/moments/recents', params: { filter: 'upcoming' } })}
+                />
+              ) : null}
+              {recentCount > 0 ? (
+                <PushRow
+                  first={upcomingCount === 0}
+                  icon="sparkles"
+                  label="Recent moments"
+                  count={recentCount}
+                  onPress={() => router.push('/moments/recents')}
+                />
+              ) : null}
+            </PushGroup>
+          ) : (
             <VText variant="small" color="inkSoft" style={{ paddingHorizontal: GUTTER }}>
               No moments yet.
             </VText>
-          ) : null}
+          )}
         </View>
       )}
     </ScrollView>
@@ -510,9 +520,9 @@ function JoinBlock() {
   );
 }
 
-// .setgroup + .setnav — a labelled push-row into a moments sub-list (reused
-// for "Upcoming moments" + "Moments you've had").
-function PushRow({ label, count, onPress }: { label: string; count: number; onPress: () => void }) {
+// .setgroup — carded group wrapping the moments-sub-list push-rows (Upcoming +
+// "Recent moments"), hairline-divided like the settings hub.
+function PushGroup({ children }: { children: React.ReactNode }) {
   const { theme } = useTheme();
   return (
     <View
@@ -526,23 +536,35 @@ function PushRow({ label, count, onPress }: { label: string; count: number; onPr
         overflow: 'hidden',
       }}
     >
-      <Pressable
-        accessibilityRole="button"
-        onPress={onPress}
-        style={({ pressed }) => ({
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 12,
-          paddingVertical: 13,
-          paddingHorizontal: 14,
-          backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
-        })}
-      >
-        <Icon name="clock" size={18} color={theme.inkSoft} />
-        <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>{label}</VText>
-        <VText variant="small" color="inkSoft">{count}</VText>
-        <Icon name="chevron-right" size={18} color={theme.inkFaint} />
-      </Pressable>
+      {children}
     </View>
+  );
+}
+
+// .setnav — a labelled push-row into a moments sub-list. A non-first row draws
+// a top hairline so a group reads as one card divided by a line (the group's
+// own border covers the first row's edge).
+function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon: IconName; label: string; count: number; onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        paddingVertical: 13,
+        paddingHorizontal: 14,
+        borderTopWidth: first ? 0 : 1,
+        borderTopColor: theme.ruleSoft,
+        backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+      })}
+    >
+      <Icon name={icon} size={19} color={theme.inkSoft} />
+      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>{label}</VText>
+      <VText variant="small" color="inkSoft">{count}</VText>
+      <Icon name="chevron-right" size={18} color={theme.inkFaint} />
+    </Pressable>
   );
 }
