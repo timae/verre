@@ -239,6 +239,49 @@ export async function createMoment(body: CreateMomentBody): Promise<{ code: stri
   return res.json();
 }
 
+// Wine type codes the server accepts (lib/session.ts addWineToSession). The
+// design's 7-option dropdown (Orange/Dessert/Fortified…) has no backend home —
+// these 5 are the canonical set, matching the web AddWineModal. A required
+// field; the server 400s without a valid one.
+export type WineTypeCode = 'red' | 'white' | 'spark' | 'rose' | 'nonalc';
+
+// 02b·add add-impression. Adds a wine to a session line-up — host/cohost/
+// provider only (server gates on isHostByIdentity || isProviderById; providers
+// can later edit/delete only what they added). Field names map design→server:
+// Variety→grape, Process→vinification, Type→type. `position` (1-indexed) is
+// honoured for hosts only; providers always append (server ignores it for them).
+// `image` is a base64 data URL — keep it under the wine-image cap
+// (MAX_WINE_IMAGE_BYTES; sanitizeImage silently drops larger). All optional
+// except name + type.
+export type AddWineBody = {
+  name: string;
+  type: WineTypeCode;
+  producer?: string;
+  vintage?: string; // server truncates to 4 chars
+  grape?: string; // design "Variety"
+  region?: string;
+  country?: string; // ISO 3166-1 alpha-2; invalid codes drop server-side
+  vinification?: string; // design "Process"
+  description?: string;
+  purchaseUrl?: string;
+  image?: string; // base64 data URL
+  position?: number; // 1-indexed insert; host-only server-side
+};
+
+// Returns the created wine in the same WireWine shape as the GET/poll (isMine
+// always true — the caller is the adder). The current caller discards it and
+// just invalidates the line-up query (the poll refetches); the typed return is
+// kept so a future optimistic-splice caller has the right shape on hand.
+export async function addWine(code: string, body: AddWineBody): Promise<WireWine> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
 // 02f settings edit. Host-only PATCH; every field is optional — send only
 // what changed. The server (app/api/session/[code]/settings) shares the detail
 // validators with create via lib/sessionFields.ts, pro-gates blind + lifespan,

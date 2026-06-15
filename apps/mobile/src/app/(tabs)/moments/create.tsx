@@ -288,20 +288,17 @@ export default function CreateMoment() {
         ) : null}
       </ScrollView>
 
-      {/* .vfoot — sticky Create bar over a bg fade (transparent at top →
-          solid bg by 38%, so scrolling content dissolves rather than
-          hitting a hard edge). Full-width button, 52pt, Apple's 16pt gap
-          above the safe-area inset. */}
-      <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }} pointerEvents="box-none">
-        <LinearGradient
-          colors={['transparent', theme.bg]}
-          locations={[0, 0.38]}
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-          pointerEvents="none"
-        />
-        <View style={{ paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }} pointerEvents="box-none">
-          <Button title="Create" loadingTitle="Creating…" loading={creating} onPress={onCreate} bar block />
-        </View>
+      {/* Sticky Create bar — SOLID theme.bg fill, no gradient fade (Simon's
+          call, matching SettingsFooter + add.tsx). Full-width button, 52pt,
+          Apple's 16pt gap above the safe-area inset. */}
+      <View
+        style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0,
+          paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16,
+          backgroundColor: theme.bg,
+        }}
+      >
+        <Button title="Create" loadingTitle="Creating…" loading={creating} onPress={onCreate} bar block />
       </View>
 
       <CategorySheet open={categoryOpen} onClose={() => setCategoryOpen(false)} />

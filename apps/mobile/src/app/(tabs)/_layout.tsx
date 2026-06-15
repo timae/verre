@@ -56,14 +56,16 @@ export default function TabsLayout() {
       iconColor={theme.inkSoft}
       labelStyle={{ default: { color: theme.inkSoft }, selected: { color: theme.accent } }}
       // The design ruling "in-flow footer actions replace the nav while
-      // rating/creating": 02e (Previous / Save & next), 02a (Create), and the
-      // 02f settings sub-screens (Moment details / Reveal & blind, Discard /
-      // Save) carry their own action bars — hide the OS tab bar there. The
-      // settings HUB keeps the bar (it's a nav list, no footer).
+      // rating/creating": 02e (Previous / Save & next), 02a (Create), 02b·add
+      // (Add to line-up), and the 02f settings sub-screens (Moment details /
+      // Reveal & blind, Discard / Save) carry their own action bars — hide the
+      // OS tab bar there. The settings HUB keeps the bar (it's a nav list, no
+      // footer).
       hidden={
         anySheetOpen ||
         pathname.includes('/impression/') ||
         pathname.endsWith('/moments/create') ||
+        pathname.endsWith('/add') ||
         pathname.endsWith('/settings/details') ||
         pathname.endsWith('/settings/reveal')
       }
