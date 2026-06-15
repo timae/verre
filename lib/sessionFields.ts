@@ -43,6 +43,15 @@ export function applySessionFields(meta: SessionFieldsTarget, body: Record<strin
     if ('error' in d) return d.error
     meta.dateTo = d.value
   }
+  // End must not precede start. Check the RESULTING pair (a PATCH may set only
+  // one date, so validate against whatever the other ends up being on `meta`),
+  // and only when both are present. Equal is allowed (degenerate but harmless).
+  // Gated on a date actually being in this body so an unrelated PATCH (e.g. just
+  // the name) can't be blocked by a pre-existing inverted pair from old data.
+  const touchedDates = body.dateFrom !== undefined || body.dateTo !== undefined
+  if (touchedDates && meta.dateFrom && meta.dateTo && Date.parse(meta.dateTo) < Date.parse(meta.dateFrom)) {
+    return 'dateTo before dateFrom'
+  }
   // scrub() on every free-text field (lib/CLAUDE.md): strips C0 controls,
   // bidi overrides, and zero-width chars before they reach Redis/Postgres.
   // (The settings PATCH historically omitted it — fixed here for both.)

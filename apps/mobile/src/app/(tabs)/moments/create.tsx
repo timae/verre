@@ -81,6 +81,13 @@ export default function CreateMoment() {
 
   const onCreate = async () => {
     setError(null);
+    // Friendly guard before the request (the picker min/max should make this
+    // unreachable, and the server rejects it regardless — this just gives nice
+    // copy instead of the raw server string).
+    if (dateFrom && dateTo && dateTo < dateFrom) {
+      setError('The end time can’t be before the start time.');
+      return;
+    }
     setCreating(true);
     try {
       const { code } = await createMoment({
@@ -183,12 +190,16 @@ export default function CreateMoment() {
               if (!d) setHideLineup(false);
             }}
             defaultValue={() => nextFullHour()}
+            // From can't be after a set To (the picker greys out later dates).
+            maximumDate={dateTo ?? undefined}
           />
           <DateField
             label="To"
             value={dateTo}
             onChange={setDateTo}
             defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)}
+            // To can't be before a set From.
+            minimumDate={dateFrom ?? undefined}
           />
         </View>
 

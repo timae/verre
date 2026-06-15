@@ -93,6 +93,13 @@ function DetailsForm({
 
   const onSave = async () => {
     setError(null);
+    // Friendly guard before the request (picker min/max should make this
+    // unreachable; the server rejects it regardless — nicer copy than the raw
+    // server string).
+    if (dateFrom && dateTo && dateTo < dateFrom) {
+      setError('The end time can’t be before the start time.');
+      return;
+    }
     setSaving(true);
     // Minimal diff vs the loaded meta — send only changed fields. Dates send
     // null to clear, ISO to set. Timezone rides along whenever either date is
@@ -172,8 +179,8 @@ function DetailsForm({
           <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
         </View>
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} />
-          <DateField label="To" value={dateTo} onChange={setDateTo} defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)} />
+          <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
+          <DateField label="To" value={dateTo} onChange={setDateTo} defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)} minimumDate={dateFrom ?? undefined} />
         </View>
         <View style={{ marginBottom: 14 }}>
           <TextField label="Address" placeholder="Where's it happening?" value={address} onChangeText={setAddress} />
