@@ -242,7 +242,16 @@ export default function SessionLineup() {
         <View style={{ paddingHorizontal: GUTTER }}>
           <VBar
             title={meta?.name ?? ''}
-            right={meta ? <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} /> : undefined}
+            right={
+              meta ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
+                      here), left of the ⋯. Host/cohost/provider only. */}
+                  {canAdd ? <LineupAddButton onPress={openAdd} /> : null}
+                  <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} />
+                </View>
+              ) : undefined
+            }
           />
         </View>
       ) : null}
@@ -364,6 +373,8 @@ export default function SessionLineup() {
         <HeroTopBar
           title={meta.name}
           collapsed={heroCollapsed}
+          canAdd={canAdd}
+          onAdd={openAdd}
           onBack={() => router.back()}
           onMenu={(top) => setSessMenuTop(top)}
         />
@@ -513,10 +524,12 @@ function CoverHeroLineup({
 // blurred theme bg, rule underline, the moment name, ink icons. The ⋯ anchors
 // the shared SessionMenu via measureInWindow (same protocol as SessionMenuButton).
 function HeroTopBar({
-  title, collapsed, onBack, onMenu,
+  title, collapsed, canAdd, onAdd, onBack, onMenu,
 }: {
   title: string;
   collapsed: boolean;
+  canAdd: boolean;
+  onAdd: () => void;
   onBack: () => void;
   onMenu: (anchorBottomY: number) => void;
 }) {
@@ -567,7 +580,11 @@ function HeroTopBar({
               {title}
             </VText>
           </Animated.View>
-          <View ref={moreRef} collapsable={false}>
+          {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
+              + glyph once the bar goes solid (label drop mirrors the Crave
+              button). Host/cohost/provider only. */}
+          {canAdd ? <LineupAddButton onPress={onAdd} collapsed={collapsed} glass /> : null}
+          <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Session menu"
@@ -1117,6 +1134,58 @@ function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void
         <Icon name="more" size={20} color={theme.ink} />
       </Pressable>
     </View>
+  );
+}
+
+// Header "Add" control (.hv-add) — sits left of the ⋯ for host/cohost/provider.
+// Collapses label→glyph exactly like the impression Crave button: when
+// `collapsed`, the label is dropped and only the + glyph remains (no width
+// animation — the row just reflows, same as IrBar's crave). Visual modes:
+//  - plain bar (no cover): BORDERLESS bare-ink + glyph + "Add", NO background
+//    fill and NO accent — it sits beside the borderless ink back/⋯ on that bar,
+//    so it reads as one of that bar's controls (Simon's call).
+//  - cover-hero bar: a GLASS pill pre-collapse (white + glyph + "Add" on the dark
+//    scrim — the fill IS needed there for legibility over the photo), collapsing
+//    to a bare ink + glyph once the bar goes solid, matching the back/⋯ circles.
+function LineupAddButton({
+  onPress, collapsed, glass,
+}: {
+  onPress: () => void;
+  // cover-hero only: drop the label, leave the + glyph (mirrors crave's titleShown)
+  collapsed?: boolean;
+  // cover-hero only: glass pill treatment over the photo (pre-collapse)
+  glass?: boolean;
+}) {
+  const { theme } = useTheme();
+  const onGlass = glass && !collapsed;
+  // Plain bar + collapsed cover: bare ink (like the back/⋯). Only the over-photo
+  // glass variant is white.
+  const iconColor = onGlass ? '#fff' : theme.ink;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Add impression"
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => ({
+        flexDirection: 'row', alignItems: 'center', gap: 6, height: 34,
+        // Only the over-photo glass variant carries a fill + rounded pill; the
+        // plain-bar and collapsed variants are borderless.
+        paddingHorizontal: onGlass ? 13 : 4,
+        borderRadius: onGlass ? 17 : 0,
+        backgroundColor: onGlass ? 'rgba(20,18,15,0.42)' : 'transparent',
+        opacity: pressed ? 0.6 : 1,
+      })}
+    >
+      {/* 17px glyph in every state — matches the .hv-add spec; we borrow the
+          Crave button's collapse mechanism, not its icon size. */}
+      <Icon name="plus" size={17} color={iconColor} />
+      {!collapsed ? (
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: iconColor }}>
+          Add
+        </VText>
+      ) : null}
+    </Pressable>
   );
 }
 
