@@ -37,8 +37,19 @@ export function formatWhen(d: Date): string {
 // manipulator re-encode also STRIPS EXIF/GPS as a side effect; the server's
 // stripJpegMetadata (lib/s3.ts) is the backstop. If 0.82 still exceeds the
 // cap (huge dimensions), step quality down.
-const MAX_COVER_BYTES = 2_600_000; // base64 length; ≈2MB decoded server cap
-export async function fitCover(uri: string, srcW: number, srcH: number): Promise<string | null> {
+//
+// `maxBytes` is the base64-length ceiling and is per-SURFACE, not universal:
+// covers/avatars decode to a ~2MB server cap (MAX_COVER_BYTES), but a WINE
+// image is rejected server-side over 1.5MB base64 by sanitizeImage
+// (lib/session.ts) — and that rejection is SILENT (returns '', so the wine
+// saves with no image). So the impression picker must pass its own smaller cap
+// (MAX_WINE_IMAGE_BYTES); a photo between the two caps would otherwise pass the
+// client check and lose its image server-side.
+export const MAX_COVER_BYTES = 2_600_000; // base64 length; ≈2MB decoded server cap
+// A margin under the 1.5MB sanitizeImage cap to leave room for the
+// `data:image/jpeg;base64,` prefix and base64 overhead.
+export const MAX_WINE_IMAGE_BYTES = 1_400_000;
+export async function fitCover(uri: string, srcW: number, srcH: number, maxBytes = MAX_COVER_BYTES): Promise<string | null> {
   // Clamp the LONG edge to 1200 (web parity); pass the matching axis so a
   // tall portrait isn't left huge. Only downscale, never upscale.
   const resize: ImageManipulator.ActionResize['resize'] =
@@ -51,23 +62,24 @@ export async function fitCover(uri: string, srcW: number, srcH: number): Promise
     ).catch(() => null);
     if (!out?.base64) return null;
     const dataUrl = `data:image/jpeg;base64,${out.base64}`;
-    if (dataUrl.length <= MAX_COVER_BYTES) return dataUrl;
+    if (dataUrl.length <= maxBytes) return dataUrl;
   }
   return null;
 }
 
-// Launches the photo library, fits the result. Returns the cover (data URL +
-// the original asset uri for an immediate local preview) or null on
+// Launches the photo library, fits the result. Returns the picked image (data
+// URL + the original asset uri for an immediate local preview) or null on
 // cancel/failure; `failed` distinguishes a real failure (show an error) from a
-// user cancel (do nothing).
-export async function pickCover(): Promise<{ dataUrl: string; previewUri: string } | null | { failed: true }> {
+// user cancel (do nothing). `maxBytes` defaults to the cover cap; the
+// impression form passes MAX_WINE_IMAGE_BYTES (see fitCover).
+export async function pickCover(maxBytes = MAX_COVER_BYTES): Promise<{ dataUrl: string; previewUri: string } | null | { failed: true }> {
   const result = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
     quality: 1, // full quality from the picker; fitCover does the compression
   }).catch(() => null);
   const asset = result && !result.canceled ? result.assets[0] : null;
   if (!asset?.uri) return null;
-  const dataUrl = await fitCover(asset.uri, asset.width ?? 1200, asset.height ?? 1200);
+  const dataUrl = await fitCover(asset.uri, asset.width ?? 1200, asset.height ?? 1200, maxBytes);
   if (!dataUrl) return { failed: true };
   return { dataUrl, previewUri: asset.uri };
 }

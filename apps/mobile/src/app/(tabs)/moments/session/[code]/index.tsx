@@ -212,6 +212,7 @@ export default function SessionLineup() {
   ) : null;
   const openImpression = (wineId: string) =>
     router.push({ pathname: '/(tabs)/moments/session/[code]/impression/[wineId]', params: { code, wineId } });
+  const openAdd = () => router.push({ pathname: '/(tabs)/moments/session/[code]/add', params: { code } });
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
@@ -319,6 +320,7 @@ export default function SessionLineup() {
           ovc={ovc}
           onCollapsedChange={setHeroCollapsed}
           onPressWine={openImpression}
+          onAdd={openAdd}
         />
       ) : lock ? (
         <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
@@ -347,7 +349,10 @@ export default function SessionLineup() {
                 onPress={() => openImpression(item.id)}
               />
             )}
-            ListEmptyComponent={<EmptyLineup canAdd={canAdd} />}
+            // .lu-add row trails the populated list for host/cohost/provider.
+            // (Empty list shows its own CTA via EmptyLineup instead.)
+            ListFooterComponent={canAdd && (wines?.length ?? 0) > 0 ? <AddImpressionRow onPress={openAdd} /> : null}
+            ListEmptyComponent={<EmptyLineup canAdd={canAdd} onAdd={openAdd} />}
           />
         </>
       )}
@@ -375,7 +380,7 @@ export default function SessionLineup() {
 // subviews[0] finder from force-flipping contentInsetAdjustmentBehavior
 // never→automatic (which would top-inset the photo below the status bar).
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, onCollapsedChange, onPressWine,
+  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
@@ -388,6 +393,7 @@ function CoverHeroLineup({
   ovc: React.ReactNode;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
+  onAdd: () => void;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -477,20 +483,23 @@ function CoverHeroLineup({
           <View style={{ paddingHorizontal: GUTTER }}>
             {ovc}
             {rows.length === 0 ? (
-              <EmptyLineup canAdd={canAdd} />
+              <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
             ) : (
-              rows.map((item, index) => (
-                <View key={item.id}>
-                  {index > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
-                  <LuRow
-                    wine={item}
-                    index={index}
-                    myIdentityId={myIdentityId}
-                    ratings={ratings}
-                    onPress={() => onPressWine(item.id)}
-                  />
-                </View>
-              ))
+              <>
+                {rows.map((item, index) => (
+                  <View key={item.id}>
+                    {index > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                    <LuRow
+                      wine={item}
+                      index={index}
+                      myIdentityId={myIdentityId}
+                      ratings={ratings}
+                      onPress={() => onPressWine(item.id)}
+                    />
+                  </View>
+                ))}
+                {canAdd ? <AddImpressionRow onPress={onAdd} /> : null}
+              </>
             )}
           </View>
         )}
@@ -902,7 +911,7 @@ function LockCard({ revealAt }: { revealAt: number }) {
 
 // .tempty — role-aware: only viewers with add-rights get the "add the first
 // thing" invitation (guest copy is unspecced in the handoff; flagged).
-function EmptyLineup({ canAdd }: { canAdd: boolean }) {
+function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) {
   const { theme } = useTheme();
   // The empty state lives in a flex:1 slot. When the tab bar hides for a sheet,
   // that slot grows (the freed bar space), and center-justified content would
@@ -924,7 +933,49 @@ function EmptyLineup({ canAdd }: { canAdd: boolean }) {
           ? "Add the first thing you're tasting — a bottle, a cup, a plate."
           : 'The host is still putting the line-up together.'}
       </VText>
+      {canAdd ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={onAdd}
+          style={({ pressed }) => ({
+            flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 20,
+            paddingVertical: 11, paddingHorizontal: 18, borderRadius: radius.pill,
+            backgroundColor: theme.accent, opacity: pressed ? 0.85 : 1,
+          })}
+        >
+          <Icon name="plus" size={17} color={theme.accentInk} />
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, lineHeight: 18 }} color={theme.accentInk}>
+            Add impression
+          </VText>
+        </Pressable>
+      ) : null}
     </View>
+  );
+}
+
+// .lu-add — full-width dashed-accent "Add impression" row that trails a
+// populated line-up (host/cohost/provider only). The empty state uses a filled
+// accent pill instead (above); this dashed variant matches the design's
+// in-list affordance.
+function AddImpressionRow({ onPress }: { onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Add impression"
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+        marginTop: 8, paddingVertical: 14, borderRadius: radius.md,
+        borderWidth: 1, borderStyle: 'dashed', borderColor: theme.accentLine,
+        opacity: pressed ? 0.6 : 1,
+      })}
+    >
+      <Icon name="plus" size={17} color={theme.accent} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16 }} color="accent">
+        Add impression
+      </VText>
+    </Pressable>
   );
 }
 
