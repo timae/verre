@@ -195,7 +195,7 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
         {/* "Hosted by" is suppressed when the moment has no name (host_name
             is already the title above); "you" when the viewer is the host
             (id-resolved role, never a name). */}
-        <VText variant="small" color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}>{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
+        <VText variant="small" color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}>{liveMeta(m.date_from, m.name ? (m.role === 'host' ? 'you' : m.host_name) : null)}</VText>
       </View>
     </View>
   );
