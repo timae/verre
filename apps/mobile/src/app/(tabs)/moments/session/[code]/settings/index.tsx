@@ -10,6 +10,8 @@ import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
 import { ApiError, deleteMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { DATE_LOCALE } from '@/lib/locale';
+import { sessionWhen } from '@/lib/momentFormat';
 import { useSettingsSession } from '@/lib/useSettingsSession';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 
@@ -47,7 +49,11 @@ export default function SettingsHub() {
     : (meta?.coHostIds ?? []).includes(myIdentityId) ? 'cohost'
     : (meta?.providerIds ?? []).includes(myIdentityId) ? 'provider'
     : 'taster';
-  const metaDate = shortDay(meta?.dateFrom) ?? shortDay(meta ? new Date(meta.createdAt).toISOString() : null);
+  // Full start–end range (date · time both ends) when the moment has a set
+  // date, matching the line-up "when"; fall back to just the created date when
+  // it has no set date (date-less moments carry no time to show).
+  const metaDate = sessionWhen(meta?.dateFrom, meta?.dateTo)
+    ?? shortDay(meta ? new Date(meta.createdAt).toISOString() : null);
 
   const confirmDelete = () => {
     Alert.alert(
@@ -173,10 +179,11 @@ export default function SettingsHub() {
   );
 }
 
-// "Fri 20 Jun" — read-card date (year-less, like the mock).
+// "Fri 20 Jun" — read-card date (year-less, like the mock). DATE_LOCALE so
+// day/month order follows the device region (English words; see lib/locale.ts).
 function shortDay(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return d.toLocaleDateString(DATE_LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
 }

@@ -27,6 +27,8 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { initials } from '@/lib/initials';
+import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
@@ -762,18 +764,6 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
   );
 }
 
-function initials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return '?';
-  // Code-point-aware (`[...word]`, not `word[i]`): a disambiguated name can
-  // carry an emoji suffix (e.g. "Simon 🍇"), and indexing UTF-16 units would
-  // split the surrogate pair into a broken "?" glyph. Array spread yields whole
-  // code points, so an emoji renders as itself.
-  const cp = (w: string) => [...w];
-  if (words.length === 1) return cp(words[0]).slice(0, 2).join('').toUpperCase();
-  return (cp(words[0])[0] + cp(words[1])[0]).toUpperCase();
-}
-
 // .ovc-foot + .ovc-chip: 28px initials circles, -8 overlap, host = accent,
 // overflow chip = accent tint, "Hosted by <b>…</b>".
 function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void }) {
@@ -865,9 +855,15 @@ function LockCard({ revealAt }: { revealAt: number }) {
     ['min', Math.floor((s % 3600) / 60)],
     ['sec', s % 60],
   ];
-  const when = new Date(revealAt).toLocaleString('en-GB', {
-    weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true,
-  });
+  // DATE_LOCALE → English words, region's date order + 12/24h (see
+  // lib/locale.ts). Date + time joined with a space (no comma/dot between them,
+  // matching the "when" line), so format the two parts separately rather than
+  // letting toLocaleString insert a locale comma.
+  const revealDate = new Date(revealAt);
+  const when =
+    revealDate.toLocaleDateString(DATE_LOCALE, { weekday: 'short', day: 'numeric', month: 'short' }) +
+    ' ' +
+    revealDate.toLocaleTimeString(DATE_LOCALE, { hour: 'numeric', minute: '2-digit' });
   return (
     <View style={{ alignItems: 'center', paddingTop: 30, paddingBottom: 34, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
       <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>

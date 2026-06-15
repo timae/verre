@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { DATE_LOCALE } from '@/lib/locale';
 import { radius, useTheme } from '@/theme';
 
 // Shared moment-form widgets, extracted from create.tsx so the 02f settings
@@ -21,12 +22,13 @@ export function nextFullHour(): Date {
   return d;
 }
 
-// The mock's year-less field format ("Fri 20 Jun · 19:00"), device-locale
-// ordering for the date words.
+// The mock's year-less field format ("Fri 20 Jun 19:00" — no separator between
+// date and time, just a space). DATE_LOCALE gives region-aware date order in
+// English words (see lib/locale.ts); time stays 24h by design regardless of region.
 export function formatWhen(d: Date): string {
-  const date = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
-  return `${date} · ${time}`;
+  const date = d.toLocaleDateString(DATE_LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
+  const time = d.toLocaleTimeString(DATE_LOCALE, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${date} ${time}`;
 }
 
 // Downscale + recompress rather than rejecting a big photo (a cover never
