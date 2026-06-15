@@ -11,6 +11,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
 import { WEB_BASE } from '@/lib/config';
+import { initials } from '@/lib/initials';
 import { alpha } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
@@ -234,7 +235,7 @@ function BrowseChip({ onPress }: { onPress: () => void }) {
 // .ish-chip — avatar (initials) + "+" badge + first name. Tap → OS share.
 function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }) {
   const { theme } = useTheme();
-  const initials = friend.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const ini = initials(friend.name);
   const firstName = friend.name.split(/\s+/)[0];
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`Invite ${friend.name}`} onPress={onPress} style={{ alignItems: 'center', gap: 6, width: 60 }}>
@@ -243,7 +244,7 @@ function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }
           <Image source={{ uri: friend.imageUrl }} style={{ width: 52, height: 52, borderRadius: 26 }} />
         ) : (
           <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 16, color: theme.inkSoft }}>{initials}</VText>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 16, color: theme.inkSoft }}>{ini}</VText>
           </View>
         )}
         <View style={{ position: 'absolute', right: -2, bottom: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: theme.surface }}>
@@ -258,14 +259,14 @@ function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }
 // .fr-row — browse-pane row: avatar · name + "Friend" · Joined chip | Invite.
 function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first: boolean; joined: boolean; onInvite: () => void }) {
   const { theme } = useTheme();
-  const initials = friend.name.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase();
+  const ini = initials(friend.name);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
       {friend.imageUrl ? (
         <Image source={{ uri: friend.imageUrl }} style={{ width: 42, height: 42, borderRadius: 21 }} />
       ) : (
         <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, color: theme.inkSoft }}>{initials}</VText>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, color: theme.inkSoft }}>{ini}</VText>
         </View>
       )}
       <View style={{ flex: 1, minWidth: 0 }}>

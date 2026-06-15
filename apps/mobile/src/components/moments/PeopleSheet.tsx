@@ -7,6 +7,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
+import { initials } from '@/lib/initials';
 import {
   ApiError,
   removeParticipant,
@@ -245,7 +246,7 @@ function PersonRow({
 }) {
   const { theme } = useTheme();
   const rowRef = useRef<View>(null);
-  const ini = p.displayName.trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('').slice(0, 2).toUpperCase() || '?';
+  const ini = initials(p.displayName);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
     isSelf ? { label: 'You', color: 'inkSoft' }
