@@ -30,7 +30,11 @@ export default function AllMoments() {
   // 'upcoming' filter → only future-start sessions, re-sorted SOONEST-first
   // (the server's activity sort puts the furthest-out date on top, which is
   // backwards for an agenda); default → everything that isn't upcoming
-  // ("Moments you've had"), keeping the server's most-recently-active order.
+  // ("Your moments"), keeping the server's most-recently-active order.
+  // Both filters key on `status`, NOT `pinned` — the carousel (pinned) overlaps
+  // both lists: a 'live' moment shows in the had-list AND carousel; an
+  // upcoming+pinned moment shows in the Upcoming filter AND carousel. Full
+  // routing model: app/api/me/sessions/route.ts "Moments-home routing".
   const moments = useMemo(() => {
     const rows = (sessions.data ?? []).filter((r) => (upcoming ? isUpcomingSession(r) : !isUpcomingSession(r)));
     if (upcoming) {
@@ -54,7 +58,7 @@ export default function AllMoments() {
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title={upcoming ? 'Upcoming moments' : "Moments you've had"} />
+        <VBar title={upcoming ? 'Upcoming moments' : 'Your moments'} />
       </View>
       <FlatList
         data={moments}

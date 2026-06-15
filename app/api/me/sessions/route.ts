@@ -102,26 +102,66 @@ export async function GET(req: NextRequest) {
     // Scheduled-but-not-started: a session whose start is in the future is
     // UPCOMING, not live — it must not show as "ongoing" before it begins.
     const dateFuture = startsAt !== null && Date.now() < startsAt
-    // Date-less: drop from live once THIS user hasn't touched the moment
-    // (visit OR an in-moment action, both bump lastSeen) for the cutoff
-    // window. lastSeen 0 (never recorded — pre-feature session) counts as
-    // stale so an old date-less session doesn't resurrect as "Just visited".
+    // Recently-visited: THIS user touched the moment (visit OR an in-moment
+    // action, both bump lastSeen) within the 1h window. lastSeen 0 (never
+    // recorded — pre-feature session) reads as Infinity → not recent, so an
+    // old session doesn't resurrect as "Just visited". This drives two things:
+    // (a) a date-less session stays live only while recent, and (b) ANY moment
+    // (incl. a not-yet-started upcoming one) gets carousel-pinned while recent.
     const idleMs = lastSeen > 0 ? Date.now() - lastSeen : Infinity
-    const datelessStale = !hasDate && idleMs > DATELESS_IDLE_CUTOFF_MS
-    // Carousel-hidden → never live (drops to the list only).
+    const recentlyVisited = idleMs <= DATELESS_IDLE_CUTOFF_MS
+    const datelessStale = !hasDate && !recentlyVisited
+    // Carousel-hidden → never live, never pinned (drops to the list only).
     const hidden = hiddenCarousel.has(r.code)
-    // Buckets: upcoming (future start, still in Redis, participant, not
-    // hidden) takes precedence over live; otherwise live by the usual rules;
-    // else past. `!hidden` gates BOTH live and upcoming so a dismissed moment
-    // is suppressed everywhere (a hidden future session drops to past →
-    // "Moments you've had", consistent with hide on a live one).
+    // ── Moments-home routing (source of truth) ──────────────────────────
+    // The home screen + "All moments" list consume TWO orthogonal signals to
+    // place a moment. Read this before changing the buckets, `pinned`, or
+    // either client filter (apps/mobile .../moments/index.tsx + recents.tsx).
+    //
+    // 1. `status` ('live' | 'upcoming' | 'past') — a 3-way bucket that drives
+    //    the LISTS. The had-list shows every `!== 'upcoming'` row; the Upcoming
+    //    row shows `=== 'upcoming'`. Mutually exclusive: a moment is in exactly
+    //    one list. Precedence: upcoming (future start) beats live; else live;
+    //    else past.
+    // 2. `pinned` (boolean) — INDEPENDENT of `status`; drives the CAROUSEL
+    //    highlight strip alone. The carousel is a promotion layered on top of
+    //    the lists, NOT a fourth bucket, so a pinned moment ALSO sits in
+    //    whichever list its `status` puts it in.
+    //
+    // The cross-product the client must handle:
+    //   live + pinned        → carousel + had-list. Label: dated→"Still
+    //                          ongoing", date-less→"Just visited".
+    //   upcoming + pinned    → carousel + Upcoming row, AT ONCE (you visited a
+    //                          not-yet-started moment <1h ago). Label is
+    //                          "Just visited" (it hasn't begun, so never
+    //                          "Still ongoing"). THIS is the overlap that makes
+    //                          `pinned` a separate signal — one enum can't say
+    //                          "carousel AND Upcoming".
+    //   past / not-pinned    → list only, no carousel.
+    //
+    // INVARIANT: `status` is PURE TENSE — it must NOT depend on `hidden`.
+    // Dismissing from the carousel affects ONLY `pinned` (below), never which
+    // LIST a moment lands in. An earlier version gated the upcoming branch on
+    // `!hidden`; dismissing a future moment then fell through to `past` and the
+    // moment jumped out of Upcoming into "Your moments" — a bug, because an
+    // upcoming moment's list is the Upcoming row, not the had-list (whereas a
+    // live moment's list IS the had-list, so demoting it there was invisible
+    // and masked the issue). Keep `hidden` out of this ternary.
     const status: 'live' | 'upcoming' | 'past' =
-      ttlAlive && participant && dateFuture && !hidden ? 'upcoming'
-      : ttlAlive && participant && !datePast && !datelessStale && !hidden ? 'live'
+      ttlAlive && participant && dateFuture ? 'upcoming'
+      : ttlAlive && participant && !datePast && !datelessStale ? 'live'
       : 'past'
-    // The "ongoing vs just-visited" label is NOT sent — the client derives
-    // it from `status === 'live'` + whether date_from/date_to is present (a
-    // pure restatement of fields already on the wire).
+    // Carousel pin: anything live is pinned; additionally an upcoming moment is
+    // pinned while recently visited (the future-start overlap). `!hidden` lives
+    // HERE and ONLY here — dismissing drops the highlight card, full stop, and
+    // never moves the moment between lists.
+    const pinned =
+      ttlAlive && participant && !hidden &&
+      (status === 'live' || (status === 'upcoming' && recentlyVisited))
+    // The "ongoing vs just-visited" carousel label is NOT sent — the client
+    // derives it from fields already on the wire: "Still ongoing" only when the
+    // moment is dated AND has actually started; otherwise "Just visited" (a
+    // date-less live one, or an upcoming+pinned one that hasn't begun).
     // Activity recency for the "All moments" default sort (most-recently-
     // active on top): the strongest of this user's last touch, the session's
     // scheduled start, and when it was created. Internal — not serialized.
@@ -145,6 +185,7 @@ export async function GET(req: NextRequest) {
       taster_count,
       role,
       status,
+      pinned,
       _lastActiveMs: lastActiveMs,
     }
   }))
