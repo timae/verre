@@ -4,7 +4,7 @@ import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { VBar } from '@/components/VBar';
-import { VText } from '@/components/ui/VText';
+import { ErrorState } from '@/components/ui/ConnectionState';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { ReadCard, SetGroup, SetNav, type SettingsRole } from '@/components/moments/settingsParts';
@@ -36,7 +36,7 @@ export default function SettingsHub() {
   // Live role pill rides the line-up's 5s poll via the shared cache (no own
   // interval — see useSettingsSession). The line-up stays mounted under this
   // pushed screen and keeps refetching this exact key.
-  const { meta, isError } = useSettingsSession(code);
+  const { meta, isError, isFetching, refetch } = useSettingsSession(code);
 
   const hostId = meta?.hostIdentityId ?? (meta?.hostUserId != null ? `u:${meta.hostUserId}` : null);
   const isHostViewer = !!meta && (
@@ -165,13 +165,17 @@ export default function SettingsHub() {
               )}
             </ScrollView>
           </>
+        ) : isError ? (
+          // VBar already rendered above — just the body (no second bar).
+          <ErrorState
+            title="Couldn’t load this moment"
+            message="Check your connection and try again."
+            onRetry={refetch}
+            retrying={isFetching}
+          />
         ) : (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-            {isError ? (
-              <VText variant="small" color="inkSoft">Couldn’t load this moment.</VText>
-            ) : (
-              <ActivityIndicator />
-            )}
+            <ActivityIndicator />
           </View>
         )}
       </View>

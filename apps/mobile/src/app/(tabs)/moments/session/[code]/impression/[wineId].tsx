@@ -23,6 +23,7 @@ import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import {
   getBookmarkedWineIds,
   getSessionState,
@@ -32,6 +33,7 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
@@ -86,6 +88,12 @@ export default function ImpressionDetail() {
   const wine = index >= 0 ? wines![index] : null;
   const total = wines?.length ?? 0;
   const existing: RatingMeta | undefined = ratings?.[myIdentityId]?.ratings[wineId];
+
+  // Reconnecting bar — same passive treatment as the line-up (shared 5s poll,
+  // shared session-state cache). Show when offline, or errored while we still
+  // have a wine to display (stale-but-usable). Overlaid on top of either layout.
+  const online = useIsOnline();
+  const showReconnecting = !online || (state.isError && wine !== null);
 
   // Local-until-commit (web Rate-pane parity): edits live here, the POST
   // fires on Save. Re-seed when the route param swaps to a sibling wine.
@@ -284,8 +292,13 @@ export default function ImpressionDetail() {
           photo→no-photo sibling swap must explicitly reassert the theme
           style. Over the hero (pre-solid) the bar is white. */}
       <StatusBar
-        style={hasPhoto && !titleShown ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
+        // Light glyphs only over the photo; the reconnecting overlay covers the
+        // notch with surfaceSunk, so glyphs revert to theme (light would vanish).
+        style={hasPhoto && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
       />
+      {/* Reconnecting bar — overlaid on top of either layout (briefly over the
+          floating back/⋯ buttons on the photo variant during the blip). */}
+      {showReconnecting ? <ReconnectingBar /> : null}
       {hasPhoto ? (
         // Photo variant: hero runs under the status bar; floating header.
         <>

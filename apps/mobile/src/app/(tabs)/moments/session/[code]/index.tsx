@@ -15,6 +15,7 @@ import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
+import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
 import {
   ApiError,
@@ -188,6 +189,8 @@ export default function SessionLineup() {
   // their wines) — only treat it as locked for non-host viewers whose list
   // came back empty.
   const lock = !isHostViewer && wines !== null && wines.length === 0 ? lockState(meta) : null;
+  // Passive reconnecting strip (this screen polls every 5s and recovers on its
+  // own). Covers both !online (device) and isError-with-stale-data (server).
   const showReconnecting = !online || (state.isError && (wines !== null || meta !== null));
 
   // 02b·10: a moment WITH a cover photo gets the full-bleed collapsing hero
@@ -229,7 +232,10 @@ export default function SessionLineup() {
           if the cover is removed mid-screen). White only over the hero photo
           pre-collapse; the theme default everywhere else. */}
       <StatusBar
-        style={heroShown && !heroCollapsed ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
+        // Light glyphs only while the photo is actually under the status bar.
+        // The reconnecting strip covers the notch with surfaceSunk, so glyphs
+        // revert to the theme default (light glyphs would vanish on it).
+        style={heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
       />
       {!heroShown ? (
         <View style={{ paddingHorizontal: GUTTER }}>
@@ -285,11 +291,11 @@ export default function SessionLineup() {
           />
         </>
       ) : null}
-      {showReconnecting && !heroShown ? (
-        <View style={{ backgroundColor: theme.surfaceSunk, paddingVertical: 6, alignItems: 'center' }}>
-          <VText variant="caption" color="inkSoft">Reconnecting…</VText>
-        </View>
-      ) : null}
+      {/* Reconnecting bar (passive — this screen auto-retries; copy names the
+          problem AND that it's retrying so the user knows without acting).
+          Overlaid on top; on the cover-hero it briefly sits over the floating
+          back/⋯ buttons during the blip — accepted for a transient state. */}
+      {showReconnecting ? <ReconnectingBar /> : null}
       {fatal ? (
         <FatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
           onRetry={() => setVisitAttempt((n) => n + 1)} onBack={() => router.back()} />
