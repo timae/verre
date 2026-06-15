@@ -10,7 +10,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isLiveSession, isUpcomingSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isPinnedSession, isUpcomingSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -48,9 +48,13 @@ export default function Moments() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const live = useMemo(() => (sessions.data ?? []).filter(isLiveSession), [sessions.data]);
+  // The highlight carousel keys on `pinned`, NOT `status` — dismissing a card
+  // ("Remove from home") flips `pinned` only, so filtering on isLiveSession
+  // would never drop it. `pinned` also includes upcoming+recently-visited
+  // moments (the documented overlap). See app/api/me/sessions/route.ts.
+  const pinned = useMemo(() => (sessions.data ?? []).filter(isPinnedSession), [sessions.data]);
   const upcomingCount = useMemo(() => (sessions.data ?? []).filter(isUpcomingSession).length, [sessions.data]);
-  // "Moments you've had" = everything that ISN'T upcoming (incl. the live
+  // "Moments you've had" = everything that ISN'T upcoming (incl. the pinned
   // carousel items — the carousel is a highlight, not a separate set).
   // Upcoming sits in its own row above.
   const hadCount = (sessions.data?.length ?? 0) - upcomingCount;
@@ -85,7 +89,7 @@ export default function Moments() {
         </View>
       ) : (
         <View style={{ paddingTop: 12, gap: 14 }}>
-          {live.length > 0 ? <LiveStrip moments={live} /> : null}
+          {pinned.length > 0 ? <LiveStrip moments={pinned} /> : null}
           <JoinBlock />
           {/* Upcoming sits above "had" and only when non-empty. */}
           {upcomingCount > 0 ? (
@@ -156,42 +160,56 @@ function Thumb({ uri, size, r }: { uri?: string | null; size: number; r: number 
 // The card's inner content (thumb + status + name + meta), shared between the
 // live card and the focused copy drawn in the remove overlay so they match.
 function LiveCardBody({ m }: { m: MySessionRow }) {
-  const { theme } = useTheme();
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
       <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
       <View style={{ flex: 1, gap: 2 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-          <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: theme.positive }} />
-          {/* 'scheduled' = within its date window → genuinely ongoing;
-              'recent' = date-less, recently visited → don't claim live. */}
-          <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-            {liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
-          </VText>
-        </View>
+        {/* 'scheduled' = within its date window → genuinely ongoing;
+            'recent' = date-less, recently visited → don't claim live. */}
+        <VText color="positive" style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+          <VText color="positive" style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Still ongoing'}
+        </VText>
         <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
           {m.name || m.host_name}
         </VText>
         {/* "Hosted by" is suppressed when the moment has no name (host_name
             is already the title above); "you" when the viewer is the host
             (id-resolved role, never a name). */}
-        <VText variant="small" color="inkSoft">{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
+        <VText variant="small" color="inkSoft" numberOfLines={1}>{liveMeta(m.name ? (m.role === 'host' ? 'you' : m.host_name) : null, m.taster_count)}</VText>
       </View>
     </View>
   );
 }
 
+// Fixed height of the LIVE card (the one with the Rejoin button). Derived:
+// paddingTop 12 + body 64 (status 17 + gap 2 + title 23 + gap 2 + meta 20, the
+// text column being taller than the 56 thumb) + gap 12 + button 44 + padding
+// BOTTOM 18 (a touch more breathing room under the button than the top) = 150.
+// This is NOT cosmetic. The real card is wrapped in a SwiftUI
+// `<Host>` → `<RNHostView matchContents>`; per the RNHostView contract,
+// matchContents sizes the host to the RN child's INTRINSIC size — but until
+// that re-resolves after a content change (e.g. a card removal), the host
+// falls back to "RN fills the parent's proposed frame", and SwiftUI can
+// propose an oversized frame. The card then fills it and the spare height
+// inflates the bottom child → the Rejoin button stretched in the single-card
+// state. A FIXED height (not minHeight — minHeight still lets the fill-fallback
+// exceed it) gives matchContents a constant intrinsic size, so there is no
+// ambiguous frame to over-fill. Applied to the live card only; the Preview
+// (body, no button) keeps its natural height.
+const LIVE_CARD_HEIGHT = 150;
 // The visual card surface (bg + radius + padding + shadow). Shared by the
 // live card and its lifted context-menu Preview so they match exactly.
-function CardSurface({ width, children }: { width: number; children: ReactNode }) {
+function CardSurface({ width, height, children }: { width: number; height?: number; children: ReactNode }) {
   const { theme } = useTheme();
   return (
     <View
       style={{
         width,
+        height,
         backgroundColor: theme.surface,
         borderRadius: radius.lg,
-        paddingVertical: 12,
+        paddingTop: 12,
+        paddingBottom: 18,
         paddingHorizontal: 14,
         gap: 12,
         shadowColor: '#000',
@@ -245,9 +263,12 @@ function LiveCard({
     router.push({ pathname: '/moments/session/[code]', params: { code: m.code } });
   };
   const card = (
-    <CardSurface width={width}>
+    <CardSurface width={width} height={LIVE_CARD_HEIGHT}>
       <LiveCardBody m={m} />
-      <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} />
+      {/* flexShrink:0 so the fixed-height card can't compress the button if the
+          content ever measures a hair over LIVE_CARD_HEIGHT (the inverse of the
+          stretch bug — keep the button a constant 44 either way). */}
+      <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} style={{ flexShrink: 0 }} />
     </CardSurface>
   );
   if (isClone) return card;
@@ -287,25 +308,46 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   });
 
   const loop = moments.length > 1;
-  // Loop track: [clone(last), ...real, clone(first)]. Start parked on the
-  // first REAL card (index 1). When momentum lands on a clone, silently jump
-  // to its real twin so it scrolls endlessly both ways.
+  // Loop track: [clone(last), ...real, clone(first)]. The first REAL card sits
+  // at track offset `step` (index 1). When momentum lands on a clone, silently
+  // jump to its real twin so it scrolls endlessly both ways.
   const data = loop ? [moments[moments.length - 1], ...moments, moments[0]] : moments;
 
-  // Park on the first real card ONCE per card-set, not on every content-size
-  // change — otherwise the 15s poll adding/removing a live moment would
-  // re-fire this and yank the user back to card 1 mid-scroll. Reset the
-  // latch (+ clamp the dot) only when the live COUNT actually changes.
-  const parkedRef = useRef(false);
+  // The resting scroll offset for REAL card `p`: loop shifts everything right
+  // by one clone, so card p lives at (p+1)*step; flat list, p*step. Single
+  // helper so every re-anchor (initial park, length change) goes through one
+  // place and can't disagree.
+  const offsetForPage = (p: number) => (loop ? (p + 1) * step : p * step);
+
+  // Scroll re-anchoring funnels through ONE post-layout positioner. The trap we
+  // avoid: scrollTo() called from a commit-phase effect targets an offset the
+  // native ScrollView can't honour yet (new content not laid out), then the
+  // settle fires onScroll and clobbers the dot. So both the initial park AND a
+  // mid-session count change just record the WANTED offset; onContentSizeChange
+  // (which fires AFTER native content is sized) applies it.
+  //
+  // Previously a single latch conflated "park once" with "never re-anchor",
+  // which (a) let onContentSizeChange yank the viewport back to card 1 on every
+  // removal and (b) never reset the offset when the strip collapsed to 1 card.
+  const pendingScrollX = useRef<number | null>(offsetForPage(0));
   useEffect(() => {
-    parkedRef.current = false;
-    setPage((p) => (p < moments.length ? p : 0));
+    // Count changed mid-session: clamp the dot into the new range and KEEP the
+    // user's position (don't reset to card 1) — removing a card leaves the
+    // viewport on the card now in that slot; a 2→1 drop snaps the lone card
+    // flush (offsetForPage(0) is 0 once loop is false).
+    const clamped = Math.min(page, Math.max(0, moments.length - 1));
+    if (clamped !== page) setPage(clamped);
+    pendingScrollX.current = offsetForPage(clamped);
+    // Nudge immediately too; if content isn't laid out yet, onContentSized
+    // re-applies. Harmless double-apply to the same offset.
+    scrollRef.current?.scrollTo({ x: pendingScrollX.current, animated: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [moments.length]);
+
   const onContentSized = () => {
-    if (loop && !parkedRef.current) {
-      scrollRef.current?.scrollTo({ x: step, animated: false });
-      parkedRef.current = true;
-    }
+    if (pendingScrollX.current === null) return;
+    scrollRef.current?.scrollTo({ x: pendingScrollX.current, animated: false });
+    pendingScrollX.current = null;
   };
 
   // Dots track the swipe LIVE (on scroll, not just on settle) so they don't
@@ -345,9 +387,14 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         {data.map((m, i) => {
           // Loop clones are the first (i=0) and last (i=len-1) entries.
           const isClone = loop && (i === 0 || i === data.length - 1);
+          // Stable identity keys: reals keyed by id (so a removal shifts no
+          // real card's key → no spurious remount that would drop a card's
+          // open menu / "Opening…" state); the two clones get fixed sentinels
+          // (they share an id with a real, so they MUST be disambiguated).
+          const key = isClone ? (i === 0 ? 'clone-head' : 'clone-tail') : String(m.id);
           return (
             <LiveCard
-              key={`${m.id}-${i}`}
+              key={key}
               m={m}
               width={cardWidth}
               isClone={isClone}
