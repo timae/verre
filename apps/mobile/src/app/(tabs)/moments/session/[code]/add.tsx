@@ -288,13 +288,15 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
             />
           </View>
         ) : null}
-
-        {error ? <VText variant="small" style={{ marginTop: 16, color: theme.critical }}>{error}</VText> : null}
       </ScrollView>
 
       {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade. The
           create.tsx .vfoot uses a transparent→bg gradient, but we deliberately
-          don't here (Simon's call): a plain opaque bar, matching SettingsFooter. */}
+          don't here (Simon's call): a plain opaque bar, matching SettingsFooter.
+          The error banner lives HERE (above the button), not in the scroll body:
+          a validation error (no name / no type) must always be visible, but the
+          body scrolls (small screen / "Add more details" expanded) and an error
+          at its end would land below the fold. (Web AddWineModal does the same.) */}
       <View
         style={{
           position: 'absolute', left: 0, right: 0, bottom: 0,
@@ -302,6 +304,9 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
           backgroundColor: theme.bg,
         }}
       >
+        {error ? (
+          <VText variant="small" style={{ marginBottom: 10, color: theme.critical }}>{error}</VText>
+        ) : null}
         <Button title="Add to line-up" loadingTitle="Adding…" loading={saving} onPress={onAdd} bar block />
       </View>
 

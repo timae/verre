@@ -125,19 +125,26 @@ export function GlassButton({ label, icon, right, onPress }: { label: string; ic
 // content behind the whole footer, so the outline button only ever shows the
 // solid bar. (Create gets away with the gradient because its single button is
 // a solid fill.)
-export function SettingsFooter({ saving, onDiscard, onSave, bottomInset }: { saving: boolean; onDiscard: () => void; onSave: () => void; bottomInset: number }) {
+export function SettingsFooter({ saving, error, onDiscard, onSave, bottomInset }: { saving: boolean; error?: string | null; onDiscard: () => void; onSave: () => void; bottomInset: number }) {
   const { theme } = useTheme();
   return (
+    // The error banner lives HERE (above the buttons), not in the scroll body:
+    // a save error must always be visible, but the form body scrolls and an
+    // error at its end would land below the fold on a small screen.
     <View
       style={{
         position: 'absolute', left: 0, right: 0, bottom: 0,
-        flexDirection: 'row', gap: 10,
         paddingTop: 14, paddingHorizontal: 16, paddingBottom: bottomInset + 16,
         backgroundColor: theme.bg,
       }}
     >
-      <Button title="Discard" variant="secondary" onPress={onDiscard} disabled={saving} bar style={{ flex: 1 }} />
-      <Button title="Save" loadingTitle="Saving…" loading={saving} variant="positive" onPress={onSave} bar style={{ flex: 1 }} />
+      {error ? (
+        <VText variant="small" style={{ marginBottom: 10, color: theme.critical }}>{error}</VText>
+      ) : null}
+      <View style={{ flexDirection: 'row', gap: 10 }}>
+        <Button title="Discard" variant="secondary" onPress={onDiscard} disabled={saving} bar style={{ flex: 1 }} />
+        <Button title="Save" loadingTitle="Saving…" loading={saving} variant="positive" onPress={onSave} bar style={{ flex: 1 }} />
+      </View>
     </View>
   );
 }

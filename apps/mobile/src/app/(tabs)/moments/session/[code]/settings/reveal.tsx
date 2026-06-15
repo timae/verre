@@ -150,10 +150,9 @@ function RevealForm({
         <VText variant="caption" color="inkSoft" style={{ lineHeight: 18, marginTop: 18 }}>
           Some options need a start time, or a PRO plan. They unlock automatically once they apply.
         </VText>
-        {error ? <VText variant="small" style={{ marginTop: 12, color: theme.critical }}>{error}</VText> : null}
       </ScrollView>
 
-      <SettingsFooter saving={saving} onDiscard={onDiscard} onSave={onSave} bottomInset={insets.bottom} />
+      <SettingsFooter saving={saving} error={error} onDiscard={onDiscard} onSave={onSave} bottomInset={insets.bottom} />
     </View>
   );
 }
