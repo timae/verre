@@ -4,6 +4,33 @@ import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { redis, k, getLastSeen, getHiddenCarousel } from '@/lib/redis'
 
+// Carousel-card label: 'now' (live + started), 'soon' (pinned but not yet
+// started), 'visited' (recently opened, started/date-less), or null (not
+// pinned). Computed server-side and sent on the wire — see the routing-model
+// block in GET. Mirrored by the mobile `CarouselLabel` wire type.
+export type CarouselLabel = 'now' | 'soon' | 'visited' | null
+
+// ── Moments-home timing policy (product rulings, NOT tuning knobs) ──────────
+// Module-scope constants, not request state. Changing a value is a product
+// decision, not a perf dial. They stay here (the sole consumer) rather than in
+// @verre/core, whose charter is time-free domain logic — the client reasons
+// about none of these windows; it renders the server-computed label/status.
+//
+// "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
+// session to past the moment it passes — no grace. With only a start time we
+// assume a duration; 8h keeps an evening tasting pinned through the night and
+// nothing more.
+const ASSUMED_DURATION_MS = 8 * 3600 * 1000
+// A DATE-LESS session can't be claimed "ongoing" — we only know THIS user
+// touched it recently. Keep it pinned (as a "Just visited" card) for 1h since
+// their last activity (Redis s:{CODE}:lastseen, bumped on visit + rate —
+// per-user, NOT session-wide), then drop it to recents. The ephemeral nature
+// (dies with the session) is why it lives in Redis, not a Postgres column.
+const DATELESS_IDLE_CUTOFF_MS = 3600 * 1000
+// A dated, not-yet-started moment enters the carousel once its start is this
+// close, regardless of whether the user has opened it ("starting soon").
+const SOON_MS = 24 * 3600 * 1000
+
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
@@ -45,18 +72,6 @@ export async function GET(req: NextRequest) {
   // below so they drop from the carousel (still shown in "All moments").
   // One Redis call for the whole list, not per row.
   const hiddenCarousel = await getHiddenCarousel(userId)
-  // "Time over → recent" (Simon's ruling): a stated end (date_to) flips the
-  // session to past the moment it passes — no grace. With only a start time
-  // we have to assume a duration; 8h keeps an evening tasting pinned through
-  // the night and nothing more.
-  const ASSUMED_DURATION_MS = 8 * 3600 * 1000
-  // A DATE-LESS session can't be claimed "ongoing" — we only know THIS user
-  // touched it recently. Keep it pinned (as a "Just visited" card) for 1h
-  // since their last activity (Redis s:{CODE}:lastseen, bumped on visit +
-  // rate — per-user, NOT session-wide), then drop it to recents. The
-  // ephemeral nature (dies with the session) is why it lives in Redis, not
-  // a Postgres column.
-  const DATELESS_IDLE_CUTOFF_MS = 3600 * 1000
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
@@ -124,56 +139,49 @@ export async function GET(req: NextRequest) {
     const datelessStale = !hasDate && !recentlyVisited
     // Carousel-hidden → never live, never pinned (drops to the list only).
     const hidden = hiddenCarousel.has(r.code)
-    // ── Moments-home routing (source of truth) ──────────────────────────
-    // The home screen + "All moments" list consume TWO orthogonal signals to
-    // place a moment. Read this before changing the buckets, `pinned`, or
-    // either client filter (apps/mobile .../moments/index.tsx + recents.tsx).
+    // ── Moments-home routing ────────────────────────────────────────────
+    // Full model (the two orthogonal axes + the label, the cross-product, and
+    // every invariant below): docs/dev/moments-home.md. This is the canonical
+    // computation site — keep the doc in sync when changing it. Inline notes
+    // are kept only where they guard a specific line.
     //
-    // 1. `status` ('live' | 'upcoming' | 'past') — a 3-way bucket that drives
-    //    the LISTS. The had-list shows every `!== 'upcoming'` row; the Upcoming
-    //    row shows `=== 'upcoming'`. Mutually exclusive: a moment is in exactly
-    //    one list. Precedence: upcoming (future start) beats live; else live;
-    //    else past.
-    // 2. `pinned` (boolean) — INDEPENDENT of `status`; drives the CAROUSEL
-    //    highlight strip alone. The carousel is a promotion layered on top of
-    //    the lists, NOT a fourth bucket, so a pinned moment ALSO sits in
-    //    whichever list its `status` puts it in.
-    //
-    // The cross-product the client must handle:
-    //   live + pinned        → carousel + had-list. Label: dated→"Happening
-    //                          now", date-less→"Just visited".
-    //   upcoming + pinned    → carousel + Upcoming row, AT ONCE (you visited a
-    //                          not-yet-started moment <1h ago). Label is
-    //                          "Just visited" (it hasn't begun, so never
-    //                          "Happening now"). THIS is the overlap that makes
-    //                          `pinned` a separate signal — one enum can't say
-    //                          "carousel AND Upcoming".
-    //   past / not-pinned    → list only, no carousel.
-    //
-    // INVARIANT: `status` is PURE TENSE — it must NOT depend on `hidden`.
-    // Dismissing from the carousel affects ONLY `pinned` (below), never which
-    // LIST a moment lands in. An earlier version gated the upcoming branch on
-    // `!hidden`; dismissing a future moment then fell through to `past` and the
-    // moment jumped out of Upcoming into "Recent moments" — a bug, because an
-    // upcoming moment's list is the Upcoming row, not the had-list (whereas a
-    // live moment's list IS the had-list, so demoting it there was invisible
-    // and masked the issue). Keep `hidden` out of this ternary.
+    // `status` (drives the LISTS) is PURE TENSE — it must NOT depend on
+    // `hidden`. Dismissing from the carousel affects ONLY `pinned`, never which
+    // LIST a moment lands in (gating the upcoming branch on `!hidden` was a bug:
+    // a dismissed future moment fell through to `past` and jumped out of the
+    // Upcoming list). Precedence: upcoming (future start) beats live; else live;
+    // else past.
     const status: 'live' | 'upcoming' | 'past' =
       ttlAlive && participant && dateFuture ? 'upcoming'
       : ttlAlive && participant && !datePast && !datelessStale ? 'live'
       : 'past'
-    // Carousel pin: anything live is pinned; additionally an upcoming moment is
-    // pinned while recently visited (the future-start overlap). `!hidden` lives
-    // HERE and ONLY here — dismissing drops the highlight card, full stop, and
-    // never moves the moment between lists.
+    // "Starting soon": a dated, not-yet-started moment whose start is within
+    // 24h — pinned even if NEVER visited. The dateFuture guard is load-bearing:
+    // without it a PAST start also satisfies "<= 24h from now" (negative delta)
+    // and would wrongly re-pin a recently-ended dated moment.
+    const startsSoon = startsAt !== null && dateFuture && startsAt - Date.now() <= SOON_MS
+    // Carousel pin — INDEPENDENT of `status` (a pinned moment still sits in its
+    // status's list). `!hidden` lives HERE and ONLY here — dismissing drops the
+    // highlight card, full stop, never moves the moment between lists.
     const pinned =
       ttlAlive && participant && !hidden &&
-      (status === 'live' || (status === 'upcoming' && recentlyVisited))
-    // The "happening-now vs just-visited" carousel label is NOT sent — the
-    // client derives it from fields already on the wire: "Happening now" only
-    // when the moment is dated AND has actually started; otherwise "Just
-    // visited" (a
-    // date-less live one, or an upcoming+pinned one that hasn't begun).
+      (status === 'live' || recentlyVisited || startsSoon)
+    // Carousel chip — computed HERE, not client-side (the client can't: it
+    // depends on per-user Redis lastSeen, never serialized — so the client is a
+    // pure renderer and no recency timestamp leaks). null ⟺ !pinned. Precedence
+    // (Simon's rulings — see the doc for the why):
+    //   1. not-yet-started wins over everything → 'soon'
+    //   2. genuinely live (dated + started) wins over recency → 'now'
+    //      (`hasDate` gates it: a DATE-LESS live card can't claim "ongoing")
+    //   3. else recently-visited → 'visited'
+    // The trailing 'now' is unreachable given `pinned`'s definition — a safe
+    // least-wrong terminal if the pin invariant ever drifts.
+    const carouselLabel: CarouselLabel =
+      !pinned ? null
+      : dateFuture ? 'soon'
+      : status === 'live' && hasDate ? 'now'
+      : recentlyVisited ? 'visited'
+      : 'now'
     // Activity recency for the "All moments" default sort (most-recently-
     // active on top): the strongest of this user's last touch, the session's
     // scheduled start, and when it was created. Internal — not serialized.
@@ -201,6 +209,11 @@ export async function GET(req: NextRequest) {
       role,
       status,
       pinned,
+      // The strip card's chip ('now'/'soon'/'visited'/null), server-authoritative
+      // (the client can't recompute it — per-user Redis lastSeen isn't on the
+      // wire). An enum leaks LESS than a raw timestamp: the 1h cutoff stays
+      // server-side and the client can't even infer it.
+      carouselLabel,
       _lastActiveMs: lastActiveMs,
     }
   }))

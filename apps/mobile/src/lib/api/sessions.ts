@@ -5,6 +5,12 @@ import { apiFetch } from '../apiFetch';
 
 export type SessionRole = 'host' | 'cohost' | 'provider' | null;
 
+// Carousel-card chip, computed server-side. null ⟺ not pinned. 'now' = live +
+// started, 'soon' = pinned but not yet started, 'visited' = recently opened.
+// Hand-mirrored from CarouselLabel in app/api/me/sessions/route.ts (web↔native
+// wire-type convention) — keep in sync. See docs/dev/moments-home.md.
+export type CarouselLabel = 'now' | 'soon' | 'visited' | null;
+
 export type MySessionRow = {
   id: number;
   code: string;
@@ -23,34 +29,20 @@ export type MySessionRow = {
   lifespan: string | null;
   taster_count: number | null;
   role: SessionRole;
-  // Server-computed Moments-home routing — TWO orthogonal signals (see
-  // app/api/me/sessions/route.ts "Moments-home routing" for the full model):
-  // - `status` ('live' | 'upcoming' | 'past') drives the LISTS: the had-list
-  //   shows `!== 'upcoming'`, the Upcoming row shows `=== 'upcoming'`.
-  // - `pinned` drives the CAROUSEL alone, INDEPENDENT of status. It's true for
-  //   every live moment AND for an upcoming one visited <1h ago — so an
-  //   upcoming+pinned moment shows in the carousel AND the Upcoming row at once.
+  // Server-computed Moments-home routing — full model in docs/dev/moments-home.md.
+  // `status` drives the LISTS (Upcoming = `=== 'upcoming'`, Recent = the rest);
+  // `pinned` drives the CAROUSEL, independent of status (the two overlap);
+  // `carouselLabel` is the strip card's chip (null ⟺ !pinned). All three are
+  // server-authoritative — the client renders them verbatim, never recomputes.
   status: 'live' | 'upcoming' | 'past';
   pinned: boolean;
+  carouselLabel: CarouselLabel;
   cover_photo_url: string | null;
 };
 
-// Carousel-card label, derived client-side (not sent): "Happening now" only
-// when the moment is dated AND has actually started; otherwise "Just visited"
-// (a date-less live card, or an upcoming+pinned one that hasn't begun — we
-// can't claim a not-yet-started moment is happening now).
-export const liveKind = (r: MySessionRow): 'scheduled' | 'recent' => {
-  const startsAt = r.date_from ? new Date(r.date_from).getTime() : null;
-  const started = startsAt !== null && Date.now() >= startsAt;
-  // date_to without date_from is treated as started (the window is open now).
-  const hasOpenEnd = !r.date_from && !!r.date_to;
-  return started || hasOpenEnd ? 'scheduled' : 'recent';
-};
-
-export const isLiveSession = (r: MySessionRow) => r.status === 'live';
 export const isUpcomingSession = (r: MySessionRow) => r.status === 'upcoming';
 // Carousel membership — the `pinned` signal, NOT `status` (an upcoming moment
-// can be pinned). Use this for the highlight strip, never `isLiveSession`.
+// can be pinned). Use this for the highlight strip.
 export const isPinnedSession = (r: MySessionRow) => r.pinned;
 
 export type WireWine = {

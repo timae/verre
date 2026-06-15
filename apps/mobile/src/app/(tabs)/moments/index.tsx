@@ -10,7 +10,7 @@ import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isPinnedSession, isUpcomingSession, joinMoment, liveKind, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isPinnedSession, isUpcomingSession, joinMoment, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -49,9 +49,9 @@ export default function Moments() {
   }, []);
 
   // The highlight carousel keys on `pinned`, NOT `status` — dismissing a card
-  // ("Remove from home") flips `pinned` only, so filtering on isLiveSession
-  // would never drop it. `pinned` also includes upcoming+recently-visited
-  // moments (the documented overlap). See app/api/me/sessions/route.ts.
+  // ("Remove from home") flips `pinned` only, so filtering on status would
+  // never drop it. `pinned` overlaps both lists (an upcoming pinned moment sits
+  // in the carousel AND the Upcoming row). Full model: docs/dev/moments-home.md.
   const pinned = useMemo(() => (sessions.data ?? []).filter(isPinnedSession), [sessions.data]);
   const upcomingCount = useMemo(() => (sessions.data ?? []).filter(isUpcomingSession).length, [sessions.data]);
   // "Recent moments" = everything that ISN'T upcoming (incl. the pinned
@@ -182,13 +182,22 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
       <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
       <View style={{ flex: 1, gap: 2 }}>
-        {/* 'scheduled' = within its date window → genuinely ongoing;
-            'recent' = date-less, recently visited → don't claim live. */}
-        <VText color="positive" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
-          {/* The nested ● needs its OWN cap — maxFontSizeMultiplier doesn't
-              inherit to a nested Text in RN. */}
-          <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{liveKind(m) === 'recent' ? 'Just visited' : 'Happening now'}
-        </VText>
+        {/* Status chip — server-computed (m.carouselLabel; see
+            docs/dev/moments-home.md). 'now'/'visited' carry the green ●
+            (active/recent); 'soon' reads "Starting soon" with NO dot — it isn't
+            live yet, so a live dot would mislead. The start time rides the meta
+            line below (liveMeta's "Starts …"), so the chip stays generic. */}
+        {m.carouselLabel === 'soon' ? (
+          <VText color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+            Starting soon
+          </VText>
+        ) : (
+          <VText color="positive" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+            {/* The nested ● needs its OWN cap — maxFontSizeMultiplier doesn't
+                inherit to a nested Text in RN. */}
+            <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{m.carouselLabel === 'visited' ? 'Just visited' : 'Happening now'}
+          </VText>
+        )}
         <VText numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
           {m.name || m.host_name}
         </VText>
@@ -410,6 +419,18 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
 
   return (
     <View style={{ gap: 8 }}>
+      {/* Section title — the strip mixes now / starting-soon / recently-visited
+          moments, so a tense-neutral "Moments of interest" rather than a
+          status word. Gutter-padded to align with the cards (the ScrollView
+          pads itself). */}
+      <VText
+        color="inkSoft"
+        numberOfLines={1}
+        maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}
+        style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, letterSpacing: 0.6, textTransform: 'uppercase' }}
+      >
+        Moments of interest
+      </VText>
       <ScrollView
         ref={scrollRef}
         horizontal
