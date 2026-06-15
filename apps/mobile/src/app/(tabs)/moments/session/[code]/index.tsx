@@ -388,6 +388,12 @@ function CoverHeroLineup({
   // actually flips (a real flip re-renders the whole screen — a raw scrollY in
   // parent state would do that every frame).
   const collapsedRef = useRef(false);
+  // Top-overscroll flag (mirrors the impression hero): while the photo rides
+  // down with the rubber band its sharp top corners get a soft radius so the
+  // exposed edge doesn't read razor-sharp; flush full-bleed again at rest. Only
+  // flips at the overscroll boundary, so the local re-render is cheap.
+  const [pulled, setPulled] = useState(false);
+  const pulledRef = useRef(false);
   const rows = wines ?? [];
   return (
     <>
@@ -400,14 +406,27 @@ function CoverHeroLineup({
             collapsedRef.current = next;
             onCollapsedChange(next);
           }
+          const p = y < -1;
+          if (p !== pulledRef.current) {
+            pulledRef.current = p;
+            setPulled(p);
+          }
         }}
         scrollEventThrottle={16}
         contentInsetAdjustmentBehavior="never"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
       >
-        {/* index 0 — .hero-bleed-top: full-bleed photo, scrim, white title */}
-        <View style={{ height: heroH, overflow: 'hidden' }}>
+        {/* index 0 — .hero-bleed-top: full-bleed photo, scrim, white title.
+            Soft top corners only while pulled (overscroll); flush at rest. */}
+        <View
+          style={{
+            height: heroH,
+            overflow: 'hidden',
+            borderTopLeftRadius: pulled ? radius.xl : 0,
+            borderTopRightRadius: pulled ? radius.xl : 0,
+          }}
+        >
           <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
           {/* .hero-bleed-scrim — top tint keeps the white status-bar glyphs +
               glass controls legible; the stronger bottom carries the title. */}
