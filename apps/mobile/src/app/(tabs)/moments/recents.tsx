@@ -14,13 +14,23 @@ import { radius, useTheme } from '@/theme';
 
 const GUTTER = 22;
 
+// Sort key for the Recent list: the SET date when present, else the created
+// date as an internal fallback (never shown). A missing/invalid timestamp
+// sinks to the bottom (0).
+function effectiveDate(r: MySessionRow): number {
+  const iso = r.date_from ?? r.created_at;
+  const t = iso ? new Date(iso).getTime() : 0;
+  return Number.isNaN(t) ? 0 : t;
+}
+
 // 02s·2 — pushed "All moments" list to the .sh-row pixel spec: flat rows
 // with rule-soft separators (no cards), 46px thumb, name 15/600, meta 13,
 // role chip on its own line, chevron. Shows EVERY moment (incl. the ones
-// surfaced in the home carousel), server-sorted most-recently-active first
-// — no per-row status tag. Rows push back into the session: a date-past
-// session is often still Redis-alive and opens normally; a truly expired one
-// lands on the session screen's "This moment has ended" state.
+// surfaced in the home carousel). Sorted by effective date (set date, else
+// created) newest-first — NOT by the server's activity order, so a recent
+// visit doesn't jump the date sort. Rows push back into the session: a
+// date-past session is often still Redis-alive and opens normally; a truly
+// expired one lands on the session screen's "This moment has ended" state.
 export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
@@ -30,11 +40,17 @@ export default function AllMoments() {
   // 'upcoming' filter → only future-start sessions, re-sorted SOONEST-first
   // (the server's activity sort puts the furthest-out date on top, which is
   // backwards for an agenda); default → everything that isn't upcoming
-  // ("Recent moments"), keeping the server's most-recently-active order.
+  // ("Recent moments"), re-sorted by EFFECTIVE DATE newest-first.
   // Both filters key on `status`, NOT `pinned` — the carousel (pinned) overlaps
   // both lists: a 'live' moment shows in the had-list AND carousel; an
   // upcoming+pinned moment shows in the Upcoming filter AND carousel. Full
   // routing model: app/api/me/sessions/route.ts "Moments-home routing".
+  //
+  // The server sorts the raw payload by ACTIVITY (max of last-visit, start,
+  // created) so the carousel can float "just visited" cards up. That bump is
+  // wrong for these lists — a recently-opened moment shouldn't jump the date
+  // order — so both filters impose their own date sort here, leaving the
+  // server order for the carousel only.
   const moments = useMemo(() => {
     const rows = (sessions.data ?? []).filter((r) => (upcoming ? isUpcomingSession(r) : !isUpcomingSession(r)));
     if (upcoming) {
@@ -44,7 +60,10 @@ export default function AllMoments() {
         return ta - tb; // soonest start first
       });
     }
-    return rows;
+    // Recent: effective date = the SET date (date_from) if present, else the
+    // created date as an internal fallback. Newest first, interleaved (a
+    // date-less moment created yesterday can sit above one dated last week).
+    return [...rows].sort((a, b) => effectiveDate(b) - effectiveDate(a));
   }, [sessions.data, upcoming]);
 
   if (sessions.isPending) {
@@ -81,6 +100,7 @@ export default function AllMoments() {
 function RecentRow({ row }: { row: MySessionRow }) {
   const { theme } = useTheme();
   const router = useRouter();
+  const meta = recentMeta(row.date_from, row.name ? (row.role === 'host' ? 'you' : row.host_name) : null);
   return (
     // .sh-row: gap 12, 10px vertical padding, transparent.
     <Pressable
@@ -95,15 +115,26 @@ function RecentRow({ row }: { row: MySessionRow }) {
       })}
     >
       <Thumb46 uri={row.cover_photo_url} />
+      {/* Tight line boxes on the stacked single-line rows: the body/small
+          line-height multipliers (23 / 20) are tuned for multi-line paragraphs
+          and here add leading above+below each glyph, inflating the visible
+          gaps beyond the design's 2px column gap + 5px chip margin. Snug
+          line-heights let those design gaps read true. */}
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
+        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 20 }}>
           {row.name || row.host_name}
         </VText>
-        {/* "Hosted by" suppressed when host_name is already the title above;
-            "you" when the viewer is the host (id-resolved role, never a name). */}
-        <VText variant="small" color="inkSoft">
-          {recentMeta(row.date_from ?? row.created_at, row.name ? (row.role === 'host' ? 'you' : row.host_name) : null)}
-        </VText>
+        {/* Show ONLY the set date (date_from); a moment with no set date shows
+            no date here (created_at is internal — used for ordering, never
+            displayed). "Hosted by" suppressed when host_name is already the
+            title; "you" when the viewer is the host (id-resolved, never a name).
+            A date-less, name-less moment yields an empty string here — render
+            nothing so it doesn't leave a blank line box between title + chip. */}
+        {meta ? (
+          <VText variant="small" color="inkSoft" style={{ lineHeight: 17 }}>
+            {meta}
+          </VText>
+        ) : null}
         {row.role ? (
           <View style={{ marginTop: 5, flexDirection: 'row' }}>
             <RoleChip role={row.role} />
