@@ -37,19 +37,15 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_SCRIM, IMPRESSION_HERO_RATIO as HERO_RATIO } from '@/lib/layout';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
-const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22)
+const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
 // Direction of the last sibling-wine replace — read by the incoming screen
 // to pick the replace animation (push for next, pop for previous).
 let navDir: 'next' | 'prev' = 'next';
-// .ir-screen-hero .ir-hero is 280px in a 744px mock screen (360×760 phone
-// frame, Vero - Screens.html) — ≈37.6% of the screen. A flat 280pt reads
-// noticeably smaller on real devices, so the hero scales with the window.
-const HERO_RATIO = 280 / 744;
-const FOOT_CLEARANCE = 130; // .vbody bottom padding clears the .ir-foot bar
 
 // 02e impression detail — info + the adaptive rating moment, to the
 // vero-screens irScreen pixel spec. Photo variant = full-bleed hero with a
@@ -509,7 +505,7 @@ function IrBar({
   const onGlass = glass && !solid;
   const iconColor = onGlass ? '#fff' : theme.ink;
   const circle = onGlass
-    ? { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(20,18,15,0.42)', alignItems: 'center' as const, justifyContent: 'center' as const }
+    ? { width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
     : { width: 30, height: 30, alignItems: 'center' as const, justifyContent: 'center' as const };
 
   return (
@@ -545,7 +541,7 @@ function IrBar({
             height: 34,
             paddingHorizontal: onGlass ? 13 : 4,
             borderRadius: onGlass ? 17 : 0,
-            backgroundColor: onGlass ? 'rgba(20,18,15,0.42)' : 'transparent',
+            backgroundColor: onGlass ? GLASS_FILL : 'transparent',
             opacity: revealBusy ? 0.5 : pressed ? 0.6 : 1,
           })}
         >
@@ -570,7 +566,7 @@ function IrBar({
           height: 34,
           paddingHorizontal: onGlass ? 13 : 4,
           borderRadius: onGlass ? 17 : 0,
-          backgroundColor: onGlass ? 'rgba(20,18,15,0.42)' : 'transparent',
+          backgroundColor: onGlass ? GLASS_FILL : 'transparent',
           opacity: pressed ? 0.6 : 1,
         })}
       >
@@ -692,7 +688,7 @@ function Hero({
     >
       <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
       <LinearGradient
-        colors={['rgba(15,12,10,0.25)', 'rgba(15,12,10,0.05)', 'rgba(15,12,10,0.82)']}
+        colors={HERO_SCRIM}
         locations={[0, 0.45, 1]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />

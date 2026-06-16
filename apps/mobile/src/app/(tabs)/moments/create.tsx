@@ -17,10 +17,8 @@ import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
-
-const GUTTER = 22;
-const FOOT_CLEARANCE = 120; // .vbody bottom padding clears the .vfoot bar
 
 // 02a moment creation, to the tCreate pixel spec: .at-photo cover affordance,
 // Moment name, "What are you tasting?" category, .trow2 From–To, Hide
@@ -345,7 +343,7 @@ function CoverPicker({
             width: 28,
             height: 28,
             borderRadius: 14,
-            backgroundColor: 'rgba(20,18,15,0.55)',
+            backgroundColor: GLASS_FILL,
             alignItems: 'center',
             justifyContent: 'center',
           }}

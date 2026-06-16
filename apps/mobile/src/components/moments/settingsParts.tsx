@@ -5,9 +5,8 @@ import { ErrorState } from '@/components/ui/ConnectionState';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
+import { GLASS_FILL, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
-
-const GUTTER = 22;
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
 // details + Reveal & blind). Pixel-spec from the design's inline CSS
@@ -110,7 +109,7 @@ export function GlassButton({ label, icon, right, onPress }: { label: string; ic
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={{ position: 'absolute', top: 10, right, width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(20,18,15,0.42)', alignItems: 'center', justifyContent: 'center' }}
+      style={{ position: 'absolute', top: 10, right, width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center' }}
     >
       <Icon name={icon} size={17} color="#fff" />
     </Pressable>

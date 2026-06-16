@@ -5,7 +5,7 @@ import { ActivityIndicator, FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -13,8 +13,6 @@ import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/Co
 import { getMySessions, isUpcomingSession, type MySessionRow } from '@/lib/api/sessions';
 import { recentMeta } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
-
-const GUTTER = 22;
 
 // Sort key for the Recent list: the SET date when present, else the created
 // date as an internal fallback (never shown). A missing/invalid timestamp

@@ -7,7 +7,7 @@ import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/sw
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
@@ -22,7 +22,6 @@ import { elevation, radius, useTheme } from '@/theme';
 // the live strip bleeds to the screen edges. Deviations (flagged): no QR
 // button in the code field (camera lands with deep linking), carousel
 // doesn't loop (v1).
-const GUTTER = 22;
 
 export default function Moments() {
   const insets = useSafeAreaInsets();
