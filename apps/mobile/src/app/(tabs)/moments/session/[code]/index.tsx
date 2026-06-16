@@ -15,7 +15,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
-import { TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { COVER_HERO_RATIO as HERO_RATIO, GLASS_FILL, GUTTER, HERO_SCRIM, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
@@ -42,14 +42,10 @@ import { popRevealMode, pushRevealMode } from '@/lib/sheetVisibility';
 import { motion, radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
-const GUTTER = 22;
 const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
-// 02b·10 cover hero (Vero - Screens.html .hero-bleed-top): full-bleed photo
-// that scrolls under the status bar, with a collapsing top bar. The mock's
-// 248px bleed is measured in its 800px phone-screen frame (≈31%); a flat
-// 248pt reads short on real devices, so the hero scales with the window like
-// the impression hero does.
-const HERO_RATIO = 248 / 800;
+// HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
+// full-bleed photo under the status bar measured at 248/800; it scales with the
+// window like the impression hero).
 // The floating bar collapses (blur bg + title) when the on-photo title scrolls
 // under it — a MEASURED threshold (titleBottom − BAR_H), computed in
 // CoverHeroLineup, not a magic scroll constant (which mis-fired on a
@@ -764,8 +760,10 @@ function CoverHeroLineup({
           }}
         >
           <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          {/* Shared HERO_SCRIM (converged to the impression hero's gradient — was
+              0.28/0.05/0.72, slightly lighter at the bottom). */}
           <LinearGradient
-            colors={['rgba(15,12,10,0.28)', 'rgba(15,12,10,0.05)', 'rgba(15,12,10,0.72)']}
+            colors={HERO_SCRIM}
             locations={[0, 0.45, 1]}
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           />
@@ -914,7 +912,7 @@ function HeroTopBar({
   const iconColor = collapsed ? theme.ink : '#fff';
   const circle = collapsed
     ? { width: 34, height: 34, alignItems: 'center' as const, justifyContent: 'center' as const }
-    : { width: 34, height: 34, borderRadius: 17, backgroundColor: 'rgba(20,18,15,0.5)', alignItems: 'center' as const, justifyContent: 'center' as const };
+    : { width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const };
   return (
     <View
       pointerEvents="box-none"
@@ -1771,7 +1769,7 @@ function LineupAddButton({
         // plain-bar and collapsed variants are borderless.
         paddingHorizontal: onGlass ? 13 : 4,
         borderRadius: onGlass ? 17 : 0,
-        backgroundColor: onGlass ? 'rgba(20,18,15,0.42)' : 'transparent',
+        backgroundColor: onGlass ? GLASS_FILL : 'transparent',
         opacity: pressed ? 0.6 : 1,
       })}
     >

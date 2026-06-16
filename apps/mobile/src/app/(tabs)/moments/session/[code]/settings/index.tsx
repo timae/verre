@@ -13,9 +13,7 @@ import { authClient } from '@/lib/authClient';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useSettingsSession } from '@/lib/useSettingsSession';
-import { TAB_BAR_CLEARANCE } from '@/lib/layout';
-
-const GUTTER = 22;
+import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 
 // 02f·1 Settings hub — a pushed full-screen page (not a sheet). Read-card +
 // nav rows. People/Share open the existing bottom SHEETS (hosted here via the

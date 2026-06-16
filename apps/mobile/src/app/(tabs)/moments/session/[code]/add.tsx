@@ -15,10 +15,8 @@ import { VText } from '@/components/ui/VText';
 import { MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
 import { ApiError, addWine, getSessionState, type WineTypeCode } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
-
-const GUTTER = 22;
-const FOOT_CLEARANCE = 120; // .vbody bottom padding clears the .vfoot bar
 
 // The 5 wine types the backend accepts (lib/session.ts). FLAGGED DEVIATION
 // from the mock's 7-option dropdown (Orange/Dessert/Fortified have no backend
@@ -339,7 +337,7 @@ function PhotoPicker({
           onPress={onClear}
           style={{
             position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: 14,
-            backgroundColor: 'rgba(20,18,15,0.55)', alignItems: 'center', justifyContent: 'center',
+            backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center',
           }}
         >
           <Icon name="x" size={14} color="#fff" />

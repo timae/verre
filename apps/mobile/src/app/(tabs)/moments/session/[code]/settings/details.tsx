@@ -16,10 +16,8 @@ import {
   type SessionMetaView,
 } from '@/lib/api/sessions';
 import { useSettingsSession } from '@/lib/useSettingsSession';
+import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
-
-const GUTTER = 22;
-const FOOT_CLEARANCE = 120; // .vbody bottom padding clears the sticky footer
 
 // 02f·2 Moment details — a pushed full-screen edit form (NOT a sheet), so the
 // Discard/Save bar sticks to the bottom via the proven create.tsx .vfoot

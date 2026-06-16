@@ -14,10 +14,8 @@ import {
   type SessionMetaView,
 } from '@/lib/api/sessions';
 import { useSettingsSession } from '@/lib/useSettingsSession';
+import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
-
-const GUTTER = 22;
-const FOOT_CLEARANCE = 120;
 
 // 02f·3 Reveal & blind — pushed full-screen toggles page. Hide line-up +
 // timing chips, Blind tasting [PRO], Blind for all. Saves the minimal diff vs
