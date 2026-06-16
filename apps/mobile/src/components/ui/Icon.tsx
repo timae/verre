@@ -28,6 +28,11 @@ const ICONS: Record<string, Seg[]> = {
     { d: 'M4 4l16 16', sw: 1.5, cap: true },
     { d: 'M9.5 5.6A10.4 10.4 0 0 1 12 5.5C18.5 5.5 22 12 22 12a14 14 0 0 1-3 3.7M6.3 7.3A14 14 0 0 0 2 12s3.5 6.5 10 6.5a10 10 0 0 0 3.3-.5', sw: 1.5, cap: true, join: true },
   ],
+  // open eye — reveal control (design i-eye def). Pairs with eyeoff (hide).
+  eye: [
+    { d: 'M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z', sw: 1.5, join: true },
+    { cx: 12, cy: 12, r: 2.6, sw: 1.5 },
+  ],
   plus: [{ d: 'M12 5v14M5 12h14', sw: 1.6, cap: true }],
   starf: [{ d: 'M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z', fill: true }],
   'chevron-right': [{ d: 'M9.5 6l6 6-6 6', sw: 1.6, cap: true, join: true }],

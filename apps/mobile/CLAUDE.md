@@ -190,6 +190,161 @@ alerts, pickers: reach for the native primitive first when those screens land.
 - Covers surface from `MySessionRow.cover_photo_url` (02s live cards 56px +
   recents 46px thumbs).
 
+## Blind reveal/hide (02b — host reveals impressions from guests)
+
+Built on `feature/mobile-create` (not yet committed; awaiting Simon's Simulator
+check — no new native modules). Surfaces: the line-up + the impression detail.
+Server contract is UNCHANGED and predates this work — four host/cohost-gated
+endpoints: `POST|DELETE /api/session/:code/wines/:id/reveal` (reveal/hide one),
+`POST …/wines/reveal-all`, `POST …/wines/hide-all`. Client fns of the same
+names in `src/lib/api/sessions.ts`.
+
+- **Reveal state = `!!wine.revealedAt`, the SINGLE source of truth in every
+  case.** The host sees the full wine (incl. `revealedAt`) even under
+  blind-for-all the moment it's revealed (`redactWine` returns the full row when
+  `revealed`); an UNrevealed wine under blind-for-all comes back `_blind:true`
+  with NO `revealedAt`. So a revealed wine ALWAYS carries `revealedAt`, and
+  `_blind` true ⟺ not revealed. **`masked` must be `_blind && !revealedAt`** —
+  a just-revealed blind-for-all wine is still `_blind` locally until the next
+  poll brings the un-redacted fields, and rendering the placeholder then would
+  contradict its own "Hide" pill. Reveal always wins (mirrors `wineRedaction.ts`).
+- **Two-state host UX (Simon's ruling — full design, NOT web parity).** The web
+  shows per-row reveal/hide inline always; mobile has a resting view + a
+  dedicated reveal MODE (design `tBlindHost`→`tReveal` / `tBlindAll`→
+  `tBlindManage`). Resting: the strip shows "N of M hidden from guests" /
+  "Hidden from everyone" (blind-for-all) / "All revealed…" + a **Reveal** that
+  enters mode. Mode: the strip shows a count chip + **Hide all** / **Reveal
+  all**, each row's score/Rate slot swaps to a per-row **Reveal/Hide pill**
+  (`.lu-pill-reveal` accent fill / `.lu-pill-hide` outline), and a sticky
+  **Done** footer exits. Guests (and providers — they can't reveal, server
+  rejects) always get the quiet "Blind tasting · host reveals" strip, never the
+  host variants.
+  - ⚠️ **The controls always STAY — "reveal all" is not "finished".** Hide all
+    AND Reveal all are BOTH live in mode regardless of state (only the transient
+    in-flight `busy` disables them); the resting **Reveal** button is ALWAYS
+    rendered (even when everything's revealed) so Done never traps the host out
+    of the controls. (First build wrongly disabled the buttons by state + hid the
+    resting Reveal when nothing was hidden → Done was a one-way door. Fixed.)
+  - **Tabs + strip are STICKY in BOTH resting and reveal mode** (Simon's ruling
+    — the mock only stickies the mode strip). They sit inline above the line-up
+    (below the ovc about block) and pin under the title bar once scrolled past —
+    true `position:sticky; top:0`. **Two different impls per layout** (they must
+    behave identically):
+    - **Plain (no cover):** the title bar is a fixed non-overlapping `VBar`, so
+      native sticky works. The tabs are a fixed View above the FlatList; the
+      strip is a **sticky FlatList cell** — `STRIP_CELL` sentinel prepended to
+      `data` (so wine `index` is offset by 1) + `stickyHeaderIndices={[1]}`.
+      ⚠️ It's `[1]`, NOT `[0]`: a `ListHeaderComponent` (the ovc) shifts the
+      indices by +1 (`stickyOffset = header ? 1 : 0` in RN's VirtualizedList).
+      `ovc` stays the `ListHeaderComponent` and scrolls away.
+    - **Cover-hero:** the title bar FLOATS (absolute) over the photo, so native
+      sticky pins at offset 0 — *behind* the bar. Use the **Dynamic Overlay
+      pattern** (community best-practice, verified by review + web research):
+      one `Reanimated.ScrollView`, INLINE order **photo → tabs → about → strip →
+      rows** (the design `.hero-sticky` puts tabs UNDER the photo, ABOVE the
+      about block; the strip is separate, below the about — they are NOT one
+      block, NOT adjacent). The inline copies are the at-rest UI + the flow
+      spacers. Then **TWO** absolute `Reanimated.View` copies tracking `scrollY`
+      (`useScrollOffset`): the **tabs** clamp at the bar bottom (`PIN_Y`); the
+      **strip** STACKS under the pinned tabs (`floor = PIN_Y + tabsH`). Each is
+      `translateY = clamp(top − scrollY, floor, top)`, gated `opacity`/
+      `pointerEvents` on its own `tabsStuck`/`stripStuck` flag (flips at the same
+      inequality its overlay clamps on → seamless swap). `tabsTop`/`tabsH`/
+      `stripTop` measured via `onLayout` on **direct children of the scroll
+      content** (= content-space Y; no coordinate bug). DEAD ENDS REJECTED: one
+      combined tabs+strip block (moved the tabs BELOW the about — wrong order,
+      the bug Simon caught); a fixed header region (pins permanently above the
+      about); native `stickyHeaderIndices` under the floating bar (pins behind
+      it; iOS `contentInset` to offset is a no-op on Android + two sticky cells
+      diverged + collapse mis-fired + double title). See the big comment on
+      `CoverHeroLineup`.
+  - **Collapse is MEASURED, not a magic scroll constant.** The floating bar goes
+    solid when the on-photo title's bottom scrolls under the bar bottom
+    (`scrollY ≥ titleBottom − BAR_H`, `titleBottom` via `onLayout`) — like the
+    impression hero. The old hardcoded `HERO_COLLAPSE_Y = 150` mis-fired on the
+    proportional-height hero (collapsed too early → the on-photo title AND the
+    bar title both showed). `BAR_H = heroBarHeight(insets.top) = insets.top + 34
+    + 6` — does NOT add the bar's 1px rule (the border is drawn inside the box by
+    the stretched bg layer, so it doesn't add to height; adding it pinned the
+    sticky 1px low → a hairline seam). Overlays pin at `PIN_Y = BAR_H − 1` (1px
+    overlap under the bar) as belt-and-suspenders against sub-pixel rounding.
+  - **The collapsed title bars are SOLID OPAQUE with NO bottom rule** (Simon's
+    rulings, deviating from the mock's 86%-translucent blur + box-shadow): the
+    cover-hero `HeroTopBar`, the impression `FloatHead` collapsed state, and the
+    impression bottom action bar (`FootBar`) are all flat `theme.bg`, BlurView
+    removed (both `expo-blur` imports dropped). Pre-collapse over-the-photo
+    states stay fully transparent (the immersive look is unchanged).
+- **Host framing is HONEST (Simon's ruling): the host is NOT blind on a normal
+  blind session** — the server returns their full wines, so host rows show the
+  real wine + a `.lu-hidebadge` eye-off on the thumb + a "Hidden from guests"
+  tag (resting only). Only blind-for-all masks the host too (then rows are the
+  `.lu-masked` placeholder; the strip + pills still control reveal). The
+  impression NameBlock copy forks on this: host "Hidden from guests — reveal to
+  show it" vs guest "Revealed when the host or co-host reveals it".
+  - **A masked impression is always the NO-PHOTO NameBlock — the mock's
+    `irScreen('blindhost')` masked PHOTO hero (`.ir-hero-mask` tile over a
+    full-bleed image) is intentionally NOT implemented.** `hasPhoto = !blind &&
+    !!imageUrl`, so any `_blind` wine (guest, or blind-for-all host) uses the
+    dark name block, not a masked hero. This follows from the honest-framing
+    ruling (on normal blind the host sees the real photo; a masked wine has no
+    image to show anyway) and keeps a single masked surface. `.ir-hero-mask` has
+    no RN counterpart by design. (Recorded per design-review ask.)
+  - **`masked`/`blind` render off `_blind` ALONE, never `&& !revealedAt`.** A
+    `_blind` wine is the server's redaction STUB (name "Wine N", blank fields);
+    under blind-for-all the host's reveal stamps `revealedAt` optimistically but
+    the real fields arrive only on the next poll (which clears `_blind`). Keying
+    the placeholder on `_blind` alone keeps the stub hidden in that window; the
+    pill/bar label uses `revealedToGuests` so it flips to "Hide" immediately, and
+    the impression body shows a transitional "Revealing…" so it doesn't say
+    "reveal to show it" while the bar says "Hide". (Earlier `_blind && !revealedAt`
+    surfaced the literal "Wine N" stub for ~5s — a review catch.)
+- **Reveal mode hides the OS tab bar via a SECOND ref-counted signal**, not the
+  pathname-keyed `hidden` list (reveal mode is screen STATE, not a route).
+  `src/lib/sheetVisibility.ts` now exports `pushRevealMode`/`popRevealMode` +
+  `useTabBarOverlayHidden()` (ORs the sheet count and the reveal-mode count);
+  `(tabs)/_layout.tsx` consumes the combined signal. The Done footer replaces
+  the nav (design ruling "in-flow footer actions replace the nav"). Reveal mode
+  is bound to MOUNT (not focus) — `router.push` to an impression keeps the
+  line-up mounted, so the override correctly persists and `router.back()` resumes
+  the mode; a genuine unmount or a non-blind/role-loss poll fires the pop.
+- **Optimistic reveal/hide** stamps/clears `revealedAt` ONLY (never fabricates
+  identity fields — a masked wine stays masked until the poll) and writes the
+  shared `['session-state', code, myIdentityId]` cache both screens read. The
+  impression bar control and the line-up stay in sync through that one key.
+  ⚠️ **`await queryClient.cancelQueries({ queryKey })` BEFORE the optimistic
+  `setQueryData`** or an in-flight 5s poll resolves afterwards and clobbers it
+  (the classic TanStack race — flicker). On error: `invalidateQueries` (refetch
+  truth), NOT a frozen-snapshot restore (a poll may have advanced the cache
+  mid-flight). The pre-existing `toggleBlindForEveryone` still uses the
+  snapshot-restore pattern — flagged, not fixed here.
+- **New `eye` icon** in `Icon.tsx` (the open-eye `i-eye` design path; `eyeoff`
+  already existed). The per-row pill is a child `Pressable` inside the row's
+  Pressable — RN's responder system grants the touch to the inner pill, so a pill
+  tap does NOT also fire the row's navigate (verified pattern, same as IrBar's
+  sibling controls).
+- **Flagged deviations (Simon to confirm at review):** (1) tabs+strip are sticky
+  in BOTH modes AND the cover-hero tabs now stick (mock stickies only the mode
+  strip; the cover tabs were a prior "not sticky" deviation) — Simon's rulings,
+  recorded above; (2) the `.vfoot-rev` Done footer is a SOLID bar (+ top rule)
+  not the mock's `background:none` — RN rows scroll UNDER an absolute footer, so
+  a transparent one would bleed; (3) the "All revealed" resting copy is new (the
+  static mock has no nothing-hidden state); (4) the host's photo-hero on the
+  impression has no hidden-from-guests badge yet (consequence of the
+  honest-framing deviation; the line-up rows DO carry it). DEVICE-CHECK residuals
+  (overlay approach, not architecture): the overscroll rubber-band feel at the
+  very top of the cover-hero, and confirming no sub-frame jitter at the overlay's
+  opacity swap on a low-end Android — both tuning, neither can resurrect the
+  earlier collapse/double-title/half-stick bugs. Security review: CLEAN — gating
+  is server-side, the client checks are cosmetic, the optimistic write can't leak
+  an un-revealed identity.
+- **Known PRE-EXISTING gap (not this feature; M3 impression screen):** the
+  impression detail reads `state.data?.wines` directly with no per-section
+  graceful degradation, so a partial `/state` poll returning `wines:null` (the
+  route isolates a failed section to null + 200) briefly flashes "This impression
+  is gone" for a wine that still exists — and strands the host mid-reveal. The
+  line-up guards this with its `lastRef` per-section merge; the impression screen
+  should adopt the same. Out of scope for reveal/hide; flagged for a follow-up.
+
 ## Theme / design
 
 - `src/theme/vero-tokens.js` is a **verbatim vendored copy** of
