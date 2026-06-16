@@ -1,0 +1,31 @@
+name: Mobile design-token chokepoint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: mobile-design-tokens-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Fail the build if a converged mobile design constant (the over-photo
+      # glass fill, the hero scrim, the anchored-menu shadow) is re-inlined as a
+      # raw literal outside its canonical home (lib/layout.ts / the elevation.menu
+      # token). Keeps "the same look is built one way", which docs alone can't
+      # enforce in an AI-executed repo. See apps/mobile/CLAUDE.md.
+      #
+      # No npm ci needed — a dependency-free Node script that reads tracked files
+      # via `git ls-files`.
+      - name: Check converged design constants aren't re-inlined
+        run: node scripts/check-mobile-design-tokens.mjs
