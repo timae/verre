@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider, BottomSheetView } from '@gorhom/bottom-sheet';
 import { Button } from '@/components/ui/Button';
+import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
@@ -328,10 +329,13 @@ function CoverPicker({
   onClear: () => void;
 }) {
   const { theme } = useTheme();
+  const [fullscreen, setFullscreen] = useState(false);
   if (cover) {
     return (
       <View style={{ height: 150, borderRadius: radius.md, overflow: 'hidden', marginBottom: 16 }}>
-        <Image source={{ uri: cover.previewUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
+          <Image source={{ uri: cover.previewUri }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Remove cover photo"
@@ -350,6 +354,7 @@ function CoverPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
+        <FullscreenImage uri={cover.previewUri} visible={fullscreen} label="Cover photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }
@@ -500,4 +505,3 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
     </Sheet>
   );
 }
-

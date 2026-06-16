@@ -21,6 +21,7 @@ import { countryName, validateScore } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
+import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
@@ -675,6 +676,7 @@ function Hero({
   onNameBottom: (bottom: number) => void;
 }) {
   const { height: windowH } = useWindowDimensions();
+  const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
   return (
     <View
@@ -686,13 +688,16 @@ function Hero({
       }}
       onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16)}
     >
-      <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
+        <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+      </Pressable>
       <LinearGradient
+        pointerEvents="none"
         colors={HERO_SCRIM}
         locations={[0, 0.45, 1]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      <View style={{ position: 'absolute', left: 20, right: 20, bottom: 16 }}>
+      <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 }}>
         <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, lineHeight: 11, letterSpacing: 1.54, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>
           {posLabel(index, total)}
         </VText>
@@ -711,6 +716,7 @@ function Hero({
           </VText>
         ) : null}
       </View>
+      <FullscreenImage uri={wine.imageUrl} visible={fullscreen} label={wine.name} onClose={() => setFullscreen(false)} />
     </View>
   );
 }
