@@ -19,11 +19,11 @@ export const GUTTER = 22;
 export const FOOT_CLEARANCE = 120;
 export const FOOT_CLEARANCE_IR = 130;
 
-// Hero photo height as a fraction of the window. The two heroes use DIFFERENT
-// ratios by design (measured from their respective mocks' phone frames) — keep
-// both, don't collapse the value.
-export const COVER_HERO_RATIO = 248 / 800; // line-up cover hero (.hero-bleed-top in an 800px frame)
-export const IMPRESSION_HERO_RATIO = 280 / 744; // impression detail hero (.ir-hero in a 744px frame)
+// Hero photo height as a fraction of the window. ONE ratio for both the
+// impression hero (.ir-hero) and the line-up cover hero (.hero-bleed-top) —
+// Simon's ruling: they should be the same height, set to the impression's
+// 280/744 (the cover hero was 248/800, ~56pt shorter, before).
+export const HERO_RATIO = 280 / 744;
 
 // Over-photo dark glass fill for floating controls (back/⋯/Crave/Reveal/Add
 // pills + circles, the photo-remove ×). A sanctioned non-token literal (same on
