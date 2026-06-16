@@ -1,7 +1,7 @@
 import { usePathname, useRouter } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { useEffect, useRef } from 'react';
-import { useAnySheetOpen } from '@/lib/sheetVisibility';
+import { useTabBarOverlayHidden } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
 // The real OS tab bar (locked design ruling, 2026-06-12: bottom nav is
@@ -13,9 +13,11 @@ export default function TabsLayout() {
   const { theme } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
-  // Hide the OS tab bar while any bottom sheet is open so the sheet sits above
-  // it (in-screen, no FullWindowOverlay — see lib/sheetVisibility.ts).
-  const anySheetOpen = useAnySheetOpen();
+  // Hide the OS tab bar while any bottom sheet is open (so the sheet sits above
+  // it, in-screen, no FullWindowOverlay) OR while blind Reveal mode is active on
+  // the line-up (the sticky "Done" footer replaces the nav) — see
+  // lib/sheetVisibility.ts.
+  const overlayHidesBar = useTabBarOverlayHidden();
 
   // Cold-start anchor. NativeTabs honors neither initialRouteName nor
   // unstable_settings (verified in the SDK 56 navigator source — the options
@@ -62,7 +64,7 @@ export default function TabsLayout() {
       // OS tab bar there. The settings HUB keeps the bar (it's a nav list, no
       // footer).
       hidden={
-        anySheetOpen ||
+        overlayHidesBar ||
         pathname.includes('/impression/') ||
         pathname.endsWith('/moments/create') ||
         pathname.endsWith('/add') ||

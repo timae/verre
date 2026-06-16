@@ -282,6 +282,39 @@ export async function addWine(code: string, body: AddWineBody): Promise<WireWine
   return res.json();
 }
 
+// Blind reveal/hide (host/cohost-gated server-side; providers can't reveal).
+// On a blind session a wine is hidden from guests until revealed; revealing
+// stamps wines[].revealedAt (the host always sees the real value, even while
+// blindForEveryone masks the wine from them). The four endpoints map 1:1 to
+// the web WineListScreen controls; all take no body (server reads only the
+// session + caller). After any of them, invalidate ['session-state', code]
+// so the 5s poll surfaces the new revealedAt.
+export async function revealWine(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/reveal`,
+    { method: 'POST' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function hideWine(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/reveal`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function revealAllWines(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/reveal-all`, { method: 'POST' });
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function hideAllWines(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/hide-all`, { method: 'POST' });
+  if (!res.ok) await throwApiError(res);
+}
+
 // 02f settings edit. Host-only PATCH; every field is optional — send only
 // what changed. The server (app/api/session/[code]/settings) shares the detail
 // validators with create via lib/sessionFields.ts, pro-gates blind + lifespan,

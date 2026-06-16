@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Easing,
   Image,
@@ -25,11 +25,15 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import {
+  ApiError,
   getBookmarkedWineIds,
   getSessionState,
+  hideWine,
   rateWine,
+  revealWine,
   setBookmark,
   type RatingMeta,
+  type SessionState,
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
@@ -82,12 +86,23 @@ export default function ImpressionDetail() {
     queryFn: () => getSessionState(code),
     refetchInterval: POLL_MS,
   });
+  const meta = state.data?.meta ?? null;
   const wines = state.data?.wines ?? null;
   const ratings = state.data?.ratings ?? null;
   const index = wines?.findIndex((w) => w.id === wineId) ?? -1;
   const wine = index >= 0 ? wines![index] : null;
   const total = wines?.length ?? 0;
   const existing: RatingMeta | undefined = ratings?.[myIdentityId]?.ratings[wineId];
+
+  // Host on a blind session gets the bar's reveal/hide control (mirrors the
+  // line-up). isHostByIdentity parity: original host, logged-in host fallback,
+  // or any cohost. Providers can't reveal (server rejects) — no control.
+  const isHostViewer =
+    !!meta &&
+    (meta.hostIdentityId === myIdentityId ||
+      (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
+      (meta.coHostIds ?? []).includes(myIdentityId));
+  const hostRevealUi = !!meta?.blind && isHostViewer;
 
   // Reconnecting bar — same passive treatment as the line-up (shared 5s poll,
   // shared session-state cache). Show when offline, or errored while we still
@@ -145,6 +160,45 @@ export default function ImpressionDetail() {
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
     },
   });
+
+  // Host reveal/hide of THIS impression (blind session). Optimistically
+  // stamps/clears revealedAt in the shared session-state cache so the bar
+  // control + (on a normal blind session) the hero flip immediately; the 5s
+  // poll reconciles. revealedToGuests is the single source of truth — a
+  // revealed wine always carries revealedAt, even under blind-for-all where an
+  // unrevealed wine comes back _blind with none.
+  const stateKey = ['session-state', code, myIdentityId];
+  const revealedToGuests = !!wine?.revealedAt;
+  const [revealBusy, setRevealBusy] = useState(false);
+  const toggleReveal = async () => {
+    if (revealBusy || !wine) return;
+    const next = !revealedToGuests;
+    setRevealBusy(true);
+    // Cancel an in-flight poll so it can't resolve after the optimistic write
+    // and clobber it; refetch the server truth on error (a frozen snapshot
+    // could be stale by then). Mirrors the line-up's runReveal.
+    await queryClient.cancelQueries({ queryKey: stateKey });
+    const prev = queryClient.getQueryData<SessionState>(stateKey);
+    if (prev?.wines) {
+      queryClient.setQueryData<SessionState>(stateKey, {
+        ...prev,
+        wines: prev.wines.map((w) =>
+          w.id === wineId ? { ...w, revealedAt: next ? new Date().toISOString() : null } : w,
+        ),
+      });
+    }
+    try {
+      if (next) await revealWine(code, wineId);
+      else await hideWine(code, wineId);
+      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+    } catch (e) {
+      queryClient.invalidateQueries({ queryKey: ['session-state', code] }); // refetch truth
+      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+      Alert.alert(next ? 'Could not reveal' : 'Could not hide', msg || 'Check your connection and try again.');
+    } finally {
+      setRevealBusy(false);
+    }
+  };
 
   const [saveError, setSaveError] = useState<string | null>(null);
   const saveIfNeeded = async (): Promise<boolean> => {
@@ -346,6 +400,10 @@ export default function ImpressionDetail() {
             onHeaderBottom={(y) => {
               headerBottomRef.current = y;
             }}
+            showReveal={hostRevealUi}
+            revealed={revealedToGuests}
+            revealBusy={revealBusy}
+            onReveal={toggleReveal}
           />
         </>
       ) : (
@@ -368,6 +426,10 @@ export default function ImpressionDetail() {
               onCrave={() => craveMut.mutate({ wineId, on: !craved })}
               onMenu={onMenu}
               onBack={() => router.back()}
+              showReveal={hostRevealUi}
+              revealed={revealedToGuests}
+              revealBusy={revealBusy}
+              onReveal={toggleReveal}
             />
           </View>
           <ScrollView
@@ -381,6 +443,8 @@ export default function ImpressionDetail() {
             <NameBlock
               wine={wine}
               blind={blind}
+              hostBlind={hostRevealUi}
+              revealing={blind && revealedToGuests}
               index={index}
               total={total}
               onNameBottom={(y) => {
@@ -482,11 +546,12 @@ function IrMenu({
 
 // ─── header ────────────────────────────────────────────
 
-// Shared bar anatomy (.ir-screen .vbar): back · fading bartitle · Crave · ⋯.
-// The bartitle fades/slides in over dur-2 like .ir-bartitle.show; the Crave
-// label collapses to icon-only once the title is in.
+// Shared bar anatomy (.ir-screen .vbar): back · fading bartitle · [Reveal] ·
+// Crave · ⋯. The bartitle fades/slides in over dur-2 like .ir-bartitle.show;
+// the Crave (and host Reveal) labels collapse to icon-only once the title is in.
 function IrBar({
   title, titleShown, craved, onCrave, onMenu, onBack, glass, solid,
+  showReveal = false, revealed = false, revealBusy = false, onReveal,
 }: {
   title: string;
   titleShown: boolean;
@@ -498,6 +563,12 @@ function IrBar({
   onBack: () => void;
   glass?: boolean;
   solid?: boolean;
+  // Host-only reveal/hide control (blind session). eye/"Reveal" when hidden,
+  // eye-off/"Hide" when revealed; label collapses with the title like Crave.
+  showReveal?: boolean;
+  revealed?: boolean;
+  revealBusy?: boolean;
+  onReveal?: () => void;
 }) {
   const { theme } = useTheme();
   const menuBtnRef = useRef<View>(null);
@@ -533,6 +604,35 @@ function IrBar({
           {title}
         </VText>
       </Animated.View>
+      {/* .ir-reveal — host reveal/hide (blind session). Same glass/borderless
+          treatment as Crave; label drops once the title hands in. */}
+      {showReveal ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={revealed ? 'Hide from guests' : 'Reveal to guests'}
+          accessibilityState={{ disabled: revealBusy }}
+          disabled={revealBusy}
+          onPress={onReveal}
+          hitSlop={6}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            height: 34,
+            paddingHorizontal: onGlass ? 13 : 4,
+            borderRadius: onGlass ? 17 : 0,
+            backgroundColor: onGlass ? 'rgba(20,18,15,0.42)' : 'transparent',
+            opacity: revealBusy ? 0.5 : pressed ? 0.6 : 1,
+          })}
+        >
+          <Icon name={revealed ? 'eyeoff' : 'eye'} size={18} color={iconColor} />
+          {!titleShown ? (
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: onGlass ? '#fff' : theme.ink }}>
+              {revealed ? 'Hide' : 'Reveal'}
+            </VText>
+          ) : null}
+        </Pressable>
+      ) : null}
       {/* .ir-crave — heart + label; label collapses once the title shows */}
       <Pressable
         accessibilityRole="button"
@@ -577,6 +677,7 @@ function IrBar({
 // the title hands in, then solid bg + rule + ink icons.
 function FloatHead({
   title, titleShown, craved, onCrave, onMenu, onBack, onHeaderBottom,
+  showReveal, revealed, revealBusy, onReveal,
 }: {
   title: string;
   titleShown: boolean;
@@ -585,6 +686,10 @@ function FloatHead({
   onMenu: (anchorBottomY: number) => void;
   onBack: () => void;
   onHeaderBottom: (bottom: number) => void;
+  showReveal?: boolean;
+  revealed?: boolean;
+  revealBusy?: boolean;
+  onReveal?: () => void;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -605,9 +710,9 @@ function FloatHead({
         paddingTop: insets.top,
         paddingHorizontal: 16,
         paddingBottom: 4,
+        // Solid opaque when collapsed (no bottom rule — Simon's ruling: no white
+        // line under the title bar); fully transparent over the photo at rest.
         backgroundColor: titleShown ? theme.bg : 'transparent',
-        borderBottomWidth: titleShown ? 1 : 0,
-        borderBottomColor: theme.rule,
       }}
     >
       <IrBar
@@ -619,6 +724,10 @@ function FloatHead({
         onBack={onBack}
         glass
         solid={titleShown}
+        showReveal={showReveal}
+        revealed={revealed}
+        revealBusy={revealBusy}
+        onReveal={onReveal}
       />
     </View>
   );
@@ -687,11 +796,19 @@ function Hero({
 }
 
 // .ir-noimg — the no-photo norm: pos label, big dark name, maker line.
+// A masked (blind) impression is only seen by a guest, or by a host on a
+// blind-for-all session (the host opted into being blind too) — `hostBlind`
+// picks the host's "reveal to show it" wording over the guest's wait copy.
+// `revealing` = a blind-for-all host just tapped reveal (optimistic revealedAt)
+// but the un-redacted wine hasn't arrived yet — show a transitional line so the
+// body doesn't say "reveal to show it" while the bar already says "Hide".
 function NameBlock({
-  wine, blind, index, total, onNameBottom,
+  wine, blind, hostBlind, revealing, index, total, onNameBottom,
 }: {
   wine: WireWine;
   blind: boolean;
+  hostBlind?: boolean;
+  revealing?: boolean;
   index: number;
   total: number;
   onNameBottom: (bottom: number) => void;
@@ -715,7 +832,11 @@ function NameBlock({
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>
         {blind
-          ? 'Revealed when the host or co-host reveals it'
+          ? revealing
+            ? 'Revealing…'
+            : hostBlind
+              ? 'Hidden from guests — reveal to show it'
+              : 'Revealed when the host or co-host reveals it'
           : [wine.producer, wine.type].filter(Boolean).join(' · ')}
       </VText>
     </View>
@@ -886,24 +1007,10 @@ function FootBar({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    // .ir-foot: 90% bg wash over backdrop-filter blur(12px) — BlurView
-    // glasses the content scrolling beneath, the wash holds the theme tone.
-    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6 }}>
-      <BlurView
-        intensity={40}
-        tint={theme.scheme === 'dark' ? 'dark' : 'light'}
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-      />
-      <View
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: theme.bg + 'CC', // ≈80% wash; blur supplies the rest
-        }}
-      />
+    // Solid opaque action bar (Simon's ruling: not transparent; deviates from
+    // the mock's blur+wash). A flat theme fill — no BlurView (pointless behind
+    // an opaque fill).
+    <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6, backgroundColor: theme.bg }}>
       <View style={{ flexDirection: 'row', gap: 10, paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }}>
         <View style={{ flex: 1 }}>
           <Button title="Previous" variant="secondary" bar block disabled={variant === 'first' || saving} onPress={onPrevious} />

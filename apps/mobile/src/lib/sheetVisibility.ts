@@ -43,3 +43,31 @@ export function useAnySheetOpen(): boolean {
     () => false,
   );
 }
+
+// Blind "Reveal mode" on the line-up (02b) hides the OS tab bar the same way a
+// sheet does — the design replaces the nav with a sticky "Done" footer while
+// the host reveals/hides impressions. Reveal mode is screen STATE (not a route,
+// so the pathname-keyed `hidden` list in (tabs)/_layout can't catch it) and not
+// a sheet (so it doesn't belong on the sheet count). A separate ref-counted
+// flag keeps the two reasons independent; the tab layout ORs both.
+let revealModeCount = 0;
+
+export function pushRevealMode() {
+  revealModeCount += 1;
+  emit();
+}
+
+export function popRevealMode() {
+  revealModeCount = Math.max(0, revealModeCount - 1);
+  emit();
+}
+
+// True when the OS tab bar should hide for an in-screen reason the route path
+// can't express (a sheet up, or blind Reveal mode active).
+export function useTabBarOverlayHidden(): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => count > 0 || revealModeCount > 0,
+    () => false,
+  );
+}
