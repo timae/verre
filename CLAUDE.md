@@ -52,6 +52,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 - **Self-contained feature deep-dive (shipped)** → `docs/dev/<feature>.md`. The bar is "deserves its own section" — e.g. the social feed earned its own doc because it added `/api/feed` + `/api/checkins/*` + `/api/users/*` + a follow graph. A single new route doesn't. Add a 1-line pointer to the index below.
 - **Plans for new features / non-trivial changes (not yet shipped)** → `docs/dev/proposals/<name>.md`. Bar is the same as the deep-dive bar; use the proposal to align on the *why* and the migration shape before code. If the design conversation would be longer than the diff itself, write the proposal. See `docs/dev/proposals/README.md` for the post-ship lifecycle.
 - **env var added/changed** → `docs/dev/deployment.md` (and README.md if the local dev story changes).
+- **Native-app design decision / ruling** → `docs/design/` (mobile only): ADRs in `decisions/` (append-only, supersede never edit), reusable build recipes in `patterns/`. The component catalog + "reuse before you build" rule + the extraction backlog live in `apps/mobile/CLAUDE.md` (auto-loads on subtree touch). The mockup in `.local/design/` is historical, often stale — the shipped app + ADRs win. (Web design isn't tracked — it's slated for redesign.)
 - **User-facing feature scope changes** → README.md (`What it does` list + API table).
 - **API request/response shape changes for a route already documented in README** → update the README API table (example body shapes must stay accurate).
 
@@ -65,7 +66,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 
 **Soft cap — 250 lines for this file.** When root approaches that, audit which sections quietly moved up from area files — that's the re-bloat signal. The original file hit 563 lines because the "is this cross-cutting enough?" threshold was soft; the cap makes the next drift visible.
 
-**Reviewer rule**: spawn an Agent (`general-purpose`) before pushing when the diff touches auth/schema, spans >3 files or >50 lines, or introduces a new shared primitive. Brief with specific concerns. **Subagents only auto-load root** — when briefing on auth/security/schema, explicitly tell the reviewer to read the relevant area docs (`app/api/CLAUDE.md`, `lib/CLAUDE.md`, `docs/dev/block.md`, `docs/dev/profile-visibility.md`). After fixes, re-review — a reviewer pass that finds nothing is still cheap insurance. Single-file doc fixes can skip.
+**Reviewer rule**: spawn an Agent (`general-purpose`) before pushing when the diff touches auth/schema, spans >3 files or >50 lines, or introduces a new shared primitive. Brief with specific concerns. **Subagents only auto-load root** — when briefing on auth/security/schema, explicitly tell the reviewer to read the relevant area docs (`app/api/CLAUDE.md`, `lib/CLAUDE.md`, `docs/dev/block.md`, `docs/dev/profile-visibility.md`); for a mobile/UI diff, point them at `apps/mobile/CLAUDE.md` + `docs/design/`. After fixes, re-review — a reviewer pass that finds nothing is still cheap insurance. Single-file doc fixes can skip.
 
 **Schema check**: `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations dir disagree. Don't bypass.
 
@@ -177,7 +178,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 
 ## Where to find detail
 
-**Naming convention**: user-facing copy of moderation/privacy features lives at `docs/<name>.md` (kick-ban, block, mute, profile-visibility, roles). Developer implementation docs live at `docs/dev/<name>.md`. Grep for the wrong one will mislead — pointer indices below always reference the dev version.
+**Naming convention**: user-facing copy of moderation/privacy features lives at `docs/<name>.md` (kick-ban, block, mute, profile-visibility, roles). Developer implementation docs live at `docs/dev/<name>.md`. **Native-app design** (ADRs + UI build patterns, mobile only) lives at `docs/design/` — distinct from `docs/dev/` (backend/cross-platform impl); a mobile-UI lessons doc goes in `docs/design/patterns/`, not `docs/dev/`. Grep for the wrong one will mislead — pointer indices below always reference the dev version.
 
 ### Area CLAUDE.md (lazy-loaded when Claude touches that subtree)
 

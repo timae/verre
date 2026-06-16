@@ -710,8 +710,8 @@ function FloatHead({
         paddingTop: insets.top,
         paddingHorizontal: 16,
         paddingBottom: 4,
-        // Solid opaque when collapsed (no bottom rule — Simon's ruling: no white
-        // line under the title bar); fully transparent over the photo at rest.
+        // Solid opaque when collapsed (no bottom rule); fully transparent over
+        // the photo at rest. Rationale: docs/design/decisions/0003-collapsed-bars-opaque.md
         backgroundColor: titleShown ? theme.bg : 'transparent',
       }}
     >
@@ -1007,9 +1007,9 @@ function FootBar({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   return (
-    // Solid opaque action bar (Simon's ruling: not transparent; deviates from
-    // the mock's blur+wash). A flat theme fill — no BlurView (pointless behind
-    // an opaque fill).
+    // Solid opaque action bar (not transparent; deviates from the mock's
+    // blur+wash). A flat theme fill — no BlurView. Rationale:
+    // docs/design/decisions/0003-collapsed-bars-opaque.md
     <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 6, backgroundColor: theme.bg }}>
       <View style={{ flexDirection: 'row', gap: 10, paddingTop: 14, paddingHorizontal: 16, paddingBottom: insets.bottom + 16 }}>
         <View style={{ flex: 1 }}>
