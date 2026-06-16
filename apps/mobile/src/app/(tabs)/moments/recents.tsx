@@ -1,9 +1,10 @@
 import { useQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useMemo } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
+import { Thumb } from '@/components/ui/Thumb';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
@@ -11,7 +12,7 @@ import { VText } from '@/components/ui/VText';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { getMySessions, isUpcomingSession, type MySessionRow } from '@/lib/api/sessions';
 import { recentMeta } from '@/lib/momentFormat';
-import { radius, useTheme } from '@/theme';
+import { useTheme } from '@/theme';
 
 const GUTTER = 22;
 
@@ -126,7 +127,7 @@ function RecentRow({ row }: { row: MySessionRow }) {
         opacity: pressed ? 0.6 : 1,
       })}
     >
-      <Thumb46 uri={row.cover_photo_url} />
+      <Thumb uri={row.cover_photo_url} size={46} />
       {/* Tight line boxes on the stacked single-line rows: the body/small
           line-height multipliers (23 / 20) are tuned for multi-line paragraphs
           and here add leading above+below each glyph, inflating the visible
@@ -158,12 +159,3 @@ function RecentRow({ row }: { row: MySessionRow }) {
   );
 }
 
-function Thumb46({ uri }: { uri: string | null }) {
-  const { theme } = useTheme();
-  if (uri) return <Image source={{ uri }} style={{ width: 46, height: 46, borderRadius: radius.sm }} />;
-  return (
-    <View style={{ width: 46, height: 46, borderRadius: radius.sm, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-      <Icon name="glass" size={19} color={theme.inkFaint} />
-    </View>
-  );
-}

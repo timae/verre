@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, Pressable, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, useWindowDimensions, View } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
+import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
-import { initials } from '@/lib/initials';
 import {
   ApiError,
   removeParticipant,
@@ -251,7 +251,6 @@ function PersonRow({
 }) {
   const { theme } = useTheme();
   const rowRef = useRef<View>(null);
-  const ini = initials(p.displayName);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
     isSelf ? { label: 'You', color: 'inkSoft' }
@@ -265,17 +264,7 @@ function PersonRow({
       style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
     >
       {/* .pl-av — host = accent; anon = user glyph. */}
-      {isAnon ? (
-        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-          <Icon name="user" size={20} color={theme.inkFaint} />
-        </View>
-      ) : p.imageUrl ? (
-        <Image source={{ uri: p.imageUrl }} style={{ width: 40, height: 40, borderRadius: 20 }} />
-      ) : (
-        <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: role === 'host' ? theme.accent : theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14 }} color={role === 'host' ? theme.accentInk : 'inkSoft'}>{ini}</VText>
-        </View>
-      )}
+      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={40} anon={isAnon} host={role === 'host'} initialsSize={14} />
 
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>

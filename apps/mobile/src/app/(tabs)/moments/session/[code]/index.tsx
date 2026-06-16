@@ -9,7 +9,9 @@ import Reanimated, { clamp, useAnimatedRef, useAnimatedStyle, useScrollOffset, u
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
+import { Avatar } from '@/components/ui/Avatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
@@ -33,7 +35,6 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { initials } from '@/lib/initials';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
@@ -1319,29 +1320,13 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNu
   // create-time meta.host snapshot.
   const hostName = ordered.find((p) => p.id === hostId)?.displayName ?? meta.host;
 
-  const chip = (p: { id: string; displayName: string; imageUrl: string | null }, i: number) => {
-    const isHost = p.id === hostId;
-    return (
-      <View
-        key={p.id}
-        style={{
-          width: 30, height: 30, borderRadius: 15,
-          marginLeft: i === 0 ? 0 : -8,
-          borderWidth: 2, borderColor: theme.bg,
-          backgroundColor: isHost ? theme.accent : theme.surfaceSunk,
-          alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
-        }}
-      >
-        {p.imageUrl ? (
-          <Image source={{ uri: p.imageUrl }} style={{ width: 26, height: 26, borderRadius: 13 }} />
-        ) : (
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12 }} color={isHost ? theme.accentInk : 'inkSoft'}>
-            {initials(p.displayName)}
-          </VText>
-        )}
-      </View>
-    );
-  };
+  const chip = (p: { id: string; displayName: string; imageUrl: string | null }, i: number) => (
+    // The overlapping avatar-stack chip: shared Avatar with the `ring` treatment
+    // (2px theme.bg border + image inset), host-tinted, in a negative-margin wrap.
+    <View key={p.id} style={{ marginLeft: i === 0 ? 0 : -8 }}>
+      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} ring host={p.id === hostId} initialsSize={12} />
+    </View>
+  );
 
   return (
     // Tapping the avatar stack opens People (design behaviour).
@@ -1600,13 +1585,7 @@ function LuRow({
         // .lu-thumbwrap — the host's hidden-from-guests wine carries a small
         // eye-off badge pinned to the thumb's bottom-right corner.
         <View style={{ width: 46, height: 46 }}>
-          {wine.imageUrl ? (
-            <Image source={{ uri: wine.imageUrl }} style={{ width: 46, height: 46, borderRadius: radius.sm }} />
-          ) : (
-            <View style={{ width: 46, height: 46, borderRadius: radius.sm, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-              <Icon name="glass" size={19} color={theme.inkFaint} />
-            </View>
-          )}
+          <Thumb uri={wine.imageUrl} size={46} />
           {hostSeesHidden ? (
             // .lu-hidebadge: 20px surface circle, ink-soft eye-off, overhanging
             // the thumb corner.
