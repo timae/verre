@@ -66,6 +66,7 @@ export const elevation: {
   sm: { ios: { shadowOpacity: number; shadowRadius: number; shadowOffsetY: number }; android: { elevation: number } };
   md: { ios: { shadowOpacity: number; shadowRadius: number; shadowOffsetY: number }; android: { elevation: number } };
   lg: { ios: { shadowOpacity: number; shadowRadius: number; shadowOffsetY: number }; android: { elevation: number } };
+  menu: { ios: { shadowOpacity: number; shadowRadius: number; shadowOffsetY: number }; android: { elevation: number } };
 };
 
 declare const _default: {

@@ -5,10 +5,16 @@ import {
   InstrumentSans_700Bold,
   useFonts,
 } from '@expo-google-fonts/instrument-sans';
-import { Stack } from 'expo-router';
+import {
+  DarkTheme as NavDarkTheme,
+  DefaultTheme as NavDefaultTheme,
+  Stack,
+  ThemeProvider as NavThemeProvider,
+} from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
 import { QueryProvider } from '@/lib/query';
 import { consumePendingUpdateRequired } from '@/lib/updateGate';
@@ -29,10 +35,19 @@ function RootNavigator() {
     consumePendingUpdateRequired();
   }, [ready]);
 
+  // Theme react-navigation's base palette so any screen that falls back to
+  // colors.background (e.g. a leaf tab with no contentStyle) renders on theme.bg
+  // instead of the default near-white/black — one source of truth for the
+  // screen base across every tab.
+  const navTheme = useMemo(() => {
+    const base = theme.scheme === 'dark' ? NavDarkTheme : NavDefaultTheme;
+    return { ...base, colors: { ...base.colors, background: theme.bg, card: theme.surface, text: theme.ink, border: theme.rule } };
+  }, [theme]);
+
   if (!ready) return null;
 
   return (
-    <>
+    <NavThemeProvider value={navTheme}>
       <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg } }}>
         <Stack.Protected guard={!!session}>
@@ -44,7 +59,7 @@ function RootNavigator() {
         {/* Outside both guards: must be reachable in any auth state (proposal 04). */}
         <Stack.Screen name="update-required" options={{ gestureEnabled: false }} />
       </Stack>
-    </>
+    </NavThemeProvider>
   );
 }
 
@@ -59,10 +74,19 @@ export default function RootLayout() {
   if (!fontsLoaded) return null;
 
   return (
-    <ThemeProvider>
-      <QueryProvider>
-        <RootNavigator />
-      </QueryProvider>
-    </ThemeProvider>
+    // Gesture-handler requires the root wrapper to register its native gesture
+    // system — the score-input Pan/Tap gestures (and @gorhom/bottom-sheet's pan)
+    // depend on it. The BottomSheetModalProvider is NOT here: it's mounted
+    // per-screen (see moments/session/[code] + moments/create), because a root
+    // provider's gorhom host measures zero height across the expo-router/
+    // react-native-screens Stack boundary and sheets never present (gorhom
+    // #1884/#2035).
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider>
+        <QueryProvider>
+          <RootNavigator />
+        </QueryProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

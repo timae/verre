@@ -109,13 +109,17 @@ async function deleteSessionFromRedis(code: string): Promise<void> {
 // Already-soft-deleted sessions are skipped (deletedAt IS NULL filter): the
 // scrub is idempotent but there's nothing to do.
 async function deleteSessionFromPostgres(code: string): Promise<void> {
+  // Cover capture (capture/commit/reclaim-after): hold the URL through the
+  // transaction, reclaim the bytes only after it commits.
+  let coverUrl: string | null = null
   await prisma.$transaction(async (tx) => {
     const row = await tx.session.findFirst({
       where: { code, deletedAt: null },
-      select: { id: true },
+      select: { id: true, coverPhotoUrl: true },
     })
     if (!row) return
     const sid = row.id
+    coverUrl = row.coverPhotoUrl
     // Wipe children that exist for these no-engagement sessions: ratings
     // (only the host's, by definition of "no other engagement"), HoF
     // entries the host filed, session_members. Wines orphan (sessionId
@@ -145,10 +149,14 @@ async function deleteSessionFromPostgres(code: string): Promise<void> {
             date_to = NULL,
             timezone = NULL,
             description = NULL,
-            link = NULL
+            link = NULL,
+            cover_photo_url = NULL,
+            category = NULL
        WHERE id = ${sid}
     `
   })
+  // Commit succeeded (a thrown txn never reaches here) — release the bytes.
+  if (coverUrl) reclaimImage(coverUrl).catch(() => {})
 }
 
 // Keep the user's rating keys + identity map entry (relabeled to [deleted]).
@@ -224,6 +232,12 @@ async function applyRedisCleanup(userId: number): Promise<DeletePlan> {
       console.error(`[accountDelete] redis cleanup failed code=${code}`, err)
     }
   }
+  // User-scoped Redis keys are NOT under any `s:{code}:*` pattern, so the
+  // session loop above doesn't reach them — delete them explicitly. (The 60d
+  // TTL would self-clean eventually, but account-delete should leave nothing.)
+  // Any future `u:{userId}:*` key MUST be added here — see lib/CLAUDE.md.
+  try { await redis.del(k.carouselHidden(userId)) }
+  catch (err) { console.error('[accountDelete] carousel-hidden cleanup failed', err) }
   return plan
 }
 

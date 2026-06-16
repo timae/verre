@@ -39,29 +39,42 @@ once, in the theme/motion module — never re-inline the literal.
 - **Haptic intent (native-only, new)**: light impact on swap commit; none on
   spring-back.
 
-## Score input (slider) — milestone 3, preconditions first
+## Score input (slider) — milestone 3 (shipped native; web untouched)
 
 - **Steps**: 0.25; `0` = not rated (ghost star, never a "0 rating").
-- **Recognizer (the converged target)**: `touch-action: pan-y` + SLOP-gated
+- **Web recognizer (reference, frozen)**: `touch-action: pan-y` + SLOP-gated
   capture — defer pointer capture until movement past **6 px** (`FLAVOR_SLOP`,
   `RatingPane.tsx:371`) reveals horizontal (capture, drag-to-set) vs vertical
   (let the page scroll) intent. A tap (release under SLOP) commits the tapped
-  value directly.
-- **Keyboard/a11y (port from canonical `ScoreSlider.tsx`)**: `role=slider`,
-  arrows ±0.25, PageUp/Down ±1, Home/End 0/5.
-- **Precondition (03 §2a)**: converge the two web score inputs onto the
-  SLOP/pan-y recognizer + port the keyboard handler BEFORE extracting any
-  `useScoreSlider` hook. The flavour widgets converge the OPPOSITE way
-  (`FlavorChips`' hidden-range-input a11y is the stronger source) — verify per
-  widget.
-- **Haptic intent (native-only, new)**: selection tick on each 0.25 step while
-  dragging; light impact on commit.
+  value directly. This is the web's hand-built mimicry of OS gesture
+  arbitration.
+- **Native recognizer (as built, milestone 3)**: gesture-handler `Gesture.Pan`
+  with `activeOffsetX(±6)` + `failOffsetY(±8)` — the OS gesture system does
+  the drag-vs-scroll arbitration natively — plus `Gesture.Tap` for tap-commit.
+  Value policy (`snapScore`/`scoreFromFraction`/`stepScore`) from
+  `@verre/core` `scoringInput.ts`. A11y: `accessibilityRole="adjustable"` +
+  increment/decrement actions (the native analogue of the web's arrow keys).
+- **~~Precondition (03 §2a)~~ RESCINDED (Simon, 2026-06-12)**: the web
+  recognizer convergence + `useScoreSlider` extraction is dropped — the web's
+  touch behaviour stays byte-identical until the web redesign, and the native
+  app shares only the pure value policy, not the recognizer. The two web
+  score inputs keep their (differing) recognizers; revisit at web-redesign
+  time. See 03-topology §2a note.
+- **Haptic intent (native, shipped)**: selection tick (`selectionAsync`) on
+  each 0.25 step while dragging; light impact on commit (drag release, tap,
+  number-field commit).
 
 ## Flavour fill-track input
 
 - Whole steps 0–5, tap or drag fills in the flavour's colour, no thumb.
-- Same SLOP recognizer as the score slider (6 px, horizontal intent).
+- Web: same SLOP recognizer as the score slider (6 px, horizontal intent).
+  Native: same `activeOffsetX`/`failOffsetY` pattern as the native score
+  slider; level policy (`flavourLevelFromFraction`, `toggleFlavourLevel`)
+  in `@verre/core`.
 - Clear affordance (×) resets to 0.
+- **Native build is palette-gated**: lands once the flavour-colour brief
+  (`.local/design/prompts/flavour-colours-brief.md`) produces the decided
+  per-attribute palette.
 
 ## Bottom sheets (native shells)
 

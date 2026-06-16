@@ -19,6 +19,16 @@ We do **not** decide one-vs-two now ([meta-proposal O1](README.md#3-deferred-dec
 
 This is the correction from the second review: **deferring the decision is NOT the same as deferring the setup.** Building iOS-first in a way that's agnostic to the web outcome requires Expo Router + the shared package *up front*. Skip those and you've silently chosen "two codebases" by making the one-codebase path a rewrite.
 
+> **§2a status update (2026-06-12, milestone 3):** the "converge the web score
+> inputs before extracting `useScoreSlider`" precondition below is **rescinded**
+> by Simon's ruling: the web's hand-tuned touch behaviour stays untouched until
+> the web redesign, and the native app uses gesture-handler's native intent
+> detection (`activeOffsetX`/`failOffsetY`) instead of porting the web
+> recognizer — so there is no shared recognizer hook to extract. Only the pure
+> value policy shipped to `packages/core` (`scoringInput.ts`). The convergence
+> question returns, if at all, at web-redesign time. The hook-tier guidance
+> below stands for *policy*, not recognizers.
+
 ## 2a. The iOS↔Android split — the axis the user actually cares about (O5)
 
 The README frames topology as one-vs-two *codebases* (the web axis). But part of the user's requirement is genuinely-different **iOS vs Android** UI (Apple theming + Apple-native widgets; Material + Android-native; Android back button). The multi-platform review's point: that axis needs a *mechanism*, decided during iOS. **One thing to commit, one thing to do opportunistically — and one thing auth is NOT:**

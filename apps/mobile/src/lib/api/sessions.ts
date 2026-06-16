@@ -5,6 +5,12 @@ import { apiFetch } from '../apiFetch';
 
 export type SessionRole = 'host' | 'cohost' | 'provider' | null;
 
+// Carousel-card chip, computed server-side. null ⟺ not pinned. 'now' = live +
+// started, 'soon' = pinned but not yet started, 'visited' = recently opened.
+// Hand-mirrored from CarouselLabel in app/api/me/sessions/route.ts (web↔native
+// wire-type convention) — keep in sync. See docs/dev/moments-home.md.
+export type CarouselLabel = 'now' | 'soon' | 'visited' | null;
+
 export type MySessionRow = {
   id: number;
   code: string;
@@ -23,12 +29,21 @@ export type MySessionRow = {
   lifespan: string | null;
   taster_count: number | null;
   role: SessionRole;
-  // Server-computed Moments-home pinning: live = Redis alive + caller still
-  // a participant + any set date not clearly over.
-  status: 'live' | 'past';
+  // Server-computed Moments-home routing — full model in docs/dev/moments-home.md.
+  // `status` drives the LISTS (Upcoming = `=== 'upcoming'`, Recent = the rest);
+  // `pinned` drives the CAROUSEL, independent of status (the two overlap);
+  // `carouselLabel` is the strip card's chip (null ⟺ !pinned). All three are
+  // server-authoritative — the client renders them verbatim, never recomputes.
+  status: 'live' | 'upcoming' | 'past';
+  pinned: boolean;
+  carouselLabel: CarouselLabel;
+  cover_photo_url: string | null;
 };
 
-export const isLiveSession = (r: MySessionRow) => r.status === 'live';
+export const isUpcomingSession = (r: MySessionRow) => r.status === 'upcoming';
+// Carousel membership — the `pinned` signal, NOT `status` (an upcoming moment
+// can be pinned). Use this for the highlight strip.
+export const isPinnedSession = (r: MySessionRow) => r.pinned;
 
 export type WireWine = {
   id: string;
@@ -73,6 +88,10 @@ export type SessionMetaView = {
   link?: string;
   hideLineup?: boolean;
   hideLineupMinutesBefore?: number;
+  // Spread from the server SessionMeta (lib/session.ts) via buildMetaView's
+  // `{ ...meta }` — present whenever the host set a cover. Used by the 02f
+  // Moment-details settings sheet to preview/replace/remove the cover.
+  coverPhotoUrl?: string;
   participants: SessionParticipant[];
   ttlSeconds: number;
   viewerBlocksOut: string[];
@@ -155,6 +174,193 @@ export async function getRemovedState(code: string): Promise<'banned' | 'kicked'
   return j?.state === 'banned' || j?.state === 'kicked' ? j.state : 'none';
 }
 
+export type RateBody = {
+  wineId: string;
+  score: number; // 0..5 in 0.25 steps; 0 = not rated
+  flavors: Record<string, number>; // whole steps 1..5, zero levels omitted
+  notes: string;
+};
+
+// Upserts the caller's rating. Server side-effects (no client work):
+// Postgres archival, the feed_item on first engagement, and the
+// engagement-deletion cascade when score+flavors+notes are all empty —
+// so "clear my rating" is just an empty rate POST.
+export async function rateWine(code: string, body: RateBody): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Saved-wine ids for the Crave toggle — same shape the web SessionShell
+// consumes ([{ wine_id }] from /api/me/bookmarks).
+export async function getBookmarkedWineIds(): Promise<Set<string>> {
+  const res = await apiFetch('/api/me/bookmarks');
+  if (!res.ok) await throwApiError(res);
+  const rows: Array<{ wine_id: string }> = await res.json();
+  return new Set(rows.map((r) => r.wine_id));
+}
+
+export async function setBookmark(code: string, wineId: string, on: boolean): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/bookmark`,
+    { method: on ? 'POST' : 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
+export type CreateMomentBody = {
+  hostDisplayName: string;
+  sessionName?: string;
+  category?: 'wine'; // v1 allow-list — widens with future category sets
+  coverPhoto?: string; // base64 data URL; server runs the hardened image pipeline
+  dateFrom?: string;
+  dateTo?: string;
+  timezone?: string;
+  hideLineup?: boolean;
+  hideLineupMinutesBefore?: number;
+  address?: string;
+  description?: string;
+  link?: string;
+  blind?: boolean; // pro-gated server-side
+  // No lifespan: native creates default to 'unlimited' server-side (keyed on
+  // the Better Auth session — the unspoofable caller class).
+};
+
+export async function createMoment(body: CreateMomentBody): Promise<{ code: string }> {
+  const res = await apiFetch('/api/session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
+// Wine type codes the server accepts (lib/session.ts addWineToSession). The
+// design's 7-option dropdown (Orange/Dessert/Fortified…) has no backend home —
+// these 5 are the canonical set, matching the web AddWineModal. A required
+// field; the server 400s without a valid one.
+export type WineTypeCode = 'red' | 'white' | 'spark' | 'rose' | 'nonalc';
+
+// 02b·add add-impression. Adds a wine to a session line-up — host/cohost/
+// provider only (server gates on isHostByIdentity || isProviderById; providers
+// can later edit/delete only what they added). Field names map design→server:
+// Variety→grape, Process→vinification, Type→type. `position` (1-indexed) is
+// honoured for hosts only; providers always append (server ignores it for them).
+// `image` is a base64 data URL — keep it under the wine-image cap
+// (MAX_WINE_IMAGE_BYTES; sanitizeImage silently drops larger). All optional
+// except name + type.
+export type AddWineBody = {
+  name: string;
+  type: WineTypeCode;
+  producer?: string;
+  vintage?: string; // server truncates to 4 chars
+  grape?: string; // design "Variety"
+  region?: string;
+  country?: string; // ISO 3166-1 alpha-2; invalid codes drop server-side
+  vinification?: string; // design "Process"
+  description?: string;
+  purchaseUrl?: string;
+  image?: string; // base64 data URL
+  position?: number; // 1-indexed insert; host-only server-side
+};
+
+// Returns the created wine in the same WireWine shape as the GET/poll (isMine
+// always true — the caller is the adder). The current caller discards it and
+// just invalidates the line-up query (the poll refetches); the typed return is
+// kept so a future optimistic-splice caller has the right shape on hand.
+export async function addWine(code: string, body: AddWineBody): Promise<WireWine> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
+// Blind reveal/hide (host/cohost-gated server-side; providers can't reveal).
+// On a blind session a wine is hidden from guests until revealed; revealing
+// stamps wines[].revealedAt (the host always sees the real value, even while
+// blindForEveryone masks the wine from them). The four endpoints map 1:1 to
+// the web WineListScreen controls; all take no body (server reads only the
+// session + caller). After any of them, invalidate ['session-state', code]
+// so the 5s poll surfaces the new revealedAt.
+export async function revealWine(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/reveal`,
+    { method: 'POST' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function hideWine(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/reveal`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function revealAllWines(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/reveal-all`, { method: 'POST' });
+  if (!res.ok) await throwApiError(res);
+}
+
+export async function hideAllWines(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/hide-all`, { method: 'POST' });
+  if (!res.ok) await throwApiError(res);
+}
+
+// 02f settings edit. Host-only PATCH; every field is optional — send only
+// what changed. The server (app/api/session/[code]/settings) shares the detail
+// validators with create via lib/sessionFields.ts, pro-gates blind + lifespan,
+// and runs the hardened image pipeline on coverPhoto. coverPhoto: null removes
+// the cover (reclaims the prior S3 bytes); a data URL replaces it. Mobile never
+// sends lifespan (native creates stay 'unlimited' — create parity).
+export type MomentSettingsBody = {
+  name?: string;
+  address?: string;
+  dateFrom?: string | null;
+  dateTo?: string | null;
+  timezone?: string;
+  description?: string;
+  link?: string;
+  hideLineup?: boolean;
+  hideLineupMinutesBefore?: number;
+  blind?: boolean; // pro-gated server-side
+  blindForEveryone?: boolean;
+  coverPhoto?: string | null; // data URL = replace; null = remove
+};
+
+export async function updateMomentSettings(code: string, body: MomentSettingsBody): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Soft-deletes the moment (host/cohost-gated server-side). Bounces every
+// participant on their next poll (the session 404s). Irreversible from the UI.
+export async function deleteMoment(code: string): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}`, { method: 'DELETE' });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Hide / un-hide a moment from the home highlight carousel (personal view
+// pref; it stays in "All moments"). Re-engaging (visit/rate) auto-un-hides.
+export async function setMomentHidden(code: string, hidden: boolean): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/carousel-hidden`, {
+    method: hidden ? 'POST' : 'DELETE',
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {
   const res = await apiFetch('/api/session/join', {
     method: 'POST',
@@ -163,4 +369,37 @@ export async function joinMoment(code: string, displayName: string): Promise<{ c
   });
   if (!res.ok) await throwApiError(res);
   return res.json();
+}
+
+// People-management actions (host/cohost). The server is the authority on the
+// tier gates (cohost role = strict-host only; banning a cohost = strict-host;
+// provider ⊥ cohost) — the People UI mirrors them only to avoid offering dead
+// actions, and surfaces the server's 403 message if a race slips through.
+
+// Set a participant's role. 'taster' clears cohost/provider. The wire role
+// values are snake_case to match the backend (PATCH /api/session/:code).
+export type WireRole = 'taster' | 'co_host' | 'provider';
+export async function setParticipantRole(code: string, targetId: string, role: WireRole): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'set-role', targetId, role }),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
+// Kick (can rejoin) or ban (cannot) a participant. Ban deletes their data;
+// deleteAddedWines additionally removes wines they added (default false).
+export async function removeParticipant(
+  code: string,
+  identityId: string,
+  mode: 'kick' | 'ban',
+  deleteAddedWines = false,
+): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/bans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identityId, mode, deleteAddedWines }),
+  });
+  if (!res.ok) await throwApiError(res);
 }

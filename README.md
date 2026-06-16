@@ -150,10 +150,16 @@ The Expo (React Native) app lives in `apps/mobile` (npm workspace). It talks to 
 
 ```bash
 cd apps/mobile
+cp .env.example .env.local  # then fill in (gitignored) — see below
 npx expo run:ios            # builds the dev client, opens the iOS Simulator
 # physical device (backend on your Mac's LAN IP):
 EXPO_PUBLIC_API_URL=http://192.168.1.42:3000 npx expo run:ios --device
 ```
+
+**Env vars** (`apps/mobile/.env.local`, gitignored; `EXPO_PUBLIC_*` are inlined into the bundle at build time):
+
+- `EXPO_PUBLIC_API_URL` — backend the app talks to. Simulator defaults to `http://localhost:3000`; a physical device needs the Mac's LAN IP.
+- `EXPO_PUBLIC_WEB_URL` — public web origin for shareable links (the `/join/<code>` invite URL). Set to the real domain in prod. If unset, falls back to the API URL so local-deployment links resolve against the same backend.
 
 Day-to-day JS iteration after the first build: `npx expo start`. See `apps/mobile/CLAUDE.md` for toolchain rules (SDK pinning, auth-version lockstep, design tokens).
 
@@ -168,7 +174,8 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET/POST | /api/auth/[...nextauth] | NextAuth sign-in / sign-out |
 | POST | /api/auth/register | Create an account |
 | GET | /api/me/profile | Flavour profile + rating stats |
-| GET | /api/me/sessions | Sessions this user joined (incl. wine_count, live taster_count, caller's role, live/past status) |
+| GET | /api/me/sessions | ALL sessions this user joined (incl. wine_count, live taster_count, caller's role). Two routing signals: `status` (`live`/`upcoming`/`past`) drives the list buckets; `pinned` (independent of status) drives the highlight carousel. Sorted most-recently-active first |
+| POST/DELETE | /api/session/:code/carousel-hidden | Hide / un-hide a moment from the Moments-home highlight carousel (personal view pref; stays in "All moments"). Logged-in only; auto-un-hidden on re-engagement (visit/rate) |
 | GET | /api/me/bookmarks | Saved wines |
 | GET | /api/me/ratings | This user's rating history |
 | GET / POST / PATCH | /api/me/badges | Earned badges, XP, manual recheck, mark-as-seen |
@@ -191,7 +198,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?}`) → `{code, id, displayName, anonToken?}` |
+| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?, category?, coverPhoto?, dateFrom?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `coverPhoto` is a base64 data URL, logged-in only; native callers default to unlimited lifespan) → `{code, id, displayName, category, coverPhotoUrl?, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
@@ -199,7 +206,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
-| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan) |
+| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
 | PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
 | GET | /api/session/:code/bans | List banned identities (host + cohost) |

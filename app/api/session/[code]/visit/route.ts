@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, touchWithMeta } from '@/lib/redis'
+import { redis, k, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -64,6 +64,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   try {
     await pgUpsertSession(c, meta)
     const userId = Number(session.user.id)
+    // Pin this session as "Just visited" on the user's Moments home, and
+    // un-hide it if they'd dismissed it from the carousel (re-engagement
+    // brings the card back to the highlights).
+    await bumpLastSeen(c, userId)
+    await unhideCarousel(userId, c)
     const existing = await prisma.sessionMember.findUnique({
       where: { userId_sessionCode: { userId, sessionCode: c } },
     })

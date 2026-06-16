@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, type PressableProps, type ViewStyle } from 'react-native';
+import { useEffect, useState } from 'react';
+import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
 import { control, radius, typeScale, useTheme } from '@/theme';
 import { alpha, mix } from '@/theme/color';
 import { VText } from './VText';
@@ -14,8 +15,17 @@ interface Props extends Omit<PressableProps, 'children' | 'style'> {
   // .btn-bar — squarer corners for full-width footer action bars
   bar?: boolean;
   loading?: boolean;
+  // Shown in place of `title` when `loading` outlasts the slow threshold
+  // (e.g. "Saving…"). Without it, a slow action just stays dimmed.
+  loadingTitle?: string;
   style?: ViewStyle;
 }
+
+// In-flight feedback (Simon's ruling, 2026-06-12): no spinner. The button
+// dims immediately on `loading` (action acknowledged, double-tap blocked);
+// only when the request outlasts this threshold does the label swap to
+// `loadingTitle` — fast saves never flash an indicator.
+const SLOW_AFTER_MS = 500;
 
 const HEIGHTS: Record<Size, number> = { sm: control.hSm, md: control.h, lg: control.hLg };
 const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
@@ -26,8 +36,17 @@ const LABEL: Record<Size, { size: number; tracking: number }> = {
   lg: { size: typeScale.bodyLg.size, tracking: typeScale.bodyLg.trackingPx },
 };
 
-export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, disabled, style, ...rest }: Props) {
+export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!loading) {
+      setSlow(false);
+      return;
+    }
+    const t = setTimeout(() => setSlow(true), SLOW_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [loading]);
 
   const colors = (pressed: boolean): { bg: string; text: string; border?: string } => {
     switch (variant) {
@@ -68,7 +87,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
             justifyContent: 'center',
             flexDirection: 'row',
             gap: 8,
-            opacity: disabled ? 0.4 : 1,
+            opacity: disabled ? 0.4 : loading ? 0.55 : 1,
             // Always an array — a conditional `undefined` transform key reaches
             // RN's _validateTransforms as null and crashes (processTransform:142).
             transform: [{ scale: pressed ? 0.975 : 1 }],
@@ -81,9 +100,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
       {({ pressed }) => {
         const c = colors(pressed);
         const label = LABEL[size];
-        return loading ? (
-          <ActivityIndicator color={c.text} />
-        ) : (
+        return (
           <VText
             color={c.text}
             style={{
@@ -93,7 +110,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
               letterSpacing: label.tracking,
             }}
           >
-            {title}
+            {loading && slow && loadingTitle ? loadingTitle : title}
           </VText>
         );
       }}

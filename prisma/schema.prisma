@@ -282,6 +282,16 @@ model Session {
   timezone    String?    @db.VarChar(64)
   description String?
   link        String?    @db.VarChar(512)
+  // Host-chosen cover photo (S3 URL, sessions/{code}_{ts}.{ext}). Deliberately
+  // NOT blind-redacted — it brands the moment, not a wine. S3 bytes are
+  // reclaimed in every deletion path (capture/commit/reclaim-after).
+  coverPhotoUrl String? @map("cover_photo_url") @db.VarChar(512)
+  // Session-level category — the future contract for what impressions can be
+  // added ('wine' → wines only) and the category vocabulary. Plain varchar
+  // like wines.category (the category_styles lookup PK is the composite
+  // (category, style), so no single-column FK). v1 allow-list: 'wine'.
+  // Nullable for the soft-delete scrub contract; create writes 'wine'.
+  category    String?    @db.VarChar(32)
   // Soft-delete tombstone marker. NULL = live; non-null = deleted at this
   // instant, with every other column scrubbed to NULL per the §8 data-survival
   // contract in docs/dev/proposals/rewire.md. The row itself stays so

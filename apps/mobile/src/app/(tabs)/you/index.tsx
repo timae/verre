@@ -32,7 +32,7 @@ export default function You() {
       {__DEV__ ? (
         <Button title="Dev gallery" variant="tertiary" onPress={() => router.push('/you/dev-gallery')} />
       ) : null}
-      <Button title="Sign out" variant="secondary" block loading={busy} onPress={signOut} style={{ marginBottom: insets.bottom + TAB_BAR_CLEARANCE }} />
+      <Button title="Sign out" loadingTitle="Signing out…" variant="secondary" block loading={busy} onPress={signOut} style={{ marginBottom: insets.bottom + TAB_BAR_CLEARANCE }} />
     </View>
   );
 }

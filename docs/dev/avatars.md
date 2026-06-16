@@ -2,6 +2,8 @@
 
 Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/u_<userId>_<timestamp>.<ext>`; the URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
 
+> Session **cover photos** (milestone 4) reuse this exact pipeline: same `uploadImage` hardening, same data-URL JSON shape, same replace-then-reclaim ordering. Key shape `sessions/<code>_<timestamp>.<ext>`; see `POST /api/session` + the settings PATCH.
+
 ## Edit endpoint
 
 `POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth. POST also rate-limited 10/h per user; DELETE is currently uncapped (see `app/api/rate-limits.md` rationale). POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. On replace, the prior URL is reclaimed from S3 fire-and-forget after the new upload + DB update succeed. On account-delete, `lib/accountDelete.ts` reclaims the avatar alongside check-in and wine images.

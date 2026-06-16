@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, TTL, touchWithMeta } from '@/lib/redis'
+import { redis, k, TTL, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -257,6 +257,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Award badges + XP directly (no HTTP round-trip). Logged-in users only.
   if (identity.kind === 'user') {
     const userId = Number(identity.id.slice(2))
+    // In-moment activity → keep a date-less session pinned as "Just visited"
+    // and un-hide it from the carousel if dismissed (re-engagement = un-hide).
+    // bumpLastSeen sets the hash's TTL itself (it can be the first write, with
+    // no prior /visit, after touchWithMeta's scan above already ran).
+    await bumpLastSeen(c, userId)
+    await unhideCarousel(userId, c)
     const hasNote = (notes || '').length > 5
     const action = ratingScore === 5
       ? (hasNote ? 'rate_5star_note' : 'rate_5star')
