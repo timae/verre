@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { Thumb } from '@/components/ui/Thumb';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
@@ -178,17 +179,6 @@ function NewPill({ onPress }: { onPress: () => void }) {
 }
 
 // .sh-thumb / .sh-thumb-lg with the glass-icon placeholder (.sh-thumb-ph).
-function Thumb({ uri, size, r }: { uri?: string | null; size: number; r: number }) {
-  const { theme } = useTheme();
-  if (uri) return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: r }} />;
-  return (
-    <View
-      style={{ width: size, height: size, borderRadius: r, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}
-    >
-      <Icon name="glass" size={Math.round(size * 0.42)} color={theme.inkFaint} />
-    </View>
-  );
-}
 
 // The card's inner content (thumb + status + name + meta), shared between the
 // live card and the focused copy drawn in the remove overlay so they match.
@@ -203,7 +193,7 @@ const CARD_TEXT_MAX_SCALE = 1.3;
 function LiveCardBody({ m }: { m: MySessionRow }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-      <Thumb uri={m.cover_photo_url} size={56} r={radius.md} />
+      <Thumb uri={m.cover_photo_url} size={56} radius={radius.md} />
       <View style={{ flex: 1, gap: 2 }}>
         {/* Status chip — server-computed (m.carouselLabel; see
             docs/dev/moments-home.md). 'now'/'visited' carry the green ●

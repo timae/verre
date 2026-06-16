@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, Share, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, Share, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetTextInput, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
+import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
 import { WEB_BASE } from '@/lib/config';
-import { initials } from '@/lib/initials';
 import { alpha } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
@@ -235,22 +235,20 @@ function BrowseChip({ onPress }: { onPress: () => void }) {
 // .ish-chip — avatar (initials) + "+" badge + first name. Tap → OS share.
 function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }) {
   const { theme } = useTheme();
-  const ini = initials(friend.name);
   const firstName = friend.name.split(/\s+/)[0];
   return (
     <Pressable accessibilityRole="button" accessibilityLabel={`Invite ${friend.name}`} onPress={onPress} style={{ alignItems: 'center', gap: 6, width: 60 }}>
-      <View>
-        {friend.imageUrl ? (
-          <Image source={{ uri: friend.imageUrl }} style={{ width: 52, height: 52, borderRadius: 26 }} />
-        ) : (
-          <View style={{ width: 52, height: 52, borderRadius: 26, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 16, color: theme.inkSoft }}>{ini}</VText>
+      <Avatar
+        imageUrl={friend.imageUrl}
+        name={friend.name}
+        size={52}
+        initialsSize={16}
+        badge={
+          <View style={{ position: 'absolute', right: -2, bottom: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: theme.surface }}>
+            <Icon name="plus" size={11} color={theme.accentInk} />
           </View>
-        )}
-        <View style={{ position: 'absolute', right: -2, bottom: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: theme.surface }}>
-          <Icon name="plus" size={11} color={theme.accentInk} />
-        </View>
-      </View>
+        }
+      />
       <VText variant="caption" numberOfLines={1}>{firstName}</VText>
     </Pressable>
   );
@@ -259,16 +257,9 @@ function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }
 // .fr-row — browse-pane row: avatar · name + "Friend" · Joined chip | Invite.
 function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first: boolean; joined: boolean; onInvite: () => void }) {
   const { theme } = useTheme();
-  const ini = initials(friend.name);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
-      {friend.imageUrl ? (
-        <Image source={{ uri: friend.imageUrl }} style={{ width: 42, height: 42, borderRadius: 21 }} />
-      ) : (
-        <View style={{ width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center' }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, color: theme.inkSoft }}>{ini}</VText>
-        </View>
-      )}
+      <Avatar imageUrl={friend.imageUrl} name={friend.name} size={42} initialsSize={14} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }} numberOfLines={1}>{friend.name}</VText>
         <VText variant="small" color="inkSoft">Friend</VText>
