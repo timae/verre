@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, Image, Modal, Pressable, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, useWindowDimensions, View } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetView } from '@gorhom/bottom-sheet';
+import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
@@ -15,7 +16,7 @@ import {
   type SessionMetaView,
 } from '@/lib/api/sessions';
 import { alpha } from '@/theme/color';
-import { motion, radius, useTheme } from '@/theme';
+import { radius, useTheme } from '@/theme';
 
 // 02c — the People roster (host-manage view). Uses the shared @gorhom/bottom-
 // sheet <Sheet> (same shell as the invite sheet). Rows show role + relationship
@@ -177,13 +178,17 @@ export function PeopleSheet({
       </BottomSheetView>
     </Sheet>
 
-    {/* Anchored row menu (.pl-pop / 02e .ir-menu pattern). A plain transparent
-        RN Modal (its own window) layers above the in-screen sheet. */}
-    <RowMenu
+    {/* Anchored row menu (shared AnchoredMenu — the .ir-menu pattern; flips up
+        near the screen bottom). right:20 keeps the prior inset. */}
+    <AnchoredMenu
       anchor={menu && menuTarget ? { top: menu.anchorTop, bottom: menu.anchorBottom } : null}
       onClose={() => setMenu(null)}
-      items={menuTarget ? buildMenuItems({ p: menuTarget, role: roleOf(menuTarget), strictHost, setRole, remove }) : []}
-    />
+      right={20}
+    >
+      {(menuTarget ? buildMenuItems({ p: menuTarget, role: roleOf(menuTarget), strictHost, setRole, remove }) : []).map((it, i) => (
+        <MenuItem key={i} label={it.label} tone={it.danger ? 'danger' : 'default'} onPress={it.onPress} />
+      ))}
+    </AnchoredMenu>
     </>
   );
 }
@@ -295,6 +300,8 @@ function PersonRow({
       {busy ? (
         <ActivityIndicator />
       ) : canManage ? (
+        // Anchored to the ROW (not just the button) so the menu opens from the
+        // row's bottom edge — keep the rowRef measure rather than AnchorButton.
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={`Manage ${p.displayName}`}
@@ -325,68 +332,3 @@ function Tag({ label, kind }: { label: string; kind: 'host' | 'plain' | 'provide
   );
 }
 
-// Anchored dropdown (.pl-pop) — the 02e .ir-menu pattern: a plain transparent
-// Modal + an absolute panel anchored to the ⋯ button. Opens DOWN from the
-// button's bottom by default, but FLIPS UP (anchored to the button's top) when
-// opening down would clip off the bottom of the screen — so rows near the
-// bottom (the common case in a short roster) still show the full menu.
-function RowMenu({
-  anchor, onClose, items,
-}: {
-  anchor: { top: number; bottom: number } | null;
-  onClose: () => void;
-  items: MenuItem[];
-}) {
-  const { theme } = useTheme();
-  const { height: screenH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-  const anim = useRef(new Animated.Value(0)).current;
-  // Hold the last anchor so the panel keeps its place during the close fade.
-  const last = useRef<{ top: number; bottom: number }>({ top: 0, bottom: 0 });
-  if (anchor) last.current = anchor;
-  // Measured panel height → exact flip decision (vs guessing from item count).
-  const [menuH, setMenuH] = useState(0);
-  useEffect(() => {
-    // Reset the measured height on close: the next target may have a different
-    // item count (height), and a stale value would compute the flip direction
-    // from the previous menu for one frame. 0 → re-measures, defaulting to down.
-    if (!anchor) { anim.setValue(0); setMenuH(0); return; }
-    Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
-  }, [anchor, anim]);
-  if (!anchor) return null;
-
-  const GAP = 6;
-  const bottomLimit = screenH - insets.bottom - 8;
-  // Flip up only once measured AND the down-position would overflow. Before the
-  // first measure (menuH === 0) default to opening down.
-  const flipUp = menuH > 0 && last.current.bottom + GAP + menuH > bottomLimit;
-  const top = flipUp ? last.current.top - GAP - menuH : last.current.bottom + GAP;
-
-  return (
-    <Modal transparent visible animationType="none" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close menu" onPress={onClose}>
-        <Animated.View
-          onLayout={(e) => setMenuH(e.nativeEvent.layout.height)}
-          style={{
-            position: 'absolute', top, right: 20, minWidth: 196,
-            backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 6,
-            // Slide from the side it opens toward: down → from above (-4), up → from below (+4).
-            opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [flipUp ? 4 : -4, 0] }) }],
-            shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8,
-          }}
-        >
-          {items.map((it, i) => (
-            <Pressable
-              key={i}
-              accessibilityRole="button"
-              onPress={it.onPress}
-              style={({ pressed }) => ({ borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
-            >
-              <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15 }} color={it.danger ? theme.critical : theme.ink}>{it.label}</VText>
-            </Pressable>
-          ))}
-        </Animated.View>
-      </Pressable>
-    </Modal>
-  );
-}
