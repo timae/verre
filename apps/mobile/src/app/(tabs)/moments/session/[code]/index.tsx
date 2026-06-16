@@ -84,12 +84,11 @@ function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
 }
 
 // Collapsed HeroTopBar's painted height = safe-area top + the 34pt control row +
-// 6pt bottom pad. (The bar's 1px bottom rule is drawn INSIDE that box by the
-// stretched bg layer — borderBottomWidth on an absolute top:0/bottom:0 child
-// does NOT add to the box height — so it must NOT be added here, or the sticky
-// pin lands 1px low and a hairline of content shines through the seam.) The
-// cover-hero sticky pin offset derives from this so the tabs/strip pin flush
-// under the bar. Shared with HeroTopBar so the two can't drift.
+// 6pt bottom pad. No bottom rule to account for (the collapsed bar is a flat
+// opaque fill, no border — ADR-0003). The cover-hero sticky pin offset derives
+// from this so the tabs/strip pin flush under the bar; overlays then pin at
+// PIN_Y = this − 1 (1px overlap) against sub-pixel rounding. Shared with
+// HeroTopBar so the two can't drift.
 const heroBarHeight = (insetTop: number) => insetTop + 34 + 6;
 
 // Renders the reveal strip for either layout (null when not blind). Pulls the
@@ -613,6 +612,11 @@ export default function SessionLineup() {
 // status bar + a floating bar that collapses to a solid title bar) is LOCKED;
 // only the implementation differs from the mock.
 //
+// 📖 Full recipe + the dead ends that cost ~5 attempts + the library survey:
+//    docs/design/patterns/collapsing-hero-sticky-subheaders.md
+//    Opaque-bar rationale: docs/design/decisions/0003-collapsed-bars-opaque.md
+//    (Read those before building a NEW hero screen, e.g. the feed cards.)
+//
 // Sticky tabs + strip use the community "Dynamic Overlay" pattern (verified by
 // review + web best-practice over contentInset/native-sticky, which can't pin
 // BELOW an absolute bar and diverge on Android/New-Arch):
@@ -926,8 +930,8 @@ function HeroTopBar({
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.bg }} />
       </Animated.View>
       {/* Layout = heroBarHeight(insets.top): paddingTop insets.top + 34 row + 6
-          bottom + the bg layer's 1px rule. Keep in sync with heroBarHeight (the
-          cover-hero sticky pin offset derives from it). */}
+          bottom (no border — opaque fill, ADR-0003). Keep in sync with
+          heroBarHeight (the cover-hero sticky pin offset derives from it). */}
       <View style={{ paddingTop: insets.top, paddingHorizontal: 14, paddingBottom: 6 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', height: 34 }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}

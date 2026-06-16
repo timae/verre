@@ -105,6 +105,74 @@ decided. `TAB_BAR_CLEARANCE` (now in `src/lib/layout.ts`) is breathing room
 only — the react-native-screens tab host auto-insets content. Sheets, menus,
 alerts, pickers: reach for the native primitive first when those screens land.
 
+## Component catalog + reuse rule (READ BEFORE BUILDING ANY UI)
+
+🔁 **Before you build a visual element, check this catalog and REUSE the existing
+primitive. Do NOT re-implement a look that already exists.** The #1 cause of "the
+same thing built three different ways" is a session not knowing the canonical
+component already exists (an audit on 2026-06-16 found the anchored menu built as
+3 panels + 4 anchor buttons, the avatar circle ~6×, the "+Add" pill ~7×). If a
+visual pattern appears in 3+ places, extract it into `components/` under a name
+that says what it does. Tokens always: `theme.*` colors, `radius`, type scale via
+`useTheme()`/`textStyle()`/`VText` — never raw hex (the only sanctioned literals
+are the over-photo glass fills + scrim gradients).
+
+Design rationale + decisions live in `docs/design/` (ADRs + patterns); this is
+the "what exists / what to reuse" map.
+
+**Build patterns — read the recipe BEFORE building one of these (saves re-walking
+dead ends):**
+- **A collapsing / immersive-hero screen** (full-bleed photo under the status
+  bar + a bar that collapses on scroll + sticky sub-headers under it — the feed
+  hero cards, the line-up cover) → read `docs/design/patterns/collapsing-hero-sticky-subheaders.md`
+  FIRST. It has the Dynamic Overlay recipe + the 4 approaches that FAIL (cost ~5
+  attempts). Bars over scrolling content are opaque — `docs/design/decisions/0003`.
+
+**Existing shared primitives (the canonical things — reuse these).** Paths below
+are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
+`apps/mobile/src/components/ui/VText.tsx`); `lib/` paths are `apps/mobile/src/lib/`.
+- **Text**: `VText` (`ui/VText.tsx`) — themed Text w/ `variant` + `color` token. Every label starts here.
+- **Button**: `Button` (`ui/Button.tsx`) — `primary/positive/secondary/tertiary/danger`, `sm/md/lg`, `bar`, `block`, `loading`+`loadingTitle`. Any real button.
+- **Icon**: `Icon` (`ui/Icon.tsx`) — the vendored 24×24 SVG set (`IconName` union). All iconography. Add new glyphs here, never inline an SVG.
+- **Text input**: `TextField` (`ui/TextField.tsx`) single-line; `NotesField` (`moments/momentForm.tsx`) multiline. (A shared `<TextArea>` is a pending extraction — see below.)
+- **Bottom sheet**: `Sheet` (`ui/Sheet.tsx`) — the gorhom shell (themed bg/handle/backdrop + tab-bar-hide). All sheets.
+- **Query-failure UI**: `ui/ConnectionState.tsx` — `ErrorState` (full-screen + retry), `ConnectionBanner`, `ReconnectingBar`, `connectionView()`. All poll/error affordances.
+- **QR**: `QrCode` (`ui/QrCode.tsx`).
+- **Score READ**: `StarScore` (`scoring/StarScore.tsx`) — the one-star + value (`★ 4.25`). Never inline a star.
+- **Score WRITE**: `ScoreInput` (`scoring/ScoreInput.tsx`) — wide slider + editable number + word (gesture+haptics).
+- **Flavour wheel**: `FlavourWheel` (`scoring/FlavourWheel.tsx`).
+- **Role chip**: `RoleChip` (`moments/RoleChip.tsx`) — host/cohost/provider text pill.
+- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
+- **Form widgets + image pipeline**: `momentForm.tsx` — `DateField`, `NotesField`, `fitCover`/`pickCover`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ wine images cap LOWER than covers — see add-impression notes).
+- **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens.
+- **Sheets (domain)**: `PeopleSheet`, `InviteSheet` (`moments/`).
+- **Label helpers (`lib/`)**: `initials.ts` (code-point-aware avatar initials), `momentFormat.ts`, `scoreWords.ts`, `locale.ts`, `contrast.ts`. `theme/color.ts` `mix()`/`alpha()` for press-state/tint math (use instead of raw rgba).
+
+**⚠️ Pending extractions — KNOWN drift the audit found (2026-06-16, refined by a
+4-reviewer pass). Prefer extracting these when you next touch the area; until
+then, copy the EXISTING canonical version named below, don't invent a new one.
+Ordered by drift-risk (active divergence + likelihood of a next copy):**
+- **`<AnchoredMenu>` + `<AnchorButton>`/`useAnchorMeasure`** — the `.ir-menu` anchored dropdown is **3 panels** (`impression/[wineId].tsx` `IrMenu`; `session/[code]/index.tsx` `SessionMenu`; `PeopleSheet` `RowMenu`) + **4 verbatim measure-anchor buttons** (those screens' ⋯ + `HeroTopBar` ⋯). All 3 panels re-encode the surface card + `dur1` fade/4px-rise + the SAME `shadowOpacity:0.18/radius24/offset{0,10}/elev8` shadow. ⭐HIGHEST — host-CRUD edit/delete is coming and will be panel #4. **The real work (not just "merge 3 identical things"): the panels DIVERGE in their anchor contract** — `IrMenu`/`SessionMenu` take a single `top` with no clipping flip; `RowMenu` takes `{top,bottom}` with full measured flip-up/down. Standardize on RowMenu's flip-capable shape, parameterize `right`/`minWidth`, and pass bespoke content (SessionMenu's BlindForAll press-field + auto-close) as children. **Sub-task: that shadow is a raw bypass of `elevation.*` tokens (`CardSurface` uses them right; the signature matches NO existing token) — give `<AnchoredMenu>` an `elevation` token (or add `elevation.menu`), don't relocate the magic numbers, and don't just swap in `elevation.lg` (different look). The same shadow is also on `add.PositionPicker` (`.at-pospop`) — a 4th site the dedup/CI-gate should cover.**
+- **`<Avatar>` + `<Thumb>`** — the person circle is built ~6× at 6 sizes (`index.tsx` AvatarFoot, `PeopleSheet` PersonRow, `InviteSheet` FriendChip/FriendRow/BrowseChip). The extracted `<Avatar>` MUST cover all fallback variants in the wild: image / initials / `user`-glyph (anon, PeopleSheet) / accent host-tint / "+"-badge overlay (FriendChip) — enumerate them or it'll be under-built + re-inlined. Separately the glass-placeholder cover **`<Thumb>`** (square) is 3× (`LuRow`, `recents.Thumb46`, `moments/index.tsx` `Thumb` — most general, promote it).
+- **`GLASS_FILL` token (+ maybe `<GlassCircleButton>`)** — ⬆ moved up: ALREADY-shipped visual drift. The over-photo dark glass fill `rgba(20,18,15,α)` is re-declared at three alphas — `0.42` (×5), `0.5` (`HeroTopBar`), `0.55` (the photo-remove × in create/add). Note it's applied to TWO shapes: true `34×34/r17` circles (`settingsParts.GlassButton`, the impression back ⋯) AND variable-width pills that just share the fill (reveal/crave/add). So the primary fix is ONE `GLASS_FILL` fill token (converge the alpha); a `<GlassCircleButton>` covers only the circle subset. Also: the **hero scrim gradient** `rgba(15,12,10,…)` differs between the two hero screens (`0.25/0.05/0.82` vs `0.28/0.05/0.72`) — make a `heroScrim` constant. And `HERO_RATIO` is defined in both hero screens with DIFFERENT (legit) values — keep two NAMED consts (`IMPRESSION_HERO_RATIO`/`COVER_HERO_RATIO` in `lib/layout.ts`), don't collapse the value.
+- **Fold `PeopleSheet.Tag` into `RoleChip`** — ⬆ moved up: a 3-way EXACT re-impl of one chip with the SAME tone-mapping copied byte-for-byte (`RoleChip`, `PeopleSheet.Tag`, `ReadCard`'s inline pill all compute host→accentTint / provider→`alpha(positive,0.16)` / else→surfaceSunk). Add a `variant`/`outlined` prop (the `anon` case) — low-risk, no judgment calls.
+- **`<CoverPickerField>`** — ⬆ moved up: the dashed photo picker is 3 near-identical copies with ACTIVE copy/glass drift (`create.CoverPicker`, `add.PhotoPicker`, `details.tsx` inline — `details` is even missing the caption the others have; the photo-remove × is `0.55` in two of them). Mechanical extraction into `momentForm.tsx`.
+- **`<IconPill>` + `<DashedAddRow>`** — the accent "+pill with glyph" is ~5 filled pills (`NewPill`, `EmptyLineup` add, `PeopleSheet .hv-add`, `InviteSheet` Invite/Share) + 1 collapsing variant (`LineupAddButton`) + 1 dashed full-width row (`AddImpressionRow`) — i.e. 2–3 components, not one. Lower-stakes (off-by-2px pad doesn't read as a bug).
+- **`<TextArea>`** beside `TextField` — `momentForm.NotesField` + the impression's private `NoteField` re-encode the same multiline focus trick; the impression should use `NotesField` (expose `minHeight`/`maxHeight` — `maxHeight` already half-exists).
+- **`PushGroup`/`PushRow` (moments/index.tsx) → adopt `SetGroup`/`SetNav`** (same carded nav-row primitive, add a trailing-slot/`count`).
+- **`<OptionSheet>`** — `create.CategorySheet` ≈ `add.TypeSheet` (same check-list body) — extract for THAT case. ⚠️ Do NOT blindly fold in `add.CountrySheet`: it needs a fixed 75% snap + `BottomSheetScrollView` + search (a load-bearing config difference — see its in-file comment); make it a separate `<SearchableOptionSheet>` if anything.
+- **Export `add.SelectField`** from `momentForm` — re-inlined for create's category trigger.
+- **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
+- **Promote `ClampText`** (`impression/[wineId].tsx`) to `components/`; `OvcAbout`'s description block is a copy.
+- **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
+- **`<CenteredMessage>`** — `FatalView` (`index.tsx`) + the impression-gone block re-implement `ConnectionState.ErrorState`'s layout (`SettingsScreenFallback` already delegates — the model). Decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
+- **Shared layout constants** — `GUTTER` (`=22`, the intentional `20` in `impression/[wineId].tsx` is a documented override), `FOOT_CLEARANCE`, are re-declared per-file ~8× / ~5×. Move to `lib/layout.ts` (alongside `TAB_BAR_CLEARANCE`) so the one intentional override is visible.
+- Also noted: `DateField` (`momentForm.tsx`) hand-rolls its OWN `Modal`+scrim bottom-sheet (not `ui/Sheet`) to host the OS date picker — justified, but reuse IT if you need a native-picker-in-a-sheet rather than rolling a third.
+
+(This catalog is **mobile-only**. The web app is slated for a later redesign, so
+it gets no investment now — don't mine `components/` for patterns or treat it as a
+reference for the app; the app's design lives here + in `docs/design/`.)
+
 ## Scoring input (milestone 3)
 
 - **Native-first input ruling (Simon, 2026-06-12)**: use the OS input
@@ -142,8 +210,11 @@ alerts, pickers: reach for the native primitive first when those screens land.
   (hero scrim); **(M4)**: `expo-image-picker` (cover photo; config plugin
   carries the photosPermission copy in app.json),
   `@react-native-community/datetimepicker` (02a From–To, no plugin),
-  `expo-blur` (the .ir-foot glass — the .vfoot Create bar is spec'd as a
-  plain gradient, no blur); **(02s carousel)**: `@expo/ui` (ships WITH the SDK,
+  `expo-blur` (was the .ir-foot glass — ⚠️ that blur was later REMOVED when
+  collapsed/in-flow bars went solid-opaque per ADR-0003; the module is still in
+  package.json but currently has NO importer in src/ — verify before relying on
+  it, and consider dropping it if nothing reintroduces a blur); **(02s carousel)**:
+  `@expo/ui` (ships WITH the SDK,
   pinned `~56.0.17` — declared in package.json so an expo-router bump can't
   silently drop the transitive) — all pinned from `bundledNativeModules.json`;
   re-run `npx expo run:ios` after pulling.
@@ -192,22 +263,22 @@ alerts, pickers: reach for the native primitive first when those screens land.
 
 ## Blind reveal/hide (02b — host reveals impressions from guests)
 
-Built on `feature/mobile-create` (not yet committed; awaiting Simon's Simulator
+Built on `feature/mobile-create` (committed `bea0758`; awaiting Simon's Simulator
 check — no new native modules). Surfaces: the line-up + the impression detail.
 Server contract is UNCHANGED and predates this work — four host/cohost-gated
 endpoints: `POST|DELETE /api/session/:code/wines/:id/reveal` (reveal/hide one),
 `POST …/wines/reveal-all`, `POST …/wines/hide-all`. Client fns of the same
 names in `src/lib/api/sessions.ts`.
 
-- **Reveal state = `!!wine.revealedAt`, the SINGLE source of truth in every
-  case.** The host sees the full wine (incl. `revealedAt`) even under
-  blind-for-all the moment it's revealed (`redactWine` returns the full row when
-  `revealed`); an UNrevealed wine under blind-for-all comes back `_blind:true`
-  with NO `revealedAt`. So a revealed wine ALWAYS carries `revealedAt`, and
-  `_blind` true ⟺ not revealed. **`masked` must be `_blind && !revealedAt`** —
-  a just-revealed blind-for-all wine is still `_blind` locally until the next
-  poll brings the un-redacted fields, and rendering the placeholder then would
-  contradict its own "Hide" pill. Reveal always wins (mirrors `wineRedaction.ts`).
+- **Reveal state = `!!wine.revealedAt` is the SINGLE source of truth for the
+  PILL/BAR LABEL** (Reveal vs Hide). The host sees the full wine (incl.
+  `revealedAt`) even under blind-for-all the moment it's revealed (`redactWine`
+  returns the full row when `revealed`); an UNrevealed wine under blind-for-all
+  comes back `_blind:true` with NO `revealedAt`. **But the masked PLACEHOLDER
+  renders off `_blind` ALONE — see the dedicated rule below, NOT `_blind &&
+  !revealedAt`** (that combination briefly surfaced the server's "Wine N" stub on
+  a blind-for-all reveal; the placeholder must stay until the poll clears
+  `_blind`). So: label keys on `revealedAt`; placeholder keys on `_blind`.
 - **Two-state host UX (Simon's ruling — full design, NOT web parity).** The web
   shows per-row reveal/hide inline always; mobile has a resting view + a
   dedicated reveal MODE (design `tBlindHost`→`tReveal` / `tBlindAll`→
@@ -226,54 +297,26 @@ names in `src/lib/api/sessions.ts`.
     of the controls. (First build wrongly disabled the buttons by state + hid the
     resting Reveal when nothing was hidden → Done was a one-way door. Fixed.)
   - **Tabs + strip are STICKY in BOTH resting and reveal mode** (Simon's ruling
-    — the mock only stickies the mode strip). They sit inline above the line-up
-    (below the ovc about block) and pin under the title bar once scrolled past —
-    true `position:sticky; top:0`. **Two different impls per layout** (they must
-    behave identically):
-    - **Plain (no cover):** the title bar is a fixed non-overlapping `VBar`, so
-      native sticky works. The tabs are a fixed View above the FlatList; the
-      strip is a **sticky FlatList cell** — `STRIP_CELL` sentinel prepended to
-      `data` (so wine `index` is offset by 1) + `stickyHeaderIndices={[1]}`.
-      ⚠️ It's `[1]`, NOT `[0]`: a `ListHeaderComponent` (the ovc) shifts the
-      indices by +1 (`stickyOffset = header ? 1 : 0` in RN's VirtualizedList).
-      `ovc` stays the `ListHeaderComponent` and scrolls away.
-    - **Cover-hero:** the title bar FLOATS (absolute) over the photo, so native
-      sticky pins at offset 0 — *behind* the bar. Use the **Dynamic Overlay
-      pattern** (community best-practice, verified by review + web research):
-      one `Reanimated.ScrollView`, INLINE order **photo → tabs → about → strip →
-      rows** (the design `.hero-sticky` puts tabs UNDER the photo, ABOVE the
-      about block; the strip is separate, below the about — they are NOT one
-      block, NOT adjacent). The inline copies are the at-rest UI + the flow
-      spacers. Then **TWO** absolute `Reanimated.View` copies tracking `scrollY`
-      (`useScrollOffset`): the **tabs** clamp at the bar bottom (`PIN_Y`); the
-      **strip** STACKS under the pinned tabs (`floor = PIN_Y + tabsH`). Each is
-      `translateY = clamp(top − scrollY, floor, top)`, gated `opacity`/
-      `pointerEvents` on its own `tabsStuck`/`stripStuck` flag (flips at the same
-      inequality its overlay clamps on → seamless swap). `tabsTop`/`tabsH`/
-      `stripTop` measured via `onLayout` on **direct children of the scroll
-      content** (= content-space Y; no coordinate bug). DEAD ENDS REJECTED: one
-      combined tabs+strip block (moved the tabs BELOW the about — wrong order,
-      the bug Simon caught); a fixed header region (pins permanently above the
-      about); native `stickyHeaderIndices` under the floating bar (pins behind
-      it; iOS `contentInset` to offset is a no-op on Android + two sticky cells
-      diverged + collapse mis-fired + double title). See the big comment on
-      `CoverHeroLineup`.
-  - **Collapse is MEASURED, not a magic scroll constant.** The floating bar goes
-    solid when the on-photo title's bottom scrolls under the bar bottom
-    (`scrollY ≥ titleBottom − BAR_H`, `titleBottom` via `onLayout`) — like the
-    impression hero. The old hardcoded `HERO_COLLAPSE_Y = 150` mis-fired on the
-    proportional-height hero (collapsed too early → the on-photo title AND the
-    bar title both showed). `BAR_H = heroBarHeight(insets.top) = insets.top + 34
-    + 6` — does NOT add the bar's 1px rule (the border is drawn inside the box by
-    the stretched bg layer, so it doesn't add to height; adding it pinned the
-    sticky 1px low → a hairline seam). Overlays pin at `PIN_Y = BAR_H − 1` (1px
-    overlap under the bar) as belt-and-suspenders against sub-pixel rounding.
-  - **The collapsed title bars are SOLID OPAQUE with NO bottom rule** (Simon's
-    rulings, deviating from the mock's 86%-translucent blur + box-shadow): the
-    cover-hero `HeroTopBar`, the impression `FloatHead` collapsed state, and the
-    impression bottom action bar (`FootBar`) are all flat `theme.bg`, BlurView
-    removed (both `expo-blur` imports dropped). Pre-collapse over-the-photo
-    states stay fully transparent (the immersive look is unchanged).
+    — the mock only stickies the mode strip). Two layouts, same end result
+    (inline above the line-up, pin under the title bar on scroll):
+    - **Plain (no cover):** fixed `VBar`, so native sticky works — tabs are a
+      fixed View above the FlatList; the strip is a **sticky FlatList cell**
+      (`STRIP_CELL` sentinel at `data[0]`, wine `index` offset by 1) with
+      `stickyHeaderIndices={[1]}`. ⚠️ `[1]` not `[0]` — a `ListHeaderComponent`
+      (the ovc) shifts sticky indices by +1.
+    - **Cover-hero:** the floating bar means native sticky can't pin under it →
+      the **Dynamic Overlay pattern**. INLINE order is **photo → tabs → about →
+      strip → rows** (tabs UNDER the photo, ABOVE the about; strip separate,
+      below the about — NOT one block). 📖 **The full recipe + the dead ends live
+      in `docs/design/patterns/collapsing-hero-sticky-subheaders.md` — read it
+      before touching this or building a new hero screen.** Impl: `CoverHeroLineup`.
+  - **Collapse is MEASURED** (`scrollY ≥ titleBottom − BAR_H`, `titleBottom` via
+    `onLayout`), not a magic constant — a proportional-height hero mis-fires
+    otherwise. `BAR_H`/`PIN_Y` math + the seam fix: see the pattern doc.
+  - **Collapsed/in-flow bars are SOLID OPAQUE, no bottom rule** — the cover-hero
+    `HeroTopBar`, the impression `FloatHead` (collapsed), and the impression
+    `FootBar`, all flat `theme.bg`, BlurView removed. Pre-collapse over-photo
+    stays transparent. Rationale: `docs/design/decisions/0003-collapsed-bars-opaque.md`.
 - **Host framing is HONEST (Simon's ruling): the host is NOT blind on a normal
   blind session** — the server returns their full wines, so host rows show the
   real wine + a `.lu-hidebadge` eye-off on the thumb + a "Hidden from guests"
