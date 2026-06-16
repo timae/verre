@@ -259,8 +259,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     const userId = Number(identity.id.slice(2))
     // In-moment activity → keep a date-less session pinned as "Just visited"
     // and un-hide it from the carousel if dismissed (re-engagement = un-hide).
-    // skipExpire: touchWithMeta above already re-stamped every session key.
-    await bumpLastSeen(c, userId, true)
+    // bumpLastSeen sets the hash's TTL itself (it can be the first write, with
+    // no prior /visit, after touchWithMeta's scan above already ran).
+    await bumpLastSeen(c, userId)
     await unhideCarousel(userId, c)
     const hasNote = (notes || '').length > 5
     const action = ratingScore === 5

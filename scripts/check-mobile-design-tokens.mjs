@@ -23,9 +23,13 @@ const ALLOW = {
   shadow: 'apps/mobile/src/theme/vero-tokens.js', // elevation.menu
 }
 
+// Scan js/jsx too, not just ts/tsx: the elevation.menu canonical home is a
+// .js file (vero-tokens.js, exempted via ALLOW.shadow), and a future .js/.jsx
+// source could otherwise re-inline shadowRadius: 24 or the rgba literals
+// without this gate seeing it — which would quietly defeat the reuse contract.
 const files = execSync(`git ls-files "${SRC_GLOB}"`, { encoding: 'utf8' })
   .split('\n')
-  .filter((f) => /\.(ts|tsx)$/.test(f))
+  .filter((f) => /\.(ts|tsx|js|jsx)$/.test(f))
 
 const errors = []
 

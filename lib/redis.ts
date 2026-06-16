@@ -91,14 +91,15 @@ export async function touchWithMeta(code: string) {
 // session lifespan so it dies with the session — no cleanup. `touchWithMeta`
 // also re-stamps it on later activity.
 //
-// `skipExpire` is for callers that run `touchWithMeta` right after (the rate
-// path) — that re-expires every session key incl. this hash, so the
-// meta-read + EXPIRE here would be pure duplicate work. They write the hSet
-// only; touchWithMeta handles the TTL.
-export async function bumpLastSeen(code: string, userId: number, skipExpire = false) {
+// This ALWAYS sets the TTL itself — it must not delegate the expiry to a
+// `touchWithMeta` call elsewhere on the request. A first write can happen
+// AFTER touchWithMeta's SCAN (e.g. a logged-in user's first rate without a
+// prior /visit), and that scan only re-stamps keys it already saw — so a
+// hash created afterwards would get no expiry and leak past the session
+// (and onto a recycled code). The extra meta-read is cheap on these paths.
+export async function bumpLastSeen(code: string, userId: number) {
   try {
     await redis.hSet(k.lastSeen(code), String(userId), Date.now())
-    if (skipExpire) return
     const raw = await redis.get(k.meta(code))
     await redis.expire(k.lastSeen(code), lifespanTTL(raw ? JSON.parse(raw).lifespan : undefined))
   } catch (err) {

@@ -245,10 +245,19 @@ export async function POST(req: NextRequest) {
       })
     } catch (err) {
       // Pre-create collision check ran above, so a P2002 here means a race —
-      // log loudly and surface it. Any other failure also surfaces; the
-      // Redis state we just wrote is harmless and TTLs out — but the cover
-      // bytes are NOT TTL'd, reclaim them before bailing.
+      // log loudly and surface it. Tear down the Redis state we just wrote:
+      // a logged-in session has no other archival path, so leaving the keys
+      // would orphan a live session with NO Postgres row — and native's
+      // 'unlimited' lifespan makes that a ~1-year orphan, not a 48h one. Cover
+      // bytes are likewise NOT TTL'd, so reclaim them too. (No tokens key here
+      // — anonToken is null on the logged-in path.) Cleanup is best-effort and
+      // must not mask the original failure.
       console.error('[session] postgres create failed', err)
+      await Promise.all([
+        redis.del(k.meta(code)),
+        redis.del(k.wines(code)),
+        redis.del(k.identities(code)),
+      ]).catch(() => {})
       if (coverPhotoUrl) reclaimImage(coverPhotoUrl).catch(() => {})
       return NextResponse.json({ error: 'could not archive session' }, { status: 500 })
     }

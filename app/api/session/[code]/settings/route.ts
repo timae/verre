@@ -157,6 +157,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     await tx.exec()
   }
 
+  let mirrorOk = true
   try {
     // Soft-deleted sessions have `code = NULL` (§8 contract), so the
     // updateMany below naturally targets only live rows. Explicit filter
@@ -176,12 +177,24 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         coverPhotoUrl: meta.coverPhotoUrl || null,
       },
     })
-  } catch {}
+  } catch (err) {
+    // Non-fatal: Redis is the live-session source of truth, so the live
+    // /session/<code> surface is unaffected. The PG mirror repairs on the next
+    // SUCCESSFUL settings PATCH — NOT on a visit/rate archive touch, whose
+    // pgUpsertSession update path rewrites only `name`, never these columns.
+    // A cover change is the case that bites: /api/me/sessions reads
+    // cover_photo_url from Postgres, so a failed mirror means PG still holds
+    // the PRIOR url. Surface it, and (below) DON'T reclaim the prior bytes —
+    // deleting them would leave Moments home serving a dead image. The new
+    // bytes stay addressable and are reclaimed on the next successful change.
+    mirrorOk = false
+    console.error('[session] cover/settings PG mirror failed', { code: c, coverChanged, err })
+  }
 
-  // Commit done (meta written, mirror attempted) — now reclaim the replaced
-  // or removed cover bytes. Fire-and-forget; a transient S3 error must not
-  // fail the settings save.
-  if (coverChanged && priorCoverUrl) reclaimImage(priorCoverUrl).catch(() => {})
+  // Reclaim the replaced/removed cover bytes only once the mirror committed —
+  // otherwise the prior url is still the live Postgres value. Fire-and-forget;
+  // a transient S3 error must not fail the settings save.
+  if (coverChanged && priorCoverUrl && mirrorOk) reclaimImage(priorCoverUrl).catch(() => {})
 
   return NextResponse.json({ ok: true, meta })
 }

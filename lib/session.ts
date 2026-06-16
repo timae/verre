@@ -498,12 +498,24 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
       // redaction predicate reads this column.
       blindForEveryone: !!meta.blindForEveryone,
       createdAt: new Date(meta.createdAt),
-      // Cover + category mirror what's in Redis at archive time (the
-      // anon-host-later-archives path; the logged-in create writes them
-      // directly). Like blind, NOT in the update path — the settings
-      // PATCH's updateMany is the writer for changes.
+      // Cover, category, and the scheduled-moment detail fields all mirror
+      // what's in Redis at archive time. This is the delayed-archive path for
+      // an ANON-created session (reached when a logged-in user later visits /
+      // rates / adds a wine / bookmarks); the logged-in create writes the same
+      // set directly. They MUST match the create route's field set —
+      // /api/me/sessions reads date_from/date_to (and the rest) from Postgres,
+      // so dropping them here would make an anon-created scheduled moment look
+      // date-less and detail-less to a logged-in participant and break the
+      // upcoming/live/recent routing. Like blind, NOT in the update path — the
+      // settings PATCH's updateMany is the writer for changes.
       coverPhotoUrl: meta.coverPhotoUrl || null,
       category: meta.category || 'wine',
+      address:     meta.address     || null,
+      dateFrom:    meta.dateFrom    ? new Date(meta.dateFrom) : null,
+      dateTo:      meta.dateTo      ? new Date(meta.dateTo)   : null,
+      timezone:    meta.timezone    || null,
+      description: meta.description || null,
+      link:        meta.link        || null,
     },
     // Note: `blind` and `blindForEveryone` are intentionally NOT in the
     // update path. Settings changes route through a separate
