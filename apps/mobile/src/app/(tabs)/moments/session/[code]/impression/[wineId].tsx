@@ -10,7 +10,6 @@ import {
   Easing,
   Image,
   Keyboard,
-  Modal,
   Pressable,
   ScrollView,
   TextInput,
@@ -20,6 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
+import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -250,17 +250,15 @@ export default function ImpressionDetail() {
     else goTo(index + 1);
   };
 
-  // ⋯ menu — the design's anchored .ir-menu dropdown (Simon's ruling: the
-  // brand menu, not the native action sheet). Anchored below the measured
-  // ⋯ button.
-  const [menuTop, setMenuTop] = useState<number | null>(null);
-  const onMenu = (anchorBottomY: number) => setMenuTop(anchorBottomY + 6);
+  // ⋯ menu — the shared AnchoredMenu (.ir-menu dropdown; Simon's ruling: the
+  // brand menu, not the native action sheet). Anchored to the measured ⋯ button.
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
   const clearRating = () => {
     seededFor.current = wineId; // an edit — a late seed must not undo it
     setScore(0);
     setNotes('');
     setFlavors({});
-    setMenuTop(null);
+    setMenuAnchor(null);
   };
 
   // Collapsing header: the bar title (and the floathead's solid state) hand
@@ -395,7 +393,7 @@ export default function ImpressionDetail() {
             titleShown={titleShown}
             craved={craved}
             onCrave={() => craveMut.mutate({ wineId, on: !craved })}
-            onMenu={onMenu}
+            onMenu={setMenuAnchor}
             onBack={() => router.back()}
             onHeaderBottom={(y) => {
               headerBottomRef.current = y;
@@ -424,7 +422,7 @@ export default function ImpressionDetail() {
               titleShown={titleShown}
               craved={craved}
               onCrave={() => craveMut.mutate({ wineId, on: !craved })}
-              onMenu={onMenu}
+              onMenu={setMenuAnchor}
               onBack={() => router.back()}
               showReveal={hostRevealUi}
               revealed={revealedToGuests}
@@ -461,88 +459,15 @@ export default function ImpressionDetail() {
         onPrevious={onPrevious}
         onNext={onNext}
       />
-      <IrMenu top={menuTop} onClose={() => setMenuTop(null)} onClear={clearRating} />
+      {/* .ir-menu options dropdown (shared AnchoredMenu). Separator + danger
+          rows (Edit / Delete impression) join with the host-CRUD milestone. */}
+      <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={184}>
+        <MenuItem icon="undo" label="Clear my rating" onPress={clearRating} />
+      </AnchoredMenu>
     </View>
   );
 }
 
-// .ir-menu — the design's anchored options dropdown (brand-custom per
-// Simon's ruling, replacing the native action sheet): surface card below
-// the ⋯ button, dur-1 fade + 4px rise. Separator + danger rows (Edit /
-// Delete impression) join with the host-CRUD milestone.
-function IrMenu({
-  top, onClose, onClear,
-}: {
-  top: number | null;
-  onClose: () => void;
-  onClear: () => void;
-}) {
-  const { theme } = useTheme();
-  const anim = useRef(new Animated.Value(0)).current;
-  // The Modal can render a frame after `top` nulls while it dismisses — a
-  // `top ?? 0` layout would flash the card at the screen top. Hold the last
-  // anchor for that frame; reset the fade while closed so a re-open never
-  // shows a fully-opaque first frame.
-  const lastTopRef = useRef(0);
-  if (top !== null) lastTopRef.current = top;
-  useEffect(() => {
-    if (top === null) {
-      anim.setValue(0);
-      return;
-    }
-    Animated.timing(anim, {
-      toValue: 1,
-      duration: motion.dur1,
-      easing: Easing.bezier(...motion.ease),
-      useNativeDriver: true,
-    }).start();
-  }, [top, anim]);
-  return (
-    <Modal transparent visible={top !== null} animationType="none" onRequestClose={onClose}>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close menu" onPress={onClose}>
-        <Animated.View
-          style={{
-            position: 'absolute',
-            top: lastTopRef.current,
-            right: 16,
-            minWidth: 184,
-            backgroundColor: theme.surface,
-            borderWidth: 1,
-            borderColor: theme.rule,
-            borderRadius: radius.md,
-            padding: 6,
-            opacity: anim,
-            transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-4, 0] }) }],
-            shadowColor: '#000',
-            shadowOpacity: 0.18,
-            shadowRadius: 24,
-            shadowOffset: { width: 0, height: 10 },
-            elevation: 8,
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            onPress={onClear}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 9,
-              paddingVertical: 10,
-              paddingHorizontal: 10,
-              borderRadius: radius.sm,
-              backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
-            })}
-          >
-            <Icon name="undo" size={17} color={theme.inkSoft} />
-            <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>
-              Clear my rating
-            </VText>
-          </Pressable>
-        </Animated.View>
-      </Pressable>
-    </Modal>
-  );
-}
 
 // ─── header ────────────────────────────────────────────
 
@@ -557,9 +482,8 @@ function IrBar({
   titleShown: boolean;
   craved: boolean;
   onCrave: () => void;
-  // Receives the ⋯ button's bottom edge in window coords — the anchor for
-  // the .ir-menu dropdown.
-  onMenu: (anchorBottomY: number) => void;
+  // Receives the ⋯ button's {top, bottom} in window coords — the AnchoredMenu anchor.
+  onMenu: (anchor: MenuAnchor) => void;
   onBack: () => void;
   glass?: boolean;
   solid?: boolean;
@@ -662,7 +586,7 @@ function IrBar({
         accessibilityRole="button"
         accessibilityLabel="More"
         onPress={() =>
-          menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))
+          menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu({ top: y, bottom: y + h }))
         }
         hitSlop={8}
         style={({ pressed }) => ({ ...circle, marginLeft: 6, opacity: pressed ? 0.5 : 1 })}
@@ -683,7 +607,7 @@ function FloatHead({
   titleShown: boolean;
   craved: boolean;
   onCrave: () => void;
-  onMenu: (anchorBottomY: number) => void;
+  onMenu: (anchor: MenuAnchor) => void;
   onBack: () => void;
   onHeaderBottom: (bottom: number) => void;
   showReveal?: boolean;

@@ -134,6 +134,10 @@ export const elevation = {
   sm: { ios: { shadowOpacity: 0.10, shadowRadius: 3,  shadowOffsetY: 1 },  android: { elevation: 1 } },
   md: { ios: { shadowOpacity: 0.14, shadowRadius: 12, shadowOffsetY: 4 },  android: { elevation: 4 } },
   lg: { ios: { shadowOpacity: 0.22, shadowRadius: 28, shadowOffsetY: 12 }, android: { elevation: 12 } },
+  // App-added tier (not from the web token set): the anchored-dropdown shadow,
+  // sits between md and lg. The canonical home for the value the AnchoredMenu
+  // hand-rolled across 4 call sites.
+  menu: { ios: { shadowOpacity: 0.18, shadowRadius: 24, shadowOffsetY: 10 }, android: { elevation: 8 } },
 };
 
 export default { type, space, radius, motion, control, themes, defaults, elevation };

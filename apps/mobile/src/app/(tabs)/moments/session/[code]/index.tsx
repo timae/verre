@@ -4,10 +4,11 @@ import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Modal, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import Reanimated, { clamp, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
@@ -590,9 +591,9 @@ export default function SessionLineup() {
           is hidden while it's up). Sits above the list, below the hero bar. */}
       {revealMode ? <RevealFooter onDone={() => setRevealMode(false)} /> : null}
       {/* .hero-topfix — floats over the hero: transparent with glass back+⋯
-          while the photo title is visible, then a blurred theme bar carrying
-          the moment name once scrolled past the collapse point. Sits last so
-          it paints above the scroll content; below the SessionMenu Modal. */}
+          while the photo title is visible, then a solid theme bar carrying the
+          moment name once scrolled past the collapse point. Sits last so it
+          paints above the scroll content; below the SessionMenu (a Modal). */}
       {heroShown && meta ? (
         <HeroTopBar
           title={meta.name}
@@ -1824,17 +1825,8 @@ function SessionMenu({
   bfaBusy: boolean;
   onToggleBlindForEveryone: (next: boolean) => void;
 }) {
-  const { theme } = useTheme();
-  const anim = useRef(new Animated.Value(0)).current;
-  const lastTop = useRef(0);
-  if (anchorTop !== null) lastTop.current = anchorTop;
-  useEffect(() => {
-    if (anchorTop === null) { anim.setValue(0); return; }
-    Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start();
-  }, [anchorTop, anim]);
-  // Auto-dismiss the menu shortly after a Blind-for-all toggle so the user
-  // sees the row flip to active, then it closes itself. Cleared on unmount /
-  // manual close so the timer can't fire late.
+  // Auto-dismiss the menu shortly after a Blind-for-all toggle so the user sees
+  // the row flip to active, then it closes itself. Cleared on close/unmount.
   const bfaCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (anchorTop === null && bfaCloseTimer.current) {
@@ -1843,70 +1835,38 @@ function SessionMenu({
     }
   }, [anchorTop]);
   useEffect(() => () => { if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current); }, []);
-  const Item = ({ icon, label, onPress, disabled }: { icon: IconName; label: string; onPress?: () => void; disabled?: boolean }) => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12, backgroundColor: pressed && !disabled ? theme.surfaceSunk : 'transparent' })}
-    >
-      {/* .sess-menu-item svg is ink-soft; only the label carries full ink. */}
-      <Icon name={icon} size={18} color={disabled ? theme.inkFaint : theme.inkSoft} />
-      <VText style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }} color={disabled ? 'inkFaint' : 'ink'}>{label}</VText>
-      {disabled ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
-    </Pressable>
-  );
-  // .sess-menu-mode — Blind-for-all is a press-to-activate field (NOT a switch):
-  // tapping flips blindForEveryone, and the ACTIVE state styles the whole row
-  // accent (accent text + accent-tint bg + semibold + accent icon). Inactive =
-  // muted ink-soft. The parent only renders this on a blind session.
-  const BlindForAllItem = () => (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ selected: blindForEveryone }}
-      disabled={bfaBusy}
-      onPress={() => {
-        onToggleBlindForEveryone(!blindForEveryone);
-        if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current);
-        bfaCloseTimer.current = setTimeout(onClose, 300);
-      }}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.sm, paddingVertical: 10, paddingHorizontal: 12,
-        backgroundColor: blindForEveryone ? theme.accentTint : pressed ? theme.surfaceSunk : 'transparent',
-      })}
-    >
-      <Icon name="eyeoff" size={18} color={blindForEveryone ? theme.accent : theme.inkSoft} />
-      <VText
-        style={{ fontFamily: blindForEveryone ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }}
-        color={blindForEveryone ? 'accent' : 'inkSoft'}
-      >
-        Blind for all
-      </VText>
-    </Pressable>
-  );
   return (
-    <Modal transparent visible={anchorTop !== null} animationType="none" onRequestClose={onClose} presentationStyle="overFullScreen" statusBarTranslucent>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close menu" onPress={onClose}>
-        <Animated.View
-          style={{
-            position: 'absolute', top: lastTop.current + 6, right: GUTTER, minWidth: 200,
-            backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 6,
-            opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [-4, 0] }) }],
-            shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8,
-          }}
-        >
-          {showBlindForEveryone ? (
-            <>
-              <BlindForAllItem />
-              <View style={{ height: 1, backgroundColor: theme.ruleSoft, marginVertical: 4 }} />
-            </>
-          ) : null}
-          <Item icon="user" label="People" onPress={onPeople} />
-          <Item icon="share" label="Share invite" onPress={onShare} />
-          <Item icon="settings" label="Settings" onPress={onSettings} />
-        </Animated.View>
-      </Pressable>
-    </Modal>
+    // anchorTop is the ⋯ button's bottom edge; pass it as both top+bottom (the
+    // menu sits at the top of the screen and never flips). right=GUTTER/minWidth
+    // 200 keep the line-up menu's prior metrics.
+    <AnchoredMenu
+      anchor={anchorTop !== null ? { top: anchorTop, bottom: anchorTop } : null}
+      onClose={onClose}
+      right={GUTTER}
+      minWidth={200}
+    >
+      {/* .sess-menu-mode — Blind-for-all is a press-to-activate field: tapping
+          flips it, ACTIVE styles the whole row accent. Only on a blind session. */}
+      {showBlindForEveryone ? (
+        <>
+          <MenuItem
+            icon="eyeoff"
+            label="Blind for all"
+            active={blindForEveryone}
+            disabled={bfaBusy}
+            accessibilityState={{ selected: blindForEveryone }}
+            onPress={() => {
+              onToggleBlindForEveryone(!blindForEveryone);
+              if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current);
+              bfaCloseTimer.current = setTimeout(onClose, 300);
+            }}
+          />
+          <MenuSeparator />
+        </>
+      ) : null}
+      <MenuItem icon="user" label="People" onPress={onPeople} />
+      <MenuItem icon="share" label="Share invite" onPress={onShare} />
+      <MenuItem icon="settings" label="Settings" onPress={onSettings} />
+    </AnchoredMenu>
   );
 }
