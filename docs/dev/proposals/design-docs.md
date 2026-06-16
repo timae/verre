@@ -42,20 +42,19 @@ building the same look three ways." Resolved + built. Scope narrowed to
 
 ## Pending follow-ups (not blockers)
 
-- **Execute the extraction backlog + add ONE enforcement gate** (the
-  highest-leverage next step, per the 4-reviewer pass). Docs *record* drift; only
-  shared code + a check *stop* it, and a prose "reuse before you build" rule has
-  no teeth in an AI-executed repo. So: extract the top items (`<AnchoredMenu>`,
-  `<Avatar>`/`<Thumb>`, `<GlassCircleButton>`+`GLASS_FILL`) AND add a ~30-line
-  grep-based CI check (mirroring `scripts/check-*.mjs` + a workflow) that FAILS
-  the build if the menu-shadow signature / the `rgba(20,18,15,…)` glass literal
-  appears OUTSIDE the extracted component. Extraction-without-the-gate just resets
-  the clock (the next session re-inlines a 4th copy); the gate is what makes it
-  stick. The existing `__DEV__` dev-gallery is thin (~5 primitives) — growing it
-  as extractions land turns "what exists" into something browsable, not just
-  asserted in prose. (A full `no-color-literals` ESLint rule is NOT worth it —
-  raw-hex hygiene is already good; the failure mode is structural component
-  duplication, which hex-lint wouldn't catch.)
+- ✅ **DONE — top extractions + the enforcement gate.** Extracted `AnchoredMenu`,
+  `Avatar`/`Thumb`, and the `GLASS_FILL`/`HERO_SCRIM`/`elevation.menu` constants
+  (each its own reviewed commit). Added `scripts/check-mobile-design-tokens.mjs`
+  + `.github/workflows/check-mobile-design-tokens.yml` — FAILS the build if the
+  glass fill (`rgba(20,18,15,…)`), the hero scrim (`rgba(15,12,10,…)`), or the
+  menu shadow (`shadowRadius: 24`) is re-inlined outside its canonical home. This
+  is the lever that makes the extractions *stick* (docs alone don't, in an
+  AI-executed repo). REMAINING (lower-stakes, when next touching the area): the
+  rest of the backlog in `apps/mobile/CLAUDE.md` (`PeopleSheet.Tag→RoleChip`,
+  `<CoverPickerField>`, `<TextArea>`, …); growing the `__DEV__` dev-gallery into
+  a browsable catalog. (A full `no-color-literals` ESLint rule is NOT worth it —
+  raw-hex hygiene is already good; the failure mode was structural duplication,
+  which the targeted gate above catches.)
 - Back-fill ADR-0001 (terminology) + ADR-0002 (native-chrome vs brand-custom)
   from the existing prose, so the formal decision log is complete (it starts at
   0003 today, with honest "pending" notes).

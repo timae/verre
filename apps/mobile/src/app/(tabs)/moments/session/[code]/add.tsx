@@ -16,7 +16,7 @@ import { MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moment
 import { ApiError, addWine, getSessionState, type WineTypeCode } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
-import { radius, useTheme } from '@/theme';
+import { elevation, radius, useTheme } from '@/theme';
 
 // The 5 wine types the backend accepts (lib/session.ts). FLAGGED DEVIATION
 // from the mock's 7-option dropdown (Orange/Dessert/Fortified have no backend
@@ -603,7 +603,8 @@ function PositionPicker({
             position: 'absolute', top: '100%', right: 0, marginTop: 6, zIndex: 30,
             minWidth: 230, backgroundColor: theme.surface,
             borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 12,
-            shadowColor: '#000', shadowOpacity: 0.18, shadowRadius: 24, shadowOffset: { width: 0, height: 10 }, elevation: 8,
+            // Same dropdown shadow as AnchoredMenu — via the elevation.menu token.
+            shadowColor: '#000', shadowOpacity: elevation.menu.ios.shadowOpacity, shadowRadius: elevation.menu.ios.shadowRadius, shadowOffset: { width: 0, height: elevation.menu.ios.shadowOffsetY }, elevation: elevation.menu.android.elevation,
           }}
         >
           {/* .at-popt */}
