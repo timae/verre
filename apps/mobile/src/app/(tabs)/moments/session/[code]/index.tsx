@@ -15,7 +15,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
-import { COVER_HERO_RATIO as HERO_RATIO, GLASS_FILL, GUTTER, HERO_SCRIM, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
@@ -44,8 +44,8 @@ import { motion, radius, useTheme } from '@/theme';
 const POLL_MS = 5000;
 const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
-// full-bleed photo under the status bar measured at 248/800; it scales with the
-// window like the impression hero).
+// full-bleed photo under the status bar; HERO_RATIO is now shared with — and
+// equal to — the impression hero's, per Simon's ruling).
 // The floating bar collapses (blur bg + title) when the on-photo title scrolls
 // under it — a MEASURED threshold (titleBottom − BAR_H), computed in
 // CoverHeroLineup, not a magic scroll constant (which mis-fired on a

@@ -37,7 +37,7 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_SCRIM, IMPRESSION_HERO_RATIO as HERO_RATIO } from '@/lib/layout';
+import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
