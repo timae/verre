@@ -73,8 +73,9 @@ export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; f
     // (handleSubmit preventDefaults). The credential inputs are currently unnamed
     // so a JS-bypassed GET fallback wouldn't serialize them — but method="post"
     // guarantees that holds even if a future edit adds name= (and keeps the bot
-    // honeypot's name="website" out of the URL too). action re-renders /register.
-    <form method="post" action="/register" onSubmit={handleSubmit}>
+    // honeypot's name="website" out of the URL too). action points at a real POST
+    // route handler that discards the body and 303s back to /register.
+    <form method="post" action="/register/fallback" onSubmit={handleSubmit}>
       <div aria-hidden="true" style={{position:'absolute',left:'-9999px',width:1,height:1,overflow:'hidden'}}>
         <label>Website<input type="text" name="website" tabIndex={-1} autoComplete="off"
           value={website} onChange={e => setWebsite(e.target.value)} /></label>
