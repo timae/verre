@@ -15,7 +15,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
-import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneMetrics } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
@@ -82,13 +82,13 @@ function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
   return (it as { __strip?: true }).__strip === true;
 }
 
-// Collapsed HeroTopBar's painted height = safe-area top + the 34pt control row +
+// Collapsed HeroTopBar's painted height = safe-area top + the control row +
 // 6pt bottom pad. No bottom rule to account for (the collapsed bar is a flat
 // opaque fill, no border — ADR-0003). The cover-hero sticky pin offset derives
 // from this so the tabs/strip pin flush under the bar; overlays then pin at
 // PIN_Y = this − 1 (1px overlap) against sub-pixel rounding. Shared with
 // HeroTopBar so the two can't drift.
-const heroBarHeight = (insetTop: number) => insetTop + 34 + 6;
+const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + controlSize + 6;
 
 // Renders the reveal strip for either layout (null when not blind). Pulls the
 // matching RevealStrip variant from the bundle.
@@ -657,9 +657,11 @@ function CoverHeroLineup({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneMetrics();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
-  const BAR_H = heroBarHeight(insets.top);
+  const BAR_CONTROL = phone.lerp(34, 36);
+  const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
   const rows = wines ?? [];
   const showStrip = !!reveal.stripVariant && !lock;
 
@@ -905,6 +907,7 @@ function HeroTopBar({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneMetrics();
   const moreRef = useRef<View>(null);
   const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
   useEffect(() => {
@@ -917,9 +920,12 @@ function HeroTopBar({
   }, [collapsed, anim]);
 
   const iconColor = collapsed ? theme.ink : '#fff';
+  const controlSize = phone.lerp(34, 36);
+  const iconSize = phone.lerp(20, 21);
+  const titleSize = phone.lerp(18, 19);
   const circle = collapsed
-    ? { width: 34, height: 34, alignItems: 'center' as const, justifyContent: 'center' as const }
-    : { width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const };
+    ? { width: controlSize, height: controlSize, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : { width: controlSize, height: controlSize, borderRadius: controlSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const };
   return (
     <View
       pointerEvents="box-none"
@@ -936,20 +942,20 @@ function HeroTopBar({
       <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: anim }}>
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: theme.bg }} />
       </Animated.View>
-      {/* Layout = heroBarHeight(insets.top): paddingTop insets.top + 34 row + 6
+      {/* Layout = heroBarHeight(insets.top, controlSize): safe area + control row + 6
           bottom (no border — opaque fill, ADR-0003). Keep in sync with
           heroBarHeight (the cover-hero sticky pin offset derives from it). */}
       <View style={{ paddingTop: insets.top, paddingHorizontal: 14, paddingBottom: 6 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', height: 34 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', height: controlSize }}>
           <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
             style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
-            <Icon name="back" size={20} color={iconColor} />
+            <Icon name="back" size={iconSize} color={iconColor} />
           </Pressable>
           {/* Title appears only collapsed (fades in with a 4px rise). */}
           <Animated.View
             style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
           >
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27, color: theme.ink }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: titleSize, lineHeight: phone.lerp(23, 24), letterSpacing: 0, color: theme.ink }}>
               {title}
             </VText>
           </Animated.View>
@@ -965,7 +971,7 @@ function HeroTopBar({
               onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
               style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
             >
-              <Icon name="more" size={20} color={iconColor} />
+              <Icon name="more" size={iconSize} color={iconColor} />
             </Pressable>
           </View>
         </View>
@@ -1724,6 +1730,7 @@ function LuPill({
 // VBar ⋯ button — measures its position so the menu anchors under it.
 function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   const ref = useRef<View>(null);
   return (
     <View ref={ref} collapsable={false}>
@@ -1732,9 +1739,9 @@ function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void
         accessibilityLabel="Session menu"
         hitSlop={8}
         onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen(y + h))}
-        style={({ pressed }) => ({ width: 30, height: 30, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+        style={({ pressed }) => ({ width: phone.lerp(30, 34), height: phone.lerp(30, 34), alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
       >
-        <Icon name="more" size={20} color={theme.ink} />
+        <Icon name="more" size={phone.lerp(20, 21)} color={theme.ink} />
       </Pressable>
     </View>
   );
@@ -1760,6 +1767,7 @@ function LineupAddButton({
   glass?: boolean;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   const onGlass = glass && !collapsed;
   // Plain bar + collapsed cover: bare ink (like the back/⋯). Only the over-photo
   // glass variant is white.
@@ -1771,20 +1779,20 @@ function LineupAddButton({
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 6, height: 34,
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(6, 7), height: phone.lerp(34, 36),
         // Only the over-photo glass variant carries a fill + rounded pill; the
         // plain-bar and collapsed variants are borderless.
-        paddingHorizontal: onGlass ? 13 : 4,
-        borderRadius: onGlass ? 17 : 0,
+        paddingHorizontal: onGlass ? phone.lerp(13, 14) : 4,
+        borderRadius: onGlass ? phone.lerp(17, 18) : 0,
         backgroundColor: onGlass ? GLASS_FILL : 'transparent',
         opacity: pressed ? 0.6 : 1,
       })}
     >
-      {/* 17px glyph in every state — matches the .hv-add spec; we borrow the
-          Crave button's collapse mechanism, not its icon size. */}
-      <Icon name="plus" size={17} color={iconColor} />
+      {/* Base 17px glyph in every state — matches the .hv-add spec; we borrow
+          the Crave button's collapse mechanism, not its icon size. */}
+      <Icon name="plus" size={phone.lerp(17, 18)} color={iconColor} />
       {!collapsed ? (
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: iconColor }}>
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: phone.lerp(13, 14), lineHeight: phone.lerp(20, 21), color: iconColor }}>
           Add
         </VText>
       ) : null}

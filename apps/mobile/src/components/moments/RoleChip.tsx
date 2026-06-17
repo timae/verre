@@ -1,5 +1,6 @@
 import { View } from 'react-native';
 import type { SessionRole } from '@/lib/api/sessions';
+import { usePhoneMetrics } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 import { alpha } from '@/theme/color';
 import { VText } from '@/components/ui/VText';
@@ -14,6 +15,7 @@ const LABELS: Record<Exclude<SessionRole, null>, string> = {
 // Provider = sage/positive tint, Co-host = neutral. Plain tasters get nothing.
 export function RoleChip({ role }: { role: SessionRole }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   if (!role) return null;
   const tone =
     role === 'host'
@@ -36,11 +38,11 @@ export function RoleChip({ role }: { role: SessionRole }) {
         color={tone.text}
         style={{
           fontFamily: 'InstrumentSans_600SemiBold',
-          fontSize: 10.5,
+          fontSize: phone.lerp(10.5, 11),
           // Tight line box so the 2px padding hugs the glyphs (flat chip, like
           // the .ovc-map pill). Without an explicit lineHeight, VText's default
           // multiplier inflates the text box and the chip reads tall.
-          lineHeight: 13,
+          lineHeight: phone.lerp(13, 14),
           letterSpacing: 0.42,
           textTransform: 'uppercase',
         }}

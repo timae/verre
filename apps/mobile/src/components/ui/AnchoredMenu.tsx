@@ -3,6 +3,7 @@ import { Animated, Easing, Modal, Pressable, useWindowDimensions, View } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { usePhoneMetrics } from '@/lib/layout';
 import { elevation, motion, radius, useTheme } from '@/theme';
 
 // AnchoredMenu — the brand `.ir-menu` anchored dropdown (a transparent Modal +
@@ -176,6 +177,9 @@ export function AnchorButton({
   children?: React.ReactNode;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
+  const controlSize = size === 30 ? phone.lerp(30, 34) : size;
+  const iconSize = size === 30 ? phone.lerp(20, 21) : 20;
   const ref = useRef<View>(null);
   return (
     <View ref={ref} collapsable={false}>
@@ -184,9 +188,9 @@ export function AnchorButton({
         accessibilityLabel={accessibilityLabel}
         hitSlop={hitSlop}
         onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen({ top: y, bottom: y + h }))}
-        style={({ pressed }) => ({ width: size, height: size, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+        style={({ pressed }) => ({ width: controlSize, height: controlSize, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
       >
-        {children ?? <Icon name={icon} size={20} color={iconColor ?? theme.ink} />}
+        {children ?? <Icon name={icon} size={iconSize} color={iconColor ?? theme.ink} />}
       </Pressable>
     </View>
   );

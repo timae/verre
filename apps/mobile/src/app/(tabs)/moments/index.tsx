@@ -7,7 +7,7 @@ import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/sw
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE, usePhoneMetrics } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
@@ -149,28 +149,34 @@ export default function Moments() {
   );
 }
 
-// .hv-add — accent pill: 34h, plus 17 + label 13/600, pad 0 14 0 11.
+// .hv-add base — accent pill: 34h, plus 17 + label 13/600, pad 0 14 0 11.
 function NewPill({ onPress }: { onPress: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
+  const height = phone.lerp(34, 36);
+  const iconSize = phone.lerp(17, 18);
+  const fontSize = phone.lerp(13, 14);
+  const lineHeight = phone.lerp(18, 20);
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel="New moment"
       onPress={onPress}
+      hitSlop={6}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        height: 34,
-        paddingLeft: 11,
-        paddingRight: 14,
+        height,
+        paddingLeft: phone.lerp(11, 12),
+        paddingRight: phone.lerp(14, 15),
         borderRadius: radius.pill,
         backgroundColor: theme.accent,
         opacity: pressed ? 0.8 : 1,
       })}
     >
-      <Icon name="plus" size={17} color={theme.accentInk} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: theme.accentInk }}>
+      <Icon name="plus" size={iconSize} color={theme.accentInk} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize, lineHeight, color: theme.accentInk }}>
         New
       </VText>
     </Pressable>
@@ -581,6 +587,7 @@ function PushGroup({ children }: { children: React.ReactNode }) {
 // own border covers the first row's edge).
 function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon: IconName; label: string; count: number; onPress: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   return (
     <Pressable
       accessibilityRole="button"
@@ -588,18 +595,18 @@ function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon:
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 13,
-        paddingHorizontal: 14,
+        gap: phone.lerp(12, 14),
+        paddingVertical: phone.lerp(13, 15),
+        paddingHorizontal: phone.lerp(14, 16),
         borderTopWidth: first ? 0 : 1,
         borderTopColor: theme.ruleSoft,
         backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
       })}
     >
-      <Icon name={icon} size={19} color={theme.inkSoft} />
-      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>{label}</VText>
+      <Icon name={icon} size={phone.lerp(19, 20)} color={theme.inkSoft} />
+      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: phone.lerp(15, 16), lineHeight: phone.lerp(23, 24) }}>{label}</VText>
       <VText variant="small" color="inkSoft">{count}</VText>
-      <Icon name="chevron-right" size={18} color={theme.inkFaint} />
+      <Icon name="chevron-right" size={phone.lerp(18, 19)} color={theme.inkFaint} />
     </Pressable>
   );
 }

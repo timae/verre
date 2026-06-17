@@ -5,7 +5,7 @@ import { ActivityIndicator, FlatList, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE, usePhoneMetrics } from '@/lib/layout';
 import { RoleChip } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -34,6 +34,7 @@ function effectiveDate(r: MySessionRow): number {
 export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   const { filter } = useLocalSearchParams<{ filter?: string }>();
   const upcoming = filter === 'upcoming';
   const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
@@ -93,7 +94,7 @@ export default function AllMoments() {
             keyExtractor={(r) => String(r.id)}
             contentContainerStyle={{
               paddingHorizontal: GUTTER,
-              paddingTop: 4,
+              paddingTop: phone.lerp(4, 8),
               paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
             }}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
@@ -111,28 +112,31 @@ export default function AllMoments() {
 function RecentRow({ row }: { row: MySessionRow }) {
   const { theme } = useTheme();
   const router = useRouter();
+  const phone = usePhoneMetrics();
   const meta = recentMeta(row.date_from, row.name ? (row.role === 'host' ? 'you' : row.host_name) : null);
+  const titleSize = phone.lerp(15, 16);
+  const metaSize = phone.lerp(13, 14);
   return (
-    // .sh-row: gap 12, 10px vertical padding, transparent.
+    // .sh-row base: gap 12, 10px vertical padding, transparent.
     <Pressable
       accessibilityRole="button"
       onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: row.code } })}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 10,
+        gap: phone.lerp(12, 14),
+        paddingVertical: phone.lerp(10, 14),
         opacity: pressed ? 0.6 : 1,
       })}
     >
-      <Thumb uri={row.cover_photo_url} size={46} />
+      <Thumb uri={row.cover_photo_url} size={phone.lerp(46, 52)} />
       {/* Tight line boxes on the stacked single-line rows: the body/small
           line-height multipliers (23 / 20) are tuned for multi-line paragraphs
           and here add leading above+below each glyph, inflating the visible
           gaps beyond the design's 2px column gap + 5px chip margin. Snug
           line-heights let those design gaps read true. */}
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 20 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: phone.lerp(2, 3) }}>
+        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: titleSize, lineHeight: phone.lerp(20, 21) }}>
           {row.name || row.host_name}
         </VText>
         {/* Show ONLY the set date (date_from); a moment with no set date shows
@@ -142,18 +146,17 @@ function RecentRow({ row }: { row: MySessionRow }) {
             A date-less, name-less moment yields an empty string here — render
             nothing so it doesn't leave a blank line box between title + chip. */}
         {meta ? (
-          <VText variant="small" color="inkSoft" style={{ lineHeight: 17 }}>
+          <VText color="inkSoft" style={{ fontSize: metaSize, lineHeight: phone.lerp(17, 19) }}>
             {meta}
           </VText>
         ) : null}
         {row.role ? (
-          <View style={{ marginTop: 5, flexDirection: 'row' }}>
+          <View style={{ marginTop: phone.lerp(5, 7), flexDirection: 'row' }}>
             <RoleChip role={row.role} />
           </View>
         ) : null}
       </View>
-      <Icon name="chevron-right" size={16} color={theme.inkFaint} />
+      <Icon name="chevron-right" size={phone.lerp(16, 18)} color={theme.inkFaint} />
     </Pressable>
   );
 }
-

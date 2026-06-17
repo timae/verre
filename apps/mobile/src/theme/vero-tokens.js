@@ -24,7 +24,7 @@ export const type = {
   heading: { size: 23, lineHeight: 1.18, weight: '600', tracking: -0.02,  trackingPx: -0.46 },
   subhead: { size: 18, lineHeight: 1.30, weight: '600', tracking: -0.015, trackingPx: -0.27 },
   bodyLg:  { size: 17, lineHeight: 1.55, weight: '400', tracking: -0.005, trackingPx: -0.085 },
-  body:    { size: 15, lineHeight: 1.55, weight: '400', tracking: -0.004, trackingPx: -0.06 },
+  body:    { size: 16, lineHeight: 1.50, weight: '400', tracking: 0,      trackingPx: 0 },
   small:   { size: 13, lineHeight: 1.50, weight: '400', tracking: 0,      trackingPx: 0 },
   caption: { size: 12, lineHeight: 1.40, weight: '500', tracking: 0,      trackingPx: 0 },
   label:   { size: 11, lineHeight: 1.00, weight: '600', tracking: 0.14,   trackingPx: 1.54, uppercase: true },

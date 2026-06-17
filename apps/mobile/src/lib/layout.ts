@@ -1,6 +1,36 @@
+import { useMemo } from 'react';
+import { useWindowDimensions } from 'react-native';
+
 // Shared screen-layout + over-photo constants. Centralised so the many screens
 // that re-declared these (GUTTER, FOOT_CLEARANCE, the hero ratios, the glass
 // fill, the hero scrim) can't drift — an audit found each copied 5–10×.
+
+export function lerp(from: number, to: number, t: number): number {
+  return from + (to - from) * t;
+}
+
+export function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+export function phoneComfortFor(width: number, height: number): number {
+  const shortSide = Math.min(width, height);
+  const longSide = Math.max(width, height);
+  const widthT = clamp01((shortSide - 390) / 50);
+  const heightT = clamp01((longSide - 844) / 112);
+  return clamp01(widthT * 0.72 + heightT * 0.28);
+}
+
+export function usePhoneMetrics() {
+  const { width, height } = useWindowDimensions();
+  const comfort = phoneComfortFor(width, height);
+  return useMemo(() => ({
+    width,
+    height,
+    comfort,
+    lerp: (from: number, to: number) => lerp(from, to, comfort),
+  }), [width, height, comfort]);
+}
 
 // Extra bottom padding for scroll content above the native tab bar. The
 // react-native-screens tab host auto-insets content for the bar itself

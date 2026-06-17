@@ -38,7 +38,7 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
+import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneMetrics } from '@/lib/layout';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -492,6 +492,7 @@ function IrBar({
   onReveal?: () => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneMetrics();
   const menuBtnRef = useRef<View>(null);
   const anim = useRef(new Animated.Value(titleShown ? 1 : 0)).current;
   useEffect(() => {
@@ -505,23 +506,26 @@ function IrBar({
 
   const onGlass = glass && !solid;
   const iconColor = onGlass ? '#fff' : theme.ink;
+  const glassSize = phone.lerp(34, 36);
+  const plainSize = phone.lerp(30, 34);
+  const titleSize = phone.lerp(18, 19);
+  const pillHeight = phone.lerp(34, 36);
   const circle = onGlass
-    ? { width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
-    : { width: 30, height: 30, alignItems: 'center' as const, justifyContent: 'center' as const };
+    ? { width: glassSize, height: glassSize, borderRadius: glassSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : { width: plainSize, height: plainSize, alignItems: 'center' as const, justifyContent: 'center' as const };
 
   return (
-    // 36px row in both variants — the mock's .vbar height; the glass circles
-    // (34px) nearly fill it so the controls hug the status area.
-    <View style={{ flexDirection: 'row', alignItems: 'center', height: 36, marginLeft: glass ? 0 : -6 }}>
+    // Base 36px row in both variants; scales slightly on roomier phones.
+    <View style={{ flexDirection: 'row', alignItems: 'center', height: phone.lerp(36, 38), marginLeft: glass ? 0 : -6 }}>
       <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
         style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
-        <Icon name="back" size={22} color={iconColor} />
+        <Icon name="back" size={phone.lerp(22, 23)} color={iconColor} />
       </Pressable>
       {/* .ir-bartitle: 18/600, flex 1, fades in with a 4px rise */}
       <Animated.View
         style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
       >
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27, color: onGlass ? '#fff' : theme.ink }}>
+        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: titleSize, lineHeight: phone.lerp(23, 24), letterSpacing: 0, color: onGlass ? '#fff' : theme.ink }}>
           {title}
         </VText>
       </Animated.View>
@@ -538,17 +542,17 @@ function IrBar({
           style={({ pressed }) => ({
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 6,
-            height: 34,
-            paddingHorizontal: onGlass ? 13 : 4,
-            borderRadius: onGlass ? 17 : 0,
+            gap: phone.lerp(6, 7),
+            height: pillHeight,
+            paddingHorizontal: onGlass ? phone.lerp(13, 14) : 4,
+            borderRadius: onGlass ? pillHeight / 2 : 0,
             backgroundColor: onGlass ? GLASS_FILL : 'transparent',
             opacity: revealBusy ? 0.5 : pressed ? 0.6 : 1,
           })}
         >
-          <Icon name={revealed ? 'eyeoff' : 'eye'} size={18} color={iconColor} />
+          <Icon name={revealed ? 'eyeoff' : 'eye'} size={phone.lerp(18, 19)} color={iconColor} />
           {!titleShown ? (
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: onGlass ? '#fff' : theme.ink }}>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: phone.lerp(13, 14), lineHeight: phone.lerp(20, 21), color: onGlass ? '#fff' : theme.ink }}>
               {revealed ? 'Hide' : 'Reveal'}
             </VText>
           ) : null}
@@ -563,17 +567,17 @@ function IrBar({
         style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 6,
-          height: 34,
-          paddingHorizontal: onGlass ? 13 : 4,
-          borderRadius: onGlass ? 17 : 0,
+          gap: phone.lerp(6, 7),
+          height: pillHeight,
+          paddingHorizontal: onGlass ? phone.lerp(13, 14) : 4,
+          borderRadius: onGlass ? pillHeight / 2 : 0,
           backgroundColor: onGlass ? GLASS_FILL : 'transparent',
           opacity: pressed ? 0.6 : 1,
         })}
       >
-        <Icon name={craved ? 'heart-fill' : 'heart'} size={18} color={craved ? theme.critical : iconColor} />
+        <Icon name={craved ? 'heart-fill' : 'heart'} size={phone.lerp(18, 19)} color={craved ? theme.critical : iconColor} />
         {!titleShown ? (
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: craved ? theme.critical : onGlass ? '#fff' : theme.ink }}>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: phone.lerp(13, 14), lineHeight: phone.lerp(20, 21), color: craved ? theme.critical : onGlass ? '#fff' : theme.ink }}>
             {craved ? 'Crave!' : 'Crave?'}
           </VText>
         ) : null}
@@ -588,7 +592,7 @@ function IrBar({
         hitSlop={8}
         style={({ pressed }) => ({ ...circle, marginLeft: 6, opacity: pressed ? 0.5 : 1 })}
       >
-        <Icon name="more" size={20} color={iconColor} />
+        <Icon name="more" size={phone.lerp(20, 21)} color={iconColor} />
       </Pressable>
     </View>
   );
