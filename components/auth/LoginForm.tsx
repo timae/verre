@@ -103,7 +103,16 @@ export function LoginForm({ redirectTo, notice }: { redirectTo?: string; notice?
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    // method="post" is a security floor, not the active path: handleSubmit
+    // preventDefaults and submits via signIn(). But if the JS handler never runs
+    // (hydration race, chunk-load failure), the browser falls back to a NATIVE
+    // submit — and a method-less form defaults to GET, which would serialize the
+    // named email+password inputs into the URL (?email=…&password=… in logs,
+    // history, Referer). method="post" forces that fallback into the request
+    // body instead. The action is a harmless re-render of /login so the no-JS
+    // fallback degrades to "reload the form" rather than a 404. We keep name= on
+    // the inputs (load-bearing for the password manager — see storeCredential).
+    <form method="post" action="/login" onSubmit={handleSubmit}>
       {notice && (
         <div style={{fontSize:11,lineHeight:1.5,color:'var(--fg-dim)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:6,padding:'10px 12px',marginBottom:16}}>
           {notice}
