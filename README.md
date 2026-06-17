@@ -156,6 +156,37 @@ npx expo run:ios            # builds the dev client, opens the iOS Simulator
 EXPO_PUBLIC_API_URL=http://192.168.1.42:3000 npx expo run:ios --device
 ```
 
+The iOS Xcode project is checked in at `apps/mobile/ios`. To deploy to a physical iPhone from Xcode:
+
+```bash
+cd apps/mobile
+npm install
+open ios/Verre.xcworkspace
+```
+
+In Xcode, select the `Verre` scheme, choose your connected iPhone as the run target, set your Apple Team under **Signing & Capabilities** if needed, then press Run. Use the `.xcworkspace`, not the `.xcodeproj`, because CocoaPods integration is workspace-based.
+
+To archive and upload a TestFlight build:
+
+```bash
+cd apps/mobile
+npm install
+cd ios
+pod install
+open Verre.xcworkspace
+```
+
+Then in Xcode select a generic iOS device or **Any iOS Device**, choose **Product → Archive**, and upload the archive from Organizer. Before archiving, set production values in `apps/mobile/.env.local` or your build environment, especially `EXPO_PUBLIC_API_URL` and `EXPO_PUBLIC_WEB_URL`; `EXPO_PUBLIC_*` values are baked into the native bundle at build time.
+
+If native dependencies change and Xcode/Pods get out of sync, refresh the generated native project from the Expo config:
+
+```bash
+cd apps/mobile
+npx expo prebuild --platform ios
+cd ios
+pod install
+```
+
 **Env vars** (`apps/mobile/.env.local`, gitignored; `EXPO_PUBLIC_*` are inlined into the bundle at build time):
 
 - `EXPO_PUBLIC_API_URL` — backend the app talks to. Simulator defaults to `http://localhost:3000`; a physical device needs the Mac's LAN IP.
