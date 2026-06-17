@@ -346,7 +346,7 @@ function PhotoPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
-        <FullscreenImage uri={photo.previewUri} visible={fullscreen} onClose={() => setFullscreen(false)} />
+        <FullscreenImage uri={photo.previewUri} visible={fullscreen} label="Wine photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }
