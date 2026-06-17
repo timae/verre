@@ -18,6 +18,7 @@ import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
+import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
 import {
@@ -656,6 +657,7 @@ function CoverHeroLineup({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
   const BAR_H = heroBarHeight(insets.top);
   const rows = wines ?? [];
@@ -759,10 +761,13 @@ function CoverHeroLineup({
             borderTopRightRadius: pulled ? radius.xl : 0,
           }}
         >
-          <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
+            <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          </Pressable>
           {/* Shared HERO_SCRIM (converged to the impression hero's gradient — was
               0.28/0.05/0.72, slightly lighter at the bottom). */}
           <LinearGradient
+            pointerEvents="none"
             colors={HERO_SCRIM}
             locations={[0, 0.45, 1]}
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
@@ -770,6 +775,7 @@ function CoverHeroLineup({
           {/* Title: measure its bottom in content space (its parent is the photo
               View whose top is content-y 0, so y + height is content-Y). */}
           <View
+            pointerEvents="none"
             style={{ position: 'absolute', left: 18, right: 18, bottom: 14 }}
             onLayout={(e) => setTitleBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
           >
@@ -780,6 +786,7 @@ function CoverHeroLineup({
               {meta.name}
             </VText>
           </View>
+          <FullscreenImage uri={coverUrl} visible={fullscreen} label={meta.name} onClose={() => setFullscreen(false)} />
         </View>
         {/* INLINE tabs — right under the photo, ABOVE the about block (design
             .hero-sticky). At-rest position + flow spacer. Direct scroll child →

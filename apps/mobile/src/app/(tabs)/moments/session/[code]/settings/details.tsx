@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Image, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
@@ -70,6 +71,7 @@ function DetailsForm({
   const [coverUrl, setCoverUrl] = useState<string | null>(meta.coverPhotoUrl ?? null);
   const [coverData, setCoverData] = useState<string | null>(null);
   const [coverError, setCoverError] = useState<string | null>(null);
+  const [coverFullscreen, setCoverFullscreen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,9 +146,12 @@ function DetailsForm({
             the dashed add affordance (same as create's empty CoverPicker). */}
         {coverUrl ? (
           <View style={{ position: 'relative', marginBottom: 18 }}>
-            <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: 130, borderRadius: radius.md }} resizeMode="cover" />
+            <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setCoverFullscreen(true)}>
+              <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: 130, borderRadius: radius.md }} resizeMode="cover" />
+            </Pressable>
             <GlassButton label="Change photo" icon="edit" right={52} onPress={onPickCover} />
             <GlassButton label="Remove photo" icon="trash" right={10} onPress={onRemoveCover} />
+            <FullscreenImage uri={coverUrl} visible={coverFullscreen} label="Cover photo" onClose={() => setCoverFullscreen(false)} />
           </View>
         ) : (
           <Pressable

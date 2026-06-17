@@ -7,6 +7,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { COUNTRIES, countryName } from '@verre/core';
 import { Button } from '@/components/ui/Button';
+import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
@@ -327,10 +328,13 @@ function PhotoPicker({
   onClear: () => void;
 }) {
   const { theme } = useTheme();
+  const [fullscreen, setFullscreen] = useState(false);
   if (photo) {
     return (
       <View style={{ height: 150, borderRadius: radius.md, overflow: 'hidden', marginBottom: 16 }}>
-        <Image source={{ uri: photo.previewUri }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
+          <Image source={{ uri: photo.previewUri }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+        </Pressable>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Remove photo"
@@ -342,6 +346,7 @@ function PhotoPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
+        <FullscreenImage uri={photo.previewUri} visible={fullscreen} label="Wine photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }
