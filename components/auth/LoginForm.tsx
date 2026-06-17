@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import Link from 'next/link'
+import { safeRedirect } from '@/lib/safeRedirect'
 
 // Record the just-used credential with the browser's password manager via the
 // Credential Management API. Needed because the form submits via JS (so the
@@ -99,11 +100,30 @@ export function LoginForm({ redirectTo, notice }: { redirectTo?: string; notice?
     // field mounted with no navigation. Combined with name= + autocomplete= on
     // the inputs, this restores native autofill/save. Keep `loading` true
     // through the navigation so the button stays disabled until the page unloads.
-    window.location.assign(redirectTo || '/me')
+    // safeRedirect: redirectTo is the attacker-supplied ?redirect= param, so
+    // validate it's a same-origin relative path before navigating (no //evil.com
+    // open redirect). Default /me.
+    window.location.assign(safeRedirect(redirectTo, '/me'))
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    // method="post" is a security floor, not the active path: handleSubmit
+    // preventDefaults and submits via signIn(). But if the JS handler never runs
+    // (hydration race, chunk-load failure), the browser falls back to a NATIVE
+    // submit — and a method-less form defaults to GET, which would serialize the
+    // named email+password inputs into the URL (?email=…&password=… in logs,
+    // history, Referer). method="post" forces that fallback into the request
+    // body instead. action points at a real POST route handler that discards the
+    // body and 303s back to /login — a guaranteed clean re-render, not the
+    // incidental (version-dependent) behavior of POSTing to a page route. We keep
+    // name= on the inputs (load-bearing for the password manager — storeCredential).
+    // The ?redirect= is carried through so a failed retry returns to the original
+    // flow (e.g. /join/<code>); the fallback route re-validates it (safeRedirect).
+    <form
+      method="post"
+      action={redirectTo ? `/login/fallback?redirect=${encodeURIComponent(redirectTo)}` : '/login/fallback'}
+      onSubmit={handleSubmit}
+    >
       {notice && (
         <div style={{fontSize:11,lineHeight:1.5,color:'var(--fg-dim)',background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:6,padding:'10px 12px',marginBottom:16}}>
           {notice}

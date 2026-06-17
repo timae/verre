@@ -1,0 +1,31 @@
+name: Login-form POST chokepoint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: login-form-post-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Fail the build if a web auth form (components/auth/*) hosts a named
+      # password input inside a form that is not method="post". A method-less
+      # form defaults to GET, so a JS-bypassed native submit (hydration race /
+      # ChunkLoadError) would serialize email+password into the URL. This gate
+      # keeps the no-JS fallback a POST. See components/auth/LoginForm.tsx.
+      #
+      # No npm ci needed — a dependency-free Node script that reads tracked files
+      # via `git ls-files`.
+      - name: Check credential forms are method="post"
+        run: node scripts/check-login-form-post.mjs

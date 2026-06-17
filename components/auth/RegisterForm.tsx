@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { safeRedirect } from '@/lib/safeRedirect'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -65,11 +66,25 @@ export function RegisterForm({ redirectTo, formToken }: { redirectTo?: string; f
       setLoading(false); return
     }
     await signIn('credentials', { email, password, redirect: false })
-    router.push(redirectTo || '/'); router.refresh()
+    // safeRedirect: redirectTo is the attacker-supplied ?redirect= param —
+    // validate it's a same-origin relative path before navigating. Default /.
+    router.push(safeRedirect(redirectTo, '/')); router.refresh()
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    // method="post" defence-in-depth: like LoginForm, the submit is JS-controlled
+    // (handleSubmit preventDefaults). The credential inputs are currently unnamed
+    // so a JS-bypassed GET fallback wouldn't serialize them — but method="post"
+    // guarantees that holds even if a future edit adds name= (and keeps the bot
+    // honeypot's name="website" out of the URL too). action points at a real POST
+    // route handler that discards the body and 303s back to /register. ?redirect=
+    // is carried through (re-validated server-side) so a failed retry returns to
+    // the original flow (e.g. /join/<code>).
+    <form
+      method="post"
+      action={redirectTo ? `/register/fallback?redirect=${encodeURIComponent(redirectTo)}` : '/register/fallback'}
+      onSubmit={handleSubmit}
+    >
       <div aria-hidden="true" style={{position:'absolute',left:'-9999px',width:1,height:1,overflow:'hidden'}}>
         <label>Website<input type="text" name="website" tabIndex={-1} autoComplete="off"
           value={website} onChange={e => setWebsite(e.target.value)} /></label>
