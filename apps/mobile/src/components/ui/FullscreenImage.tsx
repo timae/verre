@@ -96,9 +96,34 @@ export function FullscreenImage({
       savedTranslateY.value = translateY.value;
     });
 
-  const tap = Gesture.Tap().onEnd(() => {
-    runOnJS(close)();
+  const doubleTap = Gesture.Tap()
+    .numberOfTaps(2)
+    .onEnd(() => {
+      if (scale.value > 1.01) {
+        scale.value = withTiming(1);
+        translateX.value = withTiming(0);
+        translateY.value = withTiming(0);
+        savedScale.value = 1;
+        savedTranslateX.value = 0;
+        savedTranslateY.value = 0;
+        return;
+      }
+
+      scale.value = withTiming(2);
+      translateX.value = withTiming(0);
+      translateY.value = withTiming(0);
+      savedScale.value = 2;
+      savedTranslateX.value = 0;
+      savedTranslateY.value = 0;
+    });
+
+  const singleTap = Gesture.Tap().onEnd(() => {
+    if (scale.value <= 1.01) {
+      runOnJS(close)();
+    }
   });
+
+  const tap = Gesture.Exclusive(doubleTap, singleTap);
 
   const imageStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: translateX.value }, { translateY: translateY.value }, { scale: scale.value }],
