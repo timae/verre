@@ -143,7 +143,37 @@ Do this primitives-first:
 
 The existing large-phone comfort work stays separate. It sets the authored size and roomier control sizes for large devices. This pass makes the boxes adapt when the OS scales text.
 
-## 6. Known hotspots
+## 6. CI gate
+
+Add a dependency-free CI check, matching the shape of `scripts/check-mobile-design-tokens.mjs` + `.github/workflows/check-mobile-design-tokens.yml`. This is not optional process polish; it is what keeps the surface-policy invariant from becoming another convention that future changes bypass.
+
+The gate should fail on:
+- hand-edits to `apps/mobile/src/theme/vero-tokens.js` that are not a deliberate re-vendor;
+- raw ordinary-text `fontSize` / `lineHeight` literals in `apps/mobile/src` outside allowlisted fixed-format components;
+- direct `maxFontSizeMultiplier={...}` literals outside the surface-policy layer;
+- scalable-text containers using fixed `height` where the surface helper should provide `minHeight` / rounded padding;
+- `VText` nested inside capped text without the same surface cap or wrapper context;
+- new `TextInput` instances that set text size without going through the shared phone/surface text path.
+
+The gate should explicitly allow documented fixed-format text:
+- invite/join codes;
+- score numerals and numeric picker fields;
+- PRO/map/badge labels;
+- countdown cell labels;
+- constrained carousel/card text while that surface remains fixed-height.
+
+Suggested implementation:
+- keep it static and dependency-free (`git ls-files`, read tracked TS/TSX/JS/JSX files);
+- strip comments before scanning, like the existing design-token check;
+- keep allowlists narrow and close to the script, with comments naming the fixed-format surface;
+- run on `push` to `main` and on every `pull_request`;
+- print actionable errors that name the replacement path (`VText` variant, `phone.surface(...)`, or the fixed-format allowlist).
+
+Feasibility note: not every invariant above is equally grep-able. Vendored-file edits, raw ordinary `fontSize` / `lineHeight` literals, inline `maxFontSizeMultiplier` literals, and `TextInput` text-size bypasses are clean static checks. Container `height` misuse and nested capped `VText` inheritance are JSX-structure checks; implement them with an AST pass if they need to be hard gates, or document them as review-backed checks rather than pretending a line grep proves them.
+
+This check should land with the Dynamic Type implementation branch, not later. The branch changes shared primitives and many call sites; without a gate, the next screen can reintroduce a local cap or hardcoded size and all other checks still stay green.
+
+## 7. Known hotspots
 
 - `Button`: fixed `36/44/52` heights can clip at larger font sizes.
 - `TextField`: fixed `44` height while body text scales.
@@ -153,7 +183,7 @@ The existing large-phone comfort work stays separate. It sets the authored size 
 - Line-up, people, and invite rows: truncation is acceptable for compact lists, but row padding should grow.
 - Codes, score numerals, PRO badges, map pills, countdown cell labels: fixed-format or low-cap surfaces.
 
-## 7. Validation matrix
+## 8. Validation matrix
 
 Test on device/simulator with:
 - default font size;
