@@ -28,7 +28,6 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>io.verre.app</string>
-				<string>io.verre.app</string>
 			</array>
 		</dict>
 	</array>
@@ -47,8 +46,6 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Allow $(PRODUCT_NAME) to access your Face ID biometric data.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Verre uses your photo library to add cover photos to your moments.</string>
 	<key>NSUserActivityTypes</key>
