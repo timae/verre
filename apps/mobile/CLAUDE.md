@@ -17,11 +17,17 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   `api.expo.dev`, which this sandbox's network policy blocks — same pins are in
   `node_modules/expo/bundledNativeModules.json`; read the version there and
   `npm install -w mobile pkg@<pin>`.
-- **Custom dev client, local prebuild** (no Expo Go, no EAS): `npx expo run:ios`
-  on the Mac (auto-prebuilds; `ios/` is gitignored — CNG). Simulator needs no
-  Apple account; a physical device needs a free Apple ID (7-day expiry) until
-  the paid program. The Linux sandbox cannot build iOS and cannot run `hermesc`
-  — for a bundle smoke test use `npx expo export --platform ios --no-bytecode`.
+- **Custom dev client, tracked iOS project** (no Expo Go, no EAS): `ios/` is
+  checked in so a fresh clone can open `ios/Verre.xcworkspace` in Xcode.
+  `Pods/` stays gitignored; run `cd ios && pod install` after cloning or when
+  native dependencies change. Android remains CNG/generated for now.
+  `npx expo run:ios` on the Mac is still useful, but it may auto-prebuild and
+  rewrite tracked `ios/` files — review those diffs before committing. Do not
+  use `expo prebuild --clean` casually; it deletes the authoritative native
+  project and regenerates it. Simulator needs no Apple account; a physical
+  device needs a free Apple ID (7-day expiry) until the paid program. The Linux
+  sandbox cannot build iOS and cannot run `hermesc` — for a bundle smoke test
+  use `npx expo export --platform ios --no-bytecode`.
 - **Monorepo**: npm workspace member; Metro auto-detects workspaces (SDK 52+)
   and resolves `@verre/core`'s raw-TS `exports` (package-exports on by default
   since SDK 53). No metro.config.js exists — don't add one just to "fix"
@@ -411,6 +417,33 @@ names in `src/lib/api/sessions.ts`.
   (`src/lib/clientVersion.ts`). When EAS Update/OTA ever lands: report the OTA
   update id in the header's third slot AND pin `runtimeVersion` to the
   fingerprint policy first (proposal 04 §3a / 06 §6).
+
+## TestFlight release workflow
+
+- TestFlight builds use EAS, not the local `expo run:ios` dev-client flow.
+  Local device runs are for smoke testing the native project and Metro bundle;
+  App Store Connect receives an EAS production archive.
+- Before the first upload, replace the placeholder bundle id if needed and
+  create the matching app record in App Store Connect. Keep `app.json`
+  `ios.bundleIdentifier` and `scheme` aligned with the chosen id.
+- The current `eas.json` production profile targets the tasting deployment:
+  `EXPO_PUBLIC_API_URL=https://tasting.tgweb.li` and
+  `EXPO_PUBLIC_WEB_URL=https://tasting.tgweb.li`. Change these before a
+  production backend cutover; `EXPO_PUBLIC_*` values are embedded at build time.
+- First-time setup:
+  1. `cd apps/mobile`
+  2. `npx eas-cli login`
+  3. `npx eas-cli build:configure`
+  4. `npx eas-cli credentials -p ios` and let EAS create/manage the App Store
+     distribution certificate and provisioning profile for the bundle id.
+- Build and submit:
+  1. `npm run typecheck -w mobile`
+  2. `npx expo export --platform ios --no-bytecode`
+  3. `npx eas-cli build --platform ios --profile production`
+  4. `npx eas-cli submit --platform ios --profile production --latest`
+- App Store Connect still needs the usual app metadata, screenshots, privacy
+  answers, export-compliance confirmation, and TestFlight beta review details.
+  `ITSAppUsesNonExemptEncryption=false` is already set in `app.json`.
 
 ## Dev workflow
 
