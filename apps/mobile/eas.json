@@ -11,19 +11,11 @@
     },
     "preview": {
       "distribution": "internal",
-      "ios": { "simulator": false },
-      "env": {
-        "EXPO_PUBLIC_API_URL": "https://tasting.tgweb.li",
-        "EXPO_PUBLIC_WEB_URL": "https://tasting.tgweb.li"
-      }
+      "ios": { "simulator": false }
     },
     "production": {
       "autoIncrement": true,
-      "ios": { "simulator": false },
-      "env": {
-        "EXPO_PUBLIC_API_URL": "https://tasting.tgweb.li",
-        "EXPO_PUBLIC_WEB_URL": "https://tasting.tgweb.li"
-      }
+      "ios": { "simulator": false }
     }
   },
   "submit": {
