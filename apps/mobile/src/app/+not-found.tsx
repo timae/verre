@@ -11,7 +11,7 @@ export default function NotFound() {
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl, gap: space.sm }}>
       <VText variant="heading">Nothing here</VText>
       <VText variant="body" color="inkSoft" style={{ textAlign: 'center' }}>
-        That link doesn't go anywhere.
+        That link doesn&apos;t go anywhere.
       </VText>
       <Button title="Back to start" variant="secondary" style={{ marginTop: space.md }} onPress={() => router.replace('/')} />
     </View>
