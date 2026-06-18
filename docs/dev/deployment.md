@@ -36,6 +36,22 @@ Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp`
 - `EXPO_PUBLIC_API_URL` — backend the app talks to (Simulator → `localhost:3000`; device → Mac LAN IP).
 - `EXPO_PUBLIC_WEB_URL` — public web origin for shareable links (the `/join/<code>` invite). Set to the real domain for prod/TestFlight builds; falls back through `app.json` `extra.webBaseUrl` → `EXPO_PUBLIC_API_URL` so local-deployment links resolve against the same backend.
 
+**The backend hosts are deliberately NOT committed.** `eas.json` build profiles carry no `env` block — the preview (staging) and production URLs live outside the repo so the hosts aren't tracked. Where they come from depends on the build path:
+
+- **Local builds** (Metro, `expo run:ios`, local Xcode archive) — Expo auto-loads `apps/mobile/.env.local` (gitignored). Put the prod values there for a local TestFlight archive.
+- **EAS cloud builds** (`eas build --profile <profile>`) — `.env.local` is gitignored, so it is **not uploaded** to the EAS build servers. Set the values in **EAS-hosted env** instead. ⚠️ **EAS selects the environment by build profile, and our profiles set no `environment` key** — so `--profile preview` (internal distribution) resolves to the **`preview`** EAS environment, and `--profile production` (store distribution) to **`production`**. They are SEPARATE stores: a var set only under `production` is invisible to a `preview` build, which then falls through to `localhost` (`src/lib/config.ts`). Set each environment explicitly:
+
+  ```bash
+  # preview → staging backend
+  eas env:create --environment preview    --visibility plaintext --name EXPO_PUBLIC_API_URL --value https://<staging-host>
+  eas env:create --environment preview    --visibility plaintext --name EXPO_PUBLIC_WEB_URL --value https://<staging-host>
+  # production → prod backend
+  eas env:create --environment production --visibility plaintext --name EXPO_PUBLIC_API_URL --value https://<prod-host>
+  eas env:create --environment production --visibility plaintext --name EXPO_PUBLIC_WEB_URL --value https://<prod-host>
+  ```
+
+  `--visibility plaintext` is deliberate: `EXPO_PUBLIC_*` are inlined into the public JS bundle, so they carry no secrecy — keep them readable in the EAS dashboard/logs rather than letting EAS default them to a protected level. (Confirm the flag spelling against your installed `eas-cli` — the three-level visibility model is stable; the exact flag is version-ish.) Or set them in the EAS dashboard per environment. A cloud build whose environment has neither the EAS-hosted vars nor an `env` block in `eas.json` ships pointing at `localhost` — verify the values resolve on the first build of **each** profile before trusting a TestFlight (or internal preview) upload.
+
 ## Geo IP→country data (Connected-devices labels)
 
 The "logged in from <country>" labels resolve IPs to countries **in-process** from a self-hosted dataset — the IP never leaves the server (no geo API). Delivery:
