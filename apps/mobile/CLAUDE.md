@@ -426,10 +426,11 @@ names in `src/lib/api/sessions.ts`.
 - Before the first upload, replace the placeholder bundle id if needed and
   create the matching app record in App Store Connect. Keep `app.json`
   `ios.bundleIdentifier` and `scheme` aligned with the chosen id.
-- The current `eas.json` production profile targets the tasting deployment:
-  `EXPO_PUBLIC_API_URL=https://tasting.tgweb.li` and
-  `EXPO_PUBLIC_WEB_URL=https://tasting.tgweb.li`. Change these before a
-  production backend cutover; `EXPO_PUBLIC_*` values are embedded at build time.
+- The EAS production/preview profiles provide `EXPO_PUBLIC_API_URL` and
+  `EXPO_PUBLIC_WEB_URL` for the backend/web origins. These values are embedded
+  at build time, so set them to the intended production host in EAS env,
+  `.env.local`, or the build profile before archiving; do not commit private or
+  staging hostnames in docs.
 - First-time setup:
   1. `cd apps/mobile`
   2. `npx eas-cli login`
