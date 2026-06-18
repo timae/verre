@@ -107,6 +107,8 @@ export function DateField({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('formControl');
   const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
   return (
     <View style={{ flex: 1, gap: 7 }}>
@@ -124,17 +126,18 @@ export function DateField({
           setDraft(seed);
         }}
         style={({ pressed }) => ({
-          height: 44,
+          minHeight: surface.height(44),
           flexDirection: 'row',
           alignItems: 'center',
           paddingHorizontal: 14,
+          paddingVertical: surface.paddingY(10),
           backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
           borderWidth: 1,
           borderColor: theme.rule,
           borderRadius: radius.sm,
         })}
       >
-        <VText variant="body" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
+        <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
           {value ? formatWhen(value) : 'Optional'}
         </VText>
         {value ? (
@@ -220,6 +223,7 @@ export function NotesField({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
   return (
     <View style={{ gap: 7 }}>
@@ -232,13 +236,14 @@ export function NotesField({
         placeholderTextColor={theme.inkFaint}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
+        {...surface.textProps}
         style={{
-          minHeight: 64,
+          minHeight: surface.height(64),
           // Cap the growth: ~2 lines (minHeight) up to ~8, then the field
           // scrolls INTERNALLY instead of ballooning the form taller and taller
           // (a long description would otherwise push content under the sticky
           // footer). A maxHeight'd multiline TextInput scrolls its own content.
-          maxHeight: 225,
+          maxHeight: surface.height(225),
           fontFamily: 'InstrumentSans_400Regular',
           fontSize: phone.text('body').fontSize,
           lineHeight: phone.text('body').lineHeight,
@@ -248,8 +253,8 @@ export function NotesField({
           borderColor: focused ? theme.accent : theme.rule,
           borderRadius: radius.sm,
           paddingHorizontal: focused ? 13 : 14,
-          paddingTop: focused ? 9 : 10,
-          paddingBottom: 10,
+          paddingTop: surface.paddingY(focused ? 9 : 10),
+          paddingBottom: surface.paddingY(10),
           textAlignVertical: 'top',
         }}
       />

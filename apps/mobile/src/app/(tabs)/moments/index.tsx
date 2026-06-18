@@ -153,6 +153,7 @@ export default function Moments() {
 function NewPill({ onPress }: { onPress: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('button');
   const actionLabel = phone.text('small');
   return (
     <Pressable
@@ -164,7 +165,7 @@ function NewPill({ onPress }: { onPress: () => void }) {
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        height: phone.size('actionPillHeight'),
+        minHeight: surface.height(phone.size('actionPillHeight')),
         paddingLeft: phone.lerp(11, 14),
         paddingRight: phone.lerp(14, 17),
         borderRadius: radius.pill,
@@ -173,7 +174,7 @@ function NewPill({ onPress }: { onPress: () => void }) {
       })}
     >
       <Icon name="plus" size={phone.size('actionIcon')} color={theme.accentInk} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...actionLabel, color: theme.accentInk }}>
+      <VText surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...actionLabel, color: theme.accentInk }}>
         New
       </VText>
     </Pressable>
@@ -185,13 +186,9 @@ function NewPill({ onPress }: { onPress: () => void }) {
 // The card's inner content (thumb + status + name + meta), shared between the
 // live card and the focused copy drawn in the remove overlay so they match.
 //
-// Every text here is capped + single-line because the live card is FIXED height
-// (LIVE_CARD_HEIGHT): an uncapped OS Dynamic-Type scale would grow the body past
-// the 64px budget and clip. The cap bounds the growth; numberOfLines={1} stops
-// any line wrapping (incl. the status line, whose inline 14px ● can lift the
-// used line-height). The Rejoin button is already height-safe — its pill height
-// is fixed by control.h, so its label scales/clips within, never grows the card.
-const CARD_TEXT_MAX_SCALE = 1.3;
+// Every text here is capped + single-line because the live card has a fixed
+// authored format. The rendered card height scales from the same carousel and
+// button surfaces below, so capped text and its container grow together.
 function LiveCardBody({ m }: { m: MySessionRow }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -203,32 +200,36 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
             live yet, so a live dot would mislead. The start time rides the meta
             line below (liveMeta's "Starts …"), so the chip stays generic. */}
         {m.carouselLabel === 'soon' ? (
-          <VText color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+          <VText surface="carousel" color="inkSoft" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
             Starting soon
           </VText>
         ) : (
-          <VText color="positive" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
+          <VText surface="carousel" color="positive" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_700Bold', fontSize: 12, lineHeight: 17 }}>
             {/* The nested ● needs its OWN cap — maxFontSizeMultiplier doesn't
                 inherit to a nested Text in RN. */}
-            <VText color="positive" maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontSize: 14 }}>● </VText>{m.carouselLabel === 'visited' ? 'Just visited' : 'Happening now'}
+            <VText surface="carousel" color="positive" style={{ fontSize: 14 }}>● </VText>{m.carouselLabel === 'visited' ? 'Just visited' : 'Happening now'}
           </VText>
         )}
-        <VText numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+        <VText surface="carousel" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
           {m.name || m.host_name}
         </VText>
         {/* "Hosted by" is suppressed when the moment has no name (host_name
             is already the title above); "you" when the viewer is the host
             (id-resolved role, never a name). */}
-        <VText variant="small" color="inkSoft" numberOfLines={1} maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}>{liveMeta(m.date_from, m.name ? (m.role === 'host' ? 'you' : m.host_name) : null)}</VText>
+        <VText surface="carousel" variant="small" color="inkSoft" numberOfLines={1}>{liveMeta(m.date_from, m.name ? (m.role === 'host' ? 'you' : m.host_name) : null)}</VText>
       </View>
     </View>
   );
 }
 
-// Fixed height of the LIVE card (the one with the Rejoin button). Derived:
+// Fixed authored height of the LIVE card (the one with the Rejoin button).
+// Dynamic Type scales the body + button portions before passing the height to
+// CardSurface.
+//
+// Authored derivation:
 // paddingTop 12 + body 64 (status 17 + gap 2 + title 23 + gap 2 + meta 20, the
 // text column being taller than the 56 thumb) + gap 12 + button 44 + padding
-// BOTTOM 18 (a touch more breathing room under the button than the top) = 150.
+// BOTTOM 22 (a little extra breathing room under the button) = 154.
 // This is NOT cosmetic. The real card is wrapped in a SwiftUI
 // `<Host>` → `<RNHostView matchContents>`; per the RNHostView contract,
 // matchContents sizes the host to the RN child's INTRINSIC size — but until
@@ -240,7 +241,11 @@ function LiveCardBody({ m }: { m: MySessionRow }) {
 // exceed it) gives matchContents a constant intrinsic size, so there is no
 // ambiguous frame to over-fill. Applied to the live card only; the Preview
 // (body, no button) keeps its natural height.
-const LIVE_CARD_HEIGHT = 150;
+const LIVE_CARD_BODY_HEIGHT = 64;
+const LIVE_CARD_BUTTON_HEIGHT = 44;
+const LIVE_CARD_PADDING_TOP = 12;
+const LIVE_CARD_PADDING_BOTTOM = 22;
+const LIVE_CARD_GAP = 12;
 // The visual card surface (bg + radius + padding + shadow). Shared by the
 // live card and its lifted context-menu Preview so they match exactly.
 function CardSurface({ width, height, children }: { width: number; height?: number; children: ReactNode }) {
@@ -253,7 +258,7 @@ function CardSurface({ width, height, children }: { width: number; height?: numb
         backgroundColor: theme.surface,
         borderRadius: radius.lg,
         paddingTop: 12,
-        paddingBottom: 18,
+        paddingBottom: LIVE_CARD_PADDING_BOTTOM,
         paddingHorizontal: 14,
         gap: 12,
         shadowColor: '#000',
@@ -291,6 +296,15 @@ function LiveCard({
   onRemove: () => void;
 }) {
   const router = useRouter();
+  const phone = usePhoneTokens();
+  const carousel = phone.surface('carousel');
+  const button = phone.surface('button');
+  const cardHeight =
+    LIVE_CARD_PADDING_TOP +
+    carousel.height(LIVE_CARD_BODY_HEIGHT) +
+    LIVE_CARD_GAP +
+    button.height(LIVE_CARD_BUTTON_HEIGHT) +
+    LIVE_CARD_PADDING_BOTTOM;
   // Acknowledge the tap immediately. The session screen's first GET/visit can be
   // slow (cold server route, a stale Redis connection), and inside the SwiftUI
   // ContextMenu the first tap can be eaten by the long-press recognizer — both
@@ -307,11 +321,11 @@ function LiveCard({
     router.push({ pathname: '/moments/session/[code]', params: { code: m.code } });
   };
   const card = (
-    <CardSurface width={width} height={LIVE_CARD_HEIGHT}>
+    <CardSurface width={width} height={cardHeight}>
       <LiveCardBody m={m} />
-      {/* flexShrink:0 so the fixed-height card can't compress the button if the
-          content ever measures a hair over LIVE_CARD_HEIGHT (the inverse of the
-          stretch bug — keep the button a constant 44 either way). */}
+      {/* flexShrink:0 so the fixed-format card can't compress the button if the
+          content ever measures a hair over the derived height (the inverse of
+          the stretch bug — keep the button at its surface-scaled height). */}
       <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} style={{ flexShrink: 0 }} />
     </CardSurface>
   );
@@ -441,7 +455,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
       <VText
         variant="subhead"
         numberOfLines={1}
-        maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}
+        surface="carousel"
         style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold' }}
       >
         Moments of interest
@@ -542,6 +556,7 @@ function JoinBlock() {
         <View style={{ flex: 1 }}>
           {/* .gs-c: 15/600, 0.14em tracking, uppercase via formatCodeInput */}
           <TextField
+            surface="code"
             value={input}
             onChangeText={(t) => { setInput(formatCodeInput(t)); setError(null); }}
             placeholder="8H4K – Q2NP"
@@ -586,6 +601,7 @@ function PushGroup({ children }: { children: React.ReactNode }) {
 function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon: IconName; label: string; count: number; onPress: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('compactList');
   const labelText = phone.text('body');
   return (
     <Pressable
@@ -595,7 +611,7 @@ function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon:
         flexDirection: 'row',
         alignItems: 'center',
         gap: phone.lerp(12, 15),
-        paddingVertical: phone.lerp(13, 17),
+        paddingVertical: surface.paddingY(phone.lerp(13, 17)),
         paddingHorizontal: phone.lerp(14, 18),
         borderTopWidth: first ? 0 : 1,
         borderTopColor: theme.ruleSoft,
@@ -603,8 +619,8 @@ function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon:
       })}
     >
       <Icon name={icon} size={phone.lerp(19, 22)} color={theme.inkSoft} />
-      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', ...labelText }}>{label}</VText>
-      <VText variant="small" color="inkSoft">{count}</VText>
+      <VText surface="compactList" numberOfLines={1} style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', ...labelText }}>{label}</VText>
+      <VText surface="compactList" variant="small" color="inkSoft">{count}</VText>
       <Icon name="chevron-right" size={phone.size('pushChevron')} color={theme.inkFaint} />
     </Pressable>
   );

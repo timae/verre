@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
+import { usePhoneTokens } from '@/lib/layout';
 import { control, radius, useTheme, type TextVariant } from '@/theme';
 import { alpha, mix } from '@/theme/color';
 import { VText } from './VText';
@@ -34,6 +35,8 @@ const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 
 
 export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('button');
   const [slow, setSlow] = useState(false);
   useEffect(() => {
     if (!loading) {
@@ -73,7 +76,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
         const c = colors(pressed);
         return [
           {
-            height: bar ? control.hLg : HEIGHTS[size],
+            minHeight: surface.height(bar ? control.hLg : HEIGHTS[size]),
             paddingHorizontal: variant === 'tertiary' ? 12 : PAD[size],
             borderRadius: bar ? radius.md : radius.pill,
             backgroundColor: c.bg,
@@ -98,6 +101,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
         return (
           <VText
             variant={LABEL_VARIANT[size]}
+            surface="button"
             color={c.text}
             style={{
               fontFamily: 'InstrumentSans_600SemiBold',

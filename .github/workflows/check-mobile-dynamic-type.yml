@@ -1,0 +1,25 @@
+name: Mobile Dynamic Type partial checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: mobile-dynamic-type-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Dependency-free partial static gate for proposal 07: grep-able text caps
+      # and container growth should come from the same mobile surface policy.
+      - name: Check Dynamic Type surface policy
+        run: node scripts/check-mobile-dynamic-type.mjs

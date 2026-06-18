@@ -40,6 +40,7 @@ export function InviteSheet({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
+  const formSurface = phone.surface('formControl');
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   const [q, setQ] = useState('');
   const [copied, setCopied] = useState(false);
@@ -132,7 +133,7 @@ export function InviteSheet({
               onPress={copyLink}
               style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.surfaceSunk, borderRadius: radius.pill, paddingVertical: 8, paddingLeft: 20, paddingRight: 10, opacity: pressed ? 0.7 : 1 })}
             >
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 22, letterSpacing: 2.6, fontVariant: ['tabular-nums'] }}>{formatCode(code)}</VText>
+              <VText surface="code" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 22, letterSpacing: 2.6, fontVariant: ['tabular-nums'] }}>{formatCode(code)}</VText>
               <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: theme.surface, alignItems: 'center', justifyContent: 'center' }}>
                 <Icon name={copied ? 'check' : 'copy'} size={16} color={copied ? theme.positive : theme.inkSoft} />
               </View>
@@ -188,13 +189,14 @@ export function InviteSheet({
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14 }}>
             <Icon name="search" size={17} color={theme.inkSoft} />
             <BottomSheetTextInput
+              {...formSurface.textProps}
               value={q}
               onChangeText={setQ}
               placeholder="Search friends"
               placeholderTextColor={theme.inkSoft}
               autoCapitalize="none"
               autoCorrect={false}
-              style={{ flex: 1, paddingVertical: 11, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, ...phone.text('body') }}
+              style={{ flex: 1, paddingVertical: 11, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, fontSize: phone.text('body').fontSize }}
             />
           </View>
           {friends.isPending ? (
@@ -259,18 +261,20 @@ function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }
 // .fr-row — browse-pane row: avatar · name + "Friend" · Joined chip | Invite.
 function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first: boolean; joined: boolean; onInvite: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('compactList');
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: surface.paddingY(9), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
       <Avatar imageUrl={friend.imageUrl} name={friend.name} size={42} initialsSize={14} />
       <View style={{ flex: 1, minWidth: 0 }}>
-        <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{friend.name}</VText>
-        <VText variant="small" color="inkSoft">Friend</VText>
+        <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{friend.name}</VText>
+        <VText surface="compactList" variant="small" color="inkSoft">Friend</VText>
       </View>
       {joined ? (
         // .fr-in — translucent positive tint (design: color-mix positive 14%).
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: alpha(theme.positive, 0.14), borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6 }}>
           <Icon name="check" size={14} color={theme.positive} />
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.positive }}>Joined</VText>
+          <VText surface="compactList" variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.positive }}>Joined</VText>
         </View>
       ) : (
         // .fr-btn
@@ -281,7 +285,7 @@ function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first:
           style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: theme.accent, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 8, opacity: pressed ? 0.85 : 1 })}
         >
           <Icon name="plus" size={14} color={theme.accentInk} />
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Invite</VText>
+          <VText surface="compactList" variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Invite</VText>
         </Pressable>
       )}
     </View>

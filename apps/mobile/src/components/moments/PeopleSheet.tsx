@@ -6,6 +6,7 @@ import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
+import { BadgePill } from '@/components/moments/RoleChip';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
@@ -251,6 +252,8 @@ function PersonRow({
   onMenu: (anchorTopY: number, anchorBottomY: number) => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('compactList');
   const rowRef = useRef<View>(null);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
@@ -262,7 +265,7 @@ function PersonRow({
   return (
     <View
       ref={rowRef}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 11, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: surface.paddingY(11), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
     >
       {/* .pl-av — host = accent; anon = user glyph. */}
       <Avatar imageUrl={p.imageUrl} name={p.displayName} size={40} anon={isAnon} host={role === 'host'} initialsSize={14} />
@@ -272,13 +275,13 @@ function PersonRow({
           {/* Name, "·" (name color), relationship WORD (colored) as separate
               flex siblings — the row's gap gives the spacing (nested-Text padding
               didn't render). ROLES stay pill badges. */}
-          <VText variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
+          <VText surface="compactList" variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
             {p.displayName}
           </VText>
           {rel ? (
             <>
-              <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
-              <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
+              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
+              <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
             </>
           ) : null}
           {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
@@ -308,7 +311,6 @@ function PersonRow({
 
 function Tag({ label, kind }: { label: string; kind: 'host' | 'plain' | 'provider' | 'anon' }) {
   const { theme } = useTheme();
-  const phone = usePhoneTokens();
   const styles: Record<typeof kind, { bg: string; fg: string; border?: string }> = {
     host: { bg: theme.accentTint, fg: theme.accent },
     plain: { bg: theme.surfaceSunk, fg: theme.inkSoft },
@@ -316,9 +318,5 @@ function Tag({ label, kind }: { label: string; kind: 'host' | 'plain' | 'provide
     anon: { bg: 'transparent', fg: theme.inkFaint, border: theme.rule },
   };
   const s = styles[kind];
-  return (
-    <View style={{ backgroundColor: s.bg, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, borderWidth: s.border ? 1 : 0, borderColor: s.border }}>
-      <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: phone.text('caption').fontSize * 0.04, textTransform: 'uppercase', color: s.fg }}>{label}</VText>
-    </View>
-  );
+  return <BadgePill label={label} bg={s.bg} color={s.fg} border={s.border} />;
 }

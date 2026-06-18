@@ -1547,6 +1547,8 @@ function LuRow({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const compact = phone.surface('compactList');
+  const badge = phone.surface('badge');
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
   const raters = ratersFor(wine.id, ratings);
   const revealedToGuests = !!wine.revealedAt;
@@ -1577,12 +1579,13 @@ function LuRow({
         flexDirection: 'row',
         alignItems: 'center',
         gap: phone.lerp(12, 16),
-        paddingVertical: phone.lerp(12, 16),
+        paddingVertical: compact.paddingY(phone.lerp(12, 16)),
         opacity: pressed ? 0.6 : 1,
       })}
     >
       {/* .lu-idx: 18w, 13/600, ink-faint, tabular */}
       <VText
+        surface="badge"
         color="inkFaint"
         style={{ width: phone.lerp(18, 22), textAlign: 'center', fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), fontVariant: ['tabular-nums'] }}
       >
@@ -1622,34 +1625,34 @@ function LuRow({
       <View style={{ flex: 1, minWidth: 0 }}>
         {masked ? (
           <>
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
+            <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               Impression {index + 1}
             </VText>
-            <VText color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>To be revealed</VText>
+            <VText surface="compactList" color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>To be revealed</VText>
           </>
         ) : (
           <>
             {/* .lu-name: "Oslavje - 2018" — the dash stays in the name
                 colour; only the year itself is ink-soft regular. The host's
                 hidden-from-guests tag rides the name line (resting only). */}
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
+            <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               {wine.name}
               {wine.vintage ? (
                 <>
                   {' - '}
-                  <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('body') }}>{wine.vintage}</VText>
+                  <VText surface="compactList" color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('body') }}>{wine.vintage}</VText>
                 </>
               ) : null}
             </VText>
             {hostSeesHidden && !revealMode ? (
-              <VText variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
+              <VText surface="compactList" variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
                 Hidden from guests
               </VText>
             ) : wine.producer ? (
-              <VText color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 1 }}>{wine.producer}</VText>
+              <VText surface="compactList" color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 1 }}>{wine.producer}</VText>
             ) : null}
             {!hostSeesHidden && (wine.grape || wine.type) ? (
-              <VText variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
+              <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
                 {wine.grape || wine.type}
               </VText>
             ) : null}
@@ -1676,17 +1679,17 @@ function LuRow({
                 borderWidth: 1,
                 borderColor: theme.accentLine,
                 borderRadius: radius.pill,
-                paddingVertical: phone.lerp(5, 7),
+                paddingVertical: badge.paddingY(phone.lerp(5, 7)),
                 paddingHorizontal: phone.lerp(13, 16),
               }}
             >
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
+              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
                 Rate
               </VText>
             </View>
           )}
           {raters > 0 ? (
-            <VText variant="caption" color="inkFaint">{`Rated by ${raters}`}</VText>
+            <VText surface="badge" variant="caption" color="inkFaint">{`Rated by ${raters}`}</VText>
           ) : null}
         </View>
       )}
@@ -1709,6 +1712,7 @@ function LuPill({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('button');
   return (
     <Pressable
       accessibilityRole="button"
@@ -1717,7 +1721,7 @@ function LuPill({
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7), height: phone.lerp(32, 36), paddingHorizontal: phone.lerp(13, 16),
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7), minHeight: surface.height(phone.lerp(32, 36)), paddingHorizontal: phone.lerp(13, 16),
         borderRadius: radius.pill,
         backgroundColor: filled ? theme.accent : 'transparent',
         borderWidth: filled ? 0 : 1,
@@ -1727,6 +1731,7 @@ function LuPill({
     >
       <Icon name={icon} size={phone.size('smallActionIcon')} color={filled ? theme.accentInk : theme.inkSoft} />
       <VText
+        surface="button"
         style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: filled ? theme.accentInk : theme.inkSoft }}
       >
         {label}
@@ -1776,6 +1781,7 @@ function LineupAddButton({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('button');
   const onGlass = glass && !collapsed;
   // Plain bar + collapsed cover: bare ink (like the back/⋯). Only the over-photo
   // glass variant is white.
@@ -1787,7 +1793,7 @@ function LineupAddButton({
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(6, 8), height: phone.size('actionPillHeight'),
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(6, 8), minHeight: surface.height(phone.size('actionPillHeight')),
         // Only the over-photo glass variant carries a fill + rounded pill; the
         // plain-bar and collapsed variants are borderless.
         paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
@@ -1800,7 +1806,7 @@ function LineupAddButton({
           the Crave button's collapse mechanism, not its icon size. */}
       <Icon name="plus" size={phone.size('actionIcon')} color={iconColor} />
       {!collapsed ? (
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: iconColor }}>
+        <VText surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: iconColor }}>
           Add
         </VText>
       ) : null}

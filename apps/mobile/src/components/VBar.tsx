@@ -13,8 +13,9 @@ export function VBar({ title, right }: { title: string; right?: React.ReactNode 
   const { theme } = useTheme();
   const router = useRouter();
   const phone = usePhoneTokens();
-  const barHeight = phone.size('topBar');
-  const controlSize = phone.size('compactAction');
+  const surface = phone.surface('topBar');
+  const barHeight = surface.height(phone.size('topBar'));
+  const controlSize = surface.height(phone.size('compactAction'));
   const iconSize = phone.size('topBarBackIcon');
   const titleText = phone.text('subhead');
   return (
@@ -30,6 +31,7 @@ export function VBar({ title, right }: { title: string; right?: React.ReactNode 
       </Pressable>
       <VText
         numberOfLines={1}
+        surface="topBar"
         style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', ...titleText }}
       >
         {title}
