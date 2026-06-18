@@ -23,7 +23,7 @@ export default function Launch() {
       </View>
       <View style={{ flex: 1 }} />
       <VText variant="small" color="inkSoft" style={{ textAlign: 'center', marginBottom: space.lg }}>
-        Wine, coffee, the dish you can't stop thinking about — capture it, score it, remember why.
+        Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
       </VText>
       <View style={{ gap: 10 }}>
         <Button title="Get started" bar block onPress={() => router.push('/sign-up')} />

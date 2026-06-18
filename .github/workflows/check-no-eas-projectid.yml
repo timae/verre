@@ -1,0 +1,31 @@
+name: No committed EAS projectId
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: no-eas-projectid-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Fail the build if apps/mobile/app.json commits an EAS projectId. EAS
+      # writes it locally on `eas build`; it's an infra identifier that must not
+      # land in this public repo, and an AI-executed commit will sweep it in
+      # otherwise. EAS resolves the project from "slug" + login without it.
+      # See apps/mobile/CLAUDE.md "Release placeholders".
+      #
+      # No npm ci needed — a dependency-free Node script reading the tracked file
+      # via `git ls-files`.
+      - name: Check app.json carries no EAS projectId
+        run: node scripts/check-no-eas-projectid.mjs

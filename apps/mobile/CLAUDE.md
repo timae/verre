@@ -417,6 +417,14 @@ names in `src/lib/api/sessions.ts`.
   (`src/lib/clientVersion.ts`). When EAS Update/OTA ever lands: report the OTA
   update id in the header's third slot AND pin `runtimeVersion` to the
   fingerprint policy first (proposal 04 §3a / 06 §6).
+- ⛔ **Never commit the EAS `projectId`.** `eas build` writes `extra.eas.projectId`
+  into `app.json` LOCALLY on first run — it's an infra identifier linking this
+  PUBLIC repo to an EAS account, and an AI-executed commit will sweep the modified
+  `app.json` in without realizing what the line is. Discard that change; do not
+  commit it. EAS resolves the project from `app.json` `slug` (`verre`) + the
+  logged-in account without the id. **CI-ENFORCED**: `scripts/check-no-eas-projectid.mjs`
+  (workflow `check-no-eas-projectid`) FAILS the build if app.json carries a
+  `projectId` — safe-by-construction, not safe-by-discipline.
 
 ## TestFlight release workflow
 
