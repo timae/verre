@@ -898,6 +898,7 @@ function AboutBlock({ wine }: { wine: WireWine }) {
 function NoteField({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
   return (
     <View style={{ gap: 7, marginTop: 8 }}>
@@ -910,8 +911,9 @@ function NoteField({ value, onChange }: { value: string; onChange: (s: string) =
         placeholderTextColor={theme.inkFaint}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
+        {...surface.textProps}
         style={{
-          minHeight: 64,
+          minHeight: surface.height(64),
           fontFamily: 'InstrumentSans_400Regular',
           fontSize: phone.text('body').fontSize,
           lineHeight: phone.text('body').lineHeight,
@@ -921,8 +923,8 @@ function NoteField({ value, onChange }: { value: string; onChange: (s: string) =
           borderColor: focused ? theme.accent : theme.rule,
           borderRadius: radius.sm,
           paddingHorizontal: focused ? 13 : 14,
-          paddingTop: focused ? 9 : 10,
-          paddingBottom: 10,
+          paddingTop: surface.paddingY(focused ? 9 : 10),
+          paddingBottom: surface.paddingY(10),
           textAlignVertical: 'top',
         }}
       />

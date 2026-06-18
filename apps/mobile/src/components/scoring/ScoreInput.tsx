@@ -5,6 +5,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
 import { scoreWord } from '@/lib/scoreWords';
+import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
 import { radius, useTheme } from '@/theme';
 
@@ -30,6 +31,8 @@ interface Props {
 
 export function ScoreInput({ value, onChange }: Props) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const scoreSurface = phone.surface('score');
   const [trackW, setTrackW] = useState(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -110,6 +113,7 @@ export function ScoreInput({ value, onChange }: Props) {
             <Path d={STAR_PATH} fill={theme.accent} />
           </Svg>
           <TextInput
+            {...scoreSurface.textProps}
             ref={inputRef}
             value={editing ? draft : value.toFixed(2)}
             onFocus={() => {
@@ -128,15 +132,23 @@ export function ScoreInput({ value, onChange }: Props) {
             caretHidden
             selectionColor={theme.accent}
             style={{
-              width: 92,
+              width: scoreSurface.height(92),
+              height: scoreSurface.height(56),
               fontFamily: 'InstrumentSans_600SemiBold',
               fontSize: 40,
+              // dynamic-type-ok: fixed-format — the score numeral pins lineHeight
+              // 48 inside a tall fixed 56 box (with includeFontPadding:false +
+              // textAlignVertical:'center'); device-verified centered, not a
+              // paragraph line box like the text fields. See the gate.
+              lineHeight: 48,
               letterSpacing: -1.2,
+              includeFontPadding: false,
+              textAlignVertical: 'center',
               fontVariant: ['tabular-nums'],
               color: editing ? theme.accent : theme.ink,
               backgroundColor: editing ? theme.surfaceSunk : 'transparent',
               borderRadius: radius.sm,
-              paddingVertical: 2,
+              paddingVertical: 0,
               paddingHorizontal: 4,
             }}
           />

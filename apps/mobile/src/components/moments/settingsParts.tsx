@@ -3,6 +3,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { ErrorState } from '@/components/ui/ConnectionState';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { BadgePill } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { GLASS_FILL, GUTTER } from '@/lib/layout';
@@ -29,20 +30,15 @@ export function ReadCard({ name, metaLine, role }: { name: string; metaLine: str
     <View style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 16, marginBottom: 18 }}>
       <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{name}</VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: 3 }}>{metaLine}</VText>
-      <View
-        style={{
-          alignSelf: 'flex-start',
-          marginTop: 10,
-          paddingVertical: 4,
-          paddingHorizontal: 11,
-          borderRadius: radius.pill,
-          backgroundColor: accentRole ? theme.accentTint : theme.surfaceSunk,
-        }}
-      >
-        <VText variant="caption" color={accentRole ? 'accent' : 'inkSoft'} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-          {label}
-        </VText>
-      </View>
+      <BadgePill
+        label={label}
+        bg={accentRole ? theme.accentTint : theme.surfaceSunk}
+        color={accentRole ? theme.accent : theme.inkSoft}
+        uppercase={false}
+        paddingHorizontal={11}
+        paddingVertical={4}
+        style={{ marginTop: 10 }}
+      />
     </View>
   );
 }

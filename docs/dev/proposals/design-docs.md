@@ -50,8 +50,8 @@ building the same look three ways." Resolved + built. Scope narrowed to
   menu shadow (`shadowRadius: 24`) is re-inlined outside its canonical home. This
   is the lever that makes the extractions *stick* (docs alone don't, in an
   AI-executed repo). REMAINING (lower-stakes, when next touching the area): the
-  rest of the backlog in `apps/mobile/CLAUDE.md` (`PeopleSheet.Tag→RoleChip`,
-  `<CoverPickerField>`, `<TextArea>`, …); growing the `__DEV__` dev-gallery into
+  rest of the backlog in `apps/mobile/CLAUDE.md` (`<CoverPickerField>`,
+  `<TextArea>`, …); growing the `__DEV__` dev-gallery into
   a browsable catalog. (A full `no-color-literals` ESLint rule is NOT worth it —
   raw-hex hygiene is already good; the failure mode was structural duplication,
   which the targeted gate above catches.)

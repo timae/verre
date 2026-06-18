@@ -18,7 +18,7 @@ import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
+import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
 
 // 02a moment creation, to the tCreate pixel spec: .at-photo cover affordance,
@@ -38,6 +38,7 @@ import { motion, radius, useTheme } from '@/theme';
 //   server-side.
 export default function CreateMoment() {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -159,18 +160,19 @@ export default function CreateMoment() {
             accessibilityLabel="What are you tasting? Wine"
             onPress={() => setCategoryOpen(true)}
             style={({ pressed }) => ({
-              height: 44,
+              minHeight: phone.surface('formControl').height(44),
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
               paddingHorizontal: 14,
+              paddingVertical: phone.surface('formControl').paddingY(10),
               backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
               borderWidth: 1,
               borderColor: theme.rule,
               borderRadius: radius.sm,
             })}
           >
-            <VText variant="body">Wine</VText>
+            <VText variant="body" surface="formControl">Wine</VText>
             <Icon name="chevron-down" size={18} color={theme.inkSoft} />
           </Pressable>
         </View>

@@ -113,9 +113,8 @@ function RecentRow({ row }: { row: MySessionRow }) {
   const { theme } = useTheme();
   const router = useRouter();
   const phone = usePhoneTokens();
+  const surface = phone.surface('compactList');
   const meta = recentMeta(row.date_from, row.name ? (row.role === 'host' ? 'you' : row.host_name) : null);
-  const titleText = phone.text('body');
-  const metaText = phone.text('small');
   return (
     // .sh-row base: gap 12, 10px vertical padding, transparent.
     <Pressable
@@ -125,18 +124,13 @@ function RecentRow({ row }: { row: MySessionRow }) {
         flexDirection: 'row',
         alignItems: 'center',
         gap: phone.lerp(12, 16),
-        paddingVertical: phone.lerp(10, 16),
+        paddingVertical: surface.paddingY(phone.lerp(10, 16)),
         opacity: pressed ? 0.6 : 1,
       })}
     >
       <Thumb uri={row.cover_photo_url} size={phone.size('recentThumb')} />
-      {/* Tight line boxes on the stacked single-line rows: the body/small
-          line-height multipliers (23 / 20) are tuned for multi-line paragraphs
-          and here add leading above+below each glyph, inflating the visible
-          gaps beyond the design's 2px column gap + 5px chip margin. Snug
-          line-heights let those design gaps read true. */}
-      <View style={{ flex: 1, minWidth: 0, gap: phone.lerp(2, 4) }}>
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...titleText }}>
+      <View style={{ flex: 1, minWidth: 0, gap: surface.gap(phone.lerp(2, 4)) }}>
+        <VText surface="compactList" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
           {row.name || row.host_name}
         </VText>
         {/* Show ONLY the set date (date_from); a moment with no set date shows
@@ -146,7 +140,7 @@ function RecentRow({ row }: { row: MySessionRow }) {
             A date-less, name-less moment yields an empty string here — render
             nothing so it doesn't leave a blank line box between title + chip. */}
         {meta ? (
-          <VText color="inkSoft" style={metaText}>
+          <VText surface="compactList" variant="small" color="inkSoft" numberOfLines={2}>
             {meta}
           </VText>
         ) : null}

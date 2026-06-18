@@ -16,7 +16,7 @@ import { VText } from '@/components/ui/VText';
 import { MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
 import { ApiError, addWine, getSessionState, type WineTypeCode } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
+import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { elevation, radius, useTheme } from '@/theme';
 
 // The 5 wine types the backend accepts (lib/session.ts). FLAGGED DEVIATION
@@ -380,18 +380,20 @@ function SelectField({
   accessibilityLabel: string;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('formControl');
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
       onPress={onPress}
       style={({ pressed }) => ({
-        height: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 14, backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
+        minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
         borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,
       })}
     >
-      <VText variant="body" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
+      <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
         {value || placeholder}
       </VText>
       <Icon name="chevron-down" size={18} color={theme.inkSoft} />
@@ -551,6 +553,8 @@ function PositionPicker({
   onChange: (n: number) => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const codeSurface = phone.surface('code');
   const [text, setText] = useState(String(value));
   // Re-seed the field on the open edge (value may have changed since last open).
   const wasOpen = useRef(false);
@@ -625,6 +629,7 @@ function PositionPicker({
                   it; tapping still focuses for typing. */}
               <GestureDetector gesture={pan}>
                 <TextInput
+                  {...codeSurface.textProps}
                   value={text}
                   onChangeText={(t) => setText(t.replace(/\D/g, ''))}
                   onEndEditing={() => commit(parseInt(text, 10))}

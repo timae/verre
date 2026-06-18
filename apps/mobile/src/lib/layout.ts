@@ -23,14 +23,15 @@ export function phoneComfortFor(width: number, height: number): number {
 }
 
 export function usePhoneMetrics() {
-  const { width, height } = useWindowDimensions();
+  const { width, height, fontScale } = useWindowDimensions();
   const comfort = phoneComfortFor(width, height);
   return useMemo(() => ({
     width,
     height,
+    fontScale,
     comfort,
     lerp: (from: number, to: number) => lerp(from, to, comfort),
-  }), [width, height, comfort]);
+  }), [width, height, fontScale, comfort]);
 }
 
 const PHONE_SIZE = {
@@ -53,6 +54,50 @@ const PHONE_SIZE = {
 type PhoneTextToken = 'display' | 'title' | 'heading' | 'subhead' | 'bodyLg' | 'body' | 'small' | 'caption' | 'label';
 type PhoneSizeToken = keyof typeof PHONE_SIZE;
 const typeScale = veroTokens.type;
+
+export const FONT_SURFACES = {
+  body: { maxFontSizeMultiplier: undefined },
+  // Form controls intentionally stay uncapped: their height math assumes the
+  // container follows the same OS scale as the editable text.
+  formControl: { maxFontSizeMultiplier: undefined },
+  button: { maxFontSizeMultiplier: 1.6 },
+  topBar: { maxFontSizeMultiplier: 1.4 },
+  compactList: { maxFontSizeMultiplier: 1.35 },
+  carousel: { maxFontSizeMultiplier: 1.3 },
+  badge: { maxFontSizeMultiplier: 1.15 },
+  score: { maxFontSizeMultiplier: 1.15 },
+  code: { maxFontSizeMultiplier: 1.1 },
+} as const;
+
+export type FontSurfaceName = keyof typeof FONT_SURFACES;
+
+export function effectiveFontScale(fontScale: number, maxFontSizeMultiplier?: number): number {
+  return maxFontSizeMultiplier == null ? fontScale : Math.min(fontScale, maxFontSizeMultiplier);
+}
+
+export function phoneSurface(name: FontSurfaceName, fontScale: number) {
+  const policy = FONT_SURFACES[name];
+  const scale = effectiveFontScale(fontScale, policy.maxFontSizeMultiplier);
+  // Let text follow smaller-than-default OS settings, but never shrink tap
+  // targets/containers below the authored design size.
+  const containerScale = Math.max(1, scale);
+  const textProps = policy.maxFontSizeMultiplier == null
+    ? {}
+    : { maxFontSizeMultiplier: policy.maxFontSizeMultiplier };
+  const scaled = (value: number) => Math.round(value * containerScale);
+  return {
+    name,
+    fontScale: scale,
+    maxFontSizeMultiplier: policy.maxFontSizeMultiplier,
+    textProps,
+    height: scaled,
+    minHeight: scaled,
+    padding: scaled,
+    paddingX: scaled,
+    paddingY: scaled,
+    gap: scaled,
+  };
+}
 
 const TEXT_COMFORT_SCALE: Partial<Record<PhoneTextToken, number>> = {
   title: 34 / typeScale.title.size,
@@ -86,10 +131,12 @@ export function usePhoneTokens() {
   return useMemo(() => ({
     width: phone.width,
     height: phone.height,
+    fontScale: phone.fontScale,
     comfort: phone.comfort,
     lerp: phone.lerp,
     text: (name: PhoneTextToken, scale?: number) => phoneTextToken(name, phone.comfort, scale),
     size: (name: PhoneSizeToken) => phoneSizeToken(name, phone.comfort),
+    surface: (name: FontSurfaceName) => phoneSurface(name, phone.fontScale),
   }), [phone]);
 }
 
