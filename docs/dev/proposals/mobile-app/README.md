@@ -6,6 +6,7 @@
 - `02` realtime — 🟨 steps 1–2 shipped (`/state` aggregate poll, web on it; native poll hardening — AppState→focusManager, NetInfo→onlineManager, fetch timeouts — landed with mobile milestone 2); push decision remains (O3)
 - `04` API versioning — ✅ shipped with the first native client: `X-Verre-Client` header on every native call, structured 426 + blocking update screen in build #1, floor envs (`NATIVE_MIN_VERSION_*`, unset in prod) enforced at the native-auth chokepoint (`lib/clientVersion.ts`)
 - `03` topology, `05` design system, `06` iOS app — 🟨 milestone 2: sessions core — Moments home (02s: live strip, join-by-code, recents), session line-up (02b read-only) on the hardened `/state` poll, read-only scoring widgets (Vero wheel geometry → `@verre/core`, `react-native-svg` render), NativeTabs swap (PillTabBar deleted). Score INPUT + wine modal gestures = milestone 3 (preconditions in [interaction-spec.md](interaction-spec.md) — the 03 §2a recognizer convergence comes first); flavour colours for the real FL sets pending a design decision. Feed screens + social sign-in not started
+- `07` Dynamic Type — 🟨 proposed follow-up to the mobile readability work: text scales natively; grow/cap containers from one surface policy so larger OS font sizes do not clip
 - Android phase, web redesign — ⬜ stubbed
 
 ## In plain English — what we're doing
@@ -77,7 +78,8 @@ This call is *defensible, not certain* — both reviewers agreed RN is reasonabl
 4. ⬅️ **[04 — API versioning](04-api-versioning.md)** — NEXT (with 02). Lets the native client (Better Auth) and legacy web (NextAuth) evolve independently against one backend; the in-app update screen must ship in build #1.
 5. **[03 — Topology](03-topology.md)** — one-app-vs-separate; commit to Expo Router to keep O1 open; decide the iOS↔Android split mechanism (O5) during the iOS build.
 6. **[05 — Design system](05-design-system.md)** + **[06 — iOS app](06-ios-app.md)** — the first shippable native deliverable.
-7. *Android phase* and *web-redesign phase* — stubbed later; not written until iOS proves the shape.
+7. **[07 — Dynamic Type](07-dynamic-type.md)** — scalable-container pass for user font-size settings; text keeps native scaling, containers follow the same surface cap.
+8. *Android phase* and *web-redesign phase* — stubbed later; not written until iOS proves the shape.
 
 The platform order is **iOS → Android → web redesign**. Backend workstreams (00–04) are platform-independent and front-loaded.
 
