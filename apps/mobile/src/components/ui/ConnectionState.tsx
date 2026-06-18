@@ -40,10 +40,10 @@ export function ErrorState({
 }) {
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, textAlign: 'center' }}>
+      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>
         {title}
       </VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 20, maxWidth: 260 }}>
+      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', maxWidth: 260 }}>
         {message}
       </VText>
       <Button title="Try again" loading={retrying} onPress={onRetry} style={{ marginTop: 10 }} />

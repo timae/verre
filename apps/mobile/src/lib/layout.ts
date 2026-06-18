@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useWindowDimensions } from 'react-native';
+import * as veroTokens from '@/theme/vero-tokens';
 
 // Shared screen-layout + over-photo constants. Centralised so the many screens
 // that re-declared these (GUTTER, FOOT_CLEARANCE, the hero ratios, the glass
@@ -16,8 +17,8 @@ export function clamp01(value: number): number {
 export function phoneComfortFor(width: number, height: number): number {
   const shortSide = Math.min(width, height);
   const longSide = Math.max(width, height);
-  const widthT = clamp01((shortSide - 390) / 50);
-  const heightT = clamp01((longSide - 844) / 112);
+  const widthT = clamp01((shortSide - 375) / 55);
+  const heightT = clamp01((longSide - 812) / 120);
   return clamp01(widthT * 0.72 + heightT * 0.28);
 }
 
@@ -31,6 +32,70 @@ export function usePhoneMetrics() {
     lerp: (from: number, to: number) => lerp(from, to, comfort),
   }), [width, height, comfort]);
 }
+
+const PHONE_SIZE = {
+  actionIcon: { size: 17, comfortSize: 19 },
+  actionPillHeight: { size: 34, comfortSize: 38 },
+  compactAction: { size: 30, comfortSize: 36 },
+  compactActionIcon: { size: 20, comfortSize: 23 },
+  fullscreenClose: { size: 40, comfortSize: 44 },
+  fullscreenCloseIcon: { size: 18, comfortSize: 20 },
+  heroAction: { size: 34, comfortSize: 40 },
+  heroActionIcon: { size: 20, comfortSize: 23 },
+  pushChevron: { size: 18, comfortSize: 20 },
+  recentChevron: { size: 16, comfortSize: 20 },
+  recentThumb: { size: 46, comfortSize: 56 },
+  smallActionIcon: { size: 15, comfortSize: 17 },
+  topBar: { size: 36, comfortSize: 42 },
+  topBarBackIcon: { size: 22, comfortSize: 24 },
+} as const;
+
+type PhoneTextToken = 'display' | 'title' | 'heading' | 'subhead' | 'bodyLg' | 'body' | 'small' | 'caption' | 'label';
+type PhoneSizeToken = keyof typeof PHONE_SIZE;
+const typeScale = veroTokens.type;
+
+const TEXT_COMFORT_SCALE: Partial<Record<PhoneTextToken, number>> = {
+  title: 34 / typeScale.title.size,
+  subhead: 20 / typeScale.subhead.size,
+  body: 17 / typeScale.body.size,
+  small: 15 / typeScale.small.size,
+};
+
+export function phoneTextToken(name: PhoneTextToken, comfort: number, scale = 1) {
+  const token = typeScale[name];
+  const baseSize = token.size * scale;
+  const baseLineHeight = Math.round(token.size * token.lineHeight) * scale;
+  const comfortScale = TEXT_COMFORT_SCALE[name] ?? 1;
+  const fontSize = lerp(baseSize, baseSize * comfortScale, comfort);
+  const lineHeight = lerp(baseLineHeight, baseLineHeight * comfortScale, comfort);
+  const letterSpacing = token.trackingPx * (fontSize / token.size);
+  return {
+    fontSize,
+    lineHeight,
+    letterSpacing,
+  };
+}
+
+export function phoneSizeToken(name: PhoneSizeToken, comfort: number): number {
+  const token = PHONE_SIZE[name];
+  return lerp(token.size, token.comfortSize, comfort);
+}
+
+export function usePhoneTokens() {
+  const phone = usePhoneMetrics();
+  return useMemo(() => ({
+    width: phone.width,
+    height: phone.height,
+    comfort: phone.comfort,
+    lerp: phone.lerp,
+    text: (name: PhoneTextToken, scale?: number) => phoneTextToken(name, phone.comfort, scale),
+    size: (name: PhoneSizeToken) => phoneSizeToken(name, phone.comfort),
+  }), [phone]);
+}
+
+// Fixed-format component text may still use explicit sizes where scaling would
+// break the control: score numerals, invite/join codes, compact badges/counters,
+// constrained carousel labels, countdown cells, and numeric picker fields.
 
 // Extra bottom padding for scroll content above the native tab bar. The
 // react-native-screens tab host auto-insets content for the bar itself

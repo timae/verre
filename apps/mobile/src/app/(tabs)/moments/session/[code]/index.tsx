@@ -15,7 +15,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
-import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneMetrics } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
@@ -657,10 +657,10 @@ function CoverHeroLineup({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const phone = usePhoneMetrics();
+  const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
-  const BAR_CONTROL = phone.lerp(34, 36);
+  const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
   const rows = wines ?? [];
   const showStrip = !!reveal.stripVariant && !lock;
@@ -783,7 +783,7 @@ function CoverHeroLineup({
           >
             <VText
               numberOfLines={2}
-              style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 30, letterSpacing: -0.5, color: '#fff' }}
+              style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('title'), color: '#fff' }}
             >
               {meta.name}
             </VText>
@@ -907,7 +907,7 @@ function HeroTopBar({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const phone = usePhoneMetrics();
+  const phone = usePhoneTokens();
   const moreRef = useRef<View>(null);
   const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
   useEffect(() => {
@@ -920,9 +920,9 @@ function HeroTopBar({
   }, [collapsed, anim]);
 
   const iconColor = collapsed ? theme.ink : '#fff';
-  const controlSize = phone.lerp(34, 36);
-  const iconSize = phone.lerp(20, 21);
-  const titleSize = phone.lerp(18, 19);
+  const controlSize = phone.size('heroAction');
+  const iconSize = phone.size('heroActionIcon');
+  const titleText = phone.text('subhead');
   const circle = collapsed
     ? { width: controlSize, height: controlSize, alignItems: 'center' as const, justifyContent: 'center' as const }
     : { width: controlSize, height: controlSize, borderRadius: controlSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const };
@@ -955,7 +955,7 @@ function HeroTopBar({
           <Animated.View
             style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
           >
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: titleSize, lineHeight: phone.lerp(23, 24), letterSpacing: 0, color: theme.ink }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...titleText, color: theme.ink }}>
               {title}
             </VText>
           </Animated.View>
@@ -989,6 +989,7 @@ function FatalView({
   onRetry: () => void;
   onBack: () => void;
 }) {
+  const phone = usePhoneTokens();
   let title = 'Something went wrong';
   let body = 'Try again in a moment.';
   if (fatal.kind === 'not-found') {
@@ -1008,8 +1009,8 @@ function FatalView({
   }
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, textAlign: 'center' }}>{title}</VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 20, maxWidth: 260 }}>{body}</VText>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead'), textAlign: 'center' }}>{title}</VText>
+      <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 280 }}>{body}</VText>
       {fatal.kind === 'http' ? <Button title="Try again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
       <Button title="Back to Moments" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
     </View>
@@ -1020,6 +1021,7 @@ function FatalView({
 // renders per spec but disabled.
 function TabStrip() {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const tab = (label: string, on: boolean, disabled?: boolean) => (
     <View
       key={label}
@@ -1032,7 +1034,7 @@ function TabStrip() {
       }}
     >
       <VText
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}
         color={on ? 'ink' : disabled ? 'inkFaint' : 'inkSoft'}
       >
         {label}
@@ -1058,6 +1060,8 @@ function RsButton({
   disabled?: boolean;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const labelText = phone.text('small');
   // .rs-btn[disabled]: surface-sunk fill + ink-soft text/glyph + 0.4 opacity
   // (NOT a dimmed-gold pill) per the design.
   const fg = disabled ? theme.inkSoft : theme.accentInk;
@@ -1069,14 +1073,14 @@ function RsButton({
       onPress={onPress}
       hitSlop={4}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 5,
-        paddingVertical: 7, paddingHorizontal: 15, borderRadius: radius.pill,
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7),
+        paddingVertical: phone.lerp(7, 9), paddingHorizontal: phone.lerp(15, 18), borderRadius: radius.pill,
         backgroundColor: disabled ? theme.surfaceSunk : theme.accent,
         opacity: disabled ? 0.4 : pressed ? 0.8 : 1,
       })}
     >
-      <Icon name={icon} size={15} color={fg} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16, color: fg }}>
+      <Icon name={icon} size={phone.size('smallActionIcon')} color={fg} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...labelText, color: fg }}>
         {label}
       </VText>
     </Pressable>
@@ -1138,7 +1142,7 @@ function RevealStrip({
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
           <Icon name="eyeoff" size={15} color={theme.inkSoft} />
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16, fontVariant: ['tabular-nums'] }} color="inkSoft">
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontVariant: ['tabular-nums'] }} color="inkSoft">
             {hiddenCount}
           </VText>
         </View>
@@ -1288,23 +1292,23 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
                 lines.length > 3 ? lines.slice(0, 3).reduce((n, l) => n + l.text.length, 0) : null,
               );
             }}
-            style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 20 }}
+            style={{ position: 'absolute', left: 0, right: 0, opacity: 0 }}
           >
             {meta.description}
           </VText>
           {descOpen ? (
             // Expanded: "less" flows inline at the end of the last line.
-            <VText variant="small" color="inkSoft" style={{ marginTop: 10, lineHeight: 20 }}>
+            <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>
               {meta.description}
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
                 {'  less'}
               </VText>
             </VText>
           ) : (
-            <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10, lineHeight: 20 }}>
+            <VText variant="small" color="inkSoft" numberOfLines={3} style={{ marginTop: 10 }}>
               {truncated ?? meta.description}
               {truncated !== null ? (
-                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+                <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
                   {' more'}
                 </VText>
               ) : null}
@@ -1357,7 +1361,7 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNu
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12 }} color="accent">+{extra}</VText>
+            <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">+{extra}</VText>
           </View>
         ) : null}
       </View>
@@ -1379,6 +1383,7 @@ function lockState(meta: MetaView): number | null {
 // .lock-card + .cd countdown cells + .lock-start.
 function LockCard({ revealAt }: { revealAt: number }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick((n) => n + 1), 1000);
@@ -1406,16 +1411,16 @@ function LockCard({ revealAt }: { revealAt: number }) {
       <View style={{ width: 56, height: 56, borderRadius: 28, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="eyeoff" size={24} color={theme.inkSoft} />
       </View>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>
         Something good awaits you
       </VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', lineHeight: 20, maxWidth: 250, marginTop: 8, marginBottom: 22 }}>
+      <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 280, marginTop: 8, marginBottom: 22 }}>
         The host has kept the line-up under wraps. It opens when the reveal time arrives.
       </VText>
       <View style={{ flexDirection: 'row', gap: 8 }}>
         {cells.map(([label, v]) => (
-          <View key={label} style={{ width: 58, backgroundColor: theme.surfaceSunk, borderRadius: radius.md, paddingTop: 10, paddingBottom: 7, alignItems: 'center' }}>
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, letterSpacing: -0.5, lineHeight: 28 }}>
+          <View key={label} style={{ width: phone.lerp(58, 64), backgroundColor: theme.surfaceSunk, borderRadius: radius.md, paddingTop: 10, paddingBottom: 7, alignItems: 'center' }}>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('title') }}>
               {String(v).padStart(2, '0')}
             </VText>
             <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 10, letterSpacing: 1, textTransform: 'uppercase', marginTop: 5 }}>
@@ -1424,7 +1429,7 @@ function LockCard({ revealAt }: { revealAt: number }) {
           </View>
         ))}
       </View>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, marginTop: 18 }} color="accent">
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 18 }} color="accent">
         Line-up reveals {when}
       </VText>
     </View>
@@ -1435,6 +1440,7 @@ function LockCard({ revealAt }: { revealAt: number }) {
 // thing" invitation (guest copy is unspecced in the handoff; flagged).
 function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   // The empty state lives in a flex:1 slot. When the tab bar hides for a sheet,
   // that slot grows (the freed bar space), and center-justified content would
   // shift down by half the delta — then back on close: the "jump". Fix: freeze
@@ -1449,8 +1455,8 @@ function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) 
       <View style={{ width: 64, height: 64, borderRadius: 32, backgroundColor: theme.surfaceSunk, alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
         <Icon name="glass" size={30} color={theme.inkSoft} />
       </View>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23 }}>Nothing in the line-up yet</VText>
-      <VText variant="small" color="inkSoft" style={{ textAlign: 'center', maxWidth: 230, lineHeight: 20, marginTop: 6 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>Nothing in the line-up yet</VText>
+      <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 260, marginTop: 6 }}>
         {canAdd
           ? "Add the first thing you're tasting — a bottle, a cup, a plate."
           : 'The host is still putting the line-up together.'}
@@ -1466,7 +1472,7 @@ function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) 
           })}
         >
           <Icon name="plus" size={17} color={theme.accentInk} />
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 14, lineHeight: 18 }} color={theme.accentInk}>
+          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={theme.accentInk}>
             Add impression
           </VText>
         </Pressable>
@@ -1494,7 +1500,7 @@ function AddImpressionRow({ onPress }: { onPress: () => void }) {
       })}
     >
       <Icon name="plus" size={17} color={theme.accent} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16 }} color="accent">
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
         Add impression
       </VText>
     </Pressable>
@@ -1540,6 +1546,7 @@ function LuRow({
   onHide?: (wineId: string) => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
   const raters = ratersFor(wine.id, ratings);
   const revealedToGuests = !!wine.revealedAt;
@@ -1569,15 +1576,15 @@ function LuRow({
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 12,
+        gap: phone.lerp(12, 16),
+        paddingVertical: phone.lerp(12, 16),
         opacity: pressed ? 0.6 : 1,
       })}
     >
       {/* .lu-idx: 18w, 13/600, ink-faint, tabular */}
       <VText
         color="inkFaint"
-        style={{ width: 18, textAlign: 'center', fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, fontVariant: ['tabular-nums'] }}
+        style={{ width: phone.lerp(18, 22), textAlign: 'center', fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), fontVariant: ['tabular-nums'] }}
       >
         {index + 1}
       </VText>
@@ -1585,18 +1592,18 @@ function LuRow({
         // .lu-masked: sunk bg, dashed rule border, eye-off
         <View
           style={{
-            width: 46, height: 46, borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
+            width: phone.size('recentThumb'), height: phone.size('recentThumb'), borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
             borderWidth: 1, borderStyle: 'dashed', borderColor: theme.rule,
             alignItems: 'center', justifyContent: 'center',
           }}
         >
-          <Icon name="eyeoff" size={18} color={theme.inkFaint} />
+          <Icon name="eyeoff" size={phone.size('pushChevron')} color={theme.inkFaint} />
         </View>
       ) : (
         // .lu-thumbwrap — the host's hidden-from-guests wine carries a small
         // eye-off badge pinned to the thumb's bottom-right corner.
-        <View style={{ width: 46, height: 46 }}>
-          <Thumb uri={wine.imageUrl} size={46} />
+        <View style={{ width: phone.size('recentThumb'), height: phone.size('recentThumb') }}>
+          <Thumb uri={wine.imageUrl} size={phone.size('recentThumb')} />
           {hostSeesHidden ? (
             // .lu-hidebadge: 20px surface circle, ink-soft eye-off, overhanging
             // the thumb corner.
@@ -1615,22 +1622,22 @@ function LuRow({
       <View style={{ flex: 1, minWidth: 0 }}>
         {masked ? (
           <>
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               Impression {index + 1}
             </VText>
-            <VText variant="small" color="inkSoft" style={{ marginTop: 1 }}>To be revealed</VText>
+            <VText color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>To be revealed</VText>
           </>
         ) : (
           <>
             {/* .lu-name: "Oslavje - 2018" — the dash stays in the name
                 colour; only the year itself is ink-soft regular. The host's
                 hidden-from-guests tag rides the name line (resting only). */}
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
+            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               {wine.name}
               {wine.vintage ? (
                 <>
                   {' - '}
-                  <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 15, lineHeight: 23 }}>{wine.vintage}</VText>
+                  <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('body') }}>{wine.vintage}</VText>
                 </>
               ) : null}
             </VText>
@@ -1639,7 +1646,7 @@ function LuRow({
                 Hidden from guests
               </VText>
             ) : wine.producer ? (
-              <VText variant="small" color="inkSoft" numberOfLines={1} style={{ marginTop: 1 }}>{wine.producer}</VText>
+              <VText color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 1 }}>{wine.producer}</VText>
             ) : null}
             {!hostSeesHidden && (wine.grape || wine.type) ? (
               <VText variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
@@ -1669,11 +1676,11 @@ function LuRow({
                 borderWidth: 1,
                 borderColor: theme.accentLine,
                 borderRadius: radius.pill,
-                paddingVertical: 5,
-                paddingHorizontal: 13,
+                paddingVertical: phone.lerp(5, 7),
+                paddingHorizontal: phone.lerp(13, 16),
               }}
             >
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16 }} color="accent">
+              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
                 Rate
               </VText>
             </View>
@@ -1701,6 +1708,7 @@ function LuPill({
   onPress: () => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   return (
     <Pressable
       accessibilityRole="button"
@@ -1709,7 +1717,7 @@ function LuPill({
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 5, height: 32, paddingHorizontal: 13,
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7), height: phone.lerp(32, 36), paddingHorizontal: phone.lerp(13, 16),
         borderRadius: radius.pill,
         backgroundColor: filled ? theme.accent : 'transparent',
         borderWidth: filled ? 0 : 1,
@@ -1717,9 +1725,9 @@ function LuPill({
         opacity: busy ? 0.5 : pressed ? 0.7 : 1,
       })}
     >
-      <Icon name={icon} size={15} color={filled ? theme.accentInk : theme.inkSoft} />
+      <Icon name={icon} size={phone.size('smallActionIcon')} color={filled ? theme.accentInk : theme.inkSoft} />
       <VText
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16, color: filled ? theme.accentInk : theme.inkSoft }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: filled ? theme.accentInk : theme.inkSoft }}
       >
         {label}
       </VText>
@@ -1730,7 +1738,7 @@ function LuPill({
 // VBar ⋯ button — measures its position so the menu anchors under it.
 function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void }) {
   const { theme } = useTheme();
-  const phone = usePhoneMetrics();
+  const phone = usePhoneTokens();
   const ref = useRef<View>(null);
   return (
     <View ref={ref} collapsable={false}>
@@ -1739,9 +1747,9 @@ function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void
         accessibilityLabel="Session menu"
         hitSlop={8}
         onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen(y + h))}
-        style={({ pressed }) => ({ width: phone.lerp(30, 34), height: phone.lerp(30, 34), alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+        style={({ pressed }) => ({ width: phone.size('compactAction'), height: phone.size('compactAction'), alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
       >
-        <Icon name="more" size={phone.lerp(20, 21)} color={theme.ink} />
+        <Icon name="more" size={phone.size('compactActionIcon')} color={theme.ink} />
       </Pressable>
     </View>
   );
@@ -1767,7 +1775,7 @@ function LineupAddButton({
   glass?: boolean;
 }) {
   const { theme } = useTheme();
-  const phone = usePhoneMetrics();
+  const phone = usePhoneTokens();
   const onGlass = glass && !collapsed;
   // Plain bar + collapsed cover: bare ink (like the back/⋯). Only the over-photo
   // glass variant is white.
@@ -1779,20 +1787,20 @@ function LineupAddButton({
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(6, 7), height: phone.lerp(34, 36),
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(6, 8), height: phone.size('actionPillHeight'),
         // Only the over-photo glass variant carries a fill + rounded pill; the
         // plain-bar and collapsed variants are borderless.
-        paddingHorizontal: onGlass ? phone.lerp(13, 14) : 4,
-        borderRadius: onGlass ? phone.lerp(17, 18) : 0,
+        paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
+        borderRadius: onGlass ? phone.lerp(17, 19) : 0,
         backgroundColor: onGlass ? GLASS_FILL : 'transparent',
         opacity: pressed ? 0.6 : 1,
       })}
     >
       {/* Base 17px glyph in every state — matches the .hv-add spec; we borrow
           the Crave button's collapse mechanism, not its icon size. */}
-      <Icon name="plus" size={phone.lerp(17, 18)} color={iconColor} />
+      <Icon name="plus" size={phone.size('actionIcon')} color={iconColor} />
       {!collapsed ? (
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: phone.lerp(13, 14), lineHeight: phone.lerp(20, 21), color: iconColor }}>
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: iconColor }}>
           Add
         </VText>
       ) : null}

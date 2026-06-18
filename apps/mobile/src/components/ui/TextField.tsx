@@ -1,6 +1,7 @@
 import { forwardRef, useState } from 'react';
 import { TextInput, View, type TextInputProps } from 'react-native';
-import { control, radius, typeScale, useTheme } from '@/theme';
+import { usePhoneTokens } from '@/lib/layout';
+import { control, radius, useTheme } from '@/theme';
 import { VText } from './VText';
 
 interface Props extends TextInputProps {
@@ -17,12 +18,13 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   ref,
 ) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const [focused, setFocused] = useState(false);
   const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
   return (
     <View style={{ gap: 7 }}>
       {label ? (
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: typeScale.small.size }}>{label}</VText>
+        <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       ) : null}
       <TextInput
         {...rest}
@@ -35,7 +37,8 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
           {
             height: control.h,
             fontFamily: 'InstrumentSans_400Regular',
-            fontSize: typeScale.body.size,
+            fontSize: phone.text('body').fontSize,
+            lineHeight: phone.text('body').lineHeight,
             color: theme.ink,
             backgroundColor: editable === false ? theme.surfaceSunk : theme.surface,
             borderWidth: focused ? 2 : 1,

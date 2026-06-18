@@ -5,7 +5,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
-import { GLASS_FILL, usePhoneMetrics } from '@/lib/layout';
+import { GLASS_FILL, usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
 
 export function FullscreenImage({
@@ -22,8 +22,8 @@ export function FullscreenImage({
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const { theme } = useTheme();
-  const phone = usePhoneMetrics();
-  const closeSize = phone.lerp(40, 42);
+  const phone = usePhoneTokens();
+  const closeSize = phone.size('fullscreenClose');
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
   const translateX = useSharedValue(0);
@@ -158,7 +158,7 @@ export function FullscreenImage({
           hitSlop={10}
           style={[styles.close, { top: insets.top + 10, width: closeSize, height: closeSize, borderRadius: closeSize / 2 }]}
         >
-          <Icon name="x" size={phone.lerp(18, 19)} color="#fff" />
+          <Icon name="x" size={phone.size('fullscreenCloseIcon')} color="#fff" />
         </Pressable>
       </View>
     </Modal>

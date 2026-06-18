@@ -171,7 +171,7 @@ function DetailsForm({
             })}
           >
             <Icon name="cam" size={24} color={theme.inkSoft} />
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, marginTop: 4 }}>Add a cover photo</VText>
+            <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add a cover photo</VText>
           </Pressable>
         )}
         {coverError ? (

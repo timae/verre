@@ -9,6 +9,7 @@ import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
+import { usePhoneTokens } from '@/lib/layout';
 import {
   ApiError,
   removeParticipant,
@@ -121,7 +122,7 @@ export function PeopleSheet({
       <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
         {/* .at-head — "People · N" + Add pill (opens invite). */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             People · {meta?.participants.length ?? 0}
           </VText>
           {/* .hv-add — filled accent pill. */}
@@ -132,7 +133,7 @@ export function PeopleSheet({
             style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: theme.accent, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7, opacity: pressed ? 0.85 : 1 })}
           >
             <Icon name="plus" size={15} color={theme.accentInk} />
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, color: theme.accentInk }}>Add</VText>
+            <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Add</VText>
           </Pressable>
         </View>
 
@@ -169,7 +170,7 @@ export function PeopleSheet({
               />
             ))}
             {isHostViewer ? (
-              <VText variant="caption" color="inkSoft" style={{ marginTop: 14, lineHeight: 18 }}>
+              <VText variant="caption" color="inkSoft" style={{ marginTop: 14 }}>
                 Tap ⋯ on anyone to make them a co-host, make a Provider (lets a taster add impressions), remove, or ban them.
               </VText>
             ) : null}
@@ -271,13 +272,13 @@ function PersonRow({
           {/* Name, "·" (name color), relationship WORD (colored) as separate
               flex siblings — the row's gap gives the spacing (nested-Text padding
               didn't render). ROLES stay pill badges. */}
-          <VText style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', fontSize: 15, flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
+          <VText variant="body" style={{ fontFamily: isAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', flexShrink: 1 }} color={isAnon ? 'inkSoft' : 'ink'} numberOfLines={1}>
             {p.displayName}
           </VText>
           {rel ? (
             <>
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }} color={rel.color}>{rel.label}</VText>
+              <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={isAnon ? 'inkSoft' : 'ink'}>·</VText>
+              <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={rel.color}>{rel.label}</VText>
             </>
           ) : null}
           {role === 'host' ? <Tag label="Host" kind="host" /> : role === 'cohost' ? <Tag label="Co-host" kind="plain" /> : null}
@@ -307,6 +308,7 @@ function PersonRow({
 
 function Tag({ label, kind }: { label: string; kind: 'host' | 'plain' | 'provider' | 'anon' }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const styles: Record<typeof kind, { bg: string; fg: string; border?: string }> = {
     host: { bg: theme.accentTint, fg: theme.accent },
     plain: { bg: theme.surfaceSunk, fg: theme.inkSoft },
@@ -316,8 +318,7 @@ function Tag({ label, kind }: { label: string; kind: 'host' | 'plain' | 'provide
   const s = styles[kind];
   return (
     <View style={{ backgroundColor: s.bg, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, borderWidth: s.border ? 1 : 0, borderColor: s.border }}>
-      <VText style={{ fontSize: 10.5, fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: 0.4, textTransform: 'uppercase', color: s.fg }}>{label}</VText>
+      <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: phone.text('caption').fontSize * 0.04, textTransform: 'uppercase', color: s.fg }}>{label}</VText>
     </View>
   );
 }
-
