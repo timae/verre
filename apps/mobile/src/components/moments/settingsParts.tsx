@@ -27,7 +27,7 @@ export function ReadCard({ name, metaLine, role }: { name: string; metaLine: str
     : 'You are a taster';
   return (
     <View style={{ backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.md, padding: 16, marginBottom: 18 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>{name}</VText>
+      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{name}</VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: 3 }}>{metaLine}</VText>
       <View
         style={{
@@ -93,7 +93,7 @@ export function SetNav({
       })}
     >
       <Icon name={icon} size={19} color={iconTint} />
-      <VText style={{ flex: 1, fontFamily: action ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', fontSize: 15 }} color={tint}>
+      <VText variant="body" style={{ flex: 1, fontFamily: action ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium' }} color={tint}>
         {label}
       </VText>
       {soon ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
@@ -165,7 +165,7 @@ export function ToggleRow({
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14, paddingTop: 18, paddingBottom: 2 }}>
       <View style={{ flexShrink: 1 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }} color={disabled ? 'inkFaint' : 'ink'}>{title}</VText>
+          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={disabled ? 'inkFaint' : 'ink'}>{title}</VText>
           {proBadge ? (
             // letterSpacing adds trailing space after the last glyph, shoving
             // the text optically left — pull the right padding in by that amount

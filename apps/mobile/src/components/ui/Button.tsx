@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
-import { control, radius, typeScale, useTheme } from '@/theme';
+import { control, radius, useTheme, type TextVariant } from '@/theme';
 import { alpha, mix } from '@/theme/color';
 import { VText } from './VText';
 
@@ -29,12 +29,8 @@ const SLOW_AFTER_MS = 500;
 
 const HEIGHTS: Record<Size, number> = { sm: control.hSm, md: control.h, lg: control.hLg };
 const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
-// .btn label scale: small / body / bodyLg sizes + their tracking, line-height 1
-const LABEL: Record<Size, { size: number; tracking: number }> = {
-  sm: { size: typeScale.small.size, tracking: typeScale.small.trackingPx },
-  md: { size: typeScale.body.size, tracking: typeScale.body.trackingPx },
-  lg: { size: typeScale.bodyLg.size, tracking: typeScale.bodyLg.trackingPx },
-};
+// .btn label scale: small / body / bodyLg.
+const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 'bodyLg' };
 
 export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
@@ -99,15 +95,12 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
     >
       {({ pressed }) => {
         const c = colors(pressed);
-        const label = LABEL[size];
         return (
           <VText
+            variant={LABEL_VARIANT[size]}
             color={c.text}
             style={{
               fontFamily: 'InstrumentSans_600SemiBold',
-              fontSize: label.size,
-              lineHeight: label.size,
-              letterSpacing: label.tracking,
             }}
           >
             {loading && slow && loadingTitle ? loadingTitle : title}

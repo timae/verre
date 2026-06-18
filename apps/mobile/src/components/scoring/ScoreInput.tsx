@@ -141,10 +141,11 @@ export function ScoreInput({ value, onChange }: Props) {
             }}
           />
         </View>
-        {/* .rateword: 18/600, accent when rated, ink-soft at 0 */}
+        {/* .rateword: accent when rated, ink-soft at 0 */}
         <VText
+          variant="subhead"
           numberOfLines={1}
-          style={{ flexShrink: 1, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27, textAlign: 'right' }}
+          style={{ flexShrink: 1, fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'right' }}
           color={rated ? 'accent' : 'inkSoft'}
         >
           {scoreWord(value)}

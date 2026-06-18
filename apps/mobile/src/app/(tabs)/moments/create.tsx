@@ -127,7 +127,7 @@ export default function CreateMoment() {
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title="Create a moment" />
         {/* .vsub */}
-        <VText variant="small" color="inkSoft" style={{ lineHeight: 19, marginBottom: 18 }}>
+        <VText variant="small" color="inkSoft" style={{ marginBottom: 18 }}>
           Set up a tasting to share with others
         </VText>
       </View>
@@ -151,7 +151,7 @@ export default function CreateMoment() {
             Wine is preselected; the others sit in the sheet disabled
             ("soon") and aren't choosable. */}
         <View style={{ gap: 7, marginBottom: 14 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             What are you tasting?
           </VText>
           <Pressable
@@ -231,7 +231,7 @@ export default function CreateMoment() {
                       backgroundColor: on ? theme.accent : theme.bg,
                     }}
                   >
-                    <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: on ? theme.accentInk : theme.inkSoft }}>
+                    <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>
                       {label}
                     </VText>
                   </Pressable>
@@ -270,7 +270,7 @@ export default function CreateMoment() {
             paddingBottom: 4,
           }}
         >
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
+          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             Add more details
           </VText>
           <View style={{ transform: [{ rotate: moreOpen ? '180deg' : '0deg' }] }}>
@@ -377,7 +377,7 @@ function CoverPicker({
       })}
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, marginTop: 4 }}>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>
         Add a cover photo
       </VText>
       <VText variant="caption" color="inkSoft">optional — gives your moment a face</VText>
@@ -473,7 +473,7 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
     <Sheet open={open} onClose={onClose}>
       <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             What are you tasting?
           </VText>
         </View>

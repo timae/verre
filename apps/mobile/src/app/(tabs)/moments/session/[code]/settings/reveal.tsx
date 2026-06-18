@@ -115,7 +115,7 @@ function RevealForm({
                   onPress={() => setHideMinutes(mins)}
                   style={{ paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: on ? 'transparent' : theme.rule, backgroundColor: on ? theme.accent : theme.bg }}
                 >
-                  <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: on ? theme.accentInk : theme.inkSoft }}>{label}</VText>
+                  <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>{label}</VText>
                 </Pressable>
               );
             })}
@@ -145,7 +145,7 @@ function RevealForm({
           disabled={!blind}
           reason={!blind ? 'Turn on blind tasting first' : undefined}
         />
-        <VText variant="caption" color="inkSoft" style={{ lineHeight: 18, marginTop: 18 }}>
+        <VText variant="caption" color="inkSoft" style={{ marginTop: 18 }}>
           Some options need a start time, or a PRO plan. They unlock automatically once they apply.
         </VText>
       </ScrollView>

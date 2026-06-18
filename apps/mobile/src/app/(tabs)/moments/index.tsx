@@ -7,7 +7,7 @@ import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/sw
 import { normalizeCode, formatCodeInput } from '@verre/core';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
@@ -149,28 +149,31 @@ export default function Moments() {
   );
 }
 
-// .hv-add — accent pill: 34h, plus 17 + label 13/600, pad 0 14 0 11.
+// .hv-add base — accent pill: 34h, plus 17 + label 13/600, pad 0 14 0 11.
 function NewPill({ onPress }: { onPress: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const actionLabel = phone.text('small');
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel="New moment"
       onPress={onPress}
+      hitSlop={6}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
         gap: 6,
-        height: 34,
-        paddingLeft: 11,
-        paddingRight: 14,
+        height: phone.size('actionPillHeight'),
+        paddingLeft: phone.lerp(11, 14),
+        paddingRight: phone.lerp(14, 17),
         borderRadius: radius.pill,
         backgroundColor: theme.accent,
         opacity: pressed ? 0.8 : 1,
       })}
     >
-      <Icon name="plus" size={17} color={theme.accentInk} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, color: theme.accentInk }}>
+      <Icon name="plus" size={phone.size('actionIcon')} color={theme.accentInk} />
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...actionLabel, color: theme.accentInk }}>
         New
       </VText>
     </Pressable>
@@ -436,9 +439,10 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
           word. Same heading style as "Join a moment" (18/600, -0.27 tracking).
           Gutter-padded to align with the cards (the ScrollView pads itself). */}
       <VText
+        variant="subhead"
         numberOfLines={1}
         maxFontSizeMultiplier={CARD_TEXT_MAX_SCALE}
-        style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}
+        style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold' }}
       >
         Moments of interest
       </VText>
@@ -528,8 +532,8 @@ function JoinBlock() {
   return (
     // .sh-joinblock: gap 10, margin-top 6
     <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
-      {/* .sh-sheettitle: 18/600 */}
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+      {/* .sh-sheettitle */}
+      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
         Join a moment
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
@@ -581,6 +585,8 @@ function PushGroup({ children }: { children: React.ReactNode }) {
 // own border covers the first row's edge).
 function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon: IconName; label: string; count: number; onPress: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const labelText = phone.text('body');
   return (
     <Pressable
       accessibilityRole="button"
@@ -588,18 +594,18 @@ function PushRow({ first, icon, label, count, onPress }: { first: boolean; icon:
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 13,
-        paddingHorizontal: 14,
+        gap: phone.lerp(12, 15),
+        paddingVertical: phone.lerp(13, 17),
+        paddingHorizontal: phone.lerp(14, 18),
         borderTopWidth: first ? 0 : 1,
         borderTopColor: theme.ruleSoft,
         backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
       })}
     >
-      <Icon name={icon} size={19} color={theme.inkSoft} />
-      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', fontSize: 15, lineHeight: 23 }}>{label}</VText>
+      <Icon name={icon} size={phone.lerp(19, 22)} color={theme.inkSoft} />
+      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium', ...labelText }}>{label}</VText>
       <VText variant="small" color="inkSoft">{count}</VText>
-      <Icon name="chevron-right" size={18} color={theme.inkFaint} />
+      <Icon name="chevron-right" size={phone.size('pushChevron')} color={theme.inkFaint} />
     </Pressable>
   );
 }

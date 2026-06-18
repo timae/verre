@@ -12,6 +12,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
 import { WEB_BASE } from '@/lib/config';
+import { usePhoneTokens } from '@/lib/layout';
 import { alpha } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
@@ -38,6 +39,7 @@ export function InviteSheet({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneTokens();
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   const [q, setQ] = useState('');
   const [copied, setCopied] = useState(false);
@@ -94,7 +96,7 @@ export function InviteSheet({
           <Icon name="back" size={22} color={theme.ink} />
         </Pressable>
       ) : null}
-      <VText style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }} numberOfLines={1}>
+      <VText variant="subhead" style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>
         {pane === 'browse' ? 'Invite friends' : `Invite to ${label}`}
       </VText>
     </View>
@@ -172,7 +174,7 @@ export function InviteSheet({
             style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent, borderRadius: radius.pill, paddingVertical: 13, opacity: pressed ? 0.85 : 1 })}
           >
             <Icon name="share" size={18} color={theme.accentInk} />
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, color: theme.accentInk }}>Share</VText>
+            <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Share</VText>
           </Pressable>
         </BottomSheetView>
       ) : (
@@ -192,7 +194,7 @@ export function InviteSheet({
               placeholderTextColor={theme.inkSoft}
               autoCapitalize="none"
               autoCorrect={false}
-              style={{ flex: 1, paddingVertical: 11, fontFamily: 'InstrumentSans_400Regular', fontSize: 15, color: theme.ink }}
+              style={{ flex: 1, paddingVertical: 11, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, ...phone.text('body') }}
             />
           </View>
           {friends.isPending ? (
@@ -261,7 +263,7 @@ function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first:
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 9, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
       <Avatar imageUrl={friend.imageUrl} name={friend.name} size={42} initialsSize={14} />
       <View style={{ flex: 1, minWidth: 0 }}>
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15 }} numberOfLines={1}>{friend.name}</VText>
+        <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{friend.name}</VText>
         <VText variant="small" color="inkSoft">Friend</VText>
       </View>
       {joined ? (

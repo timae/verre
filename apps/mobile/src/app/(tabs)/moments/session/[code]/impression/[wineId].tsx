@@ -38,7 +38,7 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
+import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -71,6 +71,7 @@ export default function ImpressionDetail() {
   const wineId = String(rawWineId ?? '');
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneTokens();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: auth } = authClient.useSession();
@@ -287,7 +288,7 @@ export default function ImpressionDetail() {
           onBack={() => router.back()}
         />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23 }}>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>
             {state.isPending ? '' : 'This impression is gone'}
           </VText>
           {!state.isPending ? (
@@ -312,7 +313,7 @@ export default function ImpressionDetail() {
         onPress={() => setDetailOpen((o) => !o)}
         style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16 }}
       >
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
           {detailOpen ? 'Tasting detail' : 'Add tasting detail'}
         </VText>
         <View style={{ transform: [{ rotate: detailOpen ? '180deg' : '0deg' }] }}>
@@ -492,6 +493,7 @@ function IrBar({
   onReveal?: () => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const menuBtnRef = useRef<View>(null);
   const anim = useRef(new Animated.Value(titleShown ? 1 : 0)).current;
   useEffect(() => {
@@ -505,23 +507,26 @@ function IrBar({
 
   const onGlass = glass && !solid;
   const iconColor = onGlass ? '#fff' : theme.ink;
+  const glassSize = phone.size('heroAction');
+  const plainSize = phone.size('compactAction');
+  const titleText = phone.text('subhead');
+  const pillHeight = phone.size('actionPillHeight');
   const circle = onGlass
-    ? { width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
-    : { width: 30, height: 30, alignItems: 'center' as const, justifyContent: 'center' as const };
+    ? { width: glassSize, height: glassSize, borderRadius: glassSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : { width: plainSize, height: plainSize, alignItems: 'center' as const, justifyContent: 'center' as const };
 
   return (
-    // 36px row in both variants — the mock's .vbar height; the glass circles
-    // (34px) nearly fill it so the controls hug the status area.
-    <View style={{ flexDirection: 'row', alignItems: 'center', height: 36, marginLeft: glass ? 0 : -6 }}>
+    // Base 36px row in both variants; scales slightly on roomier phones.
+    <View style={{ flexDirection: 'row', alignItems: 'center', height: phone.size('topBar'), marginLeft: glass ? 0 : -6 }}>
       <Pressable accessibilityRole="button" accessibilityLabel="Back" onPress={onBack} hitSlop={8}
         style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
-        <Icon name="back" size={22} color={iconColor} />
+        <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
       </Pressable>
       {/* .ir-bartitle: 18/600, flex 1, fades in with a 4px rise */}
       <Animated.View
         style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
       >
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27, color: onGlass ? '#fff' : theme.ink }}>
+        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...titleText, color: onGlass ? '#fff' : theme.ink }}>
           {title}
         </VText>
       </Animated.View>
@@ -538,17 +543,17 @@ function IrBar({
           style={({ pressed }) => ({
             flexDirection: 'row',
             alignItems: 'center',
-            gap: 6,
-            height: 34,
-            paddingHorizontal: onGlass ? 13 : 4,
-            borderRadius: onGlass ? 17 : 0,
+            gap: phone.lerp(6, 8),
+            height: pillHeight,
+            paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
+            borderRadius: onGlass ? pillHeight / 2 : 0,
             backgroundColor: onGlass ? GLASS_FILL : 'transparent',
             opacity: revealBusy ? 0.5 : pressed ? 0.6 : 1,
           })}
         >
-          <Icon name={revealed ? 'eyeoff' : 'eye'} size={18} color={iconColor} />
+          <Icon name={revealed ? 'eyeoff' : 'eye'} size={phone.size('actionIcon')} color={iconColor} />
           {!titleShown ? (
-            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: onGlass ? '#fff' : theme.ink }}>
+            <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: onGlass ? '#fff' : theme.ink }}>
               {revealed ? 'Hide' : 'Reveal'}
             </VText>
           ) : null}
@@ -563,17 +568,17 @@ function IrBar({
         style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
-          gap: 6,
-          height: 34,
-          paddingHorizontal: onGlass ? 13 : 4,
-          borderRadius: onGlass ? 17 : 0,
+          gap: phone.lerp(6, 8),
+          height: pillHeight,
+          paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
+          borderRadius: onGlass ? pillHeight / 2 : 0,
           backgroundColor: onGlass ? GLASS_FILL : 'transparent',
           opacity: pressed ? 0.6 : 1,
         })}
       >
-        <Icon name={craved ? 'heart-fill' : 'heart'} size={18} color={craved ? theme.critical : iconColor} />
+        <Icon name={craved ? 'heart-fill' : 'heart'} size={phone.size('actionIcon')} color={craved ? theme.critical : iconColor} />
         {!titleShown ? (
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20, color: craved ? theme.critical : onGlass ? '#fff' : theme.ink }}>
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: craved ? theme.critical : onGlass ? '#fff' : theme.ink }}>
             {craved ? 'Crave!' : 'Crave?'}
           </VText>
         ) : null}
@@ -588,7 +593,7 @@ function IrBar({
         hitSlop={8}
         style={({ pressed }) => ({ ...circle, marginLeft: 6, opacity: pressed ? 0.5 : 1 })}
       >
-        <Icon name="more" size={20} color={iconColor} />
+        <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
       </Pressable>
     </View>
   );
@@ -676,6 +681,7 @@ function Hero({
   onNameBottom: (bottom: number) => void;
 }) {
   const { height: windowH } = useWindowDimensions();
+  const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
   return (
@@ -698,20 +704,20 @@ function Hero({
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
       <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 }}>
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, lineHeight: 11, letterSpacing: 1.54, textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>
+        <VText variant="label" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>
           {posLabel(index, total)}
         </VText>
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 30, lineHeight: 33, letterSpacing: -0.75, color: '#fff', marginTop: 4 }}>
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('title'), color: '#fff', marginTop: 4 }}>
           {wine.name}
           {wine.vintage ? (
             <>
               {' - '}
-              <VText style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 30, lineHeight: 33, color: 'rgba(255,255,255,0.7)' }}>{wine.vintage}</VText>
+              <VText style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('title'), color: 'rgba(255,255,255,0.7)' }}>{wine.vintage}</VText>
             </>
           ) : null}
         </VText>
         {wine.producer || wine.type ? (
-          <VText style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 13, lineHeight: 20, color: 'rgba(255,255,255,0.82)', marginTop: 2 }}>
+          <VText style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('small'), color: 'rgba(255,255,255,0.82)', marginTop: 2 }}>
             {[wine.producer, wine.type].filter(Boolean).join(' · ')}
           </VText>
         ) : null}
@@ -739,24 +745,25 @@ function NameBlock({
   total: number;
   onNameBottom: (bottom: number) => void;
 }) {
+  const phone = usePhoneTokens();
   return (
     <View
       style={{ paddingTop: 4, paddingHorizontal: GUTTER, paddingBottom: 8 }}
       onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
     >
-      <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, lineHeight: 11, letterSpacing: 1.54, textTransform: 'uppercase', marginBottom: 6 }}>
+      <VText variant="label" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 6 }}>
         {posLabel(index, total)}
       </VText>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 30, lineHeight: 33, letterSpacing: -0.75 }}>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('title') }}>
         {blind ? `Impression ${index + 1}` : wine.name}
         {!blind && wine.vintage ? (
           <>
             {' - '}
-            <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: 30, lineHeight: 33 }}>{wine.vintage}</VText>
+            <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('title') }}>{wine.vintage}</VText>
           </>
         ) : null}
       </VText>
-      <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>
+      <VText color="inkSoft" style={{ ...phone.text('small'), marginTop: 2 }}>
         {blind
           ? revealing
             ? 'Revealing…'
@@ -774,6 +781,7 @@ function NameBlock({
 // .ir-clamp — line-clamped text with an inline more/less toggle, reusing the
 // invisible-measurer + word-boundary cut from the line-up description.
 function ClampText({ text, lines, medium }: { text: string; lines: number; medium?: boolean }) {
+  const phone = usePhoneTokens();
   const [open, setOpen] = useState(false);
   const [clampLen, setClampLen] = useState<number | null>(null);
   // .ir-ival values are 500-weight in the spec; .ir-desc body stays 400.
@@ -797,7 +805,7 @@ function ClampText({ text, lines, medium }: { text: string; lines: number; mediu
             laid.length > lines ? laid.slice(0, lines).reduce((n, l) => n + l.text.length, 0) : null,
           );
         }}
-        style={{ position: 'absolute', left: 0, right: 0, opacity: 0, lineHeight: 20, fontFamily: family }}
+        style={{ position: 'absolute', left: 0, right: 0, opacity: 0, ...phone.text('small'), fontFamily: family }}
       >
         {text}
       </VText>
@@ -805,11 +813,11 @@ function ClampText({ text, lines, medium }: { text: string; lines: number; mediu
         variant="small"
         color={medium ? 'ink' : 'inkSoft'}
         numberOfLines={open ? undefined : lines}
-        style={{ lineHeight: 20, fontFamily: family }}
+        style={{ ...phone.text('small'), fontFamily: family }}
       >
         {open ? text : truncated ?? text}
         {truncated !== null ? (
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
             {open ? '  less' : ' more'}
           </VText>
         ) : null}
@@ -823,13 +831,14 @@ function ClampText({ text, lines, medium }: { text: string; lines: number; mediu
 // whole block drops away when there's no metadata at all.
 function AboutBlock({ wine }: { wine: WireWine }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
   // name ("Italy"), falling back to the raw code for anything off-list —
   // mirrors the web WineInfoPane's `countryName(country) || country`.
   const country = wine.country ? countryName(wine.country) || wine.country : '';
   const origin = [wine.region, country].filter(Boolean).join(' · ');
   const rows: Array<[string, React.ReactNode]> = [];
-  if (origin) rows.push(['Origin', <VText key="v" variant="small" style={{ fontFamily: 'InstrumentSans_500Medium' }}>{origin}</VText>]);
+  if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
   if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
   if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
   if (rows.length === 0 && !wine.description && !wine.purchaseUrl) return null;
@@ -854,7 +863,7 @@ function AboutBlock({ wine }: { wine: WireWine }) {
               borderBottomColor: theme.ruleSoft,
             }}
           >
-            <VText variant="small" color="inkSoft" style={{ width: 72 }}>{label}</VText>
+            <VText color="inkSoft" style={{ width: phone.lerp(72, 82), ...phone.text('small') }}>{label}</VText>
             <View style={{ flex: 1 }}>{value}</View>
           </View>
         );
@@ -873,7 +882,7 @@ function AboutBlock({ wine }: { wine: WireWine }) {
           style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 }}
         >
           <Icon name="link" size={15} color={theme.accent} />
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }} color="accent">
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
             Where to buy
           </VText>
         </Pressable>
@@ -888,10 +897,11 @@ function AboutBlock({ wine }: { wine: WireWine }) {
 // border thickened inside the bounds, TextField's convention).
 function NoteField({ value, onChange }: { value: string; onChange: (s: string) => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const [focused, setFocused] = useState(false);
   return (
     <View style={{ gap: 7, marginTop: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>Your note</VText>
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>Your note</VText>
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -903,8 +913,8 @@ function NoteField({ value, onChange }: { value: string; onChange: (s: string) =
         style={{
           minHeight: 64,
           fontFamily: 'InstrumentSans_400Regular',
-          fontSize: 15,
-          lineHeight: 21,
+          fontSize: phone.text('body').fontSize,
+          lineHeight: phone.text('body').lineHeight,
           color: theme.ink,
           backgroundColor: theme.surface,
           borderWidth: focused ? 2 : 1,

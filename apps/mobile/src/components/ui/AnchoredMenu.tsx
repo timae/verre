@@ -3,6 +3,7 @@ import { Animated, Easing, Modal, Pressable, useWindowDimensions, View } from 'r
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { usePhoneTokens } from '@/lib/layout';
 import { elevation, motion, radius, useTheme } from '@/theme';
 
 // AnchoredMenu — the brand `.ir-menu` anchored dropdown (a transparent Modal +
@@ -144,7 +145,8 @@ export function MenuItem({
     >
       {icon ? <Icon name={icon} size={18} color={iconColor} /> : null}
       <VText
-        style={{ fontFamily: active ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', fontSize: 15, flex: 1 }}
+        variant="body"
+        style={{ fontFamily: active ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', flex: 1 }}
         color={labelColor}
       >
         {label}
@@ -176,6 +178,9 @@ export function AnchorButton({
   children?: React.ReactNode;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const controlSize = size === 30 ? phone.size('compactAction') : size;
+  const iconSize = size === 30 ? phone.size('compactActionIcon') : 20;
   const ref = useRef<View>(null);
   return (
     <View ref={ref} collapsable={false}>
@@ -184,9 +189,9 @@ export function AnchorButton({
         accessibilityLabel={accessibilityLabel}
         hitSlop={hitSlop}
         onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen({ top: y, bottom: y + h }))}
-        style={({ pressed }) => ({ width: size, height: size, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
+        style={({ pressed }) => ({ width: controlSize, height: controlSize, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
       >
-        {children ?? <Icon name={icon} size={20} color={iconColor ?? theme.ink} />}
+        {children ?? <Icon name={icon} size={iconSize} color={iconColor ?? theme.ink} />}
       </Pressable>
     </View>
   );

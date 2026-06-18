@@ -230,7 +230,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         {/* Type — required. Native-chrome dropdown → brand picker sheet (the
             create.tsx CategorySheet pattern). */}
         <View style={{ gap: 7, marginBottom: 14 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>Type</VText>
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Type</VText>
           <SelectField
             value={typeLabel}
             placeholder="Choose a type"
@@ -252,7 +252,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
             marginTop: 18, paddingTop: 16, paddingBottom: 4,
           }}
         >
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 23 }}>Add more details</VText>
+          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Add more details</VText>
           <View style={{ transform: [{ rotate: moreOpen ? '180deg' : '0deg' }] }}>
             <Icon name="chevron-down" size={18} color={theme.inkSoft} />
           </View>
@@ -265,7 +265,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
                 <TextField label="Region" placeholder="Where it is from" value={region} onChangeText={setRegion} autoCorrect={false} />
               </View>
               <View style={{ flex: 1, gap: 7 }}>
-                <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>Country</VText>
+                <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Country</VText>
                 <SelectField
                   value={countryName(country) || ''}
                   placeholder="Country"
@@ -362,7 +362,7 @@ function PhotoPicker({
       })}
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 18, marginTop: 4 }}>Add photo</VText>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add photo</VText>
       <VText variant="caption" color="inkSoft">optional — a label or pour</VText>
     </Pressable>
   );
@@ -415,7 +415,7 @@ function TypeSheet({
     <Sheet open={open} onClose={onClose}>
       <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             Type
           </VText>
         </View>
@@ -466,7 +466,7 @@ function CountrySheet({
     <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
       <BottomSheetView style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 12 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             Country
           </VText>
           <TextField placeholder="Type to search…" value={query} onChangeText={setQuery} autoCorrect={false} autoCapitalize="none" />
@@ -593,7 +593,7 @@ function PositionPicker({
           backgroundColor: pressed ? theme.surfaceSunk : theme.bg,
         })}
       >
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 16 }}>
+        <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
           {posLabel(value, max)}
         </VText>
         <View style={{ transform: [{ rotate: open ? '180deg' : '0deg' }] }}>
@@ -613,7 +613,7 @@ function PositionPicker({
           }}
         >
           {/* .at-popt */}
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 }} color="inkSoft">
+          <VText variant="label" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 10 }} color="inkSoft">
             Position in line-up
           </VText>
           {/* .at-posrow — number field + ± spinner, then "of N tastes". */}

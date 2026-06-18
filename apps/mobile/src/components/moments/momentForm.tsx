@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { DATE_LOCALE } from '@/lib/locale';
+import { usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
 // Shared moment-form widgets, extracted from create.tsx so the 02f settings
@@ -109,7 +110,7 @@ export function DateField({
   const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
   return (
     <View style={{ flex: 1, gap: 7 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${label} date and time`}
@@ -177,7 +178,7 @@ export function DateField({
                 paddingBottom: 4,
               }}
             >
-              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 18, lineHeight: 23, letterSpacing: -0.27 }}>
+              <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
                 {label}
               </VText>
               <Button
@@ -218,10 +219,11 @@ export function NotesField({
   onChange: (s: string) => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const [focused, setFocused] = useState(false);
   return (
     <View style={{ gap: 7 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13, lineHeight: 20 }}>{label}</VText>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       <TextInput
         value={value}
         onChangeText={onChange}
@@ -238,8 +240,8 @@ export function NotesField({
           // footer). A maxHeight'd multiline TextInput scrolls its own content.
           maxHeight: 225,
           fontFamily: 'InstrumentSans_400Regular',
-          fontSize: 15,
-          lineHeight: 21,
+          fontSize: phone.text('body').fontSize,
+          lineHeight: phone.text('body').lineHeight,
           color: theme.ink,
           backgroundColor: theme.surface,
           borderWidth: focused ? 2 : 1,
