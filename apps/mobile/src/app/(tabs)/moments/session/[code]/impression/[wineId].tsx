@@ -691,6 +691,11 @@ function Hero({
         overflow: 'hidden',
         borderTopLeftRadius: pulled ? radius.xl : 0,
         borderTopRightRadius: pulled ? radius.xl : 0,
+        // Soft bottom corners so the photo→content seam reads as a rounded panel
+        // edge rather than a razor-straight line (visible here because the
+        // content body below sits on the screen bg).
+        borderBottomLeftRadius: radius.xl,
+        borderBottomRightRadius: radius.xl,
       }}
       onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16)}
     >
