@@ -1,0 +1,53 @@
+diff --git a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
+index 8d3ac76..073ef30 100644
+--- a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
++++ b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
+@@ -3,7 +3,7 @@
+ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+ import { InteractionManager, Platform, useWindowDimensions } from 'react-native';
+ import { Gesture } from 'react-native-gesture-handler';
+-import { Easing, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
++import { Easing, cancelAnimation, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withDecay, withSpring, withTiming } from 'react-native-reanimated';
+ import { scheduleOnRN } from 'react-native-worklets';
+ import { registry } from "./GestureViewerRegistry.js";
+ import { useGestureViewerPaging } from './useGestureViewerPaging';
+@@ -447,6 +447,10 @@ export const useGestureViewer = ({
+     scheduleOnRN(setIsPinching, false);
+   }), [scale, enablePinchZoom, maxZoomScale, translateX, translateY, startScale, initialTranslateX, initialTranslateY, width, height, constrainTranslation, lastFocalX, lastFocalY, startFocalX, startFocalY, hasActiveFocal]);
+   const zoomPanGesture = useMemo(() => Gesture.Pan().enabled(enablePanWhenZoomed && isZoomed).activeCursor('grabbing').averageTouches(true).onBegin(() => {
++    // PATCH: stop any in-flight momentum decay so a re-grab continues from the
++    // live position instead of fighting the glide.
++    cancelAnimation(translateX);
++    cancelAnimation(translateY);
+     initialTranslateX.set(translateX.get());
+     initialTranslateY.set(translateY.get());
+   }).onUpdate(event => {
+@@ -465,7 +469,18 @@ export const useGestureViewer = ({
+       translateX.set(constrainedTranslateX);
+       translateY.set(constrainedTranslateY);
+     }
+-  }), [translateX, translateY, enablePanWhenZoomed, isZoomed, scale, initialTranslateX, initialTranslateY, constrainTranslation]);
++  }).onEnd(event => {
++    // PATCH (patch-package): momentum on zoomed-pan release. Upstream stops dead
++    // on let go (no onEnd). Carry the release velocity into a decaying glide,
++    // clamped to the scale-derived bounds (±(dim*scale - dim)/2) so it eases to
++    // rest at the image edge with a small rubber-band, like the iOS Photos pan.
++    const currentScale = scale.get();
++    if (currentScale <= 1) return;
++    const boundX = Math.max(0, (width * currentScale - width) / 2);
++    const boundY = Math.max(0, (height * currentScale - height) / 2);
++    translateX.set(withDecay({ velocity: event.velocityX, clamp: [-boundX, boundX], rubberBandEffect: true }));
++    translateY.set(withDecay({ velocity: event.velocityY, clamp: [-boundY, boundY], rubberBandEffect: true }));
++  }), [translateX, translateY, enablePanWhenZoomed, isZoomed, scale, initialTranslateX, initialTranslateY, constrainTranslation, width, height]);
+   const emitSingleTap = useCallback((x, y) => {
+     const index = pendingIndexRef.current;
+     const currentData = dataRef.current;
+@@ -495,7 +510,7 @@ export const useGestureViewer = ({
+     }
+     scheduleOnRN(emitSingleTap, event.x, event.y);
+   }), [emitSingleTap]);
+-  const doubleTapGesture = useMemo(() => Gesture.Tap().enabled(enableDoubleTapZoom && Platform.OS !== 'web').numberOfTaps(2).onEnd(event => {
++  const doubleTapGesture = useMemo(() => Gesture.Tap().enabled(enableDoubleTapZoom && Platform.OS !== 'web').numberOfTaps(2).maxDelay(300).maxDuration(300).onEnd(event => {
+     applyTapZoomAtPoint({
+       x: event.x,
+       y: event.y,
