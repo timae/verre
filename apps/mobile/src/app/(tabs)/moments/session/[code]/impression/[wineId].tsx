@@ -501,8 +501,8 @@ export default function ImpressionDetail() {
         {canEditImpression ? (
           <>
             <MenuSeparator />
-            <MenuItem icon="edit" label="Edit impression" onPress={editImpression} />
-            <MenuItem icon="trash" label="Delete impression" tone="danger" onPress={confirmDeleteImpression} />
+            <MenuItem icon="edit" label="Edit" onPress={editImpression} />
+            <MenuItem icon="trash" label="Delete" tone="danger" onPress={confirmDeleteImpression} />
           </>
         ) : null}
       </AnchoredMenu>

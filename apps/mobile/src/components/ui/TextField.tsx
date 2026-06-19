@@ -54,6 +54,8 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
             borderColor,
             borderRadius: radius.sm,
             paddingHorizontal: focused ? 13 : 14,
+            paddingVertical: 0,
+            textAlignVertical: 'center',
             opacity: editable === false ? 0.55 : 1,
           },
           style,
