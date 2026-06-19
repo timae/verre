@@ -761,6 +761,12 @@ function CoverHeroLineup({
             overflow: 'hidden',
             borderTopLeftRadius: pulled ? radius.xl : 0,
             borderTopRightRadius: pulled ? radius.xl : 0,
+            // Soft bottom corners, matching the impression hero. (Largely a
+            // no-op visually here — the flush opaque theme.bg tab strip sits
+            // directly below, so the rounded corners read bg-on-bg — but kept
+            // for parity with the impression hero's photo container.)
+            borderBottomLeftRadius: radius.xl,
+            borderBottomRightRadius: radius.xl,
           }}
         >
           <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>

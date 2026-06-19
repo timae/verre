@@ -1,6 +1,7 @@
 import { usePathname, useRouter } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { Keyboard, Platform } from 'react-native';
 import { useTabBarOverlayHidden } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
@@ -18,6 +19,7 @@ export default function TabsLayout() {
   // the line-up (the sticky "Done" footer replaces the nav) — see
   // lib/sheetVisibility.ts.
   const overlayHidesBar = useTabBarOverlayHidden();
+  const [keyboardShown, setKeyboardShown] = useState(false);
 
   // Cold-start anchor. NativeTabs honors neither initialRouteName nor
   // unstable_settings (verified in the SDK 56 navigator source — the options
@@ -32,6 +34,20 @@ export default function TabsLayout() {
     anchored.current = true;
     if (pathname === '/' || pathname === '/feed') router.replace('/moments');
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const setShown = (shown: boolean) => {
+      setKeyboardShown((current) => (current === shown ? current : shown));
+    };
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const show = Keyboard.addListener(showEvent, () => setShown(true));
+    const hide = Keyboard.addListener(hideEvent, () => setShown(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
   }, []);
 
   return (
@@ -65,6 +81,7 @@ export default function TabsLayout() {
       // footer).
       hidden={
         overlayHidesBar ||
+        keyboardShown ||
         pathname.includes('/impression/') ||
         pathname.endsWith('/moments/create') ||
         pathname.endsWith('/add') ||

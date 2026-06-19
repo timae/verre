@@ -185,8 +185,11 @@ export function InviteSheet({
         // remaining space.
         <BottomSheetView style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {header}
-          {/* .fr-search */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14 }}>
+          {/* .fr-search — fixed pill height + a centered, zero-vertical-padding
+              input so the value/placeholder sit on the pill's centre line. A
+              paddingVertical-only input lets iOS bias the (single-line) text down
+              in its line box — the value and grey placeholder read low. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, height: formSurface.height(44), backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14 }}>
             <Icon name="search" size={17} color={theme.inkSoft} />
             <BottomSheetTextInput
               {...formSurface.textProps}
@@ -196,7 +199,7 @@ export function InviteSheet({
               placeholderTextColor={theme.inkSoft}
               autoCapitalize="none"
               autoCorrect={false}
-              style={{ flex: 1, paddingVertical: 11, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, fontSize: phone.text('body').fontSize }}
+              style={{ flex: 1, paddingVertical: 0, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, fontSize: phone.text('body').fontSize }}
             />
           </View>
           {friends.isPending ? (
@@ -210,7 +213,7 @@ export function InviteSheet({
           ) : (
             <View style={{ flex: 1 }}>
               <VText variant="label" color="inkSoft" style={{ marginBottom: 4, letterSpacing: 1.54 }}>ALL FRIENDS · {allFriends.length}</VText>
-              <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
                 {browseMatches.map((f, i) => (
                   <FriendRow key={f.id} friend={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
                 ))}

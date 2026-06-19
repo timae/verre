@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { Image, Pressable, ScrollView, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Image, Keyboard, Pressable, ScrollView, TextInput, View } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,7 +11,7 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
-import { DateField, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
+import { DateField, Disclosure, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
 import { ToggleRow } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -67,6 +67,11 @@ export default function CreateMoment() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [coverError, setCoverError] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  // Return-key chaining for the disclosure sub-chain (Address → Link, skipping
+  // the multiline Description). Moment name stands alone before the date pickers
+  // (non-text), so it gets "done". See add.tsx for the same pattern.
+  const linkRef = useRef<TextInput>(null);
 
   const onPickCover = async () => {
     setCoverError(null);
@@ -133,6 +138,7 @@ export default function CreateMoment() {
         </VText>
       </View>
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
@@ -145,7 +151,8 @@ export default function CreateMoment() {
         ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
+          {/* Next field is a date picker (non-text), so return = done. */}
+          <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="done" />
         </View>
 
         {/* "What are you tasting?" — wine-only v1, field per spec but
@@ -158,7 +165,8 @@ export default function CreateMoment() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="What are you tasting? Wine"
-            onPress={() => setCategoryOpen(true)}
+            // Dismiss first so a tap from a focused field opens on the first tap.
+            onPress={() => { Keyboard.dismiss(); setCategoryOpen(true); }}
             style={({ pressed }) => ({
               minHeight: phone.surface('formControl').height(44),
               flexDirection: 'row',
@@ -258,42 +266,29 @@ export default function CreateMoment() {
           disabled={!pro}
         />
 
-        {/* .disclosure Add more details */}
-        <Pressable
-          onPress={() => setMoreOpen((o) => !o)}
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderTopWidth: 1,
-            borderTopColor: theme.rule,
-            marginTop: 18,
-            paddingTop: 16,
-            paddingBottom: 4,
-          }}
+        {/* .disclosure Add more details — body expands DOWN from this bar
+            (Disclosure owns the height animation); scroll into view once open. */}
+        <Disclosure
+          label="Add more details"
+          open={moreOpen}
+          onToggle={() => setMoreOpen((o) => !o)}
+          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
-          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            Add more details
-          </VText>
-          <View style={{ transform: [{ rotate: moreOpen ? '180deg' : '0deg' }] }}>
-            <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-          </View>
-        </Pressable>
-        {moreOpen ? (
-          <View style={{ gap: 14, marginTop: 14 }}>
-            <TextField label="Address" placeholder="Where's it happening?" value={address} onChangeText={setAddress} />
-            <NotesField label="Description" placeholder="Notes for your guests…" value={description} onChange={setDescription} />
-            <TextField
-              label="Link"
-              placeholder="Menu, event page…"
-              value={link}
-              onChangeText={setLink}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
-          </View>
-        ) : null}
+          {/* Address → Link skips the multiline Description (return = newline). */}
+          <TextField label="Address" placeholder="Where's it happening?" value={address} onChangeText={setAddress} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => linkRef.current?.focus()} />
+          <NotesField label="Description" placeholder="Notes for your guests…" value={description} onChange={setDescription} />
+          <TextField
+            ref={linkRef}
+            label="Link"
+            placeholder="Menu, event page…"
+            value={link}
+            onChangeText={setLink}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            returnKeyType="done"
+          />
+        </Disclosure>
       </ScrollView>
 
       {/* Sticky Create bar — SOLID theme.bg fill, no gradient fade (Simon's

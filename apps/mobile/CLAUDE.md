@@ -43,6 +43,25 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   by jumping ranges in either direction — observed downgrading `next` 15→9 and
   `expo` 56→46, wrecking the whole tree. Recovery: `git checkout --` the
   package manifests, delete `node_modules` + `package-lock.json`, `npm install`.
+- ⚠️ **Adding a dep: install, then run a ROOT `npm install`.** A bare
+  `npm install -w mobile <pkg>` does a workspace-scoped resolve that can EVICT
+  the hoisted shared `expo`/`react-native` out of root `node_modules` (the tell
+  is "removed N packages"). The Podfile then fails with `Cannot find module
+  'expo/package.json'` and the JS won't resolve. Fix: a full `npm install` from
+  the repo root re-resolves the whole workspace tree. (Hit twice during the
+  image-viewer swap.)
+- ⚠️ **`react-native-gesture-image-viewer` is PATCHED via `patch-package`**
+  (`patches/react-native-gesture-image-viewer+<version>.patch`, auto-applied by
+  the root `postinstall`). The patch adds what the library doesn't expose as
+  props: double-tap `.maxDelay(300)/.maxDuration(300)` (the un-tuned default
+  needed near-impossibly-fast taps) and `withDecay` momentum on zoomed-pan
+  release + `cancelAnimation` on re-grab (upstream stopped dead on let go). The
+  patch filename is **version-pinned** — bumping the library makes patch-package
+  warn loudly and the patch must be regenerated (`npx patch-package
+  react-native-gesture-image-viewer` after re-applying the edits to
+  `lib/module/useGestureViewer.js`), or upstreamed as a PR (the proper fix is
+  configurable props). It powers `components/ui/FullscreenImage.tsx` and is the
+  intended base for the future multi-image feed gallery.
 
 ## Auth (Better Auth client)
 

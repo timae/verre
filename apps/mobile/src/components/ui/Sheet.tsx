@@ -94,6 +94,14 @@ export function Sheet({
       // than minimized-and-parked behind the new one.
       stackBehavior="replace"
       enablePanDownToClose
+      // Keyboard: gorhom's default 'interactive' slides the WHOLE sheet up to
+      // keep the focused input above the keyboard — but our sheet inputs (the
+      // Invite browse search) sit near the top of a tall snap, so the shift just
+      // looks like the sheet jumped. 'extend' keeps the sheet anchored and lets
+      // the keyboard slide under it; 'restore' returns to the resting snap on
+      // blur. Shell-wide default so every sheet input behaves the same.
+      keyboardBehavior="extend"
+      keyboardBlurBehavior="restore"
       enableDynamicSizing={enableDynamicSizing}
       maxDynamicContentSize={maxDynamicContentSize}
       snapPoints={snapPoints}
