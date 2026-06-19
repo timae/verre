@@ -299,6 +299,14 @@ export async function updateWine(code: string, wineId: string, body: UpdateWineB
   return res.json();
 }
 
+export async function deleteWine(code: string, wineId: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) await throwApiError(res);
+}
+
 // Blind reveal/hide (host/cohost-gated server-side; providers can't reveal).
 // On a blind session a wine is hidden from guests until revealed; revealing
 // stamps wines[].revealedAt (the host always sees the real value, even while
