@@ -21,8 +21,9 @@ import { elevation, radius, useTheme } from '@/theme';
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
 // the live strip bleeds to the screen edges. Deviations (flagged): no QR
-// button in the code field (camera lands with deep linking), carousel
-// doesn't loop (v1).
+// button in the code field (camera lands with deep linking), and the live
+// strip is a bounded scroll (end-to-end, no wrap) — the infinite-loop variant
+// was removed.
 
 export default function Moments() {
   const insets = useSafeAreaInsets();
@@ -288,26 +289,23 @@ function CardSurface({ width, height, children }: { width: number; height?: numb
   );
 }
 
-// .sh-live2 .sh-liveB card. Pulled out so the loop can render the real cards
-// plus a clone of the first/last without duplicating JSX.
+// .sh-live2 .sh-liveB card.
 //
 // Long-press → native iOS context-menu lift (@expo/ui ContextMenu): the OS
 // lifts the card (the Preview copy), dims the rest, and shows the "Remove
 // from home" action; tap-away dismisses; the strip is frozen while open. This
 // replaced a hand-rolled measureInWindow + dim-Modal overlay that desynced
-// over the moving/looping carousel.
+// over the moving carousel.
 //
 // @expo/ui SwiftUI views must live under a `<Host>` boundary; our RN card is
 // brought back into the SwiftUI tree via `<RNHostView matchContents>` (Trigger)
 // and rendered directly in `.Preview`. `matchContents` so the host sizes to the
 // card inside the horizontal strip rather than collapsing/forcing a size.
-// Clones (isClone) get no menu — they have no stable identity; plain card.
 function LiveCard({
-  m, width, isClone, onRemove,
+  m, width, onRemove,
 }: {
   m: MySessionRow;
   width: number;
-  isClone: boolean;
   onRemove: () => void;
 }) {
   const router = useRouter();
@@ -344,7 +342,6 @@ function LiveCard({
       <Button title="Rejoin" loadingTitle="Opening…" loading={navigating} block onPress={open} style={{ flexShrink: 0 }} />
     </CardSurface>
   );
-  if (isClone) return card;
   return (
     <Host matchContents style={{ width }}>
       <ContextMenu>
@@ -380,17 +377,14 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['my-sessions'] }),
   });
 
-  const loop = moments.length > 1;
-  // Loop track: [clone(last), ...real, clone(first)]. The first REAL card sits
-  // at track offset `step` (index 1). When momentum lands on a clone, silently
-  // jump to its real twin so it scrolls endlessly both ways.
-  const data = loop ? [moments[moments.length - 1], ...moments, moments[0]] : moments;
+  // Bounded strip (NOT a loop): cards scroll from the first to the last and
+  // stop, with the natural iOS rubber-band at each end. (An earlier version
+  // cloned the first/last cards and jumped on momentum to scroll endlessly; the
+  // loop was removed — you can only travel end-to-end now.)
+  const data = moments;
 
-  // The resting scroll offset for REAL card `p`: loop shifts everything right
-  // by one clone, so card p lives at (p+1)*step; flat list, p*step. Single
-  // helper so every re-anchor (initial park, length change) goes through one
-  // place and can't disagree.
-  const offsetForPage = (p: number) => (loop ? (p + 1) * step : p * step);
+  // Resting scroll offset for card `p` — a plain flat list, no clone shift.
+  const offsetForPage = (p: number) => p * step;
 
   // The card the viewport is currently centred on, tracked by IDENTITY (id),
   // not numeric index. The list is server-sorted by activity, so the 15s poll
@@ -435,30 +429,15 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
     pendingScrollX.current = null;
   };
 
-  // Dots track the swipe LIVE (on scroll, not just on settle) so they don't
-  // lag. Map the raw track index → real dot index, wrapping for the clones.
+  // Dots track the swipe LIVE (on scroll, not just on settle) so they don't lag.
   const onScroll = (x: number) => {
     // Skip while a re-anchor is mid-flight: the programmatic scrollTo fires
-    // onScroll against the OLD (not-yet-relaid-out) content, where `i` can land
-    // on a clone and wrap the dot to the wrong real → a one-frame flicker.
-    // onContentSized will null this once the new layout settles.
+    // onScroll against the OLD (not-yet-relaid-out) content → a one-frame dot
+    // flicker. onContentSized nulls this once the new layout settles.
     if (pendingScrollX.current !== null) return;
-    const i = Math.round(x / step);
-    const dot = loop ? (i - 1 + moments.length) % moments.length : i;
+    const dot = Math.max(0, Math.min(moments.length - 1, Math.round(x / step)));
     focusedId.current = moments[dot]?.id ?? focusedId.current;
     setPage((p) => (p === dot ? p : dot));
-  };
-
-  const onMomentumEnd = (x: number) => {
-    if (!loop) return;
-    const i = Math.round(x / step);
-    if (i === 0) {
-      // leading clone (of the last real) → jump to the last real card
-      scrollRef.current?.scrollTo({ x: moments.length * step, animated: false });
-    } else if (i === data.length - 1) {
-      // trailing clone (of the first real) → jump to the first real card
-      scrollRef.current?.scrollTo({ x: step, animated: false });
-    }
   };
 
   return (
@@ -488,26 +467,17 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         onContentSizeChange={onContentSized}
         scrollEventThrottle={16}
         onScroll={(e) => onScroll(e.nativeEvent.contentOffset.x)}
-        onMomentumScrollEnd={(e) => onMomentumEnd(e.nativeEvent.contentOffset.x)}
       >
-        {data.map((m, i) => {
-          // Loop clones are the first (i=0) and last (i=len-1) entries.
-          const isClone = loop && (i === 0 || i === data.length - 1);
-          // Stable identity keys: reals keyed by id (so a removal shifts no
-          // real card's key → no spurious remount that would drop a card's
-          // open menu / "Opening…" state); the two clones get fixed sentinels
-          // (they share an id with a real, so they MUST be disambiguated).
-          const key = isClone ? (i === 0 ? 'clone-head' : 'clone-tail') : String(m.id);
-          return (
-            <LiveCard
-              key={key}
-              m={m}
-              width={cardWidth}
-              isClone={isClone}
-              onRemove={() => hideMut.mutate(m.code)}
-            />
-          );
-        })}
+        {/* Keyed by id so a removal shifts no card's key → no spurious remount
+            that would drop a card's open menu / "Opening…" state. */}
+        {data.map((m) => (
+          <LiveCard
+            key={String(m.id)}
+            m={m}
+            width={cardWidth}
+            onRemove={() => hideMut.mutate(m.code)}
+          />
+        ))}
       </ScrollView>
       {moments.length > 1 ? (
         <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 5 }}>
