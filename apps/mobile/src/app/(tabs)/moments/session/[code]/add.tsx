@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Image, Keyboard, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -13,7 +13,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
+import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
 import { ApiError, addWine, getSessionState, type WineTypeCode } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
@@ -110,6 +110,18 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
   const [posOpen, setPosOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  // Return-key field chaining. Two sub-chains, NOT one across the disclosure
+  // fold: the always-visible fields (Name→Vintage→Producer→Variety) and the
+  // disclosure fields (Region→Process→Purchase link). We don't jump into a
+  // collapsed/unmounted field. Type/Country (dropdowns) and Description
+  // (multiline — return = newline) are skipped; the last field in each chain
+  // gets returnKeyType="done".
+  const vintageRef = useRef<TextInput>(null);
+  const producerRef = useRef<TextInput>(null);
+  const varietyRef = useRef<TextInput>(null);
+  const processRef = useRef<TextInput>(null);
+  const purchaseRef = useRef<TextInput>(null);
 
   const maxPosition = wineCount + 1; // a new wine can land anywhere 1..count+1
 
@@ -195,6 +207,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
       ) : null}
 
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
@@ -209,10 +222,12 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         {/* .trow2-name — Name (wide) + Vintage (narrow 76). */}
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
           <View style={{ flex: 1 }}>
-            <TextField label="Name" placeholder="e.g. Oslavje" value={name} onChangeText={setName} autoCorrect={false} />
+            <TextField label="Name" placeholder="e.g. Oslavje" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
           </View>
           <View style={{ width: 76 }}>
+            {/* number-pad has no return key — chained as a focus TARGET only. */}
             <TextField
+              ref={vintageRef}
               label="Vintage"
               placeholder="Year"
               value={vintage}
@@ -224,7 +239,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         </View>
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Producer" placeholder="Maker or winery" value={producer} onChangeText={setProducer} autoCorrect={false} />
+          <TextField ref={producerRef} label="Producer" placeholder="Maker or winery" value={producer} onChangeText={setProducer} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => varietyRef.current?.focus()} />
         </View>
 
         {/* Type — required. Native-chrome dropdown → brand picker sheet (the
@@ -240,53 +255,50 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         </View>
 
         <View style={{ marginBottom: 4 }}>
-          <TextField label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} />
+          {/* Last always-visible field — Region lives behind the disclosure fold,
+              so we stop here ("done") rather than focus an unmounted field. */}
+          <TextField ref={varietyRef} label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} returnKeyType="done" />
         </View>
 
-        {/* .disclosure Add more details */}
-        <Pressable
-          onPress={() => setMoreOpen((o) => !o)}
-          style={{
-            flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-            borderTopWidth: 1, borderTopColor: theme.rule,
-            marginTop: 18, paddingTop: 16, paddingBottom: 4,
-          }}
+        {/* .disclosure Add more details — body expands DOWN from the bar
+            (Disclosure owns the height animation); scroll into view once open. */}
+        <Disclosure
+          label="Add more details"
+          open={moreOpen}
+          onToggle={() => setMoreOpen((o) => !o)}
+          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
-          <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Add more details</VText>
-          <View style={{ transform: [{ rotate: moreOpen ? '180deg' : '0deg' }] }}>
-            <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-          </View>
-        </Pressable>
-        {moreOpen ? (
-          <View style={{ gap: 14, marginTop: 14 }}>
-            {/* .trow2-even — Region + Country. */}
-            <View style={{ flexDirection: 'row', gap: 12 }}>
-              <View style={{ flex: 1 }}>
-                <TextField label="Region" placeholder="Where it is from" value={region} onChangeText={setRegion} autoCorrect={false} />
-              </View>
-              <View style={{ flex: 1, gap: 7 }}>
-                <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Country</VText>
-                <SelectField
-                  value={countryName(country) || ''}
-                  placeholder="Country"
-                  onPress={() => setCountryOpen(true)}
-                  accessibilityLabel={`Country${country ? `: ${countryName(country)}` : ''}`}
-                />
-              </View>
+          {/* .trow2-even — Region + Country. */}
+          <View style={{ flexDirection: 'row', gap: 12 }}>
+            <View style={{ flex: 1 }}>
+              <TextField label="Region" placeholder="Where it is from" value={region} onChangeText={setRegion} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => processRef.current?.focus()} />
             </View>
-            <TextField label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} />
-            <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
-            <TextField
-              label="Purchase link"
-              placeholder="Where to buy it"
-              value={purchaseUrl}
-              onChangeText={setPurchaseUrl}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-            />
+            <View style={{ flex: 1, gap: 7 }}>
+              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Country</VText>
+              <SelectField
+                value={countryName(country) || ''}
+                placeholder="Country"
+                onPress={() => setCountryOpen(true)}
+                accessibilityLabel={`Country${country ? `: ${countryName(country)}` : ''}`}
+              />
+            </View>
           </View>
-        ) : null}
+          {/* Process → Purchase link skips the multiline Description (return =
+              newline there, not a chain link). */}
+          <TextField ref={processRef} label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => purchaseRef.current?.focus()} />
+          <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
+          <TextField
+            ref={purchaseRef}
+            label="Purchase link"
+            placeholder="Where to buy it"
+            value={purchaseUrl}
+            onChangeText={setPurchaseUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="done"
+            keyboardType="url"
+          />
+        </Disclosure>
       </ScrollView>
 
       {/* Sticky "Add to line-up" — SOLID theme.bg fill, no gradient fade. The
@@ -386,7 +398,10 @@ function SelectField({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      onPress={onPress}
+      // Dismiss first so a tap coming FROM a focused text field opens the sheet
+      // on the first tap — otherwise keyboardShouldPersistTaps can spend that tap
+      // dismissing the keyboard and the open needs a second tap.
+      onPress={() => { Keyboard.dismiss(); onPress(); }}
       style={({ pressed }) => ({
         minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
         paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,

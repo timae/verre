@@ -1,7 +1,8 @@
+import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
 import { normalizeCode, formatCodeInput } from '@verre/core';
@@ -44,8 +45,15 @@ export default function Moments() {
   // navigation. Track the pull explicitly.
   const [pulling, setPulling] = useState(false);
   const onPullRefresh = useCallback(() => {
+    // Light impact on trigger — the iOS pull-to-refresh convention (UIRefreshControl
+    // gives no haptic on its own). No-op in the Simulator; verify on device.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setPulling(true);
-    sessions.refetch().finally(() => setPulling(false));
+    // Hold the spinner for a visible minimum so a fast/cached refetch still reads
+    // as "it refreshed" instead of a sub-frame flash (the "not sure it refreshed"
+    // complaint). 600ms ≈ the iOS Mail feel.
+    const minVisible = new Promise<void>((r) => setTimeout(r, 600));
+    Promise.allSettled([sessions.refetch(), minVisible]).then(() => setPulling(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -69,9 +77,16 @@ export default function Moments() {
   return (
     <ScrollView
       style={{ flex: 1 }}
+      // iOS-native keyboard dismissal for the join-code field: drag the list to
+      // dismiss (interactive = finger-tracked), and persistTaps="handled" so a
+      // tap on Join still fires while the field is focused. (Apple convention is
+      // drag-to-dismiss + return key, NOT a global tap-catcher.)
+      keyboardDismissMode="interactive"
+      keyboardShouldPersistTaps="handled"
       contentContainerStyle={{
         // The tab host auto-insets this ScrollView below the status bar —
         // adding insets.top here double-counts and sinks the title.
+        flexGrow: 1,
         paddingTop: 8,
         paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
       }}
@@ -554,14 +569,21 @@ function JoinBlock() {
       {/* .gs-codewrap: row, gap 8, stretch */}
       <View style={{ flexDirection: 'row', gap: 8, alignItems: 'flex-start' }}>
         <View style={{ flex: 1 }}>
-          {/* .gs-c: 15/600, 0.14em tracking, uppercase via formatCodeInput */}
+          {/* .gs-c: 15/600, 0.14em tracking, uppercase via formatCodeInput.
+              Codes are alphanumeric (Crockford), so we want letters AND digits
+              reachable. Android 'visible-password' shows a full QWERTY WITH the
+              number row (and kills autocorrect/suggestions). iOS has no
+              letters-plus-number-row keyboard type — 'ascii-capable' is the
+              closest (letters; digits one tap away via the 123 key). */}
           <TextField
             surface="code"
             value={input}
             onChangeText={(t) => { setInput(formatCodeInput(t)); setError(null); }}
             placeholder="8H4K – Q2NP"
+            keyboardType={Platform.OS === 'android' ? 'visible-password' : 'ascii-capable'}
             autoCapitalize="characters"
             autoCorrect={false}
+            autoComplete="off"
             returnKeyType="go"
             onSubmitEditing={join}
             style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, letterSpacing: 2.1 }}

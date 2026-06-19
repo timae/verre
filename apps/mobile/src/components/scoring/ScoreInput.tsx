@@ -24,6 +24,34 @@ const THUMB = 26;
 const TRACK_H = 30;
 const RAIL_H = 6;
 
+// Sanitize a raw keystroke string into a left-anchored decimal the user is
+// typing: keep digits + a single separator, cap the integer part at one digit
+// (scores are 0..5), and cap to two fraction digits. NO reformatting to a fixed
+// X.XX — that fought the caret and made the field flicker on every keystroke.
+// "2" stays "2"; "2.5" stays "2.5"; "25" (no dot) is read as 2.5 by parseScoreDraft.
+function sanitizeScoreDraft(text: string) {
+  let s = text.replace(/[^0-9.,]/g, '').replace(',', '.');
+  const dot = s.indexOf('.');
+  if (dot !== -1) {
+    const intPart = s.slice(0, dot).slice(0, 1);
+    const fracPart = s.slice(dot + 1).replace(/\./g, '').slice(0, 2);
+    s = `${intPart}.${fracPart}`;
+  } else {
+    // No separator yet: a lone "25" means 2.5 — keep first digit as units, the
+    // rest flow into the fraction so the bar can track digit-by-digit.
+    if (s.length > 1) s = `${s.slice(0, 1)}.${s.slice(1, 3)}`;
+  }
+  return s;
+}
+
+// Parse a typed draft to a raw 0..5 number (pre-snap), for the LIVE bar.
+function parseScoreDraft(text: string): number | null {
+  if (!text || text === '.') return null;
+  const n = Number.parseFloat(text);
+  if (!Number.isFinite(n)) return null;
+  return Math.min(SCORE_MAX, Math.max(0, n));
+}
+
 interface Props {
   value: number; // 0..5 in 0.25 steps; 0 = not rated
   onChange: (v: number) => void;
@@ -89,13 +117,25 @@ export function ScoreInput({ value, onChange }: Props) {
       return;
     }
     setEditing(false);
-    const parsed = Number.parseFloat(draft.replace(',', '.'));
-    if (!Number.isFinite(parsed)) return;
+    const parsed = parseScoreDraft(draft);
+    // Empty/garbage draft leaves the value as last live-tracked (updateDraft
+    // already pushed each keystroke through). Only snap+commit a parseable one.
+    if (parsed == null) return;
     const next = snapScore(parsed);
     if (next !== value) {
       onChange(next);
       commitHaptic();
     }
+  };
+
+  const updateDraft = (text: string) => {
+    const clean = sanitizeScoreDraft(text);
+    setDraft(clean); // raw as typed — no X.XX reformat, so the field can't flicker
+    // Live-track the bar: snap each keystroke's value and push it up. "2" → 2,
+    // "2" then "5" → 2.5; an off-grid "2.6" snaps the bar+value to 2.5.
+    const parsed = parseScoreDraft(clean);
+    const next = parsed == null ? 0 : snapScore(parsed);
+    if (next !== valueRef.current) onChange(next);
   };
 
   const rated = value > 0;
@@ -118,10 +158,12 @@ export function ScoreInput({ value, onChange }: Props) {
             value={editing ? draft : value.toFixed(2)}
             onFocus={() => {
               skipCommitRef.current = false;
-              setDraft(value.toFixed(2));
+              // Seed left-anchored: a rated value as a trim string ("3.5", not
+              // "3.50"); unrated (0) starts EMPTY so typing fills from the left.
+              setDraft(value > 0 ? String(value) : '');
               setEditing(true);
             }}
-            onChangeText={setDraft}
+            onChangeText={updateDraft}
             onEndEditing={commitDraft}
             keyboardType="decimal-pad"
             accessibilityLabel="Score out of 5"

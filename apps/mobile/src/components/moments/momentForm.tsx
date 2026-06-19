@@ -1,7 +1,8 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useState } from 'react';
-import { Modal, Pressable, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { type LayoutChangeEvent, Modal, Pressable, TextInput, View } from 'react-native';
+import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
@@ -9,12 +10,104 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
-import { radius, useTheme } from '@/theme';
+import { motion, radius, useTheme } from '@/theme';
 
 // Shared moment-form widgets, extracted from create.tsx so the 02f settings
 // "Moment details" sheet renders the IDENTICAL pixel-spec controls (DateField,
 // NotesField) and reuses the same cover-photo pipeline (fitCover/pickCover).
 // Both surfaces collect the same fields — one home keeps them from drifting.
+
+// .disclosure "Add more details" — header bar + a body that EXPANDS DOWN FROM
+// the bar (height 0 → measured) and RETRACTS UP INTO it, clipped by
+// overflow:hidden. NOT a screen-edge slide (SlideInUp read as "from the top").
+// Content stays mounted (measured via onLayout); we animate the wrapper height.
+// `onExpanded` fires after the open animation so the screen can scroll it into
+// view. Duration = motion.dur3 (the slower tier — the disclosure felt too fast).
+export function Disclosure({
+  label,
+  open,
+  onToggle,
+  onExpanded,
+  children,
+}: {
+  label: string;
+  open: boolean;
+  onToggle: () => void;
+  onExpanded?: () => void;
+  children: React.ReactNode;
+}) {
+  const { theme } = useTheme();
+  // Measured natural height of the content (from an UNCLIPPED inner view, so it
+  // reports the real size even while the animated wrapper is at height 0).
+  const [contentHeight, setContentHeight] = useState(0);
+  const progress = useSharedValue(open ? 1 : 0);
+  // Drive the animation from an effect keyed ONLY on open (+ measured height),
+  // NOT useDerivedValue — a derived value re-evaluates on every parent re-render
+  // (e.g. typing in the fields), which would re-fire onExpanded/scroll. The
+  // effect runs once per open/close transition. onExpanded latches via the
+  // withTiming completion callback.
+  useEffect(() => {
+    if (open && contentHeight === 0) return; // wait for the first measurement
+    progress.value = withTiming(
+      open ? 1 : 0,
+      { duration: motion.dur3, easing: Easing.bezier(...motion.ease) },
+      (done) => {
+        if (done && open && onExpanded) runOnJS(onExpanded)();
+      },
+    );
+    // onExpanded intentionally excluded — callers pass fresh inline fns; we only
+    // want this to run on an open/close edge, not when the callback identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, contentHeight, progress]);
+
+  const bodyStyle = useAnimatedStyle(() => ({
+    height: contentHeight * progress.value,
+    opacity: progress.value,
+  }));
+  const chevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${progress.value * 180}deg` }],
+  }));
+  return (
+    <View>
+      <Pressable
+        onPress={onToggle}
+        style={{
+          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+          borderTopWidth: 1, borderTopColor: theme.rule,
+          marginTop: 18, paddingTop: 16, paddingBottom: 4,
+        }}
+      >
+        <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
+        <Animated.View style={chevronStyle}>
+          <Icon name="chevron-down" size={18} color={theme.inkSoft} />
+        </Animated.View>
+      </Pressable>
+      {/* Clipped wrapper animates height 0↔contentHeight (reveal from the bar).
+          When closed it's hidden from the a11y tree so VoiceOver/TalkBack don't
+          reach the collapsed fields. */}
+      <Animated.View
+        style={[{ overflow: 'hidden' }, bodyStyle]}
+        pointerEvents={open ? 'auto' : 'none'}
+        accessibilityElementsHidden={!open}
+        importantForAccessibility={open ? 'auto' : 'no-hide-descendants'}
+      >
+        {/* Absolutely positioned so its layout is the NATURAL content height,
+            independent of the wrapper's animated (possibly 0) height — the
+            wrapper measuring its own clipped child returned 0 and the body never
+            opened. */}
+        <View
+          // paddingTop (not marginTop) so the 14px lead spacing is INCLUDED in
+          // the measured layout height — otherwise the wrapper (height =
+          // contentHeight) clips the last 14px.
+          style={{ position: 'absolute', left: 0, right: 0, gap: 14, paddingTop: 14 }}
+          onLayout={(e: LayoutChangeEvent) => setContentHeight(e.nativeEvent.layout.height)}
+        >
+          {children}
+        </View>
+      </Animated.View>
+    </View>
+  );
+}
 
 export function nextFullHour(): Date {
   const d = new Date();
