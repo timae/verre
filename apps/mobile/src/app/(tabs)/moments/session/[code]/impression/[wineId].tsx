@@ -19,7 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
-import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -100,6 +100,8 @@ export default function ImpressionDetail() {
     (meta.hostIdentityId === myIdentityId ||
       (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
       (meta.coHostIds ?? []).includes(myIdentityId));
+  const isOwnProvider = !!meta && (meta.providerIds ?? []).includes(myIdentityId) && !!wine?.isMine;
+  const canEditImpression = !!wine && !wine._blind && (isHostViewer || isOwnProvider);
   const hostRevealUi = !!meta?.blind && isHostViewer;
 
   // Reconnecting bar — same passive treatment as the line-up (shared 5s poll,
@@ -257,6 +259,13 @@ export default function ImpressionDetail() {
     setNotes('');
     setFlavors({});
     setMenuAnchor(null);
+  };
+  const editImpression = () => {
+    setMenuAnchor(null);
+    router.push({
+      pathname: '/(tabs)/moments/session/[code]/edit-impression/[wineId]',
+      params: { code, wineId },
+    });
   };
 
   // Collapsing header: the bar title (and the floathead's solid state) hand
@@ -458,9 +467,15 @@ export default function ImpressionDetail() {
         onNext={onNext}
       />
       {/* .ir-menu options dropdown (shared AnchoredMenu). Separator + danger
-          rows (Edit / Delete impression) join with the host-CRUD milestone. */}
+          Delete impression joins when destructive CRUD is implemented. */}
       <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={184}>
         <MenuItem icon="undo" label="Clear my rating" onPress={clearRating} />
+        {canEditImpression ? (
+          <>
+            <MenuSeparator />
+            <MenuItem icon="edit" label="Edit impression" onPress={editImpression} />
+          </>
+        ) : null}
       </AnchoredMenu>
     </View>
   );

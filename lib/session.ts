@@ -405,7 +405,7 @@ export async function buildKickedUserNameLookup(
 
 export async function addWineToSession(
   code: string,
-  body: Partial<WineMeta>,
+  body: Partial<WineMeta> & { image?: string | null },
   existing?: WineMeta,
   addedByIdentityId?: string,
   addedByDisplayName?: string,
@@ -429,6 +429,11 @@ export async function addWineToSession(
   let image = body.image === undefined
     ? (existing?.image || '')
     : sanitizeImage(body.image)
+  if (existing && body.image === null) {
+    if (existing.imageUrl) reclaimImage(existing.imageUrl)
+    imageUrl = ''
+    image = ''
+  }
 
   // Upload to S3 if new base64 image provided. uploadImage keys by wine id,
   // so a same-extension replace overwrites in place. If the new image has
@@ -465,6 +470,9 @@ export async function addWineToSession(
     country: cleanCountry(body.country),
     vinification: clean(body.vinification).slice(0, 1000),
     purchaseUrl: cleanUrl(body.purchaseUrl).slice(0, 1000),
+    // Preserve reveal state on edit. The PATCH route replaces the Redis wine
+    // object wholesale, so omitting this would silently re-hide revealed wines.
+    revealedAt: existing?.revealedAt ?? null,
     // Preserve on edit; populate on create. Edits never overwrite the
     // original adder — `existing.addedByIdentityId` wins.
     addedByIdentityId: existing?.addedByIdentityId ?? addedByIdentityId,
@@ -563,7 +571,7 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       vintage: wine.vintage || null,
       grape: wine.grape || null,
       style: wine.type || null,
-      imageUrl: wine.imageUrl || undefined,
+      imageUrl: wine.imageUrl || null,
       description: wine.description || null,
       region: wine.region || null,
       country: wine.country || null,

@@ -83,6 +83,7 @@ export default function TabsLayout() {
         overlayHidesBar ||
         keyboardShown ||
         pathname.includes('/impression/') ||
+        pathname.includes('/edit-impression/') ||
         pathname.endsWith('/moments/create') ||
         pathname.endsWith('/add') ||
         pathname.endsWith('/settings/details') ||

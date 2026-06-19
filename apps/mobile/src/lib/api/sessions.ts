@@ -268,6 +268,10 @@ export type AddWineBody = {
   position?: number; // 1-indexed insert; host-only server-side
 };
 
+export type UpdateWineBody = Omit<AddWineBody, 'position' | 'image'> & {
+  image?: string | null; // data URL replaces, null removes, omitted preserves
+};
+
 // Returns the created wine in the same WireWine shape as the GET/poll (isMine
 // always true — the caller is the adder). The current caller discards it and
 // just invalidates the line-up query (the poll refetches); the typed return is
@@ -278,6 +282,19 @@ export async function addWine(code: string, body: AddWineBody): Promise<WireWine
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
+export async function updateWine(code: string, wineId: string, body: UpdateWineBody): Promise<WireWine> {
+  const res = await apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
   if (!res.ok) await throwApiError(res);
   return res.json();
 }
