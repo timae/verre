@@ -55,14 +55,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value
 
-  // Resolve the wine before the write so the registry-keyed gate (§6g) can key
-  // on its style. wine.type is the style (red/white/spark/rose/nonalc); category
-  // is 'wine'. A descriptor key from a stale client → 400 (keeps the Contract
-  // PR's "no descriptor keys remain" precondition true). An edit surface must
-  // structureSubset() a loaded legacy row before re-saving, or it 400s here.
+  // Resolve the wine before the write. A rating for a wine that isn't in the
+  // session is rejected, never stored: the only way to get here is the
+  // delete-race (a rate POST landing after the wine was deleted — the DELETE
+  // handler already SCAN-deletes that wine's ratings), and writing anyway would
+  // re-create an orphan Redis rating that never re-renders. 404, write nothing.
   const wines = await getWines(c)
   const wine = wines.find(w => w.id === wineId)
-  const keyErr = assertRegistryKeyed(validFlavors, 'wine', wine?.type ?? null)
+  if (!wine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+
+  // Registry-keyed write gate (§6g): wine.type is the style (red/white/spark/
+  // rose/nonalc); category is 'wine'. A descriptor key from a stale client → 400
+  // (keeps the Contract PR's "no descriptor keys remain" precondition true). An
+  // edit surface must structureSubset() a loaded legacy row before re-saving.
+  const keyErr = assertRegistryKeyed(validFlavors, 'wine', wine.type)
   if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
 
   // Rating is keyed by identity id, never by display name. Two participants
@@ -74,7 +80,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     { EX: TTL },
   )
 
-  if (identity.kind === 'user' && wine) {
+  if (identity.kind === 'user') {
     const userId = Number(identity.id.slice(2))  // strip "u:" prefix
     try {
       const meta = await getSessionMeta(c)
