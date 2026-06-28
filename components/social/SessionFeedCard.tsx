@@ -24,7 +24,7 @@ import { StarRating } from '@/components/ui/StarRating'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { LikeButton } from './LikeButton'
-import { detectFL, getFL } from '@/lib/flavours'
+import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
 import { getLevel } from '@/lib/badges'
@@ -120,9 +120,10 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
   const [imgFailed, setImgFailed] = useState(false)
   const showImage = !!wine.imageUrl && !imgFailed
   const hasFlavors = wine.flavors && Object.values(wine.flavors).some(v => v > 0)
-  const fl = wine.flavors && Object.keys(wine.flavors).length
-    ? detectFL(wine.flavors)
-    : getFL(wine.type || 'white')
+  // Read surface (§6d): legacy descriptor row → legacy wheel; structure row →
+  // per-present-key array (registry order). Only used when hasFlavors is true.
+  const fl = (wine.flavors && detectLegacyDescriptorFL(wine.flavors))
+    || perRatingAxes(wine.flavors, resolveAxesColoured('wine', wine.type || 'white'))
 
   if (wine._blind) {
     // Mystery slot — wine identity hidden; user's score / chips / notes still

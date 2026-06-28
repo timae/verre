@@ -6,7 +6,7 @@ import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
-import { getFL, detectFL, FL } from '@/lib/flavours'
+import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured, FL } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatScore } from '@verre/core'
 import { TCOL, ICO } from '@/lib/wineTypeColors'
@@ -212,11 +212,13 @@ export default function ComparePage() {
           const singleRating = activeUserId
             ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
             : null
-          const fl = singleRating?.flavors
-            ? detectFL(singleRating.flavors as Record<string, number>)
-            : getFL(wine.type)
+          // Single-taster read (§6d): legacy descriptor row → legacy wheel;
+          // structure row → per-present-key array (registry order).
+          const fl = (singleRating?.flavors && detectLegacyDescriptorFL(singleRating.flavors as Record<string, number>))
+            || perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine.type))
 
-          // For overlay: use FL from first rater that has data
+          // Multi-taster overlay still uses legacy FL — the §10 #1 open-path
+          // RadarChart change is a separate chunk (Chunk E). TODO(structure-wheel E).
           const overlayFL = FL
 
           const overlaySeries = allWineRatings.map(r => ({
@@ -269,8 +271,12 @@ export default function ComparePage() {
                         ))}
                       </div>
                     </div>
-                  ) : singleRating ? (
+                  ) : singleRating && fl.length > 0 ? (
                     <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
+                  ) : singleRating ? (
+                    <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
+                      no flavour data
+                    </div>
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
                       no rating from {(activeUserId && ratersWithRatings.find(r => r.id === activeUserId)?.displayName) || 'this user'}
