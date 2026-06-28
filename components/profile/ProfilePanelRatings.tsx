@@ -3,7 +3,7 @@ import { useRef } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
-import { FL } from '@/lib/flavours'
+import { resolveAxesColoured } from '@/lib/flavours'
 import type { FlavorBlock } from '@/lib/profileFlavor'
 
 interface Props {
@@ -50,13 +50,15 @@ export function ProfilePanelRatings({ lifetimeRatings, flavor, profileUserName, 
     )
   }
 
-  // Active data exists. Some flavor keys come back null when the user
-  // never tasted that dimension; treat as 0 for the wheel.
-  const flavors = FL.reduce((o, f) => {
+  // Profile aggregate = the full STRUCTURE axis set (§6a). The aggregate is a
+  // dense, complete frame (every structure axis, null for never-tasted), so the
+  // wheel uses the full resolved set, not a per-rating subset. Null → 0.
+  const axes = resolveAxesColoured('wine', 'red')
+  const flavors = axes.reduce((o, f) => {
     const v = flavor.keys[f.k]
     return { ...o, [f.k]: v == null ? 0 : v }
   }, {} as Record<string, number>)
-  const sorted = [...FL].sort((a, b) => (flavors[b.k] || 0) - (flavors[a.k] || 0))
+  const sorted = [...axes].sort((a, b) => (flavors[b.k] || 0) - (flavors[a.k] || 0))
   const topFlavors = sorted.slice(0, 3).filter(f => (flavors[f.k] || 0) > 0)
 
   return (
@@ -95,7 +97,7 @@ export function ProfilePanelRatings({ lifetimeRatings, flavor, profileUserName, 
           style={{ cursor: 'zoom-in' }}
           title="Click to expand"
         >
-          <PolarChart flavors={flavors} fl={FL} size={CHART_SIZE.DETAIL} />
+          <PolarChart flavors={flavors} fl={axes} size={CHART_SIZE.DETAIL} />
         </div>
         {topFlavors.length > 0 && (
           <div style={{ marginTop: 10, width: '100%' }}>
