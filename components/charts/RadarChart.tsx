@@ -42,17 +42,43 @@ export function RadarChart({ series, fl, size = 240 }: Props) {
       h += `<text x="${lx}" y="${ly}" text-anchor="${anch}" dominant-baseline="middle" font-size="${Math.max(8, size * 0.04)}" fill="rgba(180,170,150,0.8)" font-family="Manrope,sans-serif" font-weight="700" letter-spacing="0.06em">${f.l.toUpperCase()}</text>`
     })
 
-    // Each user's polygon
+    // Each taster's polygon. OPEN-PATH per-series (§10 #1): a vertex is emitted
+    // ONLY for an axis the taster actually rated — key-presence, not truthiness,
+    // so a rated-None (value 0) IS a centre vertex but an UNrated axis is SKIPPED
+    // (no `flavors[k] || 0` 0-vertex that would read as a false "rated zero").
+    // The angle for each vertex comes from the axis's index in the shared `fl`
+    // frame, so present axes land in the right place even with gaps. A series
+    // that has every frame axis closes (polygon); a partial one stays an open
+    // polyline across the gaps. Degenerate: 2 present axes → a line, 1 → a dot.
     series.forEach((s, si) => {
       const col = COLORS[si % COLORS.length]
-      const pts = fl.map((f, i) => {
-        const val = Math.max(0, Math.min(5, s.flavors[f.k] || 0))
+      const verts = fl.flatMap((f, i) => {
+        if (!Object.prototype.hasOwnProperty.call(s.flavors, f.k)) return []
+        const val = Math.max(0, Math.min(5, s.flavors[f.k]))
         const a = (Math.PI * 2 * i / n) - Math.PI / 2
         const r = (R / 5) * val
-        return `${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`
-      }).join(' ')
+        return [`${cx + r * Math.cos(a)},${cy + r * Math.sin(a)}`]
+      })
+      if (verts.length === 0) return
       const fillCol = col.replace('.85)', '.09)')
-      h += `<polygon points="${pts}" fill="${fillCol}" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`
+      if (verts.length === 1) {
+        // Single rated axis → a dot (no polygon/line to draw).
+        const [x, y] = verts[0].split(',')
+        h += `<circle cx="${x}" cy="${y}" r="2.4" fill="${col}"/>`
+        return
+      }
+      // A closed, filled polygon needs ≥3 vertices to enclose area — and the
+      // taster must span the whole frame. A complete 2-axis frame is still just
+      // a line, so it falls through to the polyline branch.
+      const isClosed = verts.length === n && verts.length >= 3
+      if (isClosed) {
+        // Fully-rated taster → closed, filled polygon (as before).
+        h += `<polygon points="${verts.join(' ')}" fill="${fillCol}" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`
+      } else {
+        // Partial taster → OPEN polyline (no closing edge, no fill) so the gap
+        // reads as "not rated", not "rated none".
+        h += `<polyline points="${verts.join(' ')}" fill="none" stroke="${col}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>`
+      }
     })
 
     return { vb, h, w: size, ht: size }
