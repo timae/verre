@@ -108,7 +108,7 @@ export function AnchoredMenu({
 // Compare-soon convention). `active` styles the whole row accent (the
 // Blind-for-all press-field state) — accent label/icon + accent-tint bg.
 export function MenuItem({
-  label, icon, onPress, tone = 'default', disabled, active, accessibilityState,
+  label, icon, onPress, tone = 'default', disabled, active, accessibilityState, accessibilityLabel,
 }: {
   label: string;
   icon?: IconName;
@@ -117,6 +117,9 @@ export function MenuItem({
   disabled?: boolean;
   active?: boolean;
   accessibilityState?: { disabled?: boolean; selected?: boolean };
+  // Override the VoiceOver announcement when the visible `label` is terse and
+  // loses object context out loud (e.g. "Edit" → "Edit impression").
+  accessibilityLabel?: string;
 }) {
   const { theme } = useTheme();
   const labelColor = disabled
@@ -130,6 +133,7 @@ export function MenuItem({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
       accessibilityState={accessibilityState ?? { disabled }}
       disabled={disabled}
       onPress={onPress}

@@ -51,6 +51,37 @@ export function ErrorState({
   );
 }
 
+// Terminal centered message — a title + optional body, vertically centered in
+// the content area, NO retry button (distinct from <ErrorState>, which is the
+// retry-shaped sibling). For dead-end states a refetch can't fix: "this thing
+// is gone", "you can't do this here". Caller owns the bar above it; this fills
+// the area below. Pass `pending` to blank the copy while the query resolves so
+// the message doesn't flash before data lands. (Canonical home for the
+// FatalView / impression-gone / can't-edit centered-block pattern — reuse this
+// instead of re-implementing the flex-center block per screen.)
+export function CenteredMessage({
+  title,
+  body,
+  pending,
+}: {
+  title: string;
+  body?: string;
+  pending?: boolean;
+}) {
+  return (
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>
+        {pending ? '' : title}
+      </VText>
+      {body && !pending ? (
+        <VText variant="small" color="inkSoft" style={{ textAlign: 'center' }}>
+          {body}
+        </VText>
+      ) : null}
+    </View>
+  );
+}
+
 // Thin top strip shown above otherwise-stale content. Tap to retry (the whole
 // strip is the affordance — there's no room for a button at this height).
 export function ConnectionBanner({

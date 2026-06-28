@@ -14,7 +14,7 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
-import { ApiError, addWine, getSessionState, type WineTypeCode } from '@/lib/api/sessions';
+import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { elevation, radius, useTheme } from '@/theme';
@@ -30,6 +30,24 @@ const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
   { code: 'rose', label: 'Rosé' },
   { code: 'nonalc', label: 'Non-alc' },
 ];
+
+function isWineTypeCode(value: string): value is WineTypeCode {
+  return WINE_TYPES.some((t) => t.code === value);
+}
+
+type PhotoState =
+  | { kind: 'new'; dataUrl: string; previewUri: string }
+  | { kind: 'existing'; uri: string }
+  | null;
+
+type ImpressionFormProps = {
+  code: string;
+  wineCount: number;
+  canPosition: boolean;
+  mode?: 'add' | 'edit';
+  wineId?: string;
+  initialWine?: WireWine;
+};
 
 // 02b·add add-impression — a pushed full-screen form (FLAGGED DEVIATION from
 // the mock's bottom sheet, same call as 02f settings: a sticky "Add to line-up"
@@ -78,33 +96,51 @@ export default function AddImpression() {
       (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
       (meta.coHostIds ?? []).includes(myIdentityId));
 
-  return <AddForm code={code} wineCount={wineCount} canPosition={canPosition} />;
+  return <ImpressionForm code={code} wineCount={wineCount} canPosition={canPosition} />;
 }
 
-function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: number; canPosition: boolean }) {
+export function ImpressionForm({
+  code,
+  wineCount,
+  canPosition,
+  mode = 'add',
+  wineId,
+  initialWine,
+}: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
 
-  const [photo, setPhoto] = useState<{ dataUrl: string; previewUri: string } | null>(null);
+  const [photo, setPhoto] = useState<PhotoState>(() => initialWine?.imageUrl ? { kind: 'existing', uri: initialWine.imageUrl } : null);
   const [photoError, setPhotoError] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [vintage, setVintage] = useState('');
-  const [producer, setProducer] = useState('');
-  const [type, setType] = useState<WineTypeCode | null>(null);
-  const [grape, setGrape] = useState('');
-  const [region, setRegion] = useState('');
-  const [country, setCountry] = useState(''); // ISO-2 code, '' = unset
-  const [process, setProcess] = useState('');
-  const [description, setDescription] = useState('');
-  const [purchaseUrl, setPurchaseUrl] = useState('');
+  const [name, setName] = useState(initialWine?.name ?? '');
+  const [vintage, setVintage] = useState(initialWine?.vintage ?? '');
+  const [producer, setProducer] = useState(initialWine?.producer ?? '');
+  const [type, setType] = useState<WineTypeCode | null>(
+    initialWine && isWineTypeCode(initialWine.type) ? initialWine.type : null,
+  );
+  const [grape, setGrape] = useState(initialWine?.grape ?? '');
+  const [region, setRegion] = useState(initialWine?.region ?? '');
+  const [country, setCountry] = useState(initialWine?.country ?? ''); // ISO-2 code, '' = unset
+  const [process, setProcess] = useState(initialWine?.vinification ?? '');
+  const [description, setDescription] = useState(initialWine?.description ?? '');
+  const [purchaseUrl, setPurchaseUrl] = useState(initialWine?.purchaseUrl ?? '');
   // null = "append" (follow the live count) — the user hasn't chosen a slot.
   // Kept null rather than seeded to wineCount+1 so a count that resolves AFTER
   // mount (cold deep-link before the parent poll lands) doesn't leave a stale
   // default: the pill + picker read the live maxPosition until the user picks.
   const [position, setPosition] = useState<number | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Start the "Add more details" fold OPEN when editing a wine that already has
+  // data in any disclosure-hidden field (region/country/process/description/
+  // purchase link) — otherwise pre-existing values sit invisibly behind a
+  // collapsed fold. Add mode (no initialWine) always starts closed.
+  const [moreOpen, setMoreOpen] = useState(
+    () => !!(initialWine && (initialWine.region || initialWine.country || initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
+  );
+  // True only for the edit-mode auto-open above — consumed once to suppress the
+  // initial scroll-to-end so an editor lands at the top (Name), not the bottom.
+  const autoOpenedRef = useRef(moreOpen);
   const [typeOpen, setTypeOpen] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
   const [posOpen, setPosOpen] = useState(false);
@@ -133,7 +169,7 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
       setPhotoError("Couldn't use that photo — try another.");
       return;
     }
-    setPhoto(picked);
+    setPhoto({ kind: 'new', ...picked });
   };
 
   const onAdd = async () => {
@@ -141,33 +177,45 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
     if (!name.trim()) { setError('Give the impression a name.'); return; }
     if (!type) { setError('Pick a type.'); return; }
     setSaving(true);
+    const base = {
+      name: name.trim(),
+      type,
+      ...(producer.trim() ? { producer: producer.trim() } : {}),
+      ...(vintage.trim() ? { vintage: vintage.trim() } : {}),
+      ...(grape.trim() ? { grape: grape.trim() } : {}),
+      ...(region.trim() ? { region: region.trim() } : {}),
+      ...(country ? { country } : {}),
+      ...(process.trim() ? { vinification: process.trim() } : {}),
+      ...(description.trim() ? { description: description.trim() } : {}),
+      ...(purchaseUrl.trim() ? { purchaseUrl: purchaseUrl.trim() } : {}),
+    };
     try {
-      await addWine(code, {
-        name: name.trim(),
-        type,
-        ...(producer.trim() ? { producer: producer.trim() } : {}),
-        ...(vintage.trim() ? { vintage: vintage.trim() } : {}),
-        ...(grape.trim() ? { grape: grape.trim() } : {}),
-        ...(region.trim() ? { region: region.trim() } : {}),
-        ...(country ? { country } : {}),
-        ...(process.trim() ? { vinification: process.trim() } : {}),
-        ...(description.trim() ? { description: description.trim() } : {}),
-        ...(purchaseUrl.trim() ? { purchaseUrl: purchaseUrl.trim() } : {}),
-        ...(photo ? { image: photo.dataUrl } : {}),
-        // Send a position only when the host explicitly chose a non-append slot.
-        // null (untouched) or == maxPosition both mean "append", which the
-        // server does by default — so we omit it (host-only server-side anyway).
-        ...(canPosition && position !== null && position !== maxPosition ? { position } : {}),
-      });
+      if (mode === 'edit') {
+        if (!wineId) throw new Error('missing wine id');
+        await updateWine(code, wineId, {
+          ...base,
+          ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
+          ...(photo === null && initialWine?.imageUrl ? { image: null } : {}),
+        });
+      } else {
+        await addWine(code, {
+          ...base,
+          ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
+          // Send a position only when the host explicitly chose a non-append slot.
+          // null (untouched) or == maxPosition both mean "append", which the
+          // server does by default — so we omit it (host-only server-side anyway).
+          ...(canPosition && position !== null && position !== maxPosition ? { position } : {}),
+        });
+      }
       // Invalidate the line-up's cached state (keyed by code + myIdentityId, so
       // a code-prefixed invalidate covers it) — the parent poll refetches and
-      // the new wine appears. router.back() returns to the line-up.
+      // the new/edited wine appears. router.back() returns to the previous screen.
       queryClient.invalidateQueries({ queryKey: ['session-state', code] });
       router.back();
     } catch (e) {
       setSaving(false);
       const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-      setError(msg && msg !== 'http' ? msg : "Couldn't add it. Check your connection and try again.");
+      setError(msg && msg !== 'http' ? msg : `Couldn't ${mode === 'edit' ? 'save' : 'add'} it. Check your connection and try again.`);
     }
   };
 
@@ -183,9 +231,9 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
           the form below. */}
       <View style={{ paddingHorizontal: GUTTER, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', zIndex: 20 }}>
         <View style={{ flex: 1 }}>
-          <VBar title="Add impression" />
+          <VBar title={mode === 'edit' ? 'Edit impression' : 'Add impression'} />
         </View>
-        {canPosition && wineCount > 0 ? (
+        {mode === 'add' && canPosition && wineCount > 0 ? (
           <PositionPicker
             value={position ?? maxPosition}
             max={maxPosition}
@@ -261,12 +309,18 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         </View>
 
         {/* .disclosure Add more details — body expands DOWN from the bar
-            (Disclosure owns the height animation); scroll into view once open. */}
+            (Disclosure owns the height animation); scroll into view once open.
+            Skip the scroll on the edit-mode AUTO-open (the fold starts open with
+            pre-filled data laid out in place) — only a USER expand should yank
+            the view to the bottom. */}
         <Disclosure
           label="Add more details"
           open={moreOpen}
           onToggle={() => setMoreOpen((o) => !o)}
-          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          onExpanded={() => {
+            if (autoOpenedRef.current) { autoOpenedRef.current = false; return; }
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }}
         >
           {/* .trow2-even — Region + Country. */}
           <View style={{ flexDirection: 'row', gap: 12 }}>
@@ -318,7 +372,14 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
         {error ? (
           <VText variant="small" style={{ marginBottom: 10, color: theme.critical }}>{error}</VText>
         ) : null}
-        <Button title="Add to line-up" loadingTitle="Adding…" loading={saving} onPress={onAdd} bar block />
+        <Button
+          title={mode === 'edit' ? 'Save changes' : 'Add to line-up'}
+          loadingTitle={mode === 'edit' ? 'Saving…' : 'Adding…'}
+          loading={saving}
+          onPress={onAdd}
+          bar
+          block
+        />
       </View>
 
       <TypeSheet open={typeOpen} selected={type} onSelect={(t) => { setType(t); setTypeOpen(false); }} onClose={() => setTypeOpen(false)} />
@@ -335,17 +396,18 @@ function AddForm({ code, wineCount, canPosition }: { code: string; wineCount: nu
 function PhotoPicker({
   photo, onPick, onClear,
 }: {
-  photo: { dataUrl: string; previewUri: string } | null;
+  photo: PhotoState;
   onPick: () => void;
   onClear: () => void;
 }) {
   const { theme } = useTheme();
   const [fullscreen, setFullscreen] = useState(false);
   if (photo) {
+    const uri = photo.kind === 'new' ? photo.previewUri : photo.uri;
     return (
       <View style={{ height: 150, borderRadius: radius.md, overflow: 'hidden', marginBottom: 16 }}>
         <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
-          <Image source={{ uri: photo.previewUri }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+          <Image source={{ uri }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
         </Pressable>
         <Pressable
           accessibilityRole="button"
@@ -358,7 +420,7 @@ function PhotoPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
-        <FullscreenImage uri={photo.previewUri} visible={fullscreen} label="Wine photo" onClose={() => setFullscreen(false)} />
+        <FullscreenImage uri={uri} visible={fullscreen} label="Wine photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }

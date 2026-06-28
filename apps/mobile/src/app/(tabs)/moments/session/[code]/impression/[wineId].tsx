@@ -19,7 +19,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
-import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -27,6 +27,7 @@ import { VText } from '@/components/ui/VText';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import {
   ApiError,
+  deleteWine,
   getBookmarkedWineIds,
   getSessionState,
   hideWine,
@@ -59,9 +60,7 @@ let navDir: 'next' | 'prev' = 'next';
 // - Fill-track flavour inputs are NOT here yet — gated on the flavour
 //   colour palette (design brief pending). The detail panel ships with the
 //   note field; existing flavour data from other surfaces passes through
-//   saves untouched. The ⋯ "Edit/Delete impression" host items wait for the
-//   host-CRUD milestone (menu carries Clear my rating only, via the native
-//   action sheet per the native-chrome ruling).
+//   saves untouched.
 // - Previous also saves pending edits (the mock leaves unsaved-edit
 //   handling unspecified; silent discard would lose data and the web's
 //   dirty-guard modal is a web pattern).
@@ -100,6 +99,8 @@ export default function ImpressionDetail() {
     (meta.hostIdentityId === myIdentityId ||
       (meta.hostUserId !== null && `u:${meta.hostUserId}` === myIdentityId) ||
       (meta.coHostIds ?? []).includes(myIdentityId));
+  const isOwnProvider = !!meta && (meta.providerIds ?? []).includes(myIdentityId) && !!wine?.isMine;
+  const canEditImpression = !!wine && !wine._blind && (isHostViewer || isOwnProvider);
   const hostRevealUi = !!meta?.blind && isHostViewer;
 
   // Reconnecting bar — same passive treatment as the line-up (shared 5s poll,
@@ -257,6 +258,42 @@ export default function ImpressionDetail() {
     setNotes('');
     setFlavors({});
     setMenuAnchor(null);
+  };
+  const editImpression = () => {
+    setMenuAnchor(null);
+    router.push({
+      pathname: '/(tabs)/moments/session/[code]/edit-impression/[wineId]',
+      params: { code, wineId },
+    });
+  };
+  const deleteMut = useMutation({
+    mutationFn: () => deleteWine(code, wineId),
+    onSuccess: () => {
+      router.back();
+      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+      queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+    },
+    onError: (e) => {
+      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+      Alert.alert('Could not delete', msg || 'Check your connection and try again.');
+    },
+  });
+  const confirmDeleteImpression = () => {
+    setMenuAnchor(null);
+    Alert.alert(
+      'Delete this impression?',
+      'This removes it from the line-up and clears ratings for it. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            if (!deleteMut.isPending) deleteMut.mutate();
+          },
+        },
+      ],
+    );
   };
 
   // Collapsing header: the bar title (and the floathead's solid state) hand
@@ -457,10 +494,17 @@ export default function ImpressionDetail() {
         onPrevious={onPrevious}
         onNext={onNext}
       />
-      {/* .ir-menu options dropdown (shared AnchoredMenu). Separator + danger
-          rows (Edit / Delete impression) join with the host-CRUD milestone. */}
+      {/* .ir-menu options dropdown (shared AnchoredMenu). Host/cohost/provider
+          CRUD rows follow the design's separator + danger-row grouping. */}
       <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={184}>
         <MenuItem icon="undo" label="Clear my rating" onPress={clearRating} />
+        {canEditImpression ? (
+          <>
+            <MenuSeparator />
+            <MenuItem icon="edit" label="Edit" accessibilityLabel="Edit impression" onPress={editImpression} />
+            <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete impression" tone="danger" onPress={confirmDeleteImpression} />
+          </>
+        ) : null}
       </AnchoredMenu>
     </View>
   );
