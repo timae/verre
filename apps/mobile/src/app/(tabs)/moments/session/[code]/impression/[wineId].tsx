@@ -208,6 +208,13 @@ export default function ImpressionDetail() {
       notes !== (existing?.notes ?? '') ||
       JSON.stringify(flavors) !== JSON.stringify(existing?.flavors ?? {});
     if (!changed) return true;
+    // Structure-wheel zero rule (§5): an all-None rating is stored/returned as
+    // {} (the server collapses all-zero to empty), so `length === 0` correctly
+    // means "nothing rated" today — `flavors` here just round-trips the stored
+    // shape (native flavour INPUT doesn't exist yet). ⚠️ When the native chip
+    // input lands, it must NOT build a zeros-only map ({acid:0,body:0,…}) and
+    // expect this to read empty — clear to {} when every axis is None, matching
+    // the server's drop-all-or-keep-all shape.
     const empty = score === 0 && notes.trim() === '' && Object.keys(flavors).length === 0;
     if (empty && !existing) return true; // nothing rated, nothing stored — no POST
     if (validateScore(score).error) {
