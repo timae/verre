@@ -57,10 +57,12 @@ export function RatingPane(props: Props) {
   const { value, onChange } = props as EditableProps
 
   // INPUT surface (§6d): hand the full structure axis set for this style so the
-  // user rates every structure axis. wineType null (blind-redacted) → base wine
-  // set (the defensive resolveAxes fallback). Legacy descriptor keys in a loaded
-  // rating are NOT shown as chips — the edit-path transform (§6g) strips them on
-  // save (in WineModal.commitWineRating).
+  // user rates every structure axis. A blind-redacted wine passes its REAL style
+  // (style isn't identity — the taster perceives fizz from the glass), so a blind
+  // sparkling wine still offers Bubbles. wineType only falls to null/base for a
+  // genuinely unknown style (the defensive resolveAxes fallback). Legacy
+  // descriptor keys in a loaded rating are NOT shown as chips — the edit-path
+  // transform (§6g) strips them on save (in WineModal.commitWineRating).
   const fl = resolveAxesColoured('wine', wineType)
 
   function setScore(score: number) { onChange({ ...value, score }) }
