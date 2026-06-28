@@ -426,6 +426,13 @@ names in `src/lib/api/sessions.ts`.
 - UI copy comes from the handoff and is **final** ("Moment", "Impression",
   exact button labels). Code identifiers stay `session`/`wine`. On any
   role/permission conflict with the design, the shipped backend model wins.
+  - **Sanctioned deviation (Simon, 2026-06-28):** the 02e impression ⋯ menu
+    rows ship as terse **"Edit" / "Delete"** (handoff specs "Edit impression" /
+    "Delete impression" in `vero-screens.js` — overridden to match the line-up
+    menu's terse style). The object context is preserved for VoiceOver via
+    `MenuItem`'s `accessibilityLabel` ("Edit impression"/"Delete impression"),
+    so the spoken label still names the object. Don't "restore" the verbose
+    visible labels.
 - App display name is **Verre** ("Vero" was the design codename — appears only
   in the design files and the tokens filename).
 

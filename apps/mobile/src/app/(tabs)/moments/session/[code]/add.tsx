@@ -138,6 +138,9 @@ export function ImpressionForm({
   const [moreOpen, setMoreOpen] = useState(
     () => !!(initialWine && (initialWine.region || initialWine.country || initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
   );
+  // True only for the edit-mode auto-open above — consumed once to suppress the
+  // initial scroll-to-end so an editor lands at the top (Name), not the bottom.
+  const autoOpenedRef = useRef(moreOpen);
   const [typeOpen, setTypeOpen] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
   const [posOpen, setPosOpen] = useState(false);
@@ -306,12 +309,18 @@ export function ImpressionForm({
         </View>
 
         {/* .disclosure Add more details — body expands DOWN from the bar
-            (Disclosure owns the height animation); scroll into view once open. */}
+            (Disclosure owns the height animation); scroll into view once open.
+            Skip the scroll on the edit-mode AUTO-open (the fold starts open with
+            pre-filled data laid out in place) — only a USER expand should yank
+            the view to the bottom. */}
         <Disclosure
           label="Add more details"
           open={moreOpen}
           onToggle={() => setMoreOpen((o) => !o)}
-          onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          onExpanded={() => {
+            if (autoOpenedRef.current) { autoOpenedRef.current = false; return; }
+            scrollRef.current?.scrollToEnd({ animated: true });
+          }}
         >
           {/* .trow2-even — Region + Country. */}
           <View style={{ flexDirection: 'row', gap: 12 }}>

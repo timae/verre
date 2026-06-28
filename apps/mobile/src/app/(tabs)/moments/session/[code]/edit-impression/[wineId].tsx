@@ -4,11 +4,10 @@ import { useEffect } from 'react';
 import { View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
-import { VText } from '@/components/ui/VText';
+import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { ApiError, getSessionState } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { GUTTER, usePhoneTokens } from '@/lib/layout';
-import { useTheme } from '@/theme';
+import { GUTTER } from '@/lib/layout';
 import { ImpressionForm } from '../add';
 
 export default function EditImpression() {
@@ -17,8 +16,6 @@ export default function EditImpression() {
   const wineId = String(rawWineId ?? '');
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const phone = usePhoneTokens();
-  const { theme } = useTheme();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
@@ -49,16 +46,15 @@ export default function EditImpression() {
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
         <VBar title="Edit impression" />
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>
-            {state.isPending ? '' : !wine ? 'This impression is gone' : "You can't edit this impression"}
-          </VText>
-          {!state.isPending ? (
-            <VText variant="small" style={{ color: theme.inkSoft, textAlign: 'center' }}>
-              {!wine ? 'It may have been removed from the line-up.' : 'Only hosts, co-hosts, or the provider who added it can edit it.'}
-            </VText>
-          ) : null}
-        </View>
+        <CenteredMessage
+          pending={state.isPending}
+          title={!wine ? 'This impression is gone' : "You can't edit this impression"}
+          body={
+            !wine
+              ? 'It may have been removed from the line-up.'
+              : 'Only hosts, co-hosts, or the provider who added it can edit it.'
+          }
+        />
       </View>
     );
   }
