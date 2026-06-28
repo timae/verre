@@ -325,7 +325,7 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
 
 // ─── flavour ───────────────────────────────────────────
 
-const INTENSITY_LABELS = ['none', 'faint', 'light', 'medium', 'bold', 'intense']
+const INTENSITY_LABELS = ['none', 'faint', 'light', 'medium', 'strong', 'intense']
 
 function FlavourSection({
   fl, flavors, setFlavor,

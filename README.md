@@ -6,7 +6,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 
 - Create or join a tasting with a short shareable code
 - Keep one shared bottle lineup across the whole table
-- Rate privately on each phone with stars, flavour radar, and notes
+- Rate privately on each phone with stars, a structure radar (sweetness, acidity, body, finish, aroma, flavour, tannin — 0–5 intensities), and notes
 - Sign up for an account to keep your history, or stay anonymous
 - Compare participants or overlay profiles per bottle
 - Attach bottle photos for the session list, detail view, and export
@@ -269,7 +269,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/session/:code/ratings | All ratings, id-keyed (participant-gated) |
-| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes}`) |
+| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes}`). `flavors` is a `{structure-axis: 0–5}` map (sweetness, acidity, body, finish, aroma, flavour, tannin; + bubbles for sparkling) — keys outside the wine's axis set are rejected. |
 | DELETE | /api/session/:code/rate/:wineId | Reset own rating |
 
 **Social feed** (logged-in)
