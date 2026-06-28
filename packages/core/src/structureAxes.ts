@@ -92,3 +92,24 @@ export function perRatingAxes<T extends { k: string }>(
   if (!flavors) return []
   return axes.filter((a) => Object.prototype.hasOwnProperty.call(flavors, a.k))
 }
+
+// The kept structure subset of a flavors map: drops any key NOT in
+// resolveAxes(category, style). This is the client-side EDIT-PATH transform
+// (proposal §6g) — apply it before re-saving a loaded rating so a legacy
+// descriptor row doesn't 400 the registry-keyed write gate. It mirrors the
+// migration's keep-set, so an edit-save produces the same shape the bulk
+// migration would. Shared web↔native (both edit surfaces need it), hence in
+// core. Pure-structure rows pass through unchanged.
+export function structureSubset(
+  flavors: Record<string, number> | null | undefined,
+  category: string | null | undefined,
+  style: string | null | undefined,
+): Record<string, number> {
+  if (!flavors) return {}
+  const allowed = new Set(resolveAxes(category, style).map((a) => a.k))
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(flavors)) {
+    if (allowed.has(k)) out[k] = v
+  }
+  return out
+}

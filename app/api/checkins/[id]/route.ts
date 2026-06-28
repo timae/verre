@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
+import { assertRegistryKeyed } from '@/lib/flavours'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
@@ -115,6 +116,15 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     const c = validateFlavors(flavors)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
     validFlavorsValue = c.value
+    // Registry-keyed write gate (§6g). Effective style = the body type (if a
+    // valid style) else the EXISTING wine.style — same resolution the wine
+    // update below uses. category is 'wine'. Descriptor key → 400; an edit
+    // surface must structureSubset() a loaded legacy row before re-saving.
+    const effStyle = type !== undefined
+      ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null)
+      : wine.style
+    const keyErr = assertRegistryKeyed(validFlavorsValue, 'wine', effStyle)
+    if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
   }
 
   // Image handling: image lives in rating_images now (not on the wine row).

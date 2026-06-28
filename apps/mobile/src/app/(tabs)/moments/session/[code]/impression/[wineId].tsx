@@ -17,7 +17,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { countryName, validateScore } from '@verre/core';
+import { countryName, validateScore, structureSubset } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
@@ -222,7 +222,11 @@ export default function ImpressionDetail() {
       return false;
     }
     try {
-      await rateMut.mutateAsync({ wineId, score, flavors, notes });
+      // Edit-path transform (§6g): strip a loaded legacy descriptor row to the
+      // structure subset for this wine's style so the registry-keyed write gate
+      // doesn't 400 a no-touch re-save. Pure-structure flavors pass through.
+      const cleanFlavors = structureSubset(flavors, 'wine', wine?.type ?? null);
+      await rateMut.mutateAsync({ wineId, score, flavors: cleanFlavors, notes });
       // The local edit is now the server state; allow re-seed on next wine.
       seededFor.current = null;
       return true;

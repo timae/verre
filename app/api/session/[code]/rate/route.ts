@@ -6,6 +6,7 @@ import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateFlavors } from '@/lib/checkinValidation'
+import { assertRegistryKeyed } from '@/lib/flavours'
 import { validateScore } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
@@ -53,6 +54,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
 
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value
+
+  // Resolve the wine before the write so the registry-keyed gate (§6g) can key
+  // on its style. wine.type is the style (red/white/spark/rose/nonalc); category
+  // is 'wine'. A descriptor key from a stale client → 400 (keeps the Contract
+  // PR's "no descriptor keys remain" precondition true). An edit surface must
+  // structureSubset() a loaded legacy row before re-saving, or it 400s here.
+  const wines = await getWines(c)
+  const wine = wines.find(w => w.id === wineId)
+  const keyErr = assertRegistryKeyed(validFlavors, 'wine', wine?.type ?? null)
+  if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
+
   // Rating is keyed by identity id, never by display name. Two participants
   // sharing a display name (legitimately via collision, or accidentally via
   // a client-side race) cannot overwrite each other's ratings.
@@ -61,9 +73,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     JSON.stringify({ score: ratingScore, flavors: validFlavors, notes: notes || '', at: Date.now() }),
     { EX: TTL },
   )
-
-  const wines = await getWines(c)
-  const wine = wines.find(w => w.id === wineId)
 
   if (identity.kind === 'user' && wine) {
     const userId = Number(identity.id.slice(2))  // strip "u:" prefix

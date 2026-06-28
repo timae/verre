@@ -1,7 +1,7 @@
 'use client'
 import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
-import { getFL, detectFL, FL, type FlItem } from '@/lib/flavours'
+import { resolveAxesColoured, detectLegacyDescriptorFL, perRatingAxes, type FlItem } from '@/lib/flavours'
 import type { RatingValue } from '@/lib/rating'
 
 // Re-exported for back-compat — callers historically imported from this
@@ -55,12 +55,12 @@ export function RatingPane(props: Props) {
 
   const { value, onChange } = props as EditableProps
 
-  // Detect flavour dimensions from the current rating's stored keys (so
-  // historic ratings with old key names still render right), else use
-  // the wine type's standard set, else generic.
-  const fl = wineType
-    ? getFL(wineType)
-    : (value.flavors && Object.keys(value.flavors).length ? detectFL(value.flavors) : FL)
+  // INPUT surface (§6d): hand the full structure axis set for this style so the
+  // user rates every structure axis. wineType null (blind-redacted) → base wine
+  // set (the defensive resolveAxes fallback). Legacy descriptor keys in a loaded
+  // rating are NOT shown as chips — the edit-path transform (§6g) strips them on
+  // save (in WineModal.commitWineRating).
+  const fl = resolveAxesColoured('wine', wineType)
 
   function setScore(score: number) { onChange({ ...value, score }) }
   function setFlavor(k: string, v: number) {
@@ -78,14 +78,12 @@ export function RatingPane(props: Props) {
 }
 
 function ReadOnlyPane({ wineType, existing }: { wineType: string | null; existing: RatingValue | null }) {
-  const fl = existing?.flavors && Object.keys(existing.flavors).length
-    ? detectFL(existing.flavors as Record<string, number>)
-    : wineType ? getFL(wineType) : FL
-  const flavors = (() => {
-    const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
-    if (existing?.flavors) Object.assign(base, existing.flavors)
-    return base
-  })()
+  // READ surface (§6d): legacy descriptor row → legacy wheel; structure row →
+  // only the axes present in it (present-and-0 drawn as a centre point).
+  const ex = existing?.flavors as Record<string, number> | undefined
+  const fl = (ex && detectLegacyDescriptorFL(ex))
+    || perRatingAxes(ex, resolveAxesColoured('wine', wineType))
+  const flavors = ex ?? {}
   return (
     <div style={{display:'flex',flexDirection:'column',gap:24}}>
       <ScoreSection score={existing?.score || 0} />

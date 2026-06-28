@@ -13,11 +13,12 @@
 import {
   resolveAxes,
   perRatingAxes,
+  structureSubset,
   type StructureAxis,
   type WineStyle,
 } from '@verre/core'
 
-export { resolveAxes, perRatingAxes }
+export { resolveAxes, perRatingAxes, structureSubset }
 export type { StructureAxis, WineStyle }
 
 // Renderer-facing axis shape: the neutral core axis + a web colour. PolarChart /
@@ -59,6 +60,34 @@ export function withColours(axes: StructureAxis[]): FlItem[] {
 export function resolveAxesColoured(category: string | null | undefined, style: string | null | undefined): FlItem[] {
   return withColours(resolveAxes(category, style))
 }
+
+// Write-side registry gate (§6g). Returns an error string if `flavors` carries
+// any key NOT in resolveAxes(category, style) — used at every write boundary so
+// only structure keys can land post-Expand. This is what keeps the Contract PR's
+// "no descriptor keys remain" precondition true: a stale client POSTing a
+// descriptor key (oak/floral/…) is rejected 400 rather than resurrecting it.
+// Returns null when every key is valid (incl. an empty/absent map).
+//
+// NOTE the asymmetry with reads: reads stay tolerant of legacy descriptor rows
+// during the Expand window (detectLegacyDescriptorFL renders them); writes do
+// NOT. The consequence is the EDIT-PATH rule (§6g) — an edit surface that loads
+// a legacy row must transform it to the structure subset before re-saving, or
+// this gate 400s a no-touch re-save. See structureSubset().
+export function assertRegistryKeyed(
+  flavors: Record<string, number> | null | undefined,
+  category: string | null | undefined,
+  style: string | null | undefined,
+): string | null {
+  if (!flavors) return null
+  const allowed = new Set(resolveAxes(category, style).map(a => a.k))
+  for (const key of Object.keys(flavors)) {
+    if (!allowed.has(key)) return `unknown flavor key: ${key}`
+  }
+  return null
+}
+
+// structureSubset (the client-side EDIT-PATH transform, §6g) lives in @verre/core
+// — it's pure and shared with the native edit surface — and is re-exported above.
 
 // ===========================================================================
 // LEGACY (Contract-PR deletion) — descriptor sets + detectors. See module header.

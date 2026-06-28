@@ -8,6 +8,7 @@ import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
+import { structureSubset } from '@/lib/flavours'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
 import { useUndoChip } from '@/lib/undoChip'
 import { usePullToSwap } from '@/lib/usePullToSwap'
@@ -464,13 +465,24 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
 
   // Primitive used by commitRating (save+close) and commitAndSwap (save+navigate).
   // Does NOT touch activeWineId / onClose / refresh — those are the caller's concern.
-  async function commitWineRating(targetWineId: string, value: RatingValue): Promise<boolean> {
+  // `ratedWineId` is the wine whose rating `value` belongs to — the CURRENT wine
+  // on save+close, or the wine being LEFT on save+swap (commitAndSwap passes
+  // fromWineId, NOT the navigation target). The style lookup below depends on
+  // this being the rated wine, not the swap destination.
+  async function commitWineRating(ratedWineId: string, value: RatingValue): Promise<boolean> {
     setSaving(true)
     setCommitError(null)
     try {
+      // Edit-path transform (§6g): a rating loaded from a legacy descriptor row
+      // carries descriptor keys; the registry-keyed write gate would 400 a
+      // no-touch re-save. Strip to the structure subset for this wine's style
+      // before sending (mirrors the migration keep-set). Pure structure ratings
+      // pass through unchanged.
+      const ratedStyle = wines.find(w => w.id === ratedWineId)?.type ?? null
+      const body = { wineId: ratedWineId, ...value, flavors: structureSubset(value.flavors, 'wine', ratedStyle) }
       const res = await sessionFetch(code, `/api/session/${code}/rate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wineId: targetWineId, ...value }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) {
         const msg = res.status === 429
