@@ -131,7 +131,13 @@ export function ImpressionForm({
   // mount (cold deep-link before the parent poll lands) doesn't leave a stale
   // default: the pill + picker read the live maxPosition until the user picks.
   const [position, setPosition] = useState<number | null>(null);
-  const [moreOpen, setMoreOpen] = useState(false);
+  // Start the "Add more details" fold OPEN when editing a wine that already has
+  // data in any disclosure-hidden field (region/country/process/description/
+  // purchase link) — otherwise pre-existing values sit invisibly behind a
+  // collapsed fold. Add mode (no initialWine) always starts closed.
+  const [moreOpen, setMoreOpen] = useState(
+    () => !!(initialWine && (initialWine.region || initialWine.country || initialWine.vinification || initialWine.description || initialWine.purchaseUrl)),
+  );
   const [typeOpen, setTypeOpen] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
   const [posOpen, setPosOpen] = useState(false);
