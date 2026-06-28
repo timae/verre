@@ -52,8 +52,14 @@ export type FlavorBlock = {
 // `/u/[id]` page so both surfaces show the same numbers without a
 // duplicate roundtrip.
 export async function getProfileFlavor(userId: number): Promise<FlavorBlock> {
+  // Score-weighted mean per axis. Keyed on key-PRESENCE (`flavors ? '${f}'`),
+  // NOT `> 0`: under the structure-wheel zero rule (§5) a present 0 means "rated
+  // None" — a real judgment that must pull the average toward 0, not be excluded
+  // as "not rated". A row that never rated this axis (key absent) still
+  // contributes nothing (absent → not in numerator or denominator). NULLIF keeps
+  // an all-absent axis at NULL (→ "never tasted that dimension"), not 0.
   const weightedAvg = FL_KEYS.map(f =>
-    `ROUND((SUM((flavors->>'${f}')::numeric * score) / NULLIF(SUM(CASE WHEN (flavors->>'${f}')::numeric > 0 THEN score ELSE 0 END), 0))::numeric, 2) AS ${f}`,
+    `ROUND((SUM((flavors->>'${f}')::numeric * score) FILTER (WHERE flavors ? '${f}') / NULLIF(SUM(score) FILTER (WHERE flavors ? '${f}'), 0))::numeric, 2) AS ${f}`,
   ).join(', ')
   const rows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
     `SELECT ${weightedAvg},

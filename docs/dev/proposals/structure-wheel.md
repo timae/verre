@@ -1,9 +1,13 @@
 # Structure Wheel — proposal
 
-**Status:** Proposed and review-hardened (2026-06-28); **decision pass COMPLETE — all 🔴 Build-1 gates
-resolved, including the compare overlay** (§10 #1, option C: per-series open-path in `RadarChart`).
-**The Expand PR is fully scoped.** Not built. Remaining open items are 🟡 migration-step (decide at the
-§8a dry-run) + 🟢 deferrable (palette, axis-order, profile mixed-history) — none block PR 1. See §10.
+**Status:** **Expand PR BUILT** on `feature/structure-wheel` (2026-06-28) — registry + web re-export +
+all render/aggregate/write/zero-rule/compare-overlay/copy chunks, verified (incl. against a live
+Postgres+Redis stack) and 5-angle reviewed. **NOT yet shipped to main; the data MIGRATION and the
+Contract PR (delete legacy `FL_*`) are deliberately separate later steps (§8).** Legacy descriptor sets
+are retained for the Expand-window dual-read. Decision pass COMPLETE — all 🔴 Build-1 gates resolved
+(compare overlay §10 #1, option C). Remaining open items are 🟡 migration-step (decide at the §8a
+dry-run) + 🟢 deferrable (palette VALUES, axis-order, profile mixed-history) — none blocked the Expand PR.
+See §10.
 Headline corrections from review: this is
 **not** "only data changes" — two hard-coded SQL aggregates (profile, badges) duplicate the descriptor
 keys (§2, §6a/§6b); the missing-vs-zero render is a real Build-1 decision (§6d); a destructive
