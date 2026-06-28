@@ -968,7 +968,14 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
         {forPane === 'rate' && (
           <RatingPane
             key={forWineId}
-            wineType={red ? null : w.type}
+            // Pass the real style even when blind-redacted: style (red/white/
+            // spark/rose) is NOT identity (the taster perceives fizz from the
+            // glass), so the structure wheel should offer the right axes — e.g.
+            // Bubbles on a blind sparkling wine. The server preserves `type` on
+            // a _blind wine (lib/wineRedaction.ts); discarding it here would
+            // give blind spark only the base 7 axes, inconsistent with feed/
+            // compare. (Was `red ? null` for the old descriptor-set hiding.)
+            wineType={w.type}
             value={forRating}
             onChange={interactive ? setRating : () => {}}
           />

@@ -145,7 +145,11 @@ export async function loadSessionFeedWines(
           producer: null,
           vintage: null,
           grape: null,
-          type: null,
+          // Style (red/white/spark/rose) is NOT identity — a taster knows it's
+          // sparkling from the glass. Expose it so the structure wheel offers the
+          // right axes (e.g. Bubbles on a blind sparkling wine); the mystery slot
+          // keys on `_blind`, not type. Consistent with lib/wineRedaction.ts.
+          type: w.style,
           // Hide rating photo on a redacted wine — a label-bearing pour
           // photo would leak the identity. Per rewire.md §3 line 429.
           imageUrl: null,

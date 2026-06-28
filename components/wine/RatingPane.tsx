@@ -9,8 +9,9 @@ import type { RatingValue } from '@/lib/rating'
 export type { RatingValue }
 
 interface BasePaneProps {
-  // Wine type drives the flavour-dimension set (red vs white vs spark…).
-  // Pass null when the wine is blind-redacted — falls back to FL generic.
+  // Wine STYLE (red/white/spark/rose) — drives the structure axis set
+  // (resolveAxes); spark adds Bubbles. Pass the real style even for a blind-
+  // redacted wine (style is not identity). null/unknown → base wine set.
   wineType: string | null
 }
 
