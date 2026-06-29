@@ -14,7 +14,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "postinstall": "patch-package",
+    "postinstall": "command -v patch-package >/dev/null 2>&1 && patch-package || echo 'patch-package not installed — skipping patches'",
     "dev": "next dev",
     "build": "next build",
     "start": "next start -p ${PORT:-8080}",
