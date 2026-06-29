@@ -1,7 +1,7 @@
 'use client'
 import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
-import { resolveAxesColoured, detectLegacyDescriptorFL, perRatingAxes, type FlItem } from '@/lib/flavours'
+import { resolveAxesColoured, perRatingAxes, type FlItem } from '@/lib/flavours'
 import type { RatingValue } from '@/lib/rating'
 
 // Re-exported for back-compat — callers historically imported from this
@@ -81,11 +81,10 @@ export function RatingPane(props: Props) {
 }
 
 function ReadOnlyPane({ wineType, existing }: { wineType: string | null; existing: RatingValue | null }) {
-  // READ surface (§6d): legacy descriptor row → legacy wheel; structure row →
-  // only the axes present in it (present-and-0 drawn as a centre point).
+  // READ surface (§6d): only the axes present in the rating (present-and-0
+  // drawn as a centre point).
   const ex = existing?.flavors as Record<string, number> | undefined
-  const fl = (ex && detectLegacyDescriptorFL(ex))
-    || perRatingAxes(ex, resolveAxesColoured('wine', wineType))
+  const fl = perRatingAxes(ex, resolveAxesColoured('wine', wineType))
   const flavors = ex ?? {}
   return (
     <div style={{display:'flex',flexDirection:'column',gap:24}}>
