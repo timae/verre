@@ -17,7 +17,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { countryName, validateScore } from '@verre/core';
+import { countryName, validateScore, structureSubset } from '@verre/core';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
@@ -208,6 +208,13 @@ export default function ImpressionDetail() {
       notes !== (existing?.notes ?? '') ||
       JSON.stringify(flavors) !== JSON.stringify(existing?.flavors ?? {});
     if (!changed) return true;
+    // Structure-wheel zero rule (§5): an all-None rating is stored/returned as
+    // {} (the server collapses all-zero to empty), so `length === 0` correctly
+    // means "nothing rated" today — `flavors` here just round-trips the stored
+    // shape (native flavour INPUT doesn't exist yet). ⚠️ When the native chip
+    // input lands, it must NOT build a zeros-only map ({acid:0,body:0,…}) and
+    // expect this to read empty — clear to {} when every axis is None, matching
+    // the server's drop-all-or-keep-all shape.
     const empty = score === 0 && notes.trim() === '' && Object.keys(flavors).length === 0;
     if (empty && !existing) return true; // nothing rated, nothing stored — no POST
     if (validateScore(score).error) {
@@ -215,7 +222,11 @@ export default function ImpressionDetail() {
       return false;
     }
     try {
-      await rateMut.mutateAsync({ wineId, score, flavors, notes });
+      // Edit-path transform (§6g): strip a loaded legacy descriptor row to the
+      // structure subset for this wine's style so the registry-keyed write gate
+      // doesn't 400 a no-touch re-save. Pure-structure flavors pass through.
+      const cleanFlavors = structureSubset(flavors, 'wine', wine?.type ?? null);
+      await rateMut.mutateAsync({ wineId, score, flavors: cleanFlavors, notes });
       // The local edit is now the server state; allow re-seed on next wine.
       seededFor.current = null;
       return true;

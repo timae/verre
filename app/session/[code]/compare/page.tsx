@@ -6,7 +6,7 @@ import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
-import { getFL, detectFL, FL } from '@/lib/flavours'
+import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatScore } from '@verre/core'
 import { TCOL, ICO } from '@/lib/wineTypeColors'
@@ -212,17 +212,25 @@ export default function ComparePage() {
           const singleRating = activeUserId
             ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
             : null
-          const fl = singleRating?.flavors
-            ? detectFL(singleRating.flavors as Record<string, number>)
-            : getFL(wine.type)
+          // Single-taster read (§6d): legacy descriptor row → legacy wheel;
+          // structure row → per-present-key array (registry order).
+          const fl = (singleRating?.flavors && detectLegacyDescriptorFL(singleRating.flavors as Record<string, number>))
+            || perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine.type))
 
-          // For overlay: use FL from first rater that has data
-          const overlayFL = FL
-
+          // Multi-taster overlay frame (§10 #1): the UNION of structure axes
+          // present across the shown tasters, in registry order (so the frame is
+          // stable across renders, never insertion-order). A legacy descriptor-
+          // only taster contributes nothing to the frame for the Expand window
+          // (intentional — DUMP-set keys aren't in the structure registry). Each
+          // taster's polygon then spans only its own present axes (open path,
+          // handled in RadarChart).
           const overlaySeries = allWineRatings.map(r => ({
             label: r.user,
             flavors: (r.rating.flavors || {}) as Record<string, number>,
           }))
+          const presentKeys = new Set<string>()
+          for (const s of overlaySeries) for (const key of Object.keys(s.flavors)) presentKeys.add(key)
+          const overlayFL = resolveAxesColoured('wine', wine.type).filter(f => presentKeys.has(f.k))
 
           const chartShown = !isNarrow || expandedCards.has(wine.id)
           const raterEntries: RaterEntry[] = allWineRatings.map(r => ({ user: r.user, score: r.rating.score || 0 }))
@@ -269,8 +277,12 @@ export default function ComparePage() {
                         ))}
                       </div>
                     </div>
-                  ) : singleRating ? (
+                  ) : singleRating && fl.length > 0 ? (
                     <PolarChart flavors={(singleRating.flavors||{}) as Record<string,number>} fl={fl} size={CHART_SIZE.COMPARE} />
+                  ) : singleRating ? (
+                    <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
+                      no flavour data
+                    </div>
                   ) : (
                     <div style={{height:200,display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'var(--fg-faint)'}}>
                       no rating from {(activeUserId && ratersWithRatings.find(r => r.id === activeUserId)?.displayName) || 'this user'}

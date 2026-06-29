@@ -18,7 +18,7 @@ export function scoreWord(v: number): string {
   return w;
 }
 
-export const INTENSITY = ['None', 'Faint', 'Light', 'Medium', 'Bold', 'Intense'] as const;
+export const INTENSITY = ['None', 'Faint', 'Light', 'Medium', 'Strong', 'Intense'] as const;
 
 export function intensityWord(v: number): string {
   return INTENSITY[Math.max(0, Math.min(5, Math.round(v)))];

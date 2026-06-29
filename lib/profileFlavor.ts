@@ -1,19 +1,24 @@
 import { prisma } from '@/lib/prisma'
+import { resolveAxes } from '@/lib/flavours'
 
-// Legacy FL flavor keys — same set as `lib/flavours.ts` `FL`. Hardcoded
-// here so the SQL aggregate is parameter-free; these names map directly
-// to JSON keys in `ratings.flavors`. A schema migration would need to
-// touch this list too.
+// Profile-aggregate keys = the STRUCTURE axes (no longer hardcoded descriptors).
+// Derived from the registry so this can't drift from the axis set — the
+// "second hardcoded list" that broke the day descriptors were dropped (§6a) is
+// gone. The base wine set (resolveAxes('wine','red')) is the 7 universal wine
+// axes; `bubbles` (sparkling-only) is intentionally excluded — the profile
+// wheel is a cross-wine structure profile, not a per-style one.
 //
-// Strict regex: these names are interpolated raw into a SQL SELECT list
-// (column aliases and JSON path keys). Anything outside `[a-z_]+` would
-// either break the query or open it up to injection if the constant is
-// ever extended carelessly. The runtime check below catches any future
-// edit that forgets that.
-export const FL_KEYS = [
-  'floral', 'citrus', 'stone', 'tropical', 'herbal',
-  'oak', 'body', 'tannin', 'acid', 'sweet',
-] as const
+// Strict regex (kept): these names are interpolated raw into a SQL SELECT list
+// (column aliases + JSON path keys). The registry only ever produces lowercase
+// snake keys, but the guard stays as a hard backstop against any future axis
+// key that isn't injection-safe.
+//
+// Mixed-history caveat (§6a / §10 #4, deferred): a user with pre-migration rows
+// (only body/acid/tannin/sweet survive) + new structure rows will have the new
+// axes (finish/aroma/flavour) averaged over fewer rows than the carried-over
+// ones. The blend is accepted for now; per-axis n / post-migration-only is a
+// later product call.
+export const FL_KEYS = resolveAxes('wine', 'red').map(a => a.k)
 
 if (!FL_KEYS.every(k => /^[a-z_]+$/.test(k))) {
   throw new Error('FL_KEYS contains a value that is unsafe to interpolate into SQL')
@@ -47,8 +52,14 @@ export type FlavorBlock = {
 // `/u/[id]` page so both surfaces show the same numbers without a
 // duplicate roundtrip.
 export async function getProfileFlavor(userId: number): Promise<FlavorBlock> {
+  // Score-weighted mean per axis. Keyed on key-PRESENCE (`flavors ? '${f}'`),
+  // NOT `> 0`: under the structure-wheel zero rule (§5) a present 0 means "rated
+  // None" — a real judgment that must pull the average toward 0, not be excluded
+  // as "not rated". A row that never rated this axis (key absent) still
+  // contributes nothing (absent → not in numerator or denominator). NULLIF keeps
+  // an all-absent axis at NULL (→ "never tasted that dimension"), not 0.
   const weightedAvg = FL_KEYS.map(f =>
-    `ROUND((SUM((flavors->>'${f}')::numeric * score) / NULLIF(SUM(CASE WHEN (flavors->>'${f}')::numeric > 0 THEN score ELSE 0 END), 0))::numeric, 2) AS ${f}`,
+    `ROUND((SUM((flavors->>'${f}')::numeric * score) FILTER (WHERE flavors ? '${f}') / NULLIF(SUM(score) FILTER (WHERE flavors ? '${f}'), 0))::numeric, 2) AS ${f}`,
   ).join(', ')
   const rows = await prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(
     `SELECT ${weightedAvg},

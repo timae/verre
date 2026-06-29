@@ -1,14 +1,14 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 
-export const INTENSITY = ['none', 'faint', 'light', 'medium', 'bold', 'intense'] as const
+export const INTENSITY = ['none', 'faint', 'light', 'medium', 'strong', 'intense'] as const
 
 const DESCRIPTIONS: Record<typeof INTENSITY[number], string> = {
   none:    "the component isn't there",
   faint:   'barely detectable',
   light:   'clearly present but quiet',
   medium:  'balanced',
-  bold:    'forward, prominent',
+  strong:  'forward, prominent',
   intense: 'dominating',
 }
 

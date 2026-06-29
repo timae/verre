@@ -30,10 +30,7 @@ export interface UserStats {
   avgScore: number
   avgFlavorTannin: number
   avgFlavorAcid: number
-  avgFlavorOak: number
-  avgFlavorFloral: number
-  avgFlavorFruit: number       // avg of citrus+stone+tropical+red_fruit+dark_fruit
-  avgFlavorEarth: number
+  // oak/floral/earth/fruit dropped (§6b) — descriptor keys gone post-migration.
   maxNoteLength: number
   sessionParticipants: number  // max participants in a single session
   aiScansUsed: number          // stored in redis, approximated as 0 for now
@@ -206,11 +203,14 @@ export function evaluateBadges(stats: UserStats, alreadyEarned: Set<string>): st
   // Flavour
   check('tannic_titan',    stats.avgFlavorTannin >= 3.0 && stats.redCount >= 15)
   check('acid_freak',      stats.avgFlavorAcid >= 3.0 && stats.totalRatings >= 15)
-  check('oak_addict',      stats.avgFlavorOak >= 3.0 && stats.totalRatings >= 15)
-  check('floral_fanatic',  stats.avgFlavorFloral >= 3.0 && stats.totalRatings >= 15)
-  check('fruit_bomb',      stats.avgFlavorFruit >= 3.0 && stats.totalRatings >= 20)
+  // Descriptor badges — temporarily UNEARNABLE (§6b / §10 #11). oak/floral/earth/
+  // fruit keys are dropped post-migration; pinned false (like blind_believer)
+  // until the badge revamp re-keys them. Already-awarded user_badges rows persist.
+  check('oak_addict',      false)
+  check('floral_fanatic',  false)
+  check('fruit_bomb',      false)
+  check('earth_mover',     false)
   check('mineral_hunter',  stats.uniqueStyles >= 5 && stats.whiteCount >= 10)
-  check('earth_mover',     stats.avgFlavorEarth >= 2.5 && stats.totalRatings >= 15)
 
   // Social
   check('big_table',    stats.sessionParticipants >= 5)

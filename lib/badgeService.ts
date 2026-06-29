@@ -66,18 +66,18 @@ export async function getUserStats(userId: number): Promise<UserStats> {
   // operate on the current ratings dataset (snapshot counters are
   // total-count-only, not faceted). `@@index([userId])` on `Rating`
   // keeps this fast on the rate-POST hot path.
+  // Structure-wheel (§6b): the descriptor aggregates oak/floral/earth/avg_fruit
+  // are DROPPED — those keys no longer exist post-migration. The four badges
+  // that read them (oak_addict/floral_fanatic/earth_mover/fruit_bomb) go
+  // temporarily unearnable (§10 #11, deferred to the badge revamp); their
+  // predicates are pinned false in badges.ts. tannin/acid survive (kept axes).
   const [main] = await prisma.$queryRaw<[{
     avg_score:number|null; avg_tannin:number|null; avg_acid:number|null
-    avg_oak:number|null; avg_floral:number|null; avg_earth:number|null; avg_fruit:number|null
   }]>`
     SELECT
       AVG(score)::float AS avg_score,
       AVG((flavors->>'tannin')::numeric) FILTER (WHERE (flavors->>'tannin') IS NOT NULL)::float AS avg_tannin,
-      AVG((flavors->>'acid')::numeric)   FILTER (WHERE (flavors->>'acid')   IS NOT NULL)::float AS avg_acid,
-      AVG((flavors->>'oak')::numeric)    FILTER (WHERE (flavors->>'oak')    IS NOT NULL)::float AS avg_oak,
-      AVG((flavors->>'floral')::numeric) FILTER (WHERE (flavors->>'floral') IS NOT NULL)::float AS avg_floral,
-      AVG((flavors->>'earth')::numeric)  FILTER (WHERE (flavors->>'earth')  IS NOT NULL)::float AS avg_earth,
-      AVG(COALESCE((flavors->>'citrus')::numeric,0)+COALESCE((flavors->>'stone')::numeric,0)+COALESCE((flavors->>'tropical')::numeric,0)+COALESCE((flavors->>'red_fruit')::numeric,0)+COALESCE((flavors->>'dark_fruit')::numeric,0))::float AS avg_fruit
+      AVG((flavors->>'acid')::numeric)   FILTER (WHERE (flavors->>'acid')   IS NOT NULL)::float AS avg_acid
     FROM ratings WHERE user_id=${userId}`
 
   const [types] = await prisma.$queryRaw<[{
@@ -124,10 +124,6 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     avgScore:            Number(main.avg_score) || 0,
     avgFlavorTannin:     Number(main.avg_tannin) || 0,
     avgFlavorAcid:       Number(main.avg_acid) || 0,
-    avgFlavorOak:        Number(main.avg_oak) || 0,
-    avgFlavorFloral:     Number(main.avg_floral) || 0,
-    avgFlavorEarth:      Number(main.avg_earth) || 0,
-    avgFlavorFruit:      Number(main.avg_fruit) || 0,
     redCount:            Number(types.red_count),
     whiteCount:          Number(types.white_count),
     sparkCount:          Number(types.spark_count),

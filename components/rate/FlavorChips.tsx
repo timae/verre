@@ -160,7 +160,15 @@ function Chip({ item, value, onSet }: ChipProps) {
             <span style={{
               fontWeight: v ? 600 : 500,
               color: 'var(--fg)', fontSize: 13,
-            }}>{item.l}</span>
+            }}>
+              {item.l}
+              {/* Disambiguating subtitle, INPUT chip only (§6f / §10 #12):
+                  "smell" under Aroma, "taste" under Flavour. From the registry
+                  `sub` field — only those two axes carry it; the wheels ignore it. */}
+              {item.sub && (
+                <span style={{ color: 'var(--fg-dim)', fontWeight: 500, fontSize: 11, marginLeft: 5 }}>{item.sub}</span>
+              )}
+            </span>
             <span style={{
               fontFamily: 'monospace', fontSize: 10,
               color: v ? item.c : 'var(--fg-dim)',

@@ -177,7 +177,12 @@ export async function getRemovedState(code: string): Promise<'banned' | 'kicked'
 export type RateBody = {
   wineId: string;
   score: number; // 0..5 in 0.25 steps; 0 = not rated
-  flavors: Record<string, number>; // whole steps 1..5, zero levels omitted
+  // 0..5 integer intensities. Structure-wheel zero rule (§5): once ANY axis is
+  // rated, the rest persist as explicit 0 ("perceived none"); if EVERY axis is
+  // None the whole map is empty ({}). So a non-empty map carries zeros — do NOT
+  // assume "zeros omitted" (the pre-structure-wheel contract). The server's
+  // validateFlavors enforces this drop-all-or-keep-all shape.
+  flavors: Record<string, number>;
   notes: string;
 };
 

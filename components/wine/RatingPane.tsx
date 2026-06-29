@@ -1,7 +1,7 @@
 'use client'
 import { useRef, useState } from 'react'
 import { StarIcon } from '@/components/ui/icons'
-import { getFL, detectFL, FL, type FlItem } from '@/lib/flavours'
+import { resolveAxesColoured, detectLegacyDescriptorFL, perRatingAxes, type FlItem } from '@/lib/flavours'
 import type { RatingValue } from '@/lib/rating'
 
 // Re-exported for back-compat — callers historically imported from this
@@ -9,8 +9,9 @@ import type { RatingValue } from '@/lib/rating'
 export type { RatingValue }
 
 interface BasePaneProps {
-  // Wine type drives the flavour-dimension set (red vs white vs spark…).
-  // Pass null when the wine is blind-redacted — falls back to FL generic.
+  // Wine STYLE (red/white/spark/rose) — drives the structure axis set
+  // (resolveAxes); spark adds Bubbles. Pass the real style even for a blind-
+  // redacted wine (style is not identity). null/unknown → base wine set.
   wineType: string | null
 }
 
@@ -55,12 +56,14 @@ export function RatingPane(props: Props) {
 
   const { value, onChange } = props as EditableProps
 
-  // Detect flavour dimensions from the current rating's stored keys (so
-  // historic ratings with old key names still render right), else use
-  // the wine type's standard set, else generic.
-  const fl = wineType
-    ? getFL(wineType)
-    : (value.flavors && Object.keys(value.flavors).length ? detectFL(value.flavors) : FL)
+  // INPUT surface (§6d): hand the full structure axis set for this style so the
+  // user rates every structure axis. A blind-redacted wine passes its REAL style
+  // (style isn't identity — the taster perceives fizz from the glass), so a blind
+  // sparkling wine still offers Bubbles. wineType only falls to null/base for a
+  // genuinely unknown style (the defensive resolveAxes fallback). Legacy
+  // descriptor keys in a loaded rating are NOT shown as chips — the edit-path
+  // transform (§6g) strips them on save (in WineModal.commitWineRating).
+  const fl = resolveAxesColoured('wine', wineType)
 
   function setScore(score: number) { onChange({ ...value, score }) }
   function setFlavor(k: string, v: number) {
@@ -78,14 +81,12 @@ export function RatingPane(props: Props) {
 }
 
 function ReadOnlyPane({ wineType, existing }: { wineType: string | null; existing: RatingValue | null }) {
-  const fl = existing?.flavors && Object.keys(existing.flavors).length
-    ? detectFL(existing.flavors as Record<string, number>)
-    : wineType ? getFL(wineType) : FL
-  const flavors = (() => {
-    const base = fl.reduce((o, f) => ({ ...o, [f.k]: 0 }), {} as Record<string, number>)
-    if (existing?.flavors) Object.assign(base, existing.flavors)
-    return base
-  })()
+  // READ surface (§6d): legacy descriptor row → legacy wheel; structure row →
+  // only the axes present in it (present-and-0 drawn as a centre point).
+  const ex = existing?.flavors as Record<string, number> | undefined
+  const fl = (ex && detectLegacyDescriptorFL(ex))
+    || perRatingAxes(ex, resolveAxesColoured('wine', wineType))
+  const flavors = ex ?? {}
   return (
     <div style={{display:'flex',flexDirection:'column',gap:24}}>
       <ScoreSection score={existing?.score || 0} />
@@ -327,7 +328,7 @@ function ScoreSection({ score, setScore }: { score: number; setScore?: (s: numbe
 
 // ─── flavour ───────────────────────────────────────────
 
-const INTENSITY_LABELS = ['none', 'faint', 'light', 'medium', 'bold', 'intense']
+const INTENSITY_LABELS = ['none', 'faint', 'light', 'medium', 'strong', 'intense']
 
 function FlavourSection({
   fl, flavors, setFlavor,
@@ -406,6 +407,7 @@ function FlavourBar({
   }
 
   return (
+   <div>
     <div
       ref={barRef}
       // Note: data-no-pull is set on the surrounding FlavourSection
@@ -568,6 +570,14 @@ function FlavourBar({
         />
       ))}
     </div>
+    {/* Disambiguating subtitle BELOW the slider, INPUT only (§6f): "smell"
+        under Aroma, "taste" under Flavour. From the registry `sub` field — only
+        those two axes carry it (aroma + flavour share one grid row, so both
+        cells grow together — no ragged height). The read-only wheels ignore it. */}
+    {item.sub && (
+      <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:3, paddingLeft:2 }}>{item.sub}</div>
+    )}
+   </div>
   )
 }
 

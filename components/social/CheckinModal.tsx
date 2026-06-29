@@ -4,7 +4,7 @@ import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
-import { getFL } from '@/lib/flavours'
+import { resolveAxes, resolveAxesColoured, structureSubset } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { Modal } from '@/components/ui/Modal'
 import { ScoreSlider } from '@/components/ui/ScoreSlider'
@@ -76,7 +76,8 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
-  const fl = getFL(type || 'white')
+  // Input chips = the STRUCTURE axis set for this style (§6d input surface).
+  const fl = resolveAxesColoured('wine', type || 'white')
   const { data: friends = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
 
   const sourceAuthorId = copyFromCheckin?.author.id
@@ -138,7 +139,9 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
       method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         wineName, producer, vintage, grape, type,
-        score: score || null, flavors, notes,
+        // Edit-path transform (§6g): strip a loaded legacy row to the structure
+        // subset so the registry-keyed write gate doesn't 400 a no-touch re-save.
+        score: score || null, flavors: structureSubset(flavors, 'wine', type), notes,
         imageData: imageData === '__remove__' ? null : (imageData || undefined),
         copyFromCheckinId,
         ...location,
@@ -198,7 +201,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
               <div key={t.k} className="chip" data-sel={type === t.k ? t.k : undefined} onClick={() => {
                 if (t.k === type) return
                 setType(t.k)
-                setFlavors(getFL(t.k).reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
+                setFlavors(resolveAxes('wine', t.k).reduce((o, f) => ({ ...o, [f.k]: 0 }), {}))
               }}>
                 <span>{t.ico}</span>{t.l}
               </div>

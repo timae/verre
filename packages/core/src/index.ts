@@ -53,3 +53,10 @@ export {
   countryName,
   type Country,
 } from './countries'
+export {
+  resolveAxes,
+  perRatingAxes,
+  structureSubset,
+  type StructureAxis,
+  type WineStyle,
+} from './structureAxes'

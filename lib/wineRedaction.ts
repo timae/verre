@@ -50,7 +50,13 @@ export function redactWine(wine: WineMeta, opts: RedactWineOpts): WireWine | nul
     producer: '',
     vintage: '',
     grape: '',
-    type: 'red',   // keep as red for FL purposes but UI shows mystery icon
+    // `type` (the STYLE: red/white/spark/rose) is NOT masked. Style is not
+    // identity — a taster holding the glass already sees/tastes that it's
+    // sparkling vs still; name/producer/vintage/grape/region (above + below)
+    // are what identify the wine, and those stay blank. Passing the real style
+    // through lets the structure wheel offer the right axes (e.g. Bubbles on a
+    // blind sparkling wine) — the UI mystery slot keys on `_blind`, not `type`.
+    // (Was forced to 'red' for the old descriptor detectFL; no longer needed.)
     image: '',
     imageUrl: '',
     description: '',

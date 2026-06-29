@@ -4,7 +4,7 @@ import { useRef } from 'react'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { openWheelLightbox } from '@/components/charts/wheelLightbox'
-import { detectFL, FL } from '@/lib/flavours'
+import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { Modal } from '@/components/ui/Modal'
@@ -31,7 +31,10 @@ export function SavedWineModal({ wine, ratings, onClose, onRemove }: Props) {
   // ratings of differently-spelled same-name wines once the §8 scrub nulls
   // session_code on both rows.
   const rating = ratings.find(r => r.wine_id === wine.wine_id)
-  const fl = rating?.flavors ? detectFL(rating.flavors) : FL
+  // Read surface (§6d): legacy descriptor row → legacy wheel; structure row →
+  // per-present-key array. Style comes from the bookmark (no type on the rating).
+  const fl = (rating?.flavors && detectLegacyDescriptorFL(rating.flavors))
+    || perRatingAxes(rating?.flavors, resolveAxesColoured('wine', wine.style))
   const wheelRef = useRef<HTMLDivElement>(null)
 
   return (
