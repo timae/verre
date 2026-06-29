@@ -407,6 +407,7 @@ function FlavourBar({
   }
 
   return (
+   <div>
     <div
       ref={barRef}
       // Note: data-no-pull is set on the surrounding FlavourSection
@@ -569,6 +570,14 @@ function FlavourBar({
         />
       ))}
     </div>
+    {/* Disambiguating subtitle BELOW the slider, INPUT only (§6f): "smell"
+        under Aroma, "taste" under Flavour. From the registry `sub` field — only
+        those two axes carry it (aroma + flavour share one grid row, so both
+        cells grow together — no ragged height). The read-only wheels ignore it. */}
+    {item.sub && (
+      <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:3, paddingLeft:2 }}>{item.sub}</div>
+    )}
+   </div>
   )
 }
 
