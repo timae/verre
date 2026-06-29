@@ -400,18 +400,41 @@ psql "$DATABASE_URL" -c "\copy (
 ### 4.3 The migration itself (in-place, destructive → hand-written)
 
 Per `prisma/CLAUDE.md`, a destructive data migration is hand-written in `prisma/migrations/`, gated on
-the dump above, and triggered by Simon in a window he can monitor (not auto-run). The transform keeps
-the four structure keys and strips the rest by rebuilding each JSONB object:
+the dump above. **As-built (`20260629120000_structure_wheel_strip_descriptors`) it is a DENYLIST
+subtraction** — it removes EXACTLY the 16 descriptor keys and leaves every other key untouched:
 
 ```sql
 UPDATE ratings
-SET flavors = (
-  SELECT COALESCE(jsonb_object_agg(key, value), '{}'::jsonb)
-  FROM jsonb_each(flavors)
-  WHERE key IN ('body','acid','tannin','sweet')
-)
-WHERE flavors <> '{}'::jsonb;
+SET flavors = flavors - array[
+      'dark_fruit','red_fruit','dried_fruit','tree_fruit','tropical','stone','citrus',
+      'floral','floral_herb','herbal','mineral','oak','earth','spice','creamy','nutty'
+    ]
+WHERE jsonb_typeof(flavors) = 'object'
+  AND flavors <> '{}'::jsonb
+  AND (flavors ?| array[
+        'dark_fruit','red_fruit','dried_fruit','tree_fruit','tropical','stone','citrus',
+        'floral','floral_herb','herbal','mineral','oak','earth','spice','creamy','nutty'
+      ]);
 ```
+
+> **Why denylist, not the earlier allowlist `keep body/acid/tannin/sweet` rebuild (review fix).** An
+> allowlist `jsonb_object_agg … WHERE key IN ('body','acid','tannin','sweet')` rebuild would silently
+> DROP the new structure keys (`finish`/`aroma`/`flavour`/`bubbles`) from any row that ALSO carried a
+> descriptor key (a "mixed-vocabulary" row). The dry-run shows zero such rows in prod today, but the
+> denylist is self-protecting and unconditionally safe to re-run. The `?|` WHERE scopes the touched
+> rows (idempotency); `jsonb_typeof = 'object'` makes a malformed non-object row a clean no-op instead
+> of aborting the deploy.
+
+> **⚠️ AUTO-DEPLOY GATE (review fix — the load-bearing operational rule).** This ships as a normal
+> tracked Prisma migration, and **Deplo.io's `deployJob` runs `prisma migrate deploy` AUTOMATICALLY
+> before each release goes live** (`.deploio.yaml`). So **merging the PR == applying the UPDATE** — there
+> is NO separate "Simon triggers it later" step once it's merged. The "monitored window, not auto-run"
+> requirement is therefore re-expressed as a **merge gate**: the §4.2 backups (the `pg_dump` AND the
+> aroma-seed archive — the only capture of the 16 descriptor keys before they're stripped forever) MUST
+> be completed and verified BEFORE the PR is merged. The deploy IS the migrate step; the monitored
+> window is "between archive-complete and merge." Do not merge until the archive exists. (Earlier drafts
+> said "triggered by Simon, not auto-run" — that's true of the *decision to merge*, NOT of a separate
+> post-merge trigger; the apply is automatic on deploy.)
 
 **The migration must also reckon with the rollout order (see §8) — a bulk `UPDATE` that runs while
 old code is still live, or vice-versa, produces mixed/mis-rendered data. The sequencing is not
@@ -789,12 +812,24 @@ per #10, no `flavors_version` column per #8. Compare-overlay: decided per #1 bel
      `FlavourWheel` stay untouched. The doc's "renderers untouched" claim now carries this one scoped
      exception (§6d, §3 compare row).
 
-**🟡 Migration-step decisions (resolve before the archive+migrate window, after §8a dry-run):**
+**🟡 Migration-step decisions — RESOLVED by the 2026-06-29 prod dry-run (§8a):**
 
-2. **Fully-empty orphan rows** (§4.1(b)) — add a reap `DELETE` (the full multi-table + S3 runbook) to
-   the migration, or leave them? Decide after the §8a dry-run counts. **blocks: migration.**
-3. **Redis live-session ratings during migration** (§4.3) — quiet-window TTL ageout vs parallel pass
-   (with `KEEPTTL`). **blocks: migration.**
+2. **Fully-empty orphan rows** (§4.1(b)) — ~~add a reap `DELETE` … or leave them?~~ **DECIDED:
+   LEAVE, no reap.** The prod dry-run (2026-06-29) returned **0** fully-empty orphans (Q2) and **0**
+   lingering orphan session cards (Q3): of 44 non-empty rows, 43 keep ≥1 structure key and the single
+   collapsing row is engaged (carries a score/note), so it survives as a partial structure rating.
+   There is nothing to reap → the §4.1 eager-reap runbook (`rating_images` + S3 + feed_item
+   replication + extended backup) is **moot**; the migration is a pure `UPDATE`, no `DELETE` step.
+   Dry-run also confirmed **0 unexpected keys** (Q5) and the descriptor-key frequencies that size the
+   §4.2 aroma seed: `oak 38 · citrus 35 · herbal 32 · floral 31 · tropical 24 · stone 23 · red_fruit 21
+   · mineral 19 · earth 17 · nutty 10 · creamy 10 · floral_herb 10 · dried_fruit 10 · tree_fruit 10 ·
+   spice 8 · dark_fruit 8`. (The full report — queries + this table — is also kept at the gitignored
+   `.local/structure-wheel-migration/dry-run-2026-06-29.md`, but the load-bearing numbers are inlined
+   here so the evidence travels with the branch.) **blocks: nothing.**
+3. **Redis live-session ratings during migration** (§4.3) — ~~quiet-window TTL ageout vs parallel
+   pass.~~ **DECIDED for this window: no parallel pass.** Simon confirmed **no live session active**
+   (2026-06-29) → no Redis descriptor data to migrate. (Re-verify with `SCAN s:*:r:*` at the actual
+   migration moment if time has elapsed.) **blocks: nothing now.**
 
 **🟢 Deferrable (do not block PR 1; resolve before the surface they touch ships):**
 
