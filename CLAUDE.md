@@ -207,7 +207,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap, HoF trigger
 - [Social feed](docs/dev/social-feed.md) — unified `feed_items` model, follow graph, engagement trigger + auto-deletion cascade, mutual-follow tag gating, "had a sip" S3 copy flow, `<SessionFeedCard>` aggregate render with server-side blind redaction
 - [Avatars](docs/dev/avatars.md) — upload pipeline, MIME allow-list + magic-byte signatures, JPEG EXIF strip, account-delete reclaim
-- [Flavour charts](docs/dev/flavour-charts.md) — polar vs radar, type-specific dimensions (FL_RED/WHITE/SPARK/ROSE/legacy)
+- [Flavour charts](docs/dev/flavour-charts.md) — polar vs radar, structure intensity axes (resolveAxes/perRatingAxes; legacy FL_* descriptor sets removed in the Contract PR)
 - [iOS touch gestures](docs/dev/ios-touch-gestures.md) — pull-to-swap design history (architectures tried + discarded)
 - [Deployment](docs/dev/deployment.md) — Deploio env vars, deploy story
 - [Wine metadata](docs/dev/wine-metadata.md) — description/region/country/vinification/purchase_url specs, `cleanUrl` http(s)-only rule

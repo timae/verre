@@ -6,7 +6,7 @@ import { LineupLocked } from '@/components/session/LineupLocked'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { RadarChart } from '@/components/charts/RadarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
-import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
+import { perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatScore } from '@verre/core'
 import { TCOL, ICO } from '@/lib/wineTypeColors'
@@ -212,10 +212,9 @@ export default function ComparePage() {
           const singleRating = activeUserId
             ? ratersWithRatings.find(r => r.id === activeUserId)?.ratings[wine.id]
             : null
-          // Single-taster read (§6d): legacy descriptor row → legacy wheel;
-          // structure row → per-present-key array (registry order).
-          const fl = (singleRating?.flavors && detectLegacyDescriptorFL(singleRating.flavors as Record<string, number>))
-            || perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine.type))
+          // Single-taster read (§6d): per-present-key array (registry order),
+          // present-and-0 drawn at centre.
+          const fl = perRatingAxes(singleRating?.flavors as Record<string, number> | undefined, resolveAxesColoured('wine', wine.type))
 
           // Multi-taster overlay frame (§10 #1): the UNION of structure axes
           // present across the shown tasters, in registry order (so the frame is

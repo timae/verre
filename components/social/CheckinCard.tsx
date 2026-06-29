@@ -5,7 +5,7 @@ import { CheckinModal } from './CheckinModal'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { LikeButton } from './LikeButton'
-import { detectLegacyDescriptorFL, perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
+import { perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { StarRating } from '@/components/ui/StarRating'
 import { getLevel } from '@/lib/badges'
@@ -32,11 +32,9 @@ interface Props {
 }
 
 export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onDelete, onEdited, isOwn, onCopy }: Props) {
-  // Read surface (§6d): a legacy descriptor row keeps its legacy wheel during
-  // the Expand window; a structure row draws only the axes present in it
-  // (per-present-key, registry order). Only used when hasFlavors is true.
-  const fl = (checkin.flavors && detectLegacyDescriptorFL(checkin.flavors as Record<string,number>))
-    || perRatingAxes(checkin.flavors, resolveAxesColoured('wine', checkin.type || 'white'))
+  // Read surface (§6d): draws only the axes present in the rating (per-present-
+  // key, registry order). Only used when hasFlavors is true.
+  const fl = perRatingAxes(checkin.flavors, resolveAxesColoured('wine', checkin.type || 'white'))
 
   const hasFlavors = checkin.flavors && Object.values(checkin.flavors).some(v => v > 0)
   const wheelRef = useRef<HTMLDivElement>(null)
