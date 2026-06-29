@@ -1,5 +1,5 @@
 // Structure-wheel axis registry — the rated axes are STRUCTURE intensities
-// (Sweetness, Acidity, Body, Finish, Aroma, Flavour, Tannin, Bubbles…), not
+// (Sweet, Acidity, Body, Finish, Aroma, Flavour, Tannin, Bubbles…), not
 // flavour descriptors. Lives in @verre/core so the native input surface shares
 // one source of truth with web; pure data + pure functions only (no node:*,
 // next, prisma, React, DOM — core's platform-purity rule). lib/flavours.ts
@@ -36,7 +36,7 @@ export type WineStyle = 'red' | 'white' | 'rose' | 'spark' | 'nonalc'
 // Aroma/Flavour carry plain-language subtitles on the INPUT chip only, to
 // disambiguate "Aroma = smell" / "Flavour = taste" (proposal §6f / §10 #12).
 const WINE_BASE: StructureAxis[] = [
-  { k: 'sweet',   l: 'Sweetness' },
+  { k: 'sweet',   l: 'Sweet' }, // short label: 'Sweetness' (9ch) clipped at a side wheel cardinal past PolarChart's viewBox pad
   { k: 'acid',    l: 'Acidity' },
   { k: 'body',    l: 'Body' },
   { k: 'finish',  l: 'Finish' },
