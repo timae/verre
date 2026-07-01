@@ -1,33 +1,50 @@
 import { Redirect } from 'expo-router';
+import { useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { resolveAxes, perRatingAxes } from '@verre/core';
 import { FlavourWheel, type WheelAxis } from '@/components/scoring/FlavourWheel';
+import { FlavourInput } from '@/components/scoring/FlavourInput';
 import { StarScore } from '@/components/scoring/StarScore';
 import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { contrastRatio } from '@/lib/contrast';
+import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
 
 // Dev-only widget gallery + theme switcher: the Simulator verification surface
-// for the read-only scoring widgets and the NativeTabs/theming spike. Not a
-// user surface — the wheel ships to users when its screen lands (next
-// milestone), with the design-resolved flavour palette.
-const SAMPLE: WheelAxis[] = [
-  { label: 'Red fruit', color: '#C0563E', value: 4 },
-  { label: 'Citrus', color: '#D9A227', value: 2 },
-  { label: 'Floral', color: '#B070A8', value: 1 },
-  { label: 'Earth', color: '#7A5A3A', value: 3 },
-  { label: 'Spice', color: '#9A6FA0', value: 2 },
-  { label: 'Oak', color: '#A8865C', value: 5 },
-  { label: 'Body', color: '#6E5A8A', value: 3 },
-  { label: 'Acidity', color: '#5E9B8A', value: 4 },
-];
+// for the scoring widgets and the NativeTabs/theming spike. Not a user surface.
+//
+// Structure-wheel data: the axes are the real registry set (resolveAxes) with
+// colour resolved from the ACTIVE THEME (useFlavourColors) — switch themes above
+// to see the wheel + input retint. A sparkling style is used here so Bubbles
+// shows; the values are a demo profile.
+const SAMPLE_STYLE = 'spark';
+const SAMPLE_LEVELS: Record<string, number> = {
+  sweet: 2,
+  acid: 4,
+  body: 3,
+  finish: 4,
+  aroma: 3,
+  flavour: 5,
+  tannin: 2,
+  bubbles: 4,
+};
 
 export default function DevGallery() {
   const insets = useSafeAreaInsets();
   const { theme, choice, setChoice } = useTheme();
+  const axisColor = useFlavourColors();
+  const [levels, setLevels] = useState<Record<string, number>>(SAMPLE_LEVELS);
   if (!__DEV__) return <Redirect href="/moments" />;
+
+  // Wheel reads the SAME resolved axes + theme colours the input writes.
+  const sample: WheelAxis[] = perRatingAxes(levels, resolveAxes('wine', SAMPLE_STYLE)).map((a) => ({
+    label: a.l,
+    color: axisColor(a.k),
+    value: levels[a.k] ?? 0,
+  }));
 
   return (
     <>
@@ -54,12 +71,18 @@ export default function DevGallery() {
         </View>
 
         <View style={{ gap: space.xs }}>
+          <VText variant="heading">Flavour input</VText>
+          <VText variant="small" color="inkSoft">Fill-track — tap/drag; wheel below updates live.</VText>
+          <FlavourInput style={SAMPLE_STYLE} value={levels} onChange={setLevels} />
+        </View>
+
+        <View style={{ gap: space.xs }}>
           <VText variant="heading">Flavour wheel</VText>
           <View style={{ alignItems: 'center' }}>
-            <FlavourWheel axes={SAMPLE} />
+            <FlavourWheel axes={sample} />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-            <FlavourWheel axes={SAMPLE} size={72} labels={false} />
+            <FlavourWheel axes={sample} size={72} labels={false} />
             <VText variant="small" color="inkSoft">mini (feed-card scale)</VText>
           </View>
         </View>

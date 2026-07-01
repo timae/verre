@@ -119,7 +119,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // Registry-keyed write gate (§6g). Effective style = the body type (if a
     // valid style) else the EXISTING wine.style — same resolution the wine
     // update below uses. category is 'wine'. Descriptor key → 400; an edit
-    // surface must structureSubset() a loaded legacy row before re-saving.
+    // surface normalises via fillFlavourZeros() (drops non-registry keys) before
+    // re-saving, so a loaded legacy row can't trip this gate.
     const effStyle = type !== undefined
       ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null)
       : wine.style

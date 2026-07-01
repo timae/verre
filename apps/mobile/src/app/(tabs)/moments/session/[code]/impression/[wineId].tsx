@@ -17,7 +17,8 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { countryName, validateScore, structureSubset } from '@verre/core';
+import { countryName, validateScore, fillFlavourZeros } from '@verre/core';
+import { FlavourInput } from '@/components/scoring/FlavourInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
@@ -57,10 +58,6 @@ let navDir: 'next' | 'prev' = 'next';
 // (ScoreInput) + "Add tasting detail" disclosure.
 //
 // Flagged deviations (pixel-spec rule):
-// - Fill-track flavour inputs are NOT here yet — gated on the flavour
-//   colour palette (design brief pending). The detail panel ships with the
-//   note field; existing flavour data from other surfaces passes through
-//   saves untouched.
 // - Previous also saves pending edits (the mock leaves unsaved-edit
 //   handling unspecified; silent discard would lose data and the web's
 //   dirty-guard modal is a web pattern).
@@ -121,8 +118,8 @@ export default function ImpressionDetail() {
     seededFor.current = wineId;
     setScore(existing?.score ?? 0);
     setNotes(existing?.notes ?? '');
-    // Flavour input is palette-gated — carry existing chip data through
-    // saves untouched rather than wiping it.
+    // Seed the flavour grid from the stored structure map (keys present = rated,
+    // 0 = perceived None). FlavourInput edits it in place.
     setFlavors(existing?.flavors ?? {});
     setDetailOpen(!!(existing?.notes || Object.keys(existing?.flavors ?? {}).length));
   }, [wineId, ratings, existing]);
@@ -136,6 +133,10 @@ export default function ImpressionDetail() {
   const editNotes = (s: string) => {
     seededFor.current = wineId;
     setNotes(s);
+  };
+  const editFlavors = (next: Record<string, number>) => {
+    seededFor.current = wineId;
+    setFlavors(next);
   };
 
   // Crave = wine bookmark (web WineModal parity, optimistic). The local
@@ -203,29 +204,29 @@ export default function ImpressionDetail() {
   const saveIfNeeded = async (): Promise<boolean> => {
     Keyboard.dismiss();
     setSaveError(null);
+    // Normalise the sparse edit map (structure-wheel §5): if any axis is rated,
+    // every axis of this style is stored — untouched ones as explicit 0
+    // ("perceived None", a centre-point wedge); all-None collapses to {}. Also
+    // the edit-path transform (§6g) — only registry keys survive, so a stale
+    // descriptor row can't 400 the write gate.
+    const cleanFlavors = fillFlavourZeros(flavors, 'wine', wine?.type ?? null);
+    // Diff BOTH sides normalised, so missing ≡ explicit-0. A rating stored under
+    // the old sparse shape ({acid:4}) must not read as "changed" against the
+    // reloaded filled shape ({…,acid:4,…}) — otherwise tapping Next/Back on an
+    // untouched legacy rating reposts it and bumps its `at` timestamp.
+    const cleanExisting = fillFlavourZeros(existing?.flavors ?? {}, 'wine', wine?.type ?? null);
     const changed =
       score !== (existing?.score ?? 0) ||
       notes !== (existing?.notes ?? '') ||
-      JSON.stringify(flavors) !== JSON.stringify(existing?.flavors ?? {});
+      JSON.stringify(cleanFlavors) !== JSON.stringify(cleanExisting);
     if (!changed) return true;
-    // Structure-wheel zero rule (§5): an all-None rating is stored/returned as
-    // {} (the server collapses all-zero to empty), so `length === 0` correctly
-    // means "nothing rated" today — `flavors` here just round-trips the stored
-    // shape (native flavour INPUT doesn't exist yet). ⚠️ When the native chip
-    // input lands, it must NOT build a zeros-only map ({acid:0,body:0,…}) and
-    // expect this to read empty — clear to {} when every axis is None, matching
-    // the server's drop-all-or-keep-all shape.
-    const empty = score === 0 && notes.trim() === '' && Object.keys(flavors).length === 0;
+    const empty = score === 0 && notes.trim() === '' && Object.keys(cleanFlavors).length === 0;
     if (empty && !existing) return true; // nothing rated, nothing stored — no POST
     if (validateScore(score).error) {
       setSaveError('Scores go from 0 to 5 in quarter steps.');
       return false;
     }
     try {
-      // Edit-path transform (§6g): strip a loaded legacy descriptor row to the
-      // structure subset for this wine's style so the registry-keyed write gate
-      // doesn't 400 a no-touch re-save. Pure-structure flavors pass through.
-      const cleanFlavors = structureSubset(flavors, 'wine', wine?.type ?? null);
       await rateMut.mutateAsync({ wineId, score, flavors: cleanFlavors, notes });
       // The local edit is now the server state; allow re-seed on next wine.
       seededFor.current = null;
@@ -369,9 +370,13 @@ export default function ImpressionDetail() {
         </View>
       </Pressable>
       {detailOpen ? (
-        <View>
-          {/* Fill-track flavour grid lands here once the palette is decided
-              (design brief pending) — note field only until then. */}
+        <View style={{ gap: 18 }}>
+          {/* .filltrack per-attribute intensity grid — structure axes for this
+              wine's style, colour from the active theme. Shown on blind wines
+              too: `type` (the STYLE) is NOT masked by redaction — a taster
+              perceives fizz/tannin/body blind, so they rate structure while the
+              identity stays hidden (mirrors web RatingPane + wineRedaction). */}
+          <FlavourInput style={wine.type} value={flavors} onChange={editFlavors} />
           <NoteField value={notes} onChange={editNotes} />
         </View>
       ) : null}

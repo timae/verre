@@ -57,6 +57,7 @@ export {
   resolveAxes,
   perRatingAxes,
   structureSubset,
+  fillFlavourZeros,
   type StructureAxis,
   type WineStyle,
 } from './structureAxes'

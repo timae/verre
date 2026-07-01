@@ -113,3 +113,36 @@ export function structureSubset(
   }
   return out
 }
+
+// INPUT-side zero-fill (structure-wheel §5, "the rest persist as explicit 0").
+// The fill-track input shows EVERY axis of a style at once, so an untouched axis
+// left at its resting position reads as "perceived None", not "not rated". This
+// expands a sparse edit map to the full axis set:
+//   • ALL axes None (map empty or every value 0) → {} (the empty-rating signal;
+//     matches the server's validateFlavors drop-all-or-keep-all + the engagement
+//     cascade that keys on flavors = '{}').
+//   • ANY axis rated → every resolved axis is present, untouched ones as explicit
+//     0. `perRatingAxes` then draws all axes (rated = wedge, None = centre point),
+//     never an absent spoke — the "I tasted this, the others were absent" read.
+// Only keys in the resolved set are emitted (a stray non-registry key is dropped,
+// same keep-set as structureSubset). Pure + shared web↔native (both input
+// surfaces normalise the same way). Returns a fresh object.
+export function fillFlavourZeros(
+  flavors: Record<string, number> | null | undefined,
+  category: string | null | undefined,
+  style: string | null | undefined,
+): Record<string, number> {
+  const axes = resolveAxes(category, style)
+  const src = flavors ?? {}
+  let anyRated = false
+  for (const a of axes) {
+    if ((src[a.k] ?? 0) > 0) {
+      anyRated = true
+      break
+    }
+  }
+  if (!anyRated) return {}
+  const out: Record<string, number> = {}
+  for (const a of axes) out[a.k] = src[a.k] ?? 0
+  return out
+}

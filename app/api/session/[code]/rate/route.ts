@@ -67,7 +67,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Registry-keyed write gate (§6g): wine.type is the style (red/white/spark/
   // rose/nonalc); category is 'wine'. A descriptor key from a stale client → 400
   // (keeps the Contract PR's "no descriptor keys remain" precondition true). An
-  // edit surface must structureSubset() a loaded legacy row before re-saving.
+  // edit surface normalises via fillFlavourZeros() (which drops non-registry
+  // keys) before re-saving, so a loaded legacy row can't trip this gate.
   const keyErr = assertRegistryKeyed(validFlavors, 'wine', wine.type)
   if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
 

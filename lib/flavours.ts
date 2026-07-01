@@ -12,11 +12,12 @@ import {
   resolveAxes,
   perRatingAxes,
   structureSubset,
+  fillFlavourZeros,
   type StructureAxis,
   type WineStyle,
 } from '@verre/core'
 
-export { resolveAxes, perRatingAxes, structureSubset }
+export { resolveAxes, perRatingAxes, structureSubset, fillFlavourZeros }
 export type { StructureAxis, WineStyle }
 
 // Renderer-facing axis shape: the neutral core axis + a web colour. PolarChart /
