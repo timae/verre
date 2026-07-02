@@ -2,9 +2,11 @@
 
 **Status:** **SHIPPED end-to-end** — Expand (PR #56) → data migration (PR #59, `49aa684`) → Contract
 (PR #60, `bf9adc0`, 2026-06-29; legacy `FL_*`/`detectFL` deleted) all merged to main, plus the palette
-VALUES + native input (PR #62, 2026-07-02). The one remaining §7 item (multi-taster range view = design
-02d) is **spec-pinned and in build** — see §7 for the 2026-07-02 rulings. Historical decision detail
-below is kept as the rationale-of-record.
+VALUES + native input (PR #62, 2026-07-02) **and §7's multi-taster range view = the native compare
+screen 02d (PR #64, `82192d1`, 2026-07-02)** — see §7 for the as-built rulings. Nothing in this
+proposal remains to build; the §10 leftovers are parked on OTHER features (profile redesign, badge
+revamp, the separate alcohol-attribute proposal, the future aroma tree). Kept in place as the
+rationale-of-record per the proposals lifecycle.
 Headline corrections from review: this is
 **not** "only data changes" — two hard-coded SQL aggregates (profile, badges) duplicate the descriptor
 keys (§2, §6a/§6b); the missing-vs-zero render is a real Build-1 decision (§6d); a destructive
