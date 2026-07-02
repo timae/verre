@@ -129,9 +129,13 @@ function buildItems(
 ): CmpItem[] {
   if (!wines || !ratings) return [];
   const rosterIndex = rosterIndexOf(ratings, meta);
+  // Sorted by roster position: Object.entries follows the server's Redis SCAN
+  // order, which is NOT stable across polls — unsorted, radar layering, axis
+  // rows, and tied score rows would flicker between refreshes.
   const raterBuckets = Object.entries(ratings)
     .filter(([id]) => !hidden.has(id))
-    .map(([id, bucket]) => ({ id, ...bucket }));
+    .map(([id, bucket]) => ({ id, ...bucket }))
+    .sort((a, b) => rosterIndex.get(a.id)! - rosterIndex.get(b.id)!);
 
   const items = wines
     .map((wine, index): CmpItem => {
@@ -143,7 +147,11 @@ function buildItems(
           rating: b.ratings[wine.id],
           filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine.type),
           personIndex: rosterIndex.get(b.id)!,
-        }));
+        }))
+        // Compare renders scores + structure only — a notes-only (or stale
+        // cleared) rating has neither and would make a dead-end card ("No
+        // structure detail" + "No scores yet").
+        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
       const scores = raters.map((r) => r.rating.score || 0);
       return {
         wine,
@@ -586,7 +594,8 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             ) : (
               <ScoreRows
                 item={item}
-                mode={item.raters.length > 1 && item.raters.length <= 4 ? 'radar' : 'plain'}
+                mode={agg.n > 1 && agg.n <= 4 ? 'radar' : 'plain'}
+                structureFirst={agg.n >= 1 && agg.n <= 4}
                 selPerson={selPerson}
                 onSelectPerson={selectPerson}
                 onShowAll={() => setSheetOpen(true)}
@@ -637,7 +646,10 @@ function CmpChart({
   let head: string;
   let chart: React.ReactNode;
   let hint: string | null = null;
-  const person = detail ?? (item.raters.length === 1 ? item.raters[0] : undefined);
+  // Size-adaptive mode keys on the STRUCTURE-ENGAGED tasters (ruled via
+  // review feedback): one structure profile among score-only raters draws
+  // that person's wheel, never a one-series radar or a degenerate C1b.
+  const person = detail ?? (flavourRaters.length === 1 ? flavourRaters[0] : undefined);
   if (person) {
     // Person detail (row tap) or a single selected rater — same surface. A
     // person WITHOUT structure detail still draws the (empty) wheel when
@@ -655,13 +667,17 @@ function CmpChart({
         No structure detail from {person.displayName} yet.
       </VText>
     );
+    // Make the one-profile case unmistakable (Simon's ask): when the single
+    // wheel is automatic — only one person gave structure detail — say so.
+    // A deliberate row tap (detail) needs no disclaimer.
+    if (!detail) hint = `Structure detail from ${person.displayName} only.`;
   } else if (flavourRaters.length === 0) {
     return (
       <VText variant="caption" color="inkFaint" style={{ textAlign: 'center', paddingVertical: 14, fontStyle: 'italic' }}>
         No structure detail yet.
       </VText>
     );
-  } else if (item.raters.length <= 4) {
+  } else if (flavourRaters.length <= 4) {
     head = 'Group flavour';
     hint = 'Tap a flavour name to see the split.';
     chart = (
@@ -786,16 +802,27 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
 // for that person's rating detail; in the ≤4 radar view a person dot (before
 // the name) ties the row to their polygon (empty dot = no flavour profile).
 function ScoreRows({
-  item, mode, selPerson, onSelectPerson, onShowAll,
+  item, mode, structureFirst, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   mode: 'radar' | 'plain';
+  /** 1–4 structure profiles (Simon's ruling): structure-givers sort to the top
+      of the list — their rows pair with the chart (dot colours ↔ polygons) —
+      and a structure-only score-0 rater gets a row too (else their polygon
+      would have no legend). */
+  structureFirst: boolean;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
 }) {
   const personColor = usePersonColors();
-  const rows = item.scored;
+  const engaged = (r: Rater) => Object.keys(r.filled).length > 0;
+  let rows = item.scored;
+  if (structureFirst) {
+    const unscoredStructure = item.raters.filter((r) => engaged(r) && (r.rating.score || 0) === 0);
+    // Stable sort: structure-givers first (score-desc within), then the rest.
+    rows = [...item.scored, ...unscoredStructure].sort((a, b) => (engaged(b) ? 1 : 0) - (engaged(a) ? 1 : 0));
+  }
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
   if (rows.length === 0) {
     return (
@@ -813,11 +840,15 @@ function ScoreRows({
           name={r.displayName}
           active={selPerson === r.id}
           onPress={() => onSelectPerson(r.id)}
-          lead={mode === 'radar' ? <PersonDot color={Object.keys(r.filled).length > 0 ? personColor(r.personIndex) : null} /> : undefined}
+          lead={mode === 'radar' ? <PersonDot color={engaged(r) ? personColor(r.personIndex) : null} /> : undefined}
         >
           {/* .osv-num min-width 46 (+ star 17 + gap 4) so the score column aligns */}
           <View style={{ minWidth: 67 }}>
-            <StarScore value={r.rating.score} size={17} />
+            {(r.rating.score || 0) > 0 ? (
+              <StarScore value={r.rating.score} size={17} />
+            ) : (
+              <VText variant="small" color="inkFaint">—</VText>
+            )}
           </View>
         </PersonRow>
       ))}

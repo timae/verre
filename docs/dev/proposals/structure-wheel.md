@@ -655,9 +655,16 @@ line (the decided **C1b** comparison wheel, `.local/design/vero-scoring.js` `com
 spread between tasters is signal, not noise. This section is the data-half spec; the full screen is
 design section 02d. Rulings below are Simon's, 2026-07-02.
 
-**Size-adaptive display** (recomputed live when the people selection changes): 1 taster → plain
-flavour wheel + score word · 2–4 → overlaid per-taster radar · 5+ → C1b range wheel. Plus the ranked
-impression list + per-impression accordion.
+**Size-adaptive display** (recomputed live when the people selection changes) keys on the
+STRUCTURE-ENGAGED taster count (ruled 2026-07-02 — one profile among score-only raters draws that
+person's wheel, never a one-series radar or a degenerate C1b): 1 profile → plain flavour wheel (with
+a "Structure detail from NAME only." hint when automatic) · 2–4 → overlaid per-taster radar · 5+ →
+C1b range wheel. With 1–4 profiles the structure-givers sort to the TOP of the score list (dot
+colours pair with polygons; a structure-only score-0 rater gets a row with an em-dash score so their
+polygon has a legend). Rater iteration is roster-ordered (the wire map follows Redis SCAN order —
+unsorted it would flicker between polls), and raters with neither a score nor structure (notes-only
+/ stale rows) are excluded from Compare entirely. Plus the ranked impression list + per-impression
+accordion.
 
 **People-selector = 02d·4 variant B, the AVATAR RAIL (DECIDED, Simon 2026-07-02)**, adapted to
 hide/unhide semantics: one screen-level hidden set drives every compare view — the rail chips, the
