@@ -162,6 +162,12 @@ export default function SessionLineup() {
     });
   }, []);
   const showAllCmp = useCallback(() => setCmpHidden(new Set()), []);
+  // A roster of one renders no rail/picker — a surviving hidden entry would
+  // strand "Nobody selected" with no in-screen recovery. One person needs no
+  // selection: clear it.
+  useEffect(() => {
+    if (cmpPeople.length <= 1 && cmpHiddenRaw.size > 0) setCmpHidden(new Set());
+  }, [cmpPeople, cmpHiddenRaw]);
   // The rail's All chip TOGGLES: everything visible → deselect everyone;
   // anything hidden → select everyone (Simon's ruling).
   const toggleAllCmp = useCallback(() => {
