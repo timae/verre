@@ -145,3 +145,14 @@ not sticky sub-headers; FlashList v2 has `stickyHeaderConfig.offset` (the one
 native "pin below an offset" primitive) but isn't installed and would replace the
 list. So roll-your-own Dynamic Overlay is the current best fit — revisit if a
 maintained library closes the gap.
+
+## Gotcha: swapping the strip-slot content fires no scroll event
+
+The stuck gates (`tabsStuck`/`stripStuck`) recompute in `onScroll`. Anything
+that changes the pinned elements WITHOUT scrolling — the 02d in-screen tab
+swap replaces the reveal strip with the compare people rail — leaves the gates
+stale: the new element's overlay can stay invisible while its inline copy is
+already above the viewport (or the old element pins early on the way back).
+Keep the last scroll offset in a ref and re-run the gate math in an effect
+keyed on the swap + the measurements, resetting the strip measurement first so
+the fresh `onLayout` drives the recompute (see `CoverHeroLineup`).
