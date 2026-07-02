@@ -5,7 +5,7 @@ import { prisma } from '@/lib/prisma'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
-import { assertRegistryKeyed } from '@/lib/flavours'
+import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
@@ -112,19 +112,23 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
     validScore = c.value
   }
+  // Effective style = the body type (if a valid style) else the EXISTING
+  // wine.style — the same resolution the wine update below writes. Hoisted
+  // because BOTH flavour paths key on it (sent-flavours gate + the
+  // style-changed re-normalisation of stored flavours).
+  const effStyle = type !== undefined
+    ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null)
+    : wine.style
   if (flavors !== undefined) {
     const c = validateFlavors(flavors)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
-    validFlavorsValue = c.value
-    // Registry-keyed write gate (§6g). Effective style = the body type (if a
-    // valid style) else the EXISTING wine.style — same resolution the wine
-    // update below uses. category is 'wine'. Descriptor key → 400; an edit
-    // surface must structureSubset() a loaded legacy row before re-saving.
-    const effStyle = type !== undefined
-      ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null)
-      : wine.style
-    const keyErr = assertRegistryKeyed(validFlavorsValue, 'wine', effStyle)
-    if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
+    // Server-side flavour normalisation (§6g gate + §5 zero-fill — see
+    // gateAndFillFlavors). category is 'wine'. Non-zero descriptor key → 400;
+    // zero-valued off-style keys are stripped (stale-type fill artifacts);
+    // the stored shape is filled-or-empty by construction.
+    const norm = gateAndFillFlavors(c.value, 'wine', effStyle)
+    if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
+    validFlavorsValue = norm.value
   }
 
   // Image handling: image lives in rating_images now (not on the wine row).
@@ -195,7 +199,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         grape:    grape    !== undefined ? scrub(grape)                    : wine.grape,
         // Validate `type` against the seeded category_styles. Unknown
         // values coerce to NULL — see POST handler for the rationale.
-        style:    type     !== undefined ? (typeof type === 'string' && ['red','white','spark','rose','nonalc'].includes(type) ? type : null) : wine.style,
+        style:    effStyle,
         // wine.imageUrl is the catalog bottle shot, not the user's tasting
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create
@@ -208,7 +212,18 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       where: { id: rating.id },
       data: {
         score:   score   !== undefined ? (validScore ?? null) : rating.score,
-        flavors: flavors !== undefined ? (validFlavorsValue ?? {}) : (rating.flavors as object),
+        // No flavours in the body but the style CHANGED → re-normalise the
+        // STORED map against the new style (fillFlavourZeros drops off-set
+        // keys — a spark row's bubbles doesn't survive a switch to red — and
+        // re-fills; all-off-set collapses to {}). Otherwise a type-only PATCH
+        // from a raw/partial client would leave rating.flavors keyed to the
+        // OLD style, breaking the registry-keyed-for-effective-style invariant
+        // the write boundary now guarantees.
+        flavors: flavors !== undefined
+          ? (validFlavorsValue ?? {})
+          : effStyle !== wine.style
+            ? fillFlavourZeros(rating.flavors as Record<string, number>, 'wine', effStyle)
+            : (rating.flavors as object),
         notes:   notes   !== undefined ? scrub(notes)         : rating.notes,
       },
     })

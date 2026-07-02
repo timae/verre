@@ -1,0 +1,82 @@
+// Per-theme flavour-axis colours — the structure-wheel palette, DERIVED.
+// ─────────────────────────────────────────────────────────────────────────
+// Colour is per-platform presentation: the @verre/core axis registry
+// (structureAxes.ts) carries NO colour on purpose; native resolves an axis's
+// colour from the user's ACTIVE THEME at render time (proposal §3a / §10 #14).
+// This module is that native resolution — a (theme, axis key) → hex table plus
+// a hook that reads the current theme.
+//
+// The hexes are NOT copied here: they're derived at module load from the
+// tracked full palette (`./flavour-palette/palette.js` — all 13 structure +
+// 12 aroma keys × 6 themes; typed via its sibling `palette.d.ts`, the same
+// pattern as `vero-tokens.js`). Drift between the full palette and the runtime
+// subset is impossible by construction — change a colour in palette.js (re-
+// pasted from the design source `.local/design/flavour-palette.js`) and every
+// consumer retints. The full palette also holds colours for future categories
+// (cheese/beer/spirits) and the later aroma feature; wiring a new axis set =
+// adding its keys to KEY_TO_LABEL's sibling table when the registry grows.
+//
+// Registry key → design-palette `structure` label (the design names attributes
+// by label; the registry by key). ⚠️ registry `sweet` → structure "Sweetness",
+// NOT the aroma-set "Sweet" — different attributes that share a hex in most
+// themes; reading `structure` scoped below makes cross-wiring impossible.
+
+import { FLAVOUR_PALETTE, type StructureLabel } from './flavour-palette/palette';
+import { useTheme, type ThemeKey } from '@/theme';
+
+// The 8 wine axis keys carried today (structureAxes.ts WINE_BASE + Bubbles on
+// spark). A record keeps every theme's table exhaustive — TypeScript flags a
+// forgotten axis when a new theme is added or an axis renamed.
+export type FlavourAxisKey =
+  | 'sweet'
+  | 'acid'
+  | 'body'
+  | 'tannin'
+  | 'finish'
+  | 'aroma'
+  | 'flavour'
+  | 'bubbles';
+
+type AxisPalette = Record<FlavourAxisKey, string>;
+
+// StructureLabel-typed: a misspelled or since-removed design label here is a
+// COMPILE error (palette.d.ts literal union), not a silent accent-fallback.
+const KEY_TO_LABEL: Record<FlavourAxisKey, StructureLabel> = {
+  sweet: 'Sweetness',
+  acid: 'Acidity',
+  body: 'Body',
+  tannin: 'Tannin',
+  finish: 'Finish',
+  aroma: 'Aroma',
+  flavour: 'Flavour',
+  bubbles: 'Bubbles',
+};
+
+function wineSubset(theme: keyof typeof FLAVOUR_PALETTE): AxisPalette {
+  const structure = FLAVOUR_PALETTE[theme].structure;
+  const out = {} as AxisPalette;
+  for (const key of Object.keys(KEY_TO_LABEL) as FlavourAxisKey[]) out[key] = structure[KEY_TO_LABEL[key]];
+  return out;
+}
+
+// Explicitly keyed (not Object.keys-derived) so BOTH exhaustiveness checks
+// stay compile-time: a new ThemeKey errors this record; a theme missing from
+// palette.js errors the wineSubset argument.
+export const FLAVOUR_COLORS: Record<ThemeKey, AxisPalette> = {
+  apricot: wineSubset('apricot'),
+  charcoal: wineSubset('charcoal'),
+  cobalt: wineSubset('cobalt'),
+  aubergine: wineSubset('aubergine'),
+  clay: wineSubset('clay'),
+  mauve: wineSubset('mauve'),
+};
+
+// The active-theme axis-colour resolver. Returns a `(axisKey) => hex` reader
+// bound to the user's current theme; an unknown key (or a label missing from
+// palette.js) falls back to the theme accent so a wedge is never colourless.
+// Consumed by the flavour input + the wheel wiring so both read one source.
+export function useFlavourColors(): (key: string) => string {
+  const { themeKey, theme } = useTheme();
+  const palette = FLAVOUR_COLORS[themeKey];
+  return (key: string) => palette[key as FlavourAxisKey] ?? theme.accent;
+}

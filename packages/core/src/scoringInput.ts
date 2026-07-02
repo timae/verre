@@ -27,10 +27,14 @@ export function stepScore(value: number, direction: 1 | -1): number {
   return snapScore(value + direction * SCORE_STEP)
 }
 
-// Fraction of track width → whole-step flavour level 1..5; f < 0
-// (touch left of the track) clears to 0.
+// Fraction of track width → whole-step flavour level 1..5. A touch in the
+// leftmost sliver (≤ FLAVOUR_CLEAR_FRACTION, incl. negatives — finger left of
+// the track) clears to 0: the "drag/tap far-left to unset" affordance. The
+// threshold lives HERE so web + native fill-tracks share one clear policy.
+export const FLAVOUR_CLEAR_FRACTION = 0.04
+
 export function flavourLevelFromFraction(f: number): number {
-  if (f < 0) return 0
+  if (f <= FLAVOUR_CLEAR_FRACTION) return 0
   return Math.max(1, Math.min(FLAVOUR_MAX, Math.ceil(Math.min(1, f) * FLAVOUR_MAX)))
 }
 

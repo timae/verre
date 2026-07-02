@@ -93,23 +93,36 @@ export function perRatingAxes<T extends { k: string }>(
   return axes.filter((a) => Object.prototype.hasOwnProperty.call(flavors, a.k))
 }
 
-// The kept structure subset of a flavors map: drops any key NOT in
-// resolveAxes(category, style). This is the client-side EDIT-PATH transform
-// (proposal §6g) — apply it before re-saving a loaded rating so a legacy
-// descriptor row doesn't 400 the registry-keyed write gate. It mirrors the
-// migration's keep-set, so an edit-save produces the same shape the bulk
-// migration would. Shared web↔native (both edit surfaces need it), hence in
-// core. Pure-structure rows pass through unchanged.
-export function structureSubset(
+// INPUT-side zero-fill (structure-wheel §5, "the rest persist as explicit 0").
+// The fill-track input shows EVERY axis of a style at once, so an untouched axis
+// left at its resting position reads as "perceived None", not "not rated". This
+// expands a sparse edit map to the full axis set:
+//   • ALL axes None (map empty or every value 0) → {} (the empty-rating signal;
+//     matches the server's validateFlavors drop-all-or-keep-all + the engagement
+//     cascade that keys on flavors = '{}').
+//   • ANY axis rated → every resolved axis is present, untouched ones as explicit
+//     0. `perRatingAxes` then draws all axes (rated = wedge, None = centre point),
+//     never an absent spoke — the "I tasted this, the others were absent" read.
+// Only keys in the resolved set are emitted (a stray non-registry key is
+// dropped — the migration's keep-set). Pure + shared web↔native; the server
+// write boundary applies it too (lib/flavours.ts gateAndFillFlavors), so the
+// stored shape is filled-or-empty by construction. Returns a fresh object.
+export function fillFlavourZeros(
   flavors: Record<string, number> | null | undefined,
   category: string | null | undefined,
   style: string | null | undefined,
 ): Record<string, number> {
-  if (!flavors) return {}
-  const allowed = new Set(resolveAxes(category, style).map((a) => a.k))
-  const out: Record<string, number> = {}
-  for (const [k, v] of Object.entries(flavors)) {
-    if (allowed.has(k)) out[k] = v
+  const axes = resolveAxes(category, style)
+  const src = flavors ?? {}
+  let anyRated = false
+  for (const a of axes) {
+    if ((src[a.k] ?? 0) > 0) {
+      anyRated = true
+      break
+    }
   }
+  if (!anyRated) return {}
+  const out: Record<string, number> = {}
+  for (const a of axes) out[a.k] = src[a.k] ?? 0
   return out
 }

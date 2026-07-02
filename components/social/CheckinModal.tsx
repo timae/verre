@@ -4,7 +4,7 @@ import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
 import { useQuery } from '@tanstack/react-query'
-import { resolveAxes, resolveAxesColoured, structureSubset } from '@/lib/flavours'
+import { resolveAxes, resolveAxesColoured, fillFlavourZeros } from '@/lib/flavours'
 import { ConfirmDeleteButton } from '@/components/ui/ConfirmDeleteButton'
 import { Modal } from '@/components/ui/Modal'
 import { ScoreSlider } from '@/components/ui/ScoreSlider'
@@ -139,9 +139,11 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
       method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         wineName, producer, vintage, grape, type,
-        // Edit-path transform (§6g): strip a loaded legacy row to the structure
-        // subset so the registry-keyed write gate doesn't 400 a no-touch re-save.
-        score: score || null, flavors: structureSubset(flavors, 'wine', type), notes,
+        // Normalise flavours (structure-wheel §5 zero rule): any axis rated →
+        // every axis of this style stored (untouched = explicit 0); all-None →
+        // {}. Also the edit-path transform (§6g) — only registry keys survive, so
+        // a stale descriptor row can't 400 the write gate. One shape web+native.
+        score: score || null, flavors: fillFlavourZeros(flavors, 'wine', type), notes,
         imageData: imageData === '__remove__' ? null : (imageData || undefined),
         copyFromCheckinId,
         ...location,

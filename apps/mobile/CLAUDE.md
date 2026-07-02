@@ -167,7 +167,8 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **QR**: `QrCode` (`ui/QrCode.tsx`).
 - **Score READ**: `StarScore` (`scoring/StarScore.tsx`) — the one-star + value (`★ 4.25`). Never inline a star.
 - **Score WRITE**: `ScoreInput` (`scoring/ScoreInput.tsx`) — wide slider + editable number + word (gesture+haptics). The editable score numeral uses the `score` Dynamic Type surface, not the generic badge/code surfaces.
-- **Flavour wheel**: `FlavourWheel` (`scoring/FlavourWheel.tsx`).
+- **Flavour wheel (READ)**: `FlavourWheel` (`scoring/FlavourWheel.tsx`).
+- **Flavour WRITE**: `FlavourInput` (`scoring/FlavourInput.tsx`) — the per-axis fill-track grid (whole 0–5 steps, gesture+haptics, VoiceOver-adjustable); axes from `resolveAxes`, colour from the active theme via `useFlavourColors()` (`theme/flavourColors.ts`). ALL flavour-intensity input.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
 - **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
 - **Form widgets + image pipeline**: `momentForm.tsx` — `DateField`, `NotesField`, `fitCover`/`pickCover`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ wine images cap LOWER than covers — see add-impression notes).
@@ -272,8 +273,10 @@ reference for the app; the app's design lives here + in `docs/design/`.)
   commit like the web Rate pane — the POST fires on Save & next/finish (and
   Previous, a flagged deviation to avoid silent edit loss). "Clear my rating"
   is local too; an empty save triggers the server's engagement-deletion
-  cascade. Existing flavour chip data passes through saves untouched until
-  the fill-track input lands (palette-gated — see the flavour-colours brief).
+  cascade. Flavour intensities are edited via `FlavourInput` (the fill-track
+  grid — see the component catalog) inside "Add tasting detail"; the save
+  boundary normalises via `fillFlavourZeros` and diffs BOTH sides normalised
+  so an untouched legacy sparse row is never re-posted.
 
 ## Moment creation (milestone 4, 02a)
 

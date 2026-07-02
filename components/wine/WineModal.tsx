@@ -8,7 +8,7 @@ import { RatingPane, type RatingValue } from '@/components/wine/RatingPane'
 import { AddWineModal } from '@/components/wine/AddWineModal'
 import { useSession } from '@/components/session/SessionShell'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { structureSubset } from '@/lib/flavours'
+import { fillFlavourZeros } from '@/lib/flavours'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
 import { useUndoChip } from '@/lib/undoChip'
 import { usePullToSwap } from '@/lib/usePullToSwap'
@@ -473,13 +473,14 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
     setSaving(true)
     setCommitError(null)
     try {
-      // Edit-path transform (§6g): a rating loaded from a legacy descriptor row
-      // carries descriptor keys; the registry-keyed write gate would 400 a
-      // no-touch re-save. Strip to the structure subset for this wine's style
-      // before sending (mirrors the migration keep-set). Pure structure ratings
-      // pass through unchanged.
+      // Normalise flavours before sending (structure-wheel §5 zero rule): if any
+      // axis is rated, every axis of this style is stored — untouched ones as
+      // explicit 0 ("perceived None", a centre-point wedge); all-None collapses
+      // to {}. Also the edit-path transform (§6g) — only registry keys survive,
+      // so a stale descriptor row can't 400 the write gate. Keeps web + native
+      // writing ONE shape into the shared ratings.flavors column.
       const ratedStyle = wines.find(w => w.id === ratedWineId)?.type ?? null
-      const body = { wineId: ratedWineId, ...value, flavors: structureSubset(value.flavors, 'wine', ratedStyle) }
+      const body = { wineId: ratedWineId, ...value, flavors: fillFlavourZeros(value.flavors, 'wine', ratedStyle) }
       const res = await sessionFetch(code, `/api/session/${code}/rate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

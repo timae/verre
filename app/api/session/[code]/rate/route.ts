@@ -6,7 +6,7 @@ import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateFlavors } from '@/lib/checkinValidation'
-import { assertRegistryKeyed } from '@/lib/flavours'
+import { gateAndFillFlavors } from '@/lib/flavours'
 import { validateScore } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
@@ -64,19 +64,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const wine = wines.find(w => w.id === wineId)
   if (!wine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
-  // Registry-keyed write gate (§6g): wine.type is the style (red/white/spark/
-  // rose/nonalc); category is 'wine'. A descriptor key from a stale client → 400
-  // (keeps the Contract PR's "no descriptor keys remain" precondition true). An
-  // edit surface must structureSubset() a loaded legacy row before re-saving.
-  const keyErr = assertRegistryKeyed(validFlavors, 'wine', wine.type)
-  if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
+  // Server-side flavour normalisation (§6g gate + §5 zero-fill in one — see
+  // gateAndFillFlavors): wine.type is the SERVER's current style, so the stored
+  // shape (filled-or-empty, registry-keyed) holds for every writer regardless
+  // of what the client sent — a zero-valued off-style key from a stale-type
+  // race is stripped; a non-zero descriptor key from a stale client → 400.
+  const norm = gateAndFillFlavors(validFlavors, 'wine', wine.type)
+  if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
+  const storedFlavors = norm.value ?? {}
 
   // Rating is keyed by identity id, never by display name. Two participants
   // sharing a display name (legitimately via collision, or accidentally via
   // a client-side race) cannot overwrite each other's ratings.
   await redis.set(
     k.rating(c, identity.id, wineId),
-    JSON.stringify({ score: ratingScore, flavors: validFlavors, notes: notes || '', at: Date.now() }),
+    JSON.stringify({ score: ratingScore, flavors: storedFlavors, notes: notes || '', at: Date.now() }),
     { EX: TTL },
   )
 
@@ -147,7 +149,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             'session',
             ${identity.displayName},
             ${ratingScore}::numeric,
-            ${JSON.stringify(validFlavors)}::jsonb,
+            ${JSON.stringify(storedFlavors)}::jsonb,
             ${notes || null},
             NOW()
           )
@@ -179,7 +181,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // 'user'` gate at the top of the handler skips them). feed_items.user_id
         // NOT NULL enforces this at the schema level.
         const hasEngagement = ratingScore > 0
-          || Object.keys(validFlavors ?? {}).length > 0
+          || Object.keys(storedFlavors).length > 0
           || (notes != null && notes.length > 0)
         let cascadeReaped = false
         if (hasEngagement) {

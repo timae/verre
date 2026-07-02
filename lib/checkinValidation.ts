@@ -11,7 +11,7 @@ type ValidFlavors = { value: Record<string, number>; error?: undefined } | { val
 
 // Flavors: object with string keys → integers 0-5. Type-specific dimension
 // the axis SET (which keys are valid for a wine's style) is NOT enforced here —
-// that's the registry-keyed write gate's job (assertRegistryKeyed in
+// that's the write-boundary normaliser's job (gateAndFillFlavors in
 // lib/flavours.ts, called per-route). This function only guards STRUCTURE
 // (object of string→int 0–5) and applies the zero rule below.
 //
