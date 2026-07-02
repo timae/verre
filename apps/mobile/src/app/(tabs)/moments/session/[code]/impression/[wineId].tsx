@@ -25,7 +25,7 @@ import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { ReconnectingBar } from '@/components/ui/ConnectionState';
+import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
 import {
   ApiError,
   deleteWine,
@@ -80,9 +80,28 @@ export default function ImpressionDetail() {
     queryFn: () => getSessionState(code),
     refetchInterval: POLL_MS,
   });
-  const meta = state.data?.meta ?? null;
-  const wines = state.data?.wines ?? null;
-  const ratings = state.data?.ratings ?? null;
+  // Per-section graceful degradation (the line-up's lastRef merge): /state
+  // isolates a failed section to null + 200, so a degraded poll is a SUCCESS
+  // with a hole in it. Reading state.data directly turned that hole into the
+  // terminal "This impression is gone" flash (and bounced goTo's Next/Prev to
+  // router.back()) for a wine that still exists — keep the last good section
+  // and only trust a PRESENT section's content. Keyed on code so a different
+  // session can't inherit stale data (route params can swap in place).
+  const lastRef = useRef<{ code: string; data: SessionState }>({
+    code,
+    data: { meta: null, wines: null, ratings: null },
+  });
+  if (lastRef.current.code !== code) {
+    lastRef.current = { code, data: { meta: null, wines: null, ratings: null } };
+  }
+  if (state.data) {
+    lastRef.current.data = {
+      meta: state.data.meta ?? lastRef.current.data.meta,
+      wines: state.data.wines ?? lastRef.current.data.wines,
+      ratings: state.data.ratings ?? lastRef.current.data.ratings,
+    };
+  }
+  const { meta, wines, ratings } = lastRef.current.data;
   const index = wines?.findIndex((w) => w.id === wineId) ?? -1;
   const wine = index >= 0 ? wines![index] : null;
   const total = wines?.length ?? 0;
@@ -336,14 +355,27 @@ export default function ImpressionDetail() {
           onMenu={() => {}}
           onBack={() => router.back()}
         />
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>
-            {state.isPending ? '' : 'This impression is gone'}
-          </VText>
-          {!state.isPending ? (
-            <VText variant="small" color="inkSoft">It may have been removed from the line-up.</VText>
-          ) : null}
-        </View>
+        {/* "Gone" needs a REAL wine list that lacks this wine. wines === null
+            covers both first-load pending AND a cold degraded poll (wines
+            section null on every poll so far) — neither may claim deletion.
+            (A present-but-EMPTY list also lands here via hide-lineup's [] for
+            guests pre-start — "removed from the line-up" is the honest copy
+            for that too.) */}
+        <CenteredMessage
+          title="This impression is gone"
+          body="It may have been removed from the line-up."
+          pending={wines === null}
+        />
+        {/* Branch-local reconnecting condition: showReconnecting's error arm
+            requires wine !== null, which is never true here — without this,
+            a cold hard error / offline entry is a silent blank dead end.
+            The third arm covers the cold DEGRADED case: /state degrades a
+            failed section to null + 200, so isError never trips — settled
+            (!isPending) with wines still null means the wines section keeps
+            failing and the blank pending copy would otherwise sit signal-less
+            forever. First-load pending shows no bar (normal loading). The 5s
+            poll IS the retry, so the bar's "reconnecting" framing holds. */}
+        {!online || state.isError || (wines === null && !state.isPending) ? <ReconnectingBar /> : null}
       </View>
     );
   }

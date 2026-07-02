@@ -196,7 +196,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - **Promote `ClampText`** (`impression/[wineId].tsx`) to `components/`; `OvcAbout`'s description block is a copy.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
-- ✅ **DONE (partial) — `<CenteredMessage>`** built in `ui/ConnectionState.tsx` and adopted in the edit-impression screen (in the primitives list above). **Two pre-existing copies still un-migrated**: `FatalView` (`index.tsx`) and the impression-gone block (`impression/[wineId].tsx`) still hand-roll the same flex-center layout — migrate them to `<CenteredMessage>` next time you touch each. Still open: decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
+- ✅ **DONE (partial) — `<CenteredMessage>`** built in `ui/ConnectionState.tsx` and adopted in the edit-impression screen (in the primitives list above). **One pre-existing copy still un-migrated**: `FatalView` (`index.tsx`) still hand-rolls the same flex-center layout — migrate it to `<CenteredMessage>` next time you touch it (the impression-gone block migrated with the poll-degradation fix). Still open: decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
 - **Shared layout constants** — `GUTTER` (`=22`, the intentional `20` in `impression/[wineId].tsx` is a documented override), `FOOT_CLEARANCE`, are re-declared per-file ~8× / ~5×. Move to `lib/layout.ts` (alongside `TAB_BAR_CLEARANCE`) so the one intentional override is visible.
 - Also noted: `DateField` (`momentForm.tsx`) hand-rolls its OWN `Modal`+scrim bottom-sheet (not `ui/Sheet`) to host the OS date picker — justified, but reuse IT if you need a native-picker-in-a-sheet rather than rolling a third.
 
@@ -413,13 +413,11 @@ names in `src/lib/api/sessions.ts`.
   earlier collapse/double-title/half-stick bugs. Security review: CLEAN — gating
   is server-side, the client checks are cosmetic, the optimistic write can't leak
   an un-revealed identity.
-- **Known PRE-EXISTING gap (not this feature; M3 impression screen):** the
-  impression detail reads `state.data?.wines` directly with no per-section
-  graceful degradation, so a partial `/state` poll returning `wines:null` (the
-  route isolates a failed section to null + 200) briefly flashes "This impression
-  is gone" for a wine that still exists — and strands the host mid-reveal. The
-  line-up guards this with its `lastRef` per-section merge; the impression screen
-  should adopt the same. Out of scope for reveal/hide; flagged for a follow-up.
+- **FIXED (was the flagged M3 gap):** the impression detail now uses the same
+  `lastRef` per-section merge as the line-up (a `wines:null` degraded poll keeps
+  the last good list; the "This impression is gone" terminal requires a PRESENT
+  wines section that lacks the wine). Any new screen reading the shared `/state`
+  poll must adopt the same merge — never read `state.data?.<section>` directly.
 
 ## Theme / design
 
