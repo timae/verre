@@ -22,7 +22,8 @@ export function SessionTabs({ active, onSelect }: { active: SessionTab; onSelect
         accessibilityState={{ selected: on }}
         onPress={() => { if (!on) onSelect(key); }}
         style={({ pressed }) => ({
-          paddingVertical: 10,
+          // 13 (was 10) — Simon's call for a roomier strip, same round as centering.
+          paddingVertical: 13,
           paddingHorizontal: 12,
           borderBottomWidth: 2,
           borderBottomColor: on ? theme.accent : 'transparent',
@@ -40,7 +41,8 @@ export function SessionTabs({ active, onSelect }: { active: SessionTab; onSelect
     );
   };
   return (
-    <View style={{ flexDirection: 'row', gap: 2, borderBottomWidth: 1, borderBottomColor: theme.rule, marginBottom: 4 }}>
+    // Centered in the strip (Simon's try-it ruling 2026-07-02 — was left-aligned).
+    <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 2, borderBottomWidth: 1, borderBottomColor: theme.rule, marginBottom: 4 }}>
       {tab('lineup', 'Line-up')}
       {tab('compare', 'Compare')}
     </View>

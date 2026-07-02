@@ -201,7 +201,7 @@ export function PeopleRail({
   // every chip is active; hiding one drops All AND that chip, the rest stay.
   const activeChip = { borderColor: theme.accentLine, backgroundColor: theme.accentTint };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: GUTTER, paddingVertical: 8 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: GUTTER, paddingRight: GUTTER, paddingVertical: 8 }}>
       {/* .selchip-pick — fixed at the left (outside the scroll), opens the picker */}
       <Pressable
         accessibilityRole="button"
@@ -213,7 +213,7 @@ export function PeopleRail({
         <Icon name="chevrondown" size={13} color={theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingLeft: 6, paddingRight: GUTTER }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingLeft: 6, paddingRight: 14 }}>
           <Pressable
             accessibilityRole="button"
             accessibilityState={{ selected: allOn }}
@@ -255,14 +255,24 @@ export function PeopleRail({
             );
           })}
         </ScrollView>
-        {/* Soft fade where chips slide under the picker chip — a hard clip
-            edge read harshly. bg → transparent over the scroll's left edge. */}
+        {/* Soft fades at both clip edges — a hard clip read harshly. Left:
+            where chips slide under the picker chip. Right: the viewport now
+            ends at the content gutter (chips used to clip at the PHYSICAL
+            screen edge), so chips fade out on the line where all other
+            content ends. bg → transparent over the scroll edges. */}
         <LinearGradient
           pointerEvents="none"
           colors={[theme.bg, alpha(theme.bg, 0)]}
           start={{ x: 0, y: 0.5 }}
           end={{ x: 1, y: 0.5 }}
           style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 14 }}
+        />
+        <LinearGradient
+          pointerEvents="none"
+          colors={[alpha(theme.bg, 0), theme.bg]}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 14 }}
         />
       </View>
     </View>

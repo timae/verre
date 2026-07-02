@@ -469,7 +469,18 @@ export default function ImpressionDetail() {
                 nameBottomRef.current = y;
               }}
             />
-            {body}
+            {/* Content panel: rounded top corners overlapping the photo's
+                underlap strip — the photo shows in the corner notches. */}
+            <View
+              style={{
+                marginTop: -radius.xl,
+                borderTopLeftRadius: radius.xl,
+                borderTopRightRadius: radius.xl,
+                backgroundColor: theme.bg,
+              }}
+            >
+              {body}
+            </View>
           </ScrollView>
           <FloatHead
             title={barTitle}
@@ -776,20 +787,23 @@ function Hero({
   const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
+  // Scrim stops scaled to the VISIBLE region (the container runs radius.xl
+  // past the seam) so the darkening behind the caption is unchanged; past the
+  // last stop the darkest colour continues into the underlap/notches.
+  const scrimEnd = heroH / (heroH + radius.xl);
   return (
     <View
       style={{
-        height: heroH,
+        // The photo runs radius.xl PAST the visual seam so the content panel
+        // below (rounded top corners, negative margin — see the body wrapper in
+        // the photo branch) overlaps it and the photo stays visible in the
+        // corner notches. The panel is what's rounded, not the photo.
+        height: heroH + radius.xl,
         overflow: 'hidden',
         borderTopLeftRadius: pulled ? radius.xl : 0,
         borderTopRightRadius: pulled ? radius.xl : 0,
-        // Soft bottom corners so the photo→content seam reads as a rounded panel
-        // edge rather than a razor-straight line (visible here because the
-        // content body below sits on the screen bg).
-        borderBottomLeftRadius: radius.xl,
-        borderBottomRightRadius: radius.xl,
       }}
-      onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16)}
+      onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16 - radius.xl)}
     >
       <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
         <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
@@ -797,10 +811,10 @@ function Hero({
       <LinearGradient
         pointerEvents="none"
         colors={HERO_SCRIM}
-        locations={[0, 0.45, 1]}
+        locations={[0, 0.45 * scrimEnd, scrimEnd]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 }}>
+      <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 + radius.xl }}>
         <VText variant="label" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>
           {posLabel(index, total)}
         </VText>

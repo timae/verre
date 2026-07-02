@@ -667,6 +667,10 @@ function CoverHeroLineup({
   const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
+  // Scrim stops scaled to the VISIBLE region (the container runs radius.xl
+  // past the seam) so the darkening behind the title is unchanged; past the
+  // last stop the darkest colour continues into the underlap/notches.
+  const scrimEnd = heroH / (heroH + radius.xl);
   const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
   const rows = wines ?? [];
@@ -756,14 +760,19 @@ function CoverHeroLineup({
     return { transform: [{ translateY: clamp(stripTop.value - scrollY.value, floor, stripTop.value || floor) }] };
   });
 
+  // Top corners rounded on BOTH copies: inline, the tabs panel overlaps the
+  // photo's underlap strip (the photo shows in the corner notches); the pinned
+  // overlay keeps the identical shape so the inline↔overlay swap is seamless
+  // (at the pin the photo still fills the notches, then slides away; past it
+  // the notches sit over theme.bg content and read as nothing).
   const Tabs = (
-    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }}>
       <SessionTabs active={tab} onSelect={onSelectTab} />
     </View>
   );
   // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
   // the people rail (both pin under the pinned tabs via the same overlay).
-  // The rail owns its horizontal padding (its chips scroll edge-to-edge).
+  // The rail owns its horizontal padding (chips clip + fade at the content gutter).
   const Strip = onCompare ? (
     compareRail ? <View style={{ backgroundColor: theme.bg }}>{compareRail}</View> : null
   ) : showStrip ? (
@@ -791,16 +800,15 @@ function CoverHeroLineup({
             status bar via the dead-end + never). Soft top corners while pulled. */}
         <View
           style={{
-            height: heroH,
+            // The photo runs radius.xl PAST the visual seam so the content
+            // below (the tabs strip, or the lock panel — rounded top corners,
+            // negative margin) overlaps it and the photo stays visible in the
+            // corner notches. The panel is what's rounded, not the photo —
+            // matching the impression hero.
+            height: heroH + radius.xl,
             overflow: 'hidden',
             borderTopLeftRadius: pulled ? radius.xl : 0,
             borderTopRightRadius: pulled ? radius.xl : 0,
-            // Soft bottom corners, matching the impression hero. (Largely a
-            // no-op visually here — the flush opaque theme.bg tab strip sits
-            // directly below, so the rounded corners read bg-on-bg — but kept
-            // for parity with the impression hero's photo container.)
-            borderBottomLeftRadius: radius.xl,
-            borderBottomRightRadius: radius.xl,
           }}
         >
           <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
@@ -811,14 +819,14 @@ function CoverHeroLineup({
           <LinearGradient
             pointerEvents="none"
             colors={HERO_SCRIM}
-            locations={[0, 0.45, 1]}
+            locations={[0, 0.45 * scrimEnd, scrimEnd]}
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           />
           {/* Title: measure its bottom in content space (its parent is the photo
               View whose top is content-y 0, so y + height is content-Y). */}
           <View
             pointerEvents="none"
-            style={{ position: 'absolute', left: 18, right: 18, bottom: 14 }}
+            style={{ position: 'absolute', left: 18, right: 18, bottom: 14 + radius.xl }}
             onLayout={(e) => setTitleBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
           >
             <VText
@@ -836,6 +844,7 @@ function CoverHeroLineup({
             strip's pin floor so it stacks under the pinned tabs). */}
         {!lock ? (
           <View
+            style={{ marginTop: -radius.xl }}
             onLayout={(e) => {
               const { y, height } = e.nativeEvent.layout;
               tabsTop.value = y;
@@ -851,7 +860,9 @@ function CoverHeroLineup({
             Compare tab everything below the tabs is the compare body (the mock
             02d screens carry no about block). */}
         {lock ? (
-          <View style={{ paddingHorizontal: GUTTER }}>
+          // No tabs on a locked moment — the lock panel is what sits directly
+          // under the photo, so IT carries the rounded overlap.
+          <View style={{ paddingHorizontal: GUTTER, marginTop: -radius.xl, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, backgroundColor: theme.bg }}>
             <LockCard revealAt={lock} />
             {ovc}
           </View>
@@ -1193,6 +1204,10 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
   const when = sessionWhen(meta.dateFrom, meta.dateTo);
   const hasAny = meta.address || when || meta.link || meta.description || meta.participants.length > 0;
   if (!hasAny) return null;
+  // Foot-only block (no about lines): the foot's 14px separation margin would
+  // stack on the container's paddingTop and read top-heavy against the 14px
+  // below (Simon's centering call) — drop it; the paddings carry the spacing.
+  const footOnly = !meta.address && !when && !meta.link && !meta.description;
 
   const line = (children: React.ReactNode, key: string, onPress?: () => void) => (
     <Pressable
@@ -1291,14 +1306,14 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
           )}
         </Pressable>
       ) : null}
-      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} />
+      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} first={footOnly} />
     </View>
   );
 }
 
 // .ovc-foot + .ovc-chip: 28px initials circles, -8 overlap, host = accent,
 // overflow chip = accent tint, "Hosted by <b>…</b>".
-function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void }) {
+function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress, first }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void; first?: boolean }) {
   const { theme } = useTheme();
   if (meta.participants.length === 0) return null;
   const hostId = meta.hostIdentityId ?? (meta.hostUserId !== null ? `u:${meta.hostUserId}` : null);
@@ -1324,7 +1339,7 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNu
       accessibilityRole="button"
       accessibilityLabel="View people"
       onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14, opacity: pressed ? 0.6 : 1 })}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: first ? 0 : 14, opacity: pressed ? 0.6 : 1 })}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         {shown.map(chip)}
