@@ -685,10 +685,12 @@ moves another; closing is a deliberate tap; the card top stays put and content u
 **The avatar rail is the ONLY select/deselect surface** (second ruling round): deselected people
 disappear from every card entirely — rows, charts, Show-all sheet — and the card header (group ★ +
 consensus) and the RANKING recompute over the selection (the mock's selAccItem semantics). **Person
-rows are per-person detail views, not toggles**: tapping a name swaps the card's chart to that
-person's flavour wheel — NO score/word under the wheel (Simon: the score already shows on their
-row; a person without structure detail draws the empty wheel so the card height stays put). Tap
-again returns to the group view; axis drill and person detail are mutually exclusive. The **axis split opens from a C1b wedge OR an axis
+rows: in RADAR mode (2–4 profiles) a structure-giver's row toggles their LINE on the overlay
+(row dims, chart-layer only — the rail stays the selection surface); in the other modes a row tap
+opens that person's detail** — the card's chart swaps to their flavour wheel, NO score/word under
+the wheel (Simon: the score already shows on their row; a person without structure detail draws the
+empty wheel so the card height stays put), tap again returns to the group view; axis drill and
+person detail are mutually exclusive. The **axis split opens from a C1b wedge OR an axis
 label — on the radar too** (label tap); the radar wheelhead is just "Group flavour" (no taster
 count, no legend dots — the row dots carry the colour mapping). The rail's left clip edge (chips
 sliding under the picker chip) wears a soft bg→transparent fade, not a hard line.

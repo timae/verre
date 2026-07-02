@@ -78,7 +78,19 @@ export function Sheet({
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
-      <BottomSheetBackdrop {...props} appearsOnIndex={0} disappearsOnIndex={-1} pressBehavior="close" />
+      // zIndex on the BACKDROP itself: gorhom renders it as a SIBLING BEFORE
+      // the sheet's hosting container (plain absoluteFill, no zIndex), so the
+      // containerStyle hoist below does not reach it — without this the
+      // screen's zIndexed overlays (hero bar, sticky tab/rail overlays,
+      // reconnecting bar) paint OVER the dim layer. 99 keeps it just under
+      // the sheet (100).
+      <BottomSheetBackdrop
+        {...props}
+        style={[props.style, { zIndex: 99 }]}
+        appearsOnIndex={0}
+        disappearsOnIndex={-1}
+        pressBehavior="close"
+      />
     ),
     [],
   );

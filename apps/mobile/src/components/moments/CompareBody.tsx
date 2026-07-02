@@ -293,6 +293,7 @@ export function ComparePickerSheet({
   const insets = useSafeAreaInsets();
   const { height: windowH } = useWindowDimensions();
   const [query, setQuery] = useState('');
+  const [rowsH, setRowsH] = useState(0);
   const friendsQ = useQuery({
     queryKey: ['my-friends'],
     queryFn: getMyFriends,
@@ -366,7 +367,13 @@ export function ComparePickerSheet({
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
         </View>
-        <View style={{ paddingBottom: 8 }}>
+        {/* The rows area locks to its UNFILTERED measured height while a
+            search filters it — the dynamically-sized sheet must not slide
+            around with the result count (Simon's ruling). */}
+        <View
+          onLayout={(e) => { if (!q) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && rowsH > 0 ? { minHeight: rowsH } : null) }}
+        >
           {rows.map((p, i) => {
             const on = !hidden.has(p.id);
             return (
@@ -482,6 +489,10 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
+  // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
+  // person row hides/shows their LINE on the overlay (Simon's ruling; the
+  // rail stays the selection surface, this is purely visual).
+  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set());
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const agg = useMemo(
@@ -512,6 +523,18 @@ function CmpAccItem({ item }: { item: CmpItem }) {
     setSelAxis(-1);
     setSelPerson((prev) => (prev === id ? null : id));
   };
+  const toggleLine = (id: string) =>
+    setHiddenLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  // In radar mode rows toggle LINES, so person detail is unreachable there —
+  // clear a stale detail carried over from another mode.
+  const radarMode = agg.n > 1 && agg.n <= 4;
+  useEffect(() => {
+    if (radarMode && selPerson) setSelPerson(null);
+  }, [radarMode, selPerson]);
 
   const maker = wine.producer || ''; // producer only — no type/variety here (Simon's ruling)
   // Blind stubs: same mask vocabulary as the line-up ("Impression N", the
@@ -588,6 +611,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             item={item}
             agg={agg}
             detail={detail}
+            hiddenLines={hiddenLines}
             selAxis={detail ? -1 : selAxis}
             onSelectAxis={selectAxis}
           />
@@ -596,6 +620,9 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               <AxisSplit
                 item={item}
                 axis={drillAxis}
+                radarMode={radarMode}
+                hiddenLines={hiddenLines}
+                onToggleLine={toggleLine}
                 selPerson={selPerson}
                 onSelectPerson={selectPerson}
                 onShowAll={() => setSheetOpen(true)}
@@ -603,8 +630,10 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             ) : (
               <ScoreRows
                 item={item}
-                mode={agg.n > 1 && agg.n <= 4 ? 'radar' : 'plain'}
+                mode={radarMode ? 'radar' : 'plain'}
                 structureFirst={agg.n >= 1 && agg.n <= 4}
+                hiddenLines={hiddenLines}
+                onToggleLine={toggleLine}
                 selPerson={selPerson}
                 onSelectPerson={selectPerson}
                 onShowAll={() => setSheetOpen(true)}
@@ -633,11 +662,13 @@ type VisibleAgg = ReturnType<typeof aggregateFlavourAxes>;
 // otherwise: 1 → wheel, ≤4 → radar, 5+ → C1b. Axis drill-in triggers: C1b
 // wedge OR axis label; radar axis label.
 function CmpChart({
-  item, agg, detail, selAxis, onSelectAxis,
+  item, agg, detail, hiddenLines, selAxis, onSelectAxis,
 }: {
   item: CmpItem;
   agg: VisibleAgg;
   detail: Rater | undefined;
+  /** Radar-mode chart-layer toggle — hidden lines stay in rows/aggregates. */
+  hiddenLines: Set<string>;
   selAxis: number;
   onSelectAxis: (i: number) => void;
 }) {
@@ -693,11 +724,13 @@ function CmpChart({
     chart = (
       <RadarOverlay
         axes={axes.map((a) => a.l)}
-        series={flavourRaters.map((r) => ({
+        series={flavourRaters
+          .filter((r) => !hiddenLines.has(r.id))
+          .map((r) => ({
           id: r.id,
-          color: personColor(r.personIndex),
-          values: axes.map((a) => r.filled[a.k] ?? 0),
-        }))}
+            color: personColor(r.personIndex),
+            values: axes.map((a) => r.filled[a.k] ?? 0),
+          }))}
         size={232}
         maxWidth={maxWidth}
         selected={selAxis}
@@ -748,10 +781,13 @@ function PersonDot({ color }: { color: string | null }) {
 // tapping shows that person's rating detail on this impression; the active
 // row's name reads accent.
 function PersonRow({
-  first, active, onPress, name, lead, children,
+  first, active, off, accessibilityLabel, onPress, name, lead, children,
 }: {
   first: boolean;
   active?: boolean;
+  /** Radar line hidden — row dims to 0.42 (.cmp-prow-toggle is-off). */
+  off?: boolean;
+  accessibilityLabel?: string;
   onPress?: () => void;
   name: string;
   lead?: React.ReactNode;
@@ -782,14 +818,15 @@ function PersonRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected: !!active }}
-      accessibilityLabel={active ? `Hide ${name}'s rating detail` : `Show ${name}'s rating detail`}
+      accessibilityState={{ selected: off !== undefined ? !off : !!active }}
+      accessibilityLabel={accessibilityLabel ?? (active ? `Hide ${name}'s rating detail` : `Show ${name}'s rating detail`)}
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
         marginHorizontal: -6, paddingHorizontal: 6, borderRadius: radius.sm,
         borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft,
         backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+        opacity: off ? 0.42 : 1,
       })}
     >
       {inner}
@@ -826,11 +863,13 @@ function scoreRowsFor(item: CmpItem, structureFirst: boolean): Rater[] {
 }
 
 function ScoreRows({
-  item, mode, structureFirst, selPerson, onSelectPerson, onShowAll,
+  item, mode, structureFirst, hiddenLines, onToggleLine, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   mode: 'radar' | 'plain';
   structureFirst: boolean;
+  hiddenLines: Set<string>;
+  onToggleLine: (id: string) => void;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
@@ -847,13 +886,20 @@ function ScoreRows({
   }
   return (
     <View>
-      {shown.map((r, i) => (
+      {shown.map((r, i) => {
+        // Radar mode (Simon's ruling): a structure-giver's row toggles their
+        // LINE on the overlay; rows without a line (score-only) do nothing.
+        // Other modes: row tap opens that person's rating detail.
+        const lineRow = mode === 'radar' && hasStructure(r);
+        return (
         <PersonRow
           key={r.id}
           first={i === 0}
           name={r.displayName}
-          active={selPerson === r.id}
-          onPress={() => onSelectPerson(r.id)}
+          active={mode !== 'radar' && selPerson === r.id}
+          off={lineRow ? hiddenLines.has(r.id) : undefined}
+          accessibilityLabel={lineRow ? `${hiddenLines.has(r.id) ? 'Show' : 'Hide'} ${r.displayName}'s line on the chart` : undefined}
+          onPress={mode === 'radar' ? (lineRow ? () => onToggleLine(r.id) : undefined) : () => onSelectPerson(r.id)}
           lead={mode === 'radar' ? <PersonDot color={hasStructure(r) ? personColor(r.personIndex) : null} /> : undefined}
         >
           {/* .osv-num min-width 46 (+ star 17 + gap 4) so the score column aligns */}
@@ -865,7 +911,8 @@ function ScoreRows({
             )}
           </View>
         </PersonRow>
-      ))}
+        );
+      })}
       {rows.length > CAP ? <ShowAllButton total={rows.length} onPress={onShowAll} /> : null}
     </View>
   );
@@ -877,10 +924,13 @@ type AxisAgg = VisibleAgg['axes'][number];
 // on a linear 0–5 track) and each selected flavour-engaged taster's intensity.
 // Rows switch to that person's detail view on tap (same as resting rows).
 function AxisSplit({
-  item, axis, selPerson, onSelectPerson, onShowAll,
+  item, axis, radarMode, hiddenLines, onToggleLine, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   axis: AxisAgg;
+  radarMode: boolean;
+  hiddenLines: Set<string>;
+  onToggleLine: (id: string) => void;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
@@ -930,8 +980,10 @@ function AxisSplit({
           key={r.id}
           first={i === 0}
           name={r.displayName}
-          active={selPerson === r.id}
-          onPress={() => onSelectPerson(r.id)}
+          active={!radarMode && selPerson === r.id}
+          off={radarMode ? hiddenLines.has(r.id) : undefined}
+          accessibilityLabel={radarMode ? `${hiddenLines.has(r.id) ? 'Show' : 'Hide'} ${r.displayName}'s line on the chart` : undefined}
+          onPress={radarMode ? () => onToggleLine(r.id) : () => onSelectPerson(r.id)}
         >
           <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
@@ -988,6 +1040,7 @@ function ShowAllSheet({
   const insets = useSafeAreaInsets();
   const { height: windowH } = useWindowDimensions();
   const [query, setQuery] = useState('');
+  const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
   const sign = dir === 'high' ? -1 : 1;
   const q = query.trim().toLowerCase();
@@ -1035,7 +1088,12 @@ function ShowAllSheet({
             <Icon name="sort" size={18} color={dir === 'low' ? theme.accent : theme.inkSoft} />
           </Pressable>
         </View>
-        <View style={{ paddingBottom: 8 }}>
+        {/* Same unfiltered-height lock as the picker — stable sheet while
+            searching. */}
+        <View
+          onLayout={(e) => { if (!q) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && rowsH > 0 ? { minHeight: rowsH } : null) }}
+        >
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
               {axis ? (
