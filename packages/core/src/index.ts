@@ -22,14 +22,23 @@ export {
   RADIUS_FRACTION,
   LABEL_OFFSET,
   STAR_PATH,
+  MIN_BAND_THICKNESS,
+  AVG_ARC_FRACTION,
   wheelEase,
   wheelRadius,
   flavourWheelGeometry,
+  comparisonWheelGeometry,
+  radarOverlayGeometry,
+  radarSeriesPoints,
   starFills,
   type WheelWedge,
   type WheelLabel,
   type WheelLabelAnchor,
   type WheelGeometry,
+  type ComparisonWedge,
+  type ComparisonWheelGeometry,
+  type RadarSpoke,
+  type RadarOverlayGeometry,
 } from './scoringGeometry'
 export {
   SCORE_MAX,
@@ -61,3 +70,11 @@ export {
   type StructureAxis,
   type WineStyle,
 } from './structureAxes'
+export {
+  aggregateFlavourAxes,
+  consensusFromRatings,
+  groupScoreAverage,
+  type AxisAggregate,
+  type FlavourAggregate,
+  type ConsensusKey,
+} from './compareAggregate'

@@ -100,6 +100,171 @@ function round1(v: number): number {
   return Math.round(v * 10) / 10
 }
 
+function labelAt(i: number, n: number, size: number): WheelLabel {
+  const cx = size / 2
+  const cy = size / 2
+  const R = size * RADIUS_FRACTION
+  const a = angleAt(i, n)
+  const c = Math.cos(a)
+  return {
+    index: i,
+    x: round1(cx + c * (R + LABEL_OFFSET)),
+    y: round1(cy + Math.sin(a) * (R + LABEL_OFFSET)),
+    anchor: Math.abs(c) < 0.35 ? 'middle' : c > 0 ? 'start' : 'end',
+  }
+}
+
+// ── Comparison wheel · C1b (structure-wheel §7 / design 02d) ────────────────
+// Per axis: a min→max range band (two tones, render layer's concern) with a
+// quiet arc at the group average, over a full-height faint base wedge that is
+// also the tap target. Geometry mirrors .local/design/vero-scoring.js
+// comparisonC1b — open hub, 0.62 ease, 3° gaps.
+
+/** A too-thin band still reads as a band: below this it thickens symmetrically around its middle. */
+export const MIN_BAND_THICKNESS = 5
+/** The average arc spans slightly less than the wedge so it reads as a tick, not a divider. */
+export const AVG_ARC_FRACTION = 0.86
+
+export type ComparisonWedge = {
+  index: number
+  /** Full annular sector r0→R — faint underlay + tap target. */
+  baseD: string
+  /** min→max range band (min-thickness enforced, inner clamped to the hub). */
+  bandD: string
+  /** Arc at the group average. */
+  avgD: string
+}
+
+export type ComparisonWheelGeometry = {
+  size: number
+  cx: number
+  cy: number
+  R: number
+  r0: number
+  wedges: ComparisonWedge[]
+  labels: WheelLabel[]
+}
+
+export function comparisonWheelGeometry(
+  values: ReadonlyArray<{ min: number; max: number; avg: number }>,
+  size: number,
+): ComparisonWheelGeometry {
+  const n = values.length
+  const cx = size / 2
+  const cy = size / 2
+  const R = size * RADIUS_FRACTION
+  const r0 = R * HUB_FRACTION
+  const gapAngle = (GAP_DEG * Math.PI) / 180
+  const half = Math.PI / n - gapAngle / 2
+  const pt = (a: number, rad: number): [number, number] => [cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]
+  // Annular sector between radii ri→ro across the wedge's angular span.
+  const ringPath = (a: number, ri: number, ro: number): string => {
+    const [i1x, i1y] = pt(a - half, ri)
+    const [i2x, i2y] = pt(a + half, ri)
+    const [o1x, o1y] = pt(a - half, ro)
+    const [o2x, o2y] = pt(a + half, ro)
+    return (
+      `M ${round1(i1x)} ${round1(i1y)} L ${round1(o1x)} ${round1(o1y)} ` +
+      `A ${round1(ro)} ${round1(ro)} 0 0 1 ${round1(o2x)} ${round1(o2y)} ` +
+      `L ${round1(i2x)} ${round1(i2y)} ` +
+      `A ${round1(ri)} ${round1(ri)} 0 0 0 ${round1(i1x)} ${round1(i1y)} Z`
+    )
+  }
+
+  const wedges: ComparisonWedge[] = []
+  const labels: WheelLabel[] = []
+  values.forEach((v, i) => {
+    const a = angleAt(i, n)
+    labels.push(labelAt(i, n, size))
+    let inner = wheelRadius(v.min, R, r0)
+    let outer = wheelRadius(v.max, R, r0)
+    if (outer - inner < MIN_BAND_THICKNESS) {
+      const mid = (inner + outer) / 2
+      inner = mid - MIN_BAND_THICKNESS / 2
+      outer = mid + MIN_BAND_THICKNESS / 2
+    }
+    // Deliberate improvement over the mock (which lets a min=max=5 band poke
+    // past the rim): shift the thickened band back inside R, thickness intact.
+    if (outer > R) {
+      inner -= outer - R
+      outer = R
+    }
+    inner = Math.max(inner, r0)
+    const rAvg = wheelRadius(v.avg, R, r0)
+    const lhalf = half * AVG_ARC_FRACTION
+    const [a1x, a1y] = pt(a - lhalf, rAvg)
+    const [a2x, a2y] = pt(a + lhalf, rAvg)
+    wedges.push({
+      index: i,
+      baseD: ringPath(a, r0, R),
+      bandD: ringPath(a, inner, outer),
+      avgD:
+        `M ${round1(a1x)} ${round1(a1y)} ` +
+        `A ${round1(rAvg)} ${round1(rAvg)} 0 0 1 ${round1(a2x)} ${round1(a2y)}`,
+    })
+  })
+  return { size, cx, cy, R, r0, wedges, labels }
+}
+
+// ── Overlaid multi-taster radar (02d, 2–4 tasters) ──────────────────────────
+// Same radius/hub/ease as the wheels so a value sits at the SAME radius on the
+// radar and the C1b wheel (the design's stated intent). Rings at the eased
+// whole intensities 1..5; spokes run r0→R; series polygons are the render
+// layer's concern via radarSeriesPoints.
+
+export type RadarSpoke = { index: number; x1: number; y1: number; x2: number; y2: number }
+
+export type RadarOverlayGeometry = {
+  size: number
+  cx: number
+  cy: number
+  R: number
+  r0: number
+  /** Guide-ring radii at intensities 1..5 (eased). */
+  rings: number[]
+  spokes: RadarSpoke[]
+  labels: WheelLabel[]
+}
+
+export function radarOverlayGeometry(n: number, size: number): RadarOverlayGeometry {
+  const cx = size / 2
+  const cy = size / 2
+  const R = size * RADIUS_FRACTION
+  const r0 = R * HUB_FRACTION
+  const rings = [1, 2, 3, 4, 5].map((k) => round1(wheelRadius(k, R, r0)))
+  const spokes: RadarSpoke[] = []
+  const labels: WheelLabel[] = []
+  for (let i = 0; i < n; i++) {
+    const a = angleAt(i, n)
+    spokes.push({
+      index: i,
+      x1: round1(cx + Math.cos(a) * r0),
+      y1: round1(cy + Math.sin(a) * r0),
+      x2: round1(cx + Math.cos(a) * R),
+      y2: round1(cy + Math.sin(a) * R),
+    })
+    labels.push(labelAt(i, n, size))
+  }
+  return { size, cx, cy, R, r0, rings, spokes, labels }
+}
+
+/** One taster's polygon vertices (normalized full axis set — every value present, 0 sits on the hub). */
+export function radarSeriesPoints(
+  values: ReadonlyArray<number>,
+  size: number,
+): Array<{ x: number; y: number }> {
+  const n = values.length
+  const cx = size / 2
+  const cy = size / 2
+  const R = size * RADIUS_FRACTION
+  const r0 = R * HUB_FRACTION
+  return values.map((v, i) => {
+    const a = angleAt(i, n)
+    const r = wheelRadius(v, R, r0)
+    return { x: round1(cx + Math.cos(a) * r), y: round1(cy + Math.sin(a) * r) }
+  })
+}
+
 /**
  * Per-star fill fraction (0..1) for a 5-star row at a quarter-step value —
  * e.g. 3.25 → [1, 1, 1, 0.25, 0].

@@ -17,19 +17,13 @@ import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/compo
 import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
+import { WINE_TYPES } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
 
 // The 5 wine types the backend accepts (lib/session.ts). FLAGGED DEVIATION
 // from the mock's 7-option dropdown (Orange/Dessert/Fortified have no backend
-// home): these match the web AddWineModal exactly. Labels are the web's
-// ("Bubbles" for spark, "Non-alc" for nonalc), code is what the server stores.
-const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
-  { code: 'red', label: 'Red' },
-  { code: 'white', label: 'White' },
-  { code: 'spark', label: 'Sparkling' },
-  { code: 'rose', label: 'Rosé' },
-  { code: 'nonalc', label: 'Non-alc' },
-];
+// home): these match the web AddWineModal exactly (list now shared from
+// lib/momentFormat.ts — Compare's maker line reads the same labels).
 
 function isWineTypeCode(value: string): value is WineTypeCode {
   return WINE_TYPES.some((t) => t.code === value);

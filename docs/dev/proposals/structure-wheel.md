@@ -1,13 +1,10 @@
 # Structure Wheel — proposal
 
-**Status:** **Expand PR BUILT** on `feature/structure-wheel` (2026-06-28) — registry + web re-export +
-all render/aggregate/write/zero-rule/compare-overlay/copy chunks, verified (incl. against a live
-Postgres+Redis stack) and 5-angle reviewed. **NOT yet shipped to main; the data MIGRATION and the
-Contract PR (delete legacy `FL_*`) are deliberately separate later steps (§8).** Legacy descriptor sets
-are retained for the Expand-window dual-read. Decision pass COMPLETE — all 🔴 Build-1 gates resolved
-(compare overlay §10 #1, option C). Remaining open items are 🟡 migration-step (decide at the §8a
-dry-run) + 🟢 deferrable (palette VALUES, axis-order, profile mixed-history) — none blocked the Expand PR.
-See §10.
+**Status:** **SHIPPED end-to-end** — Expand (PR #56) → data migration (PR #59, `49aa684`) → Contract
+(PR #60, `bf9adc0`, 2026-06-29; legacy `FL_*`/`detectFL` deleted) all merged to main, plus the palette
+VALUES + native input (PR #62, 2026-07-02). The one remaining §7 item (multi-taster range view = design
+02d) is **spec-pinned and in build** — see §7 for the 2026-07-02 rulings. Historical decision detail
+below is kept as the rationale-of-record.
 Headline corrections from review: this is
 **not** "only data changes" — two hard-coded SQL aggregates (profile, badges) duplicate the descriptor
 keys (§2, §6a/§6b); the missing-vs-zero render is a real Build-1 decision (§6d); a destructive
@@ -650,18 +647,87 @@ nuisance — it invalidates the Contract PR's delete-legacy precondition.)
 
 ---
 
-## 7. Multi-taster range view — deferred (Build 2, fast-follow)
+## 7. Multi-taster range view — SPEC PINNED 2026-07-02 (= design 02d, native compare screen)
 
 For a single taster, each axis is one value (Build 1). For multiple tasters of the same item, the
 intended display is the **range across tasters + the average**: per axis, a min–max band plus a mean
-line. The spread between tasters is signal, not noise.
+line (the decided **C1b** comparison wheel, `.local/design/vero-scoring.js` `comparisonC1b`). The
+spread between tasters is signal, not noise. This section is the data-half spec; the full screen is
+design section 02d. Rulings below are Simon's, 2026-07-02.
 
-Neither renderer draws a band today, and there's no aggregate-across-tasters shape on the session
-read path. This is the only genuinely new build (vs reconfiguration), so it lands **after** the axis
-model is proven:
+**Size-adaptive display** (recomputed live when the people selection changes): 1 taster → plain
+flavour wheel + score word · 2–4 → overlaid per-taster radar · 5+ → C1b range wheel. Plus the ranked
+impression list + per-impression accordion.
 
-- Aggregate shape (min/max/mean per axis across tasters) on the session read path.
-- Band + mean-line drawing in `PolarChart` and the native `FlavourWheel`.
+**People-selector = 02d·4 variant B, the AVATAR RAIL (DECIDED, Simon 2026-07-02)**, adapted to
+hide/unhide semantics: one screen-level hidden set drives every compare view — the rail chips, the
+person rows, and the lead-chip picker sheet ("Compare who?" with Everyone / Just me / Me + friends
+presets + search + the mock's Friend row tag; friends = mutual follows via `GET /api/me/friends`,
+fetched lazily when the sheet opens). Rail chip states: selected chips wear the accent active state,
+deselected dim; the **All chip is a toggle** — everything visible → deselect everyone, anything
+hidden → select everyone; deselecting one person drops All while the others stay selected. The rail
+is STICKY under the title bar exactly like the reveal strip (plain layout: `stickyHeaderIndices`;
+cover-hero: the strip's Dynamic Overlay slot — the two share it, since the strip is line-up-only and
+the rail compare-only). Variant A (pill + sheet) and direction C rejected.
+
+**Screen behaviours ruled 2026-07-02 (Simon, on first build review):** Compare is an **in-screen tab
+swap**, not a route — everything above the tab strip (plain bar or cover hero, incl. the hero photo)
+stays identical; only the Add pill + reveal strip are line-up-only, and there is no back-to-line-up.
+Accordion cards are **multi-open** and **all collapsed by default** — opening one never closes or
+moves another; closing is a deliberate tap; the card top stays put and content unfolds downward.
+**The avatar rail is the ONLY select/deselect surface** (second ruling round): deselected people
+disappear from every card entirely — rows, charts, Show-all sheet — and the card header (group ★ +
+consensus) and the RANKING recompute over the selection (the mock's selAccItem semantics). **Person
+rows are per-person detail views, not toggles**: tapping a name swaps the card's chart to that
+person's flavour wheel + their ★ score and score word (tap again to return to the group view; axis
+drill and person detail are mutually exclusive). The **axis split opens from a C1b wedge OR an axis
+label — on the radar too** (label tap); the radar wheelhead is just "Group flavour" (no taster
+count, no legend dots — the row dots carry the colour mapping). The rail's left clip edge (chips
+sliding under the picker chip) wears a soft bg→transparent fade, not a hard line.
+
+**Aggregate home — `@verre/core` pure function, computed client-side (supersedes this section's
+original "on the session read path" wording).** The people-selector must recompute min/max/avg live
+per selected subset, and the client already receives every taster's ratings via `GET /:code/state`
+(`buildRatingsView`) — a server-side aggregate would only ever serve the "Everyone" default and has
+no other consumer (web compare is design-frozen). So the canonical semantics live once in core
+(`aggregateFlavourAxes`), shared web↔native later; **no new server surface**.
+
+**Zero rule — per RATING, not per axis.** "Absent vs explicit 0" is not a per-key distinction in the
+data model (writes are filled-or-empty by construction, `gateAndFillFlavors`); the aggregate applies
+the same model to legacy sparse rows by normalizing each rating through `fillFlavourZeros` first:
+
+- flavors non-empty (rated ≥1 structure axis) → the taster counts on **every** axis of the wine's
+  resolved set; keys missing from an old sparse row normalize to **explicit 0** ("perceived None").
+- flavors empty / rating reset → **no data**: the taster contributes to no axis, no band, no mean.
+
+`n` is therefore uniform across axes for a given impression+selection (= engaged tasters). A lone
+engaged taster (n = 1) draws a degenerate band — min = max — which C1b's minimum-band-thickness rule
+already renders sensibly.
+
+**Score-side corollary:** overall score `0` = "not rated" (score-system invariant) — excluded from
+the group score avg, the spread, and the ranked rows. Flavour detail still aggregates for such a
+taster (engagement is per-signal). The impression appears on Compare when ≥1 selected taster has any
+rating engagement.
+
+**Consensus teaser** (replaces the type line on the accordion row) — the BLENDED disagreement score
+(`consensusFromRatings` in core, ruled 2026-07-02, superseding the score-range-only rule):
+`D = 0.6·(scoreGap/5) + 0.4·(meanAxisGap/5)`, where each gap = 2 × mean absolute deviation (equals
+the plain range for two tasters; dampens a lone outlier in a big group), the axis term averages the
+per-axis intensity gaps over structure-engaged tasters (score-0 flavour-only tasters count here) and
+drops out when fewer than two carry structure detail. Words: D ≤ 0.10 "In harmony" (positive) ·
+≤ 0.25 "Mostly agreed" (ink-soft) · ≤ 0.45 "Mixed feelings" (caution) · else "Polarizing"
+(critical) — in two-rater score-only terms: 0.5 / 1.25 / 2.25 gaps. A consensus is a GROUP signal:
+fewer than two rated scores → no consensus line at all (no score-word substitute for a single
+rater). The compare row's maker line is producer-only (no type/variety — same ruling round).
+
+**Colours:** axis colours from the theme flavour palette (`useFlavourColors()`), never the mock's
+baked hexes. Per-person series colours (≤4 radar polygons/dots) derive from the theme's palette base
+ramp (structure and aroma are assignments off one shared hex ramp per theme). As built: a hue-spread
+permutation of the 13 structure hexes (`theme/flavourColors.ts` `PERSON_SERIES` — aroma adds only
+`Chemical` beyond those, deliberately skipped), assigned in stable roster order.
+
+**C1b band tones:** the mock's `color-mix(in srgb, colour 42%|92%, var(--surface))` maps to
+`theme/color.ts` `mix()` against `theme.surface`.
 
 ---
 
