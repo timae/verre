@@ -1,8 +1,8 @@
-import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
+import { BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, LayoutAnimation, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Animated, Easing, LayoutAnimation, Platform, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   aggregateFlavourAxes,
@@ -291,6 +291,7 @@ export function ComparePickerSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
+  const { height: windowH } = useWindowDimensions();
   const [query, setQuery] = useState('');
   const friendsQ = useQuery({
     queryKey: ['my-friends'],
@@ -335,8 +336,13 @@ export function ComparePickerSheet({
     </Pressable>
   );
   return (
-    <Sheet open={open} onClose={onClose} snapPoints={['76%']} enableDynamicSizing={false}>
-      <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+    // PeopleSheet's sizing pattern (Simon: "the people view does it
+    // correctly"): dynamic sizing unfolds only as far as the list needs,
+    // capped at 85% of the window; rows in a plain View — a
+    // BottomSheetScrollView measures 0 under dynamic sizing (CountrySheet
+    // note).
+    <Sheet open={open} onClose={onClose} maxDynamicContentSize={windowH * 0.85}>
+      <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Compare who?</VText>
@@ -360,7 +366,7 @@ export function ComparePickerSheet({
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
         </View>
-        <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+        <View style={{ paddingBottom: 8 }}>
           {rows.map((p, i) => {
             const on = !hidden.has(p.id);
             return (
@@ -403,8 +409,8 @@ export function ComparePickerSheet({
               No matches
             </VText>
           ) : null}
-        </BottomSheetScrollView>
-      </View>
+        </View>
+      </BottomSheetView>
     </Sheet>
   );
 }
@@ -980,6 +986,7 @@ function ShowAllSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
+  const { height: windowH } = useWindowDimensions();
   const [query, setQuery] = useState('');
   const [dir, setDir] = useState<'high' | 'low'>('high');
   const sign = dir === 'high' ? -1 : 1;
@@ -993,8 +1000,10 @@ function ShowAllSheet({
     .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
   const total = base.length;
   return (
-    <Sheet open={open} onClose={onClose} snapPoints={['76%']} enableDynamicSizing={false}>
-      <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+    // PeopleSheet's sizing pattern: unfold only as far as the list needs,
+    // capped at 85% of the window (plain-View rows — see the picker's note).
+    <Sheet open={open} onClose={onClose} maxDynamicContentSize={windowH * 0.85}>
+      <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             {item.wine._blind ? `Impression ${item.index + 1}` : item.wine.name}
@@ -1026,7 +1035,7 @@ function ShowAllSheet({
             <Icon name="sort" size={18} color={dir === 'low' ? theme.accent : theme.inkSoft} />
           </Pressable>
         </View>
-        <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+        <View style={{ paddingBottom: 8 }}>
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
               {axis ? (
@@ -1052,8 +1061,8 @@ function ShowAllSheet({
               No matches
             </VText>
           ) : null}
-        </BottomSheetScrollView>
-      </View>
+        </View>
+      </BottomSheetView>
     </Sheet>
   );
 }

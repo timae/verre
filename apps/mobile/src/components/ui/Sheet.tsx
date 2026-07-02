@@ -105,6 +105,12 @@ export function Sheet({
       enableDynamicSizing={enableDynamicSizing}
       maxDynamicContentSize={maxDynamicContentSize}
       snapPoints={snapPoints}
+      // Explicit stacking: the portal'd modal container has NO zIndex, and
+      // under Fabric's view flattening the screen's zIndexed absolute
+      // overlays (hero bar 8, sticky tab/rail overlays 7, reconnecting bar
+      // 50) can end up siblings of it and paint OVER the backdrop. Hoist the
+      // whole modal layer above anything a screen uses.
+      containerStyle={{ zIndex: 100 }}
       backdropComponent={renderBackdrop}
       backgroundStyle={{ backgroundColor: theme.surface }}
       handleIndicatorStyle={{ backgroundColor: theme.rule }}
