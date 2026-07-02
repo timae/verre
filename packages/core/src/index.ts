@@ -35,6 +35,7 @@ export {
   SCORE_MAX,
   SCORE_STEP,
   FLAVOUR_MAX,
+  FLAVOUR_CLEAR_FRACTION,
   snapScore,
   scoreFromFraction,
   stepScore,
@@ -56,7 +57,6 @@ export {
 export {
   resolveAxes,
   perRatingAxes,
-  structureSubset,
   fillFlavourZeros,
   type StructureAxis,
   type WineStyle,

@@ -22,7 +22,7 @@ The **profile aggregate** (`lib/profileFlavor.ts`) derives its key list from `re
 
 ## Legacy descriptor dimensions (removed)
 
-The pre-redesign type-specific descriptor sets (`FL_RED`/`FL_WHITE`/`FL_SPARK`/`FL_ROSE`/generic `FL`, plus `getFL`/`detectFL`/`detectLegacyDescriptorFL` and the 16-key DUMP set) were deleted in the Contract PR. They existed only to keep historical descriptor ratings rendering during the Expand window between deploy and the data migration; the migration stripped all descriptor keys from `ratings.flavors` (prod verified at 0 remaining), so the dual-read had no rows left to serve. The write gate `assertRegistryKeyed` (in `lib/flavours.ts`) keeps descriptor keys from being re-introduced. For the historical keysets + detection rules, see `docs/dev/proposals/structure-wheel.md` §4/§8 and the git history of `lib/flavours.ts`.
+The pre-redesign type-specific descriptor sets (`FL_RED`/`FL_WHITE`/`FL_SPARK`/`FL_ROSE`/generic `FL`, plus `getFL`/`detectFL`/`detectLegacyDescriptorFL` and the 16-key DUMP set) were deleted in the Contract PR. They existed only to keep historical descriptor ratings rendering during the Expand window between deploy and the data migration; the migration stripped all descriptor keys from `ratings.flavors` (prod verified at 0 remaining), so the dual-read had no rows left to serve. The write-boundary normaliser `gateAndFillFlavors` (in `lib/flavours.ts`) keeps descriptor keys from being re-introduced (a non-zero unknown key → 400) and zero-fills the kept set so the stored shape is filled-or-empty for every writer. For the historical keysets + detection rules, see `docs/dev/proposals/structure-wheel.md` §4/§8 and the git history of `lib/flavours.ts`.
 
 ## Sizes
 

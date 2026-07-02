@@ -1,4 +1,4 @@
-// Per-theme flavour-axis colours — the structure-wheel palette, vendored.
+// Per-theme flavour-axis colours — the structure-wheel palette, DERIVED.
 // ─────────────────────────────────────────────────────────────────────────
 // Colour is per-platform presentation: the @verre/core axis registry
 // (structureAxes.ts) carries NO colour on purpose; native resolves an axis's
@@ -6,20 +6,22 @@
 // This module is that native resolution — a (theme, axis key) → hex table plus
 // a hook that reads the current theme.
 //
-// This file is the VENDORED runtime copy of the WINE subset (the 8 rated axes
-// that exist today). The FULL data-viz palette (all 13 structure + 12 aroma keys
-// × 6 themes) + the scope/mapping rules live in the tracked reference
-// `./flavour-palette/` (`palette.js` + its CLAUDE.md); the gitignored design
-// working copy is `.local/design/flavour-palette.js`. Re-vendor from there when
-// values change or a new category's axes ship — do NOT hand-tune here. The full
-// palette also holds colours for future categories (cheese/beer/spirits) and the
-// later aroma feature; those are NOT vendored until their backend axis sets land.
+// The hexes are NOT copied here: they're derived at module load from the
+// tracked full palette (`./flavour-palette/palette.js` — all 13 structure +
+// 12 aroma keys × 6 themes; typed via its sibling `palette.d.ts`, the same
+// pattern as `vero-tokens.js`). Drift between the full palette and the runtime
+// subset is impossible by construction — change a colour in palette.js (re-
+// pasted from the design source `.local/design/flavour-palette.js`) and every
+// consumer retints. The full palette also holds colours for future categories
+// (cheese/beer/spirits) and the later aroma feature; wiring a new axis set =
+// adding its keys to KEY_TO_LABEL's sibling table when the registry grows.
 //
-// Registry-key → design-palette label the values were vendored from:
-//   sweet → "Sweetness"  ·  acid → "Acidity"  ·  body → "Body"
-//   tannin → "Tannin"    ·  finish → "Finish"  ·  aroma → "Aroma"
-//   flavour → "Flavour"  ·  bubbles → "Bubbles"
+// Registry key → design-palette `structure` label (the design names attributes
+// by label; the registry by key). ⚠️ registry `sweet` → structure "Sweetness",
+// NOT the aroma-set "Sweet" — different attributes that share a hex in most
+// themes; reading `structure` scoped below makes cross-wiring impossible.
 
+import { FLAVOUR_PALETTE, type StructureLabel } from './flavour-palette/palette';
 import { useTheme, type ThemeKey } from '@/theme';
 
 // The 8 wine axis keys carried today (structureAxes.ts WINE_BASE + Bubbles on
@@ -37,76 +39,42 @@ export type FlavourAxisKey =
 
 type AxisPalette = Record<FlavourAxisKey, string>;
 
-// One 8-axis palette per theme. Values transcribed verbatim from
-// `.local/design/flavour-palette.js` (the `structure` block of each theme,
-// wine subset). Keyed by the same ThemeKey the theme provider uses.
+// StructureLabel-typed: a misspelled or since-removed design label here is a
+// COMPILE error (palette.d.ts literal union), not a silent accent-fallback.
+const KEY_TO_LABEL: Record<FlavourAxisKey, StructureLabel> = {
+  sweet: 'Sweetness',
+  acid: 'Acidity',
+  body: 'Body',
+  tannin: 'Tannin',
+  finish: 'Finish',
+  aroma: 'Aroma',
+  flavour: 'Flavour',
+  bubbles: 'Bubbles',
+};
+
+function wineSubset(theme: keyof typeof FLAVOUR_PALETTE): AxisPalette {
+  const structure = FLAVOUR_PALETTE[theme].structure;
+  const out = {} as AxisPalette;
+  for (const key of Object.keys(KEY_TO_LABEL) as FlavourAxisKey[]) out[key] = structure[KEY_TO_LABEL[key]];
+  return out;
+}
+
+// Explicitly keyed (not Object.keys-derived) so BOTH exhaustiveness checks
+// stay compile-time: a new ThemeKey errors this record; a theme missing from
+// palette.js errors the wineSubset argument.
 export const FLAVOUR_COLORS: Record<ThemeKey, AxisPalette> = {
-  apricot: {
-    sweet: '#e0b85f', // Sweetness
-    acid: '#cabb74', // Acidity
-    body: '#a85f3e', // Body
-    tannin: '#6B3C2A', // Tannin
-    finish: '#b98a37', // Finish
-    aroma: '#C6878F', // Aroma
-    flavour: '#D9605C', // Flavour
-    bubbles: '#f3d9b8', // Bubbles
-  },
-  charcoal: {
-    sweet: '#dfa847',
-    acid: '#9F9756',
-    body: '#896343',
-    tannin: '#5e3526',
-    finish: '#ab7626',
-    aroma: '#533a50',
-    flavour: '#d96f45',
-    bubbles: '#E8C9B0',
-  },
-  cobalt: {
-    sweet: '#e0b85f',
-    acid: '#cabb74',
-    body: '#a85f3e',
-    tannin: '#6B3C2A',
-    finish: '#b98a37',
-    aroma: '#C6878F',
-    flavour: '#d98e5f',
-    bubbles: '#80998a',
-  },
-  aubergine: {
-    sweet: '#dba24f',
-    acid: '#9aac82',
-    body: '#b67847',
-    tannin: '#7e4c29',
-    finish: '#cbb077',
-    aroma: '#a392cf',
-    flavour: '#cf6f5a',
-    bubbles: '#e5a196',
-  },
-  clay: {
-    sweet: '#d8a83f',
-    acid: '#aab39a',
-    body: '#443340',
-    tannin: '#6b3f2e',
-    finish: '#d8b88c',
-    aroma: '#e0a08f',
-    flavour: '#C77657',
-    bubbles: '#f8ecdb',
-  },
-  mauve: {
-    sweet: '#e0b85f',
-    acid: '#cabb74',
-    body: '#a85f3e',
-    tannin: '#6B3C2A',
-    finish: '#b98a37',
-    aroma: '#bb7d88',
-    flavour: '#D9605C',
-    bubbles: '#f3d9b8',
-  },
+  apricot: wineSubset('apricot'),
+  charcoal: wineSubset('charcoal'),
+  cobalt: wineSubset('cobalt'),
+  aubergine: wineSubset('aubergine'),
+  clay: wineSubset('clay'),
+  mauve: wineSubset('mauve'),
 };
 
 // The active-theme axis-colour resolver. Returns a `(axisKey) => hex` reader
-// bound to the user's current theme; an unknown key falls back to the theme
-// accent so a wedge is never colourless. Consumed by the flavour input + the
-// wheel wiring so both read one source.
+// bound to the user's current theme; an unknown key (or a label missing from
+// palette.js) falls back to the theme accent so a wedge is never colourless.
+// Consumed by the flavour input + the wheel wiring so both read one source.
 export function useFlavourColors(): (key: string) => string {
   const { themeKey, theme } = useTheme();
   const palette = FLAVOUR_COLORS[themeKey];

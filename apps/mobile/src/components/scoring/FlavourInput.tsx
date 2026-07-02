@@ -66,16 +66,28 @@ export function FlavourInput({ style, value, onChange }: Props) {
   // grid break — phones below ~380pt read cramped with two 38px tracks + words).
   const twoCol = phone.width >= 380;
 
+  // Latest map, updated SYNCHRONOUSLY on every edit — not just mirrored from
+  // the prop. Two tracks edited in one JS batch (a two-finger drag: sibling
+  // Pans share no pointer, so RNGH keeps both ACTIVE) must each build on the
+  // other's write; spreading the render-captured `value` would make the second
+  // onChange silently drop the first axis's edit.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
   const setLevel = (key: string, level: number) => {
-    const prev = value[key];
+    // `?? 0`: an absent key IS level 0 — without the coercion a VoiceOver
+    // decrement on an unrated axis (undefined !== 0) fires a spurious
+    // "changed" haptic + a content-identical onChange.
+    const prev = valueRef.current[key] ?? 0;
     if (prev === level) return;
     // Keys-present map: a level > 0 sets the key; level 0 REMOVES it so an
     // untouched-then-cleared axis returns to absent (the zero rule — never a
     // lingering explicit 0 unless another axis keeps the map non-empty… which
     // the caller collapses to {} when all are gone).
-    const next = { ...value };
+    const next = { ...valueRef.current };
     if (level <= 0) delete next[key];
     else next[key] = level;
+    valueRef.current = next;
     Haptics.selectionAsync().catch(() => {});
     onChange(next);
   };
@@ -131,15 +143,13 @@ function FillTrack({
   const widthRef = useRef(0);
   widthRef.current = trackW;
 
-  // Touch x → whole level. A touch in the leftmost sliver (≤4% of the track)
-  // clears to 0 — the "drag/tap far-left to unset" affordance, matching the web
-  // fill-track demo's frac<=0.04→0. Above that, the shared core policy maps the
-  // fraction to a whole 1..5 level.
+  // Touch x → whole level, entirely core policy (flavourLevelFromFraction):
+  // a touch in the leftmost sliver (≤ FLAVOUR_CLEAR_FRACTION) clears to 0 —
+  // the "drag/tap far-left to unset" affordance — above it, whole 1..5.
   const setFromX = (x: number) => {
     const w = widthRef.current;
     if (w <= 0) return;
-    const frac = x / w;
-    const next = frac <= 0.04 ? 0 : flavourLevelFromFraction(frac);
+    const next = flavourLevelFromFraction(x / w);
     if (next !== levelRef.current) onSet(next);
   };
 

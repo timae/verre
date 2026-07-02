@@ -11,13 +11,12 @@
 import {
   resolveAxes,
   perRatingAxes,
-  structureSubset,
   fillFlavourZeros,
   type StructureAxis,
   type WineStyle,
 } from '@verre/core'
 
-export { resolveAxes, perRatingAxes, structureSubset, fillFlavourZeros }
+export { resolveAxes, perRatingAxes, fillFlavourZeros }
 export type { StructureAxis, WineStyle }
 
 // Renderer-facing axis shape: the neutral core axis + a web colour. PolarChart /
@@ -60,30 +59,39 @@ export function resolveAxesColoured(category: string | null | undefined, style: 
   return withColours(resolveAxes(category, style))
 }
 
-// Write-side registry gate (§6g). Returns an error string if `flavors` carries
-// any key NOT in resolveAxes(category, style) — used at every write boundary so
-// only structure keys can land. This is what keeps descriptor keys from being
-// resurrected after the migration: a stale client POSTing a descriptor key
-// (oak/floral/…) is rejected 400 rather than written back. Returns null when
-// every key is valid (incl. an empty/absent map).
+// Server-side write-boundary normalisation — the registry gate (§6g) + the
+// zero-fill (§5) in ONE chokepoint, applied by every flavour write route
+// (session rate, checkins POST/PATCH) AFTER validateFlavors. Clients also
+// normalise via fillFlavourZeros (nicer optimistic state + the native
+// changed-diff), but the SERVER call is what makes the stored shape
+// (filled-or-empty) an invariant for every writer — stale binaries, undo
+// re-posts, raw API clients included.
 //
-// (Historical: during the Expand window reads stayed tolerant of legacy
-// descriptor rows while writes did not — the asymmetry that motivated the
-// EDIT-PATH rule, §6g. Now that the migration has run, no descriptor rows
-// remain; the gate just keeps writes registry-keyed. structureSubset() is the
-// client-side edit-path transform.)
-export function assertRegistryKeyed(
+// Key policy:
+//   • Key in resolveAxes(category, style) → kept.
+//   • Unknown key with value 0 → STRIPPED, not rejected. A zero off-registry
+//     key is a fill artifact from a client that cached a different style
+//     (host edited the wine's type mid-rating: {…, bubbles: 0} vs a
+//     now-red wine) — no data is lost by dropping it, and rejecting would
+//     400 an innocent race.
+//   • Unknown key with a NON-ZERO value → 400 (`unknown flavor key`). Real
+//     data under a key the registry doesn't know (a stale client posting a
+//     descriptor key like oak/floral) must be rejected loudly, never
+//     silently discarded — keeps the Contract PR's "no descriptor keys
+//     remain" precondition true.
+// The kept set is then zero-filled (fillFlavourZeros): any axis rated →
+// every axis of the style stored, untouched as explicit 0; all-None → {}.
+export function gateAndFillFlavors(
   flavors: Record<string, number> | null | undefined,
   category: string | null | undefined,
   style: string | null | undefined,
-): string | null {
-  if (!flavors) return null
+): { value: Record<string, number>; error?: undefined } | { value?: undefined; error: string } {
+  const src = flavors ?? {}
   const allowed = new Set(resolveAxes(category, style).map(a => a.k))
-  for (const key of Object.keys(flavors)) {
-    if (!allowed.has(key)) return `unknown flavor key: ${key}`
+  const kept: Record<string, number> = {}
+  for (const [key, v] of Object.entries(src)) {
+    if (allowed.has(key)) kept[key] = v
+    else if (v !== 0) return { error: `unknown flavor key: ${key}` }
   }
-  return null
+  return { value: fillFlavourZeros(kept, category, style) }
 }
-
-// structureSubset (the client-side EDIT-PATH transform, §6g) lives in @verre/core
-// — it's pure and shared with the native edit surface — and is re-exported above.

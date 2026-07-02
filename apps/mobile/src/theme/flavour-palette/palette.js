@@ -3,7 +3,8 @@
 // The COMPLETE colour system for flavour data-viz (wheels, fill-track inputs,
 // chips). Broader than what the app wires TODAY on purpose — it carries colours
 // for attributes that land with future categories and the aroma feature, so the
-// values are captured once and re-vendored when each backend axis set ships.
+// values are captured once; each axis set derives its subset when it ships
+// (../flavourColors.ts imports this file — the wine-8 subset today).
 //
 // Pasted by Simon (2026-07-01). Mirrors `.local/design/flavour-palette.js` (the
 // gitignored design working copy); THIS committed file is the tracked reference

@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
-import { assertRegistryKeyed } from '@/lib/flavours'
+import { gateAndFillFlavors } from '@/lib/flavours'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
@@ -204,18 +204,21 @@ export async function POST(req: NextRequest) {
   // state for an old import or a beer/spirit that hasn't been seeded yet.
   const VALID_STYLES = new Set(['red', 'white', 'spark', 'rose', 'nonalc'])
   const wineStyle = typeof type === 'string' && VALID_STYLES.has(type) ? type : null
-  // Registry-keyed write gate (§6g): only structure keys for this (wine, style)
-  // may land. Style from the body (validated above); category is 'wine' until
-  // others exist. A descriptor key from a stale client → 400, keeping the
-  // Contract PR's "no descriptor keys remain" precondition true.
-  const keyErr = assertRegistryKeyed(flavorsCheck.value, 'wine', wineStyle)
-  if (keyErr) return NextResponse.json({ error: keyErr }, { status: 400 })
+  // Server-side flavour normalisation (§6g gate + §5 zero-fill — see
+  // gateAndFillFlavors): only structure keys for this (wine, style) may land,
+  // and the stored shape is filled-or-empty by construction. Style from the
+  // body (validated above); category is 'wine' until others exist. A non-zero
+  // descriptor key from a stale client → 400 (keeps the Contract PR's "no
+  // descriptor keys remain" precondition true); zero-valued off-style keys
+  // are stripped as stale-type fill artifacts.
+  const norm = gateAndFillFlavors(flavorsCheck.value, 'wine', wineStyle)
+  if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
   const scrubNotes = scrub(notes) || null
   const scrubVenue = scrub(venueName) || null
   const scrubCity = scrub(city) || null
   const scrubCountry = scrub(country)?.slice(0, 2).toUpperCase() || null
   const ratingScore = scoreCheck.value
-  const ratingFlavors = flavorsCheck.value ?? {}
+  const ratingFlavors = norm.value ?? {}
 
   // locationPublic = true iff any location field is non-null (per
   // rewire.md §5: "true if any location field is non-NULL else false").
