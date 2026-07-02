@@ -732,9 +732,11 @@ rater). The compare row's maker line is producer-only (no type/variety — same 
 
 **Colours:** axis colours from the theme flavour palette (`useFlavourColors()`), never the mock's
 baked hexes. Per-person series colours (≤4 radar polygons/dots) derive from the theme's palette base
-ramp (structure and aroma are assignments off one shared hex ramp per theme). As built: a hue-spread
-permutation of the 13 structure hexes (`theme/flavourColors.ts` `PERSON_SERIES` — aroma adds only
-`Chemical` beyond those, deliberately skipped), assigned in stable roster order.
+ramp (structure and aroma are assignments off one shared hex ramp per theme). As built (refined on
+device 2026-07-02): the 13 structure hexes in the palette's OWN canonical order — the same colour
+family the 5+ wheel draws with; an earlier hue-spread permutation was rejected
+(`theme/flavourColors.ts` `PERSON_SERIES`; aroma adds only `Chemical` beyond those, deliberately
+skipped) — assigned in stable roster order.
 
 **C1b band tones:** the mock's `color-mix(in srgb, colour 42%|92%, var(--surface))` maps to
 `theme/color.ts` `mix()` against `theme.surface`.
