@@ -165,8 +165,11 @@ export default function SessionLineup() {
   // The rail's All chip TOGGLES: everything visible → deselect everyone;
   // anything hidden → select everyone (Simon's ruling).
   const toggleAllCmp = useCallback(() => {
-    setCmpHidden((prev) => (prev.size === 0 ? new Set(cmpPeople.map((p) => p.id)) : new Set()));
-  }, [cmpPeople]);
+    // Branch on the PRUNED set (what the UI shows) — the raw set may hold
+    // ghost ids of kicked raters, and "All looks on → tap deselects all"
+    // must hold visually, not on stale state.
+    setCmpHidden(cmpHidden.size === 0 ? new Set(cmpPeople.map((p) => p.id)) : new Set());
+  }, [cmpHidden, cmpPeople]);
   const cmpRail = tab === 'compare' && cmpPeople.length > 1 ? (
     <PeopleRail
       people={cmpPeople}

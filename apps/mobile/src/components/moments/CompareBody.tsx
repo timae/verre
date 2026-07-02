@@ -59,6 +59,7 @@ import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 // omission would itself leak the block). Blind rows arrive pre-redacted.
 
 const CAP = 4; // resting people-rows cap before "Show all N" (design .cmp-showall)
+const EMPTY_HIDDEN = new Set<string>(); // stable identity for the unfiltered buildItems probe
 
 const CONSENSUS_COPY: Record<ConsensusKey, string> = {
   harmony: 'In harmony',
@@ -441,12 +442,14 @@ export function CompareBody({
     );
   }
   if (items.length === 0) {
-    // Distinguish "nobody rated anything" from "the selection excludes every
-    // rater" so a deselect-all doesn't masquerade as an empty session.
-    const anyRatings = Object.values(ratings).some((b) => Object.keys(b.ratings).length > 0);
+    // Distinguish "nobody rated anything comparable" from "the selection
+    // excludes every rater" — via the SAME comparable predicate buildItems
+    // applies (a session holding only notes-only ratings is empty, not a
+    // selection failure).
+    const anyComparable = hidden.size > 0 && buildItems(wines, ratings, meta, EMPTY_HIDDEN).length > 0;
     return (
       <View style={{ paddingVertical: 72 }}>
-        {anyRatings ? (
+        {anyComparable ? (
           <CenteredMessage title="Nobody selected" body="Pick people on the rail above to compare their ratings." />
         ) : (
           <CenteredMessage title="No ratings yet" body="Rate some impressions and they'll show up here to compare." />
@@ -610,6 +613,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           onClose={() => setSheetOpen(false)}
           item={item}
           axis={drillAxis ?? null}
+          structureFirst={agg.n >= 1 && agg.n <= 4}
         />
       ) : null}
     </View>
@@ -801,28 +805,32 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
 // Resting rows: every SELECTED rater with a rated score, high→low. Tap a row
 // for that person's rating detail; in the ≤4 radar view a person dot (before
 // the name) ties the row to their polygon (empty dot = no flavour profile).
+const hasStructure = (r: Rater) => Object.keys(r.filled).length > 0;
+
+// Score-list rows, shared by the resting panel AND the Show-all sheet (they
+// must list the same people). With 1–4 structure profiles (Simon's ruling)
+// the structure-givers sort to the top — their rows pair with the chart (dot
+// colours ↔ polygons) — and a structure-only score-0 rater gets a row too
+// (else their polygon would have no legend; rendered with an em-dash score).
+function scoreRowsFor(item: CmpItem, structureFirst: boolean): Rater[] {
+  if (!structureFirst) return item.scored;
+  const unscoredStructure = item.raters.filter((r) => hasStructure(r) && (r.rating.score || 0) === 0);
+  // Stable sort: structure-givers first (score-desc within), then the rest.
+  return [...item.scored, ...unscoredStructure].sort((a, b) => (hasStructure(b) ? 1 : 0) - (hasStructure(a) ? 1 : 0));
+}
+
 function ScoreRows({
   item, mode, structureFirst, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   mode: 'radar' | 'plain';
-  /** 1–4 structure profiles (Simon's ruling): structure-givers sort to the top
-      of the list — their rows pair with the chart (dot colours ↔ polygons) —
-      and a structure-only score-0 rater gets a row too (else their polygon
-      would have no legend). */
   structureFirst: boolean;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
 }) {
   const personColor = usePersonColors();
-  const engaged = (r: Rater) => Object.keys(r.filled).length > 0;
-  let rows = item.scored;
-  if (structureFirst) {
-    const unscoredStructure = item.raters.filter((r) => engaged(r) && (r.rating.score || 0) === 0);
-    // Stable sort: structure-givers first (score-desc within), then the rest.
-    rows = [...item.scored, ...unscoredStructure].sort((a, b) => (engaged(b) ? 1 : 0) - (engaged(a) ? 1 : 0));
-  }
+  const rows = scoreRowsFor(item, structureFirst);
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
   if (rows.length === 0) {
     return (
@@ -840,7 +848,7 @@ function ScoreRows({
           name={r.displayName}
           active={selPerson === r.id}
           onPress={() => onSelectPerson(r.id)}
-          lead={mode === 'radar' ? <PersonDot color={engaged(r) ? personColor(r.personIndex) : null} /> : undefined}
+          lead={mode === 'radar' ? <PersonDot color={hasStructure(r) ? personColor(r.personIndex) : null} /> : undefined}
         >
           {/* .osv-num min-width 46 (+ star 17 + gap 4) so the score column aligns */}
           <View style={{ minWidth: 67 }}>
@@ -961,12 +969,13 @@ function SheetSearchField({ value, onChangeText, placeholder }: { value: string;
 // rail. (The mock's Friends filter chip is omitted here; friends live in the
 // picker sheet's preset.)
 function ShowAllSheet({
-  open, onClose, item, axis,
+  open, onClose, item, axis, structureFirst,
 }: {
   open: boolean;
   onClose: () => void;
   item: CmpItem;
   axis: AxisAgg | null;
+  structureFirst: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -975,10 +984,14 @@ function ShowAllSheet({
   const [dir, setDir] = useState<'high' | 'low'>('high');
   const sign = dir === 'high' ? -1 : 1;
   const q = query.trim().toLowerCase();
-  const rows = (axis ? item.raters.filter((r) => Object.keys(r.filled).length > 0) : item.scored)
+  // Score mode lists EXACTLY what the resting panel counts (scoreRowsFor —
+  // incl. structure-only score-0 raters), else "Show all N" would open a
+  // sheet missing people.
+  const base = axis ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
+  const rows = base
     .filter((r) => !q || r.displayName.toLowerCase().includes(q))
-    .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : a.rating.score - b.rating.score));
-  const total = axis ? item.raters.filter((r) => Object.keys(r.filled).length > 0).length : item.scored.length;
+    .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
+  const total = base.length;
   return (
     <Sheet open={open} onClose={onClose} snapPoints={['76%']} enableDynamicSizing={false}>
       <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
@@ -1025,7 +1038,11 @@ function ShowAllSheet({
                 </>
               ) : (
                 <View style={{ minWidth: 67 }}>
-                  <StarScore value={r.rating.score} size={17} />
+                  {(r.rating.score || 0) > 0 ? (
+                    <StarScore value={r.rating.score} size={17} />
+                  ) : (
+                    <VText variant="small" color="inkFaint">—</VText>
+                  )}
                 </View>
               )}
             </PersonRow>

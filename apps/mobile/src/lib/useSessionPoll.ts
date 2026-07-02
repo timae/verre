@@ -20,12 +20,14 @@ import { authClient } from './authClient';
 export const SESSION_POLL_MS = 5000;
 const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
 
-// One my-sessions invalidation per code per app run: the invalidation exists
-// for the FIRST membership registration (Moments-home pinning); re-entering
-// the session screen re-POSTs /visit (cheap, bumps lastseen) but shouldn't
-// refetch the whole home list every time. (Line-up ⇄ Compare is an in-screen
-// tab swap — it never remounts this hook.)
-const invalidatedCodes = new Set<string>();
+// One my-sessions invalidation per (code, viewer) per app run: the
+// invalidation exists for the FIRST membership registration (Moments-home
+// pinning); re-entering the session screen re-POSTs /visit (cheap, bumps
+// lastseen) but shouldn't refetch the whole home list every time. Keyed on
+// the viewer too — after an in-app account switch the new identity's own
+// my-sessions must still invalidate. (Line-up ⇄ Compare is an in-screen tab
+// swap — it never remounts this hook.)
+const invalidatedVisits = new Set<string>();
 
 // Hide-lineup lock: epoch-ms of the reveal time while the gate is still
 // closed, else null. Callers apply their own host exemption. Drives the
@@ -92,8 +94,9 @@ export function useSessionPoll(code: string): SessionPoll {
         if (cancelled) return;
         setVisited(true);
         // Membership just registered — the Moments home pinning depends on it.
-        if (!invalidatedCodes.has(code)) {
-          invalidatedCodes.add(code);
+        const visitKey = `${code}|${myIdentityId}`;
+        if (!invalidatedVisits.has(visitKey)) {
+          invalidatedVisits.add(visitKey);
           queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
         }
       })
@@ -102,7 +105,7 @@ export function useSessionPoll(code: string): SessionPoll {
         const err = e instanceof ApiError ? e : new ApiError('http', 0);
         // A removed/invalid bounce invalidates the dedup: after a kick →
         // rejoin, the next successful visit must refresh Moments-home pinning.
-        if (err.kind === 'removed' || err.kind === 'invalid') invalidatedCodes.delete(code);
+        if (err.kind === 'removed' || err.kind === 'invalid') invalidatedVisits.delete(`${code}|${myIdentityId}`);
         setFatal(err);
       });
     return () => { cancelled = true; };
@@ -151,7 +154,7 @@ export function useSessionPoll(code: string): SessionPoll {
   useEffect(() => {
     if (!isFatalSessionError(state.error)) return;
     if (state.error.kind === 'removed' || state.error.kind === 'invalid') {
-      invalidatedCodes.delete(code);
+      invalidatedVisits.delete(viewKey);
       // Auth-fatal: drop the cached session view — a kicked/banned viewer's
       // screens must not keep serving the pre-bounce data.
       lastRef.current = { key: viewKey, data: emptyState() };
