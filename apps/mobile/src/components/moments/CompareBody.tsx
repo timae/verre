@@ -497,15 +497,22 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   };
 
   const maker = wine.producer || ''; // producer only — no type/variety here (Simon's ruling)
+  // Blind stubs: same mask vocabulary as the line-up ("Impression N", the
+  // Moment/Impression copy ruling) — the server stub says "Wine N".
+  const displayName = wine._blind ? `Impression ${item.index + 1}` : wine.name;
   const consensusTone: Record<ConsensusKey, string> = {
     harmony: theme.positive,
     mostly: theme.inkSoft,
     mixed: theme.caution,
     divide: theme.critical,
   };
-  // A selected person may leave the selection (rail) or the ratings — fall
-  // back to the group view rather than holding a stale detail.
+  // A selected person may leave the selection (rail) or the ratings — clear
+  // the detail (not just fall back) so re-selecting them on the rail later
+  // doesn't snap the card back into their detail unprompted.
   const detail = selPerson ? item.raters.find((r) => r.id === selPerson) : undefined;
+  useEffect(() => {
+    if (selPerson && !item.raters.some((r) => r.id === selPerson)) setSelPerson(null);
+  }, [item, selPerson]);
   const drillAxis = !detail && selAxis >= 0 && agg.n > 0 ? agg.axes[selAxis] : undefined;
 
   return (
@@ -521,7 +528,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
       <Pressable
         accessibilityRole="button"
         accessibilityState={{ expanded: open }}
-        accessibilityLabel={`${wine.name}${item.avg !== null ? `, group average ${item.avg}` : ''}`}
+        accessibilityLabel={`${displayName}${item.avg !== null ? `, group average ${item.avg}` : ''}`}
         onPress={toggleOpen}
         style={({ pressed }) => ({
           flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12,
@@ -531,7 +538,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
         <Thumb uri={wine._blind ? undefined : wine.imageUrl || wine.image || undefined} size={48} radius={radius.sm} />
         <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
           <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
-            {wine.name}
+            {displayName}
             {wine.vintage ? (
               <>
                 {' - '}
@@ -543,7 +550,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             <VText surface="compactList" color="inkSoft" numberOfLines={1} style={phone.text('small')}>{maker}</VText>
           ) : null}
           {/* Consensus teaser — a GROUP signal only: fewer than two rated
-              scores (consensusFromScores → null) shows no line at all
+              scores (consensusFromRatings → null) shows no line at all
               (Simon's ruling: no score-word substitute for a single rater). */}
           {item.consensus ? (
             <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), marginTop: 2, color: consensusTone[item.consensus] }}>
@@ -946,7 +953,7 @@ function ShowAllSheet({
       <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            {item.wine.name}
+            {item.wine._blind ? `Impression ${item.index + 1}` : item.wine.name}
             {item.wine.vintage ? (
               <VText variant="subhead" color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular' }}>{` - ${item.wine.vintage}`}</VText>
             ) : null}

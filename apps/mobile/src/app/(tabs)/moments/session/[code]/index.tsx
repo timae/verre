@@ -110,8 +110,8 @@ function RevealStripFor({ reveal }: { reveal: RevealProps }) {
 // Milestone 3: rows open the impression detail (02e); unrated rows carry the
 // .lu-rate pill, rated rows the score chip. The ⋯ menu wires People + Share
 // (sheets), a live Blind-for-all toggle, and Settings (02f, a pushed screen
-// stack under settings/); the Compare tab opens the sibling 02d screen
-// (compare.tsx — SessionTabs owns the replace-navigation).
+// stack under settings/); the Compare tab is an IN-SCREEN swap (CompareBody
+// below the shared SessionTabs — no route, everything above the tabs stays).
 export default function SessionLineup() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
@@ -144,9 +144,16 @@ export default function SessionLineup() {
   // drives every compare view (rail chips, person rows, picker sheet). The
   // rail renders STICKY under the bar like the reveal strip: plain layout via
   // ScrollView stickyHeaderIndices, cover-hero via the strip overlay slot.
-  const [cmpHidden, setCmpHidden] = useState<Set<string>>(new Set());
+  const [cmpHiddenRaw, setCmpHidden] = useState<Set<string>>(new Set());
   const [cmpPickerOpen, setCmpPickerOpen] = useState(false);
   const cmpPeople = useMemo(() => buildComparePeople(ratings, meta), [ratings, meta]);
+  // Prune ghosts: someone hidden and THEN kicked/banned leaves the roster —
+  // their stale id must not keep the All chip dim / the picker counts wrong.
+  const cmpHidden = useMemo(() => {
+    const ids = new Set(cmpPeople.map((p) => p.id));
+    const pruned = new Set([...cmpHiddenRaw].filter((id) => ids.has(id)));
+    return pruned.size === cmpHiddenRaw.size ? cmpHiddenRaw : pruned;
+  }, [cmpHiddenRaw, cmpPeople]);
   const toggleCmpPerson = useCallback((id: string) => {
     setCmpHidden((prev) => {
       const next = new Set(prev);
@@ -285,8 +292,8 @@ export default function SessionLineup() {
   // lock states once we're past loading and not in a fatal state.
   const hasCover = !!meta?.coverPhotoUrl;
   // Mirrors the spinner gate below (data-availability, not `visited`) — on a
-  // warm-cache tab flip the hero must show immediately, not flash the plain
-  // layout for the background re-visit's round-trip.
+  // warm-cache re-entry of the screen the hero must show immediately, not
+  // flash the plain layout for the background re-visit's round-trip.
   const heroShown = hasCover && !fatal && !(wines === null && (!visited || state.isPending));
   // Only the .hero-topfix collapse (bar bg + title past 150px) needs to live
   // in React state — and it flips at most once per scroll direction, so the
@@ -444,9 +451,10 @@ export default function SessionLineup() {
         <SessionFatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
           onRetry={retryVisit} onBack={() => router.back()} />
       ) : wines === null && (!visited || state.isPending) ? (
-        // Spinner only when there's nothing to render — a Compare⇄Line-up tab
-        // flip remounts the poll hook, but the shared query cache is warm and
-        // the re-visit runs in the background.
+        // Spinner only when there's nothing to render — re-entering the
+        // screen finds the shared query cache warm, and the re-visit runs in
+        // the background. (Tab flips are in-screen and never remount the
+        // poll hook.)
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
@@ -681,13 +689,33 @@ function CoverHeroLineup({
   const collapsedRef = useRef(false);
   const [pulled, setPulled] = useState(false);
   const pulledRef = useRef(false);
+  // Last known scroll offset — the stuck gates below normally recompute per
+  // scroll event, but an IN-SCREEN tab switch swaps the strip-slot content
+  // (reveal strip ⇄ people rail) with NO scroll event, so an effect re-runs
+  // them from here (else the pinned copies strand: rail invisible when
+  // switching on pinned tabs, or the other tab's strip pinned early).
+  const lastYRef = useRef(0);
 
   // Pin 1px UNDER the bar's bottom so the opaque bg tucks beneath the bar — a
   // flush pin can leave a sub-pixel hairline after rounding. (The bar paints on
   // top, zIndex 8 > 7, so the overlap is invisible.)
   const PIN_Y = BAR_H - 1;
 
+  // Strip measurement resets on a tab switch (the slot's new content re-fires
+  // onLayout with its own y); until then the strip gate reads "not stuck".
+  useEffect(() => {
+    stripTop.value = 0;
+    setStripTopJS(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+  useEffect(() => {
+    const y = lastYRef.current;
+    setTabsStuck(tabsTopJS > 0 && y >= tabsTopJS - PIN_Y);
+    setStripStuck(stripTopJS > 0 && y >= stripTopJS - (PIN_Y + tabsHJS));
+  }, [tab, tabsTopJS, tabsHJS, stripTopJS, PIN_Y]);
+
   const onScrollJS = (y: number) => {
+    lastYRef.current = y;
     // Collapse when the on-photo title has scrolled under the bar's bottom
     // (measured — matches the impression hero; robust to a proportional hero).
     const next = y >= titleBottom - BAR_H;

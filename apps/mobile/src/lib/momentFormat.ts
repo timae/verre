@@ -95,8 +95,8 @@ function formatDay(d: Date): string | null {
 }
 
 // Wine type codes ↔ display labels — the web AddWineModal's exact list (labels
-// like "Sparkling"; the server stores the code). Shared by the add-impression
-// Type dropdown and the Compare row's maker line.
+// like "Sparkling"; the server stores the code). Used by the add-impression
+// Type dropdown. (Compare shows producer-only rows — Simon's ruling.)
 export const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
   { code: 'red', label: 'Red' },
   { code: 'white', label: 'White' },
@@ -104,6 +104,3 @@ export const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
   { code: 'rose', label: 'Rosé' },
   { code: 'nonalc', label: 'Non-alc' },
 ];
-export function wineTypeLabel(code: string): string {
-  return WINE_TYPES.find((t) => t.code === code)?.label ?? '';
-}

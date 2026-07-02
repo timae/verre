@@ -21,14 +21,16 @@ export const SESSION_POLL_MS = 5000;
 const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
 
 // One my-sessions invalidation per code per app run: the invalidation exists
-// for the FIRST membership registration (Moments-home pinning); a Line-up ⇄
-// Compare tab flip remounts the hook and re-POSTs /visit (cheap, bumps
-// lastseen) but shouldn't refetch the whole home list every switch.
+// for the FIRST membership registration (Moments-home pinning); re-entering
+// the session screen re-POSTs /visit (cheap, bumps lastseen) but shouldn't
+// refetch the whole home list every time. (Line-up ⇄ Compare is an in-screen
+// tab swap — it never remounts this hook.)
 const invalidatedCodes = new Set<string>();
 
 // Hide-lineup lock: epoch-ms of the reveal time while the gate is still
-// closed, else null. Callers apply their own host exemption. Shared by the
-// line-up's LockCard and Compare's locked empty state.
+// closed, else null. Callers apply their own host exemption. Drives the
+// line-up's LockCard; Compare's locked empty state consumes it defensively
+// (the tabs are hidden under lock, so it's normally unreachable).
 export function lockState(meta: SessionState['meta']): number | null {
   if (!meta?.hideLineup || !meta.dateFrom) return null;
   const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60_000;

@@ -53,9 +53,9 @@ export function RadarOverlay({
       width={naturalW * scale}
       height={(size + vpad * 2) * scale}
       viewBox={`${-pad} ${-vpad} ${size + pad * 2} ${size + vpad * 2}`}
-      accessible
-      accessibilityRole="image"
-      accessibilityLabel={`Overlaid flavour radar, ${series.length} taster${series.length === 1 ? '' : 's'}`}
+      // Root deliberately NOT accessible (ComparisonWheel parity): an
+      // accessible root groups children on iOS and would swallow the per-label
+      // hit-rect stops below.
     >
       <Defs>
         <Mask id={maskId}>
