@@ -1,4 +1,4 @@
-import { BottomSheetView } from '@gorhom/bottom-sheet';
+import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -291,7 +291,7 @@ export function ComparePickerSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
-  const { height: windowH } = useWindowDimensions();
+  const { height: windowH, fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
   const [rowsH, setRowsH] = useState(0);
   const friendsQ = useQuery({
@@ -336,14 +336,18 @@ export function ComparePickerSheet({
       </VText>
     </Pressable>
   );
-  return (
-    // PeopleSheet's sizing pattern (Simon: "the people view does it
-    // correctly"): dynamic sizing unfolds only as far as the list needs,
-    // capped at 85% of the window; rows in a plain View — a
-    // BottomSheetScrollView measures 0 under dynamic sizing (CountrySheet
-    // note).
-    <Sheet open={open} onClose={onClose} maxDynamicContentSize={windowH * 0.85}>
-      <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+  // Sizing: dynamic fit-to-content (PeopleSheet's pattern — Simon: "the
+  // people view does it correctly") for lists that fit under the 85% cap.
+  // Dynamic sizing cannot scroll (rows past the cap would clip unreachably),
+  // so a roster the estimate says won't fit switches to the CountrySheet
+  // recipe instead: fixed 85% snap, pinned head/controls, rows in a
+  // BottomSheetScrollView (which needs the fixed snap — it measures 0 under
+  // dynamic sizing). The estimate only picks the MODE; near the boundary the
+  // two render identically.
+  const rowH = Math.max(30, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 19;
+  const needsScroll = 214 + insets.bottom + people.length * rowH > windowH * 0.85;
+  const headBlock = (
+    <>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Compare who?</VText>
@@ -367,12 +371,15 @@ export function ComparePickerSheet({
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
         </View>
-        {/* The rows area locks to its UNFILTERED measured height while a
-            search filters it — the dynamically-sized sheet must not slide
-            around with the result count (Simon's ruling). */}
+    </>
+  );
+  // The rows area locks to its UNFILTERED measured height while a search
+  // filters it — the dynamically-sized sheet must not slide around with the
+  // result count (Simon's ruling; moot in the fixed-snap scroll mode).
+  const rowsBlock = (
         <View
-          onLayout={(e) => { if (!q) setRowsH(e.nativeEvent.layout.height); }}
-          style={{ paddingBottom: 8, ...(q && rowsH > 0 ? { minHeight: rowsH } : null) }}
+          onLayout={(e) => { if (!q && !needsScroll) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : null) }}
         >
           {rows.map((p, i) => {
             const on = !hidden.has(p.id);
@@ -417,7 +424,26 @@ export function ComparePickerSheet({
             </VText>
           ) : null}
         </View>
-      </BottomSheetView>
+  );
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
+    >
+      {needsScroll ? (
+        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+          {headBlock}
+          <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
+            {rowsBlock}
+          </BottomSheetScrollView>
+        </BottomSheetView>
+      ) : (
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+          {headBlock}
+          {rowsBlock}
+        </BottomSheetView>
+      )}
     </Sheet>
   );
 }
@@ -1038,7 +1064,7 @@ function ShowAllSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
-  const { height: windowH } = useWindowDimensions();
+  const { height: windowH, fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
   const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
@@ -1052,11 +1078,13 @@ function ShowAllSheet({
     .filter((r) => !q || r.displayName.toLowerCase().includes(q))
     .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
   const total = base.length;
-  return (
-    // PeopleSheet's sizing pattern: unfold only as far as the list needs,
-    // capped at 85% of the window (plain-View rows — see the picker's note).
-    <Sheet open={open} onClose={onClose} maxDynamicContentSize={windowH * 0.85}>
-      <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+  // Same cap-aware sizing as the picker: dynamic fit-to-content while the
+  // unfiltered list fits under 85%; else the CountrySheet recipe (fixed snap,
+  // pinned head/controls, scrollable rows).
+  const rowH = Math.max(17, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 17;
+  const needsScroll = 178 + insets.bottom + total * rowH > windowH * 0.85;
+  const headBlock = (
+    <>
         <View style={{ paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             {item.wine._blind ? `Impression ${item.index + 1}` : item.wine.name}
@@ -1088,11 +1116,14 @@ function ShowAllSheet({
             <Icon name="sort" size={18} color={dir === 'low' ? theme.accent : theme.inkSoft} />
           </Pressable>
         </View>
-        {/* Same unfiltered-height lock as the picker — stable sheet while
-            searching. */}
+    </>
+  );
+  // Same unfiltered-height lock as the picker — stable sheet while searching
+  // (moot in the fixed-snap scroll mode).
+  const rowsBlock = (
         <View
-          onLayout={(e) => { if (!q) setRowsH(e.nativeEvent.layout.height); }}
-          style={{ paddingBottom: 8, ...(q && rowsH > 0 ? { minHeight: rowsH } : null) }}
+          onLayout={(e) => { if (!q && !needsScroll) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : null) }}
         >
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
@@ -1120,7 +1151,26 @@ function ShowAllSheet({
             </VText>
           ) : null}
         </View>
-      </BottomSheetView>
+  );
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
+    >
+      {needsScroll ? (
+        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+          {headBlock}
+          <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
+            {rowsBlock}
+          </BottomSheetScrollView>
+        </BottomSheetView>
+      ) : (
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+          {headBlock}
+          {rowsBlock}
+        </BottomSheetView>
+      )}
     </Sheet>
   );
 }
