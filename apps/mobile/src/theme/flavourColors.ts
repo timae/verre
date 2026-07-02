@@ -80,3 +80,55 @@ export function useFlavourColors(): (key: string) => string {
   const palette = FLAVOUR_COLORS[themeKey];
   return (key: string) => palette[key as FlavourAxisKey] ?? theme.accent;
 }
+
+// ── Person-series colours (02d compare — ≤4 radar polygons, legend/people dots) ──
+// Simon's ruling (2026-07-02): person colours derive from the palette's base
+// ramp — the hue ramp both the structure and aroma sets are assignments of —
+// never the mock's baked hexes. This is that derivation: a hue-SPREAD
+// permutation of the theme's structure labels, so the first few assignees are
+// maximally distinct (the ramp's natural order runs red→brown→gold→green→blue→
+// purple — taking it in order would hand near-identical colours to persons 1-3).
+// The first five (rust · purple · blue-grey · gold · green) mirror the mock's
+// person-colour spread in the theme's own values. Deliberately STRUCTURE-only:
+// the aroma set re-uses the same hexes except `Chemical`, so unioning it in
+// would add one near-black for a more complex mapping — 13 distinct colours
+// before wrap is plenty.
+const PERSON_LABEL_ORDER: StructureLabel[] = [
+  'Body',       // rust
+  'Funk',       // purple
+  'Saltyness',  // blue-grey
+  'Sweetness',  // gold
+  'Bitterness', // green
+  'Flavour',    // red
+  'Umami',      // sage
+  'Aroma',      // rose
+  'Tannin',     // dark brown
+  'Warmth',     // deep rust
+  'Acidity',    // khaki
+  'Finish',     // ochre
+  'Bubbles',    // neutral (last on purpose — weakest as an identity colour)
+];
+
+function personRamp(theme: keyof typeof FLAVOUR_PALETTE): string[] {
+  const structure = FLAVOUR_PALETTE[theme].structure;
+  return PERSON_LABEL_ORDER.map((l) => structure[l]);
+}
+
+export const PERSON_SERIES: Record<ThemeKey, string[]> = {
+  apricot: personRamp('apricot'),
+  charcoal: personRamp('charcoal'),
+  cobalt: personRamp('cobalt'),
+  aubergine: personRamp('aubergine'),
+  clay: personRamp('clay'),
+  mauve: personRamp('mauve'),
+};
+
+// Active-theme person-colour resolver: stable index (roster order) → hex,
+// wrapping past the ramp's end. Assign from the SESSION roster position, not
+// the current selection, so a person keeps their colour when the selection
+// changes.
+export function usePersonColors(): (index: number) => string {
+  const { themeKey } = useTheme();
+  const ramp = PERSON_SERIES[themeKey];
+  return (index: number) => ramp[((index % ramp.length) + ramp.length) % ramp.length];
+}

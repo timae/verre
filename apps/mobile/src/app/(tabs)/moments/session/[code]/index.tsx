@@ -1,14 +1,13 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import Reanimated, { clamp, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
@@ -23,27 +22,25 @@ import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
 import {
   ApiError,
-  getRemovedState,
-  getSessionState,
   hideAllWines,
   hideWine,
-  postVisit,
   revealAllWines,
   revealWine,
-  updateMomentSettings,
   type RatingsView,
   type SessionState,
   type WireWine,
 } from '@/lib/api/sessions';
-import { authClient } from '@/lib/authClient';
+import { buildComparePeople, CompareBody, ComparePickerSheet, PeopleRail } from '@/components/moments/CompareBody';
+import { SessionFatalView } from '@/components/moments/SessionFatalView';
+import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
+import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
+import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
 import { popRevealMode, pushRevealMode } from '@/lib/sheetVisibility';
 import { motion, radius, useTheme } from '@/theme';
 
-const POLL_MS = 5000;
-const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
 // full-bleed photo under the status bar; HERO_RATIO is now shared with — and
 // equal to — the impression hero's, per Simon's ruling).
@@ -113,7 +110,8 @@ function RevealStripFor({ reveal }: { reveal: RevealProps }) {
 // Milestone 3: rows open the impression detail (02e); unrated rows carry the
 // .lu-rate pill, rated rows the score chip. The ⋯ menu wires People + Share
 // (sheets), a live Blind-for-all toggle, and Settings (02f, a pushed screen
-// stack under settings/); the Compare tab still renders disabled (flagged).
+// stack under settings/); the Compare tab is an IN-SCREEN swap (CompareBody
+// below the shared SessionTabs — no route, everything above the tabs stays).
 export default function SessionLineup() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
@@ -123,90 +121,70 @@ export default function SessionLineup() {
   const router = useRouter();
   const online = useIsOnline();
   const queryClient = useQueryClient();
-  const { data: auth } = authClient.useSession();
-  const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
-  // Per-section graceful degradation (mirrors web SessionShell): a null
-  // section from a partially-failed /state keeps the previous data.
-  const lastRef = useRef<SessionState>({ meta: null, wines: null, ratings: null });
+  // Visit → /state poll → per-section merge, shared with Compare (02d).
+  const { meta, wines, ratings, state, fatal, removedKind, visited, retryVisit, myIdentityId, stateKey } =
+    useSessionPoll(code);
 
-  // /state 401s for non-participants — the visit POST registers this user in
-  // the session's identities map first. visitAttempt re-runs the effect for
-  // retries; the effect also resets all per-session state on a code change.
-  const [visited, setVisited] = useState(false);
-  const [fatal, setFatal] = useState<ApiError | null>(null);
-  const [removedKind, setRemovedKind] = useState<'banned' | 'kicked' | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [sessMenuTop, setSessMenuTop] = useState<number | null>(null); // ⋯ menu anchor
-  const [visitAttempt, setVisitAttempt] = useState(0);
+
+  // Line-up | Compare is an IN-SCREEN tab swap (Simon's ruling): everything
+  // above the tab strip — bar or cover hero — stays put; only the content
+  // below swaps. Switching to Compare exits reveal mode (its Done footer and
+  // per-row pills are line-up furniture).
+  const [tab, setTab] = useState<SessionTab>('lineup');
+  const selectTab = (t: SessionTab) => {
+    if (t === 'compare') setRevealMode(false);
+    setTab(t);
+  };
+
+  // 02d people-selector — the avatar rail (Simon's pick): ONE hidden set
+  // drives every compare view (rail chips, person rows, picker sheet). The
+  // rail renders STICKY under the bar like the reveal strip: plain layout via
+  // ScrollView stickyHeaderIndices, cover-hero via the strip overlay slot.
+  const [cmpHiddenRaw, setCmpHidden] = useState<Set<string>>(new Set());
+  const [cmpPickerOpen, setCmpPickerOpen] = useState(false);
+  const cmpPeople = useMemo(() => buildComparePeople(ratings, meta), [ratings, meta]);
+  // Prune ghosts: someone hidden and THEN kicked/banned leaves the roster —
+  // their stale id must not keep the All chip dim / the picker counts wrong.
+  const cmpHidden = useMemo(() => {
+    const ids = new Set(cmpPeople.map((p) => p.id));
+    const pruned = new Set([...cmpHiddenRaw].filter((id) => ids.has(id)));
+    return pruned.size === cmpHiddenRaw.size ? cmpHiddenRaw : pruned;
+  }, [cmpHiddenRaw, cmpPeople]);
+  const toggleCmpPerson = useCallback((id: string) => {
+    setCmpHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const showAllCmp = useCallback(() => setCmpHidden(new Set()), []);
+  // A roster of one renders no rail/picker — a surviving hidden entry would
+  // strand "Nobody selected" with no in-screen recovery. One person needs no
+  // selection: clear it.
   useEffect(() => {
-    let cancelled = false;
-    setVisited(false);
-    setFatal(null);
-    setRemovedKind(null);
-    lastRef.current = { meta: null, wines: null, ratings: null };
-    postVisit(code)
-      .then(() => {
-        if (cancelled) return;
-        setVisited(true);
-        // Membership just registered — the Moments home pinning depends on it.
-        queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
-      })
-      .catch((e) => { if (!cancelled) setFatal(e instanceof ApiError ? e : new ApiError('http', 0)); });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [code, visitAttempt]);
-
-  // A kick is recoverable: rejoining by code clears the server-side kicked
-  // marker, but this screen instance may still hold the stale removed state.
-  // Re-run the visit whenever the screen regains focus in a recoverable
-  // fatal state (never for plain network errors — those have a Try-again).
-  const fatalRef = useRef<ApiError | null>(null);
-  fatalRef.current = fatal;
-  const focusedOnce = useRef(false);
-  useFocusEffect(
-    useCallback(() => {
-      if (!focusedOnce.current) {
-        focusedOnce.current = true;
-        return;
-      }
-      const f = fatalRef.current;
-      if (f && (f.kind === 'removed' || f.kind === 'invalid')) setVisitAttempt((n) => n + 1);
-    }, []),
-  );
-
-  // Banned vs kicked copy (web RemovedView parity).
-  useEffect(() => {
-    if (fatal?.kind !== 'removed') return;
-    let cancelled = false;
-    getRemovedState(code)
-      .then((s) => { if (!cancelled && (s === 'banned' || s === 'kicked')) setRemovedKind(s); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [fatal, code]);
-
-  const state = useQuery({
-    queryKey: ['session-state', code, myIdentityId],
-    queryFn: () => getSessionState(code),
-    enabled: visited && !fatal,
-    refetchInterval: POLL_MS,
-    retry: (failureCount, error) =>
-      !(error instanceof ApiError && FATAL_KINDS.has(error.kind)) && failureCount < 1,
-  });
-
-  useEffect(() => {
-    if (state.error instanceof ApiError && FATAL_KINDS.has(state.error.kind)) setFatal(state.error);
-  }, [state.error]);
-
-  if (state.data) {
-    lastRef.current = {
-      meta: state.data.meta ?? lastRef.current.meta,
-      wines: state.data.wines ?? lastRef.current.wines,
-      ratings: state.data.ratings ?? lastRef.current.ratings,
-    };
-  }
-  const { meta, wines, ratings } = lastRef.current;
+    if (cmpPeople.length <= 1 && cmpHiddenRaw.size > 0) setCmpHidden(new Set());
+  }, [cmpPeople, cmpHiddenRaw]);
+  // The rail's All chip TOGGLES: everything visible → deselect everyone;
+  // anything hidden → select everyone (Simon's ruling).
+  const toggleAllCmp = useCallback(() => {
+    // Branch on the PRUNED set (what the UI shows) — the raw set may hold
+    // ghost ids of kicked raters, and "All looks on → tap deselects all"
+    // must hold visually, not on stale state.
+    setCmpHidden(cmpHidden.size === 0 ? new Set(cmpPeople.map((p) => p.id)) : new Set());
+  }, [cmpHidden, cmpPeople]);
+  const cmpRail = tab === 'compare' && cmpPeople.length > 1 ? (
+    <PeopleRail
+      people={cmpPeople}
+      hidden={cmpHidden}
+      onToggle={toggleCmpPerson}
+      onToggleAll={toggleAllCmp}
+      onPick={() => setCmpPickerOpen(true)}
+    />
+  ) : null;
 
   const isHostViewer =
     !!meta &&
@@ -215,33 +193,8 @@ export default function SessionLineup() {
       (meta.coHostIds ?? []).includes(myIdentityId));
   const canAdd = isHostViewer || !!meta?.providerIds?.includes(myIdentityId);
 
-  // Blind-for-all inline toggle (⋯ menu). Optimistically flip the cached meta
-  // so the switch responds immediately, PATCH, then let the 5s poll reconcile;
-  // roll back + alert on failure. blindForEveryone is NOT pro-gated server-side
-  // (it composes on an already-blind session — root freemium note), so any
-  // host/cohost on a blind session may flip it. The menu only renders the
-  // toggle enabled when meta.blind is true.
-  const [bfaBusy, setBfaBusy] = useState(false);
-  const stateKey = ['session-state', code, myIdentityId];
-  const toggleBlindForEveryone = useCallback(async (next: boolean) => {
-    if (bfaBusy) return;
-    setBfaBusy(true);
-    const prev = queryClient.getQueryData<SessionState>(stateKey);
-    if (prev?.meta) {
-      queryClient.setQueryData<SessionState>(stateKey, { ...prev, meta: { ...prev.meta, blindForEveryone: next } });
-    }
-    try {
-      await updateMomentSettings(code, { blindForEveryone: next });
-      queryClient.invalidateQueries({ queryKey: ['session-state', code] });
-    } catch (e) {
-      if (prev) queryClient.setQueryData<SessionState>(stateKey, prev); // roll back
-      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-      Alert.alert('Could not update', msg || 'Check your connection and try again.');
-    } finally {
-      setBfaBusy(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bfaBusy, code, myIdentityId]);
+  // Blind-for-all inline toggle (⋯ menu) — shared mutation, see SessionMenu.tsx.
+  const { busy: bfaBusy, toggle: toggleBlindForEveryone } = useBlindForEveryoneToggle(code, myIdentityId);
 
   // ── Blind reveal/hide (02b) ──────────────────────────────────────────────
   // On a blind session a wine is "revealed to guests" iff it carries a
@@ -347,7 +300,10 @@ export default function SessionLineup() {
   // keeps its plain VBar layout untouched. The hero shows on the normal AND
   // lock states once we're past loading and not in a fatal state.
   const hasCover = !!meta?.coverPhotoUrl;
-  const heroShown = hasCover && !fatal && visited && !(state.isPending && wines === null);
+  // Mirrors the spinner gate below (data-availability, not `visited`) — on a
+  // warm-cache re-entry of the screen the hero must show immediately, not
+  // flash the plain layout for the background re-visit's round-trip.
+  const heroShown = hasCover && !fatal && !(wines === null && (!visited || state.isPending));
   // Only the .hero-topfix collapse (bar bg + title past 150px) needs to live
   // in React state — and it flips at most once per scroll direction, so the
   // child reports it as a boolean that we set ONLY on change (a raw scrollY in
@@ -420,8 +376,9 @@ export default function SessionLineup() {
               meta ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
-                      here), left of the ⋯. Host/cohost/provider only. */}
-                  {canAdd ? <LineupAddButton onPress={openAdd} /> : null}
+                      here), left of the ⋯. Host/cohost/provider only — and
+                      line-up furniture (hidden on the Compare tab). */}
+                  {canAdd && tab === 'lineup' ? <LineupAddButton onPress={openAdd} /> : null}
                   <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} />
                 </View>
               ) : undefined
@@ -431,22 +388,41 @@ export default function SessionLineup() {
       ) : null}
       {/* Session ⋯ menu (.sess-menu): Blind-for-all (live toggle), People,
           Share, Settings. Share intentionally lives in BOTH the menu and the
-          Settings hub (Simon's ruling). */}
-      <SessionMenu
-        anchorTop={sessMenuTop}
-        onClose={() => setSessMenuTop(null)}
-        // Blind-for-all is a host/cohost control that only appears when the
-        // session is ACTUALLY blind (design: the .sess-menu-mode row is absent
-        // otherwise). A press-to-activate field, not a switch.
-        showBlindForEveryone={isHostViewer && !!meta?.blind}
-        blindForEveryone={!!meta?.blindForEveryone}
-        bfaBusy={bfaBusy}
-        onToggleBlindForEveryone={toggleBlindForEveryone}
-        onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
-        onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
-        onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
-      />
-      {meta ? (
+          Settings hub (Simon's ruling). Menu + sheets unmount on a fatal
+          (removed/gone) — a kicked user must not keep stale session overlays
+          over the terminal view. */}
+      {!fatal ? (
+        <SessionMenu
+          anchorTop={sessMenuTop}
+          onClose={() => setSessMenuTop(null)}
+          // Blind-for-all is a host/cohost control that only appears when the
+          // session is ACTUALLY blind (design: the .sess-menu-mode row is absent
+          // otherwise). A press-to-activate field, not a switch.
+          showBlindForEveryone={isHostViewer && !!meta?.blind}
+          blindForEveryone={!!meta?.blindForEveryone}
+          bfaBusy={bfaBusy}
+          onToggleBlindForEveryone={toggleBlindForEveryone}
+          onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
+          onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
+          onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
+        />
+      ) : null}
+      {meta && !fatal ? (
+        <ComparePickerSheet
+          open={cmpPickerOpen}
+          onClose={() => setCmpPickerOpen(false)}
+          people={cmpPeople}
+          hidden={cmpHidden}
+          myIdentityId={myIdentityId}
+          onToggle={toggleCmpPerson}
+          onAll={showAllCmp}
+          onJustMe={() => setCmpHidden(new Set(cmpPeople.filter((p) => p.id !== myIdentityId).map((p) => p.id)))}
+          onMeAndFriends={(friendIds) =>
+            setCmpHidden(new Set(cmpPeople.filter((p) => p.id !== myIdentityId && !friendIds.has(p.id)).map((p) => p.id)))
+          }
+        />
+      ) : null}
+      {meta && !fatal ? (
         <>
           <InviteSheet
             open={inviteOpen}
@@ -481,9 +457,13 @@ export default function SessionLineup() {
           back/⋯ buttons during the blip — accepted for a transient state. */}
       {showReconnecting ? <ReconnectingBar /> : null}
       {fatal ? (
-        <FatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
-          onRetry={() => setVisitAttempt((n) => n + 1)} onBack={() => router.back()} />
-      ) : !visited || (state.isPending && wines === null) ? (
+        <SessionFatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
+          onRetry={retryVisit} onBack={() => router.back()} />
+      ) : wines === null && (!visited || state.isPending) ? (
+        // Spinner only when there's nothing to render — re-entering the
+        // screen finds the shared query cache warm, and the re-visit runs in
+        // the background. (Tab flips are in-screen and never remount the
+        // poll hook.)
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
@@ -502,6 +482,10 @@ export default function SessionLineup() {
           windowH={windowH}
           ovc={ovc}
           reveal={reveal}
+          tab={tab}
+          onSelectTab={selectTab}
+          compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />}
+          compareRail={cmpRail}
           onCollapsedChange={setHeroCollapsed}
           onPressWine={openImpression}
           onAdd={openAdd}
@@ -514,8 +498,21 @@ export default function SessionLineup() {
       ) : (
         <>
           <View style={{ paddingHorizontal: GUTTER }}>
-            <TabStrip />
+            <SessionTabs active={tab} onSelect={selectTab} />
           </View>
+          {tab === 'compare' ? (
+            // The rail is child 0 + stickyHeaderIndices so it pins under the
+            // fixed tabs on scroll (the plain layout's native-sticky path —
+            // same behaviour the reveal strip has on the line-up).
+            <ScrollView
+              stickyHeaderIndices={cmpRail ? [0] : undefined}
+              contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+            >
+              {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
+              <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />
+            </ScrollView>
+          ) : (
+          <>
           {/* The reveal/hide strip is a STICKY list cell (design
               .reveal-strip-sticky): it sits inline above the line-up — below the
               ovc about block — and pins under the tabs once scrolled past
@@ -583,6 +580,8 @@ export default function SessionLineup() {
             }
             ListEmptyComponent={<EmptyLineup canAdd={canAdd} onAdd={openAdd} />}
           />
+          </>
+          )}
         </>
       )}
       {/* .vfoot-rev — sticky Done footer that exits reveal mode (the OS tab bar
@@ -596,7 +595,9 @@ export default function SessionLineup() {
         <HeroTopBar
           title={meta.name}
           collapsed={heroCollapsed}
-          canAdd={canAdd}
+          // The Add pill is line-up furniture (Simon's ruling) — Compare keeps
+          // the same bar minus Add.
+          canAdd={canAdd && tab === 'lineup'}
           onAdd={openAdd}
           onBack={() => router.back()}
           onMenu={(top) => setSessMenuTop(top)}
@@ -639,7 +640,7 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, reveal, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
@@ -651,6 +652,12 @@ function CoverHeroLineup({
   windowH: number;
   ovc: React.ReactNode;
   reveal: RevealProps;
+  tab: SessionTab;
+  onSelectTab: (t: SessionTab) => void;
+  /** The Compare tab's content — swaps in below the (sticky) tabs. */
+  compare: React.ReactNode;
+  /** The people rail — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
+  compareRail: React.ReactNode;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
   onAdd: () => void;
@@ -663,7 +670,9 @@ function CoverHeroLineup({
   const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
   const rows = wines ?? [];
-  const showStrip = !!reveal.stripVariant && !lock;
+  const onCompare = tab === 'compare';
+  // Strip (like the rows + add affordances) is line-up furniture only.
+  const showStrip = !!reveal.stripVariant && !lock && !onCompare;
 
   // UI-thread scroll position for the overlay translates.
   const aref = useAnimatedRef<Reanimated.ScrollView>();
@@ -689,13 +698,33 @@ function CoverHeroLineup({
   const collapsedRef = useRef(false);
   const [pulled, setPulled] = useState(false);
   const pulledRef = useRef(false);
+  // Last known scroll offset — the stuck gates below normally recompute per
+  // scroll event, but an IN-SCREEN tab switch swaps the strip-slot content
+  // (reveal strip ⇄ people rail) with NO scroll event, so an effect re-runs
+  // them from here (else the pinned copies strand: rail invisible when
+  // switching on pinned tabs, or the other tab's strip pinned early).
+  const lastYRef = useRef(0);
 
   // Pin 1px UNDER the bar's bottom so the opaque bg tucks beneath the bar — a
   // flush pin can leave a sub-pixel hairline after rounding. (The bar paints on
   // top, zIndex 8 > 7, so the overlap is invisible.)
   const PIN_Y = BAR_H - 1;
 
+  // Strip measurement resets on a tab switch (the slot's new content re-fires
+  // onLayout with its own y); until then the strip gate reads "not stuck".
+  useEffect(() => {
+    stripTop.value = 0;
+    setStripTopJS(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+  useEffect(() => {
+    const y = lastYRef.current;
+    setTabsStuck(tabsTopJS > 0 && y >= tabsTopJS - PIN_Y);
+    setStripStuck(stripTopJS > 0 && y >= stripTopJS - (PIN_Y + tabsHJS));
+  }, [tab, tabsTopJS, tabsHJS, stripTopJS, PIN_Y]);
+
   const onScrollJS = (y: number) => {
+    lastYRef.current = y;
     // Collapse when the on-photo title has scrolled under the bar's bottom
     // (measured — matches the impression hero; robust to a proportional hero).
     const next = y >= titleBottom - BAR_H;
@@ -729,10 +758,15 @@ function CoverHeroLineup({
 
   const Tabs = (
     <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
-      <TabStrip />
+      <SessionTabs active={tab} onSelect={onSelectTab} />
     </View>
   );
-  const Strip = showStrip ? (
+  // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
+  // the people rail (both pin under the pinned tabs via the same overlay).
+  // The rail owns its horizontal padding (its chips scroll edge-to-edge).
+  const Strip = onCompare ? (
+    compareRail ? <View style={{ backgroundColor: theme.bg }}>{compareRail}</View> : null
+  ) : showStrip ? (
     <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
       <RevealStripFor reveal={reveal} />
     </View>
@@ -770,7 +804,7 @@ function CoverHeroLineup({
           }}
         >
           <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
-            <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+            <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: '100%' }} resizeMode="cover" />
           </Pressable>
           {/* Shared HERO_SCRIM (converged to the impression hero's gradient — was
               0.28/0.05/0.72, slightly lighter at the bottom). */}
@@ -813,13 +847,15 @@ function CoverHeroLineup({
             {Tabs}
           </View>
         ) : null}
-        {/* about block (or lock card) — scrolls beneath the tabs */}
+        {/* about block (or lock card) — scrolls beneath the tabs. On the
+            Compare tab everything below the tabs is the compare body (the mock
+            02d screens carry no about block). */}
         {lock ? (
           <View style={{ paddingHorizontal: GUTTER }}>
             <LockCard revealAt={lock} />
             {ovc}
           </View>
-        ) : (
+        ) : onCompare ? null : (
           <View style={{ paddingHorizontal: GUTTER }}>{ovc}</View>
         )}
         {/* INLINE reveal strip — below the about block, above the rows. At-rest
@@ -835,8 +871,10 @@ function CoverHeroLineup({
             {Strip}
           </View>
         ) : null}
-        {/* rows + footer */}
-        {lock ? null : (
+        {/* rows + footer (line-up) / compare body */}
+        {lock ? null : onCompare ? (
+          compare
+        ) : (
           <View>
             {rows.length === 0 ? (
               <View style={{ paddingHorizontal: GUTTER }}>
@@ -982,75 +1020,6 @@ function HeroTopBar({
           </View>
         </View>
       </View>
-    </View>
-  );
-}
-
-function FatalView({
-  fatal, removedKind, sessionLabel, onRetry, onBack,
-}: {
-  fatal: ApiError;
-  removedKind: 'banned' | 'kicked' | null;
-  sessionLabel: string | null;
-  onRetry: () => void;
-  onBack: () => void;
-}) {
-  const phone = usePhoneTokens();
-  let title = 'Something went wrong';
-  let body = 'Try again in a moment.';
-  if (fatal.kind === 'not-found') {
-    title = 'This moment has ended';
-    body = 'The session is no longer live.';
-  } else if (fatal.kind === 'removed') {
-    if (removedKind === 'banned') {
-      title = 'You have been banned from this session';
-      body = `The host${sessionLabel ? ` of ${sessionLabel}` : ''} banned you. Your ratings and notes from this session have been removed.`;
-    } else {
-      title = 'You were removed';
-      body = 'The host removed you from this moment. You can rejoin with the code.';
-    }
-  } else if (fatal.kind === 'invalid') {
-    body = "We couldn't verify you in this moment. Try joining again with the code.";
-    title = 'Not part of this moment';
-  }
-  return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead'), textAlign: 'center' }}>{title}</VText>
-      <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 280 }}>{body}</VText>
-      {fatal.kind === 'http' ? <Button title="Try again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
-      <Button title="Back to Moments" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
-    </View>
-  );
-}
-
-// .vtabs — Line-up | Compare. Compare arrives in a later milestone; the tab
-// renders per spec but disabled.
-function TabStrip() {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const tab = (label: string, on: boolean, disabled?: boolean) => (
-    <View
-      key={label}
-      style={{
-        paddingVertical: 10,
-        paddingHorizontal: 12,
-        borderBottomWidth: 2,
-        borderBottomColor: on ? theme.accent : 'transparent',
-        marginBottom: -1,
-      }}
-    >
-      <VText
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}
-        color={on ? 'ink' : disabled ? 'inkFaint' : 'inkSoft'}
-      >
-        {label}
-      </VText>
-    </View>
-  );
-  return (
-    <View style={{ flexDirection: 'row', gap: 2, borderBottomWidth: 1, borderBottomColor: theme.rule, marginBottom: 4 }}>
-      {tab('Line-up', true)}
-      {tab('Compare', false, true)}
     </View>
   );
 }
@@ -1380,12 +1349,6 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNu
 
 // Pre-tasting hide-lineup gate: the server returns an empty wine list until
 // revealAt (lib/sessionState.ts buildWinesView).
-function lockState(meta: MetaView): number | null {
-  if (!meta?.hideLineup || !meta.dateFrom) return null;
-  const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60_000;
-  return Date.now() < revealAt ? revealAt : null;
-}
-
 // .lock-card + .cd countdown cells + .lock-start.
 function LockCard({ revealAt }: { revealAt: number }) {
   const { theme } = useTheme();
@@ -1746,26 +1709,6 @@ function LuPill({
   );
 }
 
-// VBar ⋯ button — measures its position so the menu anchors under it.
-function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const ref = useRef<View>(null);
-  return (
-    <View ref={ref} collapsable={false}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Session menu"
-        hitSlop={8}
-        onPress={() => ref.current?.measureInWindow((_x, y, _w, h) => onOpen(y + h))}
-        style={({ pressed }) => ({ width: phone.size('compactAction'), height: phone.size('compactAction'), alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
-      >
-        <Icon name="more" size={phone.size('compactActionIcon')} color={theme.ink} />
-      </Pressable>
-    </View>
-  );
-}
-
 // Header "Add" control (.hv-add) — sits left of the ⋯ for host/cohost/provider.
 // Collapses label→glyph exactly like the impression Crave button: when
 // `collapsed`, the label is dropped and only the + glyph remains (no width
@@ -1817,68 +1760,5 @@ function LineupAddButton({
         </VText>
       ) : null}
     </Pressable>
-  );
-}
-
-// Session ⋯ menu (.sess-menu): Blind-for-all is a press-to-activate mode row
-// (.sess-menu-mode) shown only on a blind session for hosts/cohosts; People +
-// Share invite + Settings are active. Anchored dropdown (the 02e .ir-menu pattern).
-function SessionMenu({
-  anchorTop, onClose, onPeople, onShare, onSettings,
-  showBlindForEveryone, blindForEveryone, bfaBusy, onToggleBlindForEveryone,
-}: {
-  anchorTop: number | null;
-  onClose: () => void;
-  onPeople: () => void;
-  onShare: () => void;
-  onSettings: () => void;
-  showBlindForEveryone: boolean;
-  blindForEveryone: boolean;
-  bfaBusy: boolean;
-  onToggleBlindForEveryone: (next: boolean) => void;
-}) {
-  // Auto-dismiss the menu shortly after a Blind-for-all toggle so the user sees
-  // the row flip to active, then it closes itself. Cleared on close/unmount.
-  const bfaCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (anchorTop === null && bfaCloseTimer.current) {
-      clearTimeout(bfaCloseTimer.current);
-      bfaCloseTimer.current = null;
-    }
-  }, [anchorTop]);
-  useEffect(() => () => { if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current); }, []);
-  return (
-    // anchorTop is the ⋯ button's bottom edge; pass it as both top+bottom (the
-    // menu sits at the top of the screen and never flips). right=GUTTER/minWidth
-    // 200 keep the line-up menu's prior metrics.
-    <AnchoredMenu
-      anchor={anchorTop !== null ? { top: anchorTop, bottom: anchorTop } : null}
-      onClose={onClose}
-      right={GUTTER}
-      minWidth={200}
-    >
-      {/* .sess-menu-mode — Blind-for-all is a press-to-activate field: tapping
-          flips it, ACTIVE styles the whole row accent. Only on a blind session. */}
-      {showBlindForEveryone ? (
-        <>
-          <MenuItem
-            icon="eyeoff"
-            label="Blind for all"
-            active={blindForEveryone}
-            disabled={bfaBusy}
-            accessibilityState={{ selected: blindForEveryone }}
-            onPress={() => {
-              onToggleBlindForEveryone(!blindForEveryone);
-              if (bfaCloseTimer.current) clearTimeout(bfaCloseTimer.current);
-              bfaCloseTimer.current = setTimeout(onClose, 300);
-            }}
-          />
-          <MenuSeparator />
-        </>
-      ) : null}
-      <MenuItem icon="user" label="People" onPress={onPeople} />
-      <MenuItem icon="share" label="Share invite" onPress={onShare} />
-      <MenuItem icon="settings" label="Settings" onPress={onSettings} />
-    </AnchoredMenu>
   );
 }

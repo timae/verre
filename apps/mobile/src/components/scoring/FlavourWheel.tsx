@@ -14,16 +14,21 @@ export type WheelAxis = {
 // react-native-svg render layer (the web design's SVG-string assembly does
 // not port — proposal 05 §2). Colours arrive as data: the Vero palette for
 // the real backend flavour sets is a pending design decision.
-export function FlavourWheel({ axes, size = 260, labels = true }: { axes: WheelAxis[]; size?: number; labels?: boolean }) {
+export function FlavourWheel({ axes, size = 260, labels = true, maxWidth }: { axes: WheelAxis[]; size?: number; labels?: boolean; maxWidth?: number }) {
   const { theme } = useTheme();
   const pad = labels ? 58 : 4;
   const vpad = labels ? 12 : 4;
   const geo = flavourWheelGeometry(axes.map((a) => a.value), size);
+  // The design's `.radar { max-width: 100% }` responsive scale-down: the
+  // natural canvas (labels included) is wider than a small phone's content
+  // column, so a measured maxWidth shrinks the whole SVG uniformly.
+  const naturalW = size + pad * 2;
+  const scale = maxWidth && maxWidth < naturalW ? maxWidth / naturalW : 1;
 
   return (
     <Svg
-      width={size + pad * 2}
-      height={size + vpad * 2}
+      width={naturalW * scale}
+      height={(size + vpad * 2) * scale}
       viewBox={`${-pad} ${-vpad} ${size + pad * 2} ${size + vpad * 2}`}
     >
       <Circle cx={geo.cx} cy={geo.cy} r={geo.R} fill="none" stroke={theme.rule} strokeWidth={1} />

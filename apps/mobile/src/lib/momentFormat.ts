@@ -1,6 +1,7 @@
 // Display formatting for moment cards/rows (02s). Presentation-only.
 
 import { DATE_LOCALE } from '@/lib/locale';
+import type { WineTypeCode } from '@/lib/api/sessions';
 
 // "Hosted by X". Pass null to omit (e.g. when the host name already serves as
 // the card title on a name-less moment) so it isn't repeated.
@@ -92,3 +93,14 @@ function formatDay(d: Date): string | null {
   if (diffDays < 7 && diffDays > 1) return d.toLocaleDateString(DATE_LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
   return day;
 }
+
+// Wine type codes ↔ display labels — the web AddWineModal's exact list (labels
+// like "Sparkling"; the server stores the code). Used by the add-impression
+// Type dropdown. (Compare shows producer-only rows — Simon's ruling.)
+export const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
+  { code: 'red', label: 'Red' },
+  { code: 'white', label: 'White' },
+  { code: 'spark', label: 'Sparkling' },
+  { code: 'rose', label: 'Rosé' },
+  { code: 'nonalc', label: 'Non-alc' },
+];

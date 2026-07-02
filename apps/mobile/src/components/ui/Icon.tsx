@@ -85,6 +85,14 @@ const ICONS: Record<string, Seg[]> = {
     { d: 'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z', sw: 1.4, join: true },
     { cx: 12, cy: 12, r: 3, sw: 1.4 },
   ],
+  // accordion / picker disclosure (design i-chevron-down def)
+  chevrondown: [
+    { d: 'M6 9.5l6 6 6-6', sw: 1.7, cap: true, join: true },
+  ],
+  // high/low sort toggle — compare "Show all" sheet (design i-sort def)
+  sort: [
+    { d: 'M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3', sw: 1.6, cap: true, join: true },
+  ],
 };
 
 export type IconName = keyof typeof ICONS;
