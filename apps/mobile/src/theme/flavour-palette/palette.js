@@ -38,7 +38,7 @@ export const FLAVOUR_PALETTE = {
       Bitterness: '#646F58',
       Umami: '#80998a',
       Saltyness: '#587784',
-      Bubbles: '#f3d9b8',
+      Bubbles: '#D0C8B3',
       Funk: '#726E97',
       Aroma: '#C6878F',
     },
