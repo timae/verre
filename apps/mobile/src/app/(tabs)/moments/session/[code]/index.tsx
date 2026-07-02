@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue } from 'react-native-reanimated';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
@@ -87,6 +87,18 @@ function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
 // HeroTopBar so the two can't drift.
 const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + controlSize + 6;
 
+// In-screen tab-swap motion (Simon's ask): the panes swap as one horizontal
+// push — the incoming pane slides in from the side it lives on (Compare from
+// the right, Line-up from the left) while the outgoing pane slides OUT toward
+// its own side. Equal durations keep the seam between the two exactly at the
+// screen edge mid-flight. Entering is gated on a "user actually switched" ref
+// so the screen's first render doesn't slide. `exiting` fires on ANY unmount,
+// not just tab swaps — accepted trade-off (Simon wants the push): on a screen
+// pop the ghost plays inside the departing screen (invisible); the rare
+// fatal/lock swaps get a stray slide-out that reads as content leaving.
+const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3);
+const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3);
+
 // Renders the reveal strip for either layout (null when not blind). Pulls the
 // matching RevealStrip variant from the bundle.
 function RevealStripFor({ reveal }: { reveal: RevealProps }) {
@@ -135,8 +147,12 @@ export default function SessionLineup() {
   // below swaps. Switching to Compare exits reveal mode (its Done footer and
   // per-row pills are line-up furniture).
   const [tab, setTab] = useState<SessionTab>('lineup');
+  // Flips true on the first user switch — the swap slide-in must not run on
+  // the screen's initial mount (see swapIn).
+  const tabSwapped = useRef(false);
   const selectTab = (t: SessionTab) => {
     if (t === 'compare') setRevealMode(false);
+    tabSwapped.current = true;
     setTab(t);
   };
 
@@ -377,8 +393,12 @@ export default function SessionLineup() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
                       here), left of the ⋯. Host/cohost/provider only — and
-                      line-up furniture (hidden on the Compare tab). */}
-                  {canAdd && tab === 'lineup' ? <LineupAddButton onPress={openAdd} /> : null}
+                      line-up furniture (morphs into the ⋯ on the Compare tab). */}
+                  {canAdd ? (
+                    <CollapsingAdd show={tab === 'lineup'}>
+                      <LineupAddButton onPress={openAdd} />
+                    </CollapsingAdd>
+                  ) : null}
                   <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} />
                 </View>
               ) : undefined
@@ -486,6 +506,7 @@ export default function SessionLineup() {
           onSelectTab={selectTab}
           compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />}
           compareRail={cmpRail}
+          swapAnimated={tabSwapped.current}
           onCollapsedChange={setHeroCollapsed}
           onPressWine={openImpression}
           onAdd={openAdd}
@@ -504,15 +525,18 @@ export default function SessionLineup() {
             // The rail is child 0 + stickyHeaderIndices so it pins under the
             // fixed tabs on scroll (the plain layout's native-sticky path —
             // same behaviour the reveal strip has on the line-up).
-            <ScrollView
-              stickyHeaderIndices={cmpRail ? [0] : undefined}
-              contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
-            >
-              {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
-              <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />
-            </ScrollView>
+            <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
+              <ScrollView
+                style={{ flex: 1 }}
+                stickyHeaderIndices={cmpRail ? [0] : undefined}
+                contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+              >
+                {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
+                <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />
+              </ScrollView>
+            </Reanimated.View>
           ) : (
-          <>
+          <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
           {/* The reveal/hide strip is a STICKY list cell (design
               .reveal-strip-sticky): it sits inline above the line-up — below the
               ovc about block — and pins under the tabs once scrolled past
@@ -523,6 +547,7 @@ export default function SessionLineup() {
               exists (RN: stickyOffset = header ? 1 : 0) — so [1] sticks data
               item 0 (the strip), NOT [0] (which would stick the ovc header). */}
           <FlatList<LineupCell>
+            style={{ flex: 1 }}
             data={reveal.stripVariant ? [STRIP_CELL, ...(wines ?? [])] : (wines ?? [])}
             keyExtractor={(it) => (isStripCell(it) ? '__strip' : it.id)}
             ListHeaderComponent={ovc}
@@ -580,7 +605,7 @@ export default function SessionLineup() {
             }
             ListEmptyComponent={<EmptyLineup canAdd={canAdd} onAdd={openAdd} />}
           />
-          </>
+          </Reanimated.View>
           )}
         </>
       )}
@@ -595,9 +620,10 @@ export default function SessionLineup() {
         <HeroTopBar
           title={meta.name}
           collapsed={heroCollapsed}
-          // The Add pill is line-up furniture (Simon's ruling) — Compare keeps
-          // the same bar minus Add.
-          canAdd={canAdd && tab === 'lineup'}
+          // The Add pill is line-up furniture (Simon's ruling) — on Compare it
+          // morphs into the ⋯ (CollapsingAdd inside the bar).
+          canAdd={canAdd}
+          showAdd={tab === 'lineup'}
           onAdd={openAdd}
           onBack={() => router.back()}
           onMenu={(top) => setSessMenuTop(top)}
@@ -640,7 +666,7 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, swapAnimated, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
@@ -658,6 +684,8 @@ function CoverHeroLineup({
   compare: React.ReactNode;
   /** The people rail — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
   compareRail: React.ReactNode;
+  /** True once the user has actually switched tabs — gates the swap slide-in (see swapIn). */
+  swapAnimated: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
   onAdd: () => void;
@@ -772,13 +800,20 @@ function CoverHeroLineup({
   );
   // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
   // the people rail (both pin under the pinned tabs via the same overlay).
-  // The rail owns its horizontal padding (chips clip + fade at the content gutter).
+  // The rail owns its horizontal padding (chips clip + fade at the content
+  // gutter). Keyed animated wrappers: same element type in the same ternary
+  // slot would reconcile without remounting, and the swap slide-in only runs
+  // on a mount. Rendered twice (inline + overlay) — both copies slide in sync.
   const Strip = onCompare ? (
-    compareRail ? <View style={{ backgroundColor: theme.bg }}>{compareRail}</View> : null
+    compareRail ? (
+      <Reanimated.View key="strip-rail" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')} style={{ backgroundColor: theme.bg }}>
+        {compareRail}
+      </Reanimated.View>
+    ) : null
   ) : showStrip ? (
-    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+    <Reanimated.View key="strip-reveal" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
       <RevealStripFor reveal={reveal} />
-    </View>
+    </Reanimated.View>
   ) : null;
 
   return (
@@ -867,7 +902,7 @@ function CoverHeroLineup({
             {ovc}
           </View>
         ) : onCompare ? null : (
-          <View style={{ paddingHorizontal: GUTTER }}>{ovc}</View>
+          <Reanimated.View entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ paddingHorizontal: GUTTER }}>{ovc}</Reanimated.View>
         )}
         {/* INLINE reveal strip — below the about block, above the rows. At-rest
             position + flow spacer. Direct scroll child → layout.y is content-Y. */}
@@ -882,11 +917,12 @@ function CoverHeroLineup({
             {Strip}
           </View>
         ) : null}
-        {/* rows + footer (line-up) / compare body */}
+        {/* rows + footer (line-up) / compare body — keyed so the swap remounts
+            (same-type reconcile would skip the slide-in) */}
         {lock ? null : onCompare ? (
-          compare
+          <Reanimated.View key="pane-compare" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')}>{compare}</Reanimated.View>
         ) : (
-          <View>
+          <Reanimated.View key="pane-lineup" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
             {rows.length === 0 ? (
               <View style={{ paddingHorizontal: GUTTER }}>
                 <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
@@ -915,7 +951,7 @@ function CoverHeroLineup({
                 <AddImpressionRow onPress={onAdd} />
               </View>
             ) : null}
-          </View>
+          </Reanimated.View>
         )}
       </Reanimated.ScrollView>
       {/* OVERLAYS — pinned copies of tabs (at the bar) + strip (stacked under the
@@ -951,11 +987,13 @@ function CoverHeroLineup({
 // anchors the shared SessionMenu via measureInWindow (same protocol as
 // SessionMenuButton).
 function HeroTopBar({
-  title, collapsed, canAdd, onAdd, onBack, onMenu,
+  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu,
 }: {
   title: string;
   collapsed: boolean;
   canAdd: boolean;
+  /** Tab-driven: Add is line-up furniture — false on Compare, where it morphs into the ⋯. */
+  showAdd: boolean;
   onAdd: () => void;
   onBack: () => void;
   onMenu: (anchorBottomY: number) => void;
@@ -1016,8 +1054,14 @@ function HeroTopBar({
           </Animated.View>
           {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
               + glyph once the bar goes solid (label drop mirrors the Crave
-              button). Host/cohost/provider only. */}
-          {canAdd ? <LineupAddButton onPress={onAdd} collapsed={collapsed} glass /> : null}
+              button). Host/cohost/provider only; morphs into the ⋯ on Compare. */}
+          {canAdd ? (
+            // reach = the 6px gap + half the ⋯ circle: the pill slides under
+            // the ⋯ and disappears at its center (see CollapsingAdd).
+            <CollapsingAdd show={showAdd} reach={6 + controlSize / 2}>
+              <LineupAddButton onPress={onAdd} collapsed={collapsed} glass />
+            </CollapsingAdd>
+          ) : null}
           <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
             <Pressable
               accessibilityRole="button"
@@ -1721,6 +1765,61 @@ function LuPill({
         {label}
       </VText>
     </Pressable>
+  );
+}
+
+// Add ⇄ ⋯ hand-off (Simon's ask): on Compare the Add control slides INTO the
+// ⋯ beside it and grows back out of it on Line-up, instead of popping.
+// Mechanics: the outer window's layout width animates to 0 (the bar's
+// flexible title absorbs the freed space, so the window — and the
+// left-anchored pill riding in it — moves right); opacity holds ~solid and
+// fades only at the tail (a linear fade on the fast-start ease read as "just
+// disappears" on device). Duration matches the pane push (dur3).
+// `reach` (hero bar): the clip window permanently overhangs the gap + half
+// the ⋯ circle (`width + reach`, `marginRight: -reach` keeps the layout
+// footprint unchanged — the window's right edge sits at the ⋯ CENTER for any
+// anim value), and the pill gets `reach` extra translateX travel, so it
+// slides UNDER the ⋯ (later sibling paints on top) and vanishes at the
+// circle's midpoint instead of dying on the backdrop before reaching it
+// (Simon's device call). reach=0 (plain bar) clips at the window edge as
+// before — that bar's borderless controls read fine without the overhang.
+function CollapsingAdd({ show, reach = 0, children }: { show: boolean; reach?: number; children: React.ReactNode }) {
+  const [w, setW] = useState(0);
+  const anim = useSharedValue(show ? 1 : 0);
+  useEffect(() => {
+    // Directional easing: the shared fast-start curve made the collapse read
+    // much quicker than the expand (most travel + the tail fade landed in the
+    // first third; the expand stayed visible for the full duration — Simon's
+    // device call). Exit accelerates (slow → swallowed at the end), entrance
+    // decelerates (out fast → settle) — perceived duration now matches.
+    anim.value = withTiming(show ? 1 : 0, {
+      duration: motion.dur3,
+      easing: ReEasing.bezier(...(show ? motion.easeOut : motion.easeIn)),
+    });
+  }, [show, anim]);
+  const style = useAnimatedStyle(() =>
+    w > 0
+      ? {
+          width: w * anim.value + reach,
+          marginRight: -reach,
+          opacity: interpolate(anim.value, [0, 0.25, 1], [0, 1, 1]),
+        }
+      : { opacity: anim.value, marginRight: 0, ...(show ? null : { width: 0 }) },
+  );
+  const pill = useAnimatedStyle(() => ({
+    transform: [{ translateX: (1 - anim.value) * reach }],
+  }));
+  return (
+    <Reanimated.View
+      pointerEvents={show ? 'auto' : 'none'}
+      // pointerEvents blocks touch only — keep the collapsed (or mid-collapse)
+      // control out of the accessibility tree too, on both platforms.
+      accessibilityElementsHidden={!show}
+      importantForAccessibility={show ? 'auto' : 'no-hide-descendants'}
+      style={[{ overflow: 'hidden', flexDirection: 'row' }, style]}
+    >
+      <Reanimated.View style={[{ flexShrink: 0 }, pill]} onLayout={(e) => setW(e.nativeEvent.layout.width)}>{children}</Reanimated.View>
+    </Reanimated.View>
   );
 }
 
