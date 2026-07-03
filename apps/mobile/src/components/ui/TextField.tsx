@@ -1,5 +1,6 @@
 import { forwardRef, useState } from 'react';
-import { TextInput, View, type TextInputProps } from 'react-native';
+import { Pressable, TextInput, View, type TextInputProps } from 'react-native';
+import { Icon } from './Icon';
 import { usePhoneTokens, type FontSurfaceName } from '@/lib/layout';
 import { control, radius, useTheme } from '@/theme';
 import { VText } from './VText';
@@ -34,39 +35,64 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   // 1.2× the same value. The surface cap (maxFontSizeMultiplier) bounds how
   // large the OS can scale the glyph within the scaled height.
   const [focused, setFocused] = useState(false);
+  // Secure fields get a show/hide eye inside the field (Simon's ask). The
+  // toggle flips OUR secure flag; the caller's secureTextEntry marks the
+  // field as a password field.
+  const secure = !!rest.secureTextEntry;
+  const [revealed, setRevealed] = useState(false);
   const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
+  const input = (
+    <TextInput
+      {...rest}
+      ref={ref}
+      editable={editable}
+      secureTextEntry={secure && !revealed}
+      onFocus={(e) => { setFocused(true); onFocus?.(e); }}
+      onBlur={(e) => { setFocused(false); onBlur?.(e); }}
+      placeholderTextColor={theme.inkFaint}
+      {...surface.textProps}
+      style={[
+        {
+          height: fieldHeight,
+          fontFamily: 'InstrumentSans_400Regular',
+          fontSize: text.fontSize,
+          lineHeight: Math.round(text.fontSize * 1.2),
+          color: theme.ink,
+          backgroundColor: editable === false ? theme.surfaceSunk : theme.surface,
+          borderWidth: focused ? 2 : 1,
+          borderColor,
+          borderRadius: radius.sm,
+          paddingLeft: focused ? 13 : 14,
+          paddingRight: secure ? 42 : focused ? 13 : 14,
+          paddingVertical: 0,
+          textAlignVertical: 'center',
+          opacity: editable === false ? 0.55 : 1,
+        },
+        style,
+      ]}
+    />
+  );
   return (
     <View style={{ gap: 7 }}>
       {label ? (
         <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       ) : null}
-      <TextInput
-        {...rest}
-        ref={ref}
-        editable={editable}
-        onFocus={(e) => { setFocused(true); onFocus?.(e); }}
-        onBlur={(e) => { setFocused(false); onBlur?.(e); }}
-        placeholderTextColor={theme.inkFaint}
-        {...surface.textProps}
-        style={[
-          {
-            height: fieldHeight,
-            fontFamily: 'InstrumentSans_400Regular',
-            fontSize: text.fontSize,
-            lineHeight: Math.round(text.fontSize * 1.2),
-            color: theme.ink,
-            backgroundColor: editable === false ? theme.surfaceSunk : theme.surface,
-            borderWidth: focused ? 2 : 1,
-            borderColor,
-            borderRadius: radius.sm,
-            paddingHorizontal: focused ? 13 : 14,
-            paddingVertical: 0,
-            textAlignVertical: 'center',
-            opacity: editable === false ? 0.55 : 1,
-          },
-          style,
-        ]}
-      />
+      {secure ? (
+        <View>
+          {input}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={revealed ? 'Hide password' : 'Show password'}
+            hitSlop={8}
+            onPress={() => setRevealed((r) => !r)}
+            style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 42, alignItems: 'center', justifyContent: 'center' }}
+          >
+            <Icon name={revealed ? 'eyeoff' : 'eye'} size={18} color={theme.inkSoft} />
+          </Pressable>
+        </View>
+      ) : (
+        input
+      )}
       {error ? (
         <VText variant="caption" color="critical">{error}</VText>
       ) : null}

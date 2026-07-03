@@ -412,9 +412,16 @@ export function ComparePickerSheet({
                   backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
                 })}
               >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} />
+                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} anon={p.id.startsWith('a:')} />
                 <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-                  <VText numberOfLines={1} style={{ flexShrink: 1, fontFamily: 'InstrumentSans_500Medium', ...phone.text('body') }}>
+                  {/* Unregistered read QUIETLY, with the SAME tokens as the
+                      People sheet's anon rows (regular weight + inkSoft; no
+                      badge — the anon avatar glyph is the other cue). */}
+                  <VText
+                    numberOfLines={1}
+                    color={p.id.startsWith('a:') ? 'inkSoft' : 'ink'}
+                    style={{ flexShrink: 1, fontFamily: p.id.startsWith('a:') ? 'InstrumentSans_400Regular' : 'InstrumentSans_500Medium', ...phone.text('body') }}
+                  >
                     {p.displayName}
                   </VText>
                   {/* .selrow-fr — the mock's quiet Friend tag */}
@@ -1053,7 +1060,7 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
+export function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   return (
@@ -1074,6 +1081,16 @@ function SheetSearchField({ value, onChangeText, placeholder }: { value: string;
           style={{ height: 36, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
         />
       </View>
+      {value !== '' ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Clear search"
+          hitSlop={10}
+          onPress={() => onChangeText('')}
+        >
+          <Icon name="x" size={14} color={theme.inkFaint} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }

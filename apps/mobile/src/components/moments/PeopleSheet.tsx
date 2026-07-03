@@ -9,6 +9,7 @@ import { Icon } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
+import { SheetSearchField } from '@/components/moments/CompareBody';
 import { getMyFriends } from '@/lib/api/me';
 import { usePhoneTokens } from '@/lib/layout';
 import {
@@ -27,6 +28,14 @@ import { radius, useTheme } from '@/theme';
 // are SERVER-authoritative — the menu only mirrors them to avoid dead actions.
 
 type Participant = SessionMetaView['participants'][number];
+
+const ROLE_FILTERS = [
+  { key: 'all', label: 'All roles' },
+  { key: 'hosts', label: 'Host & co-hosts' },
+  { key: 'provider', label: 'Providers' },
+  { key: 'taster', label: 'Tasters' },
+] as const;
+
 
 export function PeopleSheet({
   open,
@@ -49,8 +58,36 @@ export function PeopleSheet({
   const queryClient = useQueryClient();
 
   // Friends fetched once per open; an id Set gives O(1) "is this row a friend".
-  const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, enabled: open, staleTime: 30_000 });
+  // Gated on a logged-in viewer — an anon viewer has no friend graph and the
+  // fetch would only 401.
+  const friends = useQuery({
+    queryKey: ['my-friends'],
+    queryFn: getMyFriends,
+    enabled: open && myIdentityId.startsWith('u:'),
+    staleTime: 30_000,
+  });
   const friendIds = useMemo(() => new Set((friends.data ?? []).map((f) => f.id)), [friends.data]);
+  const isFriendRow = (p: Participant) => p.id.startsWith('u:') && friendIds.has(Number(p.id.slice(2)));
+
+  // Search + friends filter (Simon's ask, space-efficient): the row appears
+  // only when the roster is big enough to need it; the Friends chip only when
+  // the roster actually contains a friend. Filtering locks the rows block to
+  // its unfiltered height (the compare picker's recipe) so the dynamically
+  // sized sheet doesn't slide around with the result count.
+  const [query, setQuery] = useState('');
+  const [friendsOnly, setFriendsOnly] = useState(false);
+  const [roleFilter, setRoleFilter] = useState<'all' | 'hosts' | 'provider' | 'taster'>('all');
+  const [roleMenu, setRoleMenu] = useState<{ top: number; bottom: number } | null>(null);
+  const roleChipRef = useRef<View>(null);
+  const [rowsH, setRowsH] = useState(0);
+  useEffect(() => {
+    if (!open) {
+      setQuery('');
+      setFriendsOnly(false);
+      setRoleFilter('all');
+      setRoleMenu(null);
+    }
+  }, [open]);
 
   // Anchored row menu — holds the target id + the ⋯ button's top/bottom window-Y
   // (RowMenu picks open-down vs open-up from these so it never clips off-screen).
@@ -74,16 +111,40 @@ export function PeopleSheet({
     return 'taster';
   };
 
-  // Order: host first, then cohosts, then everyone else (stable otherwise).
+  // Order: YOU first (Simon's rule — find yourself instantly), then host,
+  // cohosts, then everyone else (stable otherwise).
   const ordered = useMemo(() => {
     if (!meta) return [];
     const rank = (p: Participant) => {
+      if (p.id === myIdentityId) return 0;
       const r = roleOf(p);
-      return r === 'host' ? 0 : r === 'cohost' ? 1 : 2;
+      return r === 'host' ? 1 : r === 'cohost' ? 2 : 3;
     };
     return [...meta.participants].sort((a, b) => rank(a) - rank(b));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta]);
+  }, [meta, myIdentityId]);
+
+  const q = query.trim().toLowerCase();
+  const filtering = q !== '' || friendsOnly || roleFilter !== 'all';
+  const searchable = ordered.length > 7; // small rosters don't earn the row
+  const matchesRole = (p: Participant) => {
+    if (roleFilter === 'all') return true;
+    const r = roleOf(p);
+    if (roleFilter === 'hosts') return r === 'host' || r === 'cohost';
+    return r === roleFilter;
+  };
+  const filtered = useMemo(
+    () =>
+      ordered.filter(
+        (p) =>
+          matchesRole(p) &&
+          (!friendsOnly || isFriendRow(p)) &&
+          (q === '' || p.displayName.toLowerCase().includes(q)),
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ordered, q, friendsOnly, roleFilter, friendIds],
+  );
+  const hasFriendInRoster = useMemo(() => ordered.some(isFriendRow), [ordered, friendIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['session-state', code] });
 
@@ -138,6 +199,60 @@ export function PeopleSheet({
           </Pressable>
         </View>
 
+        {searchable ? (
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={{ flex: 1 }}>
+              <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search people" />
+            </View>
+            {hasFriendInRoster ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: friendsOnly }}
+                accessibilityLabel={friendsOnly ? 'Show everyone' : 'Show friends only'}
+                hitSlop={{ top: 5, bottom: 5 }}
+                onPress={() => setFriendsOnly((f) => !f)}
+                style={({ pressed }) => ({
+                  flexDirection: 'row', alignItems: 'center', gap: 5, height: 34,
+                  paddingHorizontal: 11, borderRadius: 999, borderWidth: 1,
+                  borderColor: friendsOnly ? theme.accentLine : theme.rule,
+                  backgroundColor: friendsOnly ? theme.accentTint : theme.surface,
+                  opacity: pressed ? 0.6 : 1,
+                })}
+              >
+                <Icon name="heart" size={13} color={friendsOnly ? theme.accent : theme.inkSoft} />
+                <VText surface="badge" variant="small" color={friendsOnly ? 'accent' : 'inkSoft'} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+                  Friends
+                </VText>
+              </Pressable>
+            ) : null}
+            {/* Role filter — a compact chip opening the shared anchored menu
+                (space-efficient: one chip, four options). */}
+            <View ref={roleChipRef} collapsable={false}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: roleFilter !== 'all' }}
+                accessibilityLabel="Filter by role"
+                hitSlop={{ top: 5, bottom: 5 }}
+                onPress={() =>
+                  roleChipRef.current?.measureInWindow((_x, y, _w, h) => setRoleMenu({ top: y, bottom: y + h }))
+                }
+                style={({ pressed }) => ({
+                  flexDirection: 'row', alignItems: 'center', gap: 4, height: 34,
+                  paddingHorizontal: 11, borderRadius: 999, borderWidth: 1,
+                  borderColor: roleFilter !== 'all' ? theme.accentLine : theme.rule,
+                  backgroundColor: roleFilter !== 'all' ? theme.accentTint : theme.surface,
+                  opacity: pressed ? 0.6 : 1,
+                })}
+              >
+                <VText surface="badge" variant="small" color={roleFilter !== 'all' ? 'accent' : 'inkSoft'} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+                  {roleFilter === 'all' ? 'Role' : ROLE_FILTERS.find((r) => r.key === roleFilter)!.label}
+                </VText>
+                <Icon name="chevrondown" size={12} color={roleFilter !== 'all' ? theme.accent : theme.inkSoft} />
+              </Pressable>
+            </View>
+          </View>
+        ) : null}
+
         {ordered.length === 0 ? (
           <View style={{ paddingVertical: 24, alignItems: 'center' }}>
             <ActivityIndicator />
@@ -147,8 +262,16 @@ export function PeopleSheet({
           // BottomSheetScrollView here reports 0 height under dynamic sizing →
           // the sheet won't open). A long roster is capped by the sheet's
           // maxDynamicContentSize (set in <Sheet>).
-          <View>
-            {ordered.map((p, i) => (
+          <View
+            onLayout={(e) => { if (!filtering) setRowsH(e.nativeEvent.layout.height); }}
+            style={filtering && rowsH > 0 ? { minHeight: rowsH } : undefined}
+          >
+            {filtered.length === 0 ? (
+              <VText variant="small" color="inkFaint" style={{ paddingVertical: 16, fontStyle: 'italic' }}>
+                No matches
+              </VText>
+            ) : null}
+            {filtered.map((p, i) => (
               <PersonRow
                 key={p.id}
                 p={p}
@@ -170,7 +293,7 @@ export function PeopleSheet({
                 onMenu={(anchorTop, anchorBottom) => setMenu({ id: p.id, anchorTop, anchorBottom })}
               />
             ))}
-            {isHostViewer ? (
+            {isHostViewer && !filtering ? (
               <VText variant="caption" color="inkSoft" style={{ marginTop: 14 }}>
                 Tap ⋯ on anyone to make them a co-host, make a Provider (lets a taster add impressions), remove, or ban them.
               </VText>
@@ -182,6 +305,20 @@ export function PeopleSheet({
 
     {/* Anchored row menu (shared AnchoredMenu — the .ir-menu pattern; flips up
         near the screen bottom). right:20 keeps the prior inset. */}
+    <AnchoredMenu anchor={roleMenu} onClose={() => setRoleMenu(null)} right={20} minWidth={176}>
+      {ROLE_FILTERS.map((r) => (
+        <MenuItem
+          key={r.key}
+          label={r.label}
+          active={roleFilter === r.key}
+          onPress={() => {
+            setRoleFilter(r.key);
+            setRoleMenu(null);
+          }}
+        />
+      ))}
+    </AnchoredMenu>
+
     <AnchoredMenu
       anchor={menu && menuTarget ? { top: menu.anchorTop, bottom: menu.anchorBottom } : null}
       onClose={() => setMenu(null)}
@@ -200,8 +337,12 @@ type MenuItem = { label: string; danger?: boolean; onPress: () => void };
 // Mirror the server's gates so the menu never offers a dead (403) action:
 //  - co-host assign/remove → strict-host only
 //  - Provider toggle hidden on cohosts (provider ⊥ cohost)
-//  - anon target → remove/ban only
 //  - banning a cohost → strict-host only (the row only manages cohosts if strictHost)
+// ANON TARGETS TAKE ROLES: the role route validates the target against the
+// session's identities map (anon included) and just skips the Postgres
+// mirror for non-`u:` ids (app/api/session/[code]/route.ts, verified) — an
+// earlier `!isAnon` gate here claimed to mirror the server but was an
+// over-restriction (Simon hit it promoting an unregistered taster).
 function buildMenuItems({
   p, role, strictHost, setRole, remove,
 }: {
@@ -212,20 +353,16 @@ function buildMenuItems({
   remove: (p: Participant, mode: 'kick' | 'ban') => void;
 }): MenuItem[] {
   const items: MenuItem[] = [];
-  const isAnon = p.id.startsWith('a:');
   const isCohostTarget = role === 'cohost';
-  if (!isAnon) {
-    if (isCohostTarget) {
-      if (strictHost) items.push({ label: 'Remove as co-host', onPress: () => setRole(p, 'taster') });
-    } else {
-      if (strictHost) items.push({ label: 'Make co-host', onPress: () => setRole(p, 'co_host') });
-      // Provider toggle only on non-cohost registered tasters.
-      items.push(
-        role === 'provider'
-          ? { label: 'Remove as Provider', onPress: () => setRole(p, 'taster') }
-          : { label: 'Make Provider', onPress: () => setRole(p, 'provider') },
-      );
-    }
+  if (isCohostTarget) {
+    if (strictHost) items.push({ label: 'Remove as co-host', onPress: () => setRole(p, 'taster') });
+  } else {
+    if (strictHost) items.push({ label: 'Make co-host', onPress: () => setRole(p, 'co_host') });
+    items.push(
+      role === 'provider'
+        ? { label: 'Remove as Provider', onPress: () => setRole(p, 'taster') }
+        : { label: 'Make Provider', onPress: () => setRole(p, 'provider') },
+    );
   }
   // Kicking/banning a cohost requires strict-host (server gate) — don't offer
   // it to a non-strict-host cohost or it 403s.
