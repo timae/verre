@@ -26,6 +26,7 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import {
   ApiError,
   deleteWine,
@@ -469,6 +470,7 @@ export default function ImpressionDetail() {
             contentInsetAdjustmentBehavior="never"
             automaticallyAdjustKeyboardInsets
             keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             style={{ flex: 1 }}
           >
@@ -541,6 +543,7 @@ export default function ImpressionDetail() {
             scrollEventThrottle={16}
             automaticallyAdjustKeyboardInsets
             keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             style={{ flex: 1 }}
           >
@@ -1023,10 +1026,13 @@ function NoteField({ value, onChange }: { value: string; onChange: (s: string) =
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
+  const noteRef = useRef<TextInput | null>(null);
+  useRegisterInput(noteRef);
   return (
     <View style={{ gap: 7, marginTop: 8 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>Your note</VText>
       <TextInput
+        ref={noteRef}
         value={value}
         onChangeText={onChange}
         multiline

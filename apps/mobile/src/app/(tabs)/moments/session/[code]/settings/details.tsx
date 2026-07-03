@@ -139,6 +139,7 @@ function DetailsForm({
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >

@@ -14,7 +14,9 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
+import { fuzzyIncludes } from '@/lib/search';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
@@ -253,6 +255,7 @@ export function ImpressionForm({
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
@@ -531,9 +534,9 @@ function CountrySheet({
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
     if (!q) return COUNTRIES;
-    return COUNTRIES.filter((c) => c.name.toLowerCase().includes(q));
+    return COUNTRIES.filter((c) => fuzzyIncludes(c.name, q));
   }, [query]);
   return (
     <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
@@ -646,6 +649,8 @@ function PositionPicker({
   // popover is an anchored overlay, not inside a ScrollView), so a plain
   // vertical Pan is safe — no activeOffset arbitration needed.
   const dragStart = useRef(value);
+  const posInputRef = useRef<TextInput | null>(null);
+  useRegisterInput(posInputRef);
   const pan = Gesture.Pan()
     .runOnJS(true)
     .onBegin(() => { dragStart.current = cur(); })
@@ -700,6 +705,7 @@ function PositionPicker({
                   it; tapping still focuses for typing. */}
               <GestureDetector gesture={pan}>
                 <TextInput
+                  ref={posInputRef}
                   {...codeSurface.textProps}
                   value={text}
                   onChangeText={(t) => setText(t.replace(/\D/g, ''))}

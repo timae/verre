@@ -1,6 +1,7 @@
-import { forwardRef, useState } from 'react';
+import { forwardRef, useRef, useState } from 'react';
 import { Pressable, TextInput, View, type TextInputProps } from 'react-native';
 import { Icon } from './Icon';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { usePhoneTokens, type FontSurfaceName } from '@/lib/layout';
 import { control, radius, useTheme } from '@/theme';
 import { VText } from './VText';
@@ -40,11 +41,21 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   // field as a password field.
   const secure = !!rest.secureTextEntry;
   const [revealed, setRevealed] = useState(false);
+  // Keyboard-safe registration (lib/keyboardDismiss): the input itself and the
+  // eye toggle must not bounce the keyboard when tapped.
+  const innerRef = useRef<TextInput | null>(null);
+  const eyeRef = useRef<View | null>(null);
+  useRegisterInput(innerRef);
+  useRegisterInput(eyeRef, secure);
   const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
   const input = (
     <TextInput
       {...rest}
-      ref={ref}
+      ref={(node) => {
+        innerRef.current = node;
+        if (typeof ref === 'function') ref(node);
+        else if (ref) ref.current = node;
+      }}
       editable={editable}
       secureTextEntry={secure && !revealed}
       onFocus={(e) => { setFocused(true); onFocus?.(e); }}
@@ -81,6 +92,7 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
         <View>
           {input}
           <Pressable
+            ref={eyeRef}
             accessibilityRole="button"
             accessibilityLabel={revealed ? 'Hide password' : 'Show password'}
             hitSlop={8}

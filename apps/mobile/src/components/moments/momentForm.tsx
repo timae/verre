@@ -1,6 +1,6 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { type LayoutChangeEvent, Modal, Pressable, TextInput, View } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
@@ -318,10 +319,13 @@ export function NotesField({
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
+  const inputRef = useRef<TextInput | null>(null);
+  useRegisterInput(inputRef);
   return (
     <View style={{ gap: 7 }}>
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       <TextInput
+        ref={inputRef}
         value={value}
         onChangeText={onChange}
         multiline

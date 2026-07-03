@@ -33,7 +33,7 @@ import {
   type SessionState,
   type WireWine,
 } from '@/lib/api/sessions';
-import { buildComparePeople, CompareBody, ComparePickerSheet, PeopleRail } from '@/components/moments/CompareBody';
+import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
@@ -161,12 +161,15 @@ export default function SessionLineup() {
     setTab(t);
   };
 
-  // 02d people-selector — the avatar rail (Simon's pick): ONE hidden set
-  // drives every compare view (rail chips, person rows, picker sheet). The
-  // rail renders STICKY under the bar like the reveal strip: plain layout via
+  // 02d people-selector — ONE hidden set drives every compare view (picker
+  // sheet rows/presets, person rows, cards). The sticky slot under the bar
+  // holds the CompareToolbar (People + sort + search on one line — Simon's
+  // 2026-07-03 spec, superseding the avatar-chip rail): plain layout via
   // ScrollView stickyHeaderIndices, cover-hero via the strip overlay slot.
   const [cmpHiddenRaw, setCmpHidden] = useState<Set<string>>(new Set());
   const [cmpPickerOpen, setCmpPickerOpen] = useState(false);
+  const [cmpSort, setCmpSort] = useState<CompareSort>('lineup');
+  const [cmpQuery, setCmpQuery] = useState('');
   const cmpPeople = useMemo(() => buildComparePeople(ratings, meta), [ratings, meta]);
   // Prune ghosts: someone hidden and THEN kicked/banned leaves the roster —
   // their stale id must not keep the All chip dim / the picker counts wrong.
@@ -189,21 +192,17 @@ export default function SessionLineup() {
   useEffect(() => {
     if (cmpPeople.length <= 1 && cmpHiddenRaw.size > 0) setCmpHidden(new Set());
   }, [cmpPeople, cmpHiddenRaw]);
-  // The rail's All chip TOGGLES: everything visible → deselect everyone;
-  // anything hidden → select everyone (Simon's ruling).
-  const toggleAllCmp = useCallback(() => {
-    // Branch on the PRUNED set (what the UI shows) — the raw set may hold
-    // ghost ids of kicked raters, and "All looks on → tap deselects all"
-    // must hold visually, not on stale state.
-    setCmpHidden(cmpHidden.size === 0 ? new Set(cmpPeople.map((p) => p.id)) : new Set());
-  }, [cmpHidden, cmpPeople]);
-  const cmpRail = tab === 'compare' && cmpPeople.length > 1 ? (
-    <PeopleRail
+  // The toolbar is useful even on a one-rater roster (sort + search) — it
+  // hides only the People button there, so it renders whenever Compare shows.
+  const cmpRail = tab === 'compare' ? (
+    <CompareToolbar
       people={cmpPeople}
       hidden={cmpHidden}
-      onToggle={toggleCmpPerson}
-      onToggleAll={toggleAllCmp}
       onPick={() => setCmpPickerOpen(true)}
+      sort={cmpSort}
+      onSort={setCmpSort}
+      query={cmpQuery}
+      onQuery={setCmpQuery}
     />
   ) : null;
 
@@ -509,7 +508,7 @@ export default function SessionLineup() {
           reveal={reveal}
           tab={tab}
           onSelectTab={selectTab}
-          compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />}
+          compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />}
           compareRail={cmpRail}
           swapAnimated={tabSwapped.current}
           onCollapsedChange={setHeroCollapsed}
@@ -527,17 +526,19 @@ export default function SessionLineup() {
             <SessionTabs active={tab} onSelect={selectTab} />
           </View>
           {tab === 'compare' ? (
-            // The rail is child 0 + stickyHeaderIndices so it pins under the
-            // fixed tabs on scroll (the plain layout's native-sticky path —
-            // same behaviour the reveal strip has on the line-up).
+            // The toolbar is child 0 + stickyHeaderIndices so it pins under
+            // the fixed tabs on scroll (the plain layout's native-sticky path
+            // — same behaviour the reveal strip has on the line-up).
             <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
               <ScrollView
                 style={{ flex: 1 }}
                 stickyHeaderIndices={cmpRail ? [0] : undefined}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
                 contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
               >
                 {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
-                <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />
+                <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />
               </ScrollView>
             </Reanimated.View>
           ) : (
@@ -687,7 +688,7 @@ function CoverHeroLineup({
   onSelectTab: (t: SessionTab) => void;
   /** The Compare tab's content — swaps in below the (sticky) tabs. */
   compare: React.ReactNode;
-  /** The people rail — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
+  /** The compare toolbar (People + sort + search) — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
   compareRail: React.ReactNode;
   /** True once the user has actually switched tabs — gates the swap slide-in (see swapIn). */
   swapAnimated: boolean;
@@ -812,11 +813,12 @@ function CoverHeroLineup({
     </View>
   );
   // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
-  // the people rail (both pin under the pinned tabs via the same overlay).
-  // The rail owns its horizontal padding (chips clip + fade at the content
-  // gutter). Keyed animated wrappers: same element type in the same ternary
-  // slot would reconcile without remounting, and the swap slide-in only runs
-  // on a mount. Rendered twice (inline + overlay) — both copies slide in sync.
+  // the compare toolbar (both pin under the pinned tabs via the same overlay).
+  // The toolbar owns its horizontal padding. Keyed animated wrappers: same
+  // element type in the same ternary slot would reconcile without remounting,
+  // and the swap slide-in only runs on a mount. Rendered twice (inline +
+  // overlay) — both copies slide in sync; the search value is screen state, so
+  // both TextInput copies stay in step (focus lives in whichever was tapped).
   const Strip = onCompare ? (
     compareRail ? (
       <Reanimated.View key="strip-rail" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')} style={{ backgroundColor: theme.bg }}>
@@ -841,6 +843,10 @@ function CoverHeroLineup({
         // setState). Matches reanimated's own AnimatedScrollView default.
         scrollEventThrottle={1}
         contentInsetAdjustmentBehavior="never"
+        // Compare's toolbar has a search field — card taps must land while the
+        // keyboard is up (default would swallow the first tap to dismiss).
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + (reveal.revealMode ? 96 : TAB_BAR_CLEARANCE) }}
       >

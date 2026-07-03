@@ -12,6 +12,7 @@ import { SheetSearchField } from '@/components/moments/CompareBody';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
+import { fuzzyIncludes } from '@/lib/search';
 import { WEB_BASE } from '@/lib/config';
 import { usePhoneTokens } from '@/lib/layout';
 import { alpha } from '@/theme/color';
@@ -65,8 +66,8 @@ export function InviteSheet({
   // Friends not already in the session, for the quick-add chip row.
   const notIn = allFriends.filter((f) => !participantIds.has(`u:${f.id}`));
   const browseMatches = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return needle ? allFriends.filter((f) => f.name.toLowerCase().includes(needle)) : allFriends;
+    const needle = q.trim();
+    return needle ? allFriends.filter((f) => fuzzyIncludes(f.name, needle)) : allFriends;
   }, [allFriends, q]);
 
   const copyLink = async () => {

@@ -11,6 +11,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { SheetSearchField } from '@/components/moments/CompareBody';
 import { getMyFriends } from '@/lib/api/me';
+import { fuzzyIncludes } from '@/lib/search';
 import { usePhoneTokens } from '@/lib/layout';
 import {
   ApiError,
@@ -124,7 +125,7 @@ export function PeopleSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta, myIdentityId]);
 
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   const filtering = q !== '' || friendsOnly || roleFilter !== 'all';
   const searchable = ordered.length > 7; // small rosters don't earn the row
   const matchesRole = (p: Participant) => {
@@ -139,7 +140,7 @@ export function PeopleSheet({
         (p) =>
           matchesRole(p) &&
           (!friendsOnly || isFriendRow(p)) &&
-          (q === '' || p.displayName.toLowerCase().includes(q)),
+          (q === '' || fuzzyIncludes(p.displayName, q)),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [ordered, q, friendsOnly, roleFilter, friendIds],

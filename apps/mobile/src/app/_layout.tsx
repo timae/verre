@@ -14,8 +14,10 @@ import {
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo } from 'react';
+import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
+import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider } from '@/lib/query';
 import { consumePendingUpdateRequired } from '@/lib/updateGate';
 import { ThemeProvider, useTheme } from '@/theme';
@@ -84,7 +86,11 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider>
         <QueryProvider>
-          <RootNavigator />
+          {/* Tap anywhere outside a text input → keyboard leaves, tap still
+              lands (capture returns false; registry in lib/keyboardDismiss). */}
+          <View style={{ flex: 1 }} onStartShouldSetResponderCapture={dismissKeyboardOnOutsideTouch}>
+            <RootNavigator />
+          </View>
         </QueryProvider>
       </ThemeProvider>
     </GestureHandlerRootView>

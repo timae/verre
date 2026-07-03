@@ -1,8 +1,7 @@
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, LayoutAnimation, Platform, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, LayoutAnimation, Platform, Pressable, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   aggregateFlavourAxes,
@@ -17,6 +16,7 @@ import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
+import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
@@ -26,8 +26,10 @@ import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
+import { wineTypeLabel } from '@/lib/momentFormat';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
-import { alpha } from '@/theme/color';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 
@@ -36,15 +38,16 @@ import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 // Accordion of rated impressions; ALL collapsed by default; cards open/close
 // independently (multi-open — closing is always a deliberate tap).
 //
-// People-selector = the 02d·4 AVATAR RAIL (Simon's pick, 2026-07-02) and it is
-// the ONLY select/deselect surface: one screen-level hidden set, owned by the
-// screen, drives the WHOLE tab — deselected people disappear from every card
-// (rows, charts, sheet), and the card header (group ★ + consensus) and the
-// ranking recompute over the selection (the mock's selAccItem semantics).
-// Rail chips: selected = accent active state, deselected dim; the All chip
-// TOGGLES select-all/deselect-all. The rail renders STICKY under the title bar
-// like the reveal strip (plain: ScrollView stickyHeaderIndices; cover-hero:
-// the strip's Dynamic Overlay slot).
+// People-selector: ONE screen-level hidden set drives the WHOLE tab —
+// deselected people disappear from every card (rows, charts, sheet), and the
+// card header (group ★ + consensus) recomputes over the selection. The inline
+// avatar-chip rail (02d·4 variant B) was SUPERSEDED 2026-07-03 (Simon): the
+// sticky slot now holds the one-line CompareToolbar — People button (opens the
+// picker sheet, now the only select/deselect surface) + sort menu (line-up /
+// rated / agreement / ratings-count orders) + an impression search field. The
+// toolbar renders STICKY under the title bar like the reveal strip (plain:
+// ScrollView stickyHeaderIndices; cover-hero: the strip's Dynamic Overlay
+// slot).
 //
 // Person rows on a card are NOT toggles: tapping a name shows that person's
 // rating detail for the impression — their flavour wheel + score (tap again
@@ -92,6 +95,8 @@ type CmpItem = {
   raters: Rater[];
   scored: Rater[];
   avg: number | null;
+  /** Score span (max−min) across scored raters; null under 2 scores. Feeds the agreement sorts. */
+  spread: number | null;
   consensus: ConsensusKey | null;
 };
 
@@ -154,133 +159,150 @@ function buildItems(
         // structure detail" + "No scores yet").
         .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
       const scores = raters.map((r) => r.rating.score || 0);
+      const scoredScores = scores.filter((v) => v > 0);
       return {
         wine,
         index,
         raters,
         scored: raters.filter((r) => (r.rating.score || 0) > 0).sort((a, b) => b.rating.score - a.rating.score),
         avg: groupScoreAverage(scores),
+        spread: scoredScores.length >= 2 ? Math.max(...scoredScores) - Math.min(...scoredScores) : null,
         consensus: consensusFromRatings(raters.map((r) => ({ score: r.rating.score || 0, flavors: r.rating.flavors })), 'wine', wine.type),
       };
     })
     .filter((it) => it.raters.length > 0);
   // Line-up order (Simon's ruling 2026-07-03, supersedes the score-ranked
-  // list): compare cards mirror the line-up so the two tabs read as one list.
-  return items.sort((a, b) => a.index - b.index);
+  // list) — the default; the toolbar's sort menu reorders in CompareBody.
+  return items;
 }
 
-// ── 02d·4 avatar rail (.cmp-selbar) — the ONLY select/deselect surface. The
-// screen renders this STICKY under the bar (plain: ScrollView
-// stickyHeaderIndices; hero: the strip overlay slot). ───────────────────────
+// ── toolbar sort + search (Simon's 2026-07-03 spec) ─────────────────────────
 
-export function PeopleRail({
-  people, hidden, onToggle, onToggleAll, onPick,
+export type CompareSort = 'lineup' | 'top' | 'bottom' | 'agree' | 'split' | 'most';
+export const COMPARE_SORTS: { key: CompareSort; label: string }[] = [
+  { key: 'lineup', label: 'Line-up order' },
+  { key: 'top', label: 'Highest rated' },
+  { key: 'bottom', label: 'Lowest rated' },
+  { key: 'agree', label: 'Most agreement' },
+  { key: 'split', label: 'Least agreement' },
+  { key: 'most', label: 'Most ratings' },
+];
+// Sentinels (not Infinity — Infinity−Infinity is NaN and breaks sort): items
+// missing the sort signal (no score avg / <2 scores for a spread) go LAST in
+// every mode, line-up order as the universal tiebreak.
+const SORT_FNS: Record<CompareSort, (a: CmpItem, b: CmpItem) => number> = {
+  lineup: (a, b) => a.index - b.index,
+  top: (a, b) => (b.avg ?? -1) - (a.avg ?? -1) || a.index - b.index,
+  bottom: (a, b) => (a.avg ?? 999) - (b.avg ?? 999) || a.index - b.index,
+  agree: (a, b) => (a.spread ?? 999) - (b.spread ?? 999) || a.index - b.index,
+  split: (a, b) => (b.spread ?? -1) - (a.spread ?? -1) || a.index - b.index,
+  most: (a, b) => b.raters.length - a.raters.length || a.index - b.index,
+};
+
+// Search haystack — the impression's detail fields EXCEPT link, vinification
+// and description (Simon's ruling 2026-07-03). Type matches on both the code
+// and the written-out label ("non" finds Non-alcoholic). A blind stub matches
+// only its displayed "Impression N" label — the server already redacts the
+// real fields, so nothing leaks through search.
+function searchHay(it: CmpItem): string {
+  const w = it.wine;
+  if (w._blind) return `Impression ${it.index + 1}`;
+  return [w.name, w.producer, w.vintage, w.grape, w.type, wineTypeLabel(w.type), w.region, w.country]
+    .filter(Boolean)
+    .join(' ');
+}
+
+// ── toolbar (.cmp-toolbar) — ONE line: People button (opens the picker sheet,
+// the selection surface) + sort button (unfolds the order menu) + impression
+// search. Replaces the avatar-chip rail (Simon, 2026-07-03); renders in the
+// same sticky slot the rail used. ────────────────────────────────────────────
+
+export function CompareToolbar({
+  people, hidden, onPick, sort, onSort, query, onQuery,
 }: {
   people: ComparePerson[];
   hidden: Set<string>;
-  onToggle: (id: string) => void;
-  /** All chip is a TOGGLE (Simon's ruling): everything visible → deselect all; anything hidden → select all. */
-  onToggleAll: () => void;
   onPick: () => void;
+  sort: CompareSort;
+  onSort: (s: CompareSort) => void;
+  query: string;
+  onQuery: (q: string) => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const { width: screenW } = useWindowDimensions();
+  const sortBtn = useRef<View>(null);
+  const [sortAnchor, setSortAnchor] = useState<MenuAnchor | null>(null);
+  const [sortRight, setSortRight] = useState(16);
   const filtered = hidden.size > 0;
-  const allOn = !filtered;
-  const chipBase = {
+  const visibleCount = people.length - hidden.size;
+  const sorted = sort !== 'lineup';
+  const sortLabel = COMPARE_SORTS.find((o) => o.key === sort)!.label;
+  // 36pt to line up with the search pill; 44pt targets via vertical slop.
+  const chip = {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
-    gap: 6,
-    height: 34,
+    justifyContent: 'center' as const,
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 11,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: theme.rule,
     backgroundColor: theme.surface,
   };
-  // Selected (visible) chips wear the accent active state (.selchip.is-on);
-  // deselected ones stay neutral and dim (.selchip.is-off). With All on,
-  // every chip is active; hiding one drops All AND that chip, the rest stay.
-  const activeChip = { borderColor: theme.accentLine, backgroundColor: theme.accentTint };
+  const openSortMenu = () => {
+    sortBtn.current?.measureInWindow((x, y, w, h) => {
+      // AnchoredMenu is right-anchored; place the panel's right edge a panel-
+      // width from the button's left so it reads as unfolding from the button.
+      setSortRight(Math.max(12, screenW - x - 216));
+      setSortAnchor({ top: y, bottom: y + h });
+    });
+  };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: GUTTER, paddingRight: GUTTER, paddingVertical: 8 }}>
-      {/* .selchip-pick — fixed at the left (outside the scroll), opens the picker */}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingVertical: 8 }}>
+      {/* People — hidden on a roster of one (nothing to select). */}
+      {people.length > 1 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={filtered ? `Choose people — ${visibleCount} of ${people.length} selected` : 'Choose people'}
+          onPress={onPick}
+          hitSlop={{ top: 4, bottom: 4 }}
+          style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
+        >
+          <Icon name="user" size={15} color={filtered ? theme.accent : theme.inkSoft} />
+          {filtered ? (
+            <VText surface="badge" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+              {visibleCount}
+            </VText>
+          ) : null}
+          <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+        </Pressable>
+      ) : null}
       <Pressable
+        ref={sortBtn}
         accessibilityRole="button"
-        accessibilityLabel="Choose people"
-        onPress={onPick}
-        // 34pt chips → 44pt targets via vertical slop (codex; horizontal slop
-        // would overlap the adjacent chips).
-        hitSlop={{ top: 5, bottom: 5 }}
-        style={({ pressed }) => ({ ...chipBase, paddingHorizontal: 9, gap: 3, opacity: pressed ? 0.6 : 1 })}
+        accessibilityLabel={`Sort impressions — ${sortLabel}`}
+        onPress={openSortMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
       >
-        <Icon name="user" size={15} color={filtered ? theme.accent : theme.inkSoft} />
-        <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+        <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingLeft: 6, paddingRight: 14 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: allOn }}
-            accessibilityLabel={allOn ? 'Deselect everyone' : `Select all ${people.length} people`}
-            hitSlop={{ top: 5, bottom: 5 }}
-            onPress={onToggleAll}
-            style={({ pressed }) => ({
-              ...chipBase,
-              paddingHorizontal: 12,
-              ...(allOn ? activeChip : null),
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <VText surface="badge" style={{ fontFamily: allOn ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', ...phone.text('small') }}>
-              All · {people.length}
-            </VText>
-          </Pressable>
-          {people.map((p) => {
-            const on = !hidden.has(p.id);
-            return (
-              <Pressable
-                key={p.id}
-                accessibilityRole="button"
-                accessibilityState={{ selected: on }}
-                accessibilityLabel={`${on ? 'Hide' : 'Show'} ${p.displayName} in the comparison`}
-                hitSlop={{ top: 5, bottom: 5 }}
-                onPress={() => onToggle(p.id)}
-                style={({ pressed }) => ({
-                  ...chipBase,
-                  paddingLeft: 5,
-                  paddingRight: 11,
-                  ...(on ? activeChip : null),
-                  opacity: !on ? 0.45 : pressed ? 0.6 : 1,
-                })}
-              >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={24} />
-                <VText surface="badge" numberOfLines={1} style={{ fontFamily: on ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', ...phone.text('small'), maxWidth: 110 }}>
-                  {p.displayName}
-                </VText>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-        {/* Soft fades at both clip edges — a hard clip read harshly. Left:
-            where chips slide under the picker chip. Right: the viewport now
-            ends at the content gutter (chips used to clip at the PHYSICAL
-            screen edge), so chips fade out on the line where all other
-            content ends. bg → transparent over the scroll edges. */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={[theme.bg, alpha(theme.bg, 0)]}
-          start={{ x: 0, y: 0.5 }}
-          end={{ x: 1, y: 0.5 }}
-          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 14 }}
-        />
-        <LinearGradient
-          pointerEvents="none"
-          colors={[alpha(theme.bg, 0), theme.bg]}
-          start={{ x: 0, y: 0.5 }}
-          end={{ x: 1, y: 0.5 }}
-          style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 14 }}
-        />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" tone="plain" />
       </View>
+      <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortRight} minWidth={190}>
+        {COMPARE_SORTS.map((o) => (
+          <MenuItem
+            key={o.key}
+            label={o.label}
+            active={sort === o.key}
+            accessibilityState={{ selected: sort === o.key }}
+            onPress={() => { onSort(o.key); setSortAnchor(null); }}
+          />
+        ))}
+      </AnchoredMenu>
     </View>
   );
 }
@@ -320,8 +342,8 @@ export function ComparePickerSheet({
     () => new Set((friendsQ.data ?? []).map((f) => `u:${f.id}`)),
     [friendsQ.data],
   );
-  const q = query.trim().toLowerCase();
-  const rows = people.filter((p) => !q || p.displayName.toLowerCase().includes(q));
+  const q = query.trim();
+  const rows = people.filter((p) => !q || fuzzyIncludes(p.displayName, q));
   const visibleCount = people.length - hidden.size;
   const isAll = hidden.size === 0;
   const isMe = !isAll && visibleCount === 1 && !!myIdentityId && !hidden.has(myIdentityId);
@@ -481,14 +503,23 @@ export function CompareBody({
   meta,
   locked,
   hidden,
+  sort,
+  query,
 }: {
   wines: WireWine[] | null;
   ratings: RatingsView | null;
   meta: SessionMetaView | null;
   locked: boolean;
   hidden: Set<string>;
+  sort: CompareSort;
+  query: string;
 }) {
   const items = useMemo(() => buildItems(wines, ratings, meta, hidden), [wines, ratings, meta, hidden]);
+  const q = query.trim();
+  const shown = useMemo(() => {
+    const base = q ? items.filter((it) => fuzzyIncludes(searchHay(it), q)) : items;
+    return [...base].sort(SORT_FNS[sort]);
+  }, [items, q, sort]);
   if (wines === null || ratings === null) {
     // A /state section this tab needs failed server-side and has never
     // delivered — the 5s poll keeps retrying; say that, not "No ratings yet".
@@ -514,16 +545,24 @@ export function CompareBody({
     return (
       <View style={{ paddingVertical: 72 }}>
         {anyComparable ? (
-          <CenteredMessage title="Nobody selected" body="Pick people on the rail above to compare their ratings." />
+          <CenteredMessage title="Nobody selected" body="Pick people with the People button above to compare their ratings." />
         ) : (
           <CenteredMessage title="No ratings yet" body="Rate some impressions and they'll show up here to compare." />
         )}
       </View>
     );
   }
+  if (shown.length === 0) {
+    // items exist but the search query matched none of them.
+    return (
+      <View style={{ paddingVertical: 72 }}>
+        <CenteredMessage title="No matches" body={`Nothing in the comparison matches “${query.trim()}”.`} />
+      </View>
+    );
+  }
   return (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 8, gap: 10 }}>
-      {items.map((item) => (
+      {shown.map((item) => (
         <CmpAccItem key={item.wine.id} item={item} />
       ))}
     </View>
@@ -1061,11 +1100,20 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
+export function SheetSearchField({ value, onChangeText, placeholder, tone = 'sunk' }: { value: string; onChangeText: (t: string) => void; placeholder: string; tone?: 'sunk' | 'plain' }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // Clearing is part of typing — the ✕ must not bounce the keyboard.
+  const clearRef = useRef<View | null>(null);
+  useRegisterInput(clearRef, value !== '');
+  // 'sunk' = the sheet spec (surfaceSunk fill). 'plain' = the compare-toolbar
+  // skin: surface + rule border, matching the sibling chips so the pill reads
+  // as one control row instead of sticking out on theme.bg (Simon 2026-07-03).
+  const box = tone === 'sunk'
+    ? { backgroundColor: theme.surfaceSunk }
+    : { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surfaceSunk }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, ...box }}>
       <Icon name="search" size={16} color={theme.inkSoft} />
       <View style={{ flex: 1 }}>
         <TextField
@@ -1084,6 +1132,7 @@ export function SheetSearchField({ value, onChangeText, placeholder }: { value: 
       </View>
       {value !== '' ? (
         <Pressable
+          ref={clearRef}
           accessibilityRole="button"
           accessibilityLabel="Clear search"
           hitSlop={10}
@@ -1118,13 +1167,13 @@ function ShowAllSheet({
   const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
   const sign = dir === 'high' ? -1 : 1;
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   // Score mode lists EXACTLY what the resting panel counts (scoreRowsFor —
   // incl. structure-only score-0 raters), else "Show all N" would open a
   // sheet missing people.
   const base = axis ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
   const rows = base
-    .filter((r) => !q || r.displayName.toLowerCase().includes(q))
+    .filter((r) => !q || fuzzyIncludes(r.displayName, q))
     .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
   const total = base.length;
   // Same cap-aware sizing as the picker: dynamic fit-to-content while the

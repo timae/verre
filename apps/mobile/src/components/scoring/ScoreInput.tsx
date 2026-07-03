@@ -4,6 +4,7 @@ import { TextInput, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { scoreWord } from '@/lib/scoreWords';
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
@@ -65,6 +66,7 @@ export function ScoreInput({ value, onChange }: Props) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<TextInput>(null);
+  useRegisterInput(inputRef);
   const skipCommitRef = useRef(false);
   const valueRef = useRef(value);
   valueRef.current = value;

@@ -669,8 +669,13 @@ unsorted it would flicker between polls), and raters with neither a score nor st
 accordion — **in LINE-UP order (Simon's ruling 2026-07-03, supersedes the score-ranked list): the
 two tabs read as one list.** Within a card, scored rater rows stay score-ranked.
 
-**People-selector = 02d·4 variant B, the AVATAR RAIL (DECIDED, Simon 2026-07-02)**, adapted to
-hide/unhide semantics: one screen-level hidden set drives every compare view — the rail chips, the
+**People-selector: the inline avatar-chip rail was SUPERSEDED 2026-07-03 (Simon) by the one-line
+COMPARE TOOLBAR** — People button (opens the picker sheet, now the only select/deselect surface) +
+sort menu (line-up default / highest / lowest rated / most / least agreement / most ratings;
+agreement = score span max−min, <2 scores sorts last) + impression search (all detail fields except
+link, vinification, description; blind stubs match only their "Impression N" label). The hidden-set
+semantics below are unchanged. Original ruling (2026-07-02, 02d·4 variant B) kept for history:
+one screen-level hidden set drives every compare view — the rail chips, the
 person rows, and the lead-chip picker sheet ("Compare who?" with Everyone / Just me / Me + friends
 presets + search + the mock's Friend row tag; friends = mutual follows via `GET /api/me/friends`,
 fetched lazily when the sheet opens). Rail chip states: selected chips wear the accent active state,
