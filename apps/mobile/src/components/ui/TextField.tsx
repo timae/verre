@@ -23,15 +23,16 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   const surface = phone.surface(surfaceName);
   const fieldHeight = surface.height(control.h);
   const text = phone.text('body');
-  // COMPACT lineHeight (== fontSize) on a single-line input — the third state
-  // of a two-sided trap: a PARAGRAPH lineHeight (body is 1.53× the font size)
-  // biases the glyph DOWN inside the tall line box (descenders crowd the
-  // bottom edge — the original device finding), while NO lineHeight at all
-  // mis-centers the PLACEHOLDER on Fabric with Instrument Sans (it sat high;
-  // Simon caught it in the compare search + add Name fields). lineHeight ==
-  // fontSize gives a line box the size of the glyph, which iOS centers —
-  // entered text AND placeholder alike. The surface cap (maxFontSizeMultiplier)
-  // bounds how large the OS can scale the glyph within the scaled height.
+  // lineHeight = 1.2× fontSize — the empirically centered value of a
+  // three-state trap, each state device-confirmed with Instrument Sans:
+  //   · PARAGRAPH lineHeight (body's 1.53×): glyphs biased DOWN.
+  //   · NO lineHeight: entered text centers, PLACEHOLDER sits high (Fabric).
+  //   · COMPACT (1.0×): BOTH sit high — the box crops the font's descent
+  //     share (natural line ≈ 1.2 em), so iOS seats glyphs high in it.
+  // 1.2× ≈ the font's own ascent+descent: placeholder and entered text
+  // track together and center. Overriding fontSize? Override lineHeight to
+  // 1.2× the same value. The surface cap (maxFontSizeMultiplier) bounds how
+  // large the OS can scale the glyph within the scaled height.
   const [focused, setFocused] = useState(false);
   const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
   return (
@@ -52,7 +53,7 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
             height: fieldHeight,
             fontFamily: 'InstrumentSans_400Regular',
             fontSize: text.fontSize,
-            lineHeight: text.fontSize,
+            lineHeight: Math.round(text.fontSize * 1.2),
             color: theme.ink,
             backgroundColor: editable === false ? theme.surfaceSunk : theme.surface,
             borderWidth: focused ? 2 : 1,
