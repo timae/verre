@@ -92,6 +92,17 @@ const ICONS: Record<string, Seg[]> = {
   chevrondown: [
     { d: 'M6 9.5l6 6 6-6', sw: 1.7, cap: true, join: true },
   ],
+  // two people — friends filters (the "Friends" chips)
+  users: [
+    { cx: 9, cy: 8.4, r: 3.1, sw: 1.5 },
+    { d: 'M3.6 19c.5-3.1 2.8-4.9 5.4-4.9s4.9 1.8 5.4 4.9', sw: 1.5, cap: true },
+    { d: 'M15.2 5.9a3.1 3.1 0 0 1 0 5', sw: 1.5, cap: true },
+    { d: 'M17.3 14.4c1.8.7 3 2.3 3.3 4.6', sw: 1.5, cap: true },
+  ],
+  // filter funnel — the moments-list filter trigger
+  funnel: [
+    { d: 'M4 5h16l-6.2 7.2V17l-3.6 2.4v-7.2L4 5Z', sw: 1.6, cap: true, join: true },
+  ],
   // high/low sort toggle — compare "Show all" sheet (design i-sort def)
   sort: [
     { d: 'M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3', sw: 1.6, cap: true, join: true },

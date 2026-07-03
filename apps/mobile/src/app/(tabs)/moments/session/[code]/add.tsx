@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Keyboard, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -13,7 +13,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
+import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover, SelectField } from '@/components/moments/momentForm';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { fuzzyIncludes } from '@/lib/search';
@@ -435,42 +435,6 @@ function PhotoPicker({
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add photo</VText>
       <VText variant="caption" color="inkSoft">optional — a label or pour</VText>
-    </Pressable>
-  );
-}
-
-// .field + .select-wrap — a tappable field box that reads like a dropdown
-// (value or placeholder + a trailing chevron). Native-chrome dropdown rendered
-// as a brand trigger; the actual choosing happens in a sheet.
-function SelectField({
-  value, placeholder, onPress, accessibilityLabel,
-}: {
-  value: string;
-  placeholder: string;
-  onPress: () => void;
-  accessibilityLabel: string;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('formControl');
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      // Dismiss first so a tap coming FROM a focused text field opens the sheet
-      // on the first tap — otherwise keyboardShouldPersistTaps can spend that tap
-      // dismissing the keyboard and the open needs a second tap.
-      onPress={() => { Keyboard.dismiss(); onPress(); }}
-      style={({ pressed }) => ({
-        minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
-        borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,
-      })}
-    >
-      <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
-        {value || placeholder}
-      </VText>
-      <Icon name="chevron-down" size={18} color={theme.inkSoft} />
     </Pressable>
   );
 }

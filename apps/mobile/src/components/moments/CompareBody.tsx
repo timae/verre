@@ -290,7 +290,7 @@ export function CompareToolbar({
         <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" tone="plain" />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" />
       </View>
       <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortRight} minWidth={190}>
         {COMPARE_SORTS.map((o) => (
@@ -1100,20 +1100,17 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder, tone = 'sunk' }: { value: string; onChangeText: (t: string) => void; placeholder: string; tone?: 'sunk' | 'plain' }) {
+export function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Clearing is part of typing — the ✕ must not bounce the keyboard.
   const clearRef = useRef<View | null>(null);
   useRegisterInput(clearRef, value !== '');
-  // 'sunk' = the sheet spec (surfaceSunk fill). 'plain' = the compare-toolbar
-  // skin: surface + rule border, matching the sibling chips so the pill reads
-  // as one control row instead of sticking out on theme.bg (Simon 2026-07-03).
-  const box = tone === 'sunk'
-    ? { backgroundColor: theme.surfaceSunk }
-    : { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule };
+  // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
+  // border, matching the chip controls — never the sunken fill. Restyle the
+  // InviteSheet pseudo-field too if this ever changes.
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, ...box }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
       <Icon name="search" size={16} color={theme.inkSoft} />
       <View style={{ flex: 1 }}>
         <TextField

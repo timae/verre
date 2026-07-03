@@ -33,6 +33,8 @@ export function Sheet({
   snapPoints,
   enableDynamicSizing = true,
   maxDynamicContentSize,
+  stackBehavior = 'replace',
+  layer = 0,
 }: {
   open: boolean;
   onClose: () => void;
@@ -42,6 +44,17 @@ export function Sheet({
   // Cap for dynamic-sized sheets (e.g. a long People roster) so they don't
   // grow past the screen.
   maxDynamicContentSize?: number;
+  // 'replace' (default): opening one sheet as another closes dismisses the
+  // outgoing one (People "Add" → Invite). Pass 'push' for a sheet that opens
+  // ON TOP of a still-open parent and returns to it on close (the moments
+  // filter sheet's role/host/people pickers).
+  stackBehavior?: 'push' | 'replace' | 'switch';
+  // Stacking depth for nested (stackBehavior='push') sheets. The shell z-hoists
+  // container=100/backdrop=99 (see below) — identical for every sheet, so a
+  // pushed child's backdrop (99) would paint UNDER the parent's container
+  // (100) and the parent sheet sits un-dimmed beside the front sheet. Each
+  // layer lifts the pair above the previous layer's container.
+  layer?: number;
 }) {
   const { theme } = useTheme();
   const ref = useRef<BottomSheetModal>(null);
@@ -86,13 +99,13 @@ export function Sheet({
       // the sheet (100).
       <BottomSheetBackdrop
         {...props}
-        style={[props.style, { zIndex: 99 }]}
+        style={[props.style, { zIndex: 99 + layer * 4 }]}
         appearsOnIndex={0}
         disappearsOnIndex={-1}
         pressBehavior="close"
       />
     ),
-    [],
+    [layer],
   );
 
   return (
@@ -101,10 +114,8 @@ export function Sheet({
       // onDismiss is the single funnel for every close path (button, backdrop,
       // swipe) — release the counter and the presented guard here.
       onDismiss={() => { presented.current = false; markClosed(); onClose(); }}
-      // Replace (not the default 'switch') so when one sheet opens as another
-      // closes (People "Add" → Invite), the outgoing sheet is dismissed rather
-      // than minimized-and-parked behind the new one.
-      stackBehavior="replace"
+      // See the prop doc — 'replace' default, 'push' for nested pickers.
+      stackBehavior={stackBehavior}
       enablePanDownToClose
       // Keyboard: gorhom's default 'interactive' slides the WHOLE sheet up to
       // keep the focused input above the keyboard — but our sheet inputs (the
@@ -122,7 +133,7 @@ export function Sheet({
       // overlays (hero bar 8, sticky tab/rail overlays 7, reconnecting bar
       // 50) can end up siblings of it and paint OVER the backdrop. Hoist the
       // whole modal layer above anything a screen uses.
-      containerStyle={{ zIndex: 100 }}
+      containerStyle={{ zIndex: 100 + layer * 4 }}
       backdropComponent={renderBackdrop}
       backgroundStyle={{ backgroundColor: theme.surface }}
       handleIndicatorStyle={{ backgroundColor: theme.rule }}

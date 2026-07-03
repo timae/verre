@@ -198,7 +198,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<TextArea>`** beside `TextField` — `momentForm.NotesField` + the impression's private `NoteField` re-encode the same multiline focus trick; the impression should use `NotesField` (expose `minHeight`/`maxHeight` — `maxHeight` already half-exists).
 - **`PushGroup`/`PushRow` (moments/index.tsx) → adopt `SetGroup`/`SetNav`** (same carded nav-row primitive, add a trailing-slot/`count`).
 - **`<OptionSheet>`** — `create.CategorySheet` ≈ `add.TypeSheet` (same check-list body) — extract for THAT case. ⚠️ Do NOT blindly fold in `add.CountrySheet`: it needs a fixed 75% snap + `BottomSheetScrollView` + search (a load-bearing config difference — see its in-file comment); make it a separate `<SearchableOptionSheet>` if anything.
-- **Export `add.SelectField`** from `momentForm` — re-inlined for create's category trigger.
+- ✅ **DONE (partial) — `SelectField` exported from `momentForm`** (moved out of add.tsx; adopted by add + the moments-list filter sheet). Create's category trigger still carries its own inline copy — migrate when next touched.
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - **Promote `ClampText`** (`impression/[wineId].tsx`) to `components/`; `OvcAbout`'s description block is a copy.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.

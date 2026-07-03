@@ -28,6 +28,12 @@ export type MySessionRow = {
   ttl_seconds: number;
   lifespan: string | null;
   taster_count: number | null;
+  // Session category ('wine' in v1; NULL on rows predating the column — treat
+  // as 'wine', the only thing they could be). Widens with future category sets.
+  category: string | null;
+  // Everyone who was part of the moment (minus the viewer + block pairs;
+  // live identities ∪ durable members). Names are presentation-only.
+  people: { id: string; name: string }[];
   role: SessionRole;
   // Server-computed Moments-home routing — full model in docs/dev/moments-home.md.
   // `status` drives the LISTS (Upcoming = `=== 'upcoming'`, Recent = the rest);

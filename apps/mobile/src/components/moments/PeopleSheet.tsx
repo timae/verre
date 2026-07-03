@@ -220,7 +220,7 @@ export function PeopleSheet({
                   opacity: pressed ? 0.6 : 1,
                 })}
               >
-                <Icon name="heart" size={13} color={friendsOnly ? theme.accent : theme.inkSoft} />
+                <Icon name="users" size={14} color={friendsOnly ? theme.accent : theme.inkSoft} />
                 <VText surface="badge" variant="small" color={friendsOnly ? 'accent' : 'inkSoft'} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
                   Friends
                 </VText>
