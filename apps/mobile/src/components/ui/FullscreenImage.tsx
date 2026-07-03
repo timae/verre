@@ -1,7 +1,8 @@
 import { Image } from 'expo-image';
 import { StatusBar } from 'expo-status-bar';
+import { useEffect, useRef } from 'react';
 import { FlatList, Modal, Pressable, StyleSheet, useWindowDimensions } from 'react-native';
-import { GestureViewer } from 'react-native-gesture-image-viewer';
+import { GestureViewer, useGestureViewerEvent } from 'react-native-gesture-image-viewer';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
 import { GLASS_FILL, usePhoneTokens } from '@/lib/layout';
@@ -31,6 +32,20 @@ export function FullscreenImage({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const closeSize = phone.size('fullscreenClose');
+  // Zoomed ⇒ a single tap must NOT dismiss (Simon's rule: fully zoom out
+  // first). The library fires onSingleTap regardless of zoom, so track the
+  // live scale via its zoomChange event (ref, not state — no re-render per
+  // pinch frame) and gate the dismiss. Small epsilon: settling springs can
+  // rest a hair off 1.0.
+  const scaleRef = useRef(1);
+  useGestureViewerEvent('zoomChange', (data) => {
+    scaleRef.current = data.scale;
+  });
+  // Fresh open ⇒ fresh scale: closing WHILE zoomed (✕ button) would leave a
+  // stale >1 value that blocks the first tap-to-close of the next session.
+  useEffect(() => {
+    if (visible) scaleRef.current = 1;
+  }, [visible]);
 
   return (
     <Modal
@@ -52,9 +67,11 @@ export function FullscreenImage({
         dismiss={{ direction: 'both' }}
         onDismiss={onClose}
         // Reliable single-tap dismiss — the library's own callback (it advises
-        // this over overlaying a Pressable, which RNGH would swallow). Fires
-        // only on a confirmed single tap on un-zoomed content.
-        onSingleTap={onClose}
+        // this over overlaying a Pressable, which RNGH would swallow). Gated
+        // on the tracked scale: while zoomed, a tap is a no-op.
+        onSingleTap={() => {
+          if (scaleRef.current <= 1.02) onClose();
+        }}
         renderItem={(item: string) => (
           <Image
             source={{ uri: item }}
