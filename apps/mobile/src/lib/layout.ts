@@ -179,3 +179,9 @@ export const GLASS_FILL = 'rgba(20,18,15,0.42)';
 // bottom) that keeps white status-bar glyphs + glass controls + the hero title
 // readable over any photo. One gradient on both heroes (was drifting).
 export const HERO_SCRIM = ['rgba(15,12,10,0.25)', 'rgba(15,12,10,0.05)', 'rgba(15,12,10,0.82)'] as const;
+
+// Welcome-screen scrim (.welcome .scrim): a 4-stop variant of the hero scrim —
+// darker top (wordmark + h1 sit ON the photo), near-clear middle, heavy bottom
+// (copy + buttons). Distinct from HERO_SCRIM by design, same literal family.
+export const WELCOME_SCRIM = ['rgba(15,12,10,0.42)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.74)'] as const;
+export const WELCOME_SCRIM_STOPS = [0, 0.26, 0.56, 1] as const;

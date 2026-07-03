@@ -5,7 +5,11 @@ import { control, radius, useTheme, type TextVariant } from '@/theme';
 import { alpha, mix } from '@/theme/color';
 import { VText } from './VText';
 
-type Variant = 'primary' | 'positive' | 'secondary' | 'tertiary' | 'danger';
+// onlight/ghostlight = the design's over-photo skins (.btn-onlight /
+// .btn-ghostlight, welcome screen). Theme-INDEPENDENT by spec — they sit on a
+// photo, not a themed surface, so their literals are sanctioned (the same
+// carve-out as GLASS_FILL/HERO_SCRIM).
+type Variant = 'primary' | 'positive' | 'secondary' | 'tertiary' | 'danger' | 'onlight' | 'ghostlight';
 type Size = 'sm' | 'md' | 'lg';
 
 interface Props extends Omit<PressableProps, 'children' | 'style'> {
@@ -64,6 +68,14 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
         };
       case 'tertiary':
         return { bg: pressed ? theme.accentTint : 'transparent', text: theme.accent };
+      case 'onlight':
+        return { bg: pressed ? '#e9e5e1' : '#ffffff', text: '#1a1512' };
+      case 'ghostlight':
+        return {
+          bg: pressed ? 'rgba(255,255,255,0.14)' : 'transparent',
+          text: '#ffffff',
+          border: `rgba(255,255,255,${pressed ? 0.7 : 0.5})`,
+        };
     }
   };
 
