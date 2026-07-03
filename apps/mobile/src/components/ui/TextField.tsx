@@ -23,11 +23,15 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   const surface = phone.surface(surfaceName);
   const fieldHeight = surface.height(control.h);
   const text = phone.text('body');
-  // NO explicit lineHeight on a single-line input. iOS vertically centers the
-  // bare glyph within `height`; a paragraph lineHeight (body is 1.53× the font
-  // size) makes iOS bias the glyph DOWN inside the tall line box, so descenders
-  // crowd/clip the bottom edge. The surface cap (maxFontSizeMultiplier) bounds
-  // how large the OS can scale the glyph so it can't outgrow the scaled height.
+  // COMPACT lineHeight (== fontSize) on a single-line input — the third state
+  // of a two-sided trap: a PARAGRAPH lineHeight (body is 1.53× the font size)
+  // biases the glyph DOWN inside the tall line box (descenders crowd the
+  // bottom edge — the original device finding), while NO lineHeight at all
+  // mis-centers the PLACEHOLDER on Fabric with Instrument Sans (it sat high;
+  // Simon caught it in the compare search + add Name fields). lineHeight ==
+  // fontSize gives a line box the size of the glyph, which iOS centers —
+  // entered text AND placeholder alike. The surface cap (maxFontSizeMultiplier)
+  // bounds how large the OS can scale the glyph within the scaled height.
   const [focused, setFocused] = useState(false);
   const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
   return (
@@ -48,6 +52,7 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
             height: fieldHeight,
             fontFamily: 'InstrumentSans_400Regular',
             fontSize: text.fontSize,
+            lineHeight: text.fontSize,
             color: theme.ink,
             backgroundColor: editable === false ? theme.surfaceSunk : theme.surface,
             borderWidth: focused ? 2 : 1,

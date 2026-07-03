@@ -1048,9 +1048,10 @@ function SheetSearchField({ value, onChangeText, placeholder }: { value: string;
           onChangeText={onChangeText}
           autoCorrect={false}
           autoCapitalize="none"
-          // fontSize only — TextField deliberately carries no lineHeight on a
-          // single-line input (iOS glyph-centering, see its header).
-          style={{ height: 36, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize }}
+          // fontSize override ⇒ lineHeight must match it (TextField's base
+          // compact lineHeight is body-sized; a mismatched line box re-biases
+          // the glyph — see TextField's header).
+          style={{ height: 36, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: phone.text('small').fontSize }}
         />
       </View>
     </View>
