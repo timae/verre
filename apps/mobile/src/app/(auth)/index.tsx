@@ -41,6 +41,7 @@ export default function Launch() {
         contentFit="cover"
         contentPosition={{ top: '40%', left: '50%' }}
         accessibilityIgnoresInvertColors
+        alt=""
       />
       {/* .welcome .scrim — the design's 4-stop gradient. */}
       <LinearGradient

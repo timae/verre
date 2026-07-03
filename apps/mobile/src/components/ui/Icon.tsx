@@ -115,7 +115,13 @@ export function Icon({ name, size = 18, color }: { name: IconName; size?: number
   const { theme } = useTheme();
   const c = color ?? theme.ink;
   return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
+    // pointerEvents="none": icons are always decorative glyphs INSIDE an
+    // interactive parent — hits must fall through so the touch TARGET is the
+    // parent Pressable. Load-bearing for the keyboard-safe registry
+    // (lib/keyboardDismiss): the eye/clear-✕ companions register the
+    // Pressable's tag, and a tap landing on the child Svg node would read as
+    // "outside" and wrongly dismiss the keyboard (codex P2).
+    <Svg width={size} height={size} viewBox="0 0 24 24" pointerEvents="none">
       {ICONS[name].map((s, i) =>
         'cx' in s ? (
           s.fill ? (
