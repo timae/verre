@@ -12,7 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Reanimated, { runOnJS, type SharedValue, useAnimatedProps, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
+import Reanimated, { runOnJS, type SharedValue, useAnimatedProps, useAnimatedStyle, useSharedValue, withDelay, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 import Svg, { Defs, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
@@ -105,6 +105,11 @@ const FLOOR_ALPHA = { dark: 0.78, light: 0.68 };
 // Counter-tint on the lens glass — cancels the interactive sheen's added
 // light (it read as "brighter than the bar"). Light needs more.
 const LENS_TINT = { dark: 0.07, light: 0.12 };
+// How much of the theme bg's hue goes into the counter-tint (vs black).
+// Per-scheme so tuning the cold cast on LIGHT themes (Apricot read blue,
+// then "still a bit too cold" at 0.35) cannot move the dark themes Simon
+// already approved.
+const HUE_MIX = { dark: 0.35, light: 0.55 };
 // Rim-only optics (Simon: "don't reflect INTO the lens, only break at the
 // edges"): the material always processes its whole footprint, so the CENTER
 // PATCH covers the glass interior with the bar's own pseudo-material and
@@ -136,7 +141,7 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
     const m = /^#([0-9a-f]{6})$/i.exec(theme.bg.trim());
     if (!m) return alpha('#000000', LENS_TINT[mode]);
     const n = parseInt(m[1], 16);
-    const ch = (shift: number) => Math.round(((n >> shift) & 255) * 0.35);
+    const ch = (shift: number) => Math.round(((n >> shift) & 255) * HUE_MIX[mode]);
     return `rgba(${ch(16)},${ch(8)},${ch(0)},${LENS_TINT[mode]})`;
   })();
 
@@ -232,7 +237,22 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
   // call): hoverJS mirrors the hovered slot to React; content still swaps
   // only on release.
   const [hoverJS, setHoverJS] = useState<number | null>(null);
-  const held = hoverJS !== null;
+  // Tap-fly (Simon, matching the OS): a TAP also forms the lens — it lifts,
+  // travels to the tapped slot (the activeSlot effect's spring), settles and
+  // dissolves. tapFly mounts the glass layers for the flight's duration;
+  // navigation itself stays immediate, like the OS.
+  const [tapFly, setTapFly] = useState(false);
+  const tapFlyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (tapFlyTimer.current) clearTimeout(tapFlyTimer.current);
+  }, []);
+  const flyTo = () => {
+    setTapFly(true);
+    if (tapFlyTimer.current) clearTimeout(tapFlyTimer.current);
+    tapFlyTimer.current = setTimeout(() => setTapFly(false), 500);
+    lensOn.value = withSequence(withTiming(1, { duration: 150 }), withDelay(80, withTiming(0, { duration: 200 })));
+  };
+  const held = hoverJS !== null || tapFly;
   // ⚠️ Drag guard for the item Pressables: pan activation SHOULD cancel the
   // underlying press, but on device a drag's release could still fire the
   // item's onPress — a second input path that re-introduced the same-tab
@@ -375,7 +395,10 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
           if (dragActive.current || Date.now() < dragUntil.current) return;
           Haptics.selectionAsync().catch(() => {});
           const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-          if (!active && !event.defaultPrevented) navigation.navigate(route.name);
+          if (!active && !event.defaultPrevented) {
+            flyTo();
+            navigation.navigate(route.name);
+          }
         }}
       />
     );
