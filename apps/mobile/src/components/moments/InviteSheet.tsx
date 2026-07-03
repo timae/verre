@@ -163,7 +163,7 @@ export function InviteSheet({
             <Pressable
               accessibilityRole="button"
               onPress={() => setPane('browse')}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surfaceSunk }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surfaceSunk }}
             >
               <Icon name="search" size={16} color={theme.inkSoft} />
               <VText variant="small" color="inkFaint">Search and browse friends</VText>

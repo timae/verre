@@ -13,6 +13,9 @@ import { execSync } from 'node:child_process'
 const SRC_GLOB = 'apps/mobile/src'
 const ALLOW = {
   policy: 'apps/mobile/src/lib/layout.ts',
+  // The canonical home of the single-line compact-centering policy
+  // (lineHeight = 1.2× fontSize — device-verified; see its header comment).
+  compactField: 'apps/mobile/src/components/ui/TextField.tsx',
 }
 
 const files = execSync(`git ls-files "${SRC_GLOB}"`, { encoding: 'utf8' })
@@ -101,13 +104,18 @@ for (const file of files) {
     }
   }
 
-  // A SINGLE-LINE input must not carry an explicit lineHeight: iOS biases the
-  // glyph down inside a paragraph line box, so the text sits low and descenders
-  // clip the bottom edge. Single-line fields auto-center within `height`. The
-  // `multiline` prop is the discriminator — multiline fields legitimately set a
-  // lineHeight (and textAlignVertical:'top'). The spread form `...phone.text(…)`
-  // also carries a lineHeight; a <TextField> `style` override re-introduces one
-  // the component dropped.
+  // Single-line lineHeight policy (device-verified 2026-07-02, see
+  // ui/TextField.tsx header): a PARAGRAPH lineHeight (body's 1.53×) biases the
+  // glyph down; NO lineHeight leaves the Fabric PLACEHOLDER sitting high; the
+  // compact 1.2× fontSize centers both. TextField owns that base value
+  // (ALLOW.compactField); a <TextField> consumer overriding fontSize MUST pair
+  // it with a matching lineHeight — so lineHeight WITH fontSize in a TextField
+  // prop window is the policy, not a bypass. Everything else stays flagged:
+  // lineHeight without a fontSize pairing (a mismatched line box), the spread
+  // form `...phone.text(…)` (it carries the paragraph 1.53×), and raw
+  // TextInput/BottomSheetTextInput hand-rolling a lineHeight (use TextField).
+  // The `multiline` prop is the discriminator — multiline fields legitimately
+  // set a lineHeight (and textAlignVertical:'top').
   //
   // The tag extractor stops on the first `>` (it appears inside `=>` handlers),
   // so it can't bound an input tag with inline arrow props. Instead scan a
@@ -119,7 +127,9 @@ for (const file of files) {
   // and lineHeight checks in one coordinate space.
   const INPUT_OPEN = /<(TextInput|BottomSheetTextInput|TextField)\b/g
   let m
-  while ((m = INPUT_OPEN.exec(raw)) !== null) {
+  let flaggedInput = false
+  while (!flaggedInput && (m = INPUT_OPEN.exec(raw)) !== null) {
+    if (file === ALLOW.compactField) break
     // Skip the `useRef<TextInput>(null)` type-parameter false match — a real JSX
     // tag is followed by whitespace/`{`/a prop, never `>(`.
     if (/^<TextInput>\s*\(/.test(raw.slice(m.index))) continue
@@ -132,9 +142,15 @@ for (const file of files) {
     if (/\bmultiline\b/.test(props)) continue
     // Per-input opt-out: marker must sit in THIS input's own prop window.
     if (/dynamic-type-ok:\s*fixed-format/.test(props)) continue
-    if (/\blineHeight\s*:/.test(props) || /\.\.\.phone\.text\(/.test(props)) {
-      errors.push(`${file}: single-line ${m[1]} sets an explicit lineHeight (inline or via ...phone.text(...)) near "${props.slice(0, 40).replace(/\s+/g, ' ')}…" — drop it; iOS auto-centers within height and a line box bottom-clips. Multiline fields are exempt via the multiline prop.`)
-      break
+    if (/\.\.\.phone\.text\(/.test(props)) {
+      errors.push(`${file}: single-line ${m[1]} spreads ...phone.text(...) — that carries the paragraph lineHeight (glyphs bias down). Set fontSize + a matching 1.2× lineHeight instead (see TextField's header).`)
+      flaggedInput = true
+    } else if (/\blineHeight\s*:/.test(props)) {
+      // TextField pairing rule: fontSize override + matching lineHeight is the
+      // compact-centering policy, not a bypass.
+      if (m[1] === 'TextField' && /\bfontSize\s*:/.test(props)) continue
+      errors.push(`${file}: single-line ${m[1]} sets a lineHeight without a fontSize pairing near "${props.slice(0, 40).replace(/\s+/g, ' ')}…" — a mismatched line box re-biases the glyph. Pair fontSize with a 1.2× lineHeight on TextField, or use TextField instead of a raw input. Multiline fields are exempt via the multiline prop.`)
+      flaggedInput = true
     }
   }
 }
