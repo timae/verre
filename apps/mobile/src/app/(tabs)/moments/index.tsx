@@ -85,14 +85,15 @@ export default function Moments() {
       keyboardDismissMode="interactive"
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={{
-        // The tab host auto-insets this ScrollView below the status bar —
-        // adding insets.top here double-counts and sinks the title.
-        // NO flexGrow: 1 — it forced content to ≥ viewport height, which on top
-        // of the tab host's auto bottom-inset + paddingBottom overshot the
-        // viewport and created a small real scroll range (content scrolled up,
-        // exposing bg below). The ScrollView's own flex:1 keeps the gesture
-        // surface full-height, so pull-to-refresh still engages on a short list.
-        paddingTop: 8,
+        // Explicit top inset: the js-tabs scene does NOT auto-inset below the
+        // status bar (the old NativeTabs host did — relying on that sank the
+        // title behind the Dynamic Island after the ADR-0006 swap).
+        // NO flexGrow: 1 — it forced content to ≥ viewport height, which with
+        // the paddings overshot the viewport and created a small real scroll
+        // range (content scrolled up, exposing bg below). The ScrollView's own
+        // flex:1 keeps the gesture surface full-height, so pull-to-refresh
+        // still engages on a short list.
+        paddingTop: insets.top + 8,
         paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
       }}
       refreshControl={

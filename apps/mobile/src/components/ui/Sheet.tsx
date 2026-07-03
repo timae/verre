@@ -11,7 +11,7 @@ import { useTheme } from '@/theme';
 //
 // Above the tab bar: the sheet renders IN-SCREEN (gorhom v5 hosts it in its own
 // BottomSheetHostingContainer inside the per-screen BottomSheetModalProvider).
-// To sit above the OS tab bar we HIDE the NativeTabs bar while a sheet is open
+// To sit above the tab bar we HIDE the pill bar while a sheet is open
 // (lib/sheetVisibility.ts → (tabs)/_layout.tsx `hidden`), rather than a
 // react-native-screens FullWindowOverlay — the overlay re-hosts the sheet in a
 // full-window native context whose height competes with the in-screen host

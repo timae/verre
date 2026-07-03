@@ -6,13 +6,16 @@ import { useTheme } from '@/theme';
 // stroke icons at the design's per-icon stroke widths, currentColor → color.
 type Seg =
   | { d: string; sw?: number; fill?: boolean; cap?: boolean; join?: boolean }
-  | { cx: number; cy: number; r: number; sw?: number; fill?: boolean };
+  | { cx: number; cy: number; r: number; sw?: number; fill?: boolean; dash?: string };
 
 const ICONS: Record<string, Seg[]> = {
   glass: [
     { d: 'M7 3h10l-1 7a4 4 0 0 1-8 0L7 3Z', sw: 1.5, join: true },
     { d: 'M12 14v6M9 20h6', sw: 1.5, cap: true },
   ],
+  home: [{ d: 'M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5', sw: 1.5, cap: true, join: true }],
+  // dashed placeholder circle — the "Soon" tab glyph (design i-ph)
+  soon: [{ cx: 12, cy: 12, r: 7.5, sw: 1.5, dash: '2.5 3' }],
   clock: [
     { cx: 12, cy: 12, r: 8.5, sw: 1.5 },
     { d: 'M12 7.5V12l3 2', sw: 1.5, cap: true, join: true },
@@ -107,7 +110,7 @@ export function Icon({ name, size = 18, color }: { name: IconName; size?: number
           s.fill ? (
             <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill={c} />
           ) : (
-            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} />
+            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} strokeDasharray={s.dash} />
           )
         ) : (
           <Path

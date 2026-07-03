@@ -144,12 +144,14 @@ export function usePhoneTokens() {
 // break the control: score numerals, invite/join codes, compact badges/counters,
 // constrained carousel labels, countdown cells, and numeric picker fields.
 
-// Extra bottom padding for scroll content above the native tab bar. The
-// react-native-screens tab host auto-insets content for the bar itself
-// (disableAutomaticContentInsets defaults off), so this is breathing room,
-// not bar clearance — verify on device and tune here if content still runs
-// under the translucent bar.
-export const TAB_BAR_CLEARANCE = 16;
+// Bottom padding for scroll content above the floating pill tab bar
+// (PillTabBar, ADR-0006). The pill is an absolute overlay — nothing insets
+// content for it — so this is REAL clearance now (it was 16px breathing room
+// in the NativeTabs era, when the RNS tab host auto-inset for the bar):
+// bar ≈ 60 (icon 24 + gap 3 + label 13 + 2×2 item pad + 2×8 bar pad)
+// + 14 bottom margin + ~24 breathing. Consumers add their own insets.bottom
+// (`insets.bottom + TAB_BAR_CLEARANCE`), matching the bar's own offset.
+export const TAB_BAR_CLEARANCE = 96;
 
 // Horizontal screen gutter. 22 nearly everywhere; the impression detail (02e)
 // deliberately uses 20 (a per-screen override — pass it locally, don't change

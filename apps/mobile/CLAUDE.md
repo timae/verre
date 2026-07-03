@@ -120,15 +120,17 @@ per-element on mixed screens; ask when unsure):
   explicit and flagged, never silent simplifications. In-flow screens use the
   shared `VBar` (the design's variant-B bar), not the native stack header.
 
-Consequence for this app: the bottom nav IS `NativeTabs`
-(`expo-router/unstable-native-tabs`, swapped in milestone 2 — PillTabBar is
-gone). Tint-only knobs from theme tokens: `tintColor`=accent,
-`backgroundColor`=surface, label/icon colors; SF Symbols for icons (OS
-iconography is part of the native-chrome ruling). The undecided 4th slot is a
-tappable "Soon" tab (`(tabs)/soon.tsx`) until explore-vs-notifications is
-decided. `TAB_BAR_CLEARANCE` (now in `src/lib/layout.ts`) is breathing room
-only — the react-native-screens tab host auto-insets content. Sheets, menus,
-alerts, pickers: reach for the native primitive first when those screens land.
+Consequence for this app: the bottom nav is the **brand `PillTabBar`**
+(`components/PillTabBar.tsx` on `expo-router/js-tabs` — **ADR-0006**, which
+supersedes ONLY the bottom-nav slice of this ruling: the iOS-26 NativeTabs bar
+scrambled in use — label truncation + misalignment after stack returns, themed
+colors dropped — all open upstream bugs, see the ADR). The undecided 4th slot
+is a tappable "Soon" tab (`(tabs)/soon.tsx`) until explore-vs-notifications is
+decided. ⚠️ `TAB_BAR_CLEARANCE` (`src/lib/layout.ts`) is REAL clearance now
+(96): the pill is an absolute overlay, nothing auto-insets for it — every
+scrolling tab screen pads `insets.bottom + TAB_BAR_CLEARANCE`. Sheets, menus,
+alerts, pickers: still reach for the native primitive first — the ruling
+stands everywhere but the bottom nav.
 
 ## Component catalog + reuse rule (READ BEFORE BUILDING ANY UI)
 
@@ -176,6 +178,7 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
 - **Form widgets + image pipeline**: `momentForm.tsx` — `DateField`, `NotesField`, `fitCover`/`pickCover`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ wine images cap LOWER than covers — see add-impression notes).
 - **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens.
+- **Bottom nav**: `PillTabBar` (`PillTabBar.tsx`) — the floating-pill tab bar (`.tabbar-float`, ADR-0006) with the drag-lens (hold ≈180ms → a real Liquid Glass lens rides the bar; release commits; landing on the current tab is NOT input). Rendered via the tabs layout's `tabBar` prop; absolute overlay: content clears it with `insets.bottom + TAB_BAR_CLEARANCE`. ⚠️ The glass layering in that file is LOAD-BEARING physics learned over a day of device checks — read the in-file header + ADR-0006 and re-run the dev-gallery GLASS LABS (`/you/dev-gallery`) before touching any glass property. Don't add per-screen nav bars.
 - **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
 - **Thumb**: `ui/Thumb.tsx` — square cover/wine thumbnail with the glass-glyph placeholder; props `uri`, `size`, `radius`. ALL cover/wine thumbs (wrap + overlay for the line-up hidden-from-guests badge).
 - **Sheets (domain)**: `PeopleSheet`, `InviteSheet` (`moments/`).
@@ -234,10 +237,10 @@ reference for the app; the app's design lives here + in `docs/design/`.)
   hierarchy, and a flattened dead-end never exists for the finder to hit.
   Applies to any future edge-to-edge screen (feed hero cards). The per-tab
   `disableAutomaticContentInsets` would flip the whole tab — don't.
-- **Tab bar hiding**: `NativeTabs` host prop `hidden` (pathname-keyed in
-  `(tabs)/_layout.tsx`) — 02e hides the bar (footer action bar replaces the
-  nav per design). Do NOT use the per-trigger `hidden` (that's the
-  unnavigable-tab trap from M2).
+- **Tab bar hiding**: the tabs layout computes one `hidden` boolean (pathname
+  list + sheet/reveal signal + keyboard) and simply doesn't render the
+  `PillTabBar` — the pill is an absolute overlay, so hide/show never resizes
+  scenes. 02e hides the bar (footer action bar replaces the nav per design).
 - **Haptics** (`expo-haptics`): selection tick per 0.25 step while dragging,
   light impact on commit. No-ops in the Simulator — verify on device.
 - **New native modules (M3)**: `expo-haptics`, `expo-linear-gradient`
