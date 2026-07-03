@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -41,6 +41,7 @@ import {
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
+import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -74,10 +75,21 @@ export default function ImpressionDetail() {
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
   // Same query key as the line-up screen beneath this push — the cache is
-  // warm on entry and both screens share the 5s poll.
+  // warm on entry and both screens share the 5s poll. Same navigation-focus
+  // gate as useSessionPoll (this file still carries the pre-hook copy of the
+  // poll — migrate when next touched): paused while this screen isn't
+  // focused, resubscribe-and-refetch on return.
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
+    subscribed: screenFocused,
     refetchInterval: POLL_MS,
   });
   // Per-section graceful degradation (the line-up's lastRef merge): /state
@@ -829,7 +841,7 @@ function Hero({
         </VText>
         {wine.producer || wine.type ? (
           <VText style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('small'), color: 'rgba(255,255,255,0.82)', marginTop: 2 }}>
-            {[wine.producer, wine.type].filter(Boolean).join(' · ')}
+            {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
           </VText>
         ) : null}
       </View>
@@ -881,7 +893,7 @@ function NameBlock({
             : hostBlind
               ? 'Hidden from guests — reveal to show it'
               : 'Revealed when the host or co-host reveals it'
-          : [wine.producer, wine.type].filter(Boolean).join(' · ')}
+          : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
       </VText>
     </View>
   );

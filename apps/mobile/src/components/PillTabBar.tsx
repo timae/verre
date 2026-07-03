@@ -12,7 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Reanimated, { runOnJS, type SharedValue, useAnimatedProps, useAnimatedStyle, useSharedValue, withDelay, withSequence, withSpring, withTiming } from 'react-native-reanimated';
+import Reanimated, { ReduceMotion, runOnJS, type SharedValue, useAnimatedProps, useAnimatedStyle, useSharedValue, withDelay, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 import Svg, { Defs, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
@@ -214,7 +214,9 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
   // Motion: overshoot-CLAMPED springs — the OS lens settles dead, no wobble
   // (Simon called the overshoot twice; clamping keeps the spring's fast
   // decel without the bounce) + a short timed grow.
-  const SNAP = { damping: 26, stiffness: 340, overshootClamping: true };
+  // reduceMotion: System — the OS setting turns snaps/grows into jumps
+  // (codex: no reduced-motion gate existed).
+  const SNAP = { damping: 26, stiffness: 340, overshootClamping: true, reduceMotion: ReduceMotion.System };
   // Rest placement. barW gate is LOAD-BEARING (reviewer F3): itemW is a
   // constant now, and pre-measure the clamps invert — the lens would spring
   // in from off-bar on EVERY remount (and the bar remounts for every
@@ -250,7 +252,10 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
     setTapFly(true);
     if (tapFlyTimer.current) clearTimeout(tapFlyTimer.current);
     tapFlyTimer.current = setTimeout(() => setTapFly(false), 500);
-    lensOn.value = withSequence(withTiming(1, { duration: 150 }), withDelay(80, withTiming(0, { duration: 200 })));
+    lensOn.value = withSequence(
+      withTiming(1, { duration: 150, reduceMotion: ReduceMotion.System }),
+      withDelay(80, withTiming(0, { duration: 200, reduceMotion: ReduceMotion.System }), ReduceMotion.System),
+    );
   };
   const held = hoverJS !== null || tapFly;
   // ⚠️ Drag guard for the item Pressables: pan activation SHOULD cancel the
@@ -296,7 +301,7 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
     .onStart((e) => {
       // e.x is bar-space (the gesture view is the full padded row).
       started.value = 1;
-      lensOn.value = withTiming(1, { duration: 160 });
+      lensOn.value = withTiming(1, { duration: 160, reduceMotion: ReduceMotion.System });
       const h = Math.min(slots.length - 1, Math.max(0, Math.floor((e.x - PAD_SIDE) / itemW)));
       hovered.value = h;
       lensCX.value = withSpring(heldCenter(e.x), SNAP);
@@ -318,7 +323,7 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
       // to wherever the finger happened to hover (reviewer catch).
       if (!success) return;
       started.value = 0;
-      lensOn.value = withTiming(0, { duration: 160 });
+      lensOn.value = withTiming(0, { duration: 160, reduceMotion: ReduceMotion.System });
       lensCX.value = withSpring(restCenter(hovered.value), SNAP);
       runOnJS(commit)(hovered.value);
     })
@@ -331,7 +336,7 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
       if (!success && started.value === 1) {
         started.value = 0;
         // Cancelled (system interruption): retreat to the active tab.
-        lensOn.value = withTiming(0, { duration: 160 });
+        lensOn.value = withTiming(0, { duration: 160, reduceMotion: ReduceMotion.System });
         lensCX.value = withSpring(restCenter(activeSlot), SNAP);
         runOnJS(cancelHover)();
       }

@@ -18,8 +18,26 @@ import { contrastRatio } from '@/lib/contrast';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
-import { Host, HStack } from '@expo/ui/swift-ui';
-import { frame as swFrame, glassEffect } from '@expo/ui/swift-ui/modifiers';
+// Dev-only modules behind __DEV__ so Metro's constant folding + DCE strips
+// them from production bundles (codex: static imports kept lab-only code in
+// the production route module even though the screen redirects).
+let SwiftGlass: {
+  Host: typeof import('@expo/ui/swift-ui').Host;
+  HStack: typeof import('@expo/ui/swift-ui').HStack;
+  frame: typeof import('@expo/ui/swift-ui/modifiers').frame;
+  glassEffect: typeof import('@expo/ui/swift-ui/modifiers').glassEffect;
+} | null = null;
+if (__DEV__) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ui = require('@expo/ui/swift-ui') as typeof import('@expo/ui/swift-ui');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mods = require('@expo/ui/swift-ui/modifiers') as typeof import('@expo/ui/swift-ui/modifiers');
+    SwiftGlass = { Host: ui.Host, HStack: ui.HStack, frame: mods.frame, glassEffect: mods.glassEffect };
+  } catch {
+    SwiftGlass = null;
+  }
+}
 
 // ── Glass lab (PillTabBar lens forensics) ───────────────────────────────────
 // Apple's Files app renders the FULL lens optic (clear center, chromatic rim,
@@ -29,15 +47,17 @@ import { frame as swFrame, glassEffect } from '@expo/ui/swift-ui/modifiers';
 // section and compare against Files' drag lens.
 let LabGlass: typeof import('expo-glass-effect').GlassView | null = null;
 let LabGlassBox: typeof import('expo-glass-effect').GlassContainer | null = null;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const g = require('expo-glass-effect') as typeof import('expo-glass-effect');
-  if (g.isGlassEffectAPIAvailable() && g.isLiquidGlassAvailable()) {
-    LabGlass = g.GlassView;
-    LabGlassBox = g.GlassContainer;
+if (__DEV__) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const g = require('expo-glass-effect') as typeof import('expo-glass-effect');
+    if (g.isGlassEffectAPIAvailable() && g.isLiquidGlassAvailable()) {
+      LabGlass = g.GlassView;
+      LabGlassBox = g.GlassContainer;
+    }
+  } catch {
+    LabGlass = null;
   }
-} catch {
-  LabGlass = null;
 }
 const LAB_W = 150;
 const LAB_H = 64;
@@ -95,20 +115,24 @@ function GlassLab() {
             </LabCase>
           </>
         ) : null}
-        <LabCase label="5 SwiftUI regular + interactive">
-          <Host style={{ flex: 1 }}>
-            <HStack modifiers={[swFrame({ width: LAB_W, height: LAB_H }), glassEffect({ glass: { variant: 'regular', interactive: true }, shape: 'capsule' })]}>
-              {null}
-            </HStack>
-          </Host>
-        </LabCase>
-        <LabCase label="6 SwiftUI clear + interactive">
-          <Host style={{ flex: 1 }}>
-            <HStack modifiers={[swFrame({ width: LAB_W, height: LAB_H }), glassEffect({ glass: { variant: 'clear', interactive: true }, shape: 'capsule' })]}>
-              {null}
-            </HStack>
-          </Host>
-        </LabCase>
+        {SwiftGlass ? (
+          <LabCase label="5 SwiftUI regular + interactive">
+            <SwiftGlass.Host style={{ flex: 1 }}>
+              <SwiftGlass.HStack modifiers={[SwiftGlass.frame({ width: LAB_W, height: LAB_H }), SwiftGlass.glassEffect({ glass: { variant: 'regular', interactive: true }, shape: 'capsule' })]}>
+                {null}
+              </SwiftGlass.HStack>
+            </SwiftGlass.Host>
+          </LabCase>
+        ) : null}
+        {SwiftGlass ? (
+          <LabCase label="6 SwiftUI clear + interactive">
+            <SwiftGlass.Host style={{ flex: 1 }}>
+              <SwiftGlass.HStack modifiers={[SwiftGlass.frame({ width: LAB_W, height: LAB_H }), SwiftGlass.glassEffect({ glass: { variant: 'clear', interactive: true }, shape: 'capsule' })]}>
+                {null}
+              </SwiftGlass.HStack>
+            </SwiftGlass.Host>
+          </LabCase>
+        ) : null}
       </View>
       <Button title={mounted ? 'Unmount case 4' : 'Mount case 4 (post-attach, like the held lens)'} size="sm" variant="secondary" onPress={() => setMounted((m) => !m)} />
     </View>

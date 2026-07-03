@@ -207,6 +207,9 @@ export function PeopleRail({
         accessibilityRole="button"
         accessibilityLabel="Choose people"
         onPress={onPick}
+        // 34pt chips → 44pt targets via vertical slop (codex; horizontal slop
+        // would overlap the adjacent chips).
+        hitSlop={{ top: 5, bottom: 5 }}
         style={({ pressed }) => ({ ...chipBase, paddingHorizontal: 9, gap: 3, opacity: pressed ? 0.6 : 1 })}
       >
         <Icon name="user" size={15} color={filtered ? theme.accent : theme.inkSoft} />
@@ -218,6 +221,7 @@ export function PeopleRail({
             accessibilityRole="button"
             accessibilityState={{ selected: allOn }}
             accessibilityLabel={allOn ? 'Deselect everyone' : `Select all ${people.length} people`}
+            hitSlop={{ top: 5, bottom: 5 }}
             onPress={onToggleAll}
             style={({ pressed }) => ({
               ...chipBase,
@@ -238,6 +242,7 @@ export function PeopleRail({
                 accessibilityRole="button"
                 accessibilityState={{ selected: on }}
                 accessibilityLabel={`${on ? 'Hide' : 'Show'} ${p.displayName} in the comparison`}
+                hitSlop={{ top: 5, bottom: 5 }}
                 onPress={() => onToggle(p.id)}
                 style={({ pressed }) => ({
                   ...chipBase,
@@ -334,6 +339,7 @@ export function ComparePickerSheet({
       accessibilityRole="button"
       accessibilityState={{ selected: on }}
       onPress={onPress}
+      hitSlop={{ top: 6, bottom: 6 }}
       style={({ pressed }) => ({
         height: 32, paddingHorizontal: 13, borderRadius: 999, borderWidth: 1,
         borderColor: on ? theme.accentLine : theme.rule,
@@ -368,6 +374,7 @@ export function ComparePickerSheet({
           <Pressable
             accessibilityRole="button"
             onPress={onClose}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             style={({ pressed }) => ({ height: 32, paddingHorizontal: 14, borderRadius: 999, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.7 : 1 })}
           >
             <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: theme.accentInk }}>Done</VText>
@@ -529,6 +536,17 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
   const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set());
+  // Prune line-toggles for raters who left this card's set (rail deselect,
+  // kick, poll churn) — a stale id would keep someone's line hidden after
+  // they're re-selected (codex repro: hide → deselect → reselect).
+  useEffect(() => {
+    setHiddenLines((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(item.raters.map((r) => r.id));
+      const pruned = new Set([...prev].filter((id) => ids.has(id)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [item]);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const agg = useMemo(
@@ -1044,6 +1062,8 @@ function SheetSearchField({ value, onChangeText, placeholder }: { value: string;
       <View style={{ flex: 1 }}>
         <TextField
           placeholder={placeholder}
+          // Placeholder stops being the accessible name once text is entered.
+          accessibilityLabel={placeholder}
           value={value}
           onChangeText={onChangeText}
           autoCorrect={false}
@@ -1116,6 +1136,7 @@ function ShowAllSheet({
             // Announce the ACTION the tap performs, not the current state —
             // high-first is active, so the button offers "lowest first".
             accessibilityLabel={`Sort ${dir === 'high' ? 'lowest' : 'highest'} first`}
+            hitSlop={4}
             onPress={() => setDir((d) => (d === 'high' ? 'low' : 'high'))}
             style={({ pressed }) => ({
               width: 36, height: 36, borderRadius: 999, borderWidth: 1,

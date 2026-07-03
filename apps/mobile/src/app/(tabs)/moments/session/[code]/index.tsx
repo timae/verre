@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, Easing as ReEasing, interpolate, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 
 const MorphPath = Reanimated.createAnimatedComponent(Path);
@@ -38,7 +38,7 @@ import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
 import { DATE_LOCALE } from '@/lib/locale';
-import { sessionWhen } from '@/lib/momentFormat';
+import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
 import { popRevealMode, pushRevealMode } from '@/lib/sheetVisibility';
@@ -99,8 +99,10 @@ const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + cont
 // not just tab swaps — accepted trade-off (Simon wants the push): on a screen
 // pop the ghost plays inside the departing screen (invisible); the rare
 // fatal/lock swaps get a stray slide-out that reads as content leaving.
-const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3);
-const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3);
+// ReduceMotion.System: the OS accessibility setting collapses the slide to
+// an instant swap (codex — no reduced-motion gate existed in the app).
+const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
+const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
 
 // Renders the reveal strip for either layout (null when not blind). Pulls the
 // matching RevealStrip variant from the bundle.
@@ -883,6 +885,8 @@ function CoverHeroLineup({
         {!lock ? (
           <View
             style={{ marginTop: -radius.xl }}
+            accessibilityElementsHidden={tabsStuck}
+            importantForAccessibility={tabsStuck ? 'no-hide-descendants' : 'auto'}
             onLayout={(e) => {
               const { y, height } = e.nativeEvent.layout;
               tabsTop.value = y;
@@ -911,6 +915,8 @@ function CoverHeroLineup({
             position + flow spacer. Direct scroll child → layout.y is content-Y. */}
         {Strip ? (
           <View
+            accessibilityElementsHidden={stripStuck}
+            importantForAccessibility={stripStuck ? 'no-hide-descendants' : 'auto'}
             onLayout={(e) => {
               const y = e.nativeEvent.layout.y;
               stripTop.value = y;
@@ -966,6 +972,11 @@ function CoverHeroLineup({
       {!lock ? (
         <Reanimated.View
           pointerEvents={tabsStuck ? 'auto' : 'none'}
+          // Exactly ONE copy in the accessibility tree at a time (codex): the
+          // opacity/pointerEvents gate hides the duplicate visually and from
+          // touch, but VoiceOver/TalkBack still walked both.
+          accessibilityElementsHidden={!tabsStuck}
+          importantForAccessibility={tabsStuck ? 'auto' : 'no-hide-descendants'}
           style={[tabsOverlayStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7, opacity: tabsStuck ? 1 : 0 }]}
         >
           {Tabs}
@@ -974,6 +985,8 @@ function CoverHeroLineup({
       {Strip ? (
         <Reanimated.View
           pointerEvents={stripStuck ? 'auto' : 'none'}
+          accessibilityElementsHidden={!stripStuck}
+          importantForAccessibility={stripStuck ? 'auto' : 'no-hide-descendants'}
           style={[stripOverlayStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7, opacity: stripStuck ? 1 : 0 }]}
         >
           {Strip}
@@ -1707,7 +1720,7 @@ function LuRow({
             ) : null}
             {!hostSeesHidden && (wine.grape || wine.type) ? (
               <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
-                {wine.grape || wine.type}
+                {wine.grape || wineTypeLabel(wine.type)}
               </VText>
             ) : null}
           </>
@@ -1824,6 +1837,7 @@ function CollapsingAdd({ show, reach = 0, progress, onSize, children }: { show: 
     anim.value = withTiming(show ? 1 : 0, {
       duration: motion.dur3,
       easing: ReEasing.bezier(...(show ? motion.easeOut : motion.easeIn)),
+      reduceMotion: ReduceMotion.System,
     });
   }, [show, anim]);
   const style = useAnimatedStyle(() =>

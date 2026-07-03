@@ -143,10 +143,27 @@ export function useSessionPoll(code: string): SessionPoll {
     return () => { cancelled = true; };
   }, [fatal, code]);
 
+  // Navigation-focus gate (Simon's call): the 5s poll pauses while the
+  // consuming screen is NOT focused — another tab over a mounted session
+  // screen was silently polling forever (js-tabs keeps visited scenes
+  // mounted; app-background pausing is separate, via focusManager).
+  // `subscribed:false` drops the observer (no interval, no refetches) while
+  // the cached data stays readable; refocus resubscribes and immediately
+  // refetches stale data, so returning shows fresh state after one beat of
+  // the last-known view (the lastRef merge keeps the UI painted meanwhile).
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
+
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
     enabled: visited && !fatal,
+    subscribed: screenFocused,
     refetchInterval: SESSION_POLL_MS,
     retry: (failureCount, error) => !isFatalSessionError(error) && failureCount < 1,
   });
