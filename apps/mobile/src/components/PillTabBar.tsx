@@ -127,6 +127,18 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
   const [barW, setBarW] = useState(0);
   const capsule = barH > 0 ? barH / 2 : 31; // ≈ the bar's natural half-height pre-measure
   const mode: 'dark' | 'light' = theme.scheme === 'dark' ? 'dark' : 'light';
+  // Lens counter-tint carries the THEME'S temperature: pure black left the
+  // system glass's cool cast visible, which read as a BLUE hue against warm
+  // themes (Apricot worst — Simon's all-themes screenshot pass). 35% of the
+  // theme bg's hue blended into black, at the per-scheme alpha. (mix() emits
+  // rgb() which alpha() can't parse — hence the local blend.)
+  const lensTint = (() => {
+    const m = /^#([0-9a-f]{6})$/i.exec(theme.bg.trim());
+    if (!m) return alpha('#000000', LENS_TINT[mode]);
+    const n = parseInt(m[1], 16);
+    const ch = (shift: number) => Math.round(((n >> shift) & 255) * 0.35);
+    return `rgba(${ch(16)},${ch(8)},${ch(0)},${LENS_TINT[mode]})`;
+  })();
 
   const slots = SLOTS.filter((s) => state.routes.some((r) => r.name === s.name));
   // Apple's floating bar widens with the device (Simon's 15 Pro Max showed
@@ -487,7 +499,7 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
         <GlassSkin
           glassEffectStyle="clear"
           isInteractive
-          tintColor={alpha('#000000', LENS_TINT[mode])}
+          tintColor={lensTint}
           style={{ flex: 1, borderRadius: heldH / 2 }}
         />
         {/* The center patch (see CENTER_ALPHA note) — above the glass, below
