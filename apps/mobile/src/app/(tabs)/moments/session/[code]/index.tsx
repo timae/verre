@@ -5,7 +5,10 @@ import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, Easing as ReEasing, interpolate, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import Svg, { Path } from 'react-native-svg';
+
+const MorphPath = Reanimated.createAnimatedComponent(Path);
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
@@ -1002,6 +1005,15 @@ function HeroTopBar({
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const moreRef = useRef<View>(null);
+  // Add ⇄ ⋯ morph: pill fill + circle fill are ONE SVG path (capsule ∪
+  // circle, single GLASS_FILL) — the union paints uniformly by definition,
+  // so the intersection can't double into a dark crescent (two stacked
+  // translucent fills always doubled it; a uniform counter-dim on the circle
+  // just produced a two-tone circle — both device-rejected). The morph is
+  // literally a blob absorption. `morph` is driven by CollapsingAdd (1 =
+  // resting, 0 = merged); pill size arrives via onSize.
+  const morph = useSharedValue(showAdd ? 1 : 0);
+  const [pillSize, setPillSize] = useState<{ w: number; h: number } | null>(null);
   const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
   useEffect(() => {
     Animated.timing(anim, {
@@ -1055,23 +1067,37 @@ function HeroTopBar({
           {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
               + glyph once the bar goes solid (label drop mirrors the Crave
               button). Host/cohost/provider only; morphs into the ⋯ on Compare. */}
-          {canAdd ? (
-            // reach = the 6px gap + half the ⋯ circle: the pill slides under
-            // the ⋯ and disappears at its center (see CollapsingAdd).
-            <CollapsingAdd show={showAdd} reach={6 + controlSize / 2}>
-              <LineupAddButton onPress={onAdd} collapsed={collapsed} glass />
-            </CollapsingAdd>
-          ) : null}
-          <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Session menu"
-              hitSlop={8}
-              onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
-              style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
-            >
-              <Icon name="more" size={iconSize} color={iconColor} />
-            </Pressable>
+          <View collapsable={false} style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {/* THE UNION FILL — one path for pill capsule + ⋯ circle (see
+                `morph` above). Glass state only: the collapsed bar's controls
+                are fill-less (ADR-0003), and without Add the ⋯ keeps its own
+                static circle fill below. */}
+            {!collapsed && canAdd && pillSize ? (
+              <MorphUnionFill morph={morph} pillW={pillSize.w} pillH={pillSize.h} circle={controlSize} reach={6 + controlSize / 2} />
+            ) : null}
+            {canAdd ? (
+              // Center-vanish (Simon's spec) with the fill drawn by the union
+              // SVG — the pill itself carries only content (noBg).
+              <CollapsingAdd show={showAdd} reach={6 + controlSize / 2} progress={morph} onSize={(w, h) => setPillSize({ w, h })}>
+                <LineupAddButton onPress={onAdd} collapsed={collapsed} glass noBg={!collapsed} />
+              </CollapsingAdd>
+            ) : null}
+            <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Session menu"
+                hitSlop={8}
+                onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
+                style={({ pressed }) => ({
+                  ...circle,
+                  // With Add present the union SVG paints the circle's fill.
+                  backgroundColor: !collapsed && canAdd ? undefined : circle.backgroundColor,
+                  opacity: pressed ? 0.5 : 1,
+                })}
+              >
+                <Icon name="more" size={iconSize} color={iconColor} />
+              </Pressable>
+            </View>
           </View>
         </View>
       </View>
@@ -1775,17 +1801,20 @@ function LuPill({
 // left-anchored pill riding in it — moves right); opacity holds ~solid and
 // fades only at the tail (a linear fade on the fast-start ease read as "just
 // disappears" on device). Duration matches the pane push (dur3).
-// `reach` (hero bar): the clip window permanently overhangs the gap + half
-// the ⋯ circle (`width + reach`, `marginRight: -reach` keeps the layout
-// footprint unchanged — the window's right edge sits at the ⋯ CENTER for any
-// anim value), and the pill gets `reach` extra translateX travel, so it
-// slides UNDER the ⋯ (later sibling paints on top) and vanishes at the
-// circle's midpoint instead of dying on the backdrop before reaching it
-// (Simon's device call). reach=0 (plain bar) clips at the window edge as
-// before — that bar's borderless controls read fine without the overhang.
-function CollapsingAdd({ show, reach = 0, children }: { show: boolean; reach?: number; children: React.ReactNode }) {
+// `reach` (hero bar): the clip window overhangs the layout footprint by
+// `reach` (`width + reach`, `marginRight: -reach`), and the pill gets the
+// same extra translateX travel — so it slides toward the ⋯ and vanishes at
+// the window's right edge. The hero passes reach=6 (the gap): the vanish
+// line is the ⋯ circle's LEFT edge — clipping at its CENTER doubled the two
+// translucent glass fills wherever they overlapped, unfixable by fading.
+// reach=0 (plain bar) clips at the window edge; that bar's borderless
+// controls have no fill to stack.
+function CollapsingAdd({ show, reach = 0, progress, onSize, children }: { show: boolean; reach?: number; progress?: SharedValue<number>; onSize?: (w: number, h: number) => void; children: React.ReactNode }) {
   const [w, setW] = useState(0);
-  const anim = useSharedValue(show ? 1 : 0);
+  // Optionally driven through a caller-owned shared value so a sibling (the
+  // hero ⋯) can animate off the SAME morph progress (its counter-dim).
+  const internal = useSharedValue(show ? 1 : 0);
+  const anim = progress ?? internal;
   useEffect(() => {
     // Directional easing: the shared fast-start curve made the collapse read
     // much quicker than the expand (most travel + the tail fade landed in the
@@ -1802,6 +1831,9 @@ function CollapsingAdd({ show, reach = 0, children }: { show: boolean; reach?: n
       ? {
           width: w * anim.value + reach,
           marginRight: -reach,
+          // Solid slide, tail fade only: with the clip at the ⋯'s LEFT edge
+          // (zero fill overlap — see the call site) the pill can stay solid
+          // for the whole travel and just soften at the vanish point.
           opacity: interpolate(anim.value, [0, 0.25, 1], [0, 1, 1]),
         }
       : { opacity: anim.value, marginRight: 0, ...(show ? null : { width: 0 }) },
@@ -1818,8 +1850,55 @@ function CollapsingAdd({ show, reach = 0, children }: { show: boolean; reach?: n
       importantForAccessibility={show ? 'auto' : 'no-hide-descendants'}
       style={[{ overflow: 'hidden', flexDirection: 'row' }, style]}
     >
-      <Reanimated.View style={[{ flexShrink: 0 }, pill]} onLayout={(e) => setW(e.nativeEvent.layout.width)}>{children}</Reanimated.View>
+      <Reanimated.View
+        style={[{ flexShrink: 0 }, pill]}
+        onLayout={(e) => {
+          setW(e.nativeEvent.layout.width);
+          onSize?.(e.nativeEvent.layout.width, e.nativeEvent.layout.height);
+        }}
+      >
+        {children}
+      </Reanimated.View>
     </Reanimated.View>
+  );
+}
+
+// The Add ⇄ ⋯ morph's single fill: pill capsule ∪ ⋯ circle in ONE nonzero
+// path, so overlapping subpaths paint once (uniform — no dark crescent at
+// the intersection, structurally). Geometry mirrors CollapsingAdd's window
+// math in the cluster's coordinate space: visible capsule = [ (1-t)·reach,
+// min((1-t)·reach + w, w·t + reach) ]; circle at [w·t + 6, +C]. The capsule
+// subpath is dropped once its width falls under a hair's breadth.
+function MorphUnionFill({ morph, pillW, pillH, circle, reach }: { morph: SharedValue<number>; pillW: number; pillH: number; circle: number; reach: number }) {
+  // 2px bleed on every side: the control sizes are comfort-lerped
+  // (fractional), and shapes drawn flush to the canvas edge get their bottom
+  // arc shaved by sub-pixel rounding (Simon's "cut at the bottom" nit).
+  const PAD = 2;
+  const H = Math.max(pillH, circle) + PAD * 2;
+  const W = pillW + reach + 6 + circle + PAD * 2;
+  const props = useAnimatedProps(() => {
+    'worklet';
+    const t = morph.value;
+    const cx = PAD + pillW * t + 6 + circle / 2;
+    const cy = H / 2;
+    const r = circle / 2;
+    // ⚠️ Same winding as the capsule (both sweep=1 / clockwise): under the
+    // NONZERO fill rule, opposite windings cancel — the overlap would render
+    // as a HOLE instead of a union.
+    const circlePath = `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} Z`;
+    const x0 = PAD + (1 - t) * reach;
+    const x1 = PAD + Math.min((1 - t) * reach + pillW, pillW * t + reach);
+    const w = x1 - x0;
+    if (w < 1) return { d: circlePath };
+    const pr = Math.min(pillH / 2, w / 2);
+    const py = cy - pillH / 2;
+    const capsule = `M ${x0 + pr} ${py} L ${x1 - pr} ${py} A ${pr} ${pr} 0 0 1 ${x1 - pr} ${py + pillH} L ${x0 + pr} ${py + pillH} A ${pr} ${pr} 0 0 1 ${x0 + pr} ${py} Z`;
+    return { d: capsule + ' ' + circlePath };
+  });
+  return (
+    <Svg pointerEvents="none" width={W} height={H} style={{ position: 'absolute', left: -PAD, top: '50%', marginTop: -H / 2 }}>
+      <MorphPath animatedProps={props} fill={GLASS_FILL} fillRule="nonzero" />
+    </Svg>
   );
 }
 
@@ -1834,13 +1913,17 @@ function CollapsingAdd({ show, reach = 0, children }: { show: boolean; reach?: n
 //    scrim — the fill IS needed there for legibility over the photo), collapsing
 //    to a bare ink + glyph once the bar goes solid, matching the back/⋯ circles.
 function LineupAddButton({
-  onPress, collapsed, glass,
+  onPress, collapsed, glass, noBg,
 }: {
   onPress: () => void;
   // cover-hero only: drop the label, leave the + glyph (mirrors crave's titleShown)
   collapsed?: boolean;
   // cover-hero only: glass pill treatment over the photo (pre-collapse)
   glass?: boolean;
+  /** Hero morph: the capsule FILL is drawn by the union SVG behind (one shape
+   * with the ⋯ circle — two stacked translucent fills double their
+   * intersection as a dark crescent); this keeps only content + paddings. */
+  noBg?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -1861,7 +1944,7 @@ function LineupAddButton({
         // plain-bar and collapsed variants are borderless.
         paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
         borderRadius: onGlass ? phone.lerp(17, 19) : 0,
-        backgroundColor: onGlass ? GLASS_FILL : 'transparent',
+        backgroundColor: onGlass && !noBg ? GLASS_FILL : 'transparent',
         opacity: pressed ? 0.6 : 1,
       })}
     >
