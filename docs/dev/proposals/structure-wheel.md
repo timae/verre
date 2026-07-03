@@ -665,8 +665,9 @@ C1b range wheel. With 1–4 profiles the structure-givers sort to the TOP of the
 colours pair with polygons; a structure-only score-0 rater gets a row with an em-dash score so their
 polygon has a legend). Rater iteration is roster-ordered (the wire map follows Redis SCAN order —
 unsorted it would flicker between polls), and raters with neither a score nor structure (notes-only
-/ stale rows) are excluded from Compare entirely. Plus the ranked impression list + per-impression
-accordion.
+/ stale rows) are excluded from Compare entirely. Plus the impression list + per-impression
+accordion — **in LINE-UP order (Simon's ruling 2026-07-03, supersedes the score-ranked list): the
+two tabs read as one list.** Within a card, scored rater rows stay score-ranked.
 
 **People-selector = 02d·4 variant B, the AVATAR RAIL (DECIDED, Simon 2026-07-02)**, adapted to
 hide/unhide semantics: one screen-level hidden set drives every compare view — the rail chips, the

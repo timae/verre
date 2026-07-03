@@ -164,8 +164,9 @@ function buildItems(
       };
     })
     .filter((it) => it.raters.length > 0);
-  // Ranked by the selection's average, unrated-score items last, line-up order tiebreak.
-  return items.sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1) || a.index - b.index);
+  // Line-up order (Simon's ruling 2026-07-03, supersedes the score-ranked
+  // list): compare cards mirror the line-up so the two tabs read as one list.
+  return items.sort((a, b) => a.index - b.index);
 }
 
 // ── 02d·4 avatar rail (.cmp-selbar) — the ONLY select/deselect surface. The
