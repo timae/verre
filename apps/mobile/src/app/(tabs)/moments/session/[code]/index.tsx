@@ -754,10 +754,18 @@ function CoverHeroLineup({
     setStripTopJS(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+  // ⚠️ Plausibility floors in the stuck gates: a REAL tabs/strip rest
+  // position is always far below its pin line (the hero photo alone puts it
+  // hundreds of points down), so a measurement AT or ABOVE the floor is
+  // garbage from a transient first-frame geometry — and once, on re-entry,
+  // such a value stranded the pinned strip overlay over the STATUS BAR at
+  // scroll 0 (device screenshot 2026-07-03; self-healed on remount).
+  // Requiring top > floor makes that state unreachable while changing
+  // nothing for legitimate measurements.
   useEffect(() => {
     const y = lastYRef.current;
-    setTabsStuck(tabsTopJS > 0 && y >= tabsTopJS - PIN_Y);
-    setStripStuck(stripTopJS > 0 && y >= stripTopJS - (PIN_Y + tabsHJS));
+    setTabsStuck(tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y);
+    setStripStuck(stripTopJS > PIN_Y + tabsHJS && y >= stripTopJS - (PIN_Y + tabsHJS));
   }, [tab, tabsTopJS, tabsHJS, stripTopJS, PIN_Y]);
 
   const onScrollJS = (y: number) => {
@@ -771,10 +779,10 @@ function CoverHeroLineup({
     }
     // Each stuck flag flips at the same inequality its overlay clamps on, so the
     // opacity swap happens exactly where inline + overlay coincide (no jump).
-    const ts = tabsTopJS > 0 && y >= tabsTopJS - PIN_Y;
+    const ts = tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y;
     setTabsStuck((prev) => (prev === ts ? prev : ts));
     const stripFloor = PIN_Y + tabsHJS; // strip pins UNDER the pinned tabs
-    const ss = stripTopJS > 0 && y >= stripTopJS - stripFloor;
+    const ss = stripTopJS > stripFloor && y >= stripTopJS - stripFloor;
     setStripStuck((prev) => (prev === ss ? prev : ss));
     const p = y < -1;
     if (p !== pulledRef.current) {
