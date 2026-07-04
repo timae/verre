@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -15,7 +15,7 @@ import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover, SelectField } from '@/components/moments/momentForm';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
-import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
+import { ApiError, addWine, getSessionState, reorderWines, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { fuzzyIncludes } from '@/lib/search';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
@@ -43,6 +43,11 @@ type ImpressionFormProps = {
   mode?: 'add' | 'edit';
   wineId?: string;
   initialWine?: WireWine;
+  /** Edit mode: the wine's current 1-indexed line-up slot. */
+  initialPosition?: number;
+  /** Edit mode: the current line-up id order (feeds the reorder call when the
+   *  host moves the wine to a new slot). */
+  wineIds?: string[];
 };
 
 // 02b·add add-impression — a pushed full-screen form (FLAGGED DEVIATION from
@@ -102,6 +107,8 @@ export function ImpressionForm({
   mode = 'add',
   wineId,
   initialWine,
+  initialPosition,
+  wineIds,
 }: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -155,7 +162,9 @@ export function ImpressionForm({
   const processRef = useRef<TextInput>(null);
   const purchaseRef = useRef<TextInput>(null);
 
-  const maxPosition = wineCount + 1; // a new wine can land anywhere 1..count+1
+  // Add: a new wine can land anywhere 1..count+1 (the +1 = append). Edit: the
+  // wine already occupies a slot, so the range is the list itself.
+  const maxPosition = mode === 'edit' ? Math.max(1, wineCount) : wineCount + 1;
 
   const onPickPhoto = async () => {
     setPhotoError(null);
@@ -193,6 +202,24 @@ export function ImpressionForm({
           ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
           ...(photo === null && initialWine?.imageUrl ? { image: null } : {}),
         });
+        // Position change rides the existing host-gated reorder endpoint (the
+        // wine PATCH body has no position field). Its failure is SPLIT from
+        // the field save (codex P2: the outer catch read "couldn't save"
+        // while the details had already persisted): the form closes with the
+        // saved edits and the position miss is reported honestly on its own.
+        if (canPosition && position !== null && initialPosition && position !== initialPosition && wineIds) {
+          try {
+            const rest = wineIds.filter((id) => id !== wineId);
+            rest.splice(Math.min(Math.max(position - 1, 0), rest.length), 0, wineId);
+            await reorderWines(code, rest);
+          } catch (e) {
+            queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+            router.back();
+            const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+            Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply — the line-up may have changed. Try moving it again.");
+            return;
+          }
+        }
       } else {
         await addWine(code, {
           ...base,
@@ -229,9 +256,9 @@ export function ImpressionForm({
         <View style={{ flex: 1 }}>
           <VBar title={mode === 'edit' ? 'Edit impression' : 'Add impression'} />
         </View>
-        {mode === 'add' && canPosition && wineCount > 0 ? (
+        {canPosition && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
           <PositionPicker
-            value={position ?? maxPosition}
+            value={position ?? (mode === 'edit' ? initialPosition ?? maxPosition : maxPosition)}
             max={maxPosition}
             open={posOpen}
             onOpenChange={setPosOpen}

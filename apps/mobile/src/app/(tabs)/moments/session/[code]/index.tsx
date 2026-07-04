@@ -402,10 +402,15 @@ export default function SessionLineup() {
   // TRUE order on screen: an active sort or search disables it (denied hold =
   // warning haptic) — reordering a projection would silently move rows you
   // can't see between.
-  const canReorder = isHostViewer && !lock && luSort === 'lineup' && !luNarrowed && (wines?.length ?? 0) > 1;
+  // !revealBusy: runReveal (the shared optimistic-mutation runner) silently
+  // drops calls while one is in flight — a drop that lands during a busy
+  // window would freeze mid-handoff (codex P2). The boolean return below
+  // covers the race where busy flips between lift and drop.
+  const canReorder = isHostViewer && !lock && !revealBusy && luSort === 'lineup' && !luNarrowed && (wines?.length ?? 0) > 1;
   const reorderDenied = isHostViewer && !lock && (luSort !== 'lineup' || luNarrowed);
-  const onReorder = (orderedIds: string[]) =>
-    runReveal(
+  const onReorder = (orderedIds: string[]): boolean => {
+    if (revealBusy) return false; // refused — the drag resets itself
+    void runReveal(
       'Could not reorder',
       (ws) => {
         const byId = new Map(ws.map((w) => [w.id, w]));
@@ -417,6 +422,8 @@ export default function SessionLineup() {
       },
       () => reorderWines(code, orderedIds),
     );
+    return true;
+  };
   // No size threshold (Simon): the toolbar always renders on the line-up.
   const luToolbar: LuToolbarProps = {
     reveal,
@@ -752,7 +759,7 @@ function CoverHeroLineup({
   /** A search query is narrowing the rows (drives the empty copy). */
   luNarrowed: boolean;
   toolbar: LuToolbarProps;
-  reorder: { enabled: boolean; denied: boolean; deniedNote: string; onCommit: (orderedIds: string[]) => void; onDenied: () => void };
+  reorder: { enabled: boolean; denied: boolean; deniedNote: string; onCommit: (orderedIds: string[]) => boolean; onDenied: () => void };
   ratings: RatingsView | null;
   myIdentityId: string;
   canAdd: boolean;

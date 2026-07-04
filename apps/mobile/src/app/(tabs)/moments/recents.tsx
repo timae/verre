@@ -143,18 +143,18 @@ export default function AllMoments() {
       .sort((a, b) => (a.key === 'me' ? -1 : b.key === 'me' ? 1 : a.label.localeCompare(b.label)));
   }, [base]);
   const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, staleTime: 60_000 });
-  // Per-friend attendance count across the CURRENT list — shown as the row
-  // caption so "why does picking Anna empty the list" answers itself (a friend
-  // matches only when they were at the moment LOGGED IN; anon visits can't tie
-  // back to an account).
+  // Per-friend attendance count across the CURRENT list, shown as the row
+  // caption. Friends at NONE of the listed moments are dropped (codex P3 —
+  // a zero-match option can only empty the list; a friend matches only when
+  // they were at the moment LOGGED IN, anon visits can't tie to an account).
+  // The whole facet hides when nobody qualifies (peopleOptions.length === 0).
   const peopleOptions = useMemo(() => {
     const counts = new Map<string, number>();
     for (const r of base) for (const p of r.people ?? []) counts.set(p.id, (counts.get(p.id) ?? 0) + 1);
     return (friends.data ?? [])
-      .map((f) => {
-        const n = counts.get(`u:${f.id}`) ?? 0;
-        return { key: `u:${f.id}`, label: f.name, imageUrl: f.imageUrl, caption: `${n} ${n === 1 ? 'moment' : 'moments'}` };
-      })
+      .map((f) => ({ f, n: counts.get(`u:${f.id}`) ?? 0 }))
+      .filter(({ n }) => n > 0)
+      .map(({ f, n }) => ({ key: `u:${f.id}`, label: f.name, imageUrl: f.imageUrl, caption: `${n} ${n === 1 ? 'moment' : 'moments'}` }))
       .sort((a, b) => a.label.localeCompare(b.label));
   }, [friends.data, base]);
   // Friend identity keys for the host picker's Friends chip ("u:<id>" — the

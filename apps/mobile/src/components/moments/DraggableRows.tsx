@@ -66,7 +66,10 @@ type Props = {
   /** Popup copy for a denied hold, shown AT the held row. */
   deniedNote?: string;
   renderRow: (id: string, renderIndex: number) => React.ReactNode;
-  onCommit: (orderedIds: string[]) => void;
+  /** Returns whether the commit was ACCEPTED. A refusal (e.g. another
+   *  mutation in flight) means no re-render is coming — the rows reset
+   *  themselves instead of waiting frozen for a generation bump. */
+  onCommit: (orderedIds: string[]) => boolean;
   /** The hosting scroll container (auto-scroll target) + its live offset. */
   scrollRef: AnimatedRef<Reanimated.ScrollView>;
   scrollY: SharedValue<number>;
@@ -209,7 +212,7 @@ const DragRow = memo(function DragRow({
   absY: SharedValue<number>;
   dragging: SharedValue<boolean>;
   scrollY: SharedValue<number>;
-  onCommit: (orderedIds: string[]) => void;
+  onCommit: (orderedIds: string[]) => boolean;
   children: React.ReactNode;
 }) {
   // Denied-hold wiggle (per-row, horizontal) + the explainer popup shown AT
@@ -226,7 +229,17 @@ const DragRow = memo(function DragRow({
   };
 
   const commitMove = (from: number, to: number) => {
-    if (from !== to) onCommit(moved(ids, from, to));
+    const accepted = from !== to && onCommit(moved(ids, from, to));
+    if (!accepted) {
+      // No re-render coming (commit refused/no-op) — the frozen transforms
+      // would otherwise wait forever for a generation bump (codex P2).
+      runOnUI(() => {
+        'worklet';
+        activeIdx.value = -1;
+        target.value = -1;
+        dragTrans.value = 0;
+      })();
+    }
   };
 
   const pan = Gesture.Pan()

@@ -63,10 +63,14 @@ export default function EditImpression() {
     <ImpressionForm
       code={code}
       wineCount={wines?.length ?? 0}
-      canPosition={false}
+      // Position moves ride the host-gated reorder endpoint — hosts/cohosts
+      // only (a provider editing their own wine gets no picker, same as add).
+      canPosition={isHostViewer}
       mode="edit"
       wineId={wineId}
       initialWine={wine}
+      initialPosition={(wines?.findIndex((w) => w.id === wineId) ?? -1) + 1 || undefined}
+      wineIds={wines?.map((w) => w.id)}
     />
   );
 }
