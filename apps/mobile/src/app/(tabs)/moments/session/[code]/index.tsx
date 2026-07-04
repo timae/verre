@@ -12,14 +12,14 @@ const MorphPath = Reanimated.createAnimatedComponent(Path);
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
-import { Icon, type IconName } from '@/components/ui/Icon';
+import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import { alpha } from '@/theme/color';
 import { StarScore } from '@/components/scoring/StarScore';
-import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
@@ -35,13 +35,13 @@ import {
 } from '@/lib/api/sessions';
 import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
+import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
-import { popRevealMode, pushRevealMode } from '@/lib/sheetVisibility';
 import { motion, radius, useTheme } from '@/theme';
 
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
@@ -54,33 +54,38 @@ import { motion, radius, useTheme } from '@/theme';
 
 type MetaView = SessionState['meta'];
 
-// Blind reveal/hide surface, bundled so the plain + cover-hero layouts each
-// take one prop. `stripVariant` null ⟺ not a blind session (no strip).
-type RevealProps = {
-  stripVariant: 'guest' | 'host-resting' | 'host-mode' | null;
-  revealMode: boolean;
-  revealBusy: boolean;
-  hostRevealUi: boolean;
-  total: number;
-  hiddenCount: number;
-  blindForEveryone: boolean;
-  onEnterMode: () => void;
-  onRevealOne: (wineId: string) => void;
-  onHideOne: (wineId: string) => void;
-  onRevealAll: () => void;
-  onHideAll: () => void;
-};
-
+// Blind reveal/hide surface (direct-manipulation redesign, Simon 2026-07-04 —
+// ADR-0007, supersedes the two-state reveal MODE): the photo IS the control.
+// Hidden → tap arms ("tap again to reveal", 2.5s auto-disarm), second tap
+// reveals; revealed → the corner eye hides instantly (the damage-control
+// direction stays fastest). Bulk actions + Blind-for-all live in the eye menu
+// on the toolbar line under the tabs. Bundled so both layouts take one prop.
 // FlatList cell union for the PLAIN (no-cover) layout: a leading sticky
-// reveal-strip sentinel, then wines. The sentinel + stickyHeaderIndices let the
-// strip flow under the ovc and pin on scroll (the plain layout's tabs are a
-// fixed View above the list). The cover-hero layout uses the Dynamic Overlay
-// pattern instead (no cell sentinels) — see CoverHeroLineup.
+// toolbar sentinel, then wines. The sentinel + stickyHeaderIndices let the
+// eye-menu toolbar flow under the ovc — right above the rows it controls —
+// and pin under the fixed tabs on scroll. The cover-hero layout uses the
+// Dynamic Overlay pattern instead (no cell sentinels) — see CoverHeroLineup.
 const STRIP_CELL = { __strip: true } as const;
 type LineupCell = typeof STRIP_CELL | WireWine;
 function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
   return (it as { __strip?: true }).__strip === true;
 }
+
+type RevealProps = {
+  hostRevealUi: boolean;
+  revealBusy: boolean;
+  total: number;
+  hiddenCount: number;
+  blindForEveryone: boolean;
+  bfaBusy: boolean;
+  /** Wine currently armed for reveal (first tap landed, awaiting confirm). */
+  armedId: string | null;
+  onThumbTap: (wineId: string) => void;
+  onHideOne: (wineId: string) => void;
+  onRevealAll: () => void;
+  onHideAll: () => void;
+  onToggleBlindForEveryone: (next: boolean) => void;
+};
 
 // Collapsed HeroTopBar's painted height = safe-area top + the control row +
 // 6pt bottom pad. No bottom rule to account for (the collapsed bar is a flat
@@ -103,24 +108,6 @@ const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + cont
 // an instant swap (codex — no reduced-motion gate existed in the app).
 const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
 const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
-
-// Renders the reveal strip for either layout (null when not blind). Pulls the
-// matching RevealStrip variant from the bundle.
-function RevealStripFor({ reveal }: { reveal: RevealProps }) {
-  if (!reveal.stripVariant) return null;
-  return (
-    <RevealStrip
-      variant={reveal.stripVariant}
-      total={reveal.total}
-      hiddenCount={reveal.hiddenCount}
-      blindForEveryone={reveal.blindForEveryone}
-      busy={reveal.revealBusy}
-      onEnterMode={reveal.onEnterMode}
-      onRevealAll={reveal.onRevealAll}
-      onHideAll={reveal.onHideAll}
-    />
-  );
-}
 
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
 // block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
@@ -156,7 +143,6 @@ export default function SessionLineup() {
   // the screen's initial mount (see swapIn).
   const tabSwapped = useRef(false);
   const selectTab = (t: SessionTab) => {
-    if (t === 'compare') setRevealMode(false);
     tabSwapped.current = true;
     setTab(t);
   };
@@ -231,22 +217,22 @@ export default function SessionLineup() {
   const hostRevealUi = isBlind && isHostViewer;
   const hiddenCount = hostRevealUi && wines ? wines.filter((w) => !w.revealedAt).length : 0;
 
-  // Reveal MODE — the host taps the resting strip's Reveal to enter a manage
-  // surface (sticky Hide all / Reveal all, per-row Reveal/Hide pills, a sticky
-  // Done footer). It's screen state, so it also drives the OS-tab-bar hide via
-  // the reveal-mode counter (the footer replaces the nav, design ruling).
-  const [revealMode, setRevealMode] = useState(false);
-  // Leaving the blind state (toggle off / session changes) must drop the mode
-  // so the footer + hidden tab bar can't strand. Also pop the override on
-  // unmount.
+  // Arm-to-reveal (ADR-0007): revealing leaks the identity to guests within a
+  // poll tick and can't be truly undone, so the FIRST tap on a hidden photo
+  // only ARMS it (accent state + "tap again" hint, auto-disarm after 2.5s);
+  // the second tap fires. Hiding has no such guard — it's the undo path and
+  // must stay the fastest tap in the room.
+  const [armedId, setArmedId] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarm = useCallback(() => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    setArmedId(null);
+  }, []);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
   useEffect(() => {
-    if (!hostRevealUi && revealMode) setRevealMode(false);
-  }, [hostRevealUi, revealMode]);
-  useEffect(() => {
-    if (!revealMode) return;
-    pushRevealMode();
-    return () => popRevealMode();
-  }, [revealMode]);
+    if (!hostRevealUi) disarm();
+  }, [hostRevealUi, disarm]);
 
   // Optimistic reveal/hide: stamp/clear revealedAt in the cached wines so the
   // row + strip respond immediately, fire the request, let the 5s poll
@@ -339,29 +325,30 @@ export default function SessionLineup() {
     router.push({ pathname: '/(tabs)/moments/session/[code]/impression/[wineId]', params: { code, wineId } });
   const openAdd = () => router.push({ pathname: '/(tabs)/moments/session/[code]/add', params: { code } });
 
-  // Everything the line-up body needs to render the blind reveal/hide surface,
-  // bundled so the two layouts (plain + cover-hero) take one prop. `strip` is
-  // null on a non-blind session (no strip at all).
-  const stripVariant: 'guest' | 'host-resting' | 'host-mode' | null = !isBlind
-    ? null
-    : !hostRevealUi
-      ? 'guest'
-      : revealMode
-        ? 'host-mode'
-        : 'host-resting';
+  // First tap arms; the second (while armed) fires the reveal.
+  const onThumbTap = (wineId: string) => {
+    if (armedId === wineId) {
+      disarm();
+      onRevealOne(wineId);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmedId(wineId);
+    armTimer.current = setTimeout(() => setArmedId(null), 2500);
+  };
   const reveal: RevealProps = {
-    stripVariant,
-    revealMode,
-    revealBusy,
     hostRevealUi,
+    revealBusy,
     total: wines?.length ?? 0,
     hiddenCount,
     blindForEveryone,
-    onEnterMode: () => setRevealMode(true),
-    onRevealOne,
+    bfaBusy,
+    armedId,
+    onThumbTap,
     onHideOne,
     onRevealAll,
     onHideAll,
+    onToggleBlindForEveryone: toggleBlindForEveryone,
   };
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
@@ -419,13 +406,6 @@ export default function SessionLineup() {
         <SessionMenu
           anchorTop={sessMenuTop}
           onClose={() => setSessMenuTop(null)}
-          // Blind-for-all is a host/cohost control that only appears when the
-          // session is ACTUALLY blind (design: the .sess-menu-mode row is absent
-          // otherwise). A press-to-activate field, not a switch.
-          showBlindForEveryone={isHostViewer && !!meta?.blind}
-          blindForEveryone={!!meta?.blindForEveryone}
-          bfaBusy={bfaBusy}
-          onToggleBlindForEveryone={toggleBlindForEveryone}
           onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
           onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
           onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
@@ -543,69 +523,56 @@ export default function SessionLineup() {
             </Reanimated.View>
           ) : (
           <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
-          {/* The reveal/hide strip is a STICKY list cell (design
-              .reveal-strip-sticky): it sits inline above the line-up — below the
-              ovc about block — and pins under the tabs once scrolled past
-              (sticky top:0). Implemented as data item 0 + stickyHeaderIndices so
-              the ovc (ListHeaderComponent) scrolls away while the strip pins. On
-              a non-blind session there's no strip cell and nothing sticks.
+          {/* The eye-menu toolbar is a STICKY list cell right above the rows
+              (Simon: close to the content it controls — the old strip's spot,
+              below the ovc): data item 0 + stickyHeaderIndices so the ovc
+              (ListHeaderComponent) scrolls away while the toolbar pins.
               ⚠️ stickyHeaderIndices is OFFSET BY +1 when a ListHeaderComponent
               exists (RN: stickyOffset = header ? 1 : 0) — so [1] sticks data
-              item 0 (the strip), NOT [0] (which would stick the ovc header). */}
+              item 0 (the toolbar), NOT [0] (which would stick the ovc). */}
           <FlatList<LineupCell>
             style={{ flex: 1 }}
-            data={reveal.stripVariant ? [STRIP_CELL, ...(wines ?? [])] : (wines ?? [])}
+            data={reveal.hostRevealUi ? [STRIP_CELL, ...(wines ?? [])] : (wines ?? [])}
             keyExtractor={(it) => (isStripCell(it) ? '__strip' : it.id)}
             ListHeaderComponent={ovc}
-            stickyHeaderIndices={reveal.stripVariant ? [1] : undefined}
+            stickyHeaderIndices={reveal.hostRevealUi ? [1] : undefined}
             // flexGrow:1 gives the empty state a flex slot; EmptyLineup freezes its
             // own height there so its centering doesn't jump when the tab bar hides.
-            // In reveal mode the OS tab bar is hidden and the Done footer takes its
-            // place — clear the footer (a bit more than the bar) instead.
-            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + (revealMode ? 96 : TAB_BAR_CLEARANCE) }}
-            // No separator below the strip cell — a sticky cell carries its
+            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+            // No separator below the toolbar cell — a sticky cell carries its
             // trailing separator while pinned, which would weld a hairline to
-            // the floating strip's bottom edge. The strip has its own spacing.
+            // the floating toolbar's bottom edge.
             ItemSeparatorComponent={({ leadingItem }: { leadingItem: LineupCell }) =>
               isStripCell(leadingItem) ? null : <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />
             }
             renderItem={({ item, index }) =>
               isStripCell(item) ? (
-                // Solid bg so rows scrolling under the pinned strip don't bleed
-                // through. Rows share the same content width (both inset by the
-                // contentContainer GUTTER), so nothing renders in the side
-                // bands — a content-width opaque fill is enough.
+                // Solid bg so rows scrolling under the pinned toolbar don't
+                // bleed through (content-width fill matches the rows' inset).
                 <View style={{ backgroundColor: theme.bg }}>
-                  <RevealStripFor reveal={reveal} />
+                  <RevealToolbar reveal={reveal} />
                 </View>
               ) : (
                 <LuRow
                   wine={item}
-                  // Offset by the leading strip cell so the displayed index is
-                  // the wine's true position, not its data-array slot.
-                  index={reveal.stripVariant ? index - 1 : index}
+                  // Offset by the leading toolbar cell so the displayed index
+                  // is the wine's true position, not its data-array slot.
+                  index={reveal.hostRevealUi ? index - 1 : index}
                   myIdentityId={myIdentityId}
                   ratings={ratings}
                   onPress={() => openImpression(item.id)}
-                  hostRevealUi={reveal.hostRevealUi}
-                  revealMode={revealMode}
-                  revealBusy={revealBusy}
-                  onReveal={reveal.onRevealOne}
-                  onHide={reveal.onHideOne}
+                  reveal={reveal}
                 />
               )
             }
-            // Footer: the empty state goes here when there are no wines but a
-            // strip cell keeps the list non-empty (blind session — ListEmpty
-            // wouldn't fire); otherwise the trailing .lu-add row (host/cohost/
-            // provider, hidden in reveal mode). ListEmptyComponent still covers
-            // the non-blind empty case (data is truly []).
+            // The sentinel keeps the list non-empty on a blind session, so
+            // ListEmpty wouldn't fire — the footer covers that case.
             ListFooterComponent={
               (wines?.length ?? 0) === 0
-                ? reveal.stripVariant
+                ? reveal.hostRevealUi
                   ? <EmptyLineup canAdd={canAdd} onAdd={openAdd} />
                   : null
-                : canAdd && !revealMode
+                : canAdd
                   ? <AddImpressionRow onPress={openAdd} />
                   : null
             }
@@ -615,9 +582,6 @@ export default function SessionLineup() {
           )}
         </>
       )}
-      {/* .vfoot-rev — sticky Done footer that exits reveal mode (the OS tab bar
-          is hidden while it's up). Sits above the list, below the hero bar. */}
-      {revealMode ? <RevealFooter onDone={() => setRevealMode(false)} /> : null}
       {/* .hero-topfix — floats over the hero: transparent with glass back+⋯
           while the photo title is visible, then a solid theme bar carrying the
           moment name once scrolled past the collapse point. Sits last so it
@@ -710,7 +674,7 @@ function CoverHeroLineup({
   const rows = wines ?? [];
   const onCompare = tab === 'compare';
   // Strip (like the rows + add affordances) is line-up furniture only.
-  const showStrip = !!reveal.stripVariant && !lock && !onCompare;
+  const showToolbar = reveal.hostRevealUi && !lock && !onCompare;
 
   // UI-thread scroll position for the overlay translates.
   const aref = useAnimatedRef<Reanimated.ScrollView>();
@@ -825,9 +789,9 @@ function CoverHeroLineup({
         {compareRail}
       </Reanimated.View>
     ) : null
-  ) : showStrip ? (
-    <Reanimated.View key="strip-reveal" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
-      <RevealStripFor reveal={reveal} />
+  ) : showToolbar ? (
+    <Reanimated.View key="strip-reveal-toolbar" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+      <RevealToolbar reveal={reveal} />
     </Reanimated.View>
   ) : null;
 
@@ -848,7 +812,7 @@ function CoverHeroLineup({
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (reveal.revealMode ? 96 : TAB_BAR_CLEARANCE) }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
       >
         {/* .hero-bleed-top: full-bleed photo at content-y 0 (bleeds under the
             status bar via the dead-end + never). Soft top corners while pulled. */}
@@ -925,8 +889,11 @@ function CoverHeroLineup({
         ) : onCompare ? null : (
           <Reanimated.View entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ paddingHorizontal: GUTTER }}>{ovc}</Reanimated.View>
         )}
-        {/* INLINE reveal strip — below the about block, above the rows. At-rest
-            position + flow spacer. Direct scroll child → layout.y is content-Y. */}
+        {/* INLINE toolbar/rail strip — right ABOVE the rows (below the about
+            block; Simon: the controls sit close to the content they act on):
+            line-up = the eye-menu toolbar, compare = the people/sort/search
+            rail. At-rest position + flow spacer; direct scroll child →
+            layout.y is content-Y. Pins under the pinned tabs via the overlay. */}
         {Strip ? (
           <View
             accessibilityElementsHidden={stripStuck}
@@ -960,16 +927,12 @@ function CoverHeroLineup({
                     myIdentityId={myIdentityId}
                     ratings={ratings}
                     onPress={() => onPressWine(item.id)}
-                    hostRevealUi={reveal.hostRevealUi}
-                    revealMode={reveal.revealMode}
-                    revealBusy={reveal.revealBusy}
-                    onReveal={reveal.onRevealOne}
-                    onHide={reveal.onHideOne}
+                    reveal={reveal}
                   />
                 </View>
               ))
             )}
-            {rows.length > 0 && canAdd && !reveal.revealMode ? (
+            {rows.length > 0 && canAdd ? (
               <View style={{ paddingHorizontal: GUTTER }}>
                 <AddImpressionRow onPress={onAdd} />
               </View>
@@ -1132,146 +1095,77 @@ function HeroTopBar({
   );
 }
 
-// .rs-btn — accent-filled pill in the reveal strip (Reveal / Reveal all / Hide
-// all). Always carries a leading eye/eye-off glyph.
-function RsButton({
-  icon, label, onPress, disabled,
-}: {
-  icon: IconName;
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
+// ── the eye menu (ADR-0007) — count + Reveal all / Hide all / Blind for all,
+// on the toolbar line under the tabs. The search field joins this row later.
+function RevealToolbar({ reveal }: { reveal: RevealProps }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const labelText = phone.text('small');
-  // .rs-btn[disabled]: surface-sunk fill + ink-soft text/glyph + 0.4 opacity
-  // (NOT a dimmed-gold pill) per the design.
-  const fg = disabled ? theme.inkSoft : theme.accentInk;
+  const { width: screenW } = useWindowDimensions();
+  const btnRef = useRef<View>(null);
+  const [anchor, setAnchor] = useState<{ top: number; bottom: number } | null>(null);
+  const [menuRight, setMenuRight] = useState(16);
+  // Auto-close shortly after a Blind-for-all flip (same beat the ⋯ menu had)
+  // so the row is seen going active before the menu leaves.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+  const openMenu = () => {
+    btnRef.current?.measureInWindow((x, y, w, h) => {
+      // AnchoredMenu is right-anchored; land the panel a panel-width right of
+      // the button's left edge so it unfolds from the trigger (the compare
+      // toolbar's sort-menu math).
+      setMenuRight(Math.max(12, screenW - x - 224));
+      setAnchor({ top: y, bottom: y + h });
+    });
+  };
+  const countLabel = reveal.blindForEveryone
+    ? (reveal.hiddenCount === 0 ? 'All revealed' : `${reveal.hiddenCount} of ${reveal.total} hidden from everyone`)
+    : (reveal.hiddenCount === 0 ? 'All revealed to guests' : `${reveal.hiddenCount} of ${reveal.total} hidden from guests`);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={4}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7),
-        paddingVertical: phone.lerp(7, 9), paddingHorizontal: phone.lerp(15, 18), borderRadius: radius.pill,
-        backgroundColor: disabled ? theme.surfaceSunk : theme.accent,
-        opacity: disabled ? 0.4 : pressed ? 0.8 : 1,
-      })}
-    >
-      <Icon name={icon} size={phone.size('smallActionIcon')} color={fg} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...labelText, color: fg }}>
-        {label}
-      </VText>
-    </Pressable>
-  );
-}
-
-// .reveal-strip — the blind line-up's host control strip + the taster's quiet
-// notice. Three shapes, all per vero-screens (tBlindHost / tReveal / tBlindAll
-// / tBlindViewer):
-//  - guest (non-host on a blind session): quiet "Blind tasting · host reveals".
-//  - host resting: "N of M hidden from guests" (or "Hidden from everyone" when
-//    blind-for-all; "All revealed…" when nothing is hidden) + a Reveal button
-//    that enters reveal mode. The Reveal button is ALWAYS present — even when
-//    all revealed — so Done never traps the host out of the controls.
-//  - host reveal mode: sticky count chip on the left, Hide all + Reveal all on
-//    the right (the per-row pills live on the rows themselves).
-function RevealStrip({
-  variant, total, hiddenCount, blindForEveryone, busy, onEnterMode, onRevealAll, onHideAll,
-}: {
-  variant: 'guest' | 'host-resting' | 'host-mode';
-  total: number;
-  hiddenCount: number;
-  blindForEveryone: boolean;
-  busy: boolean;
-  onEnterMode: () => void;
-  onRevealAll: () => void;
-  onHideAll: () => void;
-}) {
-  const { theme } = useTheme();
-  const noticeText = (children: React.ReactNode) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexShrink: 1, minWidth: 0 }}>
-      <Icon name="eyeoff" size={16} color={theme.inkSoft} />
-      <VText variant="small" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', flexShrink: 1 }} color="inkSoft">
-        {children}
-      </VText>
-    </View>
-  );
-
-  if (variant === 'guest') {
-    // .reveal-strip.is-quiet
-    return (
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: 6, paddingBottom: 10 }}>
-        {noticeText('Blind tasting · host reveals')}
-      </View>
-    );
-  }
-
-  if (variant === 'host-mode') {
-    // Manage strip: .rv-count + .rv-allrow (Hide all · Reveal all). BOTH
-    // buttons stay live regardless of state — "reveal all" doesn't mean you're
-    // finished or that the controls go away; the host keeps full control until
-    // they tap Done. Only the transient in-flight `busy` disables them.
-    return (
-      <View
-        style={{
-          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-          flexWrap: 'wrap', paddingTop: 10, paddingBottom: 10, backgroundColor: theme.bg,
-        }}
+    // Horizontal inset comes from the HOST (plain: the list's GUTTER content
+    // padding; hero: the strip wrapper) — none here, or it would double up.
+    <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: 4, paddingBottom: 8 }}>
+      <Pressable
+        ref={btnRef}
+        accessibilityRole="button"
+        accessibilityLabel={`Reveal controls — ${countLabel}`}
+        onPress={openMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 36, paddingHorizontal: 11,
+          borderRadius: 999, borderWidth: 1, borderColor: theme.rule, backgroundColor: theme.surface,
+          opacity: pressed ? 0.6 : 1,
+        })}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Icon name="eyeoff" size={15} color={theme.inkSoft} />
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontVariant: ['tabular-nums'] }} color="inkSoft">
-            {hiddenCount}
+        <Icon name={reveal.hiddenCount > 0 ? 'eyeoff' : 'eye'} size={16} color={reveal.hiddenCount > 0 ? theme.accent : theme.inkSoft} />
+        {reveal.hiddenCount > 0 ? (
+          <VText surface="badge" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), fontVariant: ['tabular-nums'] }}>
+            {reveal.hiddenCount}
           </VText>
+        ) : null}
+        <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+      </Pressable>
+      <AnchoredMenu anchor={anchor} onClose={() => setAnchor(null)} right={menuRight} minWidth={210}>
+        <View style={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 }}>
+          <VText variant="caption" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{countLabel}</VText>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8, flexShrink: 0 }}>
-          <RsButton icon="eyeoff" label="Hide all" onPress={onHideAll} disabled={busy} />
-          <RsButton icon="eye" label="Reveal all" onPress={onRevealAll} disabled={busy} />
-        </View>
-      </View>
-    );
-  }
-
-  // host-resting — the Reveal button (enters manage mode) is ALWAYS present so
-  // the host can re-open the controls even after revealing everything. The
-  // notice text just reflects the current count.
-  const nothingHidden = hiddenCount === 0;
-  return (
-    <View
-      style={{
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-        flexWrap: 'wrap', paddingTop: 6, paddingBottom: 10,
-      }}
-    >
-      {blindForEveryone
-        ? noticeText(nothingHidden ? 'All revealed' : 'Hidden from everyone')
-        : noticeText(nothingHidden ? 'All revealed to guests' : `${hiddenCount} of ${total} hidden from guests`)}
-      <RsButton icon="eye" label="Reveal" onPress={onEnterMode} disabled={busy} />
-    </View>
-  );
-}
-
-// .vfoot-rev — the sticky "Done" footer that exits reveal mode (replaces the
-// nav while managing). Solid bg bar (not the create gradient — pushed-screen
-// idiom, but here it's an in-screen mode so a solid bar reads cleanest over the
-// list) with a single full-width button.
-function RevealFooter({ onDone }: { onDone: () => void }) {
-  const { theme } = useTheme();
-  const insets = useSafeAreaInsets();
-  return (
-    <View
-      style={{
-        position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 7,
-        backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.rule,
-        paddingTop: 12, paddingHorizontal: 14, paddingBottom: insets.bottom + 12,
-      }}
-    >
-      <Button title="Done" bar block onPress={onDone} />
+        <MenuItem icon="eye" label="Reveal all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onRevealAll(); }} />
+        <MenuItem icon="eyeoff" label="Hide all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onHideAll(); }} />
+        <MenuSeparator />
+        {/* .sess-menu-mode — moved here from the ⋯ menu (Simon 2026-07-04):
+            reveal-scope controls live together. Press-to-activate field. */}
+        <MenuItem
+          icon="eyeoff"
+          label="Blind for all"
+          active={reveal.blindForEveryone}
+          disabled={reveal.bfaBusy}
+          accessibilityState={{ selected: reveal.blindForEveryone }}
+          onPress={() => {
+            reveal.onToggleBlindForEveryone(!reveal.blindForEveryone);
+            if (closeTimer.current) clearTimeout(closeTimer.current);
+            closeTimer.current = setTimeout(() => setAnchor(null), 300);
+          }}
+        />
+      </AnchoredMenu>
     </View>
   );
 }
@@ -1602,29 +1496,25 @@ function ratersFor(wineId: string, ratings: RatingsView | null): number {
 // The whole row opens the impression detail (02e); unrated rows carry the
 // .lu-rate pill, rated rows the one-star score chip.
 //
-// Blind variants (host on a blind session — `hostRevealUi`):
-//  - host-sees + hidden-from-guests: the host sees the real wine (server
-//    bypass on a normal blind session), with a small eye-off badge on the
-//    thumb and (resting only) a "Hidden from guests" tag.
-//  - masked (_blind): the wine is concealed even from the host (blind-for-all,
-//    not yet revealed) — the mystery placeholder.
-//  - reveal mode: the score/rate slot swaps to a Reveal/Hide pill.
+// Blind variants (host on a blind session — `reveal.hostRevealUi`), per the
+// ADR-0007 direct-manipulation model:
+//  - hidden (host sees the real wine, guests don't): a translucent eye-off
+//    overlay covers the photo; tapping the photo ARMS (accent overlay + the
+//    hint line flips to "tap again"), tapping again reveals.
+//  - revealed: the photo is clear except a corner eye badge — tapping the
+//    badge hides again INSTANTLY (the damage-control path).
+//  - masked (_blind, blind-for-all): the mystery placeholder is the same
+//    tap target.
+// Guests' masked rows carry their own hint line (the old quiet strip died).
 function LuRow({
-  wine, index, myIdentityId, ratings, onPress,
-  hostRevealUi = false, revealMode = false, revealBusy = false, onReveal, onHide,
+  wine, index, myIdentityId, ratings, onPress, reveal,
 }: {
   wine: WireWine;
   index: number;
   myIdentityId: string;
   ratings: RatingsView | null;
   onPress: () => void;
-  // Host on a blind session: enables the hidden-from-guests badge + the
-  // reveal/hide pill in reveal mode.
-  hostRevealUi?: boolean;
-  revealMode?: boolean;
-  revealBusy?: boolean;
-  onReveal?: (wineId: string) => void;
-  onHide?: (wineId: string) => void;
+  reveal: RevealProps;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -1632,6 +1522,8 @@ function LuRow({
   const badge = phone.surface('badge');
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
   const raters = ratersFor(wine.id, ratings);
+  const { hostRevealUi, revealBusy } = reveal;
+  const armed = reveal.armedId === wine.id;
   const revealedToGuests = !!wine.revealedAt;
   // A _blind wine is the SERVER'S redaction stub (name "Wine N", blank fields) —
   // render the mystery placeholder while it's _blind, FULL STOP. Do NOT un-mask
@@ -1648,14 +1540,13 @@ function LuRow({
   // guests" tag. A revealed wine, or a masked one, is not this.
   const hostSeesHidden = hostRevealUi && !masked && !revealedToGuests;
 
-  // In reveal mode the row is a manage target (the pill), NOT a way into the
-  // impression detail — disable the whole-row press so a tap on the row (incl. a
-  // busy/disabled pill, which doesn't claim the responder) can't navigate away
-  // mid-reveal. Outside reveal mode the row opens the detail as normal.
+  // The whole row always opens the impression; the photo (host, blind) is an
+  // INNER Pressable that claims its own taps for arm/reveal — same nesting
+  // pattern as the IrBar sibling controls.
+  const thumbSize = phone.size('recentThumb');
   return (
     <Pressable
-      onPress={revealMode ? undefined : onPress}
-      disabled={revealMode}
+      onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
@@ -1673,33 +1564,84 @@ function LuRow({
         {index + 1}
       </VText>
       {masked ? (
-        // .lu-masked: sunk bg, dashed rule border, eye-off
-        <View
-          style={{
-            width: phone.size('recentThumb'), height: phone.size('recentThumb'), borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
-            borderWidth: 1, borderStyle: 'dashed', borderColor: theme.rule,
-            alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          <Icon name="eyeoff" size={phone.size('pushChevron')} color={theme.inkFaint} />
-        </View>
+        // .lu-masked: sunk bg, dashed rule border, eye-off. For the host under
+        // blind-for-all the placeholder is ALSO the reveal trigger (same
+        // arm→confirm as a photo; armed = accent). A just-revealed stub shows
+        // the corner eye while the poll fetches the real row.
+        hostRevealUi ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              revealedToGuests ? `Hide impression ${index + 1} from guests`
+              : armed ? `Tap again to reveal impression ${index + 1}`
+              : `Reveal impression ${index + 1} — tap twice`
+            }
+            disabled={revealBusy}
+            onPress={() => (revealedToGuests ? reveal.onHideOne(wine.id) : reveal.onThumbTap(wine.id))}
+            style={{
+              width: thumbSize, height: thumbSize, borderRadius: radius.sm,
+              backgroundColor: armed ? theme.accentTint : theme.surfaceSunk,
+              borderWidth: 1, borderStyle: armed ? 'solid' : 'dashed', borderColor: armed ? theme.accentLine : theme.rule,
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Icon name={armed || revealedToGuests ? 'eye' : 'eyeoff'} size={phone.size('pushChevron')} color={armed ? theme.accent : theme.inkFaint} />
+          </Pressable>
+        ) : (
+          <View
+            style={{
+              width: thumbSize, height: thumbSize, borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
+              borderWidth: 1, borderStyle: 'dashed', borderColor: theme.rule,
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Icon name="eyeoff" size={phone.size('pushChevron')} color={theme.inkFaint} />
+          </View>
+        )
       ) : (
-        // .lu-thumbwrap — the host's hidden-from-guests wine carries a small
-        // eye-off badge pinned to the thumb's bottom-right corner.
-        <View style={{ width: phone.size('recentThumb'), height: phone.size('recentThumb') }}>
-          <Thumb uri={wine.imageUrl} size={phone.size('recentThumb')} />
+        // .lu-thumbwrap — on a blind session the photo IS the host's reveal
+        // control (ADR-0007).
+        <View style={{ width: thumbSize, height: thumbSize }}>
+          <Thumb uri={wine.imageUrl} size={thumbSize} />
           {hostSeesHidden ? (
-            // .lu-hidebadge: 20px surface circle, ink-soft eye-off, overhanging
-            // the thumb corner.
-            <View
+            // Hidden: translucent glass over the WHOLE photo (sanctioned
+            // over-photo fill) + centred glyph; armed flips it accent. Tap =
+            // arm, tap again = reveal.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={armed ? `Tap again to reveal ${wine.name}` : `Reveal ${wine.name} — tap twice`}
+              disabled={revealBusy}
+              onPress={() => reveal.onThumbTap(wine.id)}
               style={{
-                position: 'absolute', right: -4, bottom: -4, width: 20, height: 20, borderRadius: 10,
-                backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule,
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.sm,
+                backgroundColor: armed ? alpha(theme.accent, 0.55) : GLASS_FILL,
+                borderWidth: armed ? 1.5 : 0, borderColor: theme.accent,
                 alignItems: 'center', justifyContent: 'center',
               }}
             >
-              <Icon name="eyeoff" size={12} color={theme.inkSoft} />
-            </View>
+              <Icon name={armed ? 'eye' : 'eyeoff'} size={phone.size('pushChevron')} color="#fff" />
+            </Pressable>
+          ) : hostRevealUi && revealedToGuests ? (
+            // Revealed: the WHOLE photo is the hide trigger (Simon — not just
+            // the badge); the corner eye badge (.lu-hidebadge geometry) is the
+            // visual cue riding inside the transparent overlay.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Hide ${wine.name} from guests`}
+              disabled={revealBusy}
+              onPress={() => reveal.onHideOne(wine.id)}
+              style={{ position: 'absolute', top: 0, left: 0, right: -4, bottom: -4 }}
+            >
+              <View
+                style={{
+                  position: 'absolute', right: 0, bottom: 0, width: 22, height: 22, borderRadius: 11,
+                  backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule,
+                  alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                <Icon name="eye" size={13} color={theme.inkSoft} />
+              </View>
+            </Pressable>
           ) : null}
         </View>
       )}
@@ -1709,7 +1651,16 @@ function LuRow({
             <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               Impression {index + 1}
             </VText>
-            <VText surface="compactList" color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>To be revealed</VText>
+            {/* The old quiet strip's context, moved onto the thing itself:
+                guests learn WHY it's masked right on the row (Simon's call). */}
+            <VText surface="compactList" color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>
+              {hostRevealUi ? 'Hidden from everyone' : 'Hidden until the host reveals it'}
+            </VText>
+            {hostRevealUi && !revealedToGuests ? (
+              <VText surface="compactList" variant="caption" numberOfLines={1} style={{ marginTop: 1 }} color={armed ? 'accent' : 'inkFaint'}>
+                {armed ? 'Tap once more to reveal' : 'Double-tap the box to reveal'}
+              </VText>
+            ) : null}
           </>
         ) : (
           <>
@@ -1725,14 +1676,26 @@ function LuRow({
                 </>
               ) : null}
             </VText>
-            {hostSeesHidden && !revealMode ? (
-              <VText surface="compactList" variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
-                Hidden from guests
-              </VText>
+            {hostSeesHidden ? (
+              <>
+                <VText surface="compactList" variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
+                  Hidden from guests
+                </VText>
+                <VText surface="compactList" variant="caption" numberOfLines={1} style={{ marginTop: 1 }} color={armed ? 'accent' : 'inkFaint'}>
+                  {armed ? 'Tap once more to reveal' : 'Double-tap the photo to reveal'}
+                </VText>
+              </>
             ) : wine.producer ? (
               <VText surface="compactList" color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 1 }}>{wine.producer}</VText>
             ) : null}
-            {!hostSeesHidden && (wine.grape || wine.type) ? (
+            {hostRevealUi && revealedToGuests ? (
+              // The hide direction needs its own hint (Simon) — it takes the
+              // caption slot (grape/type still lives on the impression detail)
+              // so revealed rows keep the 3-line rhythm: name / producer / hint.
+              <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
+                Tap the photo to hide
+              </VText>
+            ) : !hostSeesHidden && (wine.grape || wine.type) ? (
               <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
                 {wine.grape || wineTypeLabel(wine.type)}
               </VText>
@@ -1740,16 +1703,7 @@ function LuRow({
           </>
         )}
       </View>
-      {revealMode ? (
-        // .lu-pill — reveal/hide control replacing the score slot. Reveal =
-        // accent fill; Hide = outline ink-soft (per .lu-pill-reveal /
-        // .lu-pill-hide).
-        revealedToGuests ? (
-          <LuPill icon="eyeoff" label="Hide" busy={revealBusy} onPress={() => onHide?.(wine.id)} />
-        ) : (
-          <LuPill icon="eye" label="Reveal" filled busy={revealBusy} onPress={() => onReveal?.(wine.id)} />
-        )
-      ) : (
+      {(
         // .lu-right2: score chip when rated, .lu-rate pill when not
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
           {myScore > 0 ? (
@@ -1778,48 +1732,6 @@ function LuRow({
   );
 }
 
-// .lu-pill — per-row reveal/hide control in reveal mode. `filled` = accent
-// background (Reveal); otherwise an outline ink-soft pill (Hide). Its own
-// Pressable so a tap on the pill doesn't also open the impression detail
-// (a child Pressable captures the touch before the row's).
-function LuPill({
-  icon, label, filled, busy, onPress,
-}: {
-  icon: IconName;
-  label: string;
-  filled?: boolean;
-  busy?: boolean;
-  onPress: () => void;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('button');
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={busy}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7), minHeight: surface.height(phone.lerp(32, 36)), paddingHorizontal: phone.lerp(13, 16),
-        borderRadius: radius.pill,
-        backgroundColor: filled ? theme.accent : 'transparent',
-        borderWidth: filled ? 0 : 1,
-        borderColor: theme.rule,
-        opacity: busy ? 0.5 : pressed ? 0.7 : 1,
-      })}
-    >
-      <Icon name={icon} size={phone.size('smallActionIcon')} color={filled ? theme.accentInk : theme.inkSoft} />
-      <VText
-        surface="button"
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: filled ? theme.accentInk : theme.inkSoft }}
-      >
-        {label}
-      </VText>
-    </Pressable>
-  );
-}
 
 // Add ⇄ ⋯ hand-off (Simon's ask): on Compare the Add control slides INTO the
 // ⋯ beside it and grows back out of it on Line-up, instead of popping.

@@ -171,7 +171,7 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Score WRITE**: `ScoreInput` (`scoring/ScoreInput.tsx`) — wide slider + editable number + word (gesture+haptics). The editable score numeral uses the `score` Dynamic Type surface, not the generic badge/code surfaces.
 - **Flavour wheel (READ)**: `FlavourWheel` (`scoring/FlavourWheel.tsx`).
 - **Group charts (02d Compare)**: `ComparisonWheel` (`scoring/ComparisonWheel.tsx`, the C1b min→max band wheel, wedge tap → drill-in) + `RadarOverlay` (`scoring/RadarOverlay.tsx`, ≤4-taster overlaid radar). Geometry from `@verre/core` (`comparisonWheelGeometry`/`radarOverlayGeometry`); aggregation from `aggregateFlavourAxes` (client-side per the §7 ruling — no server aggregate). Person-series colours via `usePersonColors()` (`theme/flavourColors.ts` — derived from the palette base ramp, stable roster-index assignment). ⚠️ The labelled charts' natural canvas (size 232 + 2×58 pad = 348pt) is WIDER than a small phone's content column — every host must measure its width (`onLayout`) and pass `maxWidth` (all three wheels + `FlavourWheel` take it; it scales the whole SVG uniformly, the design's `.radar { max-width:100% }`).
-- **Session-screen chrome (line-up 02b + compare 02d)**: `SessionTabs` (`moments/SessionTabs.tsx` — the .vtabs strip, CONTROLLED: Compare is an **in-screen tab swap** per Simon's 2026-07-02 ruling — everything above the tabs (bar or cover hero) stays, no route change, no back-to-line-up; the Add pill + reveal strip are line-up furniture and hide on Compare), `CompareBody`/`CompareToolbar`/`ComparePickerSheet`/`buildComparePeople` (`moments/CompareBody.tsx` — the whole 02d compare surface; **the behaviour spec-of-record is `docs/dev/proposals/structure-wheel.md` §7 + ADR-0005 — read those before touching it**. Headlines: multi-open collapsed-by-default cards; cards render in LINE-UP order by default with a toolbar sort menu (line-up / highest / lowest rated / most / least agreement / most ratings) + an impression search (name/producer/vintage/grape/type/region/country — NOT link/vinification/description); the picker sheet is the ONLY select/deselect surface since the toolbar superseded the 02d·4 avatar-chip rail (Simon 2026-07-03; screen-owned hidden set; deselected people vanish from cards, header recomputes; toolbar sticky like the reveal strip — plain: `stickyHeaderIndices`, hero: the strip overlay slot, where it renders TWICE — search value must stay screen state); chart mode keys on the STRUCTURE-ENGAGED taster count; person rows are per-person DETAIL views, not toggles; axis drill-in from C1b wedges or radar labels; Show-all sheet), `SessionMenu`/`SessionMenuButton`/`useBlindForEveryoneToggle` (`moments/SessionMenu.tsx` — the ⋯ menu + the optimistic blind-for-all mutation), `SessionFatalView` (`moments/SessionFatalView.tsx` — gone/removed/banned/invalid terminal states).
+- **Session-screen chrome (line-up 02b + compare 02d)**: `SessionTabs` (`moments/SessionTabs.tsx` — the .vtabs strip, CONTROLLED: Compare is an **in-screen tab swap** per Simon's 2026-07-02 ruling — everything above the tabs (bar or cover hero) stays, no route change, no back-to-line-up; the Add pill + reveal strip are line-up furniture and hide on Compare), `CompareBody`/`CompareToolbar`/`ComparePickerSheet`/`buildComparePeople` (`moments/CompareBody.tsx` — the whole 02d compare surface; **the behaviour spec-of-record is `docs/dev/proposals/structure-wheel.md` §7 + ADR-0005 — read those before touching it**. Headlines: multi-open collapsed-by-default cards; cards render in LINE-UP order by default with a toolbar sort menu (line-up / highest / lowest rated / most / least agreement / most ratings) + an impression search (name/producer/vintage/grape/type/region/country — NOT link/vinification/description); the picker sheet is the ONLY select/deselect surface since the toolbar superseded the 02d·4 avatar-chip rail (Simon 2026-07-03; screen-owned hidden set; deselected people vanish from cards, header recomputes; toolbar sticky like the reveal strip — plain: `stickyHeaderIndices`, hero: the strip overlay slot, where it renders TWICE — search value must stay screen state); chart mode keys on the STRUCTURE-ENGAGED taster count; person rows are per-person DETAIL views, not toggles; axis drill-in from C1b wedges or radar labels; Show-all sheet), `SessionMenu`/`SessionMenuButton`/`useBlindForEveryoneToggle` (`moments/SessionMenu.tsx` — the ⋯ menu (People/Share/Settings) + the optimistic blind-for-all mutation; the Blind-for-all ROW lives in the line-up's eye menu since ADR-0007, not here), `SessionFatalView` (`moments/SessionFatalView.tsx` — gone/removed/banned/invalid terminal states).
 - **Session poll bootstrap**: `useSessionPoll(code)` (`lib/useSessionPoll.ts`) — visit → `/state` poll → per-section `lastRef` merge (keyed on code+identity, checked synchronously) + fatal/removed handling. ANY new screen reading the shared `/state` poll uses this hook (the impression detail still carries its own pre-hook copy of the merge — migrate when next touched).
 - **Flavour WRITE**: `FlavourInput` (`scoring/FlavourInput.tsx`) — the per-axis fill-track grid (whole 0–5 steps, gesture+haptics, VoiceOver-adjustable); axes from `resolveAxes`, colour from the active theme via `useFlavourColors()` (`theme/flavourColors.ts`). ALL flavour-intensity input.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
@@ -318,44 +318,31 @@ names in `src/lib/api/sessions.ts`.
   !revealedAt`** (that combination briefly surfaced the server's "Wine N" stub on
   a blind-for-all reveal; the placeholder must stay until the poll clears
   `_blind`). So: label keys on `revealedAt`; placeholder keys on `_blind`.
-- **Two-state host UX (Simon's ruling — full design, NOT web parity).** The web
-  shows per-row reveal/hide inline always; mobile has a resting view + a
-  dedicated reveal MODE (design `tBlindHost`→`tReveal` / `tBlindAll`→
-  `tBlindManage`). Resting: the strip shows "N of M hidden from guests" /
-  "Hidden from everyone" (blind-for-all) / "All revealed…" + a **Reveal** that
-  enters mode. Mode: the strip shows a count chip + **Hide all** / **Reveal
-  all**, each row's score/Rate slot swaps to a per-row **Reveal/Hide pill**
-  (`.lu-pill-reveal` accent fill / `.lu-pill-hide` outline), and a sticky
-  **Done** footer exits. Guests (and providers — they can't reveal, server
-  rejects) always get the quiet "Blind tasting · host reveals" strip, never the
-  host variants.
-  - ⚠️ **The controls always STAY — "reveal all" is not "finished".** Hide all
-    AND Reveal all are BOTH live in mode regardless of state (only the transient
-    in-flight `busy` disables them); the resting **Reveal** button is ALWAYS
-    rendered (even when everything's revealed) so Done never traps the host out
-    of the controls. (First build wrongly disabled the buttons by state + hid the
-    resting Reveal when nothing was hidden → Done was a one-way door. Fixed.)
-  - **Tabs + strip are STICKY in BOTH resting and reveal mode** (Simon's ruling
-    — the mock only stickies the mode strip). Two layouts, same end result
-    (inline above the line-up, pin under the title bar on scroll):
-    - **Plain (no cover):** fixed `VBar`, so native sticky works — tabs are a
-      fixed View above the FlatList; the strip is a **sticky FlatList cell**
-      (`STRIP_CELL` sentinel at `data[0]`, wine `index` offset by 1) with
-      `stickyHeaderIndices={[1]}`. ⚠️ `[1]` not `[0]` — a `ListHeaderComponent`
-      (the ovc) shifts sticky indices by +1.
-    - **Cover-hero:** the floating bar means native sticky can't pin under it →
-      the **Dynamic Overlay pattern**. INLINE order is **photo → tabs → about →
-      strip → rows** (tabs UNDER the photo, ABOVE the about; strip separate,
-      below the about — NOT one block). 📖 **The full recipe + the dead ends live
-      in `docs/design/patterns/collapsing-hero-sticky-subheaders.md` — read it
-      before touching this or building a new hero screen.** Impl: `CoverHeroLineup`.
-  - **Collapse is MEASURED** (`scrollY ≥ titleBottom − BAR_H`, `titleBottom` via
-    `onLayout`), not a magic constant — a proportional-height hero mis-fires
-    otherwise. `BAR_H`/`PIN_Y` math + the seam fix: see the pattern doc.
-  - **Collapsed/in-flow bars are SOLID OPAQUE, no bottom rule** — the cover-hero
-    `HeroTopBar`, the impression `FloatHead` (collapsed), and the impression
-    `FootBar`, all flat `theme.bg`, BlurView removed. Pre-collapse over-photo
-    stays transparent. Rationale: `docs/design/decisions/0003-collapsed-bars-opaque.md`.
+- **Reveal UX = DIRECT MANIPULATION on the photo (ADR-0007, Simon 2026-07-04
+  — supersedes the earlier two-state resting-strip + reveal-MODE design).**
+  For hosts/cohosts the impression photo is the always-live control: hidden →
+  translucent GLASS_FILL + eye-off over the whole photo, hint "Double-tap the
+  photo to reveal" — first tap ARMS (accent overlay, hint flips to "tap once
+  more", 2.5s auto-disarm), second tap reveals; revealed → clear photo with a
+  corner eye badge cue, a single tap ANYWHERE on the photo hides INSTANTLY
+  (the asymmetry is deliberate: revealing leaks within a poll tick and can't
+  be unleaked, hiding is damage control and must stay fastest).
+  The blind-for-all masked placeholder is the same arm→confirm target. Row
+  copy: "Hidden from guests" + a hint third line; guests' masked rows carry
+  "Hidden until the host reveals it" (BOTH strips deleted — host strip AND
+  guest quiet strip). Bulk + scope controls live in the **eye menu** on the
+  toolbar line under the tabs (count header, Reveal all, Hide all, Blind for
+  all — the last MOVED from the session ⋯ menu, which is now identical for
+  blind and non-blind). Row-hold stays free for the planned drag-to-reorder.
+  Revealed rows hint the way back ("Tap the photo to hide", in the
+  caption slot). Toolbar PLACEMENT (Simon): right ABOVE the rows — the old
+  strip's spot below the about block — pinning under the tabs on scroll.
+  Plain = the sticky STRIP_CELL sentinel (data item 0, stickyHeaderIndices
+  [1] — the +1 header offset trap still applies); cover-hero = the strip
+  overlay slot. Reveal MODE, the Done footer, the per-row
+  pills, and the reveal-mode tab-bar-hide counter (`pushRevealMode`/
+  `popRevealMode` in `lib/sheetVisibility.ts`) are DELETED — don't resurrect
+  them from old diffs; sheets are the only in-screen tab-bar-hide reason now.
 - **Host framing is HONEST (Simon's ruling): the host is NOT blind on a normal
   blind session** — the server returns their full wines, so host rows show the
   real wine + a `.lu-hidebadge` eye-off on the thumb + a "Hidden from guests"
@@ -380,15 +367,6 @@ names in `src/lib/api/sessions.ts`.
     the impression body shows a transitional "Revealing…" so it doesn't say
     "reveal to show it" while the bar says "Hide". (Earlier `_blind && !revealedAt`
     surfaced the literal "Wine N" stub for ~5s — a review catch.)
-- **Reveal mode hides the OS tab bar via a SECOND ref-counted signal**, not the
-  pathname-keyed `hidden` list (reveal mode is screen STATE, not a route).
-  `src/lib/sheetVisibility.ts` now exports `pushRevealMode`/`popRevealMode` +
-  `useTabBarOverlayHidden()` (ORs the sheet count and the reveal-mode count);
-  `(tabs)/_layout.tsx` consumes the combined signal. The Done footer replaces
-  the nav (design ruling "in-flow footer actions replace the nav"). Reveal mode
-  is bound to MOUNT (not focus) — `router.push` to an impression keeps the
-  line-up mounted, so the override correctly persists and `router.back()` resumes
-  the mode; a genuine unmount or a non-blind/role-loss poll fires the pop.
 - **Optimistic reveal/hide** stamps/clears `revealedAt` ONLY (never fabricates
   identity fields — a masked wine stays masked until the poll) and writes the
   shared `['session-state', code, myIdentityId]` cache both screens read. The
@@ -400,25 +378,17 @@ names in `src/lib/api/sessions.ts`.
   mid-flight). The pre-existing `toggleBlindForEveryone` still uses the
   snapshot-restore pattern — flagged, not fixed here.
 - **New `eye` icon** in `Icon.tsx` (the open-eye `i-eye` design path; `eyeoff`
-  already existed). The per-row pill is a child `Pressable` inside the row's
-  Pressable — RN's responder system grants the touch to the inner pill, so a pill
-  tap does NOT also fire the row's navigate (verified pattern, same as IrBar's
-  sibling controls).
-- **Flagged deviations (Simon to confirm at review):** (1) tabs+strip are sticky
-  in BOTH modes AND the cover-hero tabs now stick (mock stickies only the mode
-  strip; the cover tabs were a prior "not sticky" deviation) — Simon's rulings,
-  recorded above; (2) the `.vfoot-rev` Done footer is a SOLID bar (+ top rule)
-  not the mock's `background:none` — RN rows scroll UNDER an absolute footer, so
-  a transparent one would bleed; (3) the "All revealed" resting copy is new (the
-  static mock has no nothing-hidden state); (4) the host's photo-hero on the
-  impression has no hidden-from-guests badge yet (consequence of the
-  honest-framing deviation; the line-up rows DO carry it). DEVICE-CHECK residuals
-  (overlay approach, not architecture): the overscroll rubber-band feel at the
-  very top of the cover-hero, and confirming no sub-frame jitter at the overlay's
-  opacity swap on a low-end Android — both tuning, neither can resurrect the
-  earlier collapse/double-title/half-stick bugs. Security review: CLEAN — gating
-  is server-side, the client checks are cosmetic, the optimistic write can't leak
-  an un-revealed identity.
+  already existed). The photo overlay / corner badge are child `Pressable`s
+  inside the row's Pressable — RN's responder system grants the touch to the
+  inner control, so a control tap does NOT also fire the row's navigate
+  (verified pattern, same as IrBar's sibling controls). A BUSY (disabled)
+  control doesn't claim the responder, so a tap during the brief in-flight
+  window falls through to the row press — accepted.
+- **Known deviation:** the host's photo-hero on the impression has no
+  hidden-from-guests badge yet (consequence of the honest-framing deviation;
+  the line-up rows DO carry it). Security posture unchanged from the 02b
+  review: gating is server-side, client checks are cosmetic, the optimistic
+  write can't leak an un-revealed identity.
 - **FIXED (was the flagged M3 gap):** the impression detail now uses the same
   `lastRef` per-section merge as the line-up (a `wines:null` degraded poll keeps
   the last good list; the "This impression is gone" terminal requires a PRESENT
