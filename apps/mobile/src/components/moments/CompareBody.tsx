@@ -1,8 +1,7 @@
-import { BottomSheetScrollView } from '@gorhom/bottom-sheet';
+import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, LayoutAnimation, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Animated, Easing, LayoutAnimation, Platform, Pressable, useWindowDimensions, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   aggregateFlavourAxes,
@@ -17,6 +16,7 @@ import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
+import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
@@ -26,8 +26,10 @@ import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
+import { wineTypeLabel } from '@/lib/momentFormat';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
-import { alpha } from '@/theme/color';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 
@@ -36,15 +38,16 @@ import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 // Accordion of rated impressions; ALL collapsed by default; cards open/close
 // independently (multi-open — closing is always a deliberate tap).
 //
-// People-selector = the 02d·4 AVATAR RAIL (Simon's pick, 2026-07-02) and it is
-// the ONLY select/deselect surface: one screen-level hidden set, owned by the
-// screen, drives the WHOLE tab — deselected people disappear from every card
-// (rows, charts, sheet), and the card header (group ★ + consensus) and the
-// ranking recompute over the selection (the mock's selAccItem semantics).
-// Rail chips: selected = accent active state, deselected dim; the All chip
-// TOGGLES select-all/deselect-all. The rail renders STICKY under the title bar
-// like the reveal strip (plain: ScrollView stickyHeaderIndices; cover-hero:
-// the strip's Dynamic Overlay slot).
+// People-selector: ONE screen-level hidden set drives the WHOLE tab —
+// deselected people disappear from every card (rows, charts, sheet), and the
+// card header (group ★ + consensus) recomputes over the selection. The inline
+// avatar-chip rail (02d·4 variant B) was SUPERSEDED 2026-07-03 (Simon): the
+// sticky slot now holds the one-line CompareToolbar — People button (opens the
+// picker sheet, now the only select/deselect surface) + sort menu (line-up /
+// rated / agreement / ratings-count orders) + an impression search field. The
+// toolbar renders STICKY under the title bar like the reveal strip (plain:
+// ScrollView stickyHeaderIndices; cover-hero: the strip's Dynamic Overlay
+// slot).
 //
 // Person rows on a card are NOT toggles: tapping a name shows that person's
 // rating detail for the impression — their flavour wheel + score (tap again
@@ -92,6 +95,8 @@ type CmpItem = {
   raters: Rater[];
   scored: Rater[];
   avg: number | null;
+  /** Score span (max−min) across scored raters; null under 2 scores. Feeds the agreement sorts. */
+  spread: number | null;
   consensus: ConsensusKey | null;
 };
 
@@ -154,117 +159,153 @@ function buildItems(
         // structure detail" + "No scores yet").
         .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
       const scores = raters.map((r) => r.rating.score || 0);
+      const scoredScores = scores.filter((v) => v > 0);
       return {
         wine,
         index,
         raters,
         scored: raters.filter((r) => (r.rating.score || 0) > 0).sort((a, b) => b.rating.score - a.rating.score),
         avg: groupScoreAverage(scores),
+        spread: scoredScores.length >= 2 ? Math.max(...scoredScores) - Math.min(...scoredScores) : null,
         consensus: consensusFromRatings(raters.map((r) => ({ score: r.rating.score || 0, flavors: r.rating.flavors })), 'wine', wine.type),
       };
     })
     .filter((it) => it.raters.length > 0);
-  // Ranked by the selection's average, unrated-score items last, line-up order tiebreak.
-  return items.sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1) || a.index - b.index);
+  // Line-up order (Simon's ruling 2026-07-03, supersedes the score-ranked
+  // list) — the default; the toolbar's sort menu reorders in CompareBody.
+  return items;
 }
 
-// ── 02d·4 avatar rail (.cmp-selbar) — the ONLY select/deselect surface. The
-// screen renders this STICKY under the bar (plain: ScrollView
-// stickyHeaderIndices; hero: the strip overlay slot). ───────────────────────
+// ── toolbar sort + search (Simon's 2026-07-03 spec) ─────────────────────────
 
-export function PeopleRail({
-  people, hidden, onToggle, onToggleAll, onPick,
+export type CompareSort = 'lineup' | 'top' | 'bottom' | 'agree' | 'split' | 'most';
+// 'lineup' is the DEFAULT state, not a menu row: tapping the active sort
+// again toggles it off, back to line-up order (Simon's ruling; the line-up
+// toolbar's sort menu behaves the same).
+export const COMPARE_SORTS: { key: Exclude<CompareSort, 'lineup'>; label: string }[] = [
+  { key: 'top', label: 'Highest rated' },
+  { key: 'bottom', label: 'Lowest rated' },
+  { key: 'agree', label: 'Most agreement' },
+  { key: 'split', label: 'Least agreement' },
+  { key: 'most', label: 'Most ratings' },
+];
+// Sentinels (not Infinity — Infinity−Infinity is NaN and breaks sort): items
+// missing the sort signal (no score avg / <2 scores for a spread) go LAST in
+// every mode, line-up order as the universal tiebreak.
+const SORT_FNS: Record<CompareSort, (a: CmpItem, b: CmpItem) => number> = {
+  lineup: (a, b) => a.index - b.index,
+  top: (a, b) => (b.avg ?? -1) - (a.avg ?? -1) || a.index - b.index,
+  bottom: (a, b) => (a.avg ?? 999) - (b.avg ?? 999) || a.index - b.index,
+  agree: (a, b) => (a.spread ?? 999) - (b.spread ?? 999) || a.index - b.index,
+  split: (a, b) => (b.spread ?? -1) - (a.spread ?? -1) || a.index - b.index,
+  most: (a, b) => b.raters.length - a.raters.length || a.index - b.index,
+};
+
+// Search haystack — the impression's detail fields EXCEPT link, vinification
+// and description (Simon's ruling 2026-07-03). Type matches on both the code
+// and the written-out label ("non" finds Non-alcoholic). A blind stub matches
+// only its displayed "Impression N" label — the server already redacts the
+// real fields, so nothing leaks through search.
+function searchHay(it: CmpItem): string {
+  const w = it.wine;
+  if (w._blind) return `Impression ${it.index + 1}`;
+  return [w.name, w.producer, w.vintage, w.grape, w.type, wineTypeLabel(w.type), w.region, w.country]
+    .filter(Boolean)
+    .join(' ');
+}
+
+// ── toolbar (.cmp-toolbar) — ONE line: People button (opens the picker sheet,
+// the selection surface) + sort button (unfolds the order menu) + impression
+// search. Replaces the avatar-chip rail (Simon, 2026-07-03); renders in the
+// same sticky slot the rail used. ────────────────────────────────────────────
+
+export function CompareToolbar({
+  people, hidden, onPick, sort, onSort, query, onQuery,
 }: {
   people: ComparePerson[];
   hidden: Set<string>;
-  onToggle: (id: string) => void;
-  /** All chip is a TOGGLE (Simon's ruling): everything visible → deselect all; anything hidden → select all. */
-  onToggleAll: () => void;
   onPick: () => void;
+  sort: CompareSort;
+  onSort: (s: CompareSort) => void;
+  query: string;
+  onQuery: (q: string) => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const { width: screenW } = useWindowDimensions();
+  const sortBtn = useRef<View>(null);
+  const [sortAnchor, setSortAnchor] = useState<MenuAnchor | null>(null);
+  const [sortRight, setSortRight] = useState(16);
   const filtered = hidden.size > 0;
-  const allOn = !filtered;
-  const chipBase = {
+  const visibleCount = people.length - hidden.size;
+  const sorted = sort !== 'lineup';
+  const sortLabel = COMPARE_SORTS.find((o) => o.key === sort)?.label ?? 'Line-up order';
+  // 36pt to line up with the search pill; 44pt targets via vertical slop.
+  const chip = {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
-    gap: 6,
-    height: 34,
+    justifyContent: 'center' as const,
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 11,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: theme.rule,
     backgroundColor: theme.surface,
   };
-  // Selected (visible) chips wear the accent active state (.selchip.is-on);
-  // deselected ones stay neutral and dim (.selchip.is-off). With All on,
-  // every chip is active; hiding one drops All AND that chip, the rest stay.
-  const activeChip = { borderColor: theme.accentLine, backgroundColor: theme.accentTint };
+  const openSortMenu = () => {
+    sortBtn.current?.measureInWindow((x, y, w, h) => {
+      // AnchoredMenu is right-anchored; place the panel's right edge a panel-
+      // width from the button's left so it reads as unfolding from the button.
+      setSortRight(Math.max(12, screenW - x - 216));
+      setSortAnchor({ top: y, bottom: y + h });
+    });
+  };
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: GUTTER, paddingVertical: 8 }}>
-      {/* .selchip-pick — fixed at the left (outside the scroll), opens the picker */}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingVertical: 8 }}>
+      {/* People — hidden on a roster of one (nothing to select). */}
+      {people.length > 1 ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={filtered ? `Choose people — ${visibleCount} of ${people.length} selected` : 'Choose people'}
+          onPress={onPick}
+          hitSlop={{ top: 4, bottom: 4 }}
+          style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
+        >
+          <Icon name="user" size={15} color={filtered ? theme.accent : theme.inkSoft} />
+          {filtered ? (
+            <VText surface="badge" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+              {visibleCount}
+            </VText>
+          ) : null}
+          <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+        </Pressable>
+      ) : null}
       <Pressable
+        ref={sortBtn}
         accessibilityRole="button"
-        accessibilityLabel="Choose people"
-        onPress={onPick}
-        style={({ pressed }) => ({ ...chipBase, paddingHorizontal: 9, gap: 3, opacity: pressed ? 0.6 : 1 })}
+        accessibilityLabel={`Sort impressions — ${sortLabel}`}
+        onPress={openSortMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
       >
-        <Icon name="user" size={15} color={filtered ? theme.accent : theme.inkSoft} />
-        <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+        <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, paddingLeft: 6, paddingRight: GUTTER }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityState={{ selected: allOn }}
-            accessibilityLabel={allOn ? 'Deselect everyone' : `Select all ${people.length} people`}
-            onPress={onToggleAll}
-            style={({ pressed }) => ({
-              ...chipBase,
-              paddingHorizontal: 12,
-              ...(allOn ? activeChip : null),
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <VText surface="badge" style={{ fontFamily: allOn ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', ...phone.text('small') }}>
-              All · {people.length}
-            </VText>
-          </Pressable>
-          {people.map((p) => {
-            const on = !hidden.has(p.id);
-            return (
-              <Pressable
-                key={p.id}
-                accessibilityRole="button"
-                accessibilityState={{ selected: on }}
-                accessibilityLabel={`${on ? 'Hide' : 'Show'} ${p.displayName} in the comparison`}
-                onPress={() => onToggle(p.id)}
-                style={({ pressed }) => ({
-                  ...chipBase,
-                  paddingLeft: 5,
-                  paddingRight: 11,
-                  ...(on ? activeChip : null),
-                  opacity: !on ? 0.45 : pressed ? 0.6 : 1,
-                })}
-              >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={24} />
-                <VText surface="badge" numberOfLines={1} style={{ fontFamily: on ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', ...phone.text('small'), maxWidth: 110 }}>
-                  {p.displayName}
-                </VText>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-        {/* Soft fade where chips slide under the picker chip — a hard clip
-            edge read harshly. bg → transparent over the scroll's left edge. */}
-        <LinearGradient
-          pointerEvents="none"
-          colors={[theme.bg, alpha(theme.bg, 0)]}
-          start={{ x: 0, y: 0.5 }}
-          end={{ x: 1, y: 0.5 }}
-          style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 14 }}
-        />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" />
       </View>
+      <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortRight} minWidth={190}>
+        {COMPARE_SORTS.map((o) => (
+          <MenuItem
+            key={o.key}
+            label={o.label}
+            active={sort === o.key}
+            accessibilityState={{ selected: sort === o.key }}
+            // Tap the active sort again → OFF (line-up order).
+            onPress={() => { onSort(sort === o.key ? 'lineup' : o.key); setSortAnchor(null); }}
+          />
+        ))}
+      </AnchoredMenu>
     </View>
   );
 }
@@ -291,7 +332,9 @@ export function ComparePickerSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
+  const { height: windowH, fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
+  const [rowsH, setRowsH] = useState(0);
   const friendsQ = useQuery({
     queryKey: ['my-friends'],
     queryFn: getMyFriends,
@@ -302,8 +345,8 @@ export function ComparePickerSheet({
     () => new Set((friendsQ.data ?? []).map((f) => `u:${f.id}`)),
     [friendsQ.data],
   );
-  const q = query.trim().toLowerCase();
-  const rows = people.filter((p) => !q || p.displayName.toLowerCase().includes(q));
+  const q = query.trim();
+  const rows = people.filter((p) => !q || fuzzyIncludes(p.displayName, q));
   const visibleCount = people.length - hidden.size;
   const isAll = hidden.size === 0;
   const isMe = !isAll && visibleCount === 1 && !!myIdentityId && !hidden.has(myIdentityId);
@@ -322,6 +365,7 @@ export function ComparePickerSheet({
       accessibilityRole="button"
       accessibilityState={{ selected: on }}
       onPress={onPress}
+      hitSlop={{ top: 6, bottom: 6 }}
       style={({ pressed }) => ({
         height: 32, paddingHorizontal: 13, borderRadius: 999, borderWidth: 1,
         borderColor: on ? theme.accentLine : theme.rule,
@@ -334,9 +378,18 @@ export function ComparePickerSheet({
       </VText>
     </Pressable>
   );
-  return (
-    <Sheet open={open} onClose={onClose} snapPoints={['76%']} enableDynamicSizing={false}>
-      <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+  // Sizing: dynamic fit-to-content (PeopleSheet's pattern — Simon: "the
+  // people view does it correctly") for lists that fit under the 85% cap.
+  // Dynamic sizing cannot scroll (rows past the cap would clip unreachably),
+  // so a roster the estimate says won't fit switches to the CountrySheet
+  // recipe instead: fixed 85% snap, pinned head/controls, rows in a
+  // BottomSheetScrollView (which needs the fixed snap — it measures 0 under
+  // dynamic sizing). The estimate only picks the MODE; near the boundary the
+  // two render identically.
+  const rowH = Math.max(30, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 19;
+  const needsScroll = 214 + insets.bottom + people.length * rowH > windowH * 0.85;
+  const headBlock = (
+    <>
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <View style={{ flex: 1, minWidth: 0 }}>
             <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Compare who?</VText>
@@ -347,6 +400,7 @@ export function ComparePickerSheet({
           <Pressable
             accessibilityRole="button"
             onPress={onClose}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             style={({ pressed }) => ({ height: 32, paddingHorizontal: 14, borderRadius: 999, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.7 : 1 })}
           >
             <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: theme.accentInk }}>Done</VText>
@@ -360,7 +414,16 @@ export function ComparePickerSheet({
         <View style={{ paddingVertical: 12 }}>
           <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search tasters" />
         </View>
-        <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+    </>
+  );
+  // The rows area locks to its UNFILTERED measured height while a search
+  // filters it — the dynamically-sized sheet must not slide around with the
+  // result count (Simon's ruling; moot in the fixed-snap scroll mode).
+  const rowsBlock = (
+        <View
+          onLayout={(e) => { if (!q && !needsScroll) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : null) }}
+        >
           {rows.map((p, i) => {
             const on = !hidden.has(p.id);
             return (
@@ -375,9 +438,16 @@ export function ComparePickerSheet({
                   backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
                 })}
               >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} />
+                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} anon={p.id.startsWith('a:')} />
                 <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
-                  <VText numberOfLines={1} style={{ flexShrink: 1, fontFamily: 'InstrumentSans_500Medium', ...phone.text('body') }}>
+                  {/* Unregistered read QUIETLY, with the SAME tokens as the
+                      People sheet's anon rows (regular weight + inkSoft; no
+                      badge — the anon avatar glyph is the other cue). */}
+                  <VText
+                    numberOfLines={1}
+                    color={p.id.startsWith('a:') ? 'inkSoft' : 'ink'}
+                    style={{ flexShrink: 1, fontFamily: p.id.startsWith('a:') ? 'InstrumentSans_400Regular' : 'InstrumentSans_500Medium', ...phone.text('body') }}
+                  >
                     {p.displayName}
                   </VText>
                   {/* .selrow-fr — the mock's quiet Friend tag */}
@@ -403,8 +473,27 @@ export function ComparePickerSheet({
               No matches
             </VText>
           ) : null}
-        </BottomSheetScrollView>
-      </View>
+        </View>
+  );
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
+    >
+      {needsScroll ? (
+        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+          {headBlock}
+          <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
+            {rowsBlock}
+          </BottomSheetScrollView>
+        </BottomSheetView>
+      ) : (
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+          {headBlock}
+          {rowsBlock}
+        </BottomSheetView>
+      )}
     </Sheet>
   );
 }
@@ -417,14 +506,23 @@ export function CompareBody({
   meta,
   locked,
   hidden,
+  sort,
+  query,
 }: {
   wines: WireWine[] | null;
   ratings: RatingsView | null;
   meta: SessionMetaView | null;
   locked: boolean;
   hidden: Set<string>;
+  sort: CompareSort;
+  query: string;
 }) {
   const items = useMemo(() => buildItems(wines, ratings, meta, hidden), [wines, ratings, meta, hidden]);
+  const q = query.trim();
+  const shown = useMemo(() => {
+    const base = q ? items.filter((it) => fuzzyIncludes(searchHay(it), q)) : items;
+    return [...base].sort(SORT_FNS[sort]);
+  }, [items, q, sort]);
   if (wines === null || ratings === null) {
     // A /state section this tab needs failed server-side and has never
     // delivered — the 5s poll keeps retrying; say that, not "No ratings yet".
@@ -450,16 +548,24 @@ export function CompareBody({
     return (
       <View style={{ paddingVertical: 72 }}>
         {anyComparable ? (
-          <CenteredMessage title="Nobody selected" body="Pick people on the rail above to compare their ratings." />
+          <CenteredMessage title="Nobody selected" body="Pick people with the People button above to compare their ratings." />
         ) : (
           <CenteredMessage title="No ratings yet" body="Rate some impressions and they'll show up here to compare." />
         )}
       </View>
     );
   }
+  if (shown.length === 0) {
+    // items exist but the search query matched none of them.
+    return (
+      <View style={{ paddingVertical: 72 }}>
+        <CenteredMessage title="No matches" body={`Nothing in the comparison matches “${query.trim()}”.`} />
+      </View>
+    );
+  }
   return (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 8, gap: 10 }}>
-      {items.map((item) => (
+      {shown.map((item) => (
         <CmpAccItem key={item.wine.id} item={item} />
       ))}
     </View>
@@ -476,6 +582,21 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
+  // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
+  // person row hides/shows their LINE on the overlay (Simon's ruling; the
+  // rail stays the selection surface, this is purely visual).
+  const [hiddenLines, setHiddenLines] = useState<Set<string>>(new Set());
+  // Prune line-toggles for raters who left this card's set (rail deselect,
+  // kick, poll churn) — a stale id would keep someone's line hidden after
+  // they're re-selected (codex repro: hide → deselect → reselect).
+  useEffect(() => {
+    setHiddenLines((prev) => {
+      if (prev.size === 0) return prev;
+      const ids = new Set(item.raters.map((r) => r.id));
+      const pruned = new Set([...prev].filter((id) => ids.has(id)));
+      return pruned.size === prev.size ? prev : pruned;
+    });
+  }, [item]);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const agg = useMemo(
@@ -506,6 +627,18 @@ function CmpAccItem({ item }: { item: CmpItem }) {
     setSelAxis(-1);
     setSelPerson((prev) => (prev === id ? null : id));
   };
+  const toggleLine = (id: string) =>
+    setHiddenLines((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  // In radar mode rows toggle LINES, so person detail is unreachable there —
+  // clear a stale detail carried over from another mode.
+  const radarMode = agg.n > 1 && agg.n <= 4;
+  useEffect(() => {
+    if (radarMode && selPerson) setSelPerson(null);
+  }, [radarMode, selPerson]);
 
   const maker = wine.producer || ''; // producer only — no type/variety here (Simon's ruling)
   // Blind stubs: same mask vocabulary as the line-up ("Impression N", the
@@ -582,6 +715,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             item={item}
             agg={agg}
             detail={detail}
+            hiddenLines={hiddenLines}
             selAxis={detail ? -1 : selAxis}
             onSelectAxis={selectAxis}
           />
@@ -590,6 +724,9 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               <AxisSplit
                 item={item}
                 axis={drillAxis}
+                radarMode={radarMode}
+                hiddenLines={hiddenLines}
+                onToggleLine={toggleLine}
                 selPerson={selPerson}
                 onSelectPerson={selectPerson}
                 onShowAll={() => setSheetOpen(true)}
@@ -597,8 +734,10 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             ) : (
               <ScoreRows
                 item={item}
-                mode={agg.n > 1 && agg.n <= 4 ? 'radar' : 'plain'}
+                mode={radarMode ? 'radar' : 'plain'}
                 structureFirst={agg.n >= 1 && agg.n <= 4}
+                hiddenLines={hiddenLines}
+                onToggleLine={toggleLine}
                 selPerson={selPerson}
                 onSelectPerson={selectPerson}
                 onShowAll={() => setSheetOpen(true)}
@@ -627,11 +766,13 @@ type VisibleAgg = ReturnType<typeof aggregateFlavourAxes>;
 // otherwise: 1 → wheel, ≤4 → radar, 5+ → C1b. Axis drill-in triggers: C1b
 // wedge OR axis label; radar axis label.
 function CmpChart({
-  item, agg, detail, selAxis, onSelectAxis,
+  item, agg, detail, hiddenLines, selAxis, onSelectAxis,
 }: {
   item: CmpItem;
   agg: VisibleAgg;
   detail: Rater | undefined;
+  /** Radar-mode chart-layer toggle — hidden lines stay in rows/aggregates. */
+  hiddenLines: Set<string>;
   selAxis: number;
   onSelectAxis: (i: number) => void;
 }) {
@@ -687,11 +828,13 @@ function CmpChart({
     chart = (
       <RadarOverlay
         axes={axes.map((a) => a.l)}
-        series={flavourRaters.map((r) => ({
+        series={flavourRaters
+          .filter((r) => !hiddenLines.has(r.id))
+          .map((r) => ({
           id: r.id,
-          color: personColor(r.personIndex),
-          values: axes.map((a) => r.filled[a.k] ?? 0),
-        }))}
+            color: personColor(r.personIndex),
+            values: axes.map((a) => r.filled[a.k] ?? 0),
+          }))}
         size={232}
         maxWidth={maxWidth}
         selected={selAxis}
@@ -742,10 +885,13 @@ function PersonDot({ color }: { color: string | null }) {
 // tapping shows that person's rating detail on this impression; the active
 // row's name reads accent.
 function PersonRow({
-  first, active, onPress, name, lead, children,
+  first, active, off, accessibilityLabel, onPress, name, lead, children,
 }: {
   first: boolean;
   active?: boolean;
+  /** Radar line hidden — row dims to 0.42 (.cmp-prow-toggle is-off). */
+  off?: boolean;
+  accessibilityLabel?: string;
   onPress?: () => void;
   name: string;
   lead?: React.ReactNode;
@@ -776,14 +922,15 @@ function PersonRow({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ selected: !!active }}
-      accessibilityLabel={active ? `Hide ${name}'s rating detail` : `Show ${name}'s rating detail`}
+      accessibilityState={{ selected: off !== undefined ? !off : !!active }}
+      accessibilityLabel={accessibilityLabel ?? (active ? `Hide ${name}'s rating detail` : `Show ${name}'s rating detail`)}
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
         marginHorizontal: -6, paddingHorizontal: 6, borderRadius: radius.sm,
         borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft,
         backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+        opacity: off ? 0.42 : 1,
       })}
     >
       {inner}
@@ -820,11 +967,13 @@ function scoreRowsFor(item: CmpItem, structureFirst: boolean): Rater[] {
 }
 
 function ScoreRows({
-  item, mode, structureFirst, selPerson, onSelectPerson, onShowAll,
+  item, mode, structureFirst, hiddenLines, onToggleLine, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   mode: 'radar' | 'plain';
   structureFirst: boolean;
+  hiddenLines: Set<string>;
+  onToggleLine: (id: string) => void;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
@@ -841,13 +990,20 @@ function ScoreRows({
   }
   return (
     <View>
-      {shown.map((r, i) => (
+      {shown.map((r, i) => {
+        // Radar mode (Simon's ruling): a structure-giver's row toggles their
+        // LINE on the overlay; rows without a line (score-only) do nothing.
+        // Other modes: row tap opens that person's rating detail.
+        const lineRow = mode === 'radar' && hasStructure(r);
+        return (
         <PersonRow
           key={r.id}
           first={i === 0}
           name={r.displayName}
-          active={selPerson === r.id}
-          onPress={() => onSelectPerson(r.id)}
+          active={mode !== 'radar' && selPerson === r.id}
+          off={lineRow ? hiddenLines.has(r.id) : undefined}
+          accessibilityLabel={lineRow ? `${hiddenLines.has(r.id) ? 'Show' : 'Hide'} ${r.displayName}'s line on the chart` : undefined}
+          onPress={mode === 'radar' ? (lineRow ? () => onToggleLine(r.id) : undefined) : () => onSelectPerson(r.id)}
           lead={mode === 'radar' ? <PersonDot color={hasStructure(r) ? personColor(r.personIndex) : null} /> : undefined}
         >
           {/* .osv-num min-width 46 (+ star 17 + gap 4) so the score column aligns */}
@@ -859,7 +1015,8 @@ function ScoreRows({
             )}
           </View>
         </PersonRow>
-      ))}
+        );
+      })}
       {rows.length > CAP ? <ShowAllButton total={rows.length} onPress={onShowAll} /> : null}
     </View>
   );
@@ -871,10 +1028,13 @@ type AxisAgg = VisibleAgg['axes'][number];
 // on a linear 0–5 track) and each selected flavour-engaged taster's intensity.
 // Rows switch to that person's detail view on tap (same as resting rows).
 function AxisSplit({
-  item, axis, selPerson, onSelectPerson, onShowAll,
+  item, axis, radarMode, hiddenLines, onToggleLine, selPerson, onSelectPerson, onShowAll,
 }: {
   item: CmpItem;
   axis: AxisAgg;
+  radarMode: boolean;
+  hiddenLines: Set<string>;
+  onToggleLine: (id: string) => void;
   selPerson: string | null;
   onSelectPerson: (id: string) => void;
   onShowAll: () => void;
@@ -924,8 +1084,10 @@ function AxisSplit({
           key={r.id}
           first={i === 0}
           name={r.displayName}
-          active={selPerson === r.id}
-          onPress={() => onSelectPerson(r.id)}
+          active={!radarMode && selPerson === r.id}
+          off={radarMode ? hiddenLines.has(r.id) : undefined}
+          accessibilityLabel={radarMode ? `${hiddenLines.has(r.id) ? 'Show' : 'Hide'} ${r.displayName}'s line on the chart` : undefined}
+          onPress={radarMode ? () => onToggleLine(r.id) : () => onSelectPerson(r.id)}
         >
           <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
@@ -941,24 +1103,57 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
+export function SheetSearchField({ value, onChangeText, placeholder, highlight }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // Clearing is part of typing — the ✕ must not bounce the keyboard.
+  const clearRef = useRef<View | null>(null);
+  useRegisterInput(clearRef, value !== '');
+  // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
+  // border, matching the chip controls — never the sunken fill. Restyle the
+  // InviteSheet pseudo-field too if this ever changes. Height rides the
+  // formControl surface — 36 at default scale, growing with the text.
+  // ⚠️ Known accepted a11y nit (Simon's call, PR #65 review round 3): the
+  // clear ✕ target is therefore ~36pt at default scale, under the 44pt
+  // guideline — RN clips a child's hitSlop to the parent frame, so the ONLY
+  // way to reach 44 was to floor the whole field at 44, which makes the pill
+  // taller than the sibling 36pt chips everywhere. Not worth the visual cost
+  // for a small, non-destructive button (the wide field-focus target is fine;
+  // a ✕ mistap just doesn't clear). Large Dynamic Type grows it past 44 anyway.
+  const fieldH = phone.surface('formControl').height(36);
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surfaceSunk }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: fieldH, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
       <Icon name="search" size={16} color={theme.inkSoft} />
       <View style={{ flex: 1 }}>
         <TextField
           placeholder={placeholder}
+          // Placeholder stops being the accessible name once text is entered.
+          accessibilityLabel={placeholder}
           value={value}
           onChangeText={onChangeText}
           autoCorrect={false}
           autoCapitalize="none"
-          // fontSize only — TextField deliberately carries no lineHeight on a
-          // single-line input (iOS glyph-centering, see its header).
-          style={{ height: 36, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize }}
+          // fontSize override ⇒ lineHeight must match it (TextField's base
+          // compact lineHeight is body-sized; a mismatched line box re-biases
+          // the glyph — see TextField's header).
+          style={{ height: fieldH, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
         />
       </View>
+      {value !== '' ? (
+        <Pressable
+          ref={clearRef}
+          accessibilityRole="button"
+          accessibilityLabel="Clear search"
+          onPress={() => onChangeText('')}
+          // Fills the field's full height for the tallest reachable target the
+          // parent allows (RN clips slop to the parent frame — see fieldH);
+          // width 40 + horizontal slop widens it. Icon 14pt; -6 snug to edge.
+          hitSlop={{ left: 8, right: 8 }}
+          style={{ width: 40, height: fieldH, alignItems: 'center', justifyContent: 'center', marginRight: -6 }}
+        >
+          <Icon name="x" size={14} color={theme.inkFaint} />
+        </Pressable>
+      ) : null}
     </View>
   );
 }
@@ -980,21 +1175,27 @@ function ShowAllSheet({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
+  const { height: windowH, fontScale } = useWindowDimensions();
   const [query, setQuery] = useState('');
+  const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
   const sign = dir === 'high' ? -1 : 1;
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   // Score mode lists EXACTLY what the resting panel counts (scoreRowsFor —
   // incl. structure-only score-0 raters), else "Show all N" would open a
   // sheet missing people.
   const base = axis ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
   const rows = base
-    .filter((r) => !q || r.displayName.toLowerCase().includes(q))
+    .filter((r) => !q || fuzzyIncludes(r.displayName, q))
     .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
   const total = base.length;
-  return (
-    <Sheet open={open} onClose={onClose} snapPoints={['76%']} enableDynamicSizing={false}>
-      <View style={{ flex: 1, paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+  // Same cap-aware sizing as the picker: dynamic fit-to-content while the
+  // unfiltered list fits under 85%; else the CountrySheet recipe (fixed snap,
+  // pinned head/controls, scrollable rows).
+  const rowH = Math.max(17, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 17;
+  const needsScroll = 178 + insets.bottom + total * rowH > windowH * 0.85;
+  const headBlock = (
+    <>
         <View style={{ paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
           <VText variant="subhead" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             {item.wine._blind ? `Impression ${item.index + 1}` : item.wine.name}
@@ -1015,6 +1216,7 @@ function ShowAllSheet({
             // Announce the ACTION the tap performs, not the current state —
             // high-first is active, so the button offers "lowest first".
             accessibilityLabel={`Sort ${dir === 'high' ? 'lowest' : 'highest'} first`}
+            hitSlop={4}
             onPress={() => setDir((d) => (d === 'high' ? 'low' : 'high'))}
             style={({ pressed }) => ({
               width: 36, height: 36, borderRadius: 999, borderWidth: 1,
@@ -1026,7 +1228,15 @@ function ShowAllSheet({
             <Icon name="sort" size={18} color={dir === 'low' ? theme.accent : theme.inkSoft} />
           </Pressable>
         </View>
-        <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 8 }}>
+    </>
+  );
+  // Same unfiltered-height lock as the picker — stable sheet while searching
+  // (moot in the fixed-snap scroll mode).
+  const rowsBlock = (
+        <View
+          onLayout={(e) => { if (!q && !needsScroll) setRowsH(e.nativeEvent.layout.height); }}
+          style={{ paddingBottom: 8, ...(q && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : null) }}
+        >
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
               {axis ? (
@@ -1052,8 +1262,27 @@ function ShowAllSheet({
               No matches
             </VText>
           ) : null}
-        </BottomSheetScrollView>
-      </View>
+        </View>
+  );
+  return (
+    <Sheet
+      open={open}
+      onClose={onClose}
+      {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
+    >
+      {needsScroll ? (
+        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+          {headBlock}
+          <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
+            {rowsBlock}
+          </BottomSheetScrollView>
+        </BottomSheetView>
+      ) : (
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
+          {headBlock}
+          {rowsBlock}
+        </BottomSheetView>
+      )}
     </Sheet>
   );
 }

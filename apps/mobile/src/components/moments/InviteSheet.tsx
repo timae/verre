@@ -2,15 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, Share, View } from 'react-native';
 import { useQuery } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BottomSheetScrollView, BottomSheetTextInput, BottomSheetView } from '@gorhom/bottom-sheet';
+import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
+import { SheetSearchField } from '@/components/moments/CompareBody';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
+import { fuzzyIncludes } from '@/lib/search';
 import { WEB_BASE } from '@/lib/config';
 import { usePhoneTokens } from '@/lib/layout';
 import { alpha } from '@/theme/color';
@@ -39,8 +41,6 @@ export function InviteSheet({
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const phone = usePhoneTokens();
-  const formSurface = phone.surface('formControl');
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
   const [q, setQ] = useState('');
   const [copied, setCopied] = useState(false);
@@ -66,8 +66,8 @@ export function InviteSheet({
   // Friends not already in the session, for the quick-add chip row.
   const notIn = allFriends.filter((f) => !participantIds.has(`u:${f.id}`));
   const browseMatches = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    return needle ? allFriends.filter((f) => f.name.toLowerCase().includes(needle)) : allFriends;
+    const needle = q.trim();
+    return needle ? allFriends.filter((f) => fuzzyIncludes(f.name, needle)) : allFriends;
   }, [allFriends, q]);
 
   const copyLink = async () => {
@@ -158,13 +158,16 @@ export function InviteSheet({
                 ))}
               </ScrollView>
             )}
+            {/* Pseudo-field (a button opening the browse pane) — styled to
+                match the shared SheetSearchField so every "search" affordance
+                in sheets reads as one design (Simon's unification call). */}
             <Pressable
               accessibilityRole="button"
               onPress={() => setPane('browse')}
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 11 }}
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}
             >
-              <Icon name="search" size={17} color={theme.inkSoft} />
-              <VText variant="body" color="inkSoft">Search and browse friends</VText>
+              <Icon name="search" size={16} color={theme.inkSoft} />
+              <VText variant="small" color="inkFaint">Search and browse friends</VText>
             </Pressable>
           </View>
 
@@ -185,23 +188,10 @@ export function InviteSheet({
         // remaining space.
         <BottomSheetView style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {header}
-          {/* .fr-search — fixed pill height + a centered, zero-vertical-padding
-              input so the value/placeholder sit on the pill's centre line. A
-              paddingVertical-only input lets iOS bias the (single-line) text down
-              in its line box — the value and grey placeholder read low. */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9, height: formSurface.height(44), backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule, borderRadius: radius.pill, paddingHorizontal: 14 }}>
-            <Icon name="search" size={17} color={theme.inkSoft} />
-            <BottomSheetTextInput
-              {...formSurface.textProps}
-              value={q}
-              onChangeText={setQ}
-              placeholder="Search friends"
-              placeholderTextColor={theme.inkSoft}
-              autoCapitalize="none"
-              autoCorrect={false}
-              style={{ flex: 1, paddingVertical: 0, fontFamily: 'InstrumentSans_400Regular', color: theme.ink, fontSize: phone.text('body').fontSize }}
-            />
-          </View>
+          {/* The shared sheet search field (one look for every in-sheet
+              search — the hand-rolled .fr-search pill drifted visually and
+              lacked the clear ✕; Simon's unification call). */}
+          <SheetSearchField value={q} onChangeText={setQ} placeholder="Search friends" />
           {friends.isPending ? (
             <View style={{ paddingVertical: 24, alignItems: 'center' }}>
               <ActivityIndicator />

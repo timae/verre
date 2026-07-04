@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Animated,
@@ -26,6 +26,7 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import {
   ApiError,
   deleteWine,
@@ -41,6 +42,7 @@ import {
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
+import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -74,10 +76,21 @@ export default function ImpressionDetail() {
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
   // Same query key as the line-up screen beneath this push — the cache is
-  // warm on entry and both screens share the 5s poll.
+  // warm on entry and both screens share the 5s poll. Same navigation-focus
+  // gate as useSessionPoll (this file still carries the pre-hook copy of the
+  // poll — migrate when next touched): paused while this screen isn't
+  // focused, resubscribe-and-refetch on return.
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
+    subscribed: screenFocused,
     refetchInterval: POLL_MS,
   });
   // Per-section graceful degradation (the line-up's lastRef merge): /state
@@ -457,6 +470,7 @@ export default function ImpressionDetail() {
             contentInsetAdjustmentBehavior="never"
             automaticallyAdjustKeyboardInsets
             keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             style={{ flex: 1 }}
           >
@@ -469,7 +483,18 @@ export default function ImpressionDetail() {
                 nameBottomRef.current = y;
               }}
             />
-            {body}
+            {/* Content panel: rounded top corners overlapping the photo's
+                underlap strip — the photo shows in the corner notches. */}
+            <View
+              style={{
+                marginTop: -radius.xl,
+                borderTopLeftRadius: radius.xl,
+                borderTopRightRadius: radius.xl,
+                backgroundColor: theme.bg,
+              }}
+            >
+              {body}
+            </View>
           </ScrollView>
           <FloatHead
             title={barTitle}
@@ -518,6 +543,7 @@ export default function ImpressionDetail() {
             scrollEventThrottle={16}
             automaticallyAdjustKeyboardInsets
             keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
             style={{ flex: 1 }}
           >
@@ -776,20 +802,23 @@ function Hero({
   const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
+  // Scrim stops scaled to the VISIBLE region (the container runs radius.xl
+  // past the seam) so the darkening behind the caption is unchanged; past the
+  // last stop the darkest colour continues into the underlap/notches.
+  const scrimEnd = heroH / (heroH + radius.xl);
   return (
     <View
       style={{
-        height: heroH,
+        // The photo runs radius.xl PAST the visual seam so the content panel
+        // below (rounded top corners, negative margin — see the body wrapper in
+        // the photo branch) overlaps it and the photo stays visible in the
+        // corner notches. The panel is what's rounded, not the photo.
+        height: heroH + radius.xl,
         overflow: 'hidden',
         borderTopLeftRadius: pulled ? radius.xl : 0,
         borderTopRightRadius: pulled ? radius.xl : 0,
-        // Soft bottom corners so the photo→content seam reads as a rounded panel
-        // edge rather than a razor-straight line (visible here because the
-        // content body below sits on the screen bg).
-        borderBottomLeftRadius: radius.xl,
-        borderBottomRightRadius: radius.xl,
       }}
-      onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16)}
+      onLayout={(e) => onNameBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16 - radius.xl)}
     >
       <Pressable accessibilityRole="button" accessibilityLabel="Open photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
         <Image source={{ uri: wine.imageUrl }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
@@ -797,10 +826,10 @@ function Hero({
       <LinearGradient
         pointerEvents="none"
         colors={HERO_SCRIM}
-        locations={[0, 0.45, 1]}
+        locations={[0, 0.45 * scrimEnd, scrimEnd]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 }}>
+      <View pointerEvents="none" style={{ position: 'absolute', left: 20, right: 20, bottom: 16 + radius.xl }}>
         <VText variant="label" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' }}>
           {posLabel(index, total)}
         </VText>
@@ -815,7 +844,7 @@ function Hero({
         </VText>
         {wine.producer || wine.type ? (
           <VText style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('small'), color: 'rgba(255,255,255,0.82)', marginTop: 2 }}>
-            {[wine.producer, wine.type].filter(Boolean).join(' · ')}
+            {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
           </VText>
         ) : null}
       </View>
@@ -867,7 +896,7 @@ function NameBlock({
             : hostBlind
               ? 'Hidden from guests — reveal to show it'
               : 'Revealed when the host or co-host reveals it'
-          : [wine.producer, wine.type].filter(Boolean).join(' · ')}
+          : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
       </VText>
     </View>
   );
@@ -997,10 +1026,13 @@ function NoteField({ value, onChange }: { value: string; onChange: (s: string) =
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
+  const noteRef = useRef<TextInput | null>(null);
+  useRegisterInput(noteRef);
   return (
     <View style={{ gap: 7, marginTop: 8 }}>
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>Your note</VText>
       <TextInput
+        ref={noteRef}
         value={value}
         onChangeText={onChange}
         multiline

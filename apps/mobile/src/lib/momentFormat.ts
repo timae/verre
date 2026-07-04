@@ -102,5 +102,14 @@ export const WINE_TYPES: Array<{ code: WineTypeCode; label: string }> = [
   { code: 'white', label: 'White' },
   { code: 'spark', label: 'Sparkling' },
   { code: 'rose', label: 'Rosé' },
-  { code: 'nonalc', label: 'Non-alc' },
+  { code: 'nonalc', label: 'Non-alcoholic' },
 ];
+
+// Display form of a wine-type CODE. Raw codes leaked into the UI (line-up
+// rows and impression captions showed lowercase "nonalc" when no variety was
+// set — Simon's catch): anything user-facing goes through this. Unknown /
+// legacy codes fall back to the code itself rather than blanking.
+export function wineTypeLabel(code: string | null | undefined): string | null {
+  if (!code) return null;
+  return WINE_TYPES.find((t) => t.code === code)?.label ?? code;
+}

@@ -28,6 +28,12 @@ export type MySessionRow = {
   ttl_seconds: number;
   lifespan: string | null;
   taster_count: number | null;
+  // Session category ('wine' in v1; NULL on rows predating the column — treat
+  // as 'wine', the only thing they could be). Widens with future category sets.
+  category: string | null;
+  // Everyone who was part of the moment (minus the viewer + block pairs;
+  // live identities ∪ durable members). Names are presentation-only.
+  people: { id: string; name: string }[];
   role: SessionRole;
   // Server-computed Moments-home routing — full model in docs/dev/moments-home.md.
   // `status` drives the LISTS (Upcoming = `=== 'upcoming'`, Recent = the rest);
@@ -332,6 +338,17 @@ export async function hideWine(code: string, wineId: string): Promise<void> {
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}/reveal`,
     { method: 'DELETE' },
   );
+  if (!res.ok) await throwApiError(res);
+}
+
+// Host/cohost-only; the server validates a FULL permutation of the current
+// list (length + id-set match) and rejects anything else.
+export async function reorderWines(code: string, orderedIds: string[]): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderedIds }),
+  });
   if (!res.ok) await throwApiError(res);
 }
 

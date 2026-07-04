@@ -144,12 +144,14 @@ export function usePhoneTokens() {
 // break the control: score numerals, invite/join codes, compact badges/counters,
 // constrained carousel labels, countdown cells, and numeric picker fields.
 
-// Extra bottom padding for scroll content above the native tab bar. The
-// react-native-screens tab host auto-insets content for the bar itself
-// (disableAutomaticContentInsets defaults off), so this is breathing room,
-// not bar clearance — verify on device and tune here if content still runs
-// under the translucent bar.
-export const TAB_BAR_CLEARANCE = 16;
+// Bottom padding for scroll content above the floating pill tab bar
+// (PillTabBar, ADR-0006). The pill is an absolute overlay — nothing insets
+// content for it — so this is REAL clearance now (it was 16px breathing room
+// in the NativeTabs era, when the RNS tab host auto-inset for the bar):
+// bar ≈ 60 (icon 24 + gap 3 + label 13 + 2×2 item pad + 2×8 bar pad)
+// + 14 bottom margin + ~24 breathing. Consumers add their own insets.bottom
+// (`insets.bottom + TAB_BAR_CLEARANCE`), matching the bar's own offset.
+export const TAB_BAR_CLEARANCE = 96;
 
 // Horizontal screen gutter. 22 nearly everywhere; the impression detail (02e)
 // deliberately uses 20 (a per-screen override — pass it locally, don't change
@@ -177,3 +179,9 @@ export const GLASS_FILL = 'rgba(20,18,15,0.42)';
 // bottom) that keeps white status-bar glyphs + glass controls + the hero title
 // readable over any photo. One gradient on both heroes (was drifting).
 export const HERO_SCRIM = ['rgba(15,12,10,0.25)', 'rgba(15,12,10,0.05)', 'rgba(15,12,10,0.82)'] as const;
+
+// Welcome-screen scrim (.welcome .scrim): a 4-stop variant of the hero scrim —
+// darker top (wordmark + h1 sit ON the photo), near-clear middle, heavy bottom
+// (copy + buttons). Distinct from HERO_SCRIM by design, same literal family.
+export const WELCOME_SCRIM = ['rgba(15,12,10,0.42)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.74)'] as const;
+export const WELCOME_SCRIM_STOPS = [0, 0.26, 0.56, 1] as const;

@@ -1,13 +1,14 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState } from 'react';
-import { type LayoutChangeEvent, Modal, Pressable, TextInput, View } from 'react-native';
+import { useEffect, useState, useRef } from 'react';
+import { Keyboard, type LayoutChangeEvent, Modal, Pressable, TextInput, View } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
@@ -180,6 +181,43 @@ export async function pickCover(maxBytes = MAX_COVER_BYTES): Promise<{ dataUrl: 
 
 // From/To — brand .field box, EMPTY by default (our own field can render
 // empty; the OS compact pills couldn't, and allowed no format control). Set
+// .field + .select-wrap — a tappable field box that reads like a dropdown
+// (value or placeholder + a trailing chevron). Native-chrome dropdown rendered
+// as a brand trigger; the actual choosing happens in a sheet. (Extracted from
+// add.tsx per the catalog's pending-extraction list.)
+export function SelectField({
+  value, placeholder, onPress, accessibilityLabel,
+}: {
+  value: string;
+  placeholder: string;
+  onPress: () => void;
+  accessibilityLabel: string;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('formControl');
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      // Dismiss first so a tap coming FROM a focused text field opens the sheet
+      // on the first tap — otherwise keyboardShouldPersistTaps can spend that tap
+      // dismissing the keyboard and the open needs a second tap.
+      onPress={() => { Keyboard.dismiss(); onPress(); }}
+      style={({ pressed }) => ({
+        minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
+        borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,
+      })}
+    >
+      <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
+        {value || placeholder}
+      </VText>
+      <Icon name="chevron-down" size={18} color={theme.inkSoft} />
+    </Pressable>
+  );
+}
+
 // state shows the year-less mock format + an × to clear. Tapping presents the
 // OS INLINE picker (calendar + time) in a content-sized bottom sheet — the
 // seed exists only inside the sheet and commits only on Done; swipe-dismiss
@@ -318,10 +356,13 @@ export function NotesField({
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
+  const inputRef = useRef<TextInput | null>(null);
+  useRegisterInput(inputRef);
   return (
     <View style={{ gap: 7 }}>
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       <TextInput
+        ref={inputRef}
         value={value}
         onChangeText={onChange}
         multiline

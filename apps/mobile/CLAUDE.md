@@ -120,15 +120,17 @@ per-element on mixed screens; ask when unsure):
   explicit and flagged, never silent simplifications. In-flow screens use the
   shared `VBar` (the design's variant-B bar), not the native stack header.
 
-Consequence for this app: the bottom nav IS `NativeTabs`
-(`expo-router/unstable-native-tabs`, swapped in milestone 2 — PillTabBar is
-gone). Tint-only knobs from theme tokens: `tintColor`=accent,
-`backgroundColor`=surface, label/icon colors; SF Symbols for icons (OS
-iconography is part of the native-chrome ruling). The undecided 4th slot is a
-tappable "Soon" tab (`(tabs)/soon.tsx`) until explore-vs-notifications is
-decided. `TAB_BAR_CLEARANCE` (now in `src/lib/layout.ts`) is breathing room
-only — the react-native-screens tab host auto-insets content. Sheets, menus,
-alerts, pickers: reach for the native primitive first when those screens land.
+Consequence for this app: the bottom nav is the **brand `PillTabBar`**
+(`components/PillTabBar.tsx` on `expo-router/js-tabs` — **ADR-0006**, which
+supersedes ONLY the bottom-nav slice of this ruling: the iOS-26 NativeTabs bar
+scrambled in use — label truncation + misalignment after stack returns, themed
+colors dropped — all open upstream bugs, see the ADR). The undecided 4th slot
+is a tappable "Soon" tab (`(tabs)/soon.tsx`) until explore-vs-notifications is
+decided. ⚠️ `TAB_BAR_CLEARANCE` (`src/lib/layout.ts`) is REAL clearance now
+(96): the pill is an absolute overlay, nothing auto-insets for it — every
+scrolling tab screen pads `insets.bottom + TAB_BAR_CLEARANCE`. Sheets, menus,
+alerts, pickers: still reach for the native primitive first — the ruling
+stands everywhere but the bottom nav.
 
 ## Component catalog + reuse rule (READ BEFORE BUILDING ANY UI)
 
@@ -160,7 +162,7 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Button**: `Button` (`ui/Button.tsx`) — `primary/positive/secondary/tertiary/danger`, `sm/md/lg`, `bar`, `block`, `loading`+`loadingTitle`. Any real button. It owns the Dynamic Type `button` surface; don't recreate fixed-height text buttons.
 - **Icon**: `Icon` (`ui/Icon.tsx`) — the vendored 24×24 SVG set (`IconName` union). All iconography. Add new glyphs here, never inline an SVG.
 - **Text input**: `TextField` (`ui/TextField.tsx`) single-line; `NotesField` (`moments/momentForm.tsx`) multiline. `TextField` owns the `formControl` Dynamic Type surface and deliberately omits `lineHeight` on single-line `TextInput` so iOS centers entered glyphs correctly. Pass `surface="code"` for fixed-format codes. (A shared `<TextArea>` is a pending extraction — see below.)
-- **Bottom sheet**: `Sheet` (`ui/Sheet.tsx`) — the gorhom shell (themed bg/handle/backdrop + tab-bar-hide). All sheets.
+- **Bottom sheet**: `Sheet` (`ui/Sheet.tsx`) — the gorhom shell (themed bg/handle/backdrop + tab-bar-hide). All sheets. ⚠️ Two load-bearing gorhom facts baked into the shell + consumers: (1) the BACKDROP renders as a no-zIndex sibling BEFORE the sheet container, so the shell z-indexes backdrop (99) + container (100) — without that, a screen's zIndexed absolute overlays (hero bar, sticky tab/rail overlays, reconnecting bar) paint OVER the dim layer (`containerStyle` alone does NOT reach the backdrop — a fix that "looks right" but isn't); (2) sizing is two-mode: dynamic fit-to-content (`maxDynamicContentSize`, plain-View rows — a `BottomSheetScrollView` measures 0 under dynamic sizing) while content fits, or fixed-snap + `BottomSheetScrollView` when it can't (rows past the cap CLIP unreachably under dynamic sizing). The compare sheets (`CompareBody.tsx`) show the cap-aware mode switch + the search height-lock recipe.
 - **Anchored dropdown menu**: `ui/AnchoredMenu.tsx` — `AnchoredMenu` (the `.ir-menu` panel: Modal shell + surface card + `elevation.menu` shadow + dur1 fade/4px-rise + flip-up-near-bottom, `{top,bottom}` anchor), `MenuItem` (icon/label row, `tone`/`disabled`/`active`), `MenuSeparator`, `AnchorButton` (measure-self ⋯ trigger). ALL ⋯ dropdowns route through this. (Anchor to a ROW not the button → keep a manual `rowRef.measureInWindow` like PeopleSheet's PersonRow.)
 - **Query-failure UI**: `ui/ConnectionState.tsx` — `ErrorState` (full-screen + retry), `ConnectionBanner`, `ReconnectingBar`, `connectionView()`. All poll/error affordances.
 - **Terminal centered message**: `CenteredMessage` (`ui/ConnectionState.tsx`) — `title` + optional `body`, vertically centered, NO retry (the no-button sibling of `ErrorState`). For dead-end states a refetch can't fix ("this impression is gone", "you can't edit this"); pass `pending` to blank the copy while a query resolves. Caller owns the bar above it. Reuse instead of re-rolling the flex-center block.
@@ -169,16 +171,18 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Score WRITE**: `ScoreInput` (`scoring/ScoreInput.tsx`) — wide slider + editable number + word (gesture+haptics). The editable score numeral uses the `score` Dynamic Type surface, not the generic badge/code surfaces.
 - **Flavour wheel (READ)**: `FlavourWheel` (`scoring/FlavourWheel.tsx`).
 - **Group charts (02d Compare)**: `ComparisonWheel` (`scoring/ComparisonWheel.tsx`, the C1b min→max band wheel, wedge tap → drill-in) + `RadarOverlay` (`scoring/RadarOverlay.tsx`, ≤4-taster overlaid radar). Geometry from `@verre/core` (`comparisonWheelGeometry`/`radarOverlayGeometry`); aggregation from `aggregateFlavourAxes` (client-side per the §7 ruling — no server aggregate). Person-series colours via `usePersonColors()` (`theme/flavourColors.ts` — derived from the palette base ramp, stable roster-index assignment). ⚠️ The labelled charts' natural canvas (size 232 + 2×58 pad = 348pt) is WIDER than a small phone's content column — every host must measure its width (`onLayout`) and pass `maxWidth` (all three wheels + `FlavourWheel` take it; it scales the whole SVG uniformly, the design's `.radar { max-width:100% }`).
-- **Session-screen chrome (line-up 02b + compare 02d)**: `SessionTabs` (`moments/SessionTabs.tsx` — the .vtabs strip, CONTROLLED: Compare is an **in-screen tab swap** per Simon's 2026-07-02 ruling — everything above the tabs (bar or cover hero) stays, no route change, no back-to-line-up; the Add pill + reveal strip are line-up furniture and hide on Compare), `CompareBody`/`PeopleRail`/`ComparePickerSheet`/`buildComparePeople` (`moments/CompareBody.tsx` — the whole 02d compare surface; **the behaviour spec-of-record is `docs/dev/proposals/structure-wheel.md` §7 + ADR-0005 — read those before touching it**. Headlines: multi-open collapsed-by-default cards; the DECIDED 02d·4 avatar rail is the ONLY select/deselect surface (screen-owned hidden set; deselected people vanish from cards, header + ranking recompute; rail sticky like the reveal strip — plain: `stickyHeaderIndices`, hero: the strip overlay slot); chart mode keys on the STRUCTURE-ENGAGED taster count; person rows are per-person DETAIL views, not toggles; axis drill-in from C1b wedges or radar labels; Show-all sheet), `SessionMenu`/`SessionMenuButton`/`useBlindForEveryoneToggle` (`moments/SessionMenu.tsx` — the ⋯ menu + the optimistic blind-for-all mutation), `SessionFatalView` (`moments/SessionFatalView.tsx` — gone/removed/banned/invalid terminal states).
+- **Session-screen chrome (line-up 02b + compare 02d)**: `SessionTabs` (`moments/SessionTabs.tsx` — the .vtabs strip, CONTROLLED: Compare is an **in-screen tab swap** per Simon's 2026-07-02 ruling — everything above the tabs (bar or cover hero) stays, no route change, no back-to-line-up; the Add pill + reveal strip are line-up furniture and hide on Compare), `CompareBody`/`CompareToolbar`/`ComparePickerSheet`/`buildComparePeople` (`moments/CompareBody.tsx` — the whole 02d compare surface; **the behaviour spec-of-record is `docs/dev/proposals/structure-wheel.md` §7 + ADR-0005 — read those before touching it**. Headlines: multi-open collapsed-by-default cards; cards render in LINE-UP order by default with a toolbar sort menu (line-up / highest / lowest rated / most / least agreement / most ratings) + an impression search (name/producer/vintage/grape/type/region/country — NOT link/vinification/description); the picker sheet is the ONLY select/deselect surface since the toolbar superseded the 02d·4 avatar-chip rail (Simon 2026-07-03; screen-owned hidden set; deselected people vanish from cards, header recomputes; toolbar sticky like the reveal strip — plain: `stickyHeaderIndices`, hero: the strip overlay slot, where it renders TWICE — search value must stay screen state); chart mode keys on the STRUCTURE-ENGAGED taster count; person rows are per-person DETAIL views, not toggles; axis drill-in from C1b wedges or radar labels; Show-all sheet), `SessionMenu`/`SessionMenuButton`/`useBlindForEveryoneToggle` (`moments/SessionMenu.tsx` — the ⋯ menu (People/Share/Settings) + the optimistic blind-for-all mutation; the Blind-for-all ROW lives in the line-up's eye menu since ADR-0007, not here), `SessionFatalView` (`moments/SessionFatalView.tsx` — gone/removed/banned/invalid terminal states).
 - **Session poll bootstrap**: `useSessionPoll(code)` (`lib/useSessionPoll.ts`) — visit → `/state` poll → per-section `lastRef` merge (keyed on code+identity, checked synchronously) + fatal/removed handling. ANY new screen reading the shared `/state` poll uses this hook (the impression detail still carries its own pre-hook copy of the merge — migrate when next touched).
 - **Flavour WRITE**: `FlavourInput` (`scoring/FlavourInput.tsx`) — the per-axis fill-track grid (whole 0–5 steps, gesture+haptics, VoiceOver-adjustable); axes from `resolveAxes`, colour from the active theme via `useFlavourColors()` (`theme/flavourColors.ts`). ALL flavour-intensity input.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
 - **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
 - **Form widgets + image pipeline**: `momentForm.tsx` — `DateField`, `NotesField`, `fitCover`/`pickCover`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ wine images cap LOWER than covers — see add-impression notes).
 - **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens.
+- **Bottom nav**: `PillTabBar` (`PillTabBar.tsx`) — the floating-pill tab bar (`.tabbar-float`, ADR-0006) with the drag-lens (hold ≈180ms → a real Liquid Glass lens rides the bar; release commits; landing on the current tab is NOT input). Rendered via the tabs layout's `tabBar` prop; absolute overlay: content clears it with `insets.bottom + TAB_BAR_CLEARANCE`. ⚠️ The glass layering in that file is LOAD-BEARING physics learned over a day of device checks — read the in-file header + ADR-0006 and re-run the dev-gallery GLASS LABS (`/you/dev-gallery`) before touching any glass property. Don't add per-screen nav bars.
 - **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
 - **Thumb**: `ui/Thumb.tsx` — square cover/wine thumbnail with the glass-glyph placeholder; props `uri`, `size`, `radius`. ALL cover/wine thumbs (wrap + overlay for the line-up hidden-from-guests badge).
 - **Sheets (domain)**: `PeopleSheet`, `InviteSheet` (`moments/`).
+- **Drag-to-reorder rows**: `DraggableRows` (`moments/DraggableRows.tsx`) — long-press lift + sibling springs + edge auto-scroll + haptics over NON-virtualized mapped rows in a `Reanimated.ScrollView` (hand-rolled: reorder libs need to own a FlatList or can't be device-verified on reanimated 4). Used by both line-up layouts; needs the host scroll's `AnimatedRef` + offset + a maxScroll SharedValue. `enabled` gates drag, `denied` answers a hold with a warning haptic (sort/search active). ⚠️ Worklet closure-capture ordering is load-bearing (consts before gesture builders — the PillTabBar crash class).
 - **Shared screen constants + Dynamic Type surfaces (`lib/layout.ts`)**: `GUTTER`(22), `FOOT_CLEARANCE`/`FOOT_CLEARANCE_IR`, `TAB_BAR_CLEARANCE`, `HERO_RATIO` (shared by BOTH heroes — same height), `GLASS_FILL` (the over-photo glass fill), `HERO_SCRIM` (the hero-photo gradient), and `FONT_SURFACES` / `phone.surface(...)`. Import constants; don't re-declare. Use `phone.surface(name)` for scalable container math and `VText surface="..."` / `{...surface.textProps}` for matching text caps. `formControl` intentionally stays uncapped because field height math tracks editable text scale. ⛔ **CI-ENFORCED**: `scripts/check-mobile-design-tokens.mjs` (workflow `check-mobile-design-tokens`) FAILS if converged design constants are re-inlined; `scripts/check-mobile-dynamic-type.mjs` (workflow `check-mobile-dynamic-type`) is a partial static backstop for inline caps, common fixed-height text controls, and TextInput surface props. Device checks still own clipping/overlap truth.
 - **Label helpers (`lib/`)**: `initials.ts` (code-point-aware avatar initials — used by `Avatar`), `momentFormat.ts`, `scoreWords.ts`, `locale.ts`, `contrast.ts`. `theme/color.ts` `mix()`/`alpha()` for press-state/tint math (use instead of raw rgba).
 
@@ -195,7 +199,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<TextArea>`** beside `TextField` — `momentForm.NotesField` + the impression's private `NoteField` re-encode the same multiline focus trick; the impression should use `NotesField` (expose `minHeight`/`maxHeight` — `maxHeight` already half-exists).
 - **`PushGroup`/`PushRow` (moments/index.tsx) → adopt `SetGroup`/`SetNav`** (same carded nav-row primitive, add a trailing-slot/`count`).
 - **`<OptionSheet>`** — `create.CategorySheet` ≈ `add.TypeSheet` (same check-list body) — extract for THAT case. ⚠️ Do NOT blindly fold in `add.CountrySheet`: it needs a fixed 75% snap + `BottomSheetScrollView` + search (a load-bearing config difference — see its in-file comment); make it a separate `<SearchableOptionSheet>` if anything.
-- **Export `add.SelectField`** from `momentForm` — re-inlined for create's category trigger.
+- ✅ **DONE (partial) — `SelectField` exported from `momentForm`** (moved out of add.tsx; adopted by add + the moments-list filter sheet). Create's category trigger still carries its own inline copy — migrate when next touched.
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - **Promote `ClampText`** (`impression/[wineId].tsx`) to `components/`; `OvcAbout`'s description block is a copy.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
@@ -234,10 +238,10 @@ reference for the app; the app's design lives here + in `docs/design/`.)
   hierarchy, and a flattened dead-end never exists for the finder to hit.
   Applies to any future edge-to-edge screen (feed hero cards). The per-tab
   `disableAutomaticContentInsets` would flip the whole tab — don't.
-- **Tab bar hiding**: `NativeTabs` host prop `hidden` (pathname-keyed in
-  `(tabs)/_layout.tsx`) — 02e hides the bar (footer action bar replaces the
-  nav per design). Do NOT use the per-trigger `hidden` (that's the
-  unnavigable-tab trap from M2).
+- **Tab bar hiding**: the tabs layout computes one `hidden` boolean (pathname
+  list + sheet/reveal signal + keyboard) and simply doesn't render the
+  `PillTabBar` — the pill is an absolute overlay, so hide/show never resizes
+  scenes. 02e hides the bar (footer action bar replaces the nav per design).
 - **Haptics** (`expo-haptics`): selection tick per 0.25 step while dragging,
   light impact on commit. No-ops in the Simulator — verify on device.
 - **New native modules (M3)**: `expo-haptics`, `expo-linear-gradient`
@@ -315,44 +319,45 @@ names in `src/lib/api/sessions.ts`.
   !revealedAt`** (that combination briefly surfaced the server's "Wine N" stub on
   a blind-for-all reveal; the placeholder must stay until the poll clears
   `_blind`). So: label keys on `revealedAt`; placeholder keys on `_blind`.
-- **Two-state host UX (Simon's ruling — full design, NOT web parity).** The web
-  shows per-row reveal/hide inline always; mobile has a resting view + a
-  dedicated reveal MODE (design `tBlindHost`→`tReveal` / `tBlindAll`→
-  `tBlindManage`). Resting: the strip shows "N of M hidden from guests" /
-  "Hidden from everyone" (blind-for-all) / "All revealed…" + a **Reveal** that
-  enters mode. Mode: the strip shows a count chip + **Hide all** / **Reveal
-  all**, each row's score/Rate slot swaps to a per-row **Reveal/Hide pill**
-  (`.lu-pill-reveal` accent fill / `.lu-pill-hide` outline), and a sticky
-  **Done** footer exits. Guests (and providers — they can't reveal, server
-  rejects) always get the quiet "Blind tasting · host reveals" strip, never the
-  host variants.
-  - ⚠️ **The controls always STAY — "reveal all" is not "finished".** Hide all
-    AND Reveal all are BOTH live in mode regardless of state (only the transient
-    in-flight `busy` disables them); the resting **Reveal** button is ALWAYS
-    rendered (even when everything's revealed) so Done never traps the host out
-    of the controls. (First build wrongly disabled the buttons by state + hid the
-    resting Reveal when nothing was hidden → Done was a one-way door. Fixed.)
-  - **Tabs + strip are STICKY in BOTH resting and reveal mode** (Simon's ruling
-    — the mock only stickies the mode strip). Two layouts, same end result
-    (inline above the line-up, pin under the title bar on scroll):
-    - **Plain (no cover):** fixed `VBar`, so native sticky works — tabs are a
-      fixed View above the FlatList; the strip is a **sticky FlatList cell**
-      (`STRIP_CELL` sentinel at `data[0]`, wine `index` offset by 1) with
-      `stickyHeaderIndices={[1]}`. ⚠️ `[1]` not `[0]` — a `ListHeaderComponent`
-      (the ovc) shifts sticky indices by +1.
-    - **Cover-hero:** the floating bar means native sticky can't pin under it →
-      the **Dynamic Overlay pattern**. INLINE order is **photo → tabs → about →
-      strip → rows** (tabs UNDER the photo, ABOVE the about; strip separate,
-      below the about — NOT one block). 📖 **The full recipe + the dead ends live
-      in `docs/design/patterns/collapsing-hero-sticky-subheaders.md` — read it
-      before touching this or building a new hero screen.** Impl: `CoverHeroLineup`.
-  - **Collapse is MEASURED** (`scrollY ≥ titleBottom − BAR_H`, `titleBottom` via
-    `onLayout`), not a magic constant — a proportional-height hero mis-fires
-    otherwise. `BAR_H`/`PIN_Y` math + the seam fix: see the pattern doc.
-  - **Collapsed/in-flow bars are SOLID OPAQUE, no bottom rule** — the cover-hero
-    `HeroTopBar`, the impression `FloatHead` (collapsed), and the impression
-    `FootBar`, all flat `theme.bg`, BlurView removed. Pre-collapse over-photo
-    stays transparent. Rationale: `docs/design/decisions/0003-collapsed-bars-opaque.md`.
+- **Reveal UX = DIRECT MANIPULATION on the photo (ADR-0007, Simon 2026-07-04
+  — supersedes the earlier two-state resting-strip + reveal-MODE design).**
+  For hosts/cohosts the impression photo is the always-live control: hidden →
+  translucent GLASS_FILL + eye-off over the whole photo, hint "Double-tap the
+  photo to reveal" — first tap ARMS (accent overlay, hint flips to "tap once
+  more", 2.5s auto-disarm), second tap reveals; revealed → clear photo with a
+  corner eye badge cue, a single tap ANYWHERE on the photo hides INSTANTLY
+  (the asymmetry is deliberate: revealing leaks within a poll tick and can't
+  be unleaked, hiding is damage control and must stay fastest).
+  The blind-for-all masked placeholder is the same arm→confirm target. Row
+  copy: "Hidden from guests" + a hint third line; guests' masked rows carry
+  "Hidden until the host reveals it" (BOTH strips deleted — host strip AND
+  guest quiet strip). Bulk + scope controls live in the **eye menu** on the
+  toolbar line under the tabs (count header, Reveal all, Hide all, Blind for
+  all — the last MOVED from the session ⋯ menu, which is now identical for
+  blind and non-blind). Row-hold stays free for the planned drag-to-reorder.
+  Revealed rows hint the way back ("Tap the photo to hide", in the
+  caption slot). Toolbar PLACEMENT (Simon): right ABOVE the rows — the old
+  strip's spot below the about block — pinning under the tabs on scroll.
+  The toolbar is now the full line-up control row: [eye ⌄][sort ⌄][search──]
+  — eye menu on the very LEFT (blind host/cohost only), search on the very
+  RIGHT, sort between; ALWAYS rendered, no size threshold (Simon). Sort =
+  line-up / my highest / my lowest / not-rated-first (VIEWER's scores);
+  search = the fuzzy Compare field set. Search/sort NEVER
+  renumber rows (.lu-idx and "Impression N" key on the true position via an
+  indexById map); reveal counts stay full-list.
+  Plain = a Reanimated.ScrollView (left FlatList for drag-to-reorder —
+  translated rows + virtualization don't mix; sticky toolbar via ScrollView
+  stickyHeaderIndices keyed on `ovc` presence); cover-hero = the strip
+  overlay slot. ⭐DRAG-TO-REORDER (host tier, web parity — allowed on blind,
+  renumbering is the host's call): long-press a row ≈400ms → lift + drag
+  (DraggableRows, see catalog), drop = optimistic permutation of the cached
+  wines + POST /wines/reorder (full-permutation-validated server-side).
+  Disabled while a sort/search narrows the list — a hold answers with a
+  warning haptic; the accent sort icon explains why. Reveal MODE, the Done
+  footer, the per-row
+  pills, and the reveal-mode tab-bar-hide counter (`pushRevealMode`/
+  `popRevealMode` in `lib/sheetVisibility.ts`) are DELETED — don't resurrect
+  them from old diffs; sheets are the only in-screen tab-bar-hide reason now.
 - **Host framing is HONEST (Simon's ruling): the host is NOT blind on a normal
   blind session** — the server returns their full wines, so host rows show the
   real wine + a `.lu-hidebadge` eye-off on the thumb + a "Hidden from guests"
@@ -377,15 +382,6 @@ names in `src/lib/api/sessions.ts`.
     the impression body shows a transitional "Revealing…" so it doesn't say
     "reveal to show it" while the bar says "Hide". (Earlier `_blind && !revealedAt`
     surfaced the literal "Wine N" stub for ~5s — a review catch.)
-- **Reveal mode hides the OS tab bar via a SECOND ref-counted signal**, not the
-  pathname-keyed `hidden` list (reveal mode is screen STATE, not a route).
-  `src/lib/sheetVisibility.ts` now exports `pushRevealMode`/`popRevealMode` +
-  `useTabBarOverlayHidden()` (ORs the sheet count and the reveal-mode count);
-  `(tabs)/_layout.tsx` consumes the combined signal. The Done footer replaces
-  the nav (design ruling "in-flow footer actions replace the nav"). Reveal mode
-  is bound to MOUNT (not focus) — `router.push` to an impression keeps the
-  line-up mounted, so the override correctly persists and `router.back()` resumes
-  the mode; a genuine unmount or a non-blind/role-loss poll fires the pop.
 - **Optimistic reveal/hide** stamps/clears `revealedAt` ONLY (never fabricates
   identity fields — a masked wine stays masked until the poll) and writes the
   shared `['session-state', code, myIdentityId]` cache both screens read. The
@@ -397,25 +393,17 @@ names in `src/lib/api/sessions.ts`.
   mid-flight). The pre-existing `toggleBlindForEveryone` still uses the
   snapshot-restore pattern — flagged, not fixed here.
 - **New `eye` icon** in `Icon.tsx` (the open-eye `i-eye` design path; `eyeoff`
-  already existed). The per-row pill is a child `Pressable` inside the row's
-  Pressable — RN's responder system grants the touch to the inner pill, so a pill
-  tap does NOT also fire the row's navigate (verified pattern, same as IrBar's
-  sibling controls).
-- **Flagged deviations (Simon to confirm at review):** (1) tabs+strip are sticky
-  in BOTH modes AND the cover-hero tabs now stick (mock stickies only the mode
-  strip; the cover tabs were a prior "not sticky" deviation) — Simon's rulings,
-  recorded above; (2) the `.vfoot-rev` Done footer is a SOLID bar (+ top rule)
-  not the mock's `background:none` — RN rows scroll UNDER an absolute footer, so
-  a transparent one would bleed; (3) the "All revealed" resting copy is new (the
-  static mock has no nothing-hidden state); (4) the host's photo-hero on the
-  impression has no hidden-from-guests badge yet (consequence of the
-  honest-framing deviation; the line-up rows DO carry it). DEVICE-CHECK residuals
-  (overlay approach, not architecture): the overscroll rubber-band feel at the
-  very top of the cover-hero, and confirming no sub-frame jitter at the overlay's
-  opacity swap on a low-end Android — both tuning, neither can resurrect the
-  earlier collapse/double-title/half-stick bugs. Security review: CLEAN — gating
-  is server-side, the client checks are cosmetic, the optimistic write can't leak
-  an un-revealed identity.
+  already existed). The photo overlay / corner badge are child `Pressable`s
+  inside the row's Pressable — RN's responder system grants the touch to the
+  inner control, so a control tap does NOT also fire the row's navigate
+  (verified pattern, same as IrBar's sibling controls). A BUSY (disabled)
+  control doesn't claim the responder, so a tap during the brief in-flight
+  window falls through to the row press — accepted.
+- **Known deviation:** the host's photo-hero on the impression has no
+  hidden-from-guests badge yet (consequence of the honest-framing deviation;
+  the line-up rows DO carry it). Security posture unchanged from the 02b
+  review: gating is server-side, client checks are cosmetic, the optimistic
+  write can't leak an un-revealed identity.
 - **FIXED (was the flagged M3 gap):** the impression detail now uses the same
   `lastRef` per-section merge as the line-up (a `wines:null` degraded poll keeps
   the last good list; the "This impression is gone" terminal requires a PRESENT

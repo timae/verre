@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from 'react';
 
-// Tracks whether ANY bottom sheet is currently open, so the OS tab bar
-// (NativeTabs in (tabs)/_layout.tsx) can hide while a sheet is up. We hide the
+// Tracks whether ANY bottom sheet is currently open, so the pill tab bar
+// (PillTabBar via (tabs)/_layout.tsx) can hide while a sheet is up. We hide the
 // bar rather than rendering the sheet in a react-native-screens FullWindowOverlay
 // (the obvious "above the tab bar" trick): under @gorhom/bottom-sheet v5 the
 // overlay threads a SECOND, full-window container height into the sheet that
@@ -44,30 +44,14 @@ export function useAnySheetOpen(): boolean {
   );
 }
 
-// Blind "Reveal mode" on the line-up (02b) hides the OS tab bar the same way a
-// sheet does — the design replaces the nav with a sticky "Done" footer while
-// the host reveals/hides impressions. Reveal mode is screen STATE (not a route,
-// so the pathname-keyed `hidden` list in (tabs)/_layout can't catch it) and not
-// a sheet (so it doesn't belong on the sheet count). A separate ref-counted
-// flag keeps the two reasons independent; the tab layout ORs both.
-let revealModeCount = 0;
-
-export function pushRevealMode() {
-  revealModeCount += 1;
-  emit();
-}
-
-export function popRevealMode() {
-  revealModeCount = Math.max(0, revealModeCount - 1);
-  emit();
-}
-
-// True when the OS tab bar should hide for an in-screen reason the route path
-// can't express (a sheet up, or blind Reveal mode active).
+// True when the tab bar should hide for an in-screen reason the route path
+// can't express (a sheet up). Blind Reveal MODE — the second counter that
+// used to feed this — was removed with the mode itself (ADR-0007: the photo
+// is the reveal control now, no footer replaces the nav).
 export function useTabBarOverlayHidden(): boolean {
   return useSyncExternalStore(
     subscribe,
-    () => count > 0 || revealModeCount > 0,
+    () => count > 0,
     () => false,
   );
 }

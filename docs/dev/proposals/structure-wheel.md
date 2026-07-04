@@ -2,9 +2,11 @@
 
 **Status:** **SHIPPED end-to-end** — Expand (PR #56) → data migration (PR #59, `49aa684`) → Contract
 (PR #60, `bf9adc0`, 2026-06-29; legacy `FL_*`/`detectFL` deleted) all merged to main, plus the palette
-VALUES + native input (PR #62, 2026-07-02). The one remaining §7 item (multi-taster range view = design
-02d) is **spec-pinned and in build** — see §7 for the 2026-07-02 rulings. Historical decision detail
-below is kept as the rationale-of-record.
+VALUES + native input (PR #62, 2026-07-02) **and §7's multi-taster range view = the native compare
+screen 02d (PR #64, `82192d1`, 2026-07-02)** — see §7 for the as-built rulings. Nothing in this
+proposal remains to build; the §10 leftovers are parked on OTHER features (profile redesign, badge
+revamp, the separate alcohol-attribute proposal, the future aroma tree). Kept in place as the
+rationale-of-record per the proposals lifecycle.
 Headline corrections from review: this is
 **not** "only data changes" — two hard-coded SQL aggregates (profile, badges) duplicate the descriptor
 keys (§2, §6a/§6b); the missing-vs-zero render is a real Build-1 decision (§6d); a destructive
@@ -663,11 +665,17 @@ C1b range wheel. With 1–4 profiles the structure-givers sort to the TOP of the
 colours pair with polygons; a structure-only score-0 rater gets a row with an em-dash score so their
 polygon has a legend). Rater iteration is roster-ordered (the wire map follows Redis SCAN order —
 unsorted it would flicker between polls), and raters with neither a score nor structure (notes-only
-/ stale rows) are excluded from Compare entirely. Plus the ranked impression list + per-impression
-accordion.
+/ stale rows) are excluded from Compare entirely. Plus the impression list + per-impression
+accordion — **in LINE-UP order (Simon's ruling 2026-07-03, supersedes the score-ranked list): the
+two tabs read as one list.** Within a card, scored rater rows stay score-ranked.
 
-**People-selector = 02d·4 variant B, the AVATAR RAIL (DECIDED, Simon 2026-07-02)**, adapted to
-hide/unhide semantics: one screen-level hidden set drives every compare view — the rail chips, the
+**People-selector: the inline avatar-chip rail was SUPERSEDED 2026-07-03 (Simon) by the one-line
+COMPARE TOOLBAR** — People button (opens the picker sheet, now the only select/deselect surface) +
+sort menu (line-up default / highest / lowest rated / most / least agreement / most ratings;
+agreement = score span max−min, <2 scores sorts last) + impression search (all detail fields except
+link, vinification, description; blind stubs match only their "Impression N" label). The hidden-set
+semantics below are unchanged. Original ruling (2026-07-02, 02d·4 variant B) kept for history:
+one screen-level hidden set drives every compare view — the rail chips, the
 person rows, and the lead-chip picker sheet ("Compare who?" with Everyone / Just me / Me + friends
 presets + search + the mock's Friend row tag; friends = mutual follows via `GET /api/me/friends`,
 fetched lazily when the sheet opens). Rail chip states: selected chips wear the accent active state,
@@ -685,10 +693,12 @@ moves another; closing is a deliberate tap; the card top stays put and content u
 **The avatar rail is the ONLY select/deselect surface** (second ruling round): deselected people
 disappear from every card entirely — rows, charts, Show-all sheet — and the card header (group ★ +
 consensus) and the RANKING recompute over the selection (the mock's selAccItem semantics). **Person
-rows are per-person detail views, not toggles**: tapping a name swaps the card's chart to that
-person's flavour wheel — NO score/word under the wheel (Simon: the score already shows on their
-row; a person without structure detail draws the empty wheel so the card height stays put). Tap
-again returns to the group view; axis drill and person detail are mutually exclusive. The **axis split opens from a C1b wedge OR an axis
+rows: in RADAR mode (2–4 profiles) a structure-giver's row toggles their LINE on the overlay
+(row dims, chart-layer only — the rail stays the selection surface); in the other modes a row tap
+opens that person's detail** — the card's chart swaps to their flavour wheel, NO score/word under
+the wheel (Simon: the score already shows on their row; a person without structure detail draws the
+empty wheel so the card height stays put), tap again returns to the group view; axis drill and
+person detail are mutually exclusive. The **axis split opens from a C1b wedge OR an axis
 label — on the radar too** (label tap); the radar wheelhead is just "Group flavour" (no taster
 count, no legend dots — the row dots carry the colour mapping). The rail's left clip edge (chips
 sliding under the picker chip) wears a soft bg→transparent fade, not a hard line.
@@ -730,9 +740,11 @@ rater). The compare row's maker line is producer-only (no type/variety — same 
 
 **Colours:** axis colours from the theme flavour palette (`useFlavourColors()`), never the mock's
 baked hexes. Per-person series colours (≤4 radar polygons/dots) derive from the theme's palette base
-ramp (structure and aroma are assignments off one shared hex ramp per theme). As built: a hue-spread
-permutation of the 13 structure hexes (`theme/flavourColors.ts` `PERSON_SERIES` — aroma adds only
-`Chemical` beyond those, deliberately skipped), assigned in stable roster order.
+ramp (structure and aroma are assignments off one shared hex ramp per theme). As built (refined on
+device 2026-07-02): the 13 structure hexes in the palette's OWN canonical order — the same colour
+family the 5+ wheel draws with; an earlier hue-spread permutation was rejected
+(`theme/flavourColors.ts` `PERSON_SERIES`; aroma adds only `Chemical` beyond those, deliberately
+skipped) — assigned in stable roster order.
 
 **C1b band tones:** the mock's `color-mix(in srgb, colour 42%|92%, var(--surface))` maps to
 `theme/color.ts` `mix()` against `theme.surface`.

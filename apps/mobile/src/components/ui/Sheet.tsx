@@ -11,7 +11,7 @@ import { useTheme } from '@/theme';
 //
 // Above the tab bar: the sheet renders IN-SCREEN (gorhom v5 hosts it in its own
 // BottomSheetHostingContainer inside the per-screen BottomSheetModalProvider).
-// To sit above the OS tab bar we HIDE the NativeTabs bar while a sheet is open
+// To sit above the tab bar we HIDE the pill bar while a sheet is open
 // (lib/sheetVisibility.ts → (tabs)/_layout.tsx `hidden`), rather than a
 // react-native-screens FullWindowOverlay — the overlay re-hosts the sheet in a
 // full-window native context whose height competes with the in-screen host
@@ -33,6 +33,8 @@ export function Sheet({
   snapPoints,
   enableDynamicSizing = true,
   maxDynamicContentSize,
+  stackBehavior = 'replace',
+  layer = 0,
 }: {
   open: boolean;
   onClose: () => void;
@@ -42,6 +44,17 @@ export function Sheet({
   // Cap for dynamic-sized sheets (e.g. a long People roster) so they don't
   // grow past the screen.
   maxDynamicContentSize?: number;
+  // 'replace' (default): opening one sheet as another closes dismisses the
+  // outgoing one (People "Add" → Invite). Pass 'push' for a sheet that opens
+  // ON TOP of a still-open parent and returns to it on close (the moments
+  // filter sheet's role/host/people pickers).
+  stackBehavior?: 'push' | 'replace' | 'switch';
+  // Stacking depth for nested (stackBehavior='push') sheets. The shell z-hoists
+  // container=100/backdrop=99 (see below) — identical for every sheet, so a
+  // pushed child's backdrop (99) would paint UNDER the parent's container
+  // (100) and the parent sheet sits un-dimmed beside the front sheet. Each
+  // layer lifts the pair above the previous layer's container.
+  layer?: number;
 }) {
   const { theme } = useTheme();
   const ref = useRef<BottomSheetModal>(null);
@@ -78,9 +91,21 @@ export function Sheet({
 
   const renderBackdrop = useCallback(
     (props: BottomSheetBackdropProps) => (
-      <BottomSheetBackdrop {...props} appearsOnIndex={0} disappearsOnIndex={-1} pressBehavior="close" />
+      // zIndex on the BACKDROP itself: gorhom renders it as a SIBLING BEFORE
+      // the sheet's hosting container (plain absoluteFill, no zIndex), so the
+      // containerStyle hoist below does not reach it — without this the
+      // screen's zIndexed overlays (hero bar, sticky tab/rail overlays,
+      // reconnecting bar) paint OVER the dim layer. 99 keeps it just under
+      // the sheet (100).
+      <BottomSheetBackdrop
+        {...props}
+        style={[props.style, { zIndex: 99 + layer * 4 }]}
+        appearsOnIndex={0}
+        disappearsOnIndex={-1}
+        pressBehavior="close"
+      />
     ),
-    [],
+    [layer],
   );
 
   return (
@@ -89,10 +114,8 @@ export function Sheet({
       // onDismiss is the single funnel for every close path (button, backdrop,
       // swipe) — release the counter and the presented guard here.
       onDismiss={() => { presented.current = false; markClosed(); onClose(); }}
-      // Replace (not the default 'switch') so when one sheet opens as another
-      // closes (People "Add" → Invite), the outgoing sheet is dismissed rather
-      // than minimized-and-parked behind the new one.
-      stackBehavior="replace"
+      // See the prop doc — 'replace' default, 'push' for nested pickers.
+      stackBehavior={stackBehavior}
       enablePanDownToClose
       // Keyboard: gorhom's default 'interactive' slides the WHOLE sheet up to
       // keep the focused input above the keyboard — but our sheet inputs (the
@@ -105,6 +128,12 @@ export function Sheet({
       enableDynamicSizing={enableDynamicSizing}
       maxDynamicContentSize={maxDynamicContentSize}
       snapPoints={snapPoints}
+      // Explicit stacking: the portal'd modal container has NO zIndex, and
+      // under Fabric's view flattening the screen's zIndexed absolute
+      // overlays (hero bar 8, sticky tab/rail overlays 7, reconnecting bar
+      // 50) can end up siblings of it and paint OVER the backdrop. Hoist the
+      // whole modal layer above anything a screen uses.
+      containerStyle={{ zIndex: 100 + layer * 4 }}
       backdropComponent={renderBackdrop}
       backgroundStyle={{ backgroundColor: theme.surface }}
       handleIndicatorStyle={{ backgroundColor: theme.rule }}

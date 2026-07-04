@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { Prisma } from '@prisma/client'
 import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { redis, k, getLastSeen, getHiddenCarousel } from '@/lib/redis'
+import { blockPairIds } from '@/lib/userBlock'
 
 // Carousel-card label: 'now' (live + started), 'soon' (pinned but not yet
 // started), 'visited' (recently opened, started/date-less), or null (not
@@ -43,10 +45,11 @@ export async function GET(req: NextRequest) {
       date_from: Date | null; date_to: Date | null; address: string | null
       host_user_id: number | null; wine_count: bigint
       cover_photo_url: string | null
+      category: string | null
     }>
   >`
     SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
-           s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url,
+           s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category,
            COUNT(DISTINCT w.id) AS wine_count,
            COUNT(DISTINCT r.id) AS wines_rated,
            ROUND(AVG(r.score)::numeric, 1) AS avg_score
@@ -59,8 +62,16 @@ export async function GET(req: NextRequest) {
     -- explicit deleted_at filter documents intent and survives any future
     -- change to the scrub or member-wipe paths.
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
-    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url
+    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category
     ORDER BY sm.joined_at DESC
+    -- 50 = the recency page (Simon's call after the PR #65 review weighed
+    -- the Redis enrichment fan-out; a 500 valve was tried and reverted).
+    -- KNOWN CONSEQUENCE, accepted until server-side filtering ships: the
+    -- mobile filters/search only reach these 50 rows, so older moments are
+    -- unfindable past the cap (device repro: the two oldest friend-shared
+    -- sessions fell off and the friend vanished from the friends-there
+    -- picker). The real fix is pagination + SERVER-side facets — Part B of
+    -- docs/dev/proposals/moments-server-filtering.md.
     LIMIT 50
   `
 
@@ -68,10 +79,42 @@ export async function GET(req: NextRequest) {
   // live taster count, the caller's role (id-based, never display names),
   // and a live/past status for the Moments-home pinning.
   const myIdentityId = `u:${userId}`
+  // Participants per session, for the mobile people filter. Two sources,
+  // unioned per row below: PG session_members (durable — survives Redis
+  // expiry; registered users only) and the live identities hash (adds anon
+  // participants while the session is alive). Batched: one query for all rows.
+  const codes = rows.map((r) => r.code)
+  const memberRows = codes.length
+    ? await prisma.$queryRaw<Array<{ code: string; uid: number; name: string | null }>>`
+        SELECT sm.session_code AS code, u.id AS uid, u.name
+        FROM session_members sm
+        JOIN users u ON u.id = sm.user_id
+        WHERE sm.session_code IN (${Prisma.join(codes)})
+      `
+    : []
+  const membersByCode = new Map<string, Array<{ id: string; name: string }>>()
+  for (const m of memberRows) {
+    if (m.name === null) continue
+    const list = membersByCode.get(m.code) ?? []
+    list.push({ id: `u:${m.uid}`, name: m.name })
+    membersByCode.set(m.code, list)
+  }
+  // Block scrub, server-side (blocks are global user↔user pairs, so one load
+  // covers every row): a blocked user must not surface in the people list —
+  // same globally-subtracted posture as the in-session surfaces.
+  const { blockedByMe, blockingMe } = await blockPairIds(userId)
+  const blockedUserIds = new Set([...blockedByMe, ...blockingMe])
+  const blockedIdentity = (id: string) =>
+    id.startsWith('u:') && blockedUserIds.has(Number(id.slice(2)))
   // Codes the user dismissed from the highlight carousel — forced to 'past'
   // below so they drop from the carousel (still shown in "All moments").
   // One Redis call for the whole list, not per row.
   const hiddenCarousel = await getHiddenCarousel(userId)
+  // Redis cost of this loop (PR #65 review): ~2 commands/row + 2 more per
+  // LIVE row. node-redis v4 auto-pipelines same-tick commands, so the wave
+  // is a handful of round trips, not N — and the 500-row valve bounds it.
+  // The real fix at scale is Part B of docs/dev/proposals/
+  // moments-server-filtering.md (paginate + enrich per page only).
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
@@ -89,6 +132,7 @@ export async function GET(req: NextRequest) {
     // carousel case, which is always alive).
     let host_name_live: string | null = null
     let hostId: string | null = null
+    let liveIdentities: Record<string, string> = {}
     try {
       const [t, raw] = await Promise.all([
         redis.ttl(k.meta(r.code)),
@@ -105,12 +149,15 @@ export async function GET(req: NextRequest) {
           else if (Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId)) role = 'provider'
         } catch {}
         try {
-          ;[taster_count, participant, lastSeen, host_name_live] = await Promise.all([
-            redis.hLen(k.identities(r.code)),
-            redis.hExists(k.identities(r.code), myIdentityId),
+          // One hGetAll serves four consumers: taster count, the caller's
+          // participant check, the live host name, AND the people list.
+          ;[liveIdentities, lastSeen] = await Promise.all([
+            redis.hGetAll(k.identities(r.code)).then((m) => m ?? {}),
             getLastSeen(r.code, userId),
-            hostId ? redis.hGet(k.identities(r.code), hostId).then((v) => v ?? null) : Promise.resolve(null),
           ])
+          taster_count = Object.keys(liveIdentities).length
+          participant = myIdentityId in liveIdentities
+          host_name_live = (hostId ? liveIdentities[hostId] : undefined) ?? null
         } catch {}
       }
     } catch {}
@@ -191,8 +238,19 @@ export async function GET(req: NextRequest) {
       r.created_at ? r.created_at.getTime() : 0,
       r.joined_at ? r.joined_at.getTime() : 0,
     )
+    // People who were part of the moment (mobile filter): live identities ∪
+    // durable PG members, minus the caller (they're on every row) and minus
+    // block pairs. Display names only — presentation, never identity-bearing.
+    const peopleById = new Map<string, string>()
+    for (const [id, name] of Object.entries(liveIdentities)) {
+      if (id !== myIdentityId && !blockedIdentity(id) && name) peopleById.set(id, name)
+    }
+    for (const m of membersByCode.get(r.code) ?? []) {
+      if (m.id !== myIdentityId && !blockedIdentity(m.id) && !peopleById.has(m.id)) peopleById.set(m.id, m.name)
+    }
     return {
       ...r,
+      people: [...peopleById.entries()].map(([id, name]) => ({ id, name })),
       // Live host name (identities hash) over the create-time SQL snapshot, so
       // a host rename shows on the card like it does in-moment.
       host_name: host_name_live ?? r.host_name,

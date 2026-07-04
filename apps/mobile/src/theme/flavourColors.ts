@@ -81,32 +81,28 @@ export function useFlavourColors(): (key: string) => string {
   return (key: string) => palette[key as FlavourAxisKey] ?? theme.accent;
 }
 
-// ── Person-series colours (02d compare — ≤4 radar polygons, legend/people dots) ──
-// Simon's ruling (2026-07-02): person colours derive from the palette's base
-// ramp — the hue ramp both the structure and aroma sets are assignments of —
-// never the mock's baked hexes. This is that derivation: a hue-SPREAD
-// permutation of the theme's structure labels, so the first few assignees are
-// maximally distinct (the ramp's natural order runs red→brown→gold→green→blue→
-// purple — taking it in order would hand near-identical colours to persons 1-3).
-// The first five (rust · purple · blue-grey · gold · green) mirror the mock's
-// person-colour spread in the theme's own values. Deliberately STRUCTURE-only:
-// the aroma set re-uses the same hexes except `Chemical`, so unioning it in
-// would add one near-black for a more complex mapping — 13 distinct colours
-// before wrap is plenty.
+// ── Person-series colours (02d compare — ≤4 radar polygons, people dots) ──
+// Simon's rulings (2026-07-02): person colours come from the SAME data-viz
+// palette the 5+ wheel draws its wedges with — the theme's structure block, in
+// its own canonical (declaration) order, never the mock's baked hexes and no
+// bespoke reordering (an earlier hue-spread permutation was rejected on
+// device: the radar lines must read as the same colour family as the wheel).
+// Deliberately STRUCTURE-only: the aroma set re-uses the same hexes except
+// `Chemical` — 13 distinct colours before wrap is plenty.
 const PERSON_LABEL_ORDER: StructureLabel[] = [
-  'Body',       // rust
-  'Funk',       // purple
-  'Saltyness',  // blue-grey
-  'Sweetness',  // gold
-  'Bitterness', // green
-  'Flavour',    // red
-  'Umami',      // sage
-  'Aroma',      // rose
-  'Tannin',     // dark brown
-  'Warmth',     // deep rust
-  'Acidity',    // khaki
-  'Finish',     // ochre
-  'Bubbles',    // neutral (last on purpose — weakest as an identity colour)
+  'Flavour',
+  'Warmth',
+  'Body',
+  'Tannin',
+  'Finish',
+  'Sweetness',
+  'Acidity',
+  'Bitterness',
+  'Umami',
+  'Saltyness',
+  'Bubbles',
+  'Funk',
+  'Aroma',
 ];
 
 function personRamp(theme: keyof typeof FLAVOUR_PALETTE): string[] {

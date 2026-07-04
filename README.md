@@ -209,7 +209,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | GET/POST | /api/auth/[...nextauth] | NextAuth sign-in / sign-out |
 | POST | /api/auth/register | Create an account |
 | GET | /api/me/profile | Flavour profile + rating stats |
-| GET | /api/me/sessions | ALL sessions this user joined (incl. wine_count, live taster_count, caller's role). Two routing signals: `status` (`live`/`upcoming`/`past`) drives the list buckets; `pinned` (independent of status) drives the highlight carousel. Sorted most-recently-active first |
+| GET | /api/me/sessions | ALL sessions this user joined (incl. wine_count, live taster_count, caller's role, category). Two routing signals: `status` (`live`/`upcoming`/`past`) drives the list buckets; `pinned` (independent of status) drives the highlight carousel. Sorted most-recently-active first |
 | POST/DELETE | /api/session/:code/carousel-hidden | Hide / un-hide a moment from the Moments-home highlight carousel (personal view pref; stays in "All moments"). Logged-in only; auto-un-hidden on re-engagement (visit/rate) |
 | GET | /api/me/bookmarks | Saved wines |
 | GET | /api/me/ratings | This user's rating history |

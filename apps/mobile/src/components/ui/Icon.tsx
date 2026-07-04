@@ -6,13 +6,16 @@ import { useTheme } from '@/theme';
 // stroke icons at the design's per-icon stroke widths, currentColor → color.
 type Seg =
   | { d: string; sw?: number; fill?: boolean; cap?: boolean; join?: boolean }
-  | { cx: number; cy: number; r: number; sw?: number; fill?: boolean };
+  | { cx: number; cy: number; r: number; sw?: number; fill?: boolean; dash?: string };
 
 const ICONS: Record<string, Seg[]> = {
   glass: [
     { d: 'M7 3h10l-1 7a4 4 0 0 1-8 0L7 3Z', sw: 1.5, join: true },
     { d: 'M12 14v6M9 20h6', sw: 1.5, cap: true },
   ],
+  home: [{ d: 'M4 11l8-6.5 8 6.5M6.5 9.5V19h11V9.5', sw: 1.5, cap: true, join: true }],
+  // dashed placeholder circle — the "Soon" tab glyph (design i-ph)
+  soon: [{ cx: 12, cy: 12, r: 7.5, sw: 1.5, dash: '2.5 3' }],
   clock: [
     { cx: 12, cy: 12, r: 8.5, sw: 1.5 },
     { d: 'M12 7.5V12l3 2', sw: 1.5, cap: true, join: true },
@@ -89,6 +92,17 @@ const ICONS: Record<string, Seg[]> = {
   chevrondown: [
     { d: 'M6 9.5l6 6 6-6', sw: 1.7, cap: true, join: true },
   ],
+  // two people — friends filters (the "Friends" chips)
+  users: [
+    { cx: 9, cy: 8.4, r: 3.1, sw: 1.5 },
+    { d: 'M3.6 19c.5-3.1 2.8-4.9 5.4-4.9s4.9 1.8 5.4 4.9', sw: 1.5, cap: true },
+    { d: 'M15.2 5.9a3.1 3.1 0 0 1 0 5', sw: 1.5, cap: true },
+    { d: 'M17.3 14.4c1.8.7 3 2.3 3.3 4.6', sw: 1.5, cap: true },
+  ],
+  // filter funnel — the moments-list filter trigger
+  funnel: [
+    { d: 'M4 5h16l-6.2 7.2V17l-3.6 2.4v-7.2L4 5Z', sw: 1.6, cap: true, join: true },
+  ],
   // high/low sort toggle — compare "Show all" sheet (design i-sort def)
   sort: [
     { d: 'M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3', sw: 1.6, cap: true, join: true },
@@ -101,13 +115,19 @@ export function Icon({ name, size = 18, color }: { name: IconName; size?: number
   const { theme } = useTheme();
   const c = color ?? theme.ink;
   return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
+    // pointerEvents="none": icons are always decorative glyphs INSIDE an
+    // interactive parent — hits must fall through so the touch TARGET is the
+    // parent Pressable. Load-bearing for the keyboard-safe registry
+    // (lib/keyboardDismiss): the eye/clear-✕ companions register the
+    // Pressable's tag, and a tap landing on the child Svg node would read as
+    // "outside" and wrongly dismiss the keyboard (codex P2).
+    <Svg width={size} height={size} viewBox="0 0 24 24" pointerEvents="none">
       {ICONS[name].map((s, i) =>
         'cx' in s ? (
           s.fill ? (
             <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill={c} />
           ) : (
-            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} />
+            <Circle key={i} cx={s.cx} cy={s.cy} r={s.r} fill="none" stroke={c} strokeWidth={s.sw ?? 1.5} strokeDasharray={s.dash} />
           )
         ) : (
           <Path

@@ -4,19 +4,23 @@ import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue } from 'react-native-reanimated';
+import { ActivityIndicator, Alert, Animated, Easing, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import Svg, { Path } from 'react-native-svg';
+
+const MorphPath = Reanimated.createAnimatedComponent(Path);
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
-import { Icon, type IconName } from '@/components/ui/Icon';
+import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
 import { VBar } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import { fuzzyIncludes } from '@/lib/search';
+import { alpha } from '@/theme/color';
 import { StarScore } from '@/components/scoring/StarScore';
-import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { ReconnectingBar } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
@@ -24,21 +28,24 @@ import {
   ApiError,
   hideAllWines,
   hideWine,
+  reorderWines,
   revealAllWines,
   revealWine,
   type RatingsView,
   type SessionState,
   type WireWine,
 } from '@/lib/api/sessions';
-import { buildComparePeople, CompareBody, ComparePickerSheet, PeopleRail } from '@/components/moments/CompareBody';
+import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
+import { SheetSearchField } from '@/components/moments/CompareBody';
+import { DraggableRows, type RowMoveActions } from '@/components/moments/DraggableRows';
+import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
 import { DATE_LOCALE } from '@/lib/locale';
-import { sessionWhen } from '@/lib/momentFormat';
+import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
-import { popRevealMode, pushRevealMode } from '@/lib/sheetVisibility';
 import { motion, radius, useTheme } from '@/theme';
 
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
@@ -51,33 +58,49 @@ import { motion, radius, useTheme } from '@/theme';
 
 type MetaView = SessionState['meta'];
 
-// Blind reveal/hide surface, bundled so the plain + cover-hero layouts each
-// take one prop. `stripVariant` null ⟺ not a blind session (no strip).
+// Blind reveal/hide surface (direct-manipulation redesign, Simon 2026-07-04 —
+// ADR-0007, supersedes the two-state reveal MODE): the photo IS the control.
+// Hidden → tap arms ("tap again to reveal", 2.5s auto-disarm), second tap
+// reveals; revealed → the corner eye hides instantly (the damage-control
+// direction stays fastest). Bulk actions + Blind-for-all live in the eye menu
+// on the toolbar line under the tabs. Bundled so both layouts take one prop.
+// Line-up sort (toolbar menu; mirrors the compare toolbar's model). Scores
+// are the VIEWER'S own. Sorting never renumbers — .lu-idx keeps the wine's
+// true line-up position via the indexById map.
+type LuSort = 'lineup' | 'top' | 'bottom' | 'unrated';
+// 'lineup' is the DEFAULT state, not a menu row: tapping the active sort
+// again toggles it off, back to line-up order (Simon's ruling — same toggle
+// in the compare sort menu).
+const LU_SORTS: { key: Exclude<LuSort, 'lineup'>; label: string }[] = [
+  { key: 'top', label: 'My highest rated' },
+  { key: 'bottom', label: 'My lowest rated' },
+  { key: 'unrated', label: 'Not rated first' },
+];
+
+// Same forgiving matcher + field set as Compare's impression search; a blind
+// stub matches only its displayed "Impression N" label.
+function luSearchHay(wine: WireWine, lineupIndex: number): string {
+  if (wine._blind) return `Impression ${lineupIndex + 1}`;
+  return [wine.name, wine.producer, wine.vintage, wine.grape, wine.type, wineTypeLabel(wine.type), wine.region, wine.country]
+    .filter(Boolean)
+    .join(' ');
+}
+
 type RevealProps = {
-  stripVariant: 'guest' | 'host-resting' | 'host-mode' | null;
-  revealMode: boolean;
-  revealBusy: boolean;
   hostRevealUi: boolean;
+  revealBusy: boolean;
   total: number;
   hiddenCount: number;
   blindForEveryone: boolean;
-  onEnterMode: () => void;
-  onRevealOne: (wineId: string) => void;
+  bfaBusy: boolean;
+  /** Wine currently armed for reveal (first tap landed, awaiting confirm). */
+  armedId: string | null;
+  onThumbTap: (wineId: string) => void;
   onHideOne: (wineId: string) => void;
   onRevealAll: () => void;
   onHideAll: () => void;
+  onToggleBlindForEveryone: (next: boolean) => void;
 };
-
-// FlatList cell union for the PLAIN (no-cover) layout: a leading sticky
-// reveal-strip sentinel, then wines. The sentinel + stickyHeaderIndices let the
-// strip flow under the ovc and pin on scroll (the plain layout's tabs are a
-// fixed View above the list). The cover-hero layout uses the Dynamic Overlay
-// pattern instead (no cell sentinels) — see CoverHeroLineup.
-const STRIP_CELL = { __strip: true } as const;
-type LineupCell = typeof STRIP_CELL | WireWine;
-function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
-  return (it as { __strip?: true }).__strip === true;
-}
 
 // Collapsed HeroTopBar's painted height = safe-area top + the control row +
 // 6pt bottom pad. No bottom rule to account for (the collapsed bar is a flat
@@ -87,23 +110,19 @@ function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
 // HeroTopBar so the two can't drift.
 const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + controlSize + 6;
 
-// Renders the reveal strip for either layout (null when not blind). Pulls the
-// matching RevealStrip variant from the bundle.
-function RevealStripFor({ reveal }: { reveal: RevealProps }) {
-  if (!reveal.stripVariant) return null;
-  return (
-    <RevealStrip
-      variant={reveal.stripVariant}
-      total={reveal.total}
-      hiddenCount={reveal.hiddenCount}
-      blindForEveryone={reveal.blindForEveryone}
-      busy={reveal.revealBusy}
-      onEnterMode={reveal.onEnterMode}
-      onRevealAll={reveal.onRevealAll}
-      onHideAll={reveal.onHideAll}
-    />
-  );
-}
+// In-screen tab-swap motion (Simon's ask): the panes swap as one horizontal
+// push — the incoming pane slides in from the side it lives on (Compare from
+// the right, Line-up from the left) while the outgoing pane slides OUT toward
+// its own side. Equal durations keep the seam between the two exactly at the
+// screen edge mid-flight. Entering is gated on a "user actually switched" ref
+// so the screen's first render doesn't slide. `exiting` fires on ANY unmount,
+// not just tab swaps — accepted trade-off (Simon wants the push): on a screen
+// pop the ghost plays inside the departing screen (invisible); the rare
+// fatal/lock swaps get a stray slide-out that reads as content leaving.
+// ReduceMotion.System: the OS accessibility setting collapses the slide to
+// an instant swap (codex — no reduced-motion gate existed in the app).
+const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
+const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
 
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
 // block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
@@ -135,17 +154,23 @@ export default function SessionLineup() {
   // below swaps. Switching to Compare exits reveal mode (its Done footer and
   // per-row pills are line-up furniture).
   const [tab, setTab] = useState<SessionTab>('lineup');
+  // Flips true on the first user switch — the swap slide-in must not run on
+  // the screen's initial mount (see swapIn).
+  const tabSwapped = useRef(false);
   const selectTab = (t: SessionTab) => {
-    if (t === 'compare') setRevealMode(false);
+    tabSwapped.current = true;
     setTab(t);
   };
 
-  // 02d people-selector — the avatar rail (Simon's pick): ONE hidden set
-  // drives every compare view (rail chips, person rows, picker sheet). The
-  // rail renders STICKY under the bar like the reveal strip: plain layout via
+  // 02d people-selector — ONE hidden set drives every compare view (picker
+  // sheet rows/presets, person rows, cards). The sticky slot under the bar
+  // holds the CompareToolbar (People + sort + search on one line — Simon's
+  // 2026-07-03 spec, superseding the avatar-chip rail): plain layout via
   // ScrollView stickyHeaderIndices, cover-hero via the strip overlay slot.
   const [cmpHiddenRaw, setCmpHidden] = useState<Set<string>>(new Set());
   const [cmpPickerOpen, setCmpPickerOpen] = useState(false);
+  const [cmpSort, setCmpSort] = useState<CompareSort>('lineup');
+  const [cmpQuery, setCmpQuery] = useState('');
   const cmpPeople = useMemo(() => buildComparePeople(ratings, meta), [ratings, meta]);
   // Prune ghosts: someone hidden and THEN kicked/banned leaves the roster —
   // their stale id must not keep the All chip dim / the picker counts wrong.
@@ -168,21 +193,17 @@ export default function SessionLineup() {
   useEffect(() => {
     if (cmpPeople.length <= 1 && cmpHiddenRaw.size > 0) setCmpHidden(new Set());
   }, [cmpPeople, cmpHiddenRaw]);
-  // The rail's All chip TOGGLES: everything visible → deselect everyone;
-  // anything hidden → select everyone (Simon's ruling).
-  const toggleAllCmp = useCallback(() => {
-    // Branch on the PRUNED set (what the UI shows) — the raw set may hold
-    // ghost ids of kicked raters, and "All looks on → tap deselects all"
-    // must hold visually, not on stale state.
-    setCmpHidden(cmpHidden.size === 0 ? new Set(cmpPeople.map((p) => p.id)) : new Set());
-  }, [cmpHidden, cmpPeople]);
-  const cmpRail = tab === 'compare' && cmpPeople.length > 1 ? (
-    <PeopleRail
+  // The toolbar is useful even on a one-rater roster (sort + search) — it
+  // hides only the People button there, so it renders whenever Compare shows.
+  const cmpRail = tab === 'compare' ? (
+    <CompareToolbar
       people={cmpPeople}
       hidden={cmpHidden}
-      onToggle={toggleCmpPerson}
-      onToggleAll={toggleAllCmp}
       onPick={() => setCmpPickerOpen(true)}
+      sort={cmpSort}
+      onSort={setCmpSort}
+      query={cmpQuery}
+      onQuery={setCmpQuery}
     />
   ) : null;
 
@@ -211,22 +232,22 @@ export default function SessionLineup() {
   const hostRevealUi = isBlind && isHostViewer;
   const hiddenCount = hostRevealUi && wines ? wines.filter((w) => !w.revealedAt).length : 0;
 
-  // Reveal MODE — the host taps the resting strip's Reveal to enter a manage
-  // surface (sticky Hide all / Reveal all, per-row Reveal/Hide pills, a sticky
-  // Done footer). It's screen state, so it also drives the OS-tab-bar hide via
-  // the reveal-mode counter (the footer replaces the nav, design ruling).
-  const [revealMode, setRevealMode] = useState(false);
-  // Leaving the blind state (toggle off / session changes) must drop the mode
-  // so the footer + hidden tab bar can't strand. Also pop the override on
-  // unmount.
+  // Arm-to-reveal (ADR-0007): revealing leaks the identity to guests within a
+  // poll tick and can't be truly undone, so the FIRST tap on a hidden photo
+  // only ARMS it (accent state + "tap again" hint, auto-disarm after 2.5s);
+  // the second tap fires. Hiding has no such guard — it's the undo path and
+  // must stay the fastest tap in the room.
+  const [armedId, setArmedId] = useState<string | null>(null);
+  const armTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disarm = useCallback(() => {
+    if (armTimer.current) clearTimeout(armTimer.current);
+    armTimer.current = null;
+    setArmedId(null);
+  }, []);
+  useEffect(() => () => { if (armTimer.current) clearTimeout(armTimer.current); }, []);
   useEffect(() => {
-    if (!hostRevealUi && revealMode) setRevealMode(false);
-  }, [hostRevealUi, revealMode]);
-  useEffect(() => {
-    if (!revealMode) return;
-    pushRevealMode();
-    return () => popRevealMode();
-  }, [revealMode]);
+    if (!hostRevealUi) disarm();
+  }, [hostRevealUi, disarm]);
 
   // Optimistic reveal/hide: stamp/clear revealedAt in the cached wines so the
   // row + strip respond immediately, fire the request, let the 5s poll
@@ -319,30 +340,108 @@ export default function SessionLineup() {
     router.push({ pathname: '/(tabs)/moments/session/[code]/impression/[wineId]', params: { code, wineId } });
   const openAdd = () => router.push({ pathname: '/(tabs)/moments/session/[code]/add', params: { code } });
 
-  // Everything the line-up body needs to render the blind reveal/hide surface,
-  // bundled so the two layouts (plain + cover-hero) take one prop. `strip` is
-  // null on a non-blind session (no strip at all).
-  const stripVariant: 'guest' | 'host-resting' | 'host-mode' | null = !isBlind
-    ? null
-    : !hostRevealUi
-      ? 'guest'
-      : revealMode
-        ? 'host-mode'
-        : 'host-resting';
+  // First tap arms; the second (while armed) fires the reveal.
+  const onThumbTap = (wineId: string) => {
+    if (armedId === wineId) {
+      disarm();
+      onRevealOne(wineId);
+      return;
+    }
+    if (armTimer.current) clearTimeout(armTimer.current);
+    setArmedId(wineId);
+    armTimer.current = setTimeout(() => setArmedId(null), 2500);
+  };
   const reveal: RevealProps = {
-    stripVariant,
-    revealMode,
-    revealBusy,
     hostRevealUi,
+    revealBusy,
     total: wines?.length ?? 0,
     hiddenCount,
     blindForEveryone,
-    onEnterMode: () => setRevealMode(true),
-    onRevealOne,
+    bfaBusy,
+    armedId,
+    onThumbTap,
     onHideOne,
     onRevealAll,
     onHideAll,
+    onToggleBlindForEveryone: toggleBlindForEveryone,
   };
+
+  // ── line-up search + sort (toolbar; counts/reveal stay on the FULL list) ──
+  const [luQuery, setLuQuery] = useState('');
+  const [luSort, setLuSort] = useState<LuSort>('lineup');
+  // The wine's true position — .lu-idx and "Impression N" never renumber
+  // under a different sort or a search that hides rows.
+  const luIndexById = useMemo(() => new Map((wines ?? []).map((w, i) => [w.id, i] as const)), [wines]);
+  const shownWines = useMemo(() => {
+    const all = wines ?? [];
+    const q = luQuery.trim();
+    const myScore = (w: WireWine) => ratings?.[myIdentityId]?.ratings[w.id]?.score ?? 0;
+    const idx = (w: WireWine) => luIndexById.get(w.id) ?? 0;
+    const base = q ? all.filter((w) => fuzzyIncludes(luSearchHay(w, idx(w)), q)) : all;
+    if (luSort === 'lineup') return base;
+    const fns: Record<Exclude<LuSort, 'lineup'>, (a: WireWine, b: WireWine) => number> = {
+      top: (a, b) => (myScore(b) || -1) - (myScore(a) || -1) || idx(a) - idx(b),
+      bottom: (a, b) => (myScore(a) || 999) - (myScore(b) || 999) || idx(a) - idx(b),
+      unrated: (a, b) => (myScore(a) > 0 ? 1 : 0) - (myScore(b) > 0 ? 1 : 0) || idx(a) - idx(b),
+    };
+    return [...base].sort(fns[luSort]);
+  }, [wines, luQuery, luSort, ratings, myIdentityId, luIndexById]);
+  const luNarrowed = luQuery.trim() !== '';
+  // Denied-hold signal → the toolbar explains itself (note + accent flash on
+  // the control that blocks reordering).
+  const [deniedTick, setDeniedTick] = useState(0);
+  const onReorderDenied = useCallback(() => setDeniedTick((t) => t + 1), []);
+  const reorderDeniedNote =
+    luSort !== 'lineup' && luNarrowed
+      ? 'Clear the search and sorting to reorder'
+      : luSort !== 'lineup'
+        ? 'Turn off sorting to reorder'
+        : 'Clear the search to reorder';
+  // ── drag-to-reorder (host tier; web parity — allowed on blind too, the
+  // renumbering of guests' "Impression N" is the host's call). Drag needs the
+  // TRUE order on screen: an active sort or search disables it (denied hold =
+  // warning haptic) — reordering a projection would silently move rows you
+  // can't see between.
+  // !revealBusy: runReveal (the shared optimistic-mutation runner) silently
+  // drops calls while one is in flight — a drop that lands during a busy
+  // window would freeze mid-handoff (codex P2). The boolean return below
+  // covers the race where busy flips between lift and drop.
+  const canReorder = isHostViewer && !lock && !revealBusy && luSort === 'lineup' && !luNarrowed && (wines?.length ?? 0) > 1;
+  const reorderDenied = isHostViewer && !lock && (luSort !== 'lineup' || luNarrowed);
+  const onReorder = (orderedIds: string[]): boolean => {
+    if (revealBusy) return false; // refused — the drag resets itself
+    void runReveal(
+      'Could not reorder',
+      (ws) => {
+        const byId = new Map(ws.map((w) => [w.id, w]));
+        const next = orderedIds.map((id) => byId.get(id)).filter(Boolean) as WireWine[];
+        // A permutation must not drop rows (a poll may have added a wine
+        // mid-drag) — anything missing from orderedIds keeps its tail spot.
+        for (const w of ws) if (!next.includes(w)) next.push(w);
+        return next;
+      },
+      () => reorderWines(code, orderedIds),
+    );
+    return true;
+  };
+  // No size threshold (Simon): the toolbar always renders on the line-up.
+  const luToolbar: LuToolbarProps = {
+    reveal,
+    query: luQuery,
+    onQuery: setLuQuery,
+    sort: luSort,
+    onSort: setLuSort,
+    deniedTick,
+  };
+
+  // Plain-layout scroll plumbing for drag-to-reorder: the rows need a live
+  // offset + max-scroll for the auto-scroll loop (the hero measures its own).
+  const plainRef = useAnimatedRef<Reanimated.ScrollView>();
+  const plainScrollY = useScrollOffset(plainRef);
+  const plainMaxScroll = useSharedValue(0);
+  const plainContentH = useRef(0);
+  const plainViewportH = useRef(0);
+  const wineById = useMemo(() => new Map((wines ?? []).map((w) => [w.id, w] as const)), [wines]);
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
@@ -377,8 +476,12 @@ export default function SessionLineup() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
                       here), left of the ⋯. Host/cohost/provider only — and
-                      line-up furniture (hidden on the Compare tab). */}
-                  {canAdd && tab === 'lineup' ? <LineupAddButton onPress={openAdd} /> : null}
+                      line-up furniture (morphs into the ⋯ on the Compare tab). */}
+                  {canAdd ? (
+                    <CollapsingAdd show={tab === 'lineup'}>
+                      <LineupAddButton onPress={openAdd} />
+                    </CollapsingAdd>
+                  ) : null}
                   <SessionMenuButton onOpen={(top) => setSessMenuTop(top)} />
                 </View>
               ) : undefined
@@ -395,13 +498,6 @@ export default function SessionLineup() {
         <SessionMenu
           anchorTop={sessMenuTop}
           onClose={() => setSessMenuTop(null)}
-          // Blind-for-all is a host/cohost control that only appears when the
-          // session is ACTUALLY blind (design: the .sess-menu-mode row is absent
-          // otherwise). A press-to-activate field, not a switch.
-          showBlindForEveryone={isHostViewer && !!meta?.blind}
-          blindForEveryone={!!meta?.blindForEveryone}
-          bfaBusy={bfaBusy}
-          onToggleBlindForEveryone={toggleBlindForEveryone}
           onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
           onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
           onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
@@ -475,7 +571,13 @@ export default function SessionLineup() {
           meta={meta}
           coverUrl={meta.coverPhotoUrl!}
           lock={lock}
-          wines={wines}
+          // Search/sort applied (counts in `reveal` stay full-list); indexById
+          // keeps true line-up numbers under any order.
+          wines={shownWines}
+          indexById={luIndexById}
+          luNarrowed={luNarrowed}
+          toolbar={luToolbar}
+          reorder={{ enabled: canReorder, denied: reorderDenied, deniedNote: reorderDeniedNote, onCommit: onReorder, onDenied: onReorderDenied }}
           ratings={ratings}
           myIdentityId={myIdentityId}
           canAdd={canAdd}
@@ -484,8 +586,9 @@ export default function SessionLineup() {
           reveal={reveal}
           tab={tab}
           onSelectTab={selectTab}
-          compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />}
+          compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />}
           compareRail={cmpRail}
+          swapAnimated={tabSwapped.current}
           onCollapsedChange={setHeroCollapsed}
           onPressWine={openImpression}
           onAdd={openAdd}
@@ -501,92 +604,97 @@ export default function SessionLineup() {
             <SessionTabs active={tab} onSelect={selectTab} />
           </View>
           {tab === 'compare' ? (
-            // The rail is child 0 + stickyHeaderIndices so it pins under the
-            // fixed tabs on scroll (the plain layout's native-sticky path —
-            // same behaviour the reveal strip has on the line-up).
-            <ScrollView
-              stickyHeaderIndices={cmpRail ? [0] : undefined}
-              contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
-            >
-              {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
-              <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} />
-            </ScrollView>
+            // The toolbar is child 0 + stickyHeaderIndices so it pins under
+            // the fixed tabs on scroll (the plain layout's native-sticky path
+            // — same behaviour the reveal strip has on the line-up).
+            <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
+              <ScrollView
+                style={{ flex: 1 }}
+                stickyHeaderIndices={cmpRail ? [0] : undefined}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+                contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+              >
+                {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
+                <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />
+              </ScrollView>
+            </Reanimated.View>
           ) : (
-          <>
-          {/* The reveal/hide strip is a STICKY list cell (design
-              .reveal-strip-sticky): it sits inline above the line-up — below the
-              ovc about block — and pins under the tabs once scrolled past
-              (sticky top:0). Implemented as data item 0 + stickyHeaderIndices so
-              the ovc (ListHeaderComponent) scrolls away while the strip pins. On
-              a non-blind session there's no strip cell and nothing sticks.
-              ⚠️ stickyHeaderIndices is OFFSET BY +1 when a ListHeaderComponent
-              exists (RN: stickyOffset = header ? 1 : 0) — so [1] sticks data
-              item 0 (the strip), NOT [0] (which would stick the ovc header). */}
-          <FlatList<LineupCell>
-            data={reveal.stripVariant ? [STRIP_CELL, ...(wines ?? [])] : (wines ?? [])}
-            keyExtractor={(it) => (isStripCell(it) ? '__strip' : it.id)}
-            ListHeaderComponent={ovc}
-            stickyHeaderIndices={reveal.stripVariant ? [1] : undefined}
-            // flexGrow:1 gives the empty state a flex slot; EmptyLineup freezes its
-            // own height there so its centering doesn't jump when the tab bar hides.
-            // In reveal mode the OS tab bar is hidden and the Done footer takes its
-            // place — clear the footer (a bit more than the bar) instead.
-            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + (revealMode ? 96 : TAB_BAR_CLEARANCE) }}
-            // No separator below the strip cell — a sticky cell carries its
-            // trailing separator while pinned, which would weld a hairline to
-            // the floating strip's bottom edge. The strip has its own spacing.
-            ItemSeparatorComponent={({ leadingItem }: { leadingItem: LineupCell }) =>
-              isStripCell(leadingItem) ? null : <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />
-            }
-            renderItem={({ item, index }) =>
-              isStripCell(item) ? (
-                // Solid bg so rows scrolling under the pinned strip don't bleed
-                // through. Rows share the same content width (both inset by the
-                // contentContainer GUTTER), so nothing renders in the side
-                // bands — a content-width opaque fill is enough.
-                <View style={{ backgroundColor: theme.bg }}>
-                  <RevealStripFor reveal={reveal} />
-                </View>
+          <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
+          {/* The eye-menu toolbar sits right above the rows (the old strip's
+              spot, below the ovc) and pins under the fixed tabs on scroll —
+              now via ScrollView stickyHeaderIndices (the list left FlatList
+              for drag-to-reorder: translated rows + virtualization don't mix,
+              and a tasting's line-up doesn't need recycling). The sticky index
+              counts RENDERED children, so it keys on `ovc` (null on a degraded
+              meta poll — React.Children.toArray skips null). */}
+          <Reanimated.ScrollView
+            ref={plainRef}
+            style={{ flex: 1 }}
+            stickyHeaderIndices={[ovc ? 1 : 0]}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+            onLayout={(e) => {
+              plainViewportH.current = e.nativeEvent.layout.height;
+              plainMaxScroll.value = Math.max(0, plainContentH.current - plainViewportH.current);
+            }}
+            onContentSizeChange={(w, h) => {
+              plainContentH.current = h;
+              plainMaxScroll.value = Math.max(0, h - plainViewportH.current);
+            }}
+            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+          >
+            {ovc}
+            {/* Solid bg so rows scrolling under the pinned toolbar don't
+                bleed through (content-width fill matches the rows' inset). */}
+            <View style={{ backgroundColor: theme.bg }}>
+              <LineupToolbar toolbar={luToolbar} />
+            </View>
+            {shownWines.length === 0 ? (
+              luNarrowed ? (
+                <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
               ) : (
-                <LuRow
-                  wine={item}
-                  // Offset by the leading strip cell so the displayed index is
-                  // the wine's true position, not its data-array slot.
-                  index={reveal.stripVariant ? index - 1 : index}
-                  myIdentityId={myIdentityId}
-                  ratings={ratings}
-                  onPress={() => openImpression(item.id)}
-                  hostRevealUi={reveal.hostRevealUi}
-                  revealMode={revealMode}
-                  revealBusy={revealBusy}
-                  onReveal={reveal.onRevealOne}
-                  onHide={reveal.onHideOne}
-                />
+                <EmptyLineup canAdd={canAdd} onAdd={openAdd} />
               )
-            }
-            // Footer: the empty state goes here when there are no wines but a
-            // strip cell keeps the list non-empty (blind session — ListEmpty
-            // wouldn't fire); otherwise the trailing .lu-add row (host/cohost/
-            // provider, hidden in reveal mode). ListEmptyComponent still covers
-            // the non-blind empty case (data is truly []).
-            ListFooterComponent={
-              (wines?.length ?? 0) === 0
-                ? reveal.stripVariant
-                  ? <EmptyLineup canAdd={canAdd} onAdd={openAdd} />
-                  : null
-                : canAdd && !revealMode
-                  ? <AddImpressionRow onPress={openAdd} />
-                  : null
-            }
-            ListEmptyComponent={<EmptyLineup canAdd={canAdd} onAdd={openAdd} />}
-          />
-          </>
+            ) : (
+              <DraggableRows
+                ids={shownWines.map((w) => w.id)}
+                enabled={canReorder}
+                denied={reorderDenied}
+                deniedNote={reorderDeniedNote}
+                onDenied={onReorderDenied}
+                scrollRef={plainRef}
+                scrollY={plainScrollY}
+                maxScrollY={plainMaxScroll}
+                onCommit={onReorder}
+                renderRow={(id, i, move) => {
+                  const item = wineById.get(id);
+                  if (!item) return null;
+                  return (
+                    <>
+                      {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                      <LuRow
+                        wine={item}
+                        // The wine's TRUE line-up position — search/sort must
+                        // never renumber rows.
+                        index={luIndexById.get(id) ?? 0}
+                        myIdentityId={myIdentityId}
+                        ratings={ratings}
+                        onPress={() => openImpression(id)}
+                        reveal={reveal}
+                        move={move}
+                      />
+                    </>
+                  );
+                }}
+              />
+            )}
+            {shownWines.length > 0 && canAdd && !luNarrowed ? <AddImpressionRow onPress={openAdd} /> : null}
+          </Reanimated.ScrollView>
+          </Reanimated.View>
           )}
         </>
       )}
-      {/* .vfoot-rev — sticky Done footer that exits reveal mode (the OS tab bar
-          is hidden while it's up). Sits above the list, below the hero bar. */}
-      {revealMode ? <RevealFooter onDone={() => setRevealMode(false)} /> : null}
       {/* .hero-topfix — floats over the hero: transparent with glass back+⋯
           while the photo title is visible, then a solid theme bar carrying the
           moment name once scrolled past the collapse point. Sits last so it
@@ -595,9 +703,10 @@ export default function SessionLineup() {
         <HeroTopBar
           title={meta.name}
           collapsed={heroCollapsed}
-          // The Add pill is line-up furniture (Simon's ruling) — Compare keeps
-          // the same bar minus Add.
-          canAdd={canAdd && tab === 'lineup'}
+          // The Add pill is line-up furniture (Simon's ruling) — on Compare it
+          // morphs into the ⋯ (CollapsingAdd inside the bar).
+          canAdd={canAdd}
+          showAdd={tab === 'lineup'}
           onAdd={openAdd}
           onBack={() => router.back()}
           onMenu={(top) => setSessMenuTop(top)}
@@ -640,12 +749,18 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, swapAnimated, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
   lock: number | null;
   wines: WireWine[] | null;
+  /** True line-up position per wine id (rows arrive search/sort-transformed). */
+  indexById: Map<string, number>;
+  /** A search query is narrowing the rows (drives the empty copy). */
+  luNarrowed: boolean;
+  toolbar: LuToolbarProps;
+  reorder: { enabled: boolean; denied: boolean; deniedNote: string; onCommit: (orderedIds: string[]) => boolean; onDenied: () => void };
   ratings: RatingsView | null;
   myIdentityId: string;
   canAdd: boolean;
@@ -656,8 +771,10 @@ function CoverHeroLineup({
   onSelectTab: (t: SessionTab) => void;
   /** The Compare tab's content — swaps in below the (sticky) tabs. */
   compare: React.ReactNode;
-  /** The people rail — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
+  /** The compare toolbar (People + sort + search) — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
   compareRail: React.ReactNode;
+  /** True once the user has actually switched tabs — gates the swap slide-in (see swapIn). */
+  swapAnimated: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
   onAdd: () => void;
@@ -667,16 +784,25 @@ function CoverHeroLineup({
   const phone = usePhoneTokens();
   const [fullscreen, setFullscreen] = useState(false);
   const heroH = Math.round(windowH * HERO_RATIO);
+  // Scrim stops scaled to the VISIBLE region (the container runs radius.xl
+  // past the seam) so the darkening behind the title is unchanged; past the
+  // last stop the darkest colour continues into the underlap/notches.
+  const scrimEnd = heroH / (heroH + radius.xl);
   const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
-  const rows = wines ?? [];
+  const rows = useMemo(() => wines ?? [], [wines]);
   const onCompare = tab === 'compare';
   // Strip (like the rows + add affordances) is line-up furniture only.
-  const showStrip = !!reveal.stripVariant && !lock && !onCompare;
+  const showToolbar = !lock && !onCompare;
 
   // UI-thread scroll position for the overlay translates.
   const aref = useAnimatedRef<Reanimated.ScrollView>();
   const scrollY = useScrollOffset(aref);
+  // Max scrollable offset — the drag auto-scroll clamp.
+  const heroMaxScroll = useSharedValue(0);
+  const heroContentH = useRef(0);
+  const heroViewportH = useRef(0);
+  const rowById = useMemo(() => new Map(rows.map((w) => [w.id, w] as const)), [rows]);
   // Content-Y of the inline tabs and (separately) the reveal strip — they sit at
   // DIFFERENT positions (tabs right under the photo; strip below the about
   // block), so they're two independent sticky elements that STACK under the bar
@@ -717,10 +843,18 @@ function CoverHeroLineup({
     setStripTopJS(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+  // ⚠️ Plausibility floors in the stuck gates: a REAL tabs/strip rest
+  // position is always far below its pin line (the hero photo alone puts it
+  // hundreds of points down), so a measurement AT or ABOVE the floor is
+  // garbage from a transient first-frame geometry — and once, on re-entry,
+  // such a value stranded the pinned strip overlay over the STATUS BAR at
+  // scroll 0 (device screenshot 2026-07-03; self-healed on remount).
+  // Requiring top > floor makes that state unreachable while changing
+  // nothing for legitimate measurements.
   useEffect(() => {
     const y = lastYRef.current;
-    setTabsStuck(tabsTopJS > 0 && y >= tabsTopJS - PIN_Y);
-    setStripStuck(stripTopJS > 0 && y >= stripTopJS - (PIN_Y + tabsHJS));
+    setTabsStuck(tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y);
+    setStripStuck(stripTopJS > PIN_Y + tabsHJS && y >= stripTopJS - (PIN_Y + tabsHJS));
   }, [tab, tabsTopJS, tabsHJS, stripTopJS, PIN_Y]);
 
   const onScrollJS = (y: number) => {
@@ -734,10 +868,10 @@ function CoverHeroLineup({
     }
     // Each stuck flag flips at the same inequality its overlay clamps on, so the
     // opacity swap happens exactly where inline + overlay coincide (no jump).
-    const ts = tabsTopJS > 0 && y >= tabsTopJS - PIN_Y;
+    const ts = tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y;
     setTabsStuck((prev) => (prev === ts ? prev : ts));
     const stripFloor = PIN_Y + tabsHJS; // strip pins UNDER the pinned tabs
-    const ss = stripTopJS > 0 && y >= stripTopJS - stripFloor;
+    const ss = stripTopJS > stripFloor && y >= stripTopJS - stripFloor;
     setStripStuck((prev) => (prev === ss ? prev : ss));
     const p = y < -1;
     if (p !== pulledRef.current) {
@@ -756,20 +890,33 @@ function CoverHeroLineup({
     return { transform: [{ translateY: clamp(stripTop.value - scrollY.value, floor, stripTop.value || floor) }] };
   });
 
+  // Top corners rounded on BOTH copies: inline, the tabs panel overlaps the
+  // photo's underlap strip (the photo shows in the corner notches); the pinned
+  // overlay keeps the identical shape so the inline↔overlay swap is seamless
+  // (at the pin the photo still fills the notches, then slides away; past it
+  // the notches sit over theme.bg content and read as nothing).
   const Tabs = (
-    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl }}>
       <SessionTabs active={tab} onSelect={onSelectTab} />
     </View>
   );
   // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
-  // the people rail (both pin under the pinned tabs via the same overlay).
-  // The rail owns its horizontal padding (its chips scroll edge-to-edge).
+  // the compare toolbar (both pin under the pinned tabs via the same overlay).
+  // The toolbar owns its horizontal padding. Keyed animated wrappers: same
+  // element type in the same ternary slot would reconcile without remounting,
+  // and the swap slide-in only runs on a mount. Rendered twice (inline +
+  // overlay) — both copies slide in sync; the search value is screen state, so
+  // both TextInput copies stay in step (focus lives in whichever was tapped).
   const Strip = onCompare ? (
-    compareRail ? <View style={{ backgroundColor: theme.bg }}>{compareRail}</View> : null
-  ) : showStrip ? (
-    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
-      <RevealStripFor reveal={reveal} />
-    </View>
+    compareRail ? (
+      <Reanimated.View key="strip-rail" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')} style={{ backgroundColor: theme.bg }}>
+        {compareRail}
+      </Reanimated.View>
+    ) : null
+  ) : showToolbar ? (
+    <Reanimated.View key="strip-reveal-toolbar" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+      <LineupToolbar toolbar={toolbar} />
+    </Reanimated.View>
   ) : null;
 
   return (
@@ -784,23 +931,34 @@ function CoverHeroLineup({
         // setState). Matches reanimated's own AnimatedScrollView default.
         scrollEventThrottle={1}
         contentInsetAdjustmentBehavior="never"
+        // Compare's toolbar has a search field — card taps must land while the
+        // keyboard is up (default would swallow the first tap to dismiss).
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+        onLayout={(e) => {
+          heroViewportH.current = e.nativeEvent.layout.height;
+          heroMaxScroll.value = Math.max(0, heroContentH.current - heroViewportH.current);
+        }}
+        onContentSizeChange={(w, h) => {
+          heroContentH.current = h;
+          heroMaxScroll.value = Math.max(0, h - heroViewportH.current);
+        }}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + (reveal.revealMode ? 96 : TAB_BAR_CLEARANCE) }}
+        contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
       >
         {/* .hero-bleed-top: full-bleed photo at content-y 0 (bleeds under the
             status bar via the dead-end + never). Soft top corners while pulled. */}
         <View
           style={{
-            height: heroH,
+            // The photo runs radius.xl PAST the visual seam so the content
+            // below (the tabs strip, or the lock panel — rounded top corners,
+            // negative margin) overlaps it and the photo stays visible in the
+            // corner notches. The panel is what's rounded, not the photo —
+            // matching the impression hero.
+            height: heroH + radius.xl,
             overflow: 'hidden',
             borderTopLeftRadius: pulled ? radius.xl : 0,
             borderTopRightRadius: pulled ? radius.xl : 0,
-            // Soft bottom corners, matching the impression hero. (Largely a
-            // no-op visually here — the flush opaque theme.bg tab strip sits
-            // directly below, so the rounded corners read bg-on-bg — but kept
-            // for parity with the impression hero's photo container.)
-            borderBottomLeftRadius: radius.xl,
-            borderBottomRightRadius: radius.xl,
           }}
         >
           <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setFullscreen(true)} style={{ width: '100%', height: '100%' }}>
@@ -811,14 +969,14 @@ function CoverHeroLineup({
           <LinearGradient
             pointerEvents="none"
             colors={HERO_SCRIM}
-            locations={[0, 0.45, 1]}
+            locations={[0, 0.45 * scrimEnd, scrimEnd]}
             style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
           />
           {/* Title: measure its bottom in content space (its parent is the photo
               View whose top is content-y 0, so y + height is content-Y). */}
           <View
             pointerEvents="none"
-            style={{ position: 'absolute', left: 18, right: 18, bottom: 14 }}
+            style={{ position: 'absolute', left: 18, right: 18, bottom: 14 + radius.xl }}
             onLayout={(e) => setTitleBottom(e.nativeEvent.layout.y + e.nativeEvent.layout.height)}
           >
             <VText
@@ -836,6 +994,9 @@ function CoverHeroLineup({
             strip's pin floor so it stacks under the pinned tabs). */}
         {!lock ? (
           <View
+            style={{ marginTop: -radius.xl }}
+            accessibilityElementsHidden={tabsStuck}
+            importantForAccessibility={tabsStuck ? 'no-hide-descendants' : 'auto'}
             onLayout={(e) => {
               const { y, height } = e.nativeEvent.layout;
               tabsTop.value = y;
@@ -851,17 +1012,24 @@ function CoverHeroLineup({
             Compare tab everything below the tabs is the compare body (the mock
             02d screens carry no about block). */}
         {lock ? (
-          <View style={{ paddingHorizontal: GUTTER }}>
+          // No tabs on a locked moment — the lock panel is what sits directly
+          // under the photo, so IT carries the rounded overlap.
+          <View style={{ paddingHorizontal: GUTTER, marginTop: -radius.xl, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, backgroundColor: theme.bg }}>
             <LockCard revealAt={lock} />
             {ovc}
           </View>
         ) : onCompare ? null : (
-          <View style={{ paddingHorizontal: GUTTER }}>{ovc}</View>
+          <Reanimated.View entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ paddingHorizontal: GUTTER }}>{ovc}</Reanimated.View>
         )}
-        {/* INLINE reveal strip — below the about block, above the rows. At-rest
-            position + flow spacer. Direct scroll child → layout.y is content-Y. */}
+        {/* INLINE toolbar/rail strip — right ABOVE the rows (below the about
+            block; Simon: the controls sit close to the content they act on):
+            line-up = the eye-menu toolbar, compare = the people/sort/search
+            rail. At-rest position + flow spacer; direct scroll child →
+            layout.y is content-Y. Pins under the pinned tabs via the overlay. */}
         {Strip ? (
           <View
+            accessibilityElementsHidden={stripStuck}
+            importantForAccessibility={stripStuck ? 'no-hide-descendants' : 'auto'}
             onLayout={(e) => {
               const y = e.nativeEvent.layout.y;
               stripTop.value = y;
@@ -871,40 +1039,59 @@ function CoverHeroLineup({
             {Strip}
           </View>
         ) : null}
-        {/* rows + footer (line-up) / compare body */}
+        {/* rows + footer (line-up) / compare body — keyed so the swap remounts
+            (same-type reconcile would skip the slide-in) */}
         {lock ? null : onCompare ? (
-          compare
+          <Reanimated.View key="pane-compare" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')}>{compare}</Reanimated.View>
         ) : (
-          <View>
+          <Reanimated.View key="pane-lineup" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
             {rows.length === 0 ? (
               <View style={{ paddingHorizontal: GUTTER }}>
-                <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
+                {luNarrowed ? (
+                  <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
+                ) : (
+                  <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
+                )}
               </View>
             ) : (
-              rows.map((item, index) => (
-                <View key={item.id} style={{ paddingHorizontal: GUTTER }}>
-                  {index > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
-                  <LuRow
-                    wine={item}
-                    index={index}
-                    myIdentityId={myIdentityId}
-                    ratings={ratings}
-                    onPress={() => onPressWine(item.id)}
-                    hostRevealUi={reveal.hostRevealUi}
-                    revealMode={reveal.revealMode}
-                    revealBusy={reveal.revealBusy}
-                    onReveal={reveal.onRevealOne}
-                    onHide={reveal.onHideOne}
-                  />
-                </View>
-              ))
+              <View style={{ paddingHorizontal: GUTTER }}>
+                <DraggableRows
+                  ids={rows.map((w) => w.id)}
+                  enabled={reorder.enabled}
+                  denied={reorder.denied}
+                  deniedNote={reorder.deniedNote}
+                  onDenied={reorder.onDenied}
+                  scrollRef={aref}
+                  scrollY={scrollY}
+                  maxScrollY={heroMaxScroll}
+                  onCommit={reorder.onCommit}
+                  renderRow={(id, i, move) => {
+                    const item = rowById.get(id);
+                    if (!item) return null;
+                    return (
+                      <>
+                        {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                        <LuRow
+                          wine={item}
+                          index={indexById.get(id) ?? 0}
+                          myIdentityId={myIdentityId}
+                          ratings={ratings}
+                          onPress={() => onPressWine(id)}
+                          reveal={reveal}
+                          move={move}
+                        />
+                      </>
+                    );
+                  }}
+                />
+              </View>
             )}
-            {rows.length > 0 && canAdd && !reveal.revealMode ? (
+            {rows.length > 0 && canAdd && !luNarrowed ? (
               <View style={{ paddingHorizontal: GUTTER }}>
                 <AddImpressionRow onPress={onAdd} />
               </View>
             ) : null}
-          </View>
+          </Reanimated.View>
         )}
       </Reanimated.ScrollView>
       {/* OVERLAYS — pinned copies of tabs (at the bar) + strip (stacked under the
@@ -916,6 +1103,11 @@ function CoverHeroLineup({
       {!lock ? (
         <Reanimated.View
           pointerEvents={tabsStuck ? 'auto' : 'none'}
+          // Exactly ONE copy in the accessibility tree at a time (codex): the
+          // opacity/pointerEvents gate hides the duplicate visually and from
+          // touch, but VoiceOver/TalkBack still walked both.
+          accessibilityElementsHidden={!tabsStuck}
+          importantForAccessibility={tabsStuck ? 'auto' : 'no-hide-descendants'}
           style={[tabsOverlayStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7, opacity: tabsStuck ? 1 : 0 }]}
         >
           {Tabs}
@@ -924,6 +1116,8 @@ function CoverHeroLineup({
       {Strip ? (
         <Reanimated.View
           pointerEvents={stripStuck ? 'auto' : 'none'}
+          accessibilityElementsHidden={!stripStuck}
+          importantForAccessibility={stripStuck ? 'auto' : 'no-hide-descendants'}
           style={[stripOverlayStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7, opacity: stripStuck ? 1 : 0 }]}
         >
           {Strip}
@@ -940,11 +1134,13 @@ function CoverHeroLineup({
 // anchors the shared SessionMenu via measureInWindow (same protocol as
 // SessionMenuButton).
 function HeroTopBar({
-  title, collapsed, canAdd, onAdd, onBack, onMenu,
+  title, collapsed, canAdd, showAdd, onAdd, onBack, onMenu,
 }: {
   title: string;
   collapsed: boolean;
   canAdd: boolean;
+  /** Tab-driven: Add is line-up furniture — false on Compare, where it morphs into the ⋯. */
+  showAdd: boolean;
   onAdd: () => void;
   onBack: () => void;
   onMenu: (anchorBottomY: number) => void;
@@ -953,6 +1149,15 @@ function HeroTopBar({
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const moreRef = useRef<View>(null);
+  // Add ⇄ ⋯ morph: pill fill + circle fill are ONE SVG path (capsule ∪
+  // circle, single GLASS_FILL) — the union paints uniformly by definition,
+  // so the intersection can't double into a dark crescent (two stacked
+  // translucent fills always doubled it; a uniform counter-dim on the circle
+  // just produced a two-tone circle — both device-rejected). The morph is
+  // literally a blob absorption. `morph` is driven by CollapsingAdd (1 =
+  // resting, 0 = merged); pill size arrives via onSize.
+  const morph = useSharedValue(showAdd ? 1 : 0);
+  const [pillSize, setPillSize] = useState<{ w: number; h: number } | null>(null);
   const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
   useEffect(() => {
     Animated.timing(anim, {
@@ -1005,18 +1210,38 @@ function HeroTopBar({
           </Animated.View>
           {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
               + glyph once the bar goes solid (label drop mirrors the Crave
-              button). Host/cohost/provider only. */}
-          {canAdd ? <LineupAddButton onPress={onAdd} collapsed={collapsed} glass /> : null}
-          <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Session menu"
-              hitSlop={8}
-              onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
-              style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
-            >
-              <Icon name="more" size={iconSize} color={iconColor} />
-            </Pressable>
+              button). Host/cohost/provider only; morphs into the ⋯ on Compare. */}
+          <View collapsable={false} style={{ flexDirection: 'row', alignItems: 'center' }}>
+            {/* THE UNION FILL — one path for pill capsule + ⋯ circle (see
+                `morph` above). Glass state only: the collapsed bar's controls
+                are fill-less (ADR-0003), and without Add the ⋯ keeps its own
+                static circle fill below. */}
+            {!collapsed && canAdd && pillSize ? (
+              <MorphUnionFill morph={morph} pillW={pillSize.w} pillH={pillSize.h} circle={controlSize} reach={6 + controlSize / 2} />
+            ) : null}
+            {canAdd ? (
+              // Center-vanish (Simon's spec) with the fill drawn by the union
+              // SVG — the pill itself carries only content (noBg).
+              <CollapsingAdd show={showAdd} reach={6 + controlSize / 2} progress={morph} onSize={(w, h) => setPillSize({ w, h })}>
+                <LineupAddButton onPress={onAdd} collapsed={collapsed} glass noBg={!collapsed} />
+              </CollapsingAdd>
+            ) : null}
+            <View ref={moreRef} collapsable={false} style={{ marginLeft: 6 }}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Session menu"
+                hitSlop={8}
+                onPress={() => moreRef.current?.measureInWindow((_x, y, _w, h) => onMenu(y + h))}
+                style={({ pressed }) => ({
+                  ...circle,
+                  // With Add present the union SVG paints the circle's fill.
+                  backgroundColor: !collapsed && canAdd ? undefined : circle.backgroundColor,
+                  opacity: pressed ? 0.5 : 1,
+                })}
+              >
+                <Icon name="more" size={iconSize} color={iconColor} />
+              </Pressable>
+            </View>
           </View>
         </View>
       </View>
@@ -1024,146 +1249,148 @@ function HeroTopBar({
   );
 }
 
-// .rs-btn — accent-filled pill in the reveal strip (Reveal / Reveal all / Hide
-// all). Always carries a leading eye/eye-off glyph.
-function RsButton({
-  icon, label, onPress, disabled,
-}: {
-  icon: IconName;
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-}) {
+// ── the line-up toolbar — [eye ⌄][sort ⌄][search────]: the eye menu (ADR-
+// 0007: count + Reveal all / Hide all / Blind for all) on the very LEFT when
+// the viewer is a blind host/cohost, search on the very RIGHT, sort between.
+// Always rendered — no size threshold (Simon's calls, 2026-07-04).
+type LuToolbarProps = {
+  reveal: RevealProps;
+  query: string;
+  onQuery: (q: string) => void;
+  sort: LuSort;
+  onSort: (s: LuSort) => void;
+  /** Bumps on every denied reorder-hold → note + accent flash. */
+  deniedTick: number;
+};
+function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
+  const { reveal, query, onQuery, sort, onSort, deniedTick } = toolbar;
   const { theme } = useTheme();
+  // Denied-reorder feedback: a short explainer line + an accent flash on the
+  // control that blocks the drag (sort chip / search pill), ~2.6s.
+  const [deniedShown, setDeniedShown] = useState(false);
+  const deniedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (deniedTick === 0) return;
+    setDeniedShown(true);
+    if (deniedTimer.current) clearTimeout(deniedTimer.current);
+    deniedTimer.current = setTimeout(() => setDeniedShown(false), 2600);
+  }, [deniedTick]);
+  useEffect(() => () => { if (deniedTimer.current) clearTimeout(deniedTimer.current); }, []);
   const phone = usePhoneTokens();
-  const labelText = phone.text('small');
-  // .rs-btn[disabled]: surface-sunk fill + ink-soft text/glyph + 0.4 opacity
-  // (NOT a dimmed-gold pill) per the design.
-  const fg = disabled ? theme.inkSoft : theme.accentInk;
+  const { width: screenW } = useWindowDimensions();
+  const btnRef = useRef<View>(null);
+  const sortBtnRef = useRef<View>(null);
+  const [anchor, setAnchor] = useState<{ top: number; bottom: number } | null>(null);
+  const [sortAnchor, setSortAnchor] = useState<{ top: number; bottom: number } | null>(null);
+  const [menuRight, setMenuRight] = useState(16);
+  const [sortMenuRight, setSortMenuRight] = useState(16);
+  const sorted = sort !== 'lineup';
+  const searching = query.trim() !== '';
+  const sortLabel = LU_SORTS.find((o) => o.key === sort)?.label ?? 'Line-up order';
+  const openSortMenu = () => {
+    sortBtnRef.current?.measureInWindow((x, y, w, h) => {
+      setSortMenuRight(Math.max(12, screenW - x - 224));
+      setSortAnchor({ top: y, bottom: y + h });
+    });
+  };
+  // Auto-close shortly after a Blind-for-all flip (same beat the ⋯ menu had)
+  // so the row is seen going active before the menu leaves.
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
+  const openMenu = () => {
+    btnRef.current?.measureInWindow((x, y, w, h) => {
+      // AnchoredMenu is right-anchored; land the panel a panel-width right of
+      // the button's left edge so it unfolds from the trigger (the compare
+      // toolbar's sort-menu math).
+      setMenuRight(Math.max(12, screenW - x - 224));
+      setAnchor({ top: y, bottom: y + h });
+    });
+  };
+  const countLabel = reveal.blindForEveryone
+    ? (reveal.hiddenCount === 0 ? 'All revealed' : `${reveal.hiddenCount} of ${reveal.total} hidden from everyone`)
+    : (reveal.hiddenCount === 0 ? 'All revealed to guests' : `${reveal.hiddenCount} of ${reveal.total} hidden from guests`);
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
-      onPress={onPress}
-      hitSlop={4}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7),
-        paddingVertical: phone.lerp(7, 9), paddingHorizontal: phone.lerp(15, 18), borderRadius: radius.pill,
-        backgroundColor: disabled ? theme.surfaceSunk : theme.accent,
-        opacity: disabled ? 0.4 : pressed ? 0.8 : 1,
-      })}
-    >
-      <Icon name={icon} size={phone.size('smallActionIcon')} color={fg} />
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...labelText, color: fg }}>
-        {label}
-      </VText>
-    </Pressable>
-  );
-}
-
-// .reveal-strip — the blind line-up's host control strip + the taster's quiet
-// notice. Three shapes, all per vero-screens (tBlindHost / tReveal / tBlindAll
-// / tBlindViewer):
-//  - guest (non-host on a blind session): quiet "Blind tasting · host reveals".
-//  - host resting: "N of M hidden from guests" (or "Hidden from everyone" when
-//    blind-for-all; "All revealed…" when nothing is hidden) + a Reveal button
-//    that enters reveal mode. The Reveal button is ALWAYS present — even when
-//    all revealed — so Done never traps the host out of the controls.
-//  - host reveal mode: sticky count chip on the left, Hide all + Reveal all on
-//    the right (the per-row pills live on the rows themselves).
-function RevealStrip({
-  variant, total, hiddenCount, blindForEveryone, busy, onEnterMode, onRevealAll, onHideAll,
-}: {
-  variant: 'guest' | 'host-resting' | 'host-mode';
-  total: number;
-  hiddenCount: number;
-  blindForEveryone: boolean;
-  busy: boolean;
-  onEnterMode: () => void;
-  onRevealAll: () => void;
-  onHideAll: () => void;
-}) {
-  const { theme } = useTheme();
-  const noticeText = (children: React.ReactNode) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexShrink: 1, minWidth: 0 }}>
-      <Icon name="eyeoff" size={16} color={theme.inkSoft} />
-      <VText variant="small" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', flexShrink: 1 }} color="inkSoft">
-        {children}
-      </VText>
-    </View>
-  );
-
-  if (variant === 'guest') {
-    // .reveal-strip.is-quiet
-    return (
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: 6, paddingBottom: 10 }}>
-        {noticeText('Blind tasting · host reveals')}
-      </View>
-    );
-  }
-
-  if (variant === 'host-mode') {
-    // Manage strip: .rv-count + .rv-allrow (Hide all · Reveal all). BOTH
-    // buttons stay live regardless of state — "reveal all" doesn't mean you're
-    // finished or that the controls go away; the host keeps full control until
-    // they tap Done. Only the transient in-flight `busy` disables them.
-    return (
-      <View
-        style={{
-          flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-          flexWrap: 'wrap', paddingTop: 10, paddingBottom: 10, backgroundColor: theme.bg,
-        }}
+    // Horizontal inset comes from the HOST (plain: the list's GUTTER content
+    // padding; hero: the strip wrapper) — none here, or it would double up.
+    <View style={{ paddingTop: 4, paddingBottom: 8, gap: 6 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+      {reveal.hostRevealUi ? (
+      <Pressable
+        ref={btnRef}
+        accessibilityRole="button"
+        accessibilityLabel={`Reveal controls — ${countLabel}`}
+        onPress={openMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row', alignItems: 'center', gap: 5, minHeight: 36, paddingHorizontal: 11,
+          borderRadius: 999, borderWidth: 1, borderColor: theme.rule, backgroundColor: theme.surface,
+          opacity: pressed ? 0.6 : 1,
+        })}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Icon name="eyeoff" size={15} color={theme.inkSoft} />
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontVariant: ['tabular-nums'] }} color="inkSoft">
-            {hiddenCount}
+        <Icon name={reveal.hiddenCount > 0 ? 'eyeoff' : 'eye'} size={16} color={reveal.hiddenCount > 0 ? theme.accent : theme.inkSoft} />
+        {reveal.hiddenCount > 0 ? (
+          <VText surface="badge" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), fontVariant: ['tabular-nums'] }}>
+            {reveal.hiddenCount}
           </VText>
+        ) : null}
+        <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+      </Pressable>
+      ) : null}
+      <AnchoredMenu anchor={anchor} onClose={() => setAnchor(null)} right={menuRight} minWidth={210}>
+        <View style={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 }}>
+          <VText variant="caption" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{countLabel}</VText>
         </View>
-        <View style={{ flexDirection: 'row', gap: 8, flexShrink: 0 }}>
-          <RsButton icon="eyeoff" label="Hide all" onPress={onHideAll} disabled={busy} />
-          <RsButton icon="eye" label="Reveal all" onPress={onRevealAll} disabled={busy} />
-        </View>
+        <MenuItem icon="eye" label="Reveal all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onRevealAll(); }} />
+        <MenuItem icon="eyeoff" label="Hide all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onHideAll(); }} />
+        <MenuSeparator />
+        {/* .sess-menu-mode — moved here from the ⋯ menu (Simon 2026-07-04):
+            reveal-scope controls live together. Press-to-activate field. */}
+        <MenuItem
+          icon="eyeoff"
+          label="Blind for all"
+          active={reveal.blindForEveryone}
+          disabled={reveal.bfaBusy}
+          accessibilityState={{ selected: reveal.blindForEveryone }}
+          onPress={() => {
+            reveal.onToggleBlindForEveryone(!reveal.blindForEveryone);
+            if (closeTimer.current) clearTimeout(closeTimer.current);
+            closeTimer.current = setTimeout(() => setAnchor(null), 300);
+          }}
+        />
+      </AnchoredMenu>
+      <Pressable
+        ref={sortBtnRef}
+        accessibilityRole="button"
+        accessibilityLabel={`Sort impressions — ${sortLabel}`}
+        onPress={openSortMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 36, paddingHorizontal: 11,
+          borderRadius: 999,
+          borderWidth: deniedShown && sorted ? 1.5 : 1,
+          borderColor: deniedShown && sorted ? theme.accent : theme.rule,
+          backgroundColor: theme.surface,
+          opacity: pressed ? 0.6 : 1,
+        })}
+      >
+        <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
+      </Pressable>
+      <View style={{ flex: 1 }}>
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" highlight={deniedShown && searching} />
       </View>
-    );
-  }
-
-  // host-resting — the Reveal button (enters manage mode) is ALWAYS present so
-  // the host can re-open the controls even after revealing everything. The
-  // notice text just reflects the current count.
-  const nothingHidden = hiddenCount === 0;
-  return (
-    <View
-      style={{
-        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10,
-        flexWrap: 'wrap', paddingTop: 6, paddingBottom: 10,
-      }}
-    >
-      {blindForEveryone
-        ? noticeText(nothingHidden ? 'All revealed' : 'Hidden from everyone')
-        : noticeText(nothingHidden ? 'All revealed to guests' : `${hiddenCount} of ${total} hidden from guests`)}
-      <RsButton icon="eye" label="Reveal" onPress={onEnterMode} disabled={busy} />
+      <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortMenuRight} minWidth={190}>
+        {LU_SORTS.map((o) => (
+          <MenuItem
+            key={o.key}
+            label={o.label}
+            active={sort === o.key}
+            accessibilityState={{ selected: sort === o.key }}
+            // Tap the active sort again → OFF (line-up order).
+            onPress={() => { onSort(sort === o.key ? 'lineup' : o.key); setSortAnchor(null); }}
+          />
+        ))}
+      </AnchoredMenu>
     </View>
-  );
-}
-
-// .vfoot-rev — the sticky "Done" footer that exits reveal mode (replaces the
-// nav while managing). Solid bg bar (not the create gradient — pushed-screen
-// idiom, but here it's an in-screen mode so a solid bar reads cleanest over the
-// list) with a single full-width button.
-function RevealFooter({ onDone }: { onDone: () => void }) {
-  const { theme } = useTheme();
-  const insets = useSafeAreaInsets();
-  return (
-    <View
-      style={{
-        position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 7,
-        backgroundColor: theme.bg, borderTopWidth: 1, borderTopColor: theme.rule,
-        paddingTop: 12, paddingHorizontal: 14, paddingBottom: insets.bottom + 12,
-      }}
-    >
-      <Button title="Done" bar block onPress={onDone} />
     </View>
   );
 }
@@ -1193,6 +1420,10 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
   const when = sessionWhen(meta.dateFrom, meta.dateTo);
   const hasAny = meta.address || when || meta.link || meta.description || meta.participants.length > 0;
   if (!hasAny) return null;
+  // Foot-only block (no about lines): the foot's 14px separation margin would
+  // stack on the container's paddingTop and read top-heavy against the 14px
+  // below (Simon's centering call) — drop it; the paddings carry the spacing.
+  const footOnly = !meta.address && !when && !meta.link && !meta.description;
 
   const line = (children: React.ReactNode, key: string, onPress?: () => void) => (
     <Pressable
@@ -1291,14 +1522,14 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
           )}
         </Pressable>
       ) : null}
-      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} />
+      <AvatarFoot meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPress={onPeople} first={footOnly} />
     </View>
   );
 }
 
 // .ovc-foot + .ovc-chip: 28px initials circles, -8 overlap, host = accent,
 // overflow chip = accent tint, "Hosted by <b>…</b>".
-function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void }) {
+function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress, first }: { meta: NonNullable<MetaView>; isHostViewer: boolean; myIdentityId: string; onPress: () => void; first?: boolean }) {
   const { theme } = useTheme();
   if (meta.participants.length === 0) return null;
   const hostId = meta.hostIdentityId ?? (meta.hostUserId !== null ? `u:${meta.hostUserId}` : null);
@@ -1324,7 +1555,7 @@ function AvatarFoot({ meta, isHostViewer, myIdentityId, onPress }: { meta: NonNu
       accessibilityRole="button"
       accessibilityLabel="View people"
       onPress={onPress}
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14, opacity: pressed ? 0.6 : 1 })}
+      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: first ? 0 : 14, opacity: pressed ? 0.6 : 1 })}
     >
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         {shown.map(chip)}
@@ -1490,29 +1721,28 @@ function ratersFor(wineId: string, ratings: RatingsView | null): number {
 // The whole row opens the impression detail (02e); unrated rows carry the
 // .lu-rate pill, rated rows the one-star score chip.
 //
-// Blind variants (host on a blind session — `hostRevealUi`):
-//  - host-sees + hidden-from-guests: the host sees the real wine (server
-//    bypass on a normal blind session), with a small eye-off badge on the
-//    thumb and (resting only) a "Hidden from guests" tag.
-//  - masked (_blind): the wine is concealed even from the host (blind-for-all,
-//    not yet revealed) — the mystery placeholder.
-//  - reveal mode: the score/rate slot swaps to a Reveal/Hide pill.
+// Blind variants (host on a blind session — `reveal.hostRevealUi`), per the
+// ADR-0007 direct-manipulation model:
+//  - hidden (host sees the real wine, guests don't): a translucent eye-off
+//    overlay covers the photo; tapping the photo ARMS (accent overlay + the
+//    hint line flips to "tap again"), tapping again reveals.
+//  - revealed: the photo is clear except a corner eye badge — tapping the
+//    badge hides again INSTANTLY (the damage-control path).
+//  - masked (_blind, blind-for-all): the mystery placeholder is the same
+//    tap target.
+// Guests' masked rows carry their own hint line (the old quiet strip died).
 function LuRow({
-  wine, index, myIdentityId, ratings, onPress,
-  hostRevealUi = false, revealMode = false, revealBusy = false, onReveal, onHide,
+  wine, index, myIdentityId, ratings, onPress, reveal, move,
 }: {
   wine: WireWine;
   index: number;
   myIdentityId: string;
   ratings: RatingsView | null;
   onPress: () => void;
-  // Host on a blind session: enables the hidden-from-guests badge + the
-  // reveal/hide pill in reveal mode.
-  hostRevealUi?: boolean;
-  revealMode?: boolean;
-  revealBusy?: boolean;
-  onReveal?: (wineId: string) => void;
-  onHide?: (wineId: string) => void;
+  reveal: RevealProps;
+  /** Accessible reorder (PR #65): VoiceOver rotor actions mirroring the
+   *  drag gesture. Null when reordering is unavailable. */
+  move?: RowMoveActions | null;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -1520,6 +1750,8 @@ function LuRow({
   const badge = phone.surface('badge');
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
   const raters = ratersFor(wine.id, ratings);
+  const { hostRevealUi, revealBusy } = reveal;
+  const armed = reveal.armedId === wine.id;
   const revealedToGuests = !!wine.revealedAt;
   // A _blind wine is the SERVER'S redaction stub (name "Wine N", blank fields) —
   // render the mystery placeholder while it's _blind, FULL STOP. Do NOT un-mask
@@ -1536,14 +1768,22 @@ function LuRow({
   // guests" tag. A revealed wine, or a masked one, is not this.
   const hostSeesHidden = hostRevealUi && !masked && !revealedToGuests;
 
-  // In reveal mode the row is a manage target (the pill), NOT a way into the
-  // impression detail — disable the whole-row press so a tap on the row (incl. a
-  // busy/disabled pill, which doesn't claim the responder) can't navigate away
-  // mid-reveal. Outside reveal mode the row opens the detail as normal.
+  // The whole row always opens the impression; the photo (host, blind) is an
+  // INNER Pressable that claims its own taps for arm/reveal — same nesting
+  // pattern as the IrBar sibling controls.
+  const thumbSize = phone.size('recentThumb');
+  const moveActions = [
+    ...(move?.up ? [{ name: 'moveUp', label: 'Move up in the line-up' }] : []),
+    ...(move?.down ? [{ name: 'moveDown', label: 'Move down in the line-up' }] : []),
+  ];
   return (
     <Pressable
-      onPress={revealMode ? undefined : onPress}
-      disabled={revealMode}
+      onPress={onPress}
+      accessibilityActions={moveActions.length > 0 ? moveActions : undefined}
+      onAccessibilityAction={(e) => {
+        if (e.nativeEvent.actionName === 'moveUp') move?.up?.();
+        else if (e.nativeEvent.actionName === 'moveDown') move?.down?.();
+      }}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
@@ -1561,33 +1801,84 @@ function LuRow({
         {index + 1}
       </VText>
       {masked ? (
-        // .lu-masked: sunk bg, dashed rule border, eye-off
-        <View
-          style={{
-            width: phone.size('recentThumb'), height: phone.size('recentThumb'), borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
-            borderWidth: 1, borderStyle: 'dashed', borderColor: theme.rule,
-            alignItems: 'center', justifyContent: 'center',
-          }}
-        >
-          <Icon name="eyeoff" size={phone.size('pushChevron')} color={theme.inkFaint} />
-        </View>
+        // .lu-masked: sunk bg, dashed rule border, eye-off. For the host under
+        // blind-for-all the placeholder is ALSO the reveal trigger (same
+        // arm→confirm as a photo; armed = accent). A just-revealed stub shows
+        // the corner eye while the poll fetches the real row.
+        hostRevealUi ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={
+              revealedToGuests ? `Hide impression ${index + 1} from guests`
+              : armed ? `Tap again to reveal impression ${index + 1}`
+              : `Reveal impression ${index + 1} — tap twice`
+            }
+            disabled={revealBusy}
+            onPress={() => (revealedToGuests ? reveal.onHideOne(wine.id) : reveal.onThumbTap(wine.id))}
+            style={{
+              width: thumbSize, height: thumbSize, borderRadius: radius.sm,
+              backgroundColor: armed ? theme.accentTint : theme.surfaceSunk,
+              borderWidth: 1, borderStyle: armed ? 'solid' : 'dashed', borderColor: armed ? theme.accentLine : theme.rule,
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Icon name={armed || revealedToGuests ? 'eye' : 'eyeoff'} size={phone.size('pushChevron')} color={armed ? theme.accent : theme.inkFaint} />
+          </Pressable>
+        ) : (
+          <View
+            style={{
+              width: thumbSize, height: thumbSize, borderRadius: radius.sm, backgroundColor: theme.surfaceSunk,
+              borderWidth: 1, borderStyle: 'dashed', borderColor: theme.rule,
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Icon name="eyeoff" size={phone.size('pushChevron')} color={theme.inkFaint} />
+          </View>
+        )
       ) : (
-        // .lu-thumbwrap — the host's hidden-from-guests wine carries a small
-        // eye-off badge pinned to the thumb's bottom-right corner.
-        <View style={{ width: phone.size('recentThumb'), height: phone.size('recentThumb') }}>
-          <Thumb uri={wine.imageUrl} size={phone.size('recentThumb')} />
+        // .lu-thumbwrap — on a blind session the photo IS the host's reveal
+        // control (ADR-0007).
+        <View style={{ width: thumbSize, height: thumbSize }}>
+          <Thumb uri={wine.imageUrl} size={thumbSize} />
           {hostSeesHidden ? (
-            // .lu-hidebadge: 20px surface circle, ink-soft eye-off, overhanging
-            // the thumb corner.
-            <View
+            // Hidden: translucent glass over the WHOLE photo (sanctioned
+            // over-photo fill) + centred glyph; armed flips it accent. Tap =
+            // arm, tap again = reveal.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={armed ? `Tap again to reveal ${wine.name}` : `Reveal ${wine.name} — tap twice`}
+              disabled={revealBusy}
+              onPress={() => reveal.onThumbTap(wine.id)}
               style={{
-                position: 'absolute', right: -4, bottom: -4, width: 20, height: 20, borderRadius: 10,
-                backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule,
+                position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radius.sm,
+                backgroundColor: armed ? alpha(theme.accent, 0.55) : GLASS_FILL,
+                borderWidth: armed ? 1.5 : 0, borderColor: theme.accent,
                 alignItems: 'center', justifyContent: 'center',
               }}
             >
-              <Icon name="eyeoff" size={12} color={theme.inkSoft} />
-            </View>
+              <Icon name={armed ? 'eye' : 'eyeoff'} size={phone.size('pushChevron')} color="#fff" />
+            </Pressable>
+          ) : hostRevealUi && revealedToGuests ? (
+            // Revealed: the WHOLE photo is the hide trigger (Simon — not just
+            // the badge); the corner eye badge (.lu-hidebadge geometry) is the
+            // visual cue riding inside the transparent overlay.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Hide ${wine.name} from guests`}
+              disabled={revealBusy}
+              onPress={() => reveal.onHideOne(wine.id)}
+              style={{ position: 'absolute', top: 0, left: 0, right: -4, bottom: -4 }}
+            >
+              <View
+                style={{
+                  position: 'absolute', right: 0, bottom: 0, width: 22, height: 22, borderRadius: 11,
+                  backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule,
+                  alignItems: 'center', justifyContent: 'center',
+                }}
+              >
+                <Icon name="eye" size={13} color={theme.inkSoft} />
+              </View>
+            </Pressable>
           ) : null}
         </View>
       )}
@@ -1597,7 +1888,16 @@ function LuRow({
             <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
               Impression {index + 1}
             </VText>
-            <VText surface="compactList" color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>To be revealed</VText>
+            {/* The old quiet strip's context, moved onto the thing itself:
+                guests learn WHY it's masked right on the row (Simon's call). */}
+            <VText surface="compactList" color="inkSoft" style={{ ...phone.text('small'), marginTop: 1 }}>
+              {hostRevealUi ? 'Hidden from everyone' : 'Hidden until the host reveals it'}
+            </VText>
+            {hostRevealUi && !revealedToGuests ? (
+              <VText surface="compactList" variant="caption" numberOfLines={1} style={{ marginTop: 1 }} color={armed ? 'accent' : 'inkFaint'}>
+                {armed ? 'Tap once more to reveal' : 'Double-tap the box to reveal'}
+              </VText>
+            ) : null}
           </>
         ) : (
           <>
@@ -1613,31 +1913,34 @@ function LuRow({
                 </>
               ) : null}
             </VText>
-            {hostSeesHidden && !revealMode ? (
-              <VText surface="compactList" variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
-                Hidden from guests
-              </VText>
+            {hostSeesHidden ? (
+              <>
+                <VText surface="compactList" variant="caption" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 1 }} color="inkSoft">
+                  Hidden from guests
+                </VText>
+                <VText surface="compactList" variant="caption" numberOfLines={1} style={{ marginTop: 1 }} color={armed ? 'accent' : 'inkFaint'}>
+                  {armed ? 'Tap once more to reveal' : 'Double-tap the photo to reveal'}
+                </VText>
+              </>
             ) : wine.producer ? (
               <VText surface="compactList" color="inkSoft" numberOfLines={1} style={{ ...phone.text('small'), marginTop: 1 }}>{wine.producer}</VText>
             ) : null}
-            {!hostSeesHidden && (wine.grape || wine.type) ? (
+            {hostRevealUi && revealedToGuests ? (
+              // The hide direction needs its own hint (Simon) — it takes the
+              // caption slot (grape/type still lives on the impression detail)
+              // so revealed rows keep the 3-line rhythm: name / producer / hint.
               <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
-                {wine.grape || wine.type}
+                Tap the photo to hide
+              </VText>
+            ) : !hostSeesHidden && (wine.grape || wine.type) ? (
+              <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
+                {wine.grape || wineTypeLabel(wine.type)}
               </VText>
             ) : null}
           </>
         )}
       </View>
-      {revealMode ? (
-        // .lu-pill — reveal/hide control replacing the score slot. Reveal =
-        // accent fill; Hide = outline ink-soft (per .lu-pill-reveal /
-        // .lu-pill-hide).
-        revealedToGuests ? (
-          <LuPill icon="eyeoff" label="Hide" busy={revealBusy} onPress={() => onHide?.(wine.id)} />
-        ) : (
-          <LuPill icon="eye" label="Reveal" filled busy={revealBusy} onPress={() => onReveal?.(wine.id)} />
-        )
-      ) : (
+      {(
         // .lu-right2: score chip when rated, .lu-rate pill when not
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
           {myScore > 0 ? (
@@ -1666,46 +1969,113 @@ function LuRow({
   );
 }
 
-// .lu-pill — per-row reveal/hide control in reveal mode. `filled` = accent
-// background (Reveal); otherwise an outline ink-soft pill (Hide). Its own
-// Pressable so a tap on the pill doesn't also open the impression detail
-// (a child Pressable captures the touch before the row's).
-function LuPill({
-  icon, label, filled, busy, onPress,
-}: {
-  icon: IconName;
-  label: string;
-  filled?: boolean;
-  busy?: boolean;
-  onPress: () => void;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('button');
+
+// Add ⇄ ⋯ hand-off (Simon's ask): on Compare the Add control slides INTO the
+// ⋯ beside it and grows back out of it on Line-up, instead of popping.
+// Mechanics: the outer window's layout width animates to 0 (the bar's
+// flexible title absorbs the freed space, so the window — and the
+// left-anchored pill riding in it — moves right); opacity holds ~solid and
+// fades only at the tail (a linear fade on the fast-start ease read as "just
+// disappears" on device). Duration matches the pane push (dur3).
+// `reach` (hero bar): the clip window overhangs the layout footprint by
+// `reach` (`width + reach`, `marginRight: -reach`), and the pill gets the
+// same extra translateX travel — so it slides toward the ⋯ and vanishes at
+// the window's right edge. The hero passes reach=6 (the gap): the vanish
+// line is the ⋯ circle's LEFT edge — clipping at its CENTER doubled the two
+// translucent glass fills wherever they overlapped, unfixable by fading.
+// reach=0 (plain bar) clips at the window edge; that bar's borderless
+// controls have no fill to stack.
+function CollapsingAdd({ show, reach = 0, progress, onSize, children }: { show: boolean; reach?: number; progress?: SharedValue<number>; onSize?: (w: number, h: number) => void; children: React.ReactNode }) {
+  const [w, setW] = useState(0);
+  // Optionally driven through a caller-owned shared value so a sibling (the
+  // hero ⋯) can animate off the SAME morph progress (its counter-dim).
+  const internal = useSharedValue(show ? 1 : 0);
+  const anim = progress ?? internal;
+  useEffect(() => {
+    // Directional easing: the shared fast-start curve made the collapse read
+    // much quicker than the expand (most travel + the tail fade landed in the
+    // first third; the expand stayed visible for the full duration — Simon's
+    // device call). Exit accelerates (slow → swallowed at the end), entrance
+    // decelerates (out fast → settle) — perceived duration now matches.
+    anim.value = withTiming(show ? 1 : 0, {
+      duration: motion.dur3,
+      easing: ReEasing.bezier(...(show ? motion.easeOut : motion.easeIn)),
+      reduceMotion: ReduceMotion.System,
+    });
+  }, [show, anim]);
+  const style = useAnimatedStyle(() =>
+    w > 0
+      ? {
+          width: w * anim.value + reach,
+          marginRight: -reach,
+          // Solid slide, tail fade only: with the clip at the ⋯'s LEFT edge
+          // (zero fill overlap — see the call site) the pill can stay solid
+          // for the whole travel and just soften at the vanish point.
+          opacity: interpolate(anim.value, [0, 0.25, 1], [0, 1, 1]),
+        }
+      : { opacity: anim.value, marginRight: 0, ...(show ? null : { width: 0 }) },
+  );
+  const pill = useAnimatedStyle(() => ({
+    transform: [{ translateX: (1 - anim.value) * reach }],
+  }));
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      disabled={busy}
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(5, 7), minHeight: surface.height(phone.lerp(32, 36)), paddingHorizontal: phone.lerp(13, 16),
-        borderRadius: radius.pill,
-        backgroundColor: filled ? theme.accent : 'transparent',
-        borderWidth: filled ? 0 : 1,
-        borderColor: theme.rule,
-        opacity: busy ? 0.5 : pressed ? 0.7 : 1,
-      })}
+    <Reanimated.View
+      pointerEvents={show ? 'auto' : 'none'}
+      // pointerEvents blocks touch only — keep the collapsed (or mid-collapse)
+      // control out of the accessibility tree too, on both platforms.
+      accessibilityElementsHidden={!show}
+      importantForAccessibility={show ? 'auto' : 'no-hide-descendants'}
+      style={[{ overflow: 'hidden', flexDirection: 'row' }, style]}
     >
-      <Icon name={icon} size={phone.size('smallActionIcon')} color={filled ? theme.accentInk : theme.inkSoft} />
-      <VText
-        surface="button"
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: filled ? theme.accentInk : theme.inkSoft }}
+      <Reanimated.View
+        style={[{ flexShrink: 0 }, pill]}
+        onLayout={(e) => {
+          setW(e.nativeEvent.layout.width);
+          onSize?.(e.nativeEvent.layout.width, e.nativeEvent.layout.height);
+        }}
       >
-        {label}
-      </VText>
-    </Pressable>
+        {children}
+      </Reanimated.View>
+    </Reanimated.View>
+  );
+}
+
+// The Add ⇄ ⋯ morph's single fill: pill capsule ∪ ⋯ circle in ONE nonzero
+// path, so overlapping subpaths paint once (uniform — no dark crescent at
+// the intersection, structurally). Geometry mirrors CollapsingAdd's window
+// math in the cluster's coordinate space: visible capsule = [ (1-t)·reach,
+// min((1-t)·reach + w, w·t + reach) ]; circle at [w·t + 6, +C]. The capsule
+// subpath is dropped once its width falls under a hair's breadth.
+function MorphUnionFill({ morph, pillW, pillH, circle, reach }: { morph: SharedValue<number>; pillW: number; pillH: number; circle: number; reach: number }) {
+  // 2px bleed on every side: the control sizes are comfort-lerped
+  // (fractional), and shapes drawn flush to the canvas edge get their bottom
+  // arc shaved by sub-pixel rounding (Simon's "cut at the bottom" nit).
+  const PAD = 2;
+  const H = Math.max(pillH, circle) + PAD * 2;
+  const W = pillW + reach + 6 + circle + PAD * 2;
+  const props = useAnimatedProps(() => {
+    'worklet';
+    const t = morph.value;
+    const cx = PAD + pillW * t + 6 + circle / 2;
+    const cy = H / 2;
+    const r = circle / 2;
+    // ⚠️ Same winding as the capsule (both sweep=1 / clockwise): under the
+    // NONZERO fill rule, opposite windings cancel — the overlap would render
+    // as a HOLE instead of a union.
+    const circlePath = `M ${cx - r} ${cy} A ${r} ${r} 0 1 1 ${cx + r} ${cy} A ${r} ${r} 0 1 1 ${cx - r} ${cy} Z`;
+    const x0 = PAD + (1 - t) * reach;
+    const x1 = PAD + Math.min((1 - t) * reach + pillW, pillW * t + reach);
+    const w = x1 - x0;
+    if (w < 1) return { d: circlePath };
+    const pr = Math.min(pillH / 2, w / 2);
+    const py = cy - pillH / 2;
+    const capsule = `M ${x0 + pr} ${py} L ${x1 - pr} ${py} A ${pr} ${pr} 0 0 1 ${x1 - pr} ${py + pillH} L ${x0 + pr} ${py + pillH} A ${pr} ${pr} 0 0 1 ${x0 + pr} ${py} Z`;
+    return { d: capsule + ' ' + circlePath };
+  });
+  return (
+    <Svg pointerEvents="none" width={W} height={H} style={{ position: 'absolute', left: -PAD, top: '50%', marginTop: -H / 2 }}>
+      <MorphPath animatedProps={props} fill={GLASS_FILL} fillRule="nonzero" />
+    </Svg>
   );
 }
 
@@ -1720,13 +2090,17 @@ function LuPill({
 //    scrim — the fill IS needed there for legibility over the photo), collapsing
 //    to a bare ink + glyph once the bar goes solid, matching the back/⋯ circles.
 function LineupAddButton({
-  onPress, collapsed, glass,
+  onPress, collapsed, glass, noBg,
 }: {
   onPress: () => void;
   // cover-hero only: drop the label, leave the + glyph (mirrors crave's titleShown)
   collapsed?: boolean;
   // cover-hero only: glass pill treatment over the photo (pre-collapse)
   glass?: boolean;
+  /** Hero morph: the capsule FILL is drawn by the union SVG behind (one shape
+   * with the ⋯ circle — two stacked translucent fills double their
+   * intersection as a dark crescent); this keeps only content + paddings. */
+  noBg?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -1747,7 +2121,7 @@ function LineupAddButton({
         // plain-bar and collapsed variants are borderless.
         paddingHorizontal: onGlass ? phone.lerp(13, 16) : 4,
         borderRadius: onGlass ? phone.lerp(17, 19) : 0,
-        backgroundColor: onGlass ? GLASS_FILL : 'transparent',
+        backgroundColor: onGlass && !noBg ? GLASS_FILL : 'transparent',
         opacity: pressed ? 0.6 : 1,
       })}
     >

@@ -38,7 +38,7 @@ export function AnchoredMenu({
   gap?: number;
 }) {
   const { theme } = useTheme();
-  const { height: screenH } = useWindowDimensions();
+  const { height: screenH, width: screenW } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const anim = useRef(new Animated.Value(0)).current;
   // Hold the last anchor so the panel keeps its place during the close fade (the
@@ -80,6 +80,10 @@ export function AnchoredMenu({
             top,
             right,
             minWidth,
+            // Right-anchored with no width cap, a long label at large text
+            // sizes pushed the panel past the LEFT screen edge, clipping the
+            // text (Simon, People row menu). Capped, labels wrap instead.
+            maxWidth: screenW - right - 12,
             backgroundColor: theme.surface,
             borderWidth: 1,
             borderColor: theme.rule,
@@ -148,14 +152,19 @@ export function MenuItem({
       })}
     >
       {icon ? <Icon name={icon} size={18} color={iconColor} /> : null}
+      {/* flexShrink (NOT flex:1): flex-basis 0 gave the label ZERO intrinsic
+          width, so the panel never grew past minWidth — long labels wrapped
+          and the mis-measured stack clipped its last row at larger text
+          sizes (Simon's screenshot). Intrinsic width + shrink lets the panel
+          size to its longest label, capped by the screen maxWidth. */}
       <VText
         variant="body"
-        style={{ fontFamily: active ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', flex: 1 }}
+        style={{ fontFamily: active ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium', flexShrink: 1 }}
         color={labelColor}
       >
         {label}
       </VText>
-      {disabled ? <VText variant="caption" color="inkFaint">Soon</VText> : null}
+      {disabled ? <VText variant="caption" color="inkFaint" style={{ marginLeft: 'auto' }}>Soon</VText> : null}
     </Pressable>
   );
 }

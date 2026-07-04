@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Image, Keyboard, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -13,8 +13,10 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover } from '@/components/moments/momentForm';
-import { ApiError, addWine, getSessionState, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
+import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover, SelectField } from '@/components/moments/momentForm';
+import { useRegisterInput } from '@/lib/keyboardDismiss';
+import { ApiError, addWine, getSessionState, reorderWines, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
+import { fuzzyIncludes } from '@/lib/search';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
@@ -41,6 +43,11 @@ type ImpressionFormProps = {
   mode?: 'add' | 'edit';
   wineId?: string;
   initialWine?: WireWine;
+  /** Edit mode: the wine's current 1-indexed line-up slot. */
+  initialPosition?: number;
+  /** Edit mode: the current line-up id order (feeds the reorder call when the
+   *  host moves the wine to a new slot). */
+  wineIds?: string[];
 };
 
 // 02b·add add-impression — a pushed full-screen form (FLAGGED DEVIATION from
@@ -100,6 +107,8 @@ export function ImpressionForm({
   mode = 'add',
   wineId,
   initialWine,
+  initialPosition,
+  wineIds,
 }: ImpressionFormProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -153,7 +162,9 @@ export function ImpressionForm({
   const processRef = useRef<TextInput>(null);
   const purchaseRef = useRef<TextInput>(null);
 
-  const maxPosition = wineCount + 1; // a new wine can land anywhere 1..count+1
+  // Add: a new wine can land anywhere 1..count+1 (the +1 = append). Edit: the
+  // wine already occupies a slot, so the range is the list itself.
+  const maxPosition = mode === 'edit' ? Math.max(1, wineCount) : wineCount + 1;
 
   const onPickPhoto = async () => {
     setPhotoError(null);
@@ -191,6 +202,24 @@ export function ImpressionForm({
           ...(photo?.kind === 'new' ? { image: photo.dataUrl } : {}),
           ...(photo === null && initialWine?.imageUrl ? { image: null } : {}),
         });
+        // Position change rides the existing host-gated reorder endpoint (the
+        // wine PATCH body has no position field). Its failure is SPLIT from
+        // the field save (codex P2: the outer catch read "couldn't save"
+        // while the details had already persisted): the form closes with the
+        // saved edits and the position miss is reported honestly on its own.
+        if (canPosition && position !== null && initialPosition && position !== initialPosition && wineIds) {
+          try {
+            const rest = wineIds.filter((id) => id !== wineId);
+            rest.splice(Math.min(Math.max(position - 1, 0), rest.length), 0, wineId);
+            await reorderWines(code, rest);
+          } catch (e) {
+            queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+            router.back();
+            const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+            Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply — the line-up may have changed. Try moving it again.");
+            return;
+          }
+        }
       } else {
         await addWine(code, {
           ...base,
@@ -227,9 +256,9 @@ export function ImpressionForm({
         <View style={{ flex: 1 }}>
           <VBar title={mode === 'edit' ? 'Edit impression' : 'Add impression'} />
         </View>
-        {mode === 'add' && canPosition && wineCount > 0 ? (
+        {canPosition && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
           <PositionPicker
-            value={position ?? maxPosition}
+            value={position ?? (mode === 'edit' ? initialPosition ?? maxPosition : maxPosition)}
             max={maxPosition}
             open={posOpen}
             onOpenChange={setPosOpen}
@@ -253,6 +282,7 @@ export function ImpressionForm({
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
@@ -436,42 +466,6 @@ function PhotoPicker({
   );
 }
 
-// .field + .select-wrap — a tappable field box that reads like a dropdown
-// (value or placeholder + a trailing chevron). Native-chrome dropdown rendered
-// as a brand trigger; the actual choosing happens in a sheet.
-function SelectField({
-  value, placeholder, onPress, accessibilityLabel,
-}: {
-  value: string;
-  placeholder: string;
-  onPress: () => void;
-  accessibilityLabel: string;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('formControl');
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={accessibilityLabel}
-      // Dismiss first so a tap coming FROM a focused text field opens the sheet
-      // on the first tap — otherwise keyboardShouldPersistTaps can spend that tap
-      // dismissing the keyboard and the open needs a second tap.
-      onPress={() => { Keyboard.dismiss(); onPress(); }}
-      style={({ pressed }) => ({
-        minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
-        borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,
-      })}
-    >
-      <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
-        {value || placeholder}
-      </VText>
-      <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-    </Pressable>
-  );
-}
-
 // Type picker — brand bottom sheet (create.tsx CategorySheet shell). All 5 are
 // choosable; the selected one carries a check.
 function TypeSheet({
@@ -531,9 +525,9 @@ function CountrySheet({
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = query.trim();
     if (!q) return COUNTRIES;
-    return COUNTRIES.filter((c) => c.name.toLowerCase().includes(q));
+    return COUNTRIES.filter((c) => fuzzyIncludes(c.name, q));
   }, [query]);
   return (
     <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
@@ -646,6 +640,8 @@ function PositionPicker({
   // popover is an anchored overlay, not inside a ScrollView), so a plain
   // vertical Pan is safe — no activeOffset arbitration needed.
   const dragStart = useRef(value);
+  const posInputRef = useRef<TextInput | null>(null);
+  useRegisterInput(posInputRef);
   const pan = Gesture.Pan()
     .runOnJS(true)
     .onBegin(() => { dragStart.current = cur(); })
@@ -700,6 +696,7 @@ function PositionPicker({
                   it; tapping still focuses for typing. */}
               <GestureDetector gesture={pan}>
                 <TextInput
+                  ref={posInputRef}
                   {...codeSurface.textProps}
                   value={text}
                   onChangeText={(t) => setText(t.replace(/\D/g, ''))}
