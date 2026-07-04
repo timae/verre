@@ -38,7 +38,7 @@ import {
 import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { SheetSearchField } from '@/components/moments/CompareBody';
-import { DraggableRows } from '@/components/moments/DraggableRows';
+import { DraggableRows, type RowMoveActions } from '@/components/moments/DraggableRows';
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
@@ -667,7 +667,7 @@ export default function SessionLineup() {
                 scrollY={plainScrollY}
                 maxScrollY={plainMaxScroll}
                 onCommit={onReorder}
-                renderRow={(id, i) => {
+                renderRow={(id, i, move) => {
                   const item = wineById.get(id);
                   if (!item) return null;
                   return (
@@ -682,6 +682,7 @@ export default function SessionLineup() {
                         ratings={ratings}
                         onPress={() => openImpression(id)}
                         reveal={reveal}
+                        move={move}
                       />
                     </>
                   );
@@ -1064,7 +1065,7 @@ function CoverHeroLineup({
                   scrollY={scrollY}
                   maxScrollY={heroMaxScroll}
                   onCommit={reorder.onCommit}
-                  renderRow={(id, i) => {
+                  renderRow={(id, i, move) => {
                     const item = rowById.get(id);
                     if (!item) return null;
                     return (
@@ -1077,6 +1078,7 @@ function CoverHeroLineup({
                           ratings={ratings}
                           onPress={() => onPressWine(id)}
                           reveal={reveal}
+                          move={move}
                         />
                       </>
                     );
@@ -1730,7 +1732,7 @@ function ratersFor(wineId: string, ratings: RatingsView | null): number {
 //    tap target.
 // Guests' masked rows carry their own hint line (the old quiet strip died).
 function LuRow({
-  wine, index, myIdentityId, ratings, onPress, reveal,
+  wine, index, myIdentityId, ratings, onPress, reveal, move,
 }: {
   wine: WireWine;
   index: number;
@@ -1738,6 +1740,9 @@ function LuRow({
   ratings: RatingsView | null;
   onPress: () => void;
   reveal: RevealProps;
+  /** Accessible reorder (PR #65): VoiceOver rotor actions mirroring the
+   *  drag gesture. Null when reordering is unavailable. */
+  move?: RowMoveActions | null;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -1767,9 +1772,18 @@ function LuRow({
   // INNER Pressable that claims its own taps for arm/reveal — same nesting
   // pattern as the IrBar sibling controls.
   const thumbSize = phone.size('recentThumb');
+  const moveActions = [
+    ...(move?.up ? [{ name: 'moveUp', label: 'Move up in the line-up' }] : []),
+    ...(move?.down ? [{ name: 'moveDown', label: 'Move down in the line-up' }] : []),
+  ];
   return (
     <Pressable
       onPress={onPress}
+      accessibilityActions={moveActions.length > 0 ? moveActions : undefined}
+      onAccessibilityAction={(e) => {
+        if (e.nativeEvent.actionName === 'moveUp') move?.up?.();
+        else if (e.nativeEvent.actionName === 'moveDown') move?.down?.();
+      }}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',

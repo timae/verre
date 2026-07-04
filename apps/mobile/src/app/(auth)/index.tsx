@@ -39,7 +39,10 @@ export default function Launch() {
         source={welcomeHero}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
         contentFit="cover"
-        contentPosition={{ top: '40%', left: '50%' }}
+        // left 57%: the dessert sits right of the frame's midline — biasing
+        // the crop window right pulls the ITEM to the screen's centre
+        // (device screenshot 2026-07-04; ~2.5pt per % on this asset).
+        contentPosition={{ top: '40%', left: '57%' }}
         accessibilityIgnoresInvertColors
         alt=""
       />
@@ -50,8 +53,10 @@ export default function Launch() {
         locations={[...WELCOME_SCRIM_STOPS]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      {/* .w-top — wordmark + h1, pinned below the status area. */}
-      <View style={{ position: 'absolute', top: insets.top + 18, left: 0, right: 0, paddingHorizontal: 24, alignItems: 'center' }}>
+      {/* .w-top — wordmark + h1. IN FLOW, not absolute (PR #65 review):
+          the bottom block flexes into the remaining space, so scaled text on
+          short devices compresses the gap instead of overlapping. */}
+      <View style={{ paddingTop: insets.top + 18, paddingHorizontal: 24, alignItems: 'center' }}>
         <VText variant="heading" style={{ color: '#fff' }}>
           verre<VText variant="heading" color="accent">.</VText>
         </VText>
@@ -64,7 +69,7 @@ export default function Launch() {
       </View>
       {/* .content — bottom copy + buttons. */}
       <View style={{ flex: 1, justifyContent: 'flex-end', paddingHorizontal: 22, paddingBottom: insets.bottom + 26 }}>
-        <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.84)', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
+        <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.92)', fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
           Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
         </VText>
         <View style={{ gap: 10 }}>

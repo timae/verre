@@ -1111,9 +1111,12 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
   useRegisterInput(clearRef, value !== '');
   // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
   // border, matching the chip controls — never the sunken fill. Restyle the
-  // InviteSheet pseudo-field too if this ever changes.
+  // InviteSheet pseudo-field too if this ever changes. Height rides the
+  // formControl surface (PR #65 review: a hard 36 clipped under large
+  // Dynamic Type) — 36 at default scale, growing with the text.
+  const fieldH = phone.surface('formControl').height(36);
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: fieldH, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
       <Icon name="search" size={16} color={theme.inkSoft} />
       <View style={{ flex: 1 }}>
         <TextField
@@ -1127,7 +1130,7 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
           // fontSize override ⇒ lineHeight must match it (TextField's base
           // compact lineHeight is body-sized; a mismatched line box re-biases
           // the glyph — see TextField's header).
-          style={{ height: 36, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
+          style={{ height: fieldH, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
         />
       </View>
       {value !== '' ? (

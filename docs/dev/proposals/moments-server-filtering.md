@@ -2,11 +2,14 @@
 
 **Status:** proposal (Simon asked for the write-up 2026-07-04). Not scheduled.
 **Trigger:** the mobile moments filters/search exist to FIND OLD MOMENTS, but
-they run client-side over one `/api/me/sessions` payload. Today that payload
-is capped (500-row safety valve after the LIMIT-50 clip ate the two oldest
-friend-shared sessions), and two facets quietly lie on expired moments
-because their truth lives only in Redis. Server-side filtering is the
-end-state; it is blocked on roles becoming Postgres-authoritative first.
+they run client-side over one `/api/me/sessions` payload capped at the 50
+most-recent memberships (a 500 valve was tried 2026-07-04 and reverted over
+the Redis enrichment fan-out — Simon's call: accept the clip until this
+proposal ships). The device repro that surfaced it: the two oldest
+friend-shared sessions fell off the cap and the friend vanished from the
+friends-there picker. Two facets additionally lie on expired moments because
+their truth lives only in Redis. Server-side filtering is the end-state; it
+is blocked on roles becoming Postgres-authoritative first.
 
 ## Part A — roles move into Postgres (independently valuable, do first)
 
@@ -77,10 +80,20 @@ behavior (the home carousel keeps its unfiltered recent page).
 
 A before B (B's role facet needs A). A is small: enum value + write-path
 audit + backfill + one read-side fallback — a normal feature branch. B is
-medium: route params + pagination + client rework + extension check. Neither
-is urgent while the whole history fits one payload; the 500-row valve buys
-the time. Revisit trigger: real payload pain, or the durable-sessions work
+medium: route params + pagination + client rework + extension check. With
+the cap back at 50, B is what makes old moments findable AT ALL — the
+revisit trigger is now simply "someone needs to find a moment older than
+their last 50" (Simon hit it 2026-07-04), or the durable-sessions work
 (future-ideas) — B should ride with that if it lands first.
+
+## PR #65 review findings folded in (2026-07-04)
+
+The review independently hit three of this proposal's motivations: expired
+cohost/provider misclassification (Part A #3 — Simon's call: fix here, not
+piecemeal), the Redis enrichment fan-out (which led to reverting the 500
+valve back to LIMIT 50 — Part B's per-page enrichment is the real answer),
+and the beyond-cap clip (now back at 50, making Part B's pagination the only
+path to finding old moments).
 
 ## Open questions (decide at build time)
 

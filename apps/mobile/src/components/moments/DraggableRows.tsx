@@ -54,6 +54,8 @@ const LIFT_SCALE = 1.03;
 const EDGE_ZONE = 110;
 const MAX_SPEED = 9;
 
+export type RowMoveActions = { up: (() => void) | null; down: (() => void) | null };
+
 type Props = {
   /** Row ids in their current (server/cache) order. */
   ids: string[];
@@ -65,7 +67,10 @@ type Props = {
   onDenied?: () => void;
   /** Popup copy for a denied hold, shown AT the held row. */
   deniedNote?: string;
-  renderRow: (id: string, renderIndex: number) => React.ReactNode;
+  /** `move` is non-null when drag is enabled: wire it to the row's main
+   *  Pressable as accessibility actions (Move up / Move down) — the pan
+   *  gesture alone is invisible to screen-reader/switch users (PR #65). */
+  renderRow: (id: string, renderIndex: number, move: RowMoveActions | null) => React.ReactNode;
   /** Returns whether the commit was ACCEPTED. A refusal (e.g. another
    *  mutation in flight) means no re-render is coming — the rows reset
    *  themselves instead of waiting frozen for a generation bump. */
@@ -184,7 +189,16 @@ export function DraggableRows({ ids, enabled, denied, onDenied, deniedNote, rend
           scrollY={scrollY}
           onCommit={onCommit}
         >
-          {renderRow(id, i)}
+          {renderRow(
+            id,
+            i,
+            enabled
+              ? {
+                  up: i > 0 ? () => onCommit(moved(ids, i, i - 1)) : null,
+                  down: i < ids.length - 1 ? () => onCommit(moved(ids, i, i + 1)) : null,
+                }
+              : null,
+          )}
         </DragRow>
       ))}
     </View>

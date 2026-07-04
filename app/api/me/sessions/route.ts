@@ -64,16 +64,15 @@ export async function GET(req: NextRequest) {
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
     GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category
     ORDER BY sm.joined_at DESC
-    -- Ruling (Simon 2026-07-04): search/filter on the moments lists must
-    -- reach the WHOLE history — they exist precisely to find old moments, so
-    -- a recency page-cap silently clips exactly the rows being searched for
-    -- (device repro: the two oldest friend-shared sessions fell off the old
-    -- LIMIT 50 and the friend vanished from the friends-there picker). 500
-    -- is a runaway safety valve, not a page size — years of heavy use sit
-    -- far below it, and enrichment stays cheap (expired rows cost 2 Redis
-    -- calls each, run concurrently). If a user ever approaches this, the
-    -- real fix is pagination + SERVER-side filtering, not a bigger number.
-    LIMIT 500
+    -- 50 = the recency page (Simon's call after the PR #65 review weighed
+    -- the Redis enrichment fan-out; a 500 valve was tried and reverted).
+    -- KNOWN CONSEQUENCE, accepted until server-side filtering ships: the
+    -- mobile filters/search only reach these 50 rows, so older moments are
+    -- unfindable past the cap (device repro: the two oldest friend-shared
+    -- sessions fell off and the friend vanished from the friends-there
+    -- picker). The real fix is pagination + SERVER-side facets — Part B of
+    -- docs/dev/proposals/moments-server-filtering.md.
+    LIMIT 50
   `
 
   // Enrich each row with live Redis TTL + lifespan from the meta key, plus
@@ -111,6 +110,11 @@ export async function GET(req: NextRequest) {
   // below so they drop from the carousel (still shown in "All moments").
   // One Redis call for the whole list, not per row.
   const hiddenCarousel = await getHiddenCarousel(userId)
+  // Redis cost of this loop (PR #65 review): ~2 commands/row + 2 more per
+  // LIVE row. node-redis v4 auto-pipelines same-tick commands, so the wave
+  // is a handful of round trips, not N — and the 500-row valve bounds it.
+  // The real fix at scale is Part B of docs/dev/proposals/
+  // moments-server-filtering.md (paginate + enrich per page only).
   const enriched = await Promise.all(rows.map(async (r) => {
     let ttl_seconds = -2
     let lifespan: string | null = null
