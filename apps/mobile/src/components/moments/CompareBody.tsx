@@ -1138,8 +1138,12 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
           ref={clearRef}
           accessibilityRole="button"
           accessibilityLabel="Clear search"
-          hitSlop={10}
+          // ≥44pt target (PR #65 review #5): a 28pt centered touch box + 8pt
+          // slop each side = 44 in both axes, regardless of the field's own
+          // (possibly 36pt) height. The icon stays 14pt visually.
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           onPress={() => onChangeText('')}
+          style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center', marginRight: -4 }}
         >
           <Icon name="x" size={14} color={theme.inkFaint} />
         </Pressable>

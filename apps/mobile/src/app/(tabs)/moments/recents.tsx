@@ -1,7 +1,7 @@
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SheetSearchField } from '@/components/moments/CompareBody';
@@ -105,6 +105,16 @@ export default function AllMoments() {
   const { filter } = useLocalSearchParams<{ filter?: string }>();
   const upcoming = filter === 'upcoming';
   const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
+  // Returning from a session must reflect a just-changed role (promoted/
+  // demoted in-session) without an app reload — mirrors the moments-home
+  // refetch-on-focus (PR #65 review #2). The mutation site also invalidates,
+  // so this is the belt to that suspenders.
+  useFocusEffect(
+    useCallback(() => {
+      sessions.refetch();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, useWindowDimensions, View } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { BottomSheetView } from '@gorhom/bottom-sheet';
+import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
@@ -54,8 +54,9 @@ export function PeopleSheet({
   onInvite: () => void;
 }) {
   const { theme } = useTheme();
-  const { height: windowH } = useWindowDimensions();
+  const { height: windowH, fontScale } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const phone = usePhoneTokens();
   const queryClient = useQueryClient();
 
   // Friends fetched once per open; an id Set gives O(1) "is this row a friend".
@@ -147,7 +148,29 @@ export function PeopleSheet({
   );
   const hasFriendInRoster = useMemo(() => ordered.some(isFriendRow), [ordered, friendIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+  // Cap-aware sizing (the ComparePickerSheet recipe; PR #65 review #3 — a
+  // long roster or large Dynamic Type could push rows + the ⋯ manage menu
+  // past the 85% dynamic cap with no way to scroll to them). Dynamic
+  // fit-to-content while the estimate fits; else a fixed 85% snap with the
+  // rows in a BottomSheetScrollView (which measures 0 under dynamic sizing,
+  // so it needs the fixed snap). The estimate only picks the MODE — near the
+  // boundary both render identically. Per-row ~= the body line box (scaled)
+  // + vertical padding + the role-chip line most rows carry; chrome = head +
+  // search + hint + paddings. Deliberately generous so it flips to scroll
+  // BEFORE anything clips rather than after.
+  const rowH = Math.max(34, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 34;
+  const chrome = 150 + (searchable ? 52 : 0) + insets.bottom;
+  const needsScroll = chrome + ordered.length * rowH > windowH * 0.85;
+
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['session-state', code] });
+    // A role/remove action changes ANOTHER user's role/membership in this
+    // moment (the caller can't self-mutate — canManage gates p.id !== self).
+    // The moments-list cache (role chips + role filter) reads its own
+    // ['my-sessions'] query, so invalidate it at the source too — the belt to
+    // the recents screen's focus refetch (PR #65 review #2).
+    queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+  };
 
   const runAction = async (fn: () => Promise<void>, targetId: string) => {
     setMenu(null);
@@ -179,10 +202,8 @@ export function PeopleSheet({
 
   const menuTarget = menu ? ordered.find((p) => p.id === menu.id) ?? null : null;
 
-  return (
-    <>
-    <Sheet open={open} onClose={onClose} maxDynamicContentSize={windowH * 0.85}>
-      <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
+  const headBlock = (
+    <View style={{ gap: 14 }}>
         {/* .at-head — "People · N" + Add pill (opens invite). */}
         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
@@ -253,19 +274,22 @@ export function PeopleSheet({
             </View>
           </View>
         ) : null}
+    </View>
+  );
 
-        {ordered.length === 0 ? (
+  const rowsBlock = ordered.length === 0 ? (
           <View style={{ paddingVertical: 24, alignItems: 'center' }}>
             <ActivityIndicator />
           </View>
         ) : (
-          // Rows in a plain View so dynamic sizing measures them (a
-          // BottomSheetScrollView here reports 0 height under dynamic sizing →
-          // the sheet won't open). A long roster is capped by the sheet's
-          // maxDynamicContentSize (set in <Sheet>).
+          // Fit-to-content mode: rows in a plain View so dynamic sizing
+          // measures them (a BottomSheetScrollView reports 0 height under
+          // dynamic sizing → the sheet won't open). In scroll mode this same
+          // block sits inside a BottomSheetScrollView instead — the minHeight
+          // lock only applies while dynamically sized (moot when scrolling).
           <View
-            onLayout={(e) => { if (!filtering) setRowsH(e.nativeEvent.layout.height); }}
-            style={filtering && rowsH > 0 ? { minHeight: rowsH } : undefined}
+            onLayout={(e) => { if (!filtering && !needsScroll) setRowsH(e.nativeEvent.layout.height); }}
+            style={filtering && !needsScroll && rowsH > 0 ? { minHeight: rowsH } : undefined}
           >
             {filtered.length === 0 ? (
               <VText variant="small" color="inkFaint" style={{ paddingVertical: 16, fontStyle: 'italic' }}>
@@ -300,8 +324,32 @@ export function PeopleSheet({
               </VText>
             ) : null}
           </View>
-        )}
-      </BottomSheetView>
+        );
+
+  return (
+    <>
+    <Sheet
+      open={open}
+      onClose={onClose}
+      {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
+    >
+      {needsScroll ? (
+        <BottomSheetView style={{ flex: 1, paddingHorizontal: 20, paddingTop: 16 }}>
+          {headBlock}
+          <BottomSheetScrollView
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingTop: 14, paddingBottom: insets.bottom + 16 }}
+          >
+            {rowsBlock}
+          </BottomSheetScrollView>
+        </BottomSheetView>
+      ) : (
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
+          {headBlock}
+          {rowsBlock}
+        </BottomSheetView>
+      )}
     </Sheet>
 
     {/* Anchored row menu (shared AnchoredMenu — the .ir-menu pattern; flips up

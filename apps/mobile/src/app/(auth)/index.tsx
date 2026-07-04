@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useState } from 'react';
-import { View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
@@ -53,30 +53,44 @@ export default function Launch() {
         locations={[...WELCOME_SCRIM_STOPS]}
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       />
-      {/* .w-top — wordmark + h1. IN FLOW, not absolute (PR #65 review):
-          the bottom block flexes into the remaining space, so scaled text on
-          short devices compresses the gap instead of overlapping. */}
-      <View style={{ paddingTop: insets.top + 18, paddingHorizontal: 24, alignItems: 'center' }}>
-        <VText variant="heading" style={{ color: '#fff' }}>
-          verre<VText variant="heading" color="accent">.</VText>
-        </VText>
-        <VText
-          variant="title"
-          style={{ textAlign: 'center', color: '#fff', marginTop: 16, lineHeight: Math.round(phone.text('title').fontSize * 1.12) }}
-        >
-          Everything you taste{'\n'}In one place
-        </VText>
-      </View>
-      {/* .content — bottom copy + buttons. */}
-      <View style={{ flex: 1, justifyContent: 'flex-end', paddingHorizontal: 22, paddingBottom: insets.bottom + 26 }}>
-        <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.92)', fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
-          Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
-        </VText>
-        <View style={{ gap: 10 }}>
-          <Button title="Get started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />
-          <Button title="Sign in" bar block variant="ghostlight" onPress={() => router.push('/sign-in')} />
+      {/* Foreground scrolls OVER the fixed photo+scrim (PR #65 review #4):
+          flexGrow:1 + space-between keeps the wordmark top / CTAs bottom when
+          content fits, and lets it scroll instead of clipping when scaled text
+          on a short device would overflow. The image + scrim stay absolute
+          behind it (transparent scroll bg). */}
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingTop: insets.top + 18, paddingBottom: insets.bottom + 26 }}
+        // Indicator left ON: in the exact overflow case this fix targets
+        // (large Dynamic Type on a short device) it's the only cue that the
+        // CTAs are reachable by scrolling (PR #65 review). alwaysBounce off so
+        // the common fits-on-screen case doesn't rubber-band.
+        alwaysBounceVertical={false}
+      >
+        {/* .w-top — wordmark + h1. */}
+        <View style={{ paddingHorizontal: 24, alignItems: 'center' }}>
+          <VText variant="heading" style={{ color: '#fff' }}>
+            verre<VText variant="heading" color="accent">.</VText>
+          </VText>
+          <VText
+            variant="title"
+            style={{ textAlign: 'center', color: '#fff', marginTop: 16, lineHeight: Math.round(phone.text('title').fontSize * 1.12) }}
+          >
+            Everything you taste{'\n'}In one place
+          </VText>
         </View>
-      </View>
+        {/* .content — bottom copy + buttons. marginTop:24 guarantees breathing
+            room from the h1 when space-between collapses (short viewport). */}
+        <View style={{ paddingHorizontal: 22, marginTop: 24 }}>
+          <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.92)', fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
+            Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
+          </VText>
+          <View style={{ gap: 10 }}>
+            <Button title="Get started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />
+            <Button title="Sign in" bar block variant="ghostlight" onPress={() => router.push('/sign-in')} />
+          </View>
+        </View>
+      </ScrollView>
     </View>
   );
 }
