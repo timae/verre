@@ -337,6 +337,13 @@ names in `src/lib/api/sessions.ts`.
   Revealed rows hint the way back ("Tap the photo to hide", in the
   caption slot). Toolbar PLACEMENT (Simon): right ABOVE the rows — the old
   strip's spot below the about block — pinning under the tabs on scroll.
+  The toolbar is now the full line-up control row: [eye ⌄][sort ⌄][search──]
+  — eye menu on the very LEFT (blind host/cohost only), search on the very
+  RIGHT, sort between; ALWAYS rendered, no size threshold (Simon). Sort =
+  line-up / my highest / my lowest / not-rated-first (VIEWER's scores);
+  search = the fuzzy Compare field set. Search/sort NEVER
+  renumber rows (.lu-idx and "Impression N" key on the true position via an
+  indexById map); reveal counts stay full-list.
   Plain = the sticky STRIP_CELL sentinel (data item 0, stickyHeaderIndices
   [1] — the +1 header offset trap still applies); cover-hero = the strip
   overlay slot. Reveal MODE, the Done footer, the per-row

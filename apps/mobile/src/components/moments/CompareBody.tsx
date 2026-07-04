@@ -179,8 +179,10 @@ function buildItems(
 // ── toolbar sort + search (Simon's 2026-07-03 spec) ─────────────────────────
 
 export type CompareSort = 'lineup' | 'top' | 'bottom' | 'agree' | 'split' | 'most';
-export const COMPARE_SORTS: { key: CompareSort; label: string }[] = [
-  { key: 'lineup', label: 'Line-up order' },
+// 'lineup' is the DEFAULT state, not a menu row: tapping the active sort
+// again toggles it off, back to line-up order (Simon's ruling; the line-up
+// toolbar's sort menu behaves the same).
+export const COMPARE_SORTS: { key: Exclude<CompareSort, 'lineup'>; label: string }[] = [
   { key: 'top', label: 'Highest rated' },
   { key: 'bottom', label: 'Lowest rated' },
   { key: 'agree', label: 'Most agreement' },
@@ -237,7 +239,7 @@ export function CompareToolbar({
   const filtered = hidden.size > 0;
   const visibleCount = people.length - hidden.size;
   const sorted = sort !== 'lineup';
-  const sortLabel = COMPARE_SORTS.find((o) => o.key === sort)!.label;
+  const sortLabel = COMPARE_SORTS.find((o) => o.key === sort)?.label ?? 'Line-up order';
   // 36pt to line up with the search pill; 44pt targets via vertical slop.
   const chip = {
     flexDirection: 'row' as const,
@@ -299,7 +301,8 @@ export function CompareToolbar({
             label={o.label}
             active={sort === o.key}
             accessibilityState={{ selected: sort === o.key }}
-            onPress={() => { onSort(o.key); setSortAnchor(null); }}
+            // Tap the active sort again → OFF (line-up order).
+            onPress={() => { onSort(sort === o.key ? 'lineup' : o.key); setSortAnchor(null); }}
           />
         ))}
       </AnchoredMenu>
