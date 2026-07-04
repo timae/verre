@@ -341,6 +341,17 @@ export async function hideWine(code: string, wineId: string): Promise<void> {
   if (!res.ok) await throwApiError(res);
 }
 
+// Host/cohost-only; the server validates a FULL permutation of the current
+// list (length + id-set match) and rejects anything else.
+export async function reorderWines(code: string, orderedIds: string[]): Promise<void> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/reorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderedIds }),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
 export async function revealAllWines(code: string): Promise<void> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/wines/reveal-all`, { method: 'POST' });
   if (!res.ok) await throwApiError(res);

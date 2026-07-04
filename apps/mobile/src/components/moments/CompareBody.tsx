@@ -1103,7 +1103,7 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder }: { value: string; onChangeText: (t: string) => void; placeholder: string }) {
+export function SheetSearchField({ value, onChangeText, placeholder, highlight }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Clearing is part of typing — the ✕ must not bounce the keyboard.
@@ -1113,7 +1113,7 @@ export function SheetSearchField({ value, onChangeText, placeholder }: { value: 
   // border, matching the chip controls — never the sunken fill. Restyle the
   // InviteSheet pseudo-field too if this ever changes.
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
       <Icon name="search" size={16} color={theme.inkSoft} />
       <View style={{ flex: 1 }}>
         <TextField

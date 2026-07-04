@@ -182,6 +182,7 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
 - **Thumb**: `ui/Thumb.tsx` — square cover/wine thumbnail with the glass-glyph placeholder; props `uri`, `size`, `radius`. ALL cover/wine thumbs (wrap + overlay for the line-up hidden-from-guests badge).
 - **Sheets (domain)**: `PeopleSheet`, `InviteSheet` (`moments/`).
+- **Drag-to-reorder rows**: `DraggableRows` (`moments/DraggableRows.tsx`) — long-press lift + sibling springs + edge auto-scroll + haptics over NON-virtualized mapped rows in a `Reanimated.ScrollView` (hand-rolled: reorder libs need to own a FlatList or can't be device-verified on reanimated 4). Used by both line-up layouts; needs the host scroll's `AnimatedRef` + offset + a maxScroll SharedValue. `enabled` gates drag, `denied` answers a hold with a warning haptic (sort/search active). ⚠️ Worklet closure-capture ordering is load-bearing (consts before gesture builders — the PillTabBar crash class).
 - **Shared screen constants + Dynamic Type surfaces (`lib/layout.ts`)**: `GUTTER`(22), `FOOT_CLEARANCE`/`FOOT_CLEARANCE_IR`, `TAB_BAR_CLEARANCE`, `HERO_RATIO` (shared by BOTH heroes — same height), `GLASS_FILL` (the over-photo glass fill), `HERO_SCRIM` (the hero-photo gradient), and `FONT_SURFACES` / `phone.surface(...)`. Import constants; don't re-declare. Use `phone.surface(name)` for scalable container math and `VText surface="..."` / `{...surface.textProps}` for matching text caps. `formControl` intentionally stays uncapped because field height math tracks editable text scale. ⛔ **CI-ENFORCED**: `scripts/check-mobile-design-tokens.mjs` (workflow `check-mobile-design-tokens`) FAILS if converged design constants are re-inlined; `scripts/check-mobile-dynamic-type.mjs` (workflow `check-mobile-dynamic-type`) is a partial static backstop for inline caps, common fixed-height text controls, and TextInput surface props. Device checks still own clipping/overlap truth.
 - **Label helpers (`lib/`)**: `initials.ts` (code-point-aware avatar initials — used by `Avatar`), `momentFormat.ts`, `scoreWords.ts`, `locale.ts`, `contrast.ts`. `theme/color.ts` `mix()`/`alpha()` for press-state/tint math (use instead of raw rgba).
 
@@ -344,9 +345,16 @@ names in `src/lib/api/sessions.ts`.
   search = the fuzzy Compare field set. Search/sort NEVER
   renumber rows (.lu-idx and "Impression N" key on the true position via an
   indexById map); reveal counts stay full-list.
-  Plain = the sticky STRIP_CELL sentinel (data item 0, stickyHeaderIndices
-  [1] — the +1 header offset trap still applies); cover-hero = the strip
-  overlay slot. Reveal MODE, the Done footer, the per-row
+  Plain = a Reanimated.ScrollView (left FlatList for drag-to-reorder —
+  translated rows + virtualization don't mix; sticky toolbar via ScrollView
+  stickyHeaderIndices keyed on `ovc` presence); cover-hero = the strip
+  overlay slot. ⭐DRAG-TO-REORDER (host tier, web parity — allowed on blind,
+  renumbering is the host's call): long-press a row ≈400ms → lift + drag
+  (DraggableRows, see catalog), drop = optimistic permutation of the cached
+  wines + POST /wines/reorder (full-permutation-validated server-side).
+  Disabled while a sort/search narrows the list — a hold answers with a
+  warning haptic; the accent sort icon explains why. Reveal MODE, the Done
+  footer, the per-row
   pills, and the reveal-mode tab-bar-hide counter (`pushRevealMode`/
   `popRevealMode` in `lib/sheetVisibility.ts`) are DELETED — don't resurrect
   them from old diffs; sheets are the only in-screen tab-bar-hide reason now.

@@ -4,7 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, FlatList, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 
@@ -28,6 +28,7 @@ import {
   ApiError,
   hideAllWines,
   hideWine,
+  reorderWines,
   revealAllWines,
   revealWine,
   type RatingsView,
@@ -37,6 +38,7 @@ import {
 import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import { SheetSearchField } from '@/components/moments/CompareBody';
+import { DraggableRows } from '@/components/moments/DraggableRows';
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';
 import { SessionTabs, type SessionTab } from '@/components/moments/SessionTabs';
@@ -62,17 +64,6 @@ type MetaView = SessionState['meta'];
 // reveals; revealed → the corner eye hides instantly (the damage-control
 // direction stays fastest). Bulk actions + Blind-for-all live in the eye menu
 // on the toolbar line under the tabs. Bundled so both layouts take one prop.
-// FlatList cell union for the PLAIN (no-cover) layout: a leading sticky
-// toolbar sentinel, then wines. The sentinel + stickyHeaderIndices let the
-// eye-menu toolbar flow under the ovc — right above the rows it controls —
-// and pin under the fixed tabs on scroll. The cover-hero layout uses the
-// Dynamic Overlay pattern instead (no cell sentinels) — see CoverHeroLineup.
-const STRIP_CELL = { __strip: true } as const;
-type LineupCell = typeof STRIP_CELL | WireWine;
-function isStripCell(it: LineupCell): it is typeof STRIP_CELL {
-  return (it as { __strip?: true }).__strip === true;
-}
-
 // Line-up sort (toolbar menu; mirrors the compare toolbar's model). Scores
 // are the VIEWER'S own. Sorting never renumbers — .lu-idx keeps the wine's
 // true line-up position via the indexById map.
@@ -396,6 +387,36 @@ export default function SessionLineup() {
     return [...base].sort(fns[luSort]);
   }, [wines, luQuery, luSort, ratings, myIdentityId, luIndexById]);
   const luNarrowed = luQuery.trim() !== '';
+  // Denied-hold signal → the toolbar explains itself (note + accent flash on
+  // the control that blocks reordering).
+  const [deniedTick, setDeniedTick] = useState(0);
+  const onReorderDenied = useCallback(() => setDeniedTick((t) => t + 1), []);
+  const reorderDeniedNote =
+    luSort !== 'lineup' && luNarrowed
+      ? 'Clear the search and sorting to reorder'
+      : luSort !== 'lineup'
+        ? 'Turn off sorting to reorder'
+        : 'Clear the search to reorder';
+  // ── drag-to-reorder (host tier; web parity — allowed on blind too, the
+  // renumbering of guests' "Impression N" is the host's call). Drag needs the
+  // TRUE order on screen: an active sort or search disables it (denied hold =
+  // warning haptic) — reordering a projection would silently move rows you
+  // can't see between.
+  const canReorder = isHostViewer && !lock && luSort === 'lineup' && !luNarrowed && (wines?.length ?? 0) > 1;
+  const reorderDenied = isHostViewer && !lock && (luSort !== 'lineup' || luNarrowed);
+  const onReorder = (orderedIds: string[]) =>
+    runReveal(
+      'Could not reorder',
+      (ws) => {
+        const byId = new Map(ws.map((w) => [w.id, w]));
+        const next = orderedIds.map((id) => byId.get(id)).filter(Boolean) as WireWine[];
+        // A permutation must not drop rows (a poll may have added a wine
+        // mid-drag) — anything missing from orderedIds keeps its tail spot.
+        for (const w of ws) if (!next.includes(w)) next.push(w);
+        return next;
+      },
+      () => reorderWines(code, orderedIds),
+    );
   // No size threshold (Simon): the toolbar always renders on the line-up.
   const luToolbar: LuToolbarProps = {
     reveal,
@@ -403,7 +424,17 @@ export default function SessionLineup() {
     onQuery: setLuQuery,
     sort: luSort,
     onSort: setLuSort,
+    deniedTick,
   };
+
+  // Plain-layout scroll plumbing for drag-to-reorder: the rows need a live
+  // offset + max-scroll for the auto-scroll loop (the hero measures its own).
+  const plainRef = useAnimatedRef<Reanimated.ScrollView>();
+  const plainScrollY = useScrollOffset(plainRef);
+  const plainMaxScroll = useSharedValue(0);
+  const plainContentH = useRef(0);
+  const plainViewportH = useRef(0);
+  const wineById = useMemo(() => new Map((wines ?? []).map((w) => [w.id, w] as const)), [wines]);
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
@@ -539,6 +570,7 @@ export default function SessionLineup() {
           indexById={luIndexById}
           luNarrowed={luNarrowed}
           toolbar={luToolbar}
+          reorder={{ enabled: canReorder, denied: reorderDenied, deniedNote: reorderDeniedNote, onCommit: onReorder, onDenied: onReorderDenied }}
           ratings={ratings}
           myIdentityId={myIdentityId}
           canAdd={canAdd}
@@ -582,69 +614,75 @@ export default function SessionLineup() {
             </Reanimated.View>
           ) : (
           <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
-          {/* The eye-menu toolbar is a STICKY list cell right above the rows
-              (Simon: close to the content it controls — the old strip's spot,
-              below the ovc): data item 0 + stickyHeaderIndices so the ovc
-              (ListHeaderComponent) scrolls away while the toolbar pins.
-              ⚠️ stickyHeaderIndices is OFFSET BY +1 when a ListHeaderComponent
-              exists (RN: stickyOffset = header ? 1 : 0) — so [1] sticks data
-              item 0 (the toolbar), NOT [0] (which would stick the ovc). */}
-          <FlatList<LineupCell>
+          {/* The eye-menu toolbar sits right above the rows (the old strip's
+              spot, below the ovc) and pins under the fixed tabs on scroll —
+              now via ScrollView stickyHeaderIndices (the list left FlatList
+              for drag-to-reorder: translated rows + virtualization don't mix,
+              and a tasting's line-up doesn't need recycling). The sticky index
+              counts RENDERED children, so it keys on `ovc` (null on a degraded
+              meta poll — React.Children.toArray skips null). */}
+          <Reanimated.ScrollView
+            ref={plainRef}
             style={{ flex: 1 }}
-            data={[STRIP_CELL, ...shownWines]}
-            keyExtractor={(it) => (isStripCell(it) ? '__strip' : it.id)}
-            ListHeaderComponent={ovc}
-            // RN offsets sticky indices by +1 ONLY when a ListHeaderComponent
-            // is present — and `ovc` is null while a degraded poll has
-            // meta:null (partial section failure) or the about block is empty.
-            // A hard-coded [1] would then stick the FIRST WINE ROW instead of
-            // the toolbar sentinel (codex P2).
-            stickyHeaderIndices={ovc ? [1] : [0]}
+            stickyHeaderIndices={[ovc ? 1 : 0]}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
-            // flexGrow:1 gives the empty state a flex slot; EmptyLineup freezes its
-            // own height there so its centering doesn't jump when the tab bar hides.
+            onLayout={(e) => {
+              plainViewportH.current = e.nativeEvent.layout.height;
+              plainMaxScroll.value = Math.max(0, plainContentH.current - plainViewportH.current);
+            }}
+            onContentSizeChange={(w, h) => {
+              plainContentH.current = h;
+              plainMaxScroll.value = Math.max(0, h - plainViewportH.current);
+            }}
             contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
-            // No separator below the toolbar cell — a sticky cell carries its
-            // trailing separator while pinned, which would weld a hairline to
-            // the floating toolbar's bottom edge.
-            ItemSeparatorComponent={({ leadingItem }: { leadingItem: LineupCell }) =>
-              isStripCell(leadingItem) ? null : <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />
-            }
-            renderItem={({ item }) =>
-              isStripCell(item) ? (
-                // Solid bg so rows scrolling under the pinned toolbar don't
-                // bleed through (content-width fill matches the rows' inset).
-                <View style={{ backgroundColor: theme.bg }}>
-                  <LineupToolbar toolbar={luToolbar} />
-                </View>
+          >
+            {ovc}
+            {/* Solid bg so rows scrolling under the pinned toolbar don't
+                bleed through (content-width fill matches the rows' inset). */}
+            <View style={{ backgroundColor: theme.bg }}>
+              <LineupToolbar toolbar={luToolbar} />
+            </View>
+            {shownWines.length === 0 ? (
+              luNarrowed ? (
+                <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
               ) : (
-                <LuRow
-                  wine={item}
-                  // The wine's TRUE line-up position — search/sort must never
-                  // renumber rows.
-                  index={luIndexById.get(item.id) ?? 0}
-                  myIdentityId={myIdentityId}
-                  ratings={ratings}
-                  onPress={() => openImpression(item.id)}
-                  reveal={reveal}
-                />
+                <EmptyLineup canAdd={canAdd} onAdd={openAdd} />
               )
-            }
-            // The sentinel keeps the list non-empty when the toolbar shows, so
-            // ListEmpty wouldn't fire — the footer covers both empty cases
-            // (truly no wines vs a search that matched none).
-            ListFooterComponent={
-              shownWines.length === 0
-                ? luNarrowed
-                  ? <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
-                  : <EmptyLineup canAdd={canAdd} onAdd={openAdd} />
-                : canAdd && !luNarrowed
-                  ? <AddImpressionRow onPress={openAdd} />
-                  : null
-            }
-            ListEmptyComponent={<EmptyLineup canAdd={canAdd} onAdd={openAdd} />}
-          />
+            ) : (
+              <DraggableRows
+                ids={shownWines.map((w) => w.id)}
+                enabled={canReorder}
+                denied={reorderDenied}
+                deniedNote={reorderDeniedNote}
+                onDenied={onReorderDenied}
+                scrollRef={plainRef}
+                scrollY={plainScrollY}
+                maxScrollY={plainMaxScroll}
+                onCommit={onReorder}
+                renderRow={(id, i) => {
+                  const item = wineById.get(id);
+                  if (!item) return null;
+                  return (
+                    <>
+                      {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                      <LuRow
+                        wine={item}
+                        // The wine's TRUE line-up position — search/sort must
+                        // never renumber rows.
+                        index={luIndexById.get(id) ?? 0}
+                        myIdentityId={myIdentityId}
+                        ratings={ratings}
+                        onPress={() => openImpression(id)}
+                        reveal={reveal}
+                      />
+                    </>
+                  );
+                }}
+              />
+            )}
+            {shownWines.length > 0 && canAdd && !luNarrowed ? <AddImpressionRow onPress={openAdd} /> : null}
+          </Reanimated.ScrollView>
           </Reanimated.View>
           )}
         </>
@@ -703,7 +741,7 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, swapAnimated, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, swapAnimated, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
@@ -714,6 +752,7 @@ function CoverHeroLineup({
   /** A search query is narrowing the rows (drives the empty copy). */
   luNarrowed: boolean;
   toolbar: LuToolbarProps;
+  reorder: { enabled: boolean; denied: boolean; deniedNote: string; onCommit: (orderedIds: string[]) => void; onDenied: () => void };
   ratings: RatingsView | null;
   myIdentityId: string;
   canAdd: boolean;
@@ -743,7 +782,7 @@ function CoverHeroLineup({
   const scrimEnd = heroH / (heroH + radius.xl);
   const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
-  const rows = wines ?? [];
+  const rows = useMemo(() => wines ?? [], [wines]);
   const onCompare = tab === 'compare';
   // Strip (like the rows + add affordances) is line-up furniture only.
   const showToolbar = !lock && !onCompare;
@@ -751,6 +790,11 @@ function CoverHeroLineup({
   // UI-thread scroll position for the overlay translates.
   const aref = useAnimatedRef<Reanimated.ScrollView>();
   const scrollY = useScrollOffset(aref);
+  // Max scrollable offset — the drag auto-scroll clamp.
+  const heroMaxScroll = useSharedValue(0);
+  const heroContentH = useRef(0);
+  const heroViewportH = useRef(0);
+  const rowById = useMemo(() => new Map(rows.map((w) => [w.id, w] as const)), [rows]);
   // Content-Y of the inline tabs and (separately) the reveal strip — they sit at
   // DIFFERENT positions (tabs right under the photo; strip below the about
   // block), so they're two independent sticky elements that STACK under the bar
@@ -883,6 +927,14 @@ function CoverHeroLineup({
         // keyboard is up (default would swallow the first tap to dismiss).
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        onLayout={(e) => {
+          heroViewportH.current = e.nativeEvent.layout.height;
+          heroMaxScroll.value = Math.max(0, heroContentH.current - heroViewportH.current);
+        }}
+        onContentSizeChange={(w, h) => {
+          heroContentH.current = h;
+          heroMaxScroll.value = Math.max(0, h - heroViewportH.current);
+        }}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
       >
@@ -994,19 +1046,36 @@ function CoverHeroLineup({
                 )}
               </View>
             ) : (
-              rows.map((item, i) => (
-                <View key={item.id} style={{ paddingHorizontal: GUTTER }}>
-                  {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
-                  <LuRow
-                    wine={item}
-                    index={indexById.get(item.id) ?? 0}
-                    myIdentityId={myIdentityId}
-                    ratings={ratings}
-                    onPress={() => onPressWine(item.id)}
-                    reveal={reveal}
-                  />
-                </View>
-              ))
+              <View style={{ paddingHorizontal: GUTTER }}>
+                <DraggableRows
+                  ids={rows.map((w) => w.id)}
+                  enabled={reorder.enabled}
+                  denied={reorder.denied}
+                  deniedNote={reorder.deniedNote}
+                  onDenied={reorder.onDenied}
+                  scrollRef={aref}
+                  scrollY={scrollY}
+                  maxScrollY={heroMaxScroll}
+                  onCommit={reorder.onCommit}
+                  renderRow={(id, i) => {
+                    const item = rowById.get(id);
+                    if (!item) return null;
+                    return (
+                      <>
+                        {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                        <LuRow
+                          wine={item}
+                          index={indexById.get(id) ?? 0}
+                          myIdentityId={myIdentityId}
+                          ratings={ratings}
+                          onPress={() => onPressWine(id)}
+                          reveal={reveal}
+                        />
+                      </>
+                    );
+                  }}
+                />
+              </View>
             )}
             {rows.length > 0 && canAdd && !luNarrowed ? (
               <View style={{ paddingHorizontal: GUTTER }}>
@@ -1181,10 +1250,23 @@ type LuToolbarProps = {
   onQuery: (q: string) => void;
   sort: LuSort;
   onSort: (s: LuSort) => void;
+  /** Bumps on every denied reorder-hold → note + accent flash. */
+  deniedTick: number;
 };
 function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
-  const { reveal, query, onQuery, sort, onSort } = toolbar;
+  const { reveal, query, onQuery, sort, onSort, deniedTick } = toolbar;
   const { theme } = useTheme();
+  // Denied-reorder feedback: a short explainer line + an accent flash on the
+  // control that blocks the drag (sort chip / search pill), ~2.6s.
+  const [deniedShown, setDeniedShown] = useState(false);
+  const deniedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (deniedTick === 0) return;
+    setDeniedShown(true);
+    if (deniedTimer.current) clearTimeout(deniedTimer.current);
+    deniedTimer.current = setTimeout(() => setDeniedShown(false), 2600);
+  }, [deniedTick]);
+  useEffect(() => () => { if (deniedTimer.current) clearTimeout(deniedTimer.current); }, []);
   const phone = usePhoneTokens();
   const { width: screenW } = useWindowDimensions();
   const btnRef = useRef<View>(null);
@@ -1194,6 +1276,7 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
   const [menuRight, setMenuRight] = useState(16);
   const [sortMenuRight, setSortMenuRight] = useState(16);
   const sorted = sort !== 'lineup';
+  const searching = query.trim() !== '';
   const sortLabel = LU_SORTS.find((o) => o.key === sort)?.label ?? 'Line-up order';
   const openSortMenu = () => {
     sortBtnRef.current?.measureInWindow((x, y, w, h) => {
@@ -1220,7 +1303,8 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
   return (
     // Horizontal inset comes from the HOST (plain: the list's GUTTER content
     // padding; hero: the strip wrapper) — none here, or it would double up.
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingTop: 4, paddingBottom: 8 }}>
+    <View style={{ paddingTop: 4, paddingBottom: 8, gap: 6 }}>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       {reveal.hostRevealUi ? (
       <Pressable
         ref={btnRef}
@@ -1273,14 +1357,17 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
         hitSlop={{ top: 4, bottom: 4 }}
         style={({ pressed }) => ({
           flexDirection: 'row', alignItems: 'center', justifyContent: 'center', minHeight: 36, paddingHorizontal: 11,
-          borderRadius: 999, borderWidth: 1, borderColor: theme.rule, backgroundColor: theme.surface,
+          borderRadius: 999,
+          borderWidth: deniedShown && sorted ? 1.5 : 1,
+          borderColor: deniedShown && sorted ? theme.accent : theme.rule,
+          backgroundColor: theme.surface,
           opacity: pressed ? 0.6 : 1,
         })}
       >
         <Icon name="sort" size={16} color={sorted ? theme.accent : theme.inkSoft} />
       </Pressable>
       <View style={{ flex: 1 }}>
-        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" />
+        <SheetSearchField value={query} onChangeText={onQuery} placeholder="Search impressions" highlight={deniedShown && searching} />
       </View>
       <AnchoredMenu anchor={sortAnchor} onClose={() => setSortAnchor(null)} right={sortMenuRight} minWidth={190}>
         {LU_SORTS.map((o) => (
@@ -1294,6 +1381,7 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
           />
         ))}
       </AnchoredMenu>
+    </View>
     </View>
   );
 }
