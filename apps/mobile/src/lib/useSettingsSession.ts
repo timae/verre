@@ -1,19 +1,24 @@
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ApiError, getSessionState, type SessionMetaView } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 
+const SETTINGS_POLL_MS = 5000;
+
 // Shared session-meta loader for the 02f settings screens (hub + sub-forms).
 //
-// NO refetchInterval on purpose. The settings screens are pushed OVER the
-// line-up, which stays mounted (expo-router doesn't freeze parent screens — no
-// freezeOnBlur/enableFreeze anywhere) and keeps polling this exact key every
-// 5s. TanStack dedupes by key + shares the cache, so these screens get live
-// updates (e.g. the hub's role pill flips on a co-host promotion) for free off
-// that one poll — a second interval here would just double the host's Redis
-// load. ⚠️ This relies on the parent staying live: if screen-freezing is ever
-// enabled, these would only refresh on focus and want their own interval.
+// OWNS its own focus-gated poll. Originally these screens rode the line-up's
+// poll for free (pushed OVER it, same query key, TanStack shares the cache) —
+// but the line-up now pauses its poll while blurred (`useSessionPoll`
+// `subscribed: screenFocused`), and a settings screen pushed on top BLURS the
+// line-up, so that shared poll stops exactly when settings is showing. So this
+// hook polls in its own right, gated on ITS focus the same way: `subscribed`
+// drops the observer while blurred (no interval, cache stays readable),
+// refocus resubscribes + refetches. When BOTH are focused (impossible — one
+// covers the other) TanStack would dedupe to one interval anyway; in practice
+// exactly one of the two polls is live at a time, so the host's Redis load is
+// unchanged from before.
 //
 // Also bounces to the line-up on a fatal auth/existence error: the settings
 // screens are reachable via a cold-start deep-link with no prior /visit, where
@@ -30,9 +35,19 @@ export function useSettingsSession(code: string): {
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
+  const [screenFocused, setScreenFocused] = useState(true);
+  useFocusEffect(
+    useCallback(() => {
+      setScreenFocused(true);
+      return () => setScreenFocused(false);
+    }, []),
+  );
+
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
+    subscribed: screenFocused,
+    refetchInterval: SETTINGS_POLL_MS,
   });
 
   const fatal =

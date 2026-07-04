@@ -31,9 +31,9 @@ export default function SettingsHub() {
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
 
-  // Live role pill rides the line-up's 5s poll via the shared cache (no own
-  // interval — see useSettingsSession). The line-up stays mounted under this
-  // pushed screen and keeps refetching this exact key.
+  // Live role pill + People roster via useSettingsSession's OWN focus-gated
+  // poll (it no longer rides the line-up's poll — that pauses while blurred
+  // under this pushed screen; see the hook header).
   const { meta, isError, isFetching, refetch } = useSettingsSession(code);
 
   const hostId = meta?.hostIdentityId ?? (meta?.hostUserId != null ? `u:${meta.hostUserId}` : null);

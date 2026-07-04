@@ -1112,8 +1112,14 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
   // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
   // border, matching the chip controls — never the sunken fill. Restyle the
   // InviteSheet pseudo-field too if this ever changes. Height rides the
-  // formControl surface (PR #65 review: a hard 36 clipped under large
-  // Dynamic Type) — 36 at default scale, growing with the text.
+  // formControl surface — 36 at default scale, growing with the text.
+  // ⚠️ Known accepted a11y nit (Simon's call, PR #65 review round 3): the
+  // clear ✕ target is therefore ~36pt at default scale, under the 44pt
+  // guideline — RN clips a child's hitSlop to the parent frame, so the ONLY
+  // way to reach 44 was to floor the whole field at 44, which makes the pill
+  // taller than the sibling 36pt chips everywhere. Not worth the visual cost
+  // for a small, non-destructive button (the wide field-focus target is fine;
+  // a ✕ mistap just doesn't clear). Large Dynamic Type grows it past 44 anyway.
   const fieldH = phone.surface('formControl').height(36);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: fieldH, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
@@ -1138,12 +1144,12 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
           ref={clearRef}
           accessibilityRole="button"
           accessibilityLabel="Clear search"
-          // ≥44pt target (PR #65 review #5): a 28pt centered touch box + 8pt
-          // slop each side = 44 in both axes, regardless of the field's own
-          // (possibly 36pt) height. The icon stays 14pt visually.
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           onPress={() => onChangeText('')}
-          style={{ width: 28, height: 28, alignItems: 'center', justifyContent: 'center', marginRight: -4 }}
+          // Fills the field's full height for the tallest reachable target the
+          // parent allows (RN clips slop to the parent frame — see fieldH);
+          // width 40 + horizontal slop widens it. Icon 14pt; -6 snug to edge.
+          hitSlop={{ left: 8, right: 8 }}
+          style={{ width: 40, height: fieldH, alignItems: 'center', justifyContent: 'center', marginRight: -6 }}
         >
           <Icon name="x" size={14} color={theme.inkFaint} />
         </Pressable>
