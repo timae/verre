@@ -64,7 +64,16 @@ export async function GET(req: NextRequest) {
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
     GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category
     ORDER BY sm.joined_at DESC
-    LIMIT 50
+    -- Ruling (Simon 2026-07-04): search/filter on the moments lists must
+    -- reach the WHOLE history — they exist precisely to find old moments, so
+    -- a recency page-cap silently clips exactly the rows being searched for
+    -- (device repro: the two oldest friend-shared sessions fell off the old
+    -- LIMIT 50 and the friend vanished from the friends-there picker). 500
+    -- is a runaway safety valve, not a page size — years of heavy use sit
+    -- far below it, and enrichment stays cheap (expired rows cost 2 Redis
+    -- calls each, run concurrently). If a user ever approaches this, the
+    -- real fix is pagination + SERVER-side filtering, not a bigger number.
+    LIMIT 500
   `
 
   // Enrich each row with live Redis TTL + lifespan from the meta key, plus
