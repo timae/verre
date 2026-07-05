@@ -154,6 +154,12 @@ dead ends):**
   hero cards, the line-up cover) → read `docs/design/patterns/collapsing-hero-sticky-subheaders.md`
   FIRST. It has the Dynamic Overlay recipe + the 4 approaches that FAIL (cost ~5
   attempts). Bars over scrolling content are opaque — `docs/design/decisions/0003`.
+- **Dropping in a native OS component** (a `@react-native-community` picker, the
+  native stack back-gesture, any UIKit-backed control) that looks wrong on a dark
+  theme or whose gesture fights the app → read
+  `docs/design/patterns/native-component-theming-gotchas.md`. Covers the
+  `themeVariant={theme.scheme}` picker-legibility fix and the
+  `gestureResponseDistance` edge-back-vs-slider fix.
 
 **Existing shared primitives (the canonical things — reuse these).** Paths below
 are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
