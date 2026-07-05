@@ -64,6 +64,12 @@ export function FullscreenImage({
         // and theme-independent on purpose: a themed tint behind a photo is
         // wrong. One of the sanctioned raw literals (over-photo surfaces).
         backdropStyle={{ backgroundColor: '#000' }}
+        // The library FADES the backdrop's opacity 1→0 during the pull-to-dismiss
+        // (useGestureViewer interpolates dismissDistance [0,200]→[1,0]). Without a
+        // black CONTAINER behind it, that fade reveals the Modal's default white
+        // → a black-to-white flash mid-swipe. Black container keeps it black the
+        // whole gesture.
+        containerStyle={{ backgroundColor: '#000' }}
         // Swipe up OR down dismisses (the library gates this to the un-zoomed
         // state — a swipe while zoomed pans the image instead).
         dismiss={{ direction: 'both' }}
