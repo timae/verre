@@ -52,14 +52,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     } catch {}
   }
 
-  // Persist the role at join time. The strict-host check is by id; cohosts
-  // get a distinct 'co_host' role so future archival audits can reconstruct
-  // who had what permissions. Don't reuse isHostByIdentity here — it lumps
-  // hosts and cohosts together, which would mislabel cohosts as host.
+  // Persist the role at join time — the DURABLE snapshot that survives Redis
+  // expiry (moments-server-filtering.md Part A). The strict-host check is by
+  // id; cohosts and providers get distinct roles so an expired-session role
+  // read (/api/me/sessions fallback) and future archival audits can
+  // reconstruct who had what permissions. Don't reuse isHostByIdentity here
+  // — it lumps hosts and cohosts together, which would mislabel cohosts as
+  // host. Snapshot precedence mirrors the live-auth precedence: host >
+  // cohost > provider > taster (a strict host who is also somehow in a role
+  // list still reads as host).
+  //
+  // This is a CREATE-only snapshot (update: {} below): the role route is the
+  // authoritative mirror for every subsequent transition (both directions,
+  // incl. provider), so re-visits must NOT overwrite it. Overwriting on
+  // re-visit would let a stale/racing meta read clobber a role-route grant.
   const isStrictHost = (meta.hostIdentityId && meta.hostIdentityId === id)
     || (meta.hostUserId && userIdentityId(meta.hostUserId) === id)
   const isCohost = !!meta.coHostIds?.includes(id)
-  const role: 'host' | 'co_host' | 'taster' = isStrictHost ? 'host' : isCohost ? 'co_host' : 'taster'
+  const isProvider = !!meta.providerIds?.includes(id)
+  const role: 'host' | 'co_host' | 'provider' | 'taster' =
+    isStrictHost ? 'host' : isCohost ? 'co_host' : isProvider ? 'provider' : 'taster'
 
   try {
     await pgUpsertSession(c, meta)

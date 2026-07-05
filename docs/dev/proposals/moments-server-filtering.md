@@ -44,6 +44,28 @@ snapshot-drift.
 4. Anon roles stay Redis-only (an anon can't log in to see a moments list;
    `session_members.user_id` is NOT NULL by design).
 
+**As-built (2026-07-05, Part A shipped):**
+- #1 — done. `/visit` now snapshots `provider` too (create-only; the role
+  route stays the authoritative mirror for transitions). No DDL: `role` is
+  `VarChar(16)`, never a Postgres enum — "enum grows provider" meant the
+  app-layer union + written values, nothing to `ALTER`.
+- #2 — **intentionally dropped** (Simon's call). The audit + an independent
+  reviewer confirmed it's a no-op for correctness: the ONLY writer of
+  `coHostIds`/`providerIds` is the role route, which already mirrors to PG,
+  so registered-user rows are already correct (the 2026-06-29 prod dump has
+  0 provider rows and both `co_host` rows already carry `role='co_host'`).
+  The only residual is a *transient* swallowed PG-write failure in the role
+  route on a still-live session — self-healing on the next transition, and
+  repairable (if ever) only by a Redis-reading reconciliation SCRIPT, never
+  a SQL migration (migrations can't read Redis; the source lives only in
+  `s:{CODE}:meta`). Cosmetic if unrepaired: one old moment misfiled for one
+  user after that session expires. Not worth the machinery.
+- #3 — done. `/api/me/sessions` initializes `role` from `sm.role` and lets
+  the live Redis-meta block OVERRIDE it (now authoritative-when-present incl.
+  a reset to null, not upgrade-only). Validated on the prod dump: user `u:2`
+  on a tombstoned-host session returned `null` before, now `cohost`.
+- #4 — inherent, no code (anon never gets a `session_members` row).
+
 **Also unblocks:** the cohost feed-redaction fix (sessionFeedWines can check
 the PG mirror), honest role display on expired moments everywhere.
 

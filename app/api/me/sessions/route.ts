@@ -46,10 +46,12 @@ export async function GET(req: NextRequest) {
       host_user_id: number | null; wine_count: bigint
       cover_photo_url: string | null
       category: string | null
+      member_role: string
     }>
   >`
     SELECT s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at,
            s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category,
+           sm.role AS member_role,
            COUNT(DISTINCT w.id) AS wine_count,
            COUNT(DISTINCT r.id) AS wines_rated,
            ROUND(AVG(r.score)::numeric, 1) AS avg_score
@@ -62,7 +64,7 @@ export async function GET(req: NextRequest) {
     -- explicit deleted_at filter documents intent and survives any future
     -- change to the scrub or member-wipe paths.
     WHERE sm.user_id = ${userId} AND s.deleted_at IS NULL
-    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category
+    GROUP BY s.id, s.code, s.host_name, s.name, s.created_at, sm.joined_at, sm.role, s.date_from, s.date_to, s.address, s.host_user_id, s.cover_photo_url, s.category
     ORDER BY sm.joined_at DESC
     -- 50 = the recency page (Simon's call after the PR #65 review weighed
     -- the Redis enrichment fan-out; a 500 valve was tried and reverted).
@@ -121,8 +123,21 @@ export async function GET(req: NextRequest) {
     let taster_count: number | null = null
     let participant = false
     let lastSeen = 0
+    // Durable role from the Postgres session_members mirror — the fallback
+    // when Redis meta is gone (expired session). Written at visit time and
+    // kept current by the role route's mirror on every transition
+    // (moments-server-filtering.md Part A). Live sessions still let the
+    // Redis-meta block below OVERRIDE this, so a grant made after the user's
+    // last visit is reflected while the session is alive. `taster` (and any
+    // legacy/unknown value) maps to null — no badge. `host_user_id === userId`
+    // is a last-resort belt for a registered host whose mirror row somehow
+    // predates the role snapshot.
     let role: 'host' | 'cohost' | 'provider' | null =
-      r.host_user_id === userId ? 'host' : null
+      r.member_role === 'host' ? 'host'
+      : r.member_role === 'co_host' ? 'cohost'
+      : r.member_role === 'provider' ? 'provider'
+      : r.host_user_id === userId ? 'host'
+      : null
     // The host's CURRENT display name from the live identities hash — same
     // source the line-up + settings hub resolve from (participants[].displayName
     // ?? meta.host). The card's SQL host_name is a create-time snapshot that
@@ -144,9 +159,17 @@ export async function GET(req: NextRequest) {
           const meta = JSON.parse(raw)
           lifespan = meta.lifespan ?? null
           hostId = meta.hostIdentityId ?? (meta.hostUserId != null ? `u:${meta.hostUserId}` : null)
-          if (meta.hostIdentityId === myIdentityId || meta.hostUserId === userId) role = 'host'
-          else if (Array.isArray(meta.coHostIds) && meta.coHostIds.includes(myIdentityId)) role = 'cohost'
-          else if (Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId)) role = 'provider'
+          // Redis meta is the LIVE trust anchor: when it's present it FULLY
+          // determines the role, overriding the durable PG fallback set above
+          // — INCLUDING a reset to null (a demotion after the user's last
+          // visit). Assigned unconditionally (not upgrade-only) so a stale PG
+          // 'cohost' can't survive a live demotion. On an expired session
+          // (no `raw`) this block never runs and the PG mirror stands.
+          role =
+            meta.hostIdentityId === myIdentityId || meta.hostUserId === userId ? 'host'
+            : Array.isArray(meta.coHostIds) && meta.coHostIds.includes(myIdentityId) ? 'cohost'
+            : Array.isArray(meta.providerIds) && meta.providerIds.includes(myIdentityId) ? 'provider'
+            : null
         } catch {}
         try {
           // One hGetAll serves four consumers: taster count, the caller's
