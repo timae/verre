@@ -175,21 +175,15 @@ function FillTrack({
   // Pan claims the gesture once movement is clearly horizontal; a clearly
   // vertical drag fails to the parent ScrollView. Mirrors ScoreInput. The fill
   // jumps in whole steps as the finger moves (stepped, not a smooth glide — the
-  // smooth version felt off, Simon). VERTICAL-only hitSlop (7pt top+bottom) so
-  // the touch target is easier to land without changing the visual height —
-  // deliberately NOT horizontal (extending left would reach back into the iOS
-  // edge-back zone, the accidental-back the screen's gestureResponseDistance is
-  // also guarding against).
+  // smooth version felt off, Simon).
   const pan = Gesture.Pan()
     .runOnJS(true)
-    .hitSlop({ vertical: 7 })
     .activeOffsetX([-6, 6])
     .failOffsetY([-8, 8])
     .onUpdate((e) => setFromX(e.x))
     .onEnd(() => commitHaptic());
   const tap = Gesture.Tap()
     .runOnJS(true)
-    .hitSlop({ vertical: 7 })
     .onEnd((e, success) => {
       if (!success) return;
       setFromX(e.x);

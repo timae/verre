@@ -72,15 +72,30 @@ mirrors how Instagram/Spotify-class apps keep left-aligned sliders draggable.
 on the expo-router / react-native-screens native stack; `start` is the LTR
 leading edge.
 
-**Optional companion — vertical-only hitSlop** for easier landing, never
-horizontal:
+### Bonus caveat — enlarging a gesture control's touch target has TWO traps
 
-```ts
-Gesture.Pan().hitSlop({ vertical: 7 })   // NOT horizontal — left slop re-enters the edge zone
-```
+If you ever try to give a `GestureDetector`-owned control a bigger touch area
+(we tried this on the fill-tracks, then **dropped it** — the tracks are already
+38–44pt, a fine target on their own, and it wasn't worth the layout churn), know
+both traps before you start:
 
-(Recall the separate hitSlop trap: RN clips hitSlop to the *parent* frame, so the
-extra vertical room must exist in the row spacing — see the mobile memory note.)
+1. **A positive `Gesture.*().hitSlop(...)` is a no-op on iOS.** RNGH's own source
+   (`apple/RNGestureHandler.mm`, `shouldReceiveTouch`) says hit slop "only works
+   for negative values… To achieve similar effect with positive values one should
+   set hitSlop for the underlying view" — iOS's `hitTest` rejects an out-of-bounds
+   touch before the recognizer ever runs the slop check. So put slop on the
+   **View** (`<View hitSlop={{top,bottom}}>`), not the gesture.
+2. **A View's hitSlop is clipped to its ANCESTOR bounds.** RN never extends a
+   view's touch area past its parent's frame. If the parent (and grandparent…)
+   collapse to the control's own height — a common case in a flex grid where the
+   inter-row space is `rowGap` (which lives *outside* the item) — the slop has
+   nowhere to extend and is clipped to nothing. The extra room must be real
+   `paddingVertical` on an ancestor *within* its bounds, not `rowGap`.
+
+Net: "just add hitSlop" rarely works for enlarging a target inside a dense flex
+grid. Prefer making the control genuinely taller, or leave it if the target is
+already adequate. (Two review passes surfaced these in order — the API compiled
+and looked right at each step but did nothing until both were satisfied.)
 
 ---
 
