@@ -22,8 +22,11 @@ import { radius, useTheme } from '@/theme';
 // value policy (0.25 snap, 0 = not rated) comes from @verre/core.
 
 const THUMB = 26;
+const THUMB_COMFORT = 30;
 const TRACK_H = 30;
+const TRACK_H_COMFORT = 34;
 const RAIL_H = 6;
+const RAIL_H_COMFORT = 7;
 
 // Sanitize a raw keystroke string into a left-anchored decimal the user is
 // typing: keep digits + a single separator, cap the integer part at one digit
@@ -62,6 +65,14 @@ export function ScoreInput({ value, onChange }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const scoreSurface = phone.surface('score');
+  // Slider chrome (hit area, rail, thumb) scales on BOTH axes: device size
+  // (phone.lerp by comfort — Pro Max gets the taller value) AND text size (the
+  // score surface, so it grows with the numeral beside it under Dynamic Type).
+  // THUMB must stay a single value — the touch-fraction math and the visual
+  // thumb both read it.
+  const trackH = scoreSurface.height(phone.lerp(TRACK_H, TRACK_H_COMFORT));
+  const railH = scoreSurface.height(phone.lerp(RAIL_H, RAIL_H_COMFORT));
+  const thumb = scoreSurface.height(phone.lerp(THUMB, THUMB_COMFORT));
   const [trackW, setTrackW] = useState(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -74,7 +85,7 @@ export function ScoreInput({ value, onChange }: Props) {
   editingRef.current = editing;
 
   const setFromX = (x: number) => {
-    if (trackW <= THUMB) return;
+    if (trackW <= thumb) return;
     if (editingRef.current) {
       // A slider touch while the number field is open abandons the draft —
       // otherwise the field's eventual blur would commit the stale draft
@@ -83,8 +94,8 @@ export function ScoreInput({ value, onChange }: Props) {
       setEditing(false);
       inputRef.current?.blur();
     }
-    // Range-input semantics: the thumb travels within [THUMB/2, W - THUMB/2].
-    const next = scoreFromFraction((x - THUMB / 2) / (trackW - THUMB));
+    // Range-input semantics: the thumb travels within [thumb/2, W - thumb/2].
+    const next = scoreFromFraction((x - thumb / 2) / (trackW - thumb));
     if (next !== valueRef.current) {
       // Selection tick on each 0.25 step while dragging (interaction-spec).
       Haptics.selectionAsync().catch(() => {});
@@ -142,7 +153,7 @@ export function ScoreInput({ value, onChange }: Props) {
 
   const rated = value > 0;
   const pct = Math.min(SCORE_MAX, Math.max(0, value)) / SCORE_MAX;
-  const thumbLeft = trackW > THUMB ? pct * (trackW - THUMB) : 0;
+  const thumbLeft = trackW > thumb ? pct * (trackW - thumb) : 0;
 
   return (
     // .ir-rate: padding 8 0 18, border-bottom rule. Inner column gap 6.
@@ -220,15 +231,15 @@ export function ScoreInput({ value, onChange }: Props) {
             const dir = e.nativeEvent.actionName === 'increment' ? 1 : -1;
             onChange(stepScore(valueRef.current, dir));
           }}
-          style={{ height: TRACK_H, justifyContent: 'center' }}
+          style={{ height: trackH, justifyContent: 'center' }}
         >
-          <View style={{ height: RAIL_H, borderRadius: radius.pill, backgroundColor: theme.surfaceSunk }} />
+          <View style={{ height: railH, borderRadius: radius.pill, backgroundColor: theme.surfaceSunk }} />
           <View
             style={{
               position: 'absolute',
               left: 0,
               width: `${pct * 100}%`,
-              height: RAIL_H,
+              height: railH,
               borderRadius: radius.pill,
               backgroundColor: theme.accent,
             }}
@@ -237,9 +248,9 @@ export function ScoreInput({ value, onChange }: Props) {
             style={{
               position: 'absolute',
               left: thumbLeft,
-              width: THUMB,
-              height: THUMB,
-              borderRadius: THUMB / 2,
+              width: thumb,
+              height: thumb,
+              borderRadius: thumb / 2,
               backgroundColor: theme.accent,
               borderWidth: 3,
               borderColor: theme.surface,

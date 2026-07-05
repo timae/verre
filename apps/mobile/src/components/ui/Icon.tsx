@@ -20,6 +20,12 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 12, cy: 12, r: 8.5, sw: 1.5 },
     { d: 'M12 7.5V12l3 2', sw: 1.5, cap: true, join: true },
   ],
+  // info — circled "i" (dot + stem). Used by the intensity-scale help bubble.
+  info: [
+    { cx: 12, cy: 12, r: 8.5, sw: 1.5 },
+    { d: 'M12 11v5', sw: 1.6, cap: true },
+    { d: 'M12 7.6v.01', sw: 1.8, cap: true },
+  ],
   pin: [
     { d: 'M12 21s6.5-5.4 6.5-10.5A6.5 6.5 0 0 0 5.5 10.5C5.5 15.6 12 21 12 21Z', sw: 1.5, join: true },
     { cx: 12, cy: 10.5, r: 2.4, sw: 1.5 },
