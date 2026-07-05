@@ -337,6 +337,15 @@ export function DateField({
                 mode={mode}
                 display="inline"
                 accentColor={theme.accent}
+                // Match the OS picker chrome to the active theme: without this
+                // the inline calendar renders in the OS default appearance
+                // (light — black numerals) on top of the dark theme.surface
+                // sheet, so day/weekday text is near-illegible on the dark
+                // themes (cobalt). themeVariant tracks the theme's own scheme so
+                // light themes (apricot/mauve) stay light. textColor pins the
+                // numerals to the theme ink for the surfaces the lib exposes it.
+                themeVariant={theme.scheme}
+                textColor={theme.ink}
                 minimumDate={minimumDate}
                 maximumDate={maximumDate}
                 onValueChange={(_e, d) => { if (d) setDraft(d); }}
