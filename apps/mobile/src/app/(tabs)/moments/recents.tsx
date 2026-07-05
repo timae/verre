@@ -1,5 +1,5 @@
 import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, View, useWindowDimensions } from 'react-native';
@@ -16,22 +16,20 @@ import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { getMyFriends } from '@/lib/api/me';
-import { getMySessions, isUpcomingSession, type MySessionRow, type SessionRole } from '@/lib/api/sessions';
+import { ApiError, getMomentsPage, type MomentQuery, type MySessionRow } from '@/lib/api/sessions';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { recentMeta } from '@/lib/momentFormat';
 import { fuzzyIncludes } from '@/lib/search';
 import { useTheme } from '@/theme';
 
-// Sort key for the Recent list: the SET date when present, else the created
-// date as an internal fallback (never shown). A missing/invalid timestamp
-// sinks to the bottom (0).
-function effectiveDate(r: MySessionRow): number {
-  const iso = r.date_from ?? r.created_at;
-  const t = iso ? new Date(iso).getTime() : 0;
-  return Number.isNaN(t) ? 0 : t;
-}
-
 // ── search + filters (Simon's 2026-07-03 spec: date, your role, host) ───────
+//
+// 02s·B: the search + facets moved SERVER-SIDE (moments-server-filtering.md
+// Part B). This screen no longer filters/sorts the payload — it sends the
+// query + filter params and pages the whole matching history on nextCursor.
+// The `q`/facets debounce into the request key; the server owns accent-folding,
+// typo tolerance, the date window, role/host/people/category facets, and the
+// list order (upcoming soonest-first, recent newest-first).
 
 type RoleKey = 'host' | 'cohost' | 'provider' | 'taster';
 const ROLE_OPTIONS: { key: RoleKey; label: string }[] = [
@@ -40,54 +38,44 @@ const ROLE_OPTIONS: { key: RoleKey; label: string }[] = [
   { key: 'provider', label: 'Provider' },
   { key: 'taster', label: 'Taster' },
 ];
-const matchesRole = (role: SessionRole, k: RoleKey) => (k === 'taster' ? role === null : role === k);
 
-// Host identity per row for the host filter: the viewer's own moments group
-// under one "You" entry (their display name varies per session); other hosts
-// key on user id when present, display name otherwise (anon hosts).
-const hostKeyOf = (r: MySessionRow) =>
-  r.role === 'host' ? 'me' : r.host_user_id ? `u:${r.host_user_id}` : `n:${r.host_name}`;
-
-// NULL category predates the column — every such session is a wine one (v1
-// allow-list), so fold it into 'wine' for filtering and option-derivation.
-const categoryOf = (r: MySessionRow) => r.category ?? 'wine';
+// v1 category is wine-only (the create form is non-interactive on it); NULL
+// rows predate the column and are wine too. The picker offers just Wine; the
+// server folds NULL → 'wine'.
 const CATEGORY_LABELS: Record<string, string> = { wine: 'Wine' };
 const categoryLabel = (code: string) => CATEGORY_LABELS[code] ?? code.charAt(0).toUpperCase() + code.slice(1);
 
 // Multi-select facets: empty array = "any". Roles and hosts OR within the
 // facet (a session has ONE of each for you); people is AND — "the moments
-// Anna AND Tim were both at" is the find-that-dinner query. People options
-// are the viewer's FRIENDS (Simon's ruling 2026-07-03 — not the union of all
-// session participants: anon guests don't survive Redis expiry and aren't
-// stable identities across moments anyway), matched against the row's
-// `people` ids (`u:<id>`).
+// Anna AND Tim were both at" is the find-that-dinner query. People + host
+// options are the viewer's FRIENDS (+ "You" for hosts): the server derives
+// matches, so the picker only needs candidate ids, not a history scan (a
+// non-friend host you shared a moment with is the deferred host-facet — see
+// the proposal). Facet keys map 1:1 to the server params.
 type Filters = { roles: RoleKey[]; hosts: string[]; people: string[]; category: string; from: Date | null; to: Date | null };
 const NO_FILTERS: Filters = { roles: [], hosts: [], people: [], category: 'any', from: null, to: null };
 
-function matchesFilters(r: MySessionRow, f: Filters): boolean {
-  if (f.roles.length > 0 && !f.roles.some((k) => matchesRole(r.role, k))) return false;
-  if (f.hosts.length > 0 && !f.hosts.includes(hostKeyOf(r))) return false;
-  if (f.people.length > 0) {
-    const present = new Set((r.people ?? []).map((p) => p.id));
-    if (!f.people.every((k) => present.has(k))) return false;
-  }
-  if (f.category !== 'any' && categoryOf(r) !== f.category) return false;
-  if (f.from || f.to) {
-    // Same date the list SORTS on (set date, else created) so the filter and
-    // the visible order agree; bounds are whole days, inclusive.
-    const t = effectiveDate(r);
-    if (f.from) {
-      const lo = new Date(f.from);
-      lo.setHours(0, 0, 0, 0);
-      if (t < lo.getTime()) return false;
-    }
-    if (f.to) {
-      const hi = new Date(f.to);
-      hi.setHours(23, 59, 59, 999);
-      if (t > hi.getTime()) return false;
-    }
-  }
-  return true;
+// Keep pulling pages until at least this many rows are loaded, so a page that
+// under-fills (server-side kicked-row drop leaves fewer than requested) still
+// grows a scrollable list rather than stalling — onEndReached can't fire on a
+// list too short to scroll. A hair over one screenful of ~72pt rows.
+const MIN_SCROLLABLE = 12;
+
+// The date filter is a plain "which local day" window, but the server compares
+// against a stored INSTANT (timestamptz), so we send the picked local day's
+// bounds as UTC instants: the START of the local day for `from`, the END of the
+// local day for `to`. Because the moment cards render in device-local time too
+// (momentFormat.ts toLocaleDateString), "July 5" here means exactly the July 5
+// the user sees — no UTC-boundary off-by-a-day. The Date the picker returns is
+// some instant on the chosen day; we re-derive local midnight / end-of-day from
+// its local Y-M-D so the time-of-day the user happened to pick doesn't leak in.
+function dayStartISO(d: Date | null): string | null {
+  if (!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0).toISOString();
+}
+function dayEndISO(d: Date | null): string | null {
+  if (!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999).toISOString();
 }
 
 // 02s·2 — pushed "All moments" list to the .sh-row pixel spec: flat rows
@@ -102,19 +90,10 @@ export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const queryClient = useQueryClient();
   const { filter } = useLocalSearchParams<{ filter?: string }>();
   const upcoming = filter === 'upcoming';
-  const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
-  // Returning from a session must reflect a just-changed role (promoted/
-  // demoted in-session) without an app reload — mirrors the moments-home
-  // refetch-on-focus (PR #65 review #2). The mutation site also invalidates,
-  // so this is the belt to that suspenders.
-  useFocusEffect(
-    useCallback(() => {
-      sessions.refetch();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []),
-  );
+  const tense: 'upcoming' | 'past' = upcoming ? 'upcoming' : 'past';
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<Filters>(NO_FILTERS);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -124,84 +103,145 @@ export default function AllMoments() {
     setEditPicker(facet);
     setFilterOpen(true);
   };
-  // 'upcoming' filter → only future-start sessions, re-sorted SOONEST-first
-  // (the server's activity sort puts the furthest-out date on top, which is
-  // backwards for an agenda); default → everything that isn't upcoming
-  // ("Recent moments"), re-sorted by EFFECTIVE DATE newest-first.
-  // Both filters key on `status`, NOT `pinned` — the carousel (pinned) overlaps
-  // both lists. Full routing model: docs/dev/moments-home.md.
-  //
-  // The server sorts the raw payload by ACTIVITY (max of last-visit, start,
-  // created) so the carousel can float "just visited" cards up. That bump is
-  // wrong for these lists — a recently-opened moment shouldn't jump the date
-  // order — so both filters impose their own date sort here, leaving the
-  // server order for the carousel only.
-  // Base = the status slice only — host options must come from here so a
-  // picked host doesn't vanish from its own option list.
-  const base = useMemo(
-    () => (sessions.data ?? []).filter((r) => (upcoming ? isUpcomingSession(r) : !isUpcomingSession(r))),
-    [sessions.data, upcoming],
-  );
-  const hostOptions = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const r of base) {
-      const k = hostKeyOf(r);
-      if (!seen.has(k)) seen.set(k, k === 'me' ? 'You' : r.host_name);
-    }
-    return [...seen.entries()]
-      .map(([key, label]) => ({ key, label }))
-      .sort((a, b) => (a.key === 'me' ? -1 : b.key === 'me' ? 1 : a.label.localeCompare(b.label)));
-  }, [base]);
-  const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, staleTime: 60_000 });
-  // Per-friend attendance count across the CURRENT list, shown as the row
-  // caption. Friends at NONE of the listed moments are dropped (codex P3 —
-  // a zero-match option can only empty the list; a friend matches only when
-  // they were at the moment LOGGED IN, anon visits can't tie to an account).
-  // The whole facet hides when nobody qualifies (peopleOptions.length === 0).
-  const peopleOptions = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const r of base) for (const p of r.people ?? []) counts.set(p.id, (counts.get(p.id) ?? 0) + 1);
-    return (friends.data ?? [])
-      .map((f) => ({ f, n: counts.get(`u:${f.id}`) ?? 0 }))
-      .filter(({ n }) => n > 0)
-      .map(({ f, n }) => ({ key: `u:${f.id}`, label: f.name, imageUrl: f.imageUrl, caption: `${n} ${n === 1 ? 'moment' : 'moments'}` }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [friends.data, base]);
-  // Friend identity keys for the host picker's Friends chip ("u:<id>" — the
-  // same key space hostKeyOf emits for other users' hosted moments).
-  const friendKeys = useMemo(() => new Set((friends.data ?? []).map((f) => `u:${f.id}`)), [friends.data]);
-  const categoryOptions = useMemo(() => {
-    const codes = [...new Set(base.map(categoryOf))].sort();
-    return codes.map((code) => ({ code, label: categoryLabel(code) }));
-  }, [base]);
   const activeCount =
     (filters.roles.length > 0 ? 1 : 0) +
     (filters.hosts.length > 0 ? 1 : 0) +
     (filters.people.length > 0 ? 1 : 0) +
     (filters.category !== 'any' ? 1 : 0) +
     (filters.from || filters.to ? 1 : 0);
-  const moments = useMemo(() => {
-    const q = query.trim();
-    const rows = base.filter(
-      (r) => matchesFilters(r, filters) && (!q || fuzzyIncludes(`${r.name ?? ''} ${r.host_name}`, q)),
-    );
-    if (upcoming) {
-      return [...rows].sort((a, b) => {
-        const ta = a.date_from ? new Date(a.date_from).getTime() : Infinity;
-        const tb = b.date_from ? new Date(b.date_from).getTime() : Infinity;
-        return ta - tb; // soonest start first
-      });
-    }
-    // Recent: effective date = the SET date (date_from) if present, else the
-    // created date as an internal fallback. Newest first, interleaved (a
-    // date-less moment created yesterday can sit above one dated last week).
-    return [...rows].sort((a, b) => effectiveDate(b) - effectiveDate(a));
-  }, [base, upcoming, query, filters]);
   const narrowed = query.trim() !== '' || activeCount > 0;
+
+  // Debounce the search text (300ms) so a fresh request key isn't minted on
+  // every keystroke — the server owns matching, we just avoid a fetch storm.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => clearTimeout(id);
+  }, [query]);
+
+  // The full request the server executes — the infinite-query key. Every facet
+  // + the debounced q ride it, so changing any filter starts a fresh paged
+  // stream from page 1.
+  const params: Omit<MomentQuery, 'cursor'> = useMemo(
+    () => ({
+      tense,
+      q: debouncedQuery || undefined,
+      roles: filters.roles,
+      hosts: filters.hosts,
+      people: filters.people,
+      category: filters.category,
+      from: dayStartISO(filters.from),
+      to: dayEndISO(filters.to),
+    }),
+    [tense, debouncedQuery, filters],
+  );
+
+  const sessions = useInfiniteQuery({
+    // Prefix is ['my-sessions', …] so the app-wide invalidateQueries({queryKey:
+    // ['my-sessions']}) calls (create, PeopleSheet, useSessionPoll, impression,
+    // settings) CASCADE to this query too — a role/name change made elsewhere
+    // refreshes the filtered list without waiting for the focus refetch below.
+    queryKey: ['my-sessions', 'search', params],
+    queryFn: ({ pageParam }) => getMomentsPage({ ...params, cursor: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    staleTime: 15_000,
+    // Keep the previous pages on screen while a new filter/search key loads, so
+    // toggling a facet doesn't blank the whole screen to a spinner (the old
+    // client-side filtering was zero-flicker; this restores that feel).
+    placeholderData: keepPreviousData,
+  });
+  // Returning from a session must reflect a just-changed role (promoted/
+  // demoted in-session) without an app reload — mirrors the moments-home
+  // refetch-on-focus (PR #65 review #2). Invalidate by the ['my-sessions']
+  // PREFIX (not sessions.refetch()) so it hits the CURRENT filtered key: this
+  // effect's deps are empty (fire once per focus), but `sessions` is a fresh
+  // observer whenever a filter/search changes — a captured sessions.refetch()
+  // would refresh the STALE key. Prefix invalidation is closure-independent.
+  useFocusEffect(
+    useCallback(() => {
+      queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+    }, [queryClient]),
+  );
+  // The server already filtered + ordered every page (upcoming soonest-first,
+  // recent newest-first); the client just flattens the pages in order.
+  const moments = useMemo(
+    () => (sessions.data?.pages ?? []).flatMap((p) => p.rows),
+    [sessions.data],
+  );
+  // Auto-advance when a page under-fills but more pages exist. Two server-side
+  // thinners can make a page render fewer rows than requested WITHOUT being the
+  // end: kicked-row drop (removed post-SQL, so nextCursor still points past
+  // them) and, in principle, any post-enrichment filter. A too-short list
+  // doesn't scroll, so onEndReached never fires and paging would stall with
+  // visible rows still unreached. This pulls the next page until the list is
+  // tall enough to scroll (or the history is exhausted).
+  // Guards, all load-bearing: !isPlaceholderData (don't chase the previous
+  // query's cursor), !isFetching (any fetch in flight, not just next-page —
+  // don't stack), and !isError (a FAILED next-page leaves hasNextPage true +
+  // the list short, so without this the effect re-fires immediately → tight
+  // retry loop hammering a failing endpoint). Primitive deps so the effect keys
+  // on the actual state, not the sessions object's per-render identity.
+  const canAutoAdvance =
+    sessions.hasNextPage &&
+    !sessions.isFetching &&
+    !sessions.isPlaceholderData &&
+    !sessions.isError &&
+    moments.length < MIN_SCROLLABLE;
+  const fetchNextPage = sessions.fetchNextPage;
+  useEffect(() => {
+    if (canAutoAdvance) fetchNextPage();
+  }, [canAutoAdvance, fetchNextPage]);
+
+  const friends = useQuery({ queryKey: ['my-friends'], queryFn: getMyFriends, staleTime: 60_000 });
+  // Filter-option candidates come from the friend list, NOT the loaded page
+  // (paginated — a host/friend on a later page would otherwise vanish from
+  // their own option list). The server decides the actual matches; the picker
+  // only needs candidate ids. People = all friends (Simon's ruling: no counts,
+  // show all — the count was cosmetic and only ever page-accurate). Hosts =
+  // "You" + friends (a non-friend host is the deferred host-facet).
+  const peopleOptions = useMemo(
+    () =>
+      (friends.data ?? [])
+        .map((f) => ({ key: `u:${f.id}`, label: f.name, imageUrl: f.imageUrl }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [friends.data],
+  );
+  const hostOptions = useMemo(
+    () => [
+      { key: 'me', label: 'You' },
+      ...(friends.data ?? [])
+        .map((f) => ({ key: `u:${f.id}`, label: f.name }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ],
+    [friends.data],
+  );
+  // Friend identity keys for the host picker's Friends chip ("u:<id>").
+  const friendKeys = useMemo(() => new Set((friends.data ?? []).map((f) => `u:${f.id}`)), [friends.data]);
+  // v1: wine only. NULL folds to wine server-side.
+  const categoryOptions = useMemo(() => [{ code: 'wine', label: categoryLabel('wine') }], []);
+
+  // The search + filter line shows whenever there's anything to narrow OR a
+  // narrow is already active (so an over-narrow that empties the list still
+  // lets you widen it back). Only a truly-empty, never-narrowed history hides
+  // the line.
+  const hasAnything = moments.length > 0 || narrowed;
 
   // Connection failure: full ErrorState when the filtered list is empty AND the
   // fetch errored (nothing to show); a top banner when we still have rows.
-  const conn = connectionView(sessions.isError, moments.length > 0);
+  // When the CURRENT query errored while keepPreviousData is showing the PRIOR
+  // query's rows (isPlaceholderData), those rows belong to the OLD filter — don't
+  // count them as valid data under the NEW chips, or the user sees mismatched
+  // results with only a banner. Treat as "no data" → full ErrorState for the
+  // failed filter change.
+  const showingStaleOnError = sessions.isError && sessions.isPlaceholderData;
+  const conn = connectionView(sessions.isError, moments.length > 0 && !showingStaleOnError);
+  // A 429 from the search/friend filters (the only rate-limited params) is a
+  // "you searched too fast" wait, not a connectivity failure — surface the
+  // server's human wait message instead of the generic "can't reach server".
+  const rlError = sessions.error instanceof ApiError && sessions.error.kind === 'rate-limited'
+    ? sessions.error.message
+    : null;
 
   // The VBar always renders (back-nav stays available); the body below it
   // switches between spinner / error / banner+list.
@@ -212,9 +252,10 @@ export default function AllMoments() {
         <VBar title={upcoming ? 'Upcoming moments' : 'Recent moments'} />
       </View>
       {/* Search + filter line (compare-toolbar pattern: pill matches the chip
-          skin). Rendered whenever the base list has rows — hidden on a truly
-          empty list where there's nothing to narrow. */}
-      {base.length > 0 ? (
+          skin). Shown whenever there's anything to narrow OR a narrow is
+          already active (so an over-narrow can be widened back) — hidden only
+          on a truly-empty, never-narrowed history. */}
+      {hasAnything ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingTop: 6, paddingBottom: 2 }}>
           <Pressable
             accessibilityRole="button"
@@ -263,14 +304,17 @@ export default function AllMoments() {
           ) : null}
           {filters.hosts.length > 0 ? (
             <ActiveChip
-              label={summarize(hostOptions.filter((o) => filters.hosts.includes(o.key)).map((o) => o.label))}
+              // Fall back to a count when a selected key isn't in the current
+              // option list (e.g. a host who's no longer a friend) — never a
+              // blank pill the user can't read but can still clear.
+              label={summarize(hostOptions.filter((o) => filters.hosts.includes(o.key)).map((o) => o.label)) || `${filters.hosts.length} selected`}
               onEdit={() => openFilter('hosts')}
               onClear={() => setFilters({ ...filters, hosts: [] })}
             />
           ) : null}
           {filters.people.length > 0 ? (
             <ActiveChip
-              label={summarize(peopleOptions.filter((o) => filters.people.includes(o.key)).map((o) => o.label))}
+              label={summarize(peopleOptions.filter((o) => filters.people.includes(o.key)).map((o) => o.label)) || `${filters.people.length} selected`}
               onEdit={() => openFilter('people')}
               onClear={() => setFilters({ ...filters, people: [] })}
             />
@@ -285,12 +329,20 @@ export default function AllMoments() {
           ) : null}
         </View>
       ) : null}
-      {sessions.isPending ? (
+      {/* Full-screen spinner ONLY on the genuine first load (no data yet). With
+          keepPreviousData a filter/search key change keeps the prior pages up
+          and flips isPlaceholderData instead of isPending, so the pill + chips
+          + results stay on screen while the new query resolves. */}
+      {sessions.isPending && moments.length === 0 ? (
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
           <ActivityIndicator />
         </View>
       ) : conn === 'error' ? (
-        <ErrorState onRetry={() => sessions.refetch()} retrying={sessions.isFetching} />
+        rlError ? (
+          <ErrorState title="Slow down a moment" message={rlError} onRetry={() => sessions.refetch()} retrying={sessions.isFetching} />
+        ) : (
+          <ErrorState onRetry={() => sessions.refetch()} retrying={sessions.isFetching} />
+        )
       ) : (
         <>
           {conn === 'banner' ? (
@@ -309,6 +361,25 @@ export default function AllMoments() {
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
             keyboardShouldPersistTaps="handled"
             renderItem={({ item }) => <RecentRow row={item} />}
+            // Infinite scroll on nextCursor — the server pages the whole
+            // matching history. Guards: hasNextPage + !isFetchingNextPage (don't
+            // double-fire) AND !isPlaceholderData — during a filter/search key
+            // change keepPreviousData shows the OLD query's rows + hasNextPage +
+            // cursor; fetching "next" then would page the new query with a stale
+            // cursor and skip/dupe rows. Wait for the new query to resolve.
+            onEndReachedThreshold={0.6}
+            onEndReached={() => {
+              if (sessions.hasNextPage && !sessions.isFetchingNextPage && !sessions.isPlaceholderData) {
+                sessions.fetchNextPage();
+              }
+            }}
+            ListFooterComponent={
+              sessions.isFetchingNextPage ? (
+                <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+                  <ActivityIndicator />
+                </View>
+              ) : null
+            }
             ListEmptyComponent={
               <VText variant="small" color="inkSoft">
                 {narrowed ? 'No moments match.' : upcoming ? 'Nothing upcoming.' : 'No moments yet.'}
@@ -437,8 +508,8 @@ function FilterSheet({
             {/* Whole days — the moment's shown date (or its created date when no
                 date is set, matching the list order). */}
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <DateField label="From" value={filters.from} onChange={(d) => onChange({ ...filters, from: d })} defaultValue={() => new Date()} maximumDate={filters.to ?? undefined} />
-              <DateField label="To" value={filters.to} onChange={(d) => onChange({ ...filters, to: d })} defaultValue={() => new Date()} minimumDate={filters.from ?? undefined} />
+              <DateField label="From" mode="date" value={filters.from} onChange={(d) => onChange({ ...filters, from: d })} defaultValue={() => new Date()} maximumDate={filters.to ?? undefined} />
+              <DateField label="To" mode="date" value={filters.to} onChange={(d) => onChange({ ...filters, to: d })} defaultValue={() => new Date()} minimumDate={filters.from ?? undefined} />
             </View>
           </View>
           <View style={{ gap: 10 }}>

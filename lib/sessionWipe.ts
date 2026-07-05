@@ -118,9 +118,13 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
       // also stays (the user's session post is theirs to keep until they
       // actively choose to leave-with-cleanup).
       if (userId !== null) {
+        // Reset role AND mark the row kicked — the durable mirror of the Redis
+        // `s:<C>:kicked` SADD above, so /api/me/sessions can exclude this
+        // moment in SQL (exact counts + lists) after Redis expiry. Cleared on
+        // rejoin (join route). kick-DELETE/ban skip this branch (row deleted).
         await tx.sessionMember.updateMany({
           where: { userId, sessionCode: code },
-          data: { role: 'taster' },
+          data: { role: 'taster', removedState: 'kicked' },
         })
       }
     } else {

@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isPinnedSession, isUpcomingSession, joinMoment, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, getMySessions, isPinnedSession, joinMoment, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -62,18 +62,19 @@ export default function Moments() {
   // ("Remove from home") flips `pinned` only, so filtering on status would
   // never drop it. `pinned` overlaps both lists (an upcoming pinned moment sits
   // in the carousel AND the Upcoming row). Full model: docs/dev/moments-home.md.
-  const pinned = useMemo(() => (sessions.data ?? []).filter(isPinnedSession), [sessions.data]);
-  const upcomingCount = useMemo(() => (sessions.data ?? []).filter(isUpcomingSession).length, [sessions.data]);
-  // "Recent moments" = everything that ISN'T upcoming (incl. the pinned
-  // carousel items — the carousel is a highlight, not a separate set).
-  // Upcoming sits in its own row above.
-  const recentCount = (sessions.data?.length ?? 0) - upcomingCount;
+  const pinned = useMemo(() => (sessions.data?.rows ?? []).filter(isPinnedSession), [sessions.data]);
+  // Nav-row counts are the TRUE full-history bucket totals (server headers), not
+  // the capped page — so the row shows (and the paginated list is reachable)
+  // whenever the bucket is non-empty anywhere in history, even beyond the recent
+  // 50. The carousel above still derives from the 50-row `rows` page.
+  const upcomingCount = sessions.data?.upcomingTotal ?? 0;
+  const recentCount = sessions.data?.recentTotal ?? 0;
 
   // Connection failure: full ErrorState only when we have NOTHING to show; a
   // top banner (keep the stale list) when a prior fetch left data. A non-empty
   // list is "data" — an errored fetch that only ever yielded [] falls to the
   // full state rather than a banner floating over emptiness.
-  const conn = connectionView(sessions.isError, (sessions.data?.length ?? 0) > 0);
+  const conn = connectionView(sessions.isError, (sessions.data?.rows.length ?? 0) > 0);
 
   return (
     <ScrollView

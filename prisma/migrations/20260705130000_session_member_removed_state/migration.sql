@@ -1,0 +1,14 @@
+-- Durable kick-state on session_members (moments-server-filtering.md review
+-- round 4 / a slice of the durable-sessions workstream). Mirrors the Redis
+-- `s:<C>:kicked` set into Postgres so /api/me/sessions can exclude kicked
+-- moments in SQL — exact home counts + lists without a per-row Redis SISMEMBER.
+--
+-- NULL = active member; 'kicked' = kick-KEEP (row survives, user is out).
+-- Kick-delete/ban DELETE the row, so they never carry a value. Written by
+-- lib/sessionWipe.ts; cleared on rejoin in the join route.
+--
+-- Additive + non-destructive: new nullable column, no default backfill needed.
+-- Any kick-keep row that predates this column reads NULL (active) — accepted:
+-- the source lived only in Redis `s:<C>:kicked`, which expires with the session,
+-- so pre-migration kicks are unrecoverable (and rare — the prod dump has none).
+ALTER TABLE "session_members" ADD COLUMN "removed_state" VARCHAR(16);

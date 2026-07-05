@@ -152,10 +152,68 @@ async function throwApiError(res: Response): Promise<never> {
   throw new ApiError('http', res.status, msg);
 }
 
-export async function getMySessions(): Promise<MySessionRow[]> {
+// Home screen (index.tsx) — the UNFILTERED recent page + carousel. No params =
+// the server's 50 most-recently-active rows, activity-sorted for the carousel.
+// `upcomingTotal`/`recentTotal` are the TRUE full-history bucket counts (from
+// response headers), so the home nav rows gate on real totals — not the capped
+// 50-row page (a user whose only upcoming moment is older than their 50 most
+// recent would otherwise see no Upcoming row and couldn't reach the list).
+export type MySessionsResult = {
+  rows: MySessionRow[];
+  upcomingTotal: number;
+  recentTotal: number;
+};
+
+export async function getMySessions(): Promise<MySessionsResult> {
   const res = await apiFetch('/api/me/sessions');
   if (!res.ok) await throwApiError(res);
-  return res.json();
+  const rows = (await res.json()) as MySessionRow[];
+  // Fall back to the page-derived count if a header is absent (older server) —
+  // never worse than the pre-header behavior.
+  const upNum = Number(res.headers.get('X-Upcoming-Total'));
+  const reNum = Number(res.headers.get('X-Recent-Total'));
+  const pageUpcoming = rows.filter((r) => r.status === 'upcoming').length;
+  const upcomingTotal = Number.isFinite(upNum) && res.headers.get('X-Upcoming-Total') !== null ? upNum : pageUpcoming;
+  const recentTotal = Number.isFinite(reNum) && res.headers.get('X-Recent-Total') !== null ? reNum : rows.length - pageUpcoming;
+  return { rows, upcomingTotal, recentTotal };
+}
+
+// Server-side filtered + paginated moments (recents.tsx). The server owns
+// search/facets/order (moments-server-filtering.md Part B); the client passes
+// the query + filter params and pages on the opaque cursor. `tense` picks the
+// list: 'upcoming' (future-start, soonest-first) vs 'past' (everything else,
+// newest-first). Roles/hosts/people are comma-joined multi-selects.
+export type MomentQuery = {
+  tense: 'upcoming' | 'past';
+  q?: string;
+  roles?: string[];
+  hosts?: string[];
+  people?: string[];
+  category?: string; // 'wine' | undefined (any)
+  from?: string | null; // YYYY-MM-DD inclusive
+  to?: string | null;
+  cursor?: string | null;
+  limit?: number;
+};
+
+export type MomentPage = { rows: MySessionRow[]; nextCursor: string | null };
+
+export async function getMomentsPage(query: MomentQuery): Promise<MomentPage> {
+  const p = new URLSearchParams();
+  p.set('tense', query.tense);
+  if (query.q?.trim()) p.set('q', query.q.trim());
+  if (query.roles?.length) p.set('roles', query.roles.join(','));
+  if (query.hosts?.length) p.set('hosts', query.hosts.join(','));
+  if (query.people?.length) p.set('people', query.people.join(','));
+  if (query.category && query.category !== 'any') p.set('category', query.category);
+  if (query.from) p.set('from', query.from);
+  if (query.to) p.set('to', query.to);
+  if (query.cursor) p.set('cursor', query.cursor);
+  if (query.limit) p.set('limit', String(query.limit));
+  const res = await apiFetch(`/api/me/sessions?${p.toString()}`);
+  if (!res.ok) await throwApiError(res);
+  const rows = (await res.json()) as MySessionRow[];
+  return { rows, nextCursor: res.headers.get('X-Next-Cursor') };
 }
 
 export async function getSessionState(code: string): Promise<SessionState> {

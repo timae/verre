@@ -47,12 +47,21 @@ export default async function JoinPage({
   // earlier Redis-users-set check was display-name based and incorrectly
   // matched two distinct users sharing a display name, silently bouncing
   // the second one into the session without going through the join flow.
+  //
+  // EXCEPTION — a KICKED member (kick-keep leaves the row with
+  // removed_state='kicked') must NOT be blind-redirected: they'd land on
+  // /visit, get bounced with ?removed=1, and the RemovedView only offers
+  // Keep/Delete — so the join POST (the sole path that clears removed_state +
+  // the Redis kicked marker) would never run and the moment would stay
+  // durably hidden from their Moments home. Fall through to <JoinClient> so
+  // clicking the invite link genuinely re-joins them and clears the flag —
+  // the documented "rejoin by code/link" contract (docs/dev/kick-ban.md).
   if (session?.user?.id && C && sessionMeta) {
     try {
       const member = await prisma.sessionMember.findUnique({
         where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
       })
-      if (member) redirect(sessionPath(C))
+      if (member && member.removedState !== 'kicked') redirect(sessionPath(C))
     } catch {}
   }
 

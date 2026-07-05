@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
+import { prisma } from '@/lib/prisma'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { validateDisplayName } from '@verre/core'
@@ -82,8 +83,17 @@ export async function POST(req: NextRequest) {
       displayName = await disambiguateDisplayName(c, displayName)
       await recordIdentity(c, { id: identityId, displayName, kind: 'user' })
     }
-    // Clear any prior kicked-marker so this rejoin starts clean.
+    // Clear any prior kicked-marker so this rejoin starts clean — Redis AND
+    // the durable Postgres mirror. The PG reset MUST live here (not in /visit):
+    // /visit's session_members upsert is create-only (`update: {}` to preserve
+    // the role snapshot), so it would NOT clear a surviving kick-keep row's
+    // removed_state. Scoped to this exact (user, session) row; a no-op if no
+    // row exists yet (first-ever join writes it fresh on the next /visit).
     await redis.sRem(k.kicked(c), identityId)
+    await prisma.sessionMember.updateMany({
+      where: { userId: Number(session!.user!.id), sessionCode: c, removedState: 'kicked' },
+      data: { removedState: null },
+    })
   } else {
     displayName = await disambiguateDisplayName(c, displayName)
     identityId = newAnonIdentityId()
