@@ -223,7 +223,7 @@ export function SelectField({
 // seed exists only inside the sheet and commits only on Done; swipe-dismiss
 // discards.
 export function DateField({
-  label, value, onChange, defaultValue, minimumDate, maximumDate,
+  label, value, onChange, defaultValue, minimumDate, maximumDate, mode = 'datetime',
 }: {
   label: string;
   value: Date | null;
@@ -235,19 +235,26 @@ export function DateField({
   // the UX guard.
   minimumDate?: Date;
   maximumDate?: Date;
+  // 'datetime' (default) for moment creation (a tasting has a start time);
+  // 'date' for the moments FILTER, which is a whole-day window — Simon's ruling
+  // (no time). Drives the picker mode + the displayed value format.
+  mode?: 'datetime' | 'date';
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [draft, setDraft] = useState<Date | null>(null); // non-null while the sheet is open
+  // Date-only display for the filter (mode='date'); date+time for creation.
+  const fmt = (d: Date) =>
+    mode === 'date' ? d.toLocaleDateString(DATE_LOCALE, { weekday: 'short', day: 'numeric', month: 'short' }) : formatWhen(d);
   return (
     <View style={{ flex: 1, gap: 7 }}>
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`${label} date and time`}
-        accessibilityValue={{ text: value ? formatWhen(value) : 'not set' }}
+        accessibilityLabel={mode === 'date' ? `${label} date` : `${label} date and time`}
+        accessibilityValue={{ text: value ? fmt(value) : 'not set' }}
         onPress={() => {
           // Seed the picker, clamped into [min, max] so it never opens on an
           // out-of-range value (which the OS picker would otherwise snap).
@@ -269,7 +276,7 @@ export function DateField({
         })}
       >
         <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
-          {value ? formatWhen(value) : 'Optional'}
+          {value ? fmt(value) : 'Optional'}
         </VText>
         {value ? (
           <Pressable
@@ -327,7 +334,7 @@ export function DateField({
             {draft ? (
               <DateTimePicker
                 value={draft}
-                mode="datetime"
+                mode={mode}
                 display="inline"
                 accentColor={theme.accent}
                 minimumDate={minimumDate}

@@ -508,8 +508,8 @@ function FilterSheet({
             {/* Whole days — the moment's shown date (or its created date when no
                 date is set, matching the list order). */}
             <View style={{ flexDirection: 'row', gap: 12 }}>
-              <DateField label="From" value={filters.from} onChange={(d) => onChange({ ...filters, from: d })} defaultValue={() => new Date()} maximumDate={filters.to ?? undefined} />
-              <DateField label="To" value={filters.to} onChange={(d) => onChange({ ...filters, to: d })} defaultValue={() => new Date()} minimumDate={filters.from ?? undefined} />
+              <DateField label="From" mode="date" value={filters.from} onChange={(d) => onChange({ ...filters, from: d })} defaultValue={() => new Date()} maximumDate={filters.to ?? undefined} />
+              <DateField label="To" mode="date" value={filters.to} onChange={(d) => onChange({ ...filters, to: d })} defaultValue={() => new Date()} minimumDate={filters.from ?? undefined} />
             </View>
           </View>
           <View style={{ gap: 10 }}>
