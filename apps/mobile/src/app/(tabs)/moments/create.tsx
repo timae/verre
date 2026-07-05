@@ -11,7 +11,7 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
-import { DateField, Disclosure, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
+import { DateField, Disclosure, NotesField, nextFullHour, pickPhoto } from '@/components/moments/momentForm';
 import { ToggleRow } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -75,7 +75,7 @@ export default function CreateMoment() {
 
   const onPickCover = async () => {
     setCoverError(null);
-    const picked = await pickCover();
+    const picked = await pickPhoto();
     if (!picked) return; // user cancelled
     if ('failed' in picked) {
       setCoverError("Couldn't use that photo — try another.");

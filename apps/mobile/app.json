@@ -41,7 +41,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Verre uses your photo library to add cover photos to your moments.",
-          "cameraPermission": false,
+          "cameraPermission": "Verre uses your camera to take photos for your moments and wines.",
           "microphonePermission": false
         }
       ],

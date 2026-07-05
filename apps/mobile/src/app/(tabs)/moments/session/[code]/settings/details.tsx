@@ -8,7 +8,7 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { DateField, NotesField, nextFullHour, pickCover } from '@/components/moments/momentForm';
+import { DateField, NotesField, nextFullHour, pickPhoto } from '@/components/moments/momentForm';
 import { GlassButton, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
 import {
   ApiError,
@@ -77,7 +77,7 @@ function DetailsForm({
 
   const onPickCover = async () => {
     setCoverError(null);
-    const picked = await pickCover();
+    const picked = await pickPhoto();
     if (!picked) return;
     if ('failed' in picked) {
       setCoverError("Couldn't use that photo — try another.");
