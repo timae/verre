@@ -154,6 +154,12 @@ dead ends):**
   hero cards, the line-up cover) → read `docs/design/patterns/collapsing-hero-sticky-subheaders.md`
   FIRST. It has the Dynamic Overlay recipe + the 4 approaches that FAIL (cost ~5
   attempts). Bars over scrolling content are opaque — `docs/design/decisions/0003`.
+- **Dropping in a native OS component** (a `@react-native-community` picker, the
+  native stack back-gesture, any UIKit-backed control) that looks wrong on a dark
+  theme or whose gesture fights the app → read
+  `docs/design/patterns/native-component-theming-gotchas.md`. Covers the
+  `themeVariant={theme.scheme}` picker-legibility fix and the
+  `gestureResponseDistance` edge-back-vs-slider fix.
 
 **Existing shared primitives (the canonical things — reuse these).** Paths below
 are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
@@ -489,3 +495,25 @@ names in `src/lib/api/sessions.ts`.
     shows `vero.app/j/<code>`: the real web route is `/join/<code>`, no `/j/`.)
 - Typecheck: `npm run typecheck -w mobile`. Root `tsconfig.json` excludes
   `apps/` — the app typechecks with its own config only.
+
+## Deferred Android work
+
+The app ships **iOS-first**; a handful of surfaces used an iOS-only native
+primitive and left an explicit Android gap to close when Android is tackled. One
+place to look before doing Android work:
+
+- **Photo source chooser (camera vs library).** `pickPhoto` in
+  `components/moments/momentForm.tsx` shows a native **`ActionSheetIOS`**
+  ("Take Photo" / "Choose from Library"), which is iOS-only. On Android it falls
+  back to the library picker directly — **no camera option yet**. To close:
+  build an Android source-chooser (a brand `AnchoredMenu`, an
+  `@expo/ui/jetpack-compose` menu, or a small custom sheet) that offers
+  `pickFromCamera` alongside `pickCover`. The camera helper + the byte-cap
+  pipeline are already platform-neutral; only the *chooser UI* is iOS-gated.
+  Camera permission string is already in `app.json` (`cameraPermission`).
+- **Moments-home "Remove from home" context menu.** Uses `@expo/ui/swift-ui`
+  `ContextMenu` (iOS-only, see the `@expo/ui` note above). Android needs the
+  `@expo/ui/jetpack-compose` equivalent or a fallback long-press affordance.
+
+General rule: an iOS-only native primitive must leave a working (if reduced)
+Android path AND a line here, so Android is a known punch-list, not a surprise.

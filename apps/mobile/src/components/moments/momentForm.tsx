@@ -1,7 +1,7 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useState, useRef } from 'react';
-import { Keyboard, type LayoutChangeEvent, Modal, Pressable, TextInput, View } from 'react-native';
+import { ActionSheetIOS, Keyboard, type LayoutChangeEvent, Modal, Platform, Pressable, TextInput, View } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -162,21 +162,59 @@ export async function fitCover(uri: string, srcW: number, srcH: number, maxBytes
   return null;
 }
 
-// Launches the photo library, fits the result. Returns the picked image (data
-// URL + the original asset uri for an immediate local preview) or null on
-// cancel/failure; `failed` distinguishes a real failure (show an error) from a
-// user cancel (do nothing). `maxBytes` defaults to the cover cap; the
-// impression form passes MAX_WINE_IMAGE_BYTES (see fitCover).
-export async function pickCover(maxBytes = MAX_COVER_BYTES): Promise<{ dataUrl: string; previewUri: string } | null | { failed: true }> {
-  const result = await ImagePicker.launchImageLibraryAsync({
-    mediaTypes: ['images'],
-    quality: 1, // full quality from the picker; fitCover does the compression
-  }).catch(() => null);
-  const asset = result && !result.canceled ? result.assets[0] : null;
+// Shared result shape for both photo sources. `failed` distinguishes a real
+// failure (show an error) from a plain cancel/no-permission (null → do nothing).
+export type PickedPhoto = { dataUrl: string; previewUri: string };
+type PickResult = PickedPhoto | null | { failed: true };
+
+// Fit an already-picked asset into the surface's byte cap. Shared tail of the
+// gallery + camera paths so the fit/return logic lives in one place.
+async function fitPickedAsset(asset: ImagePicker.ImagePickerAsset | undefined, maxBytes: number): Promise<PickResult> {
   if (!asset?.uri) return null;
   const dataUrl = await fitCover(asset.uri, asset.width ?? 1200, asset.height ?? 1200, maxBytes);
   if (!dataUrl) return { failed: true };
   return { dataUrl, previewUri: asset.uri };
+}
+
+// Launches the photo LIBRARY, fits the result. `maxBytes` defaults to the cover
+// cap; the impression form passes MAX_WINE_IMAGE_BYTES (see fitCover).
+export async function pickCover(maxBytes = MAX_COVER_BYTES): Promise<PickResult> {
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    quality: 1, // full quality from the picker; fitCover does the compression
+  }).catch(() => null);
+  return fitPickedAsset(result && !result.canceled ? result.assets[0] : undefined, maxBytes);
+}
+
+// Launches the CAMERA, fits the result. Requests camera permission first; a
+// denied permission returns null (a plain "not now", not a failure). Needs the
+// cameraPermission usage string in app.json (NSCameraUsageDescription).
+export async function pickFromCamera(maxBytes = MAX_COVER_BYTES): Promise<PickResult> {
+  const perm = await ImagePicker.requestCameraPermissionsAsync().catch(() => null);
+  if (!perm?.granted) return null;
+  const result = await ImagePicker.launchCameraAsync({
+    mediaTypes: ['images'],
+    quality: 1,
+  }).catch(() => null);
+  return fitPickedAsset(result && !result.canceled ? result.assets[0] : undefined, maxBytes);
+}
+
+// One entry point for "add a photo": on iOS a native ActionSheet lets the user
+// choose Take Photo vs Choose from Library, each routing to the matching picker.
+// Off iOS (Android — deferred, see apps/mobile/CLAUDE.md "Deferred Android
+// work") there is no ActionSheetIOS; fall back to the library picker directly
+// until an Android source-chooser is built. Callers use this instead of
+// pickCover so the source choice is centralised.
+export async function pickPhoto(maxBytes = MAX_COVER_BYTES): Promise<PickResult> {
+  if (Platform.OS !== 'ios') return pickCover(maxBytes);
+  const choice = await new Promise<'camera' | 'library' | 'cancel'>((resolve) => {
+    ActionSheetIOS.showActionSheetWithOptions(
+      { options: ['Take Photo', 'Choose from Library', 'Cancel'], cancelButtonIndex: 2 },
+      (i) => resolve(i === 0 ? 'camera' : i === 1 ? 'library' : 'cancel'),
+    );
+  });
+  if (choice === 'cancel') return null;
+  return choice === 'camera' ? pickFromCamera(maxBytes) : pickCover(maxBytes);
 }
 
 // From/To — brand .field box, EMPTY by default (our own field can render
@@ -337,6 +375,15 @@ export function DateField({
                 mode={mode}
                 display="inline"
                 accentColor={theme.accent}
+                // Match the OS picker chrome to the active theme: without this
+                // the inline calendar renders in the OS default appearance
+                // (light — black numerals) on top of the dark theme.surface
+                // sheet, so day/weekday text is near-illegible on the dark
+                // themes (cobalt). themeVariant tracks the theme's own scheme so
+                // light themes (apricot/mauve) stay light. textColor pins the
+                // numerals to the theme ink for the surfaces the lib exposes it.
+                themeVariant={theme.scheme}
+                textColor={theme.ink}
                 minimumDate={minimumDate}
                 maximumDate={maximumDate}
                 onValueChange={(_e, d) => { if (d) setDraft(d); }}

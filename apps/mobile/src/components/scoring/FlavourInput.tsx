@@ -1,6 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { useRef, useState } from 'react';
 import { View } from 'react-native';
+import Svg, { Path } from 'react-native-svg';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import {
   resolveAxes,
@@ -44,6 +45,12 @@ import { radius, useTheme } from '@/theme';
 // perRatingAxes render (absent → no wedge; present-and-0 → centre point).
 
 const TRACK_H = 38;
+const TRACK_H_COMFORT = 44; // Pro-Max-class device height (phone.lerp by comfort)
+// Left-edge "fill this way" triangle affordance (see FillTrack). Rounded SVG.
+// Near-full track height, kept slim so it doesn't reach the label inset (13).
+const TRI_W = 9;
+const TRI_H = 30;
+const TRI_H_COMFORT = 35;
 // Left inset of the axis label inside the track (.ft-name padding-left). The
 // `sub` caption centers under the label word using this + the measured label width.
 const LABEL_INSET = 13;
@@ -137,6 +144,14 @@ function FillTrack({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // Track + triangle height scale on BOTH axes: device size (phone.lerp by
+  // `comfort` — a Pro Max gets the taller value, an SE the base) AND text size
+  // (the compactList surface floors at 1× and grows with Dynamic Type, capped
+  // 1.35×, so enlarged labels never clip the fixed box). Base→comfort pairs
+  // mirror the PHONE_SIZE token convention.
+  const listSurface = phone.surface('compactList');
+  const trackH = listSurface.height(phone.lerp(TRACK_H, TRACK_H_COMFORT));
+  const triH = listSurface.height(phone.lerp(TRI_H, TRI_H_COMFORT));
   const [trackW, setTrackW] = useState(0);
   const levelRef = useRef(level);
   levelRef.current = level;
@@ -158,7 +173,9 @@ function FillTrack({
   };
 
   // Pan claims the gesture once movement is clearly horizontal; a clearly
-  // vertical drag fails to the parent ScrollView. Mirrors ScoreInput.
+  // vertical drag fails to the parent ScrollView. Mirrors ScoreInput. The fill
+  // jumps in whole steps as the finger moves (stepped, not a smooth glide — the
+  // smooth version felt off, Simon).
   const pan = Gesture.Pan()
     .runOnJS(true)
     .activeOffsetX([-6, 6])
@@ -211,16 +228,56 @@ function FillTrack({
             onSet(Math.max(0, Math.min(FLAVOUR_MAX, levelRef.current + dir)));
           }}
           style={{
-            height: TRACK_H,
+            height: trackH,
             borderRadius: radius.sm,
             backgroundColor: theme.surfaceSunk,
+            // 1px border so the EMPTY track reads as an input field on every
+            // theme — surfaceSunk sits close to bg/surface on several themes
+            // (cobalt), where a borderless empty track dissolves into the page
+            // (user feedback: "can't tell it's a slider / the 0-tint is
+            // invisible"). The container border renders OVER the absolute fill
+            // at the edges (overflow: hidden clips the fill to this radius), so
+            // one border works filled or empty. Mirrors the design's other
+            // inputs (.vslider track) which already carry `border: 1px rule`.
+            borderWidth: 1,
+            borderColor: theme.rule,
             overflow: 'hidden',
             flexDirection: 'row',
             alignItems: 'center',
           }}
         >
+          {/* Left-edge triangle affordance — points right (the fill direction),
+              in the AXIS FILL COLOUR so an empty track previews what a tap will
+              add. Flush to the left border. Declared BEFORE the fill so the fill
+              (a later, same-colour sibling starting at left:0) paints seamlessly
+              OVER it: on an EMPTY track (fill width 0) it's a visible "start
+              here, fill this way" cue; at level ≥1 it merges into the fill (user
+              feedback: "not clear you can slide it"). SVG (not the border trick)
+              so the corners can round: a filled wedge + a round-joined stroke of
+              the same colour softens the tips. It sits at the left edge, BEFORE
+              the label's inset, so the label never moves empty↔filled (no
+              reflow). */}
+          <View
+            pointerEvents="none"
+            style={{ position: 'absolute', left: 0, top: trackH / 2 - triH / 2 - 1 }}
+          >
+            <Svg width={TRI_W} height={triH} viewBox="0 0 9 30">
+              {/* right-pointing triangle inset ~2px so the round stroke stays in-canvas */}
+              <Path
+                d="M2 2 L8 15 L2 28 Z"
+                fill={color}
+                stroke={color}
+                strokeWidth={2}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+            </Svg>
+          </View>
           {/* .fill — axis colour, width = level/5. Whole-step jumps (no width
-              tween) — matches ScoreInput's plain-View fill; crisper per tap. */}
+              tween) — matches ScoreInput's plain-View fill; crisper per tap. A
+              minWidth floor keeps a few px of colour showing at level 0 (a
+              resting "this fills" cue); at level ≥1 the % already exceeds it, so
+              the floor only affects the empty state. */}
           <View
             style={{
               position: 'absolute',
@@ -242,33 +299,8 @@ function FillTrack({
           >
             {axis.l}
           </VText>
-          {/* .ft-word — intensity word, right, over the fill. */}
-          <VText surface="compactList" numberOfLines={1} style={{ marginLeft: 'auto', marginRight: 13, ...labelStyle }}>
-            {intensityWord(level)}
-          </VText>
         </View>
       </GestureDetector>
-      {/* Disambiguating caption ("Smell" under Aroma, "Taste" under Flavour),
-          left-aligned to the same inset as the label word. On the page ground so
-          it needs no halo. The negative marginBottom pulls the next row up so the
-          caption eats into the rowGap rather than stacking on top — the row grows
-          only slightly. Only Aroma/Flavour carry `sub` (§6f). */}
-      {axis.sub ? (
-        <VText
-          variant="caption"
-          color="inkSoft"
-          numberOfLines={1}
-          style={{
-            marginTop: 4,
-            marginBottom: -10,
-            marginLeft: LABEL_INSET,
-            lineHeight: 12,
-            textTransform: 'capitalize',
-          }}
-        >
-          {axis.sub}
-        </VText>
-      ) : null}
     </View>
   );
 }

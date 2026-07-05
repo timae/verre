@@ -15,10 +15,11 @@
 // subtitle. Each platform joins its own colour onto `k`.
 
 // One axis definition. `k` is the JSON key in ratings.flavors; `l` is the
-// label; `sub` is an optional plain-language subtitle read ONLY by the rating
-// INPUT chip (FlavorChips) — the wheel renderers ignore it, so adding it keeps
-// "renderers untouched" literally true (proposal §6f / §10 #12). No colour
-// here — see the module header.
+// label. `sub` (optional plain-language subtitle) is currently UNUSED — no axis
+// sets it since Aroma/Flavour became the direct labels Smell/Taste. Kept on the
+// type because the web rate renderers (FlavorChips, RatingPane) still read
+// `item.sub` defensively; with no axis providing it they render nothing. No
+// colour here — see the module header.
 export type StructureAxis = { k: string; l: string; sub?: string }
 
 // Drink categories own their own complete axis set; `style` only refines within
@@ -33,15 +34,19 @@ export type WineStyle = 'red' | 'white' | 'rose' | 'spark' | 'nonalc'
 // `spark` appends Bubbles (see WINE_SPARK below). Order is presentational
 // (wedge position) and locks once data ships (proposal §1 axis-order note).
 //
-// Aroma/Flavour carry plain-language subtitles on the INPUT chip only, to
-// disambiguate "Aroma = smell" / "Flavour = taste" (proposal §6f / §10 #12).
+// Aroma/Flavour are labelled directly as the plain-language "Smell"/"Taste"
+// (Simon's ruling): the label IS the disambiguation, so the separate `sub`
+// caption is dropped. NOTE: the JSON keys stay `aroma`/`flavour` — they are
+// stored in ratings.flavors and in the colour palette's key map
+// (theme/flavourColors.ts KEY_TO_LABEL + palette.js labels 'Aroma'/'Flavour'),
+// so ONLY the display label `l` changed here, never `k`.
 const WINE_BASE: StructureAxis[] = [
   { k: 'sweet',   l: 'Sweet' }, // short label: 'Sweetness' (9ch) clipped at a side wheel cardinal past PolarChart's viewBox pad
   { k: 'acid',    l: 'Acidity' },
   { k: 'body',    l: 'Body' },
   { k: 'finish',  l: 'Finish' },
-  { k: 'aroma',   l: 'Aroma',   sub: 'smell' },
-  { k: 'flavour', l: 'Flavour', sub: 'taste' },
+  { k: 'aroma',   l: 'Smell' },
+  { k: 'flavour', l: 'Taste' },
   { k: 'tannin',  l: 'Tannin' },
 ]
 

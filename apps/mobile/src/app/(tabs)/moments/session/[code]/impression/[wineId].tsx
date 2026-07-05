@@ -20,7 +20,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros } from '@verre/core';
 import { FlavourInput } from '@/components/scoring/FlavourInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
-import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, AnchorButton, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -43,6 +43,7 @@ import {
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
+import { INTENSITY } from '@/lib/scoreWords';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -296,6 +297,10 @@ export default function ImpressionDetail() {
   // ⋯ menu — the shared AnchoredMenu (.ir-menu dropdown; Simon's ruling: the
   // brand menu, not the native action sheet). Anchored to the measured ⋯ button.
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+  // Intensity-scale help bubble — the ⓘ by "Add tasting detail". The scale
+  // legend + "tap or drag" hint moved OFF each track (they crowded the fill and
+  // read as confusing per-track labels) into one anchored panel learned once.
+  const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   const clearRating = () => {
     seededFor.current = wineId; // an edit — a late seed must not undo it
     setScore(0);
@@ -402,20 +407,42 @@ export default function ImpressionDetail() {
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
       {!blind ? <AboutBlock wine={wine} /> : null}
       <ScoreInput value={score} onChange={editScore} />
-      {/* .ir-detail-toggle + panel — the adaptive "Add tasting detail" */}
-      <Pressable
-        onPress={() => setDetailOpen((o) => !o)}
-        style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 16 }}
-      >
-        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
-          {detailOpen ? 'Tasting detail' : 'Add tasting detail'}
-        </VText>
-        <View style={{ transform: [{ rotate: detailOpen ? '180deg' : '0deg' }] }}>
+      {/* .ir-detail-toggle + panel — the adaptive "Structure profile". The ⓘ
+          (open only) sits as a SIBLING of the toggle Pressable, not nested —
+          nested Pressables fight for the touch responder. It opens the
+          intensity-scale reference (numbered 0–5). */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 16 }}>
+        <Pressable
+          onPress={() => setDetailOpen((o) => !o)}
+          style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
+        >
+          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
+            {detailOpen ? 'Structure Profile' : 'Add Structure Profile'}
+          </VText>
+        </Pressable>
+        {detailOpen ? (
+          <AnchorButton
+            icon="info"
+            iconColor={theme.inkSoft}
+            accessibilityLabel="Intensity scale"
+            onOpen={setInfoAnchor}
+          />
+        ) : null}
+        <Pressable
+          onPress={() => setDetailOpen((o) => !o)}
+          hitSlop={8}
+          style={{ marginLeft: 4, transform: [{ rotate: detailOpen ? '180deg' : '0deg' }] }}
+        >
           <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-        </View>
-      </Pressable>
+        </Pressable>
+      </View>
       {detailOpen ? (
-        <View style={{ gap: 18 }}>
+        <View style={{ gap: 14 }}>
+          {/* Short "what to do" line under the title (always visible when open);
+              the numbered scale lives in the ⓘ bubble beside the title. */}
+          <VText variant="small" color="inkSoft" style={{ marginTop: -10 }}>
+            Tap or drag each track to set the intensity you perceive.
+          </VText>
           {/* .filltrack per-attribute intensity grid — structure axes for this
               wine's style, colour from the active theme. Shown on blind wines
               too: `type` (the STYLE) is NOT masked by redaction — a taster
@@ -434,8 +461,17 @@ export default function ImpressionDetail() {
   return (
     <View style={{ flex: 1 }}>
       {/* Previous replaces with the pop animation so the slide reads as
-          going back; next keeps push. */}
-      <Stack.Screen options={{ animationTypeForReplace: navDir === 'prev' ? 'pop' : 'push' }} />
+          going back; next keeps push. gestureResponseDistance narrows the iOS
+          edge-back zone to the true left edge (15pt) — the structure-profile
+          fill-tracks start ~20pt in and a leftward drag on the left column kept
+          triggering an accidental back-pop (the OS default edge zone is wider).
+          Back-swipe from the very edge still works. iOS-only option. */}
+      <Stack.Screen
+        options={{
+          animationTypeForReplace: navDir === 'prev' ? 'pop' : 'push',
+          gestureResponseDistance: { start: 15 },
+        }}
+      />
       {/* Always rendered: expo-status-bar doesn't restore on unmount, so a
           photo→no-photo sibling swap must explicitly reassert the theme
           style. Over the hero (pre-solid) the bar is white. */}
@@ -579,6 +615,27 @@ export default function ImpressionDetail() {
             <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete impression" tone="danger" onPress={confirmDeleteImpression} />
           </>
         ) : null}
+      </AnchoredMenu>
+      {/* Intensity-scale reference — the numbered 0–5 levels, one per row. The
+          interaction hint moved to the inline line under the title; this bubble
+          is purely the scale legend the ⓘ opens. */}
+      <AnchoredMenu anchor={infoAnchor} onClose={() => setInfoAnchor(null)} right={16} minWidth={180}>
+        <View style={{ paddingHorizontal: 10, paddingVertical: 6, gap: 5 }}>
+          <VText variant="small" style={{ color: theme.ink, fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 3 }}>
+            Perceived Intensity
+          </VText>
+          {INTENSITY.map((word, i) => (
+            <View key={word} style={{ flexDirection: 'row', alignItems: 'baseline' }}>
+              <VText
+                variant="small"
+                style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold', width: 18, fontVariant: ['tabular-nums'] }}
+              >
+                {i}
+              </VText>
+              <VText variant="small" style={{ color: theme.ink }}>{word}</VText>
+            </View>
+          ))}
+        </View>
       </AnchoredMenu>
     </View>
   );

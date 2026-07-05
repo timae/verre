@@ -13,7 +13,7 @@ import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickCover, SelectField } from '@/components/moments/momentForm';
+import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, reorderWines, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { fuzzyIncludes } from '@/lib/search';
@@ -168,7 +168,7 @@ export function ImpressionForm({
 
   const onPickPhoto = async () => {
     setPhotoError(null);
-    const picked = await pickCover(MAX_WINE_IMAGE_BYTES);
+    const picked = await pickPhoto(MAX_WINE_IMAGE_BYTES);
     if (!picked) return; // cancelled
     if ('failed' in picked) {
       setPhotoError("Couldn't use that photo — try another.");
