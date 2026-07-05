@@ -1707,16 +1707,6 @@ function AddImpressionRow({ onPress }: { onPress: () => void }) {
   );
 }
 
-function ratersFor(wineId: string, ratings: RatingsView | null): number {
-  if (!ratings) return 0;
-  let n = 0;
-  for (const entry of Object.values(ratings)) {
-    const r = entry.ratings[wineId];
-    if (r && r.score > 0) n += 1;
-  }
-  return n;
-}
-
 // .lurow: idx · thumb · name/vintage + maker + style · score/rated column.
 // The whole row opens the impression detail (02e); unrated rows carry the
 // .lu-rate pill, rated rows the one-star score chip.
@@ -1749,7 +1739,6 @@ function LuRow({
   const compact = phone.surface('compactList');
   const badge = phone.surface('badge');
   const myScore = ratings?.[myIdentityId]?.ratings[wine.id]?.score ?? 0;
-  const raters = ratersFor(wine.id, ratings);
   const { hostRevealUi, revealBusy } = reveal;
   const armed = reveal.armedId === wine.id;
   const revealedToGuests = !!wine.revealedAt;
@@ -1944,7 +1933,7 @@ function LuRow({
         // .lu-right2: score chip when rated, .lu-rate pill when not
         <View style={{ alignItems: 'flex-end', gap: 4 }}>
           {myScore > 0 ? (
-            <StarScore value={myScore} />
+            <StarScore value={myScore} size={18} />
           ) : (
             <View
               style={{
@@ -1960,9 +1949,6 @@ function LuRow({
               </VText>
             </View>
           )}
-          {raters > 0 ? (
-            <VText surface="badge" variant="caption" color="inkFaint">{`Rated by ${raters}`}</VText>
-          ) : null}
         </View>
       )}
     </Pressable>
