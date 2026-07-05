@@ -32,6 +32,23 @@ A 3-way bucket. Mutually exclusive: a moment is in exactly one list.
 - The **Upcoming** list shows `=== 'upcoming'`.
 - Precedence: `upcoming` (future start) beats `live`; else `live`; else `past`.
 
+> **Server-filtered lists split on DATE tense, not Redis-aware `status`**
+> (moments-server-filtering.md Part B, Simon 2026-07-05). The home screen's
+> carousel + Upcoming/Recent **preview counts** still route on the per-row
+> `status` above (Redis-aware). But the **paginated `recents.tsx` lists** are
+> served by `GET /api/me/sessions?tense=upcoming|past`, whose split is a
+> SQL-expressible date predicate: `upcoming` = `date_from > NOW()`, `past` =
+> everything else. It can't consult Redis TTL / live participation, so a
+> future-dated moment stays in Upcoming *by its date* even if Redis expired —
+> which is the INTENDED behaviour: a registered user's presence elevates a
+> moment to unlimited lifespan, so "Redis expired" is not a demotion signal for
+> rows that reach this endpoint (they're all the caller's own memberships). The
+> narrow disagreement (a per-row `status` of `'past'` on a future-dated row) is
+> invisible: `recents.tsx` renders only date/name/host/role, nothing off
+> `status`. **Kicked moments are dropped entirely** from every list + the
+> carousel (see the kick-drop note in kick-ban.md / the route) — a kicked user
+> doesn't see the moment at all until they rejoin.
+
 ### 2. `pinned: boolean` — drives the CAROUSEL alone
 
 **INDEPENDENT of `status`.** The carousel is a promotion layered on top of the

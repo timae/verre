@@ -9,6 +9,7 @@
 | `/api/me/visibility` GET | 60/min/user |
 | `/api/me/visibility` PATCH (outer) | 60/min/user |
 | `/api/me/visibility` PATCH (inner) | 30/h/user (on actual change) |
+| `/api/me/sessions` GET (`q` or `people` only) | 30/min/user (`rl:moments-search`) |
 | `/api/me/mutes/:id` POST+DELETE | 60/h/user (shared) |
 | `/api/me/blocks/:id` POST | 30/h/user |
 | `/api/me/blocks/:id` DELETE | uncapped |
@@ -34,6 +35,7 @@
 - **Avatar POST**: storage abuse via a stolen session cookie. DELETE is currently uncapped (`app/api/me/avatar/route.ts` has no `checkRate` call on DELETE) — flag for review if abuse appears, but DELETE is idempotent and reclaims S3 rather than consuming it.
 - **Visibility GET / PATCH (outer)**: read-side noise + general burst protection. Distinct counters per HTTP method.
 - **Visibility PATCH (inner)**: stolen-cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-`checkRate`-on-change so no-op submits don't burn slots.
+- **Sessions GET (`q`/`people`)**: charged ONLY when the caller sends the two genuinely-expensive params — the `pg_trgm` `word_similarity` search (`q`) or the per-friend correlated `EXISTS` (`people`). The OTHER filter params (`tense`/`roles`/`hosts`/`category`/date/`cursor`/`limit`) are plain indexed WHEREs + keyset paging, no costlier than the unfiltered carousel read — and since the client ALWAYS sends `tense` for Recent/Upcoming, charging on "any filter param" would throttle ordinary browsing (open list → scroll → each page a request) against a search-compute cap. So the gate is `q`/`people`, not "filtered". Capped like `/api/users/search`; blast radius smaller (every query is `sm.user_id = me`-scoped, only the caller's own sessions), so 30/min is generous. The unfiltered carousel read (home hot path, every focus) stays uncapped.
 - **Mutes POST+DELETE**: stolen cookie thrashing the table or generating noise. Shared.
 - **Blocks POST**: stolen-cookie burst-blocking. DELETE intentionally **uncapped** — recovery path from a burst-block attack must always stay open.
 - **Session POST**: code-space exhaustion (8-char Crockford, but mass enumeration would crowd legitimate creates). The create-time cover upload rides this same 10/10min counter (one create = at most one cover), so it needs no separate limit.

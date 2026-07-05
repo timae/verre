@@ -98,6 +98,135 @@ behavior (the home carousel keeps its unfiltered recent page).
   of showing all friends (server decides matches anyway). The home screen
   (carousel + Upcoming/Recent rows) is untouched.
 
+**As-built (2026-07-05, Part B shipped):**
+- **Contract:** `GET /api/me/sessions?tense&q&roles&hosts&people&category&from&to&cursor&limit`.
+  No params → today's behavior verbatim (50 most-recently-active rows, JS
+  activity re-sort for the carousel, bare-array body). Any param flips to
+  PAGINATED mode. `nextCursor` rides an **`X-Next-Cursor` response header**, not
+  the body — so the body stays a bare array in both modes (the home screen
+  consumes the array shape directly; only `recents.tsx` reads the header).
+- **`tense` added to the contract** (not in the original sketch): `upcoming`
+  (future-start, soonest-first) vs `past` (everything else, newest-first). The
+  client's two lists were each their own client-side sort; making tense a
+  server facet keeps each list a coherent paginated stream instead of one
+  date-mixed stream the client re-splits. **The split is a DATE predicate**
+  (`upcoming` = `date_from > NOW()`), NOT the Redis-aware per-row `status` — a
+  deliberate divergence (Simon 2026-07-05): a registered user's presence
+  elevates a moment to unlimited lifespan, so "Redis expired" is not a demotion
+  signal for the caller's own memberships (all rows here are). `status` is still
+  computed + sent, and the home carousel/counts still route on it; only the
+  paginated `recents.tsx` lists route on `tense`. `recents.tsx` renders nothing
+  off `status`, so the narrow date-vs-status disagreement is invisible. Full
+  rationale in `docs/dev/moments-home.md`.
+- **Kicked moments dropped server-side.** A per-row `SISMEMBER s:<C>:kicked`
+  in the enrichment drops any session the caller is currently kicked from — from
+  the carousel, counts, AND both lists (Simon 2026-07-05). They rejoin by
+  code/link (clears it). Detectable only while live in Redis (no PG mirror —
+  durable-sessions territory); ban already drops via the deleted member row.
+  See `docs/dev/kick-ban.md`.
+- **Pagination = keyset**, not offset: cursor is opaque base64url of
+  `(eff_key, id)` where `eff_key` is the effective date rendered to
+  MICROSECOND-precision text (`to_char(..'US'..)`) — Postgres timestamptz stores
+  µs but JS `Date`/Prisma only ms, so a `getTime()` cursor would drop/dupe rows
+  sharing a millisecond across a page boundary (a review catch; verified fixed
+  with µs-twin rows). The query compares the tuple `(COALESCE(date_from,
+  created_at), id)` (bound back as `::timestamptz`) strictly beyond the last
+  kept row in the sort direction, with `id` as the stable tiebreak.
+  Fetch-one-extra detects the next page (no COUNT). Verified against the prod
+  dump: 24 rows paged in pages of 5 with no
+  dupes/gaps, terminates.
+- **Search = `unaccent` + `pg_trgm`** (Simon's build-time pick, overriding the
+  proposal's Q1 "start with plain ILIKE" default): the predicate is
+  `f_unaccent(col) ILIKE '%'||f_unaccent(q)||'%' OR word_similarity(f_unaccent(q),
+  f_unaccent(col)) >= 0.3` over `name` + `host_name`. The explicit `0.3`
+  threshold is inlined (NOT the `%>` operator, which reads a pooled-connection-
+  leaking session GUC); 0.3 was tuned on the prod dump (real typos score
+  0.54–0.67, the stock 0.6 missed them, no false positives at 0.3). ⚠️ ACCEPTED
+  DIVERGENCE from the client's OSA matcher (`apps/mobile/src/lib/search.ts`):
+  pg_trgm forgives differently — documented, NOT replicated. No functional GIN
+  index (the query is always scoped to one caller's ≤N sessions — a trivial
+  seq scan; the index is the documented scale lever in the migration if per-user
+  counts ever explode). Extension availability verified on PG17 before shipping;
+  `f_unaccent` is IMMUTABLE (pinned dict) so the future index stays legal. The
+  substring branch ESCAPES the LIKE metacharacters (`\ % _`) in `q` with
+  `ESCAPE '\'` so a `%`/`_` is matched literally (a review catch — verified on
+  the dump: unescaped `_` matched all 37 rows, escaped matched only the 7 with a
+  literal `_`); the trigram branch is unaffected.
+- **Q2 (wine-name search): v1 = name + host_name only** (the decided scope). No
+  `EXISTS (wines …)` — that lives in the profile later.
+- **Q3 (friend picker counts): DROPPED** (Simon's call). The picker shows all
+  friends, no `?facets` endpoint, no per-friend counts — the server decides
+  matches. Host picker offers "You" + friends; a non-friend host you shared a
+  moment with is the deferred host-facet (the picker only supplies candidate
+  ids; the option lists derive from the friend list, not the paginated page).
+- **Security:** the `people`/`hosts` facets can't become an attendance oracle —
+  requested `people` ids are intersected with the caller's actual mutual-follow
+  set AND block-scrubbed before any `EXISTS`; every row stays scoped to `WHERE
+  sm.user_id = me` (the caller's own memberships), no facet can drop that guard.
+  Block-pair scrub on the returned `people` list stays. `Cache-Control: private,
+  no-store` on every path. The FILTERED path is rate-limited (30/min/user,
+  `rl:moments-search`, mirrors `/api/users/search`) — the unfiltered carousel
+  hot path is uncapped so it isn't starved. `q` is `scrub()`'d + 128-char capped
+  (a NUL byte would 500 the `$queryRaw` on reads too), `people` + `hosts` capped
+  at 20, anon-host names at 64 chars.
+- **Review round 2 (2026-07-05) folded in** — a second 10-finding review:
+  - **Rate limit narrowed to `q`/`people` only** (not "any filter param"). The
+    client always sends `tense`, so charging on `filtered` throttled ordinary
+    Recent/Upcoming browsing; only the trigram search + per-friend EXISTS are the
+    expensive channel worth capping.
+  - **True full-history bucket counts** for the home nav rows: the unfiltered
+    response returns `X-Upcoming-Total`/`X-Recent-Total` headers from a cheap
+    `members⋈sessions` COUNT grouped by tense (no wine/rating joins). The home
+    Upcoming/Recent rows gate on these, not the capped 50-row page — else a user
+    whose only upcoming moment is older than their recent-50 couldn't reach the
+    paginated list. (May over-count by a live-kicked session; harmless — the row
+    still opens the correct kicked-dropped list.)
+  - **Date filter = device-local day, sent as UTC instants.** `from`/`to` are now
+    full ISO instants (the picked local day's start/end), not bare `YYYY-MM-DD`
+    re-anchored at UTC midnight — so "July 5" means the user's local July 5, the
+    same day the cards render (device-local). No off-by-a-day for non-UTC users.
+  - **Under-fill auto-advance** (client): kicked-drop can thin a page below the
+    requested size; a too-short list can't scroll, so `onEndReached` never fires.
+    A `useEffect` pulls the next page until the list is scrollable or history is
+    exhausted — closes the "empty page + valid cursor strands pagination" gap.
+  - **LIKE-escape** (`\ % _`), **µs-precision cursor**, **kicked-drop**,
+    **focus-refetch by prefix invalidation** (not a stale observer),
+    **keepPreviousData not shown under new chips on error** — all from the review.
+  - Deferred with rationale: per-page aggregate-before-limit (caller-scoped tiny
+    set — scale-note comment, same posture as the trigram index); integration
+    tests (repo has no test framework — `.local/test-env/` bash+curl harnesses).
+- **Review round 3 (2026-07-05) folded in** — a 4-finding pass:
+  - **Kicked-count correction**: the `X-Upcoming/Recent-Total` headers now
+    subtract kicked sessions found in the enriched page (bucketed by the same
+    date tense the count query uses), so the counts obey "kicked drops from
+    counts" like the lists — not just the SQL membership total. (Round 2 left
+    this as an accepted over-count; the reviewer was right it violated the rule.)
+    Verified against real Redis+PG: SQL says upcoming=2, a kicked upcoming
+    session drops it to 1.
+  - **Under-fill auto-advance now guards `!isError` + `!isFetching`** (not just
+    `!isFetchingNextPage`) with primitive deps — a FAILED next-page left
+    `hasNextPage` true + the list short, so the effect re-fired in a tight retry
+    loop against a failing endpoint. Closed.
+  - **429 renders the wait message**: a rate-limit error (only `q`/`people` can
+    trigger it) shows the server's human wait copy via `ErrorState`, not the
+    generic "can't reach server".
+- **Review round 4 (2026-07-05) — durable kick-state, exact counts.** The
+  round-3 kicked-count correction was BEST-EFFORT (page-scoped, could over-count
+  the home badge by one on a kicked session older than the 50-row page). Simon's
+  call: fix it EXACTLY by persisting kick-state in Postgres rather than a
+  hot-path Redis fan-out or a documented residual. New nullable column
+  `session_members.removed_state` (migration `20260705130000`; a slice of the
+  durable-sessions workstream — Postgres-authoritative moderation state):
+  kick-keep (`lib/sessionWipe.ts`) writes `'kicked'` beside the role reset,
+  rejoin (`join` route) clears it (NOT `/visit` — its upsert is create-only), and
+  kick-delete/ban delete the row. `/api/me/sessions` excludes
+  `sm.removed_state = 'kicked'` in ALL its SQL (count + both row queries), so
+  counts + lists are exact AND durable past Redis expiry. The per-row Redis
+  `SISMEMBER` stays as a live belt for the partial-failure window (the kicked
+  SADD precedes the PG txn in `sessionWipe`). Verified end-to-end on the dev
+  stack driving the real `sessionWipe`: kick-keep → excluded from count+list;
+  rejoin → restored. Full contract in `docs/dev/kick-ban.md`.
+
 ## Sequencing & size
 
 A before B (B's role facet needs A). A is small: enum value + write-path

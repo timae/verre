@@ -89,6 +89,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
       create: { userId, sessionCode: c, role },
       update: {},
     })
+    // Self-heal a stale durable kick flag. We only reach here AFTER the kicked
+    // gate above (a still-kicked user was already bounced), so a lingering
+    // removed_state='kicked' means Redis was cleared but the PG mirror wasn't —
+    // the rejoin partial-failure window (join clears Redis then PG; if the PG
+    // write failed, the moment would stay durably hidden). A separate statement
+    // (NOT the create-only role upsert above), so it never clobbers the role
+    // snapshot. Idempotent + a no-op for the common already-null case.
+    await prisma.sessionMember.updateMany({
+      where: { userId, sessionCode: c, removedState: 'kicked' },
+      data: { removedState: null },
+    })
     // First-ever join of this session by this user → bump joined counter.
     if (!existing) {
       await prisma.$executeRaw`
