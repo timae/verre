@@ -254,7 +254,7 @@ export function ImpressionForm({
           the form below. */}
       <View style={{ paddingHorizontal: GUTTER, flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', zIndex: 20 }}>
         <View style={{ flex: 1 }}>
-          <VBar title={mode === 'edit' ? 'Edit impression' : 'Add impression'} />
+          <VBar title={mode === 'edit' ? 'Edit Impression' : 'Add Impression'} />
         </View>
         {canPosition && (mode === 'edit' ? wineCount > 1 : wineCount > 0) ? (
           <PositionPicker
@@ -338,7 +338,7 @@ export function ImpressionForm({
             pre-filled data laid out in place) — only a USER expand should yank
             the view to the bottom. */}
         <Disclosure
-          label="Add more details"
+          label="Add More Details"
           open={moreOpen}
           onToggle={() => setMoreOpen((o) => !o)}
           onExpanded={() => {
@@ -367,7 +367,7 @@ export function ImpressionForm({
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
             ref={purchaseRef}
-            label="Purchase link"
+            label="Purchase Link"
             placeholder="Where to buy it"
             value={purchaseUrl}
             onChangeText={setPurchaseUrl}
@@ -435,7 +435,7 @@ function PhotoPicker({
         </Pressable>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Remove photo"
+          accessibilityLabel="Remove Photo"
           onPress={onClear}
           style={{
             position: 'absolute', top: 8, right: 8, width: 28, height: 28, borderRadius: 14,
@@ -444,7 +444,7 @@ function PhotoPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
-        <FullscreenImage uri={uri} visible={fullscreen} label="Wine photo" onClose={() => setFullscreen(false)} />
+        <FullscreenImage uri={uri} visible={fullscreen} label="Wine Photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }
@@ -460,7 +460,7 @@ function PhotoPicker({
       })}
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
-      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add photo</VText>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
       <VText variant="caption" color="inkSoft">optional — a label or pour</VText>
     </Pressable>
   );

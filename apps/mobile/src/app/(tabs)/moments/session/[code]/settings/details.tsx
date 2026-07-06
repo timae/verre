@@ -43,7 +43,7 @@ export default function MomentDetails() {
       onDiscard={() => router.back()}
     />
   ) : (
-    <SettingsScreenFallback title="Moment details" isError={isError} retrying={isFetching} onRetry={refetch} />
+    <SettingsScreenFallback title="Moment Details" isError={isError} retrying={isFetching} onRetry={refetch} />
   );
 }
 
@@ -133,7 +133,7 @@ function DetailsForm({
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Moment details" />
+        <VBar title="Moment Details" />
       </View>
       <ScrollView
         style={{ flex: 1 }}
@@ -150,9 +150,9 @@ function DetailsForm({
             <Pressable accessibilityRole="button" accessibilityLabel="Open cover photo fullscreen" onPress={() => setCoverFullscreen(true)}>
               <Image source={{ uri: coverUrl }} alt="" style={{ width: '100%', height: 130, borderRadius: radius.md }} resizeMode="cover" />
             </Pressable>
-            <GlassButton label="Change photo" icon="edit" right={52} onPress={onPickCover} />
-            <GlassButton label="Remove photo" icon="trash" right={10} onPress={onRemoveCover} />
-            <FullscreenImage uri={coverUrl} visible={coverFullscreen} label="Cover photo" onClose={() => setCoverFullscreen(false)} />
+            <GlassButton label="Change Photo" icon="edit" right={52} onPress={onPickCover} />
+            <GlassButton label="Remove Photo" icon="trash" right={10} onPress={onRemoveCover} />
+            <FullscreenImage uri={coverUrl} visible={coverFullscreen} label="Cover Photo" onClose={() => setCoverFullscreen(false)} />
           </View>
         ) : (
           <Pressable
@@ -180,7 +180,7 @@ function DetailsForm({
         ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
         </View>
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
           <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
@@ -193,7 +193,7 @@ function DetailsForm({
           <NotesField label="Description" placeholder="Notes for your guests…" value={description} onChange={setDescription} />
         </View>
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Event link" placeholder="Menu, event page…" value={link} onChangeText={setLink} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
+          <TextField label="Event Link" placeholder="Menu, event page…" value={link} onChangeText={setLink} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
         </View>
       </ScrollView>
 

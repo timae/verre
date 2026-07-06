@@ -16,7 +16,7 @@ export default function UpdateRequired() {
   const storeUrl = params.storeUrl && SAFE_STORE_URL.test(params.storeUrl) ? params.storeUrl : null;
   return (
     <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl, gap: space.sm }}>
-      <VText variant="heading">Update required</VText>
+      <VText variant="heading">Update Required</VText>
       <VText variant="body" color="inkSoft" style={{ textAlign: 'center' }}>
         This version of the app is no longer supported. Please update to keep tasting.
       </VText>

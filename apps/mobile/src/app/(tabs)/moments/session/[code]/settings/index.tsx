@@ -126,24 +126,24 @@ export default function SettingsHub() {
                     <SetNav icon="user" label="People" onPress={() => setPeopleOpen(true)} />
                     <SetNav
                       icon="edit"
-                      label="Moment details"
+                      label="Moment Details"
                       onPress={() => router.push({ pathname: '/(tabs)/moments/session/[code]/settings/details', params: { code } })}
                     />
                     <SetNav
                       icon="eyeoff"
-                      label="Reveal & blind"
+                      label="Reveal & Blind"
                       onPress={() => router.push({ pathname: '/(tabs)/moments/session/[code]/settings/reveal', params: { code } })}
                     />
                   </SetGroup>
                   <SetGroup>
-                    <SetNav icon="share" label="Share moment" action onPress={() => setInviteOpen(true)} />
+                    <SetNav icon="share" label="Share Moment" action onPress={() => setInviteOpen(true)} />
                     {/* Delete is strict-host-only (the DELETE handler rejects
                         cohosts on a live-host session — root role model). The
                         orphaned-host recovery path where a cohost CAN delete
                         isn't surfaced here (no design); strict host covers the
                         common case. Cohosts still edit everything else. */}
                     {isSelfHost ? (
-                      <SetNav icon="trash" label="Delete moment" action critical onPress={confirmDelete} />
+                      <SetNav icon="trash" label="Delete Moment" action critical onPress={confirmDelete} />
                     ) : null}
                   </SetGroup>
                 </>
@@ -153,11 +153,11 @@ export default function SettingsHub() {
                     <SetNav icon="user" label="People" onPress={() => setPeopleOpen(true)} />
                   </SetGroup>
                   <SetGroup>
-                    <SetNav icon="share" label="Share moment" action onPress={() => setInviteOpen(true)} />
+                    <SetNav icon="share" label="Share Moment" action onPress={() => setInviteOpen(true)} />
                     {/* Leave moment has no working endpoint yet (/leave rejects
                         active participants). Disabled until a leave-self route
                         exists. See memory note verre-ios-settings-02f. */}
-                    <SetNav icon="back" label="Leave moment" action critical disabled soon />
+                    <SetNav icon="back" label="Leave Moment" action critical disabled soon />
                   </SetGroup>
                 </>
               )}

@@ -13,7 +13,7 @@ export default function NotFound() {
       <VText variant="body" color="inkSoft" style={{ textAlign: 'center' }}>
         That link doesn&apos;t go anywhere.
       </VText>
-      <Button title="Back to start" variant="secondary" style={{ marginTop: space.md }} onPress={() => router.replace('/')} />
+      <Button title="Back to Start" variant="secondary" style={{ marginTop: space.md }} onPress={() => router.replace('/')} />
     </View>
   );
 }

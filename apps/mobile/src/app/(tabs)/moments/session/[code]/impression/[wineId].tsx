@@ -607,12 +607,12 @@ export default function ImpressionDetail() {
       {/* .ir-menu options dropdown (shared AnchoredMenu). Host/cohost/provider
           CRUD rows follow the design's separator + danger-row grouping. */}
       <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={184}>
-        <MenuItem icon="undo" label="Clear my rating" onPress={clearRating} />
+        <MenuItem icon="undo" label="Clear My Rating" onPress={clearRating} />
         {canEditImpression ? (
           <>
             <MenuSeparator />
-            <MenuItem icon="edit" label="Edit" accessibilityLabel="Edit impression" onPress={editImpression} />
-            <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete impression" tone="danger" onPress={confirmDeleteImpression} />
+            <MenuItem icon="edit" label="Edit" accessibilityLabel="Edit Impression" onPress={editImpression} />
+            <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete Impression" tone="danger" onPress={confirmDeleteImpression} />
           </>
         ) : null}
       </AnchoredMenu>
@@ -1066,7 +1066,7 @@ function AboutBlock({ wine }: { wine: WireWine }) {
         >
           <Icon name="link" size={15} color={theme.accent} />
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }} color="accent">
-            Where to buy
+            Where to Buy
           </VText>
         </Pressable>
       ) : null}

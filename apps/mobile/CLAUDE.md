@@ -429,9 +429,28 @@ names in `src/lib/api/sessions.ts`.
     rows ship as terse **"Edit" / "Delete"** (handoff specs "Edit impression" /
     "Delete impression" in `vero-screens.js` — overridden to match the line-up
     menu's terse style). The object context is preserved for VoiceOver via
-    `MenuItem`'s `accessibilityLabel` ("Edit impression"/"Delete impression"),
+    `MenuItem`'s `accessibilityLabel` ("Edit Impression"/"Delete Impression"),
     so the spoken label still names the object. Don't "restore" the verbose
     visible labels.
+- **Capitalization — Title Case for titles + actions; sentence case for prose
+  (Simon, 2026-07-06).** House rule, applies to all app-authored copy:
+  - **Title Case** — screen/section titles (`VBar` titles, section headers like
+    "Recent Moments"), **button** labels (`Button title=`), **menu items**
+    (`MenuItem`/`SetNav` labels: "Reveal All", "Delete Moment"), and **form
+    field labels** (`TextField label=`: "Moment Name", "Cover Photo"). Standard
+    Title Case: capitalize each word EXCEPT minor words (a/an/the · and/or/but ·
+    of/to/for/in/on/at/by/with) — UNLESS a minor word is first or last. So
+    "Blind for All", "Back to Start", "Remove from Home", "Create a Moment".
+    `accessibilityLabel`s mirror their visible label's case ("Edit Impression").
+  - **Sentence case (unchanged)** — full-sentence copy: empty-state /
+    error / `CenteredMessage` bodies ("Nothing to compare yet", "This impression
+    is gone"), hints, toggle captions, and any **link rendered INSIDE running
+    text** ("Already have an account? Sign in" — the inline `Sign in`/`Create an
+    account` links stay lowercase; a mid-sentence capital reads wrong).
+  - **User-entered content is NEVER re-cased** — moment names, wine names,
+    producers, notes render verbatim as typed (title-casing would mangle
+    "iPhone", "AC/DC", acronyms, apostrophe-S). Only fixed, app-authored strings
+    follow the rule above.
 - App display name is **Verre** ("Vero" was the design codename — appears only
   in the design files and the tokens filename).
 

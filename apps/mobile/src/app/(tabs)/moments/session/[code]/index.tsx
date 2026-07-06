@@ -1340,14 +1340,14 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
         <View style={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 6 }}>
           <VText variant="caption" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{countLabel}</VText>
         </View>
-        <MenuItem icon="eye" label="Reveal all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onRevealAll(); }} />
-        <MenuItem icon="eyeoff" label="Hide all" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onHideAll(); }} />
+        <MenuItem icon="eye" label="Reveal All" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onRevealAll(); }} />
+        <MenuItem icon="eyeoff" label="Hide All" disabled={reveal.revealBusy} onPress={() => { setAnchor(null); reveal.onHideAll(); }} />
         <MenuSeparator />
         {/* .sess-menu-mode — moved here from the ⋯ menu (Simon 2026-07-04):
             reveal-scope controls live together. Press-to-activate field. */}
         <MenuItem
           icon="eyeoff"
-          label="Blind for all"
+          label="Blind for All"
           active={reveal.blindForEveryone}
           disabled={reveal.bfaBusy}
           accessibilityState={{ selected: reveal.blindForEveryone }}
@@ -1477,7 +1477,7 @@ function OvcAbout({ meta, isHostViewer, myIdentityId, onPeople }: { meta: MetaVi
               {/* .ovc-line svg is ink-soft even on the accent line — only
                   the label text carries accent. */}
               <Icon name="link" size={16} color={theme.inkSoft} />
-              <VText variant="small" color="accent">Event link</VText>
+              <VText variant="small" color="accent">Event Link</VText>
             </>,
             'link',
             // In-app browser — keep the user inside the moment (the Map
@@ -1673,7 +1673,7 @@ function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) 
         >
           <Icon name="plus" size={17} color={theme.accentInk} />
           <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color={theme.accentInk}>
-            Add impression
+            Add Impression
           </VText>
         </Pressable>
       ) : null}
@@ -1690,7 +1690,7 @@ function AddImpressionRow({ onPress }: { onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Add impression"
+      accessibilityLabel="Add Impression"
       onPress={onPress}
       style={({ pressed }) => ({
         flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
@@ -1701,7 +1701,7 @@ function AddImpressionRow({ onPress }: { onPress: () => void }) {
     >
       <Icon name="plus" size={17} color={theme.accent} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} color="accent">
-        Add impression
+        Add Impression
       </VText>
     </Pressable>
   );
@@ -2098,7 +2098,7 @@ function LineupAddButton({
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Add impression"
+      accessibilityLabel="Add Impression"
       onPress={onPress}
       hitSlop={6}
       style={({ pressed }) => ({

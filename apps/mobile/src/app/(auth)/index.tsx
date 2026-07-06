@@ -86,8 +86,8 @@ export default function Launch() {
             Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
           </VText>
           <View style={{ gap: 10 }}>
-            <Button title="Get started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />
-            <Button title="Sign in" bar block variant="ghostlight" onPress={() => router.push('/sign-in')} />
+            <Button title="Get Started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />
+            <Button title="Sign In" bar block variant="ghostlight" onPress={() => router.push('/sign-in')} />
           </View>
         </View>
       </ScrollView>

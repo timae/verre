@@ -131,7 +131,7 @@ export default function CreateMoment() {
     <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Create a moment" />
+        <VBar title="Create a Moment" />
         {/* .vsub */}
         <VText variant="small" color="inkSoft" style={{ marginBottom: 18 }}>
           Set up a tasting to share with others
@@ -153,7 +153,7 @@ export default function CreateMoment() {
 
         <View style={{ marginBottom: 14 }}>
           {/* Next field is a date picker (non-text), so return = done. */}
-          <TextField label="Moment name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="done" />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="done" />
         </View>
 
         {/* "What are you tasting?" — wine-only v1, field per spec but
@@ -220,7 +220,7 @@ export default function CreateMoment() {
             an accent glow on add. */}
         <SpawnedRow show={!!dateFrom}>
           <ToggleRow
-            title="Hide line-up"
+            title="Hide Line-up"
             subtitle="Keep what's being tasted a surprise until before the start"
             value={hideLineup}
             onChange={setHideLineup}
@@ -259,7 +259,7 @@ export default function CreateMoment() {
             collapse is handled by the exiting row holding its space while it
             fades; Blind then settles without a visible slide. */}
         <ToggleRow
-          title="Blind tasting"
+          title="Blind Tasting"
           proBadge
           subtitle="Hide what you're tasting until it's revealed"
           value={blind}
@@ -270,7 +270,7 @@ export default function CreateMoment() {
         {/* .disclosure Add more details — body expands DOWN from this bar
             (Disclosure owns the height animation); scroll into view once open. */}
         <Disclosure
-          label="Add more details"
+          label="Add More Details"
           open={moreOpen}
           onToggle={() => setMoreOpen((o) => !o)}
           onExpanded={() => scrollRef.current?.scrollToEnd({ animated: true })}
@@ -352,7 +352,7 @@ function CoverPicker({
         >
           <Icon name="x" size={14} color="#fff" />
         </Pressable>
-        <FullscreenImage uri={cover.previewUri} visible={fullscreen} label="Cover photo" onClose={() => setFullscreen(false)} />
+        <FullscreenImage uri={cover.previewUri} visible={fullscreen} label="Cover Photo" onClose={() => setFullscreen(false)} />
       </View>
     );
   }

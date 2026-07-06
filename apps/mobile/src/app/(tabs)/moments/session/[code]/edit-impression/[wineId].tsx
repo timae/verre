@@ -45,7 +45,7 @@ export default function EditImpression() {
   if (!wine || !canEdit) {
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
-        <VBar title="Edit impression" />
+        <VBar title="Edit Impression" />
         <CenteredMessage
           pending={state.isPending}
           title={!wine ? 'This impression is gone' : "You can't edit this impression"}

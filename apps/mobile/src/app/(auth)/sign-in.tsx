@@ -34,12 +34,12 @@ export default function SignIn() {
         contentContainerStyle={{ paddingTop: insets.top + space.xl, paddingBottom: insets.bottom + space.lg, paddingHorizontal: space.lg, gap: space.md }}
         keyboardShouldPersistTaps="handled"
       >
-        <VText variant="subhead">Welcome back</VText>
+        <VText variant="subhead">Welcome Back</VText>
         <VText variant="small" color="inkSoft" style={{ marginBottom: space.xs }}>Sign in to pick up where you left off.</VText>
         <TextField label="Email" value={email} onChangeText={setEmail} autoComplete="email" textContentType="username" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => passwordRef.current?.focus()} />
         <TextField ref={passwordRef} label="Password" value={password} onChangeText={setPassword} autoComplete="password" textContentType="password" secureTextEntry returnKeyType="go" onSubmitEditing={submit} />
         {error ? <VText variant="small" color="critical">{error}</VText> : null}
-        <Button title="Sign in" loadingTitle="Signing in…" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
+        <Button title="Sign In" loadingTitle="Signing in…" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
         <Pressable onPress={() => router.replace('/sign-up')} style={{ alignItems: 'center', marginTop: space.md }}>
           <VText variant="small" color="inkSoft">
             New to Verre? <VText variant="small" color="accent">Create an account</VText>

@@ -947,7 +947,7 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => ({ paddingVertical: 4, marginTop: 8, alignSelf: 'flex-start', opacity: pressed ? 0.6 : 1 })}>
       <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
-        Show all {total}
+        Show All {total}
       </VText>
     </Pressable>
   );

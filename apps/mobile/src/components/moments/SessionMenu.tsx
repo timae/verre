@@ -87,7 +87,7 @@ export function SessionMenu({
       minWidth={200}
     >
       <MenuItem icon="user" label="People" onPress={onPeople} />
-      <MenuItem icon="share" label="Share invite" onPress={onShare} />
+      <MenuItem icon="share" label="Share Invite" onPress={onShare} />
       <MenuItem icon="settings" label="Settings" onPress={onSettings} />
     </AnchoredMenu>
   );
