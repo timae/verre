@@ -282,10 +282,10 @@ export async function setBookmark(code: string, wineId: string, on: boolean): Pr
 
 export type CreateMomentBody = {
   hostDisplayName: string;
-  sessionName?: string;
+  sessionName: string; // required (Simon, 2026-07-06) — server rejects an empty name
   category?: 'wine'; // v1 allow-list — widens with future category sets
   coverPhoto?: string; // base64 data URL; server runs the hardened image pipeline
-  dateFrom?: string;
+  dateFrom: string; // required — a moment always has a start date; server rejects absence
   dateTo?: string;
   timezone?: string;
   hideLineup?: boolean;
@@ -427,9 +427,15 @@ export async function hideAllWines(code: string): Promise<void> {
 // the cover (reclaims the prior S3 bytes); a data URL replaces it. Mobile never
 // sends lifespan (native creates stay 'unlimited' — create parity).
 export type MomentSettingsBody = {
+  // name is required — an empty/whitespace value is rejected server-side
+  // (lib/sessionFields.ts) and the client guards block it before send.
   name?: string;
   address?: string;
-  dateFrom?: string | null;
+  // dateFrom is required and can't be CLEARED — the server rejects null/empty
+  // (Simon, 2026-07-06). Typed non-null (never sent as null): callers guard on
+  // a set start date before building the diff. (dateTo stays nullable — clearing
+  // the end date is allowed.)
+  dateFrom?: string;
   dateTo?: string | null;
   timezone?: string;
   description?: string;

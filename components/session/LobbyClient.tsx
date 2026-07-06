@@ -15,19 +15,52 @@ export function LobbyClient({ user }: { user: User }) {
   const router = useRouter()
   const [displayName, setDisplayName] = useState(user?.name || '')
   const [sessionName, setSessionName] = useState('')
+  // Start date+time is REQUIRED (Simon, 2026-07-06) — combined to a UTC ISO
+  // instant on submit, like the /me dashboard create form.
+  const [dateFromDate, setDateFromDate] = useState('')
+  const [dateFromTime, setDateFromTime] = useState('')
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [createError, setCreateError] = useState('')
+  // Which required create fields failed the last submit (red border), cleared
+  // per-field as the user edits.
+  const [badFields, setBadFields] = useState({ hostName: false, sessionName: false, start: false })
   const [joinError, setJoinError] = useState('')
   const [loading, setLoading] = useState(false)
 
+  // Clear one field's flag as it's fixed, dropping the summary once none remain.
+  function fixField(key: 'hostName' | 'sessionName' | 'start') {
+    setBadFields(prev => {
+      const next = { ...prev, [key]: false }
+      if (!next.hostName && !next.sessionName && !next.start) setCreateError('')
+      return next
+    })
+  }
+
   async function createSession() {
-    if (!displayName.trim()) { setCreateError('Enter your name'); return }
+    // Collect ALL missing required fields, flag each (red border), one summary.
+    const bad = { hostName: !displayName.trim(), sessionName: !sessionName.trim(), start: !dateFromDate || !dateFromTime }
+    setBadFields(bad)
+    const missCount = Number(bad.hostName) + Number(bad.sessionName) + Number(bad.start)
+    if (missCount > 0) {
+      setCreateError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.hostName ? 'Enter your name'
+        : bad.sessionName ? 'Please name your moment.'
+        : 'Please set a start date and time.',
+      )
+      return
+    }
+    const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostDisplayName: displayName.trim(), sessionName: sessionName.trim(), lifespan }),
+      body: JSON.stringify({
+        hostDisplayName: displayName.trim(), sessionName: sessionName.trim(),
+        dateFrom: dateFromISO, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        lifespan,
+      }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -108,12 +141,19 @@ export function LobbyClient({ user }: { user: User }) {
 
           <div className="field">
             <div className="fl">your name</div>
-            <input className="fi" value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="firstname or alias" />
+            <input className={`fi${badFields.hostName ? ' error' : ''}`} aria-invalid={badFields.hostName || undefined} value={displayName} onChange={e => { setDisplayName(e.target.value); if (badFields.hostName && e.target.value.trim()) fixField('hostName') }} placeholder="firstname or alias" />
           </div>
 
           <div className="field">
-            <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
-            <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+            <div className="fl">session name</div>
+            <input className={`fi${badFields.sessionName ? ' error' : ''}`} aria-invalid={badFields.sessionName || undefined} value={sessionName} onChange={e => { setSessionName(e.target.value); if (badFields.sessionName && e.target.value.trim()) fixField('sessionName') }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+          </div>
+          <div className="field">
+            <div className="fl">start</div>
+            <div style={{display:'flex',gap:8}}>
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) fixField('start') }} style={{flex:1,minWidth:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) fixField('start') }} style={{width:110,flexShrink:0}} />
+            </div>
           </div>
 
           <LifespanSelector value={lifespan} onChange={setLifespan} isPro={false} />

@@ -74,6 +74,9 @@ function DetailsForm({
   const [coverFullscreen, setCoverFullscreen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which required fields failed the last save (red border), cleared per-field
+  // as the user edits.
+  const [badFields, setBadFields] = useState({ name: false, start: false });
 
   const onPickCover = async () => {
     setCoverError(null);
@@ -93,20 +96,33 @@ function DetailsForm({
 
   const onSave = async () => {
     setError(null);
-    // Friendly guard before the request (picker min/max should make this
-    // unreachable; the server rejects it regardless — nicer copy than the raw
-    // server string).
-    if (dateFrom && dateTo && dateTo < dateFrom) {
+    // Name + start date are required and can't be CLEARED (Simon, 2026-07-06 —
+    // the same absolute invariant as create). Collect ALL misses, flag each
+    // field (red border), one summary. Applies to old dateless moments too:
+    // they must gain a start date before their next save goes through.
+    const bad = { name: !name.trim(), start: !dateFrom };
+    setBadFields(bad);
+    const missCount = Number(bad.name) + Number(bad.start);
+    if (missCount > 0) {
+      setError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.name ? 'Please name your moment.'
+        : 'Please set a start date.',
+      );
+      return;
+    }
+    if (!dateFrom) return; // unreachable (missCount caught it) — narrows for TS below
+    if (dateTo && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
     }
     setSaving(true);
-    // Minimal diff vs the loaded meta — send only changed fields. Dates send
-    // null to clear, ISO to set. Timezone rides along whenever either date is
-    // present (the server needs it to render the window).
+    // Minimal diff vs the loaded meta — send only changed fields. dateFrom is
+    // guaranteed set here (required + narrowed above), so it's never null; dateTo
+    // sends null to clear. Timezone rides along whenever either date is present.
     const body: MomentSettingsBody = {};
     if (name.trim() !== (meta.name ?? '')) body.name = name.trim();
-    const fromIso = dateFrom ? dateFrom.toISOString() : null;
+    const fromIso = dateFrom.toISOString();
     const toIso = dateTo ? dateTo.toISOString() : null;
     if (fromIso !== (meta.dateFrom ?? null)) body.dateFrom = fromIso;
     if (toIso !== (meta.dateTo ?? null)) body.dateTo = toIso;
@@ -180,10 +196,10 @@ function DetailsForm({
         ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) { setBadFields((b) => ({ ...b, name: false })); if (!badFields.start) setError(null); } }} invalid={badFields.name} autoCorrect={false} />
         </View>
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
+          <DateField label="From" value={dateFrom} placeholder="Tap to set" error={badFields.start} onChange={(d) => { setDateFrom(d); if (d && badFields.start) { setBadFields((b) => ({ ...b, start: false })); if (!badFields.name) setError(null); } }} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
           <DateField label="To" value={dateTo} onChange={setDateTo} defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)} minimumDate={dateFrom ?? undefined} />
         </View>
         <View style={{ marginBottom: 14 }}>

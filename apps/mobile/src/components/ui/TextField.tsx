@@ -9,6 +9,10 @@ import { VText } from './VText';
 interface Props extends TextInputProps {
   label?: string;
   error?: string;
+  /** Red border WITHOUT an inline message (the failing-field flag when a single
+   *  form-level summary carries the copy). `error` (a string) still shows both
+   *  the border and a per-field message. */
+  invalid?: boolean;
   surface?: FontSurfaceName;
 }
 
@@ -17,7 +21,7 @@ interface Props extends TextInputProps {
 // (borders draw inside the bounds: no sibling layout shift) and the padding
 // compensates by 1px so the text doesn't nudge.
 export const TextField = forwardRef<TextInput, Props>(function TextField(
-  { label, error, surface: surfaceName = 'formControl', style, onFocus, onBlur, editable, ...rest },
+  { label, error, invalid, surface: surfaceName = 'formControl', style, onFocus, onBlur, editable, ...rest },
   ref,
 ) {
   const { theme } = useTheme();
@@ -47,10 +51,13 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   const eyeRef = useRef<View | null>(null);
   useRegisterInput(innerRef);
   useRegisterInput(eyeRef, secure);
-  const borderColor = error ? theme.critical : focused ? theme.accent : theme.rule;
+  const isInvalid = !!(error || invalid);
+  const borderColor = isInvalid ? theme.critical : focused ? theme.accent : theme.rule;
   const input = (
     <TextInput
       {...rest}
+      // Screen-reader invalid state (the red border alone isn't announced).
+      aria-invalid={isInvalid}
       ref={(node) => {
         innerRef.current = node;
         if (typeof ref === 'function') ref(node);

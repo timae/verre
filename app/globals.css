@@ -58,6 +58,9 @@
 }
 .fi::placeholder{color:var(--fg-faint);}
 .fi:focus{border-color:var(--accent2);}
+/* Invalid field — red border that outranks :focus (declared after it) so a
+   failing field stays flagged even while the user is fixing it. */
+.fi.error,.fi.error:focus{border-color:var(--danger);}
 
 /* Panels */
 .panel {

@@ -36,6 +36,13 @@ export function applySessionFields(meta: SessionFieldsTarget, body: Record<strin
   if (body.dateFrom !== undefined) {
     const d = date(body.dateFrom, 'dateFrom')
     if ('error' in d) return d.error
+    // A moment always has a start date (Simon, 2026-07-06): create requires one,
+    // and an edit may not CLEAR it. This guard fires only when dateFrom is
+    // present in THIS body and resolves to empty — a partial PATCH that omits
+    // dateFrom is untouched (so unrelated edits still work). Create passes a
+    // real value; a create with none is caught by the presence check in the
+    // create route (dateFrom absent → key never here → meta.dateFrom stays unset).
+    if (d.value === null) return 'Please set a start date.'
     meta.dateFrom = d.value
   }
   if (body.dateTo !== undefined) {
@@ -56,7 +63,14 @@ export function applySessionFields(meta: SessionFieldsTarget, body: Record<strin
   // bidi overrides, and zero-width chars before they reach Redis/Postgres.
   // (The settings PATCH historically omitted it — fixed here for both.)
   // scrub returns null for non-strings/empty — coalesce back to ''.
-  if (body.name !== undefined)        meta.name        = (scrub(String(body.name        || '')) ?? '').slice(0, 80)
+  if (body.name !== undefined) {
+    // Name is required (Simon, 2026-07-06) — same as dateFrom, this guard fires
+    // only when `name` is present in this body and scrubs to empty (an explicit
+    // clear on edit, or an empty create). Partial PATCHes that omit `name` pass.
+    const cleaned = (scrub(String(body.name || '')) ?? '').slice(0, 80)
+    if (!cleaned.trim()) return 'Please name your moment.'
+    meta.name = cleaned
+  }
   if (body.address !== undefined)     meta.address     = (scrub(String(body.address     || '')) ?? '').slice(0, 255)
   if (body.timezone !== undefined)    meta.timezone    = String(body.timezone || '').trim().slice(0, 64)
   if (body.description !== undefined) meta.description = (scrub(String(body.description || '')) ?? '').slice(0, 1000)

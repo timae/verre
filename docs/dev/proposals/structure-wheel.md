@@ -732,6 +732,14 @@ axis, so per-axis `n` = engaged `n` and behaviour is unchanged. A lone engaged t
 (n = 1) draws a degenerate band — min = max — which C1b's minimum-band-thickness rule renders sensibly.
 An axis no engaged taster carried (n = 0) is a neutral placeholder (min/max/avg 0), not a real floor.
 
+**Known remaining (deferred to a Compare follow-up):** the CHART render paths still read
+`fillFlavourZeros` output, so a person/radar chart can draw a never-asked axis (e.g. bubbles on a
+flipped-to-spark wine) as a **0 point** while the wedge-split rows correctly show **"—"**. The
+aggregate (band/avg) and the split rows are fixed; the per-series chart geometry
+(`RadarOverlay` / single-person `FlavourWheel` in `CompareBody.tsx`, fed by `r.filled[a.k] ?? 0`) is
+not yet absent-aware. Fix on the Compare branch where this aggregate work lives, so the chart matches
+the split's "—" semantics — a cosmetic inconsistency, not a data error (the numbers are already right).
+
 **Score-side corollary:** overall score `0` = "not rated" (score-system invariant) — excluded from
 the group score avg, the spread, and the ranked rows. Flavour detail still aggregates for such a
 taster (engagement is per-signal). The impression appears on Compare when ≥1 selected taster has any

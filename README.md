@@ -233,7 +233,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/session | Create session (body: `{hostDisplayName, sessionName?, blind?, lifespan?, category?, coverPhoto?, dateFrom?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `coverPhoto` is a base64 data URL, logged-in only; native callers default to unlimited lifespan) → `{code, id, displayName, category, coverPhotoUrl?, anonToken?}` |
+| POST | /api/session | Create session (body: `{hostDisplayName, sessionName, dateFrom, blind?, lifespan?, category?, coverPhoto?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `sessionName` + `dateFrom` **required** for every caller; `coverPhoto` is a base64 data URL, logged-in only; native callers default to unlimited lifespan) → `{code, id, displayName, category, coverPhotoUrl?, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |

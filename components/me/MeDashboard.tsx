@@ -20,11 +20,18 @@ export function MeDashboard({ user }: { user: User }) {
   const router = useRouter()
   const [name, setName] = useState(user.name)
   const [sessionName, setSessionName] = useState('')
+  // Start date+time is REQUIRED (Simon, 2026-07-06). Date+time split like the
+  // SessionPanel settings pattern; combined to a UTC ISO instant on submit.
+  const [dateFromDate, setDateFromDate] = useState('')
+  const [dateFromTime, setDateFromTime] = useState('')
   const [blind, setBlind] = useState(false)
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [createError, setCreateError] = useState('')
+  // Which required create fields failed the last submit (red border). Cleared
+  // per-field as the user edits it.
+  const [badFields, setBadFields] = useState({ hostName: false, sessionName: false, start: false })
   const [joinError, setJoinError] = useState('')
   const isPro = user.pro
 
@@ -37,12 +44,40 @@ export function MeDashboard({ user }: { user: User }) {
     queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
   })
 
+  // Clear one field's error flag as it's fixed, and drop the summary banner once
+  // no flagged field remains (so stale error text doesn't linger past the fix).
+  function fixField(key: 'hostName' | 'sessionName' | 'start') {
+    setBadFields(prev => {
+      const next = { ...prev, [key]: false }
+      if (!next.hostName && !next.sessionName && !next.start) setCreateError('')
+      return next
+    })
+  }
+
   async function createSession() {
-    if (!name.trim()) { setCreateError('Enter your name'); return }
+    // Collect ALL missing required fields, flag each with a red border, and show
+    // one summary (specific copy for a single miss, generic for several).
+    const bad = { hostName: !name.trim(), sessionName: !sessionName.trim(), start: !dateFromDate || !dateFromTime }
+    setBadFields(bad)
+    const missCount = Number(bad.hostName) + Number(bad.sessionName) + Number(bad.start)
+    if (missCount > 0) {
+      setCreateError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.hostName ? 'Enter your name'
+        : bad.sessionName ? 'Please name your moment.'
+        : 'Please set a start date and time.',
+      )
+      return
+    }
+    const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostDisplayName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
+      body: JSON.stringify({
+        hostDisplayName: name.trim(), sessionName: sessionName.trim(),
+        dateFrom: dateFromISO, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        blind: isPro && blind, lifespan,
+      }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -113,11 +148,18 @@ export function MeDashboard({ user }: { user: User }) {
           <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:14}}>start or join</p>
           <div className="field">
             <div className="fl">your name</div>
-            <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="firstname or alias" />
+            <input className={`fi${badFields.hostName ? ' error' : ''}`} aria-invalid={badFields.hostName || undefined} value={name} onChange={e => { setName(e.target.value); if (badFields.hostName && e.target.value.trim()) fixField('hostName') }} placeholder="firstname or alias" />
           </div>
           <div className="field">
-            <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
-            <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+            <div className="fl">session name</div>
+            <input className={`fi${badFields.sessionName ? ' error' : ''}`} aria-invalid={badFields.sessionName || undefined} value={sessionName} onChange={e => { setSessionName(e.target.value); if (badFields.sessionName && e.target.value.trim()) fixField('sessionName') }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+          </div>
+          <div className="field">
+            <div className="fl">start</div>
+            <div style={{display:'flex',gap:8}}>
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) fixField('start') }} style={{flex:1,minWidth:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) fixField('start') }} style={{width:110,flexShrink:0}} />
+            </div>
           </div>
           <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
