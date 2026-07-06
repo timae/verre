@@ -161,8 +161,11 @@ export function SessionPanel({ onClose, onLeave }: Props) {
 
   async function saveSettings() {
     setSaveError('')
-    if (dateFromDate && !dateFromTime) { setSaveError('Please add a time to the start date.'); return }
-    if (dateFromTime && !dateFromDate) { setSaveError('Please add a date to the start time.'); return }
+    // Name + start date are required and can't be cleared (Simon, 2026-07-06 —
+    // the same invariant the server enforces; also applies to old dateless
+    // moments, which must gain a start date before their next save).
+    if (!name.trim()) { setSaveError('Please name your moment.'); return }
+    if (!dateFromDate || !dateFromTime) { setSaveError('Please set a start date and time.'); return }
     if (dateToDate   && !dateToTime)   { setSaveError('Please add a time to the end date.');   return }
     if (dateToTime   && !dateToDate)   { setSaveError('Please add a date to the end time.');   return }
     setSaving(true)

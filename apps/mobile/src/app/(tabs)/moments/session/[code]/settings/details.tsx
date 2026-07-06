@@ -93,10 +93,19 @@ function DetailsForm({
 
   const onSave = async () => {
     setError(null);
-    // Friendly guard before the request (picker min/max should make this
-    // unreachable; the server rejects it regardless — nicer copy than the raw
-    // server string).
-    if (dateFrom && dateTo && dateTo < dateFrom) {
+    // Name + start date are required and can't be CLEARED (Simon, 2026-07-06 —
+    // the same absolute invariant as create; the server rejects a clear for
+    // every caller, this is the friendly copy). Applies to old dateless moments
+    // too: they must gain a start date before their next save goes through.
+    if (!name.trim()) {
+      setError('Please name your moment.');
+      return;
+    }
+    if (!dateFrom) {
+      setError('Please set a start date.');
+      return;
+    }
+    if (dateTo && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
     }

@@ -30,10 +30,11 @@ import { motion, radius, useTheme } from '@/theme';
 // - Category is wine-only v1: the field renders per spec but is
 //   non-interactive (Wine preselected, "More categories soon" caption) —
 //   the mock's native <select> returns when a second category goes live.
-// - From–To are optional (the mock shows prefilled prototype values): empty
-//   fields are tappable placeholders; the first tap seeds a sensible
-//   default and shows the OS compact datetime picker (native-chrome), the
-//   small × clears back to "no date".
+// - NAME + start date (From) are REQUIRED (Simon, 2026-07-06 — reverses the
+//   earlier "From–To optional" ruling; server enforces it for every caller).
+//   End (To) stays optional. Fields still render EMPTY and seed on a
+//   deliberate tap (no-prefilled-values ruling holds); the submit guard blocks
+//   a create with no name/From. OS compact datetime picker (native-chrome).
 // - No lifespan row (per the mock): native creates default to unlimited
 //   server-side.
 export default function CreateMoment() {
@@ -49,11 +50,11 @@ export default function CreateMoment() {
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [name, setName] = useState('');
-  // Optional dates, finally settled: brand fields are visible from the
-  // start AND empty by default (our own field can render empty — the
-  // native control couldn't, which drove the earlier switch/placeholder
-  // rounds). A seed only appears inside the picker sheet after a
-  // deliberate tap, and commits only on Done.
+  // Start date (From) is REQUIRED (Simon, 2026-07-06 — reverses the earlier
+  // "dates optional" ruling); End (To) stays optional. The field still renders
+  // EMPTY by default and seeds only on a deliberate tap (the no-prefilled-values
+  // input ruling holds — we don't force-seed From); the submit guard blocks a
+  // create with no From, and the server rejects it for every caller.
   const [dateFrom, setDateFrom] = useState<Date | null>(null);
   const [dateTo, setDateTo] = useState<Date | null>(null);
   const [hideLineup, setHideLineup] = useState(false);
@@ -86,10 +87,17 @@ export default function CreateMoment() {
 
   const onCreate = async () => {
     setError(null);
-    // Friendly guard before the request (the picker min/max should make this
-    // unreachable, and the server rejects it regardless — this just gives nice
-    // copy instead of the raw server string).
-    if (dateFrom && dateTo && dateTo < dateFrom) {
+    // Name + start date are REQUIRED (Simon, 2026-07-06 — server enforces it for
+    // every caller; these guards just give nice copy instead of the raw 400).
+    if (!name.trim()) {
+      setError('Please name your moment.');
+      return;
+    }
+    if (!dateFrom) {
+      setError('Please set a start date.');
+      return;
+    }
+    if (dateTo && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
     }
@@ -97,12 +105,12 @@ export default function CreateMoment() {
     try {
       const { code } = await createMoment({
         hostDisplayName: auth?.user.name ?? 'Host',
-        sessionName: name.trim() || undefined,
+        sessionName: name.trim(),
         category: 'wine',
         ...(cover ? { coverPhoto: cover.dataUrl } : {}),
-        ...(dateFrom ? { dateFrom: dateFrom.toISOString() } : {}),
+        dateFrom: dateFrom.toISOString(),
         ...(dateTo ? { dateTo: dateTo.toISOString() } : {}),
-        ...(dateFrom || dateTo ? { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone } : {}),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         hideLineup,
         ...(hideLineup ? { hideLineupMinutesBefore: hideMinutes } : {}),
         ...(blind ? { blind: true } : {}),

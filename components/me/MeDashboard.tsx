@@ -20,6 +20,10 @@ export function MeDashboard({ user }: { user: User }) {
   const router = useRouter()
   const [name, setName] = useState(user.name)
   const [sessionName, setSessionName] = useState('')
+  // Start date+time is REQUIRED (Simon, 2026-07-06). Date+time split like the
+  // SessionPanel settings pattern; combined to a UTC ISO instant on submit.
+  const [dateFromDate, setDateFromDate] = useState('')
+  const [dateFromTime, setDateFromTime] = useState('')
   const [blind, setBlind] = useState(false)
   const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
@@ -39,10 +43,18 @@ export function MeDashboard({ user }: { user: User }) {
 
   async function createSession() {
     if (!name.trim()) { setCreateError('Enter your name'); return }
+    // Name + start date are required (Simon, 2026-07-06 — server enforces it too).
+    if (!sessionName.trim()) { setCreateError('Please name your moment.'); return }
+    if (!dateFromDate || !dateFromTime) { setCreateError('Please set a start date and time.'); return }
+    const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hostDisplayName: name.trim(), sessionName: sessionName.trim(), blind: isPro && blind, lifespan }),
+      body: JSON.stringify({
+        hostDisplayName: name.trim(), sessionName: sessionName.trim(),
+        dateFrom: dateFromISO, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        blind: isPro && blind, lifespan,
+      }),
     })
     setLoading(false)
     if (!res.ok) {
@@ -116,8 +128,15 @@ export function MeDashboard({ user }: { user: User }) {
             <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="firstname or alias" />
           </div>
           <div className="field">
-            <div className="fl">session name <span style={{opacity:.5,textTransform:'none',letterSpacing:0}}>(optional)</span></div>
+            <div className="fl">session name</div>
             <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+          </div>
+          <div className="field">
+            <div className="fl">start</div>
+            <div style={{display:'flex',gap:8}}>
+              <input className="fi" type="date" value={dateFromDate} onChange={e => setDateFromDate(e.target.value)} style={{flex:1,minWidth:0}} />
+              <input className="fi" type="time" value={dateFromTime} onChange={e => setDateFromTime(e.target.value)} style={{width:110,flexShrink:0}} />
+            </div>
           </div>
           <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
