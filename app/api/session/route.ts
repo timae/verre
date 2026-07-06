@@ -194,6 +194,15 @@ export async function POST(req: NextRequest) {
   })
   if (fieldError) return NextResponse.json({ error: fieldError }, { status: 400 })
 
+  // A moment REQUIRES a name and a start date (Simon, 2026-07-06 — applies to
+  // every caller: web, native, anon). applySessionFields rejects an explicit
+  // empty/clear, but a create that OMITS the field entirely (mobile sends
+  // sessionName:undefined when blank; a caller may send no dateFrom) leaves
+  // meta.name === '' / meta.dateFrom undefined — caught here. Before the cover
+  // upload so a rejection can't orphan S3 bytes (same ordering as the fields).
+  if (!meta.name || !meta.name.trim()) return NextResponse.json({ error: 'Please name your moment.' }, { status: 400 })
+  if (!meta.dateFrom) return NextResponse.json({ error: 'Please set a start date.' }, { status: 400 })
+
   // Upload the cover last among the validations (every rejection above is
   // side-effect-free). The code keys the S3 object; timestamped so recycled
   // codes (soft-delete frees them) can't collide and replacement leaves
