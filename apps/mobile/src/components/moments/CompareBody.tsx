@@ -775,6 +775,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           open={sheetOpen}
           onClose={() => setSheetOpen(false)}
           item={item}
+          agg={agg}
           axis={drillAxis ?? null}
           structureFirst={agg.n >= 1 && agg.n <= 4}
         />
@@ -1220,11 +1221,14 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
 // rail. (The mock's Friends filter chip is omitted here; friends live in the
 // picker sheet's preset.)
 function ShowAllSheet({
-  open, onClose, item, axis, structureFirst,
+  open, onClose, item, agg, axis, structureFirst,
 }: {
   open: boolean;
   onClose: () => void;
   item: CmpItem;
+  agg: VisibleAgg;
+  /** The axis the sheet OPENS on (from the drill-in), or null for Scores. The
+   *  in-sheet "View" picker can switch it afterward. */
   axis: AxisAgg | null;
   structureFirst: boolean;
 }) {
@@ -1235,29 +1239,36 @@ function ShowAllSheet({
   const [query, setQuery] = useState('');
   const [rowsH, setRowsH] = useState(0);
   const [dir, setDir] = useState<'high' | 'low'>('high');
+  // What the sheet SHOWS — null = Scores, else an aggregated axis. Seeded from
+  // the drilled-in axis; the "View" dropdown switches it live over the same
+  // people. All row derivation below keys on `view`, not the prop.
+  const [view, setView] = useState<AxisAgg | null>(axis);
+  // The View picker opens a nested check-list sheet (like the add-impression
+  // Type picker), not a dropdown — Simon's call.
+  const [viewSheetOpen, setViewSheetOpen] = useState(false);
   const sign = dir === 'high' ? -1 : 1;
   const q = query.trim();
   // Score mode lists EXACTLY what the resting panel counts (scoreRowsFor —
   // incl. structure-only score-0 raters), else "Show all N" would open a
   // sheet missing people.
-  const base = axis ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
+  const base = view ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
   const rows = base
     .filter((r) => !q || fuzzyIncludes(r.displayName, q))
     .sort((a, b) => {
       // On an axis, raters who were ASKED it always sort above the never-asked
       // ("—") rows, regardless of the high/low direction; within each group,
       // the chosen direction applies.
-      if (axis) {
-        const aAsked = askedAxis(a, axis.k);
-        const bAsked = askedAxis(b, axis.k);
+      if (view) {
+        const aAsked = askedAxis(a, view.k);
+        const bAsked = askedAxis(b, view.k);
         if (aAsked !== bAsked) return aAsked ? -1 : 1;
-        return sign * ((a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0));
+        return sign * ((a.filled[view.k] ?? 0) - (b.filled[view.k] ?? 0));
       }
       return sign * ((a.rating.score || 0) - (b.rating.score || 0));
     });
   // Header count reflects who actually drove the axis (asked it) — the "—"
   // never-asked rows are shown but don't inflate the label.
-  const total = axis ? base.filter((r) => askedAxis(r, axis.k)).length : base.length;
+  const total = view ? base.filter((r) => askedAxis(r, view.k)).length : base.length;
   // Same cap-aware sizing as the picker: dynamic fit-to-content while the
   // unfiltered list fits under 85%; else the CountrySheet recipe (fixed snap,
   // pinned head/controls, scrollable rows). Sizing counts the RENDERED rows
@@ -1275,13 +1286,30 @@ function ShowAllSheet({
             ) : null}
           </VText>
           <VText variant="caption" color="inkSoft" style={{ marginTop: 2 }}>
-            {axis ? axis.l : 'Scores'} · {axis && total === 0 ? 'nobody asked' : `${total} ${total === 1 ? 'person' : 'people'}`}
+            {view ? view.l : 'Scores'} · {view && total === 0 ? 'nobody asked' : `${total} ${total === 1 ? 'person' : 'people'}`}
           </VText>
         </View>
+        {/* Controls row: [View ▾][sort ⇅][search────]. The View dropdown switches
+            what the sheet shows — Scores or any structure axis — over the same
+            people; search sits on the RIGHT of the buttons (Simon). */}
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 }}>
-          <View style={{ flex: 1 }}>
-            <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search people" />
-          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Showing ${view ? view.l : 'Scores'} — change`}
+            hitSlop={{ top: 4, bottom: 4 }}
+            onPress={() => setViewSheetOpen(true)}
+            style={({ pressed }) => ({
+              flexDirection: 'row', alignItems: 'center', gap: 4,
+              minHeight: 36, paddingHorizontal: 11, borderRadius: 999, borderWidth: 1,
+              borderColor: theme.rule, backgroundColor: theme.surface,
+              opacity: pressed ? 0.6 : 1,
+            })}
+          >
+            <VText surface="badge" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+              {view ? view.l : 'Scores'}
+            </VText>
+            <Icon name="chevrondown" size={13} color={theme.inkSoft} />
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             // Announce the ACTION the tap performs, not the current state —
@@ -1289,15 +1317,20 @@ function ShowAllSheet({
             accessibilityLabel={`Sort ${dir === 'high' ? 'lowest' : 'highest'} first`}
             hitSlop={4}
             onPress={() => setDir((d) => (d === 'high' ? 'low' : 'high'))}
+            // Same coloring as the CompareToolbar sort button (surface bg, static
+            // rule border, active shown by ICON color only — not an accent border
+            // or a different bg).
             style={({ pressed }) => ({
               width: 36, height: 36, borderRadius: 999, borderWidth: 1,
-              borderColor: dir === 'low' ? theme.accentLine : theme.rule,
-              backgroundColor: theme.bg,
+              borderColor: theme.rule, backgroundColor: theme.surface,
               alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.6 : 1,
             })}
           >
-            <Icon name="sort" size={18} color={dir === 'low' ? theme.accent : theme.inkSoft} />
+            <Icon name="sort" size={16} color={dir === 'low' ? theme.accent : theme.inkSoft} />
           </Pressable>
+          <View style={{ flex: 1 }}>
+            <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search people" />
+          </View>
         </View>
     </>
   );
@@ -1310,12 +1343,12 @@ function ShowAllSheet({
         >
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
-              {axis ? (
-                askedAxis(r, axis.k) ? (
+              {view ? (
+                askedAxis(r, view.k) ? (
                   <>
-                    <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
+                    <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[view.k] ?? 0)}</VText>
                     <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
-                      {r.filled[axis.k] ?? 0}
+                      {r.filled[view.k] ?? 0}
                     </VText>
                   </>
                 ) : (
@@ -1340,6 +1373,7 @@ function ShowAllSheet({
         </View>
   );
   return (
+    <>
     <Sheet
       open={open}
       onClose={onClose}
@@ -1358,6 +1392,61 @@ function ShowAllSheet({
           {rowsBlock}
         </BottomSheetView>
       )}
+    </Sheet>
+    {/* The "View" picker — a nested check-list sheet (Type-picker style),
+        pushed ON TOP of this sheet and returning to it on close. */}
+    <ViewSheet
+      open={viewSheetOpen}
+      onClose={() => setViewSheetOpen(false)}
+      axes={agg.axes}
+      view={view}
+      onSelect={(v) => { setView(v); setViewSheetOpen(false); }}
+    />
+    </>
+  );
+}
+
+// The Show-all sheet's "View" picker: a check-list of Scores + every structure
+// axis. Pushed on top of the Show-all sheet (stackBehavior='push' + raised
+// layer so it dims the sheet under it and returns to it on close). Mirrors the
+// add-impression TypeSheet body.
+function ViewSheet({
+  open, onClose, axes, view, onSelect,
+}: {
+  open: boolean;
+  onClose: () => void;
+  axes: AxisAgg[];
+  view: AxisAgg | null;
+  onSelect: (v: AxisAgg | null) => void;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const insets = useSafeAreaInsets();
+  const row = (key: string, label: string, on: boolean, onPress: () => void) => (
+    <Pressable
+      key={key}
+      accessibilityRole="button"
+      accessibilityState={{ selected: on }}
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 20, paddingVertical: phone.lerp(14, 18),
+        backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+      })}
+    >
+      <VText variant="body" color={on ? 'accent' : 'ink'}>{label}</VText>
+      {on ? <Icon name="check" size={18} color={theme.accent} /> : null}
+    </Pressable>
+  );
+  return (
+    <Sheet open={open} onClose={onClose} stackBehavior="push" layer={1}>
+      <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Show</VText>
+        </View>
+        {row('scores', 'Scores', view === null, () => onSelect(null))}
+        {axes.map((a) => row(a.k, a.l, view?.k === a.k, () => onSelect(a)))}
+      </BottomSheetView>
     </Sheet>
   );
 }
