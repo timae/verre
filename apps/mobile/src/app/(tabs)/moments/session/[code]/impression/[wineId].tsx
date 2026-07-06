@@ -420,14 +420,6 @@ export default function ImpressionDetail() {
             {detailOpen ? 'Structure Profile' : 'Add Structure Profile'}
           </VText>
         </Pressable>
-        {detailOpen ? (
-          <AnchorButton
-            icon="info"
-            iconColor={theme.inkSoft}
-            accessibilityLabel="Intensity scale"
-            onOpen={setInfoAnchor}
-          />
-        ) : null}
         <Pressable
           onPress={() => setDetailOpen((o) => !o)}
           hitSlop={8}
@@ -438,11 +430,19 @@ export default function ImpressionDetail() {
       </View>
       {detailOpen ? (
         <View style={{ gap: 14 }}>
-          {/* Short "what to do" line under the title (always visible when open);
-              the numbered scale lives in the ⓘ bubble beside the title. */}
-          <VText variant="small" color="inkSoft" style={{ marginTop: -10 }}>
-            Tap or drag each track to set the intensity you perceive.
-          </VText>
+          {/* Short "what to do" line under the title (always visible when open),
+              with the ⓘ intensity-scale bubble at the END of the line. */}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: -10 }}>
+            <VText variant="small" color="inkSoft">
+              Set each track to the intensity you perceive.
+            </VText>
+            <AnchorButton
+              icon="info"
+              iconColor={theme.inkSoft}
+              accessibilityLabel="Intensity scale"
+              onOpen={setInfoAnchor}
+            />
+          </View>
           {/* .filltrack per-attribute intensity grid — structure axes for this
               wine's style, colour from the active theme. Shown on blind wines
               too: `type` (the STYLE) is NOT masked by redaction — a taster
