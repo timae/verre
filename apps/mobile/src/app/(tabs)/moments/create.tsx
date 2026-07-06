@@ -466,6 +466,7 @@ const CATEGORIES: Array<{ key: string; label: string; enabled: boolean }> = [
 
 function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   return (
     <Sheet open={open} onClose={onClose}>
@@ -487,7 +488,7 @@ function CategorySheet({ open, onClose }: { open: boolean; onClose: () => void }
               alignItems: 'center',
               justifyContent: 'space-between',
               paddingHorizontal: 20,
-              paddingVertical: 14,
+              paddingVertical: phone.lerp(14, 18),
               backgroundColor: pressed && c.enabled ? theme.surfaceSunk : 'transparent',
             })}
           >

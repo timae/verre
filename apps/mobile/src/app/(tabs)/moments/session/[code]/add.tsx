@@ -477,6 +477,7 @@ function TypeSheet({
   onClose: () => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   return (
     <Sheet open={open} onClose={onClose}>
@@ -496,7 +497,7 @@ function TypeSheet({
               onPress={() => onSelect(t.code)}
               style={({ pressed }) => ({
                 flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                paddingHorizontal: 20, paddingVertical: 14,
+                paddingHorizontal: 20, paddingVertical: phone.lerp(14, 18),
                 backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
               })}
             >
@@ -522,6 +523,7 @@ function CountrySheet({
   onClose: () => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const filtered = useMemo(() => {
@@ -556,7 +558,7 @@ function CountrySheet({
               accessibilityLabel="Clear country"
               onPress={() => onSelect('')}
               style={({ pressed }) => ({
-                paddingHorizontal: 20, paddingVertical: 13,
+                paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
                 borderBottomWidth: 1, borderBottomColor: theme.ruleSoft,
                 backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
               })}
@@ -579,7 +581,7 @@ function CountrySheet({
                   onPress={() => onSelect(c.code)}
                   style={({ pressed }) => ({
                     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                    paddingHorizontal: 20, paddingVertical: 13,
+                    paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
                     backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
                   })}
                 >
