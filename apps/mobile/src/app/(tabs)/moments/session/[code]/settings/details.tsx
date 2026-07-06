@@ -111,17 +111,18 @@ function DetailsForm({
       );
       return;
     }
-    if (dateTo && dateFrom && dateTo < dateFrom) {
+    if (!dateFrom) return; // unreachable (missCount caught it) — narrows for TS below
+    if (dateTo && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
     }
     setSaving(true);
-    // Minimal diff vs the loaded meta — send only changed fields. Dates send
-    // null to clear, ISO to set. Timezone rides along whenever either date is
-    // present (the server needs it to render the window).
+    // Minimal diff vs the loaded meta — send only changed fields. dateFrom is
+    // guaranteed set here (required + narrowed above), so it's never null; dateTo
+    // sends null to clear. Timezone rides along whenever either date is present.
     const body: MomentSettingsBody = {};
     if (name.trim() !== (meta.name ?? '')) body.name = name.trim();
-    const fromIso = dateFrom ? dateFrom.toISOString() : null;
+    const fromIso = dateFrom.toISOString();
     const toIso = dateTo ? dateTo.toISOString() : null;
     if (fromIso !== (meta.dateFrom ?? null)) body.dateFrom = fromIso;
     if (toIso !== (meta.dateTo ?? null)) body.dateTo = toIso;

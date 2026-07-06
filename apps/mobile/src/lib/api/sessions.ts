@@ -432,10 +432,10 @@ export type MomentSettingsBody = {
   name?: string;
   address?: string;
   // dateFrom is required and can't be CLEARED — the server rejects null/empty
-  // (Simon, 2026-07-06). The `| null` remains only because the diff builder can
-  // structurally produce it; the client guard prevents that from being sent.
-  // (dateTo stays genuinely nullable — clearing the end date is allowed.)
-  dateFrom?: string | null;
+  // (Simon, 2026-07-06). Typed non-null (never sent as null): callers guard on
+  // a set start date before building the diff. (dateTo stays nullable — clearing
+  // the end date is allowed.)
+  dateFrom?: string;
   dateTo?: string | null;
   timezone?: string;
   description?: string;
