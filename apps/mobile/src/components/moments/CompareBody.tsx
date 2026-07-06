@@ -854,9 +854,12 @@ function CmpChart({
   } else if (flavourRaters.length <= 4) {
     head = 'Group flavour';
     hint = 'Tap a flavour name to see the split.';
+    // agg.axes is built from the SAME resolveAxes('wine', type) list, in the
+    // same order — so index i lines up with axes[i]. n=0 = never asked.
     chart = (
       <RadarOverlay
         axes={axes.map((a) => a.l)}
+        absentAxes={axes.map((_, i) => agg.axes[i]?.n === 0)}
         series={flavourRaters
           .filter((r) => !hiddenLines.has(r.id))
           .map((r) => ({
@@ -875,7 +878,7 @@ function CmpChart({
     hint = 'Tap a wedge to see the split.';
     chart = (
       <ComparisonWheel
-        axes={agg.axes.map((a) => ({ label: a.l, color: flavourColor(a.k), min: a.min, max: a.max, avg: a.avg }))}
+        axes={agg.axes.map((a) => ({ label: a.l, color: flavourColor(a.k), min: a.min, max: a.max, avg: a.avg, absent: a.n === 0 }))}
         size={232}
         selected={selAxis}
         maxWidth={maxWidth}
