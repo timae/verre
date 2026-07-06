@@ -28,6 +28,15 @@ export function LobbyClient({ user }: { user: User }) {
   const [joinError, setJoinError] = useState('')
   const [loading, setLoading] = useState(false)
 
+  // Clear one field's flag as it's fixed, dropping the summary once none remain.
+  function fixField(key: 'hostName' | 'sessionName' | 'start') {
+    setBadFields(prev => {
+      const next = { ...prev, [key]: false }
+      if (!next.hostName && !next.sessionName && !next.start) setCreateError('')
+      return next
+    })
+  }
+
   async function createSession() {
     // Collect ALL missing required fields, flag each (red border), one summary.
     const bad = { hostName: !displayName.trim(), sessionName: !sessionName.trim(), start: !dateFromDate || !dateFromTime }
@@ -132,18 +141,18 @@ export function LobbyClient({ user }: { user: User }) {
 
           <div className="field">
             <div className="fl">your name</div>
-            <input className={`fi${badFields.hostName ? ' error' : ''}`} value={displayName} onChange={e => { setDisplayName(e.target.value); if (badFields.hostName && e.target.value.trim()) setBadFields(b => ({ ...b, hostName: false })) }} placeholder="firstname or alias" />
+            <input className={`fi${badFields.hostName ? ' error' : ''}`} aria-invalid={badFields.hostName || undefined} value={displayName} onChange={e => { setDisplayName(e.target.value); if (badFields.hostName && e.target.value.trim()) fixField('hostName') }} placeholder="firstname or alias" />
           </div>
 
           <div className="field">
             <div className="fl">session name</div>
-            <input className={`fi${badFields.sessionName ? ' error' : ''}`} value={sessionName} onChange={e => { setSessionName(e.target.value); if (badFields.sessionName && e.target.value.trim()) setBadFields(b => ({ ...b, sessionName: false })) }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+            <input className={`fi${badFields.sessionName ? ' error' : ''}`} aria-invalid={badFields.sessionName || undefined} value={sessionName} onChange={e => { setSessionName(e.target.value); if (badFields.sessionName && e.target.value.trim()) fixField('sessionName') }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
           </div>
           <div className="field">
             <div className="fl">start</div>
             <div style={{display:'flex',gap:8}}>
-              <input className={`fi${badFields.start ? ' error' : ''}`} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) setBadFields(b => ({ ...b, start: false })) }} style={{flex:1,minWidth:0}} />
-              <input className={`fi${badFields.start ? ' error' : ''}`} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) setBadFields(b => ({ ...b, start: false })) }} style={{width:110,flexShrink:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) fixField('start') }} style={{flex:1,minWidth:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) fixField('start') }} style={{width:110,flexShrink:0}} />
             </div>
           </div>
 

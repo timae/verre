@@ -427,8 +427,14 @@ export async function hideAllWines(code: string): Promise<void> {
 // the cover (reclaims the prior S3 bytes); a data URL replaces it. Mobile never
 // sends lifespan (native creates stay 'unlimited' — create parity).
 export type MomentSettingsBody = {
+  // name is required — an empty/whitespace value is rejected server-side
+  // (lib/sessionFields.ts) and the client guards block it before send.
   name?: string;
   address?: string;
+  // dateFrom is required and can't be CLEARED — the server rejects null/empty
+  // (Simon, 2026-07-06). The `| null` remains only because the diff builder can
+  // structurally produce it; the client guard prevents that from being sent.
+  // (dateTo stays genuinely nullable — clearing the end date is allowed.)
   dateFrom?: string | null;
   dateTo?: string | null;
   timezone?: string;

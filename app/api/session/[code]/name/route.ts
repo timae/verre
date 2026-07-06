@@ -26,7 +26,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     return NextResponse.json({ error: 'only the host can rename this session' }, { status: 403 })
   }
 
+  // A moment name is REQUIRED (Simon, 2026-07-06) — this rename path is a 4th
+  // name-write surface beside create + the settings PATCH; it must enforce the
+  // same invariant or a host could blank the name here.
   const name = String(body.name || '').trim().slice(0, 80)
+  if (!name) return NextResponse.json({ error: 'Please name your moment.' }, { status: 400 })
   meta.name = name
   // KEEPTTL — don't downgrade a pro session's 72h/1w/unlimited lifespan
   // to 48h on a rename.

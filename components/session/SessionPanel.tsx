@@ -162,6 +162,15 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     return () => document.removeEventListener('keydown', onKey, { capture: true })
   }, [showDeleteConfirm])
 
+  // Clear one field's flag as it's fixed, dropping the summary once none remain.
+  function fixField(key: 'name' | 'start') {
+    setBadFields(prev => {
+      const next = { ...prev, [key]: false }
+      if (!next.name && !next.start) setSaveError('')
+      return next
+    })
+  }
+
   async function saveSettings() {
     setSaveError('')
     // Name + start date are required and can't be cleared (Simon, 2026-07-06 —
@@ -451,7 +460,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           <div>
             <div className="field">
               <div className="fl">session name</div>
-              <input className={`fi${badFields.name ? ' error' : ''}`} value={name} onChange={e => { setName(e.target.value); if (badFields.name && e.target.value.trim()) setBadFields(b => ({ ...b, name: false })) }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+              <input className={`fi${badFields.name ? ' error' : ''}`} aria-invalid={badFields.name || undefined} value={name} onChange={e => { setName(e.target.value); if (badFields.name && e.target.value.trim()) fixField('name') }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
             </div>
             <div className="field">
               <div className="fl">address</div>
@@ -461,8 +470,8 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div className="field" style={{flex:'1 1 220px',minWidth:0}}>
                 <div className="fl">from</div>
                 <div style={{display:'flex',gap:4}}>
-                  <input className={`fi${badFields.start ? ' error' : ''}`} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) setBadFields(b => ({ ...b, start: false })) }} style={{flex:1,minWidth:0}} />
-                  <input className={`fi${badFields.start ? ' error' : ''}`} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) setBadFields(b => ({ ...b, start: false })) }} style={{width:96,flexShrink:0}} />
+                  <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) fixField('start') }} style={{flex:1,minWidth:0}} />
+                  <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) fixField('start') }} style={{width:96,flexShrink:0}} />
                 </div>
               </div>
               <div className="field" style={{flex:'1 1 220px',minWidth:0}}>

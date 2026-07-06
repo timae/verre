@@ -195,10 +195,10 @@ function DetailsForm({
         ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) setBadFields((b) => ({ ...b, name: false })); }} invalid={badFields.name} autoCorrect={false} />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) { setBadFields((b) => ({ ...b, name: false })); if (!badFields.start) setError(null); } }} invalid={badFields.name} autoCorrect={false} />
         </View>
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <DateField label="From" value={dateFrom} error={badFields.start} onChange={(d) => { setDateFrom(d); if (d && badFields.start) setBadFields((b) => ({ ...b, start: false })); }} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
+          <DateField label="From" value={dateFrom} placeholder="Tap to set" error={badFields.start} onChange={(d) => { setDateFrom(d); if (d && badFields.start) { setBadFields((b) => ({ ...b, start: false })); if (!badFields.name) setError(null); } }} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
           <DateField label="To" value={dateTo} onChange={setDateTo} defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)} minimumDate={dateFrom ?? undefined} />
         </View>
         <View style={{ marginBottom: 14 }}>

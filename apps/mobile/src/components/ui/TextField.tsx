@@ -51,10 +51,13 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   const eyeRef = useRef<View | null>(null);
   useRegisterInput(innerRef);
   useRegisterInput(eyeRef, secure);
-  const borderColor = (error || invalid) ? theme.critical : focused ? theme.accent : theme.rule;
+  const isInvalid = !!(error || invalid);
+  const borderColor = isInvalid ? theme.critical : focused ? theme.accent : theme.rule;
   const input = (
     <TextInput
       {...rest}
+      // Screen-reader invalid state (the red border alone isn't announced).
+      aria-invalid={isInvalid}
       ref={(node) => {
         innerRef.current = node;
         if (typeof ref === 'function') ref(node);

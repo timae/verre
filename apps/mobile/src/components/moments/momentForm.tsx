@@ -261,7 +261,7 @@ export function SelectField({
 // seed exists only inside the sheet and commits only on Done; swipe-dismiss
 // discards.
 export function DateField({
-  label, value, onChange, defaultValue, minimumDate, maximumDate, mode = 'datetime', error,
+  label, value, onChange, defaultValue, minimumDate, maximumDate, mode = 'datetime', error, placeholder = 'Optional',
 }: {
   label: string;
   value: Date | null;
@@ -269,6 +269,9 @@ export function DateField({
   defaultValue: () => Date;
   /** Red border flag (the failing-field indicator; the form summary carries the copy). */
   error?: boolean;
+  /** Empty-state text — defaults to 'Optional'; a REQUIRED field passes its own
+   *  (e.g. 'Tap to set') so it doesn't read as optional. */
+  placeholder?: string;
   // Bound the picker so an invalid window can't be chosen at all (the OS greys
   // out out-of-range dates): To passes minimumDate=From, From passes
   // maximumDate=To. Server is the real authority (applySessionFields), this is
@@ -295,6 +298,8 @@ export function DateField({
         accessibilityRole="button"
         accessibilityLabel={mode === 'date' ? `${label} date` : `${label} date and time`}
         accessibilityValue={{ text: value ? fmt(value) : 'not set' }}
+        // Screen-reader invalid state to match the red border.
+        aria-invalid={!!error}
         onPress={() => {
           // Seed the picker, clamped into [min, max] so it never opens on an
           // out-of-range value (which the OS picker would otherwise snap).
@@ -316,7 +321,7 @@ export function DateField({
         })}
       >
         <VText variant="body" surface="formControl" color={value ? 'ink' : 'inkFaint'} numberOfLines={1} style={{ flex: 1 }}>
-          {value ? fmt(value) : 'Optional'}
+          {value ? fmt(value) : placeholder}
         </VText>
         {value ? (
           <Pressable

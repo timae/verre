@@ -169,7 +169,7 @@ export default function CreateMoment() {
 
         <View style={{ marginBottom: 14 }}>
           {/* Next field is a date picker (non-text), so return = done. */}
-          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) setBadFields((b) => ({ ...b, name: false })); }} invalid={badFields.name} autoCorrect={false} returnKeyType="done" />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) { setBadFields((b) => ({ ...b, name: false })); if (!badFields.start) setError(null); } }} invalid={badFields.name} autoCorrect={false} returnKeyType="done" />
         </View>
 
         {/* "What are you tasting?" — wine-only v1, field per spec but
@@ -208,10 +208,11 @@ export default function CreateMoment() {
           <DateField
             label="From"
             value={dateFrom}
+            placeholder="Tap to set"
             error={badFields.start}
             onChange={(d) => {
               setDateFrom(d);
-              if (d && badFields.start) setBadFields((b) => ({ ...b, start: false }));
+              if (d && badFields.start) { setBadFields((b) => ({ ...b, start: false })); if (!badFields.name) setError(null); }
               // Hide line-up needs a start time — clearing From retracts the
               // row, so reset its state too (else a stale `true` would ship
               // with no date).
