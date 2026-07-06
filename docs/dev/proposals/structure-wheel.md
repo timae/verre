@@ -710,17 +710,27 @@ per selected subset, and the client already receives every taster's ratings via 
 no other consumer (web compare is design-frozen). So the canonical semantics live once in core
 (`aggregateFlavourAxes`), shared web↔native later; **no new server surface**.
 
-**Zero rule — per RATING, not per axis.** "Absent vs explicit 0" is not a per-key distinction in the
-data model (writes are filled-or-empty by construction, `gateAndFillFlavors`); the aggregate applies
-the same model to legacy sparse rows by normalizing each rating through `fillFlavourZeros` first:
+**Zero rule — explicit 0 counts, ABSENT key does not (refined 2026-07-06).** The original rule was
+"per rating, not per axis: any engaged rating counts on every axis, missing keys → explicit 0." That
+holds only while a wine's style at read time equals the style at write time. It broke on a **style
+change**: a wine rated as still-wine (7 axes, no `bubbles` key) later flipped to `spark` (8 axes)
+read every prior taster as `bubbles = 0` — an axis they were never asked about. So engagement is now
+tracked **per axis** on the RAW stored map (before `fillFlavourZeros` stamps absent keys to 0):
 
-- flavors non-empty (rated ≥1 structure axis) → the taster counts on **every** axis of the wine's
-  resolved set; keys missing from an old sparse row normalize to **explicit 0** ("perceived None").
-- flavors empty / rating reset → **no data**: the taster contributes to no axis, no band, no mean.
+- flavors empty / rating reset → **no data**: the taster contributes to no axis (the `{}` gate — this
+  already excludes pre-structure legacy rows, which hold no positive new-structure key).
+- flavors non-empty, and the axis KEY is **present** in the raw map (incl. an explicit stored `0`,
+  which today's input always writes for untouched axes of the wine's style) → **counts** on that axis.
+- flavors non-empty, but the axis KEY is **absent** (never asked — the style grew after this rating) →
+  **excluded** from that axis's min/max/avg AND its per-axis denominator. Not a 0.
 
-`n` is therefore uniform across axes for a given impression+selection (= engaged tasters). A lone
-engaged taster (n = 1) draws a degenerate band — min = max — which C1b's minimum-band-thickness rule
-already renders sensibly.
+`AxisAggregate.n` is therefore **per axis** (≤ the impression's engaged count); the wedge-split /
+Show-all rows render a never-asked axis as **"—"**, not `0`/"None". `consensusFromRatings` applies the
+same raw-presence filter (a never-asked axis is skipped in the per-axis disagreement mean, not counted
+as a 0-gap). In the common case (no style change, one axis set) every engaged rating carries every
+axis, so per-axis `n` = engaged `n` and behaviour is unchanged. A lone engaged taster on an axis
+(n = 1) draws a degenerate band — min = max — which C1b's minimum-band-thickness rule renders sensibly.
+An axis no engaged taster carried (n = 0) is a neutral placeholder (min/max/avg 0), not a real floor.
 
 **Score-side corollary:** overall score `0` = "not rated" (score-system invariant) — excluded from
 the group score avg, the spread, and the ranked rows. Flavour detail still aggregates for such a
