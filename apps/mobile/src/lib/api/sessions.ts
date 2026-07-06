@@ -282,10 +282,10 @@ export async function setBookmark(code: string, wineId: string, on: boolean): Pr
 
 export type CreateMomentBody = {
   hostDisplayName: string;
-  sessionName?: string;
+  sessionName: string; // required (Simon, 2026-07-06) — server rejects an empty name
   category?: 'wine'; // v1 allow-list — widens with future category sets
   coverPhoto?: string; // base64 data URL; server runs the hardened image pipeline
-  dateFrom?: string;
+  dateFrom: string; // required — a moment always has a start date; server rejects absence
   dateTo?: string;
   timezone?: string;
   hideLineup?: boolean;

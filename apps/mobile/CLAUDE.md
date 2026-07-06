@@ -295,11 +295,19 @@ reference for the app; the app's design lives here + in `docs/design/`.)
 
 - `moments/create.tsx` to the tCreate pixel spec. Rulings: category is
   wine-only v1 (field renders per spec, non-interactive, sends
-  `category:'wine'`); From–To optional via the OS compact datetime picker
-  (native-chrome; tap seeds a default, × clears); no lifespan row — native
-  creates default to `unlimited` SERVER-side (`resolveUser` `authSource`,
-  unspoofable; see root CLAUDE.md freemium note); blind toggle renders
-  disabled + PRO badge for non-pro (`GET /api/me/account` → `pro`).
+  `category:'wine'`); **NAME + start date (From) are REQUIRED (Simon,
+  2026-07-06 — reverses the earlier "From–To optional" ruling)** — the server
+  enforces it for every caller (web/native/anon) and an edit can't clear them
+  either (a pre-existing dateless moment must gain a start date before its next
+  settings save). End (To) stays optional. The From field still renders EMPTY
+  and seeds only on a deliberate tap (the no-prefilled-values input ruling holds
+  — we don't force-seed); the submit guard blocks a create/save with no From/name.
+  From–To use the OS compact datetime picker (native-chrome; tap seeds a
+  default, × clears — the × on From is harmless on create/settings because the
+  submit guard re-requires it). No lifespan row — native creates default to
+  `unlimited` SERVER-side (`resolveUser` `authSource`, unspoofable; see root
+  CLAUDE.md freemium note); blind toggle renders disabled + PRO badge for
+  non-pro (`GET /api/me/account` → `pro`).
 - Cover photo: `expo-image-picker` base64 → data URL in the create POST
   (server runs the avatar-grade image pipeline). Keep `quality` low enough
   to stay under the server's 2MB decoded cap; the client pre-checks the
