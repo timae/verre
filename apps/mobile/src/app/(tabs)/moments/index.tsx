@@ -458,7 +458,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         surface="carousel"
         style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold' }}
       >
-        Moments of interest
+        Moments of Interest
       </VText>
       <ScrollView
         ref={scrollRef}
@@ -539,7 +539,7 @@ function JoinBlock() {
     <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
       {/* .sh-sheettitle */}
       <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-        Join a moment
+        Join a Moment
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
       {/* .gs-codewrap: row, gap 8, stretch */}
