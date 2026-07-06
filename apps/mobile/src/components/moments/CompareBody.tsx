@@ -684,6 +684,14 @@ function CmpAccItem({ item }: { item: CmpItem }) {
         })}
       >
         <Thumb uri={wine._blind ? undefined : wine.imageUrl || wine.image || undefined} size={phone.grow(48)} radius={radius.sm} />
+        {/* NAME owns the full text-column width on its own line (a 25-char name +
+            score on one line doesn't fit — ~225pt name vs ~250pt column). The
+            score + chevron are RIGHT-aligned on a metadata rail below; the rail's
+            LEFT slot shows consensus (the group-summary word) if present, else
+            falls back to the producer — so a no-consensus card doesn't leave the
+            rail sparse AND doesn't spend a separate producer line (Codex). The
+            score sits in a FIXED-WIDTH box, star-anchored left, so the ★ lines up
+            vertically across cards regardless of the number's width (Simon). */}
         <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
           <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
             {displayName}
@@ -694,23 +702,35 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               </>
             ) : null}
           </VText>
-          {maker ? (
+          {/* Producer keeps its OWN line only when the rail already shows
+              consensus; otherwise it moves onto the rail (below) as the left slot. */}
+          {maker && item.consensus ? (
             <VText surface="compactList" color="inkSoft" numberOfLines={1} style={phone.text('small')}>{maker}</VText>
           ) : null}
-          {/* Consensus teaser — a GROUP signal only: fewer than two rated
-              scores (consensusFromRatings → null) shows no line at all
-              (Simon's ruling: no score-word substitute for a single rater). */}
-          {item.consensus ? (
-            <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), marginTop: 2, color: consensusTone[item.consensus] }}>
-              {CONSENSUS_COPY[item.consensus]}
-            </VText>
-          ) : null}
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          {item.avg !== null ? <StarScore value={item.avg} size={17} /> : null}
-          <Animated.View style={{ transform: [{ rotate: chev.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] }) }] }}>
-            <Icon name="chevrondown" size={18} color={theme.inkSoft} />
-          </Animated.View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 }}>
+            {item.consensus ? (
+              <VText surface="compactList" numberOfLines={1} style={{ flex: 1, minWidth: 0, fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: consensusTone[item.consensus] }}>
+                {CONSENSUS_COPY[item.consensus]}
+              </VText>
+            ) : maker ? (
+              <VText surface="compactList" color="inkSoft" numberOfLines={1} style={{ flex: 1, minWidth: 0, ...phone.text('small') }}>{maker}</VText>
+            ) : (
+              <View style={{ flex: 1 }} />
+            )}
+            {item.avg !== null ? (
+              // Fixed-width, star-anchored-left so the ★ lands at a constant x
+              // across cards (a right-aligned StarScore would float the star by
+              // the number's width). 60 holds the widest value (★19 + gap4 +
+              // "4.25" ~36); the content is a fixed 17px, so this width is flat,
+              // not comfort-grown.
+              <View style={{ width: 60, alignItems: 'flex-start' }}>
+                <StarScore value={item.avg} size={17} />
+              </View>
+            ) : null}
+            <Animated.View style={{ transform: [{ rotate: chev.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] }) }] }}>
+              <Icon name="chevrondown" size={18} color={theme.inkSoft} />
+            </Animated.View>
+          </View>
         </View>
       </Pressable>
       {open ? (
@@ -816,10 +836,14 @@ function CmpChart({
         No structure detail from {person.displayName} yet.
       </VText>
     );
-    // Make the one-profile case unmistakable (Simon's ask): when the single
-    // wheel is automatic — only one person gave structure detail — say so.
-    // A deliberate row tap (detail) needs no disclaimer.
-    if (!detail) hint = `Structure detail from ${person.displayName} only.`;
+    // Always signal that this is ONE person's view, not the group (Simon):
+    // - auto case (only one person gave structure detail): explain WHY it's a
+    //   single wheel.
+    // - deliberate row tap (detail): confirm you've drilled into that person
+    //   and how to get back to the group.
+    hint = detail
+      ? `Showing ${person.displayName} · tap their row again for the group`
+      : `Structure detail from ${person.displayName} only.`;
   } else if (flavourRaters.length === 0) {
     return (
       <VText variant="caption" color="inkFaint" style={{ textAlign: 'center', paddingVertical: 14, fontStyle: 'italic' }}>
@@ -957,6 +981,12 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
 // for that person's rating detail; in the ≤4 radar view a person dot (before
 // the name) ties the row to their polygon (empty dot = no flavour profile).
 const hasStructure = (r: Rater) => Object.keys(r.filled).length > 0;
+// Was this rater actually ASKED about a given axis? Reads the RAW stored
+// flavours: a key present (even explicit 0) = asked; absent = never asked (the
+// axis-set grew after they rated, e.g. bubbles on a since-flipped-to-spark
+// wine). Drives asked-first ordering + the "—" render + the honest axis count.
+const askedAxis = (r: Rater, axisKey: string) =>
+  Object.prototype.hasOwnProperty.call(r.rating.flavors ?? {}, axisKey);
 
 // Score-list rows, shared by the resting panel AND the Show-all sheet (they
 // must list the same people). With 1–4 structure profiles (Simon's ruling)
@@ -1049,7 +1079,15 @@ function AxisSplit({
   const color = flavourColor(axis.k);
   const spread = axis.max - axis.min;
   const agree = spread <= 1 ? 'tight agreement' : spread >= 3 ? 'wide spread' : 'some spread';
-  const rows = item.raters.filter((r) => Object.keys(r.filled).length > 0);
+  // No engaged taster was asked this axis (e.g. every selection member rated
+  // before the wine became spark) → there is no avg/range to show; the band +
+  // avg collapse to a "—" not-rated state instead of a misleading 0.0 at hub.
+  const noneAsked = axis.n === 0;
+  // Raters who ENGAGED structure at all, ordered asked-this-axis first (they
+  // drove the band/avg above), then the never-asked ("—") rows below.
+  const rows = item.raters
+    .filter((r) => Object.keys(r.filled).length > 0)
+    .sort((a, b) => Number(askedAxis(b, axis.k)) - Number(askedAxis(a, axis.k)));
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
   return (
     <View>
@@ -1059,9 +1097,14 @@ function AxisSplit({
           <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>{axis.l}</VText>
         </View>
         <VText color="inkSoft" style={phone.text('small')}>
-          avg <VText color="ink" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>{axis.avg.toFixed(1)}</VText>
+          avg <VText color={noneAsked ? 'inkFaint' : 'ink'} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>{noneAsked ? '—' : axis.avg.toFixed(1)}</VText>
         </VText>
       </View>
+      {noneAsked ? (
+        <VText variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 4, marginBottom: 8, fontStyle: 'italic' }}>
+          Nobody in the selection was asked this.
+        </VText>
+      ) : (
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4, marginBottom: 8 }}>
         <VText variant="caption" color="inkSoft" numberOfLines={1}>
           {intensityWord(axis.min)}→{intensityWord(axis.max)}
@@ -1083,6 +1126,7 @@ function AxisSplit({
         </View>
         <VText variant="caption" color="inkSoft" numberOfLines={1}>{agree}</VText>
       </View>
+      )}
       {shown.map((r, i) => (
         <PersonRow
           key={r.id}
@@ -1093,10 +1137,18 @@ function AxisSplit({
           accessibilityLabel={radarMode ? `${hiddenLines.has(r.id) ? 'Show' : 'Hide'} ${r.displayName}'s line on the chart` : undefined}
           onPress={radarMode ? () => onToggleLine(r.id) : () => onSelectPerson(r.id)}
         >
-          <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
-            {r.filled[axis.k] ?? 0}
-          </VText>
+          {askedAxis(r, axis.k) ? (
+            <>
+              <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
+              <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
+                {r.filled[axis.k] ?? 0}
+              </VText>
+            </>
+          ) : (
+            // This taster was never asked about this axis (raw key absent — e.g.
+            // rated before the wine became spark) → "—", not a 0 they didn't give.
+            <VText color="inkFaint" style={{ ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>—</VText>
+          )}
         </PersonRow>
       ))}
       {rows.length > CAP ? <ShowAllButton total={rows.length} onPress={onShowAll} /> : null}
@@ -1191,13 +1243,28 @@ function ShowAllSheet({
   const base = axis ? item.raters.filter(hasStructure) : scoreRowsFor(item, structureFirst);
   const rows = base
     .filter((r) => !q || fuzzyIncludes(r.displayName, q))
-    .sort((a, b) => sign * (axis ? (a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0) : (a.rating.score || 0) - (b.rating.score || 0)));
-  const total = base.length;
+    .sort((a, b) => {
+      // On an axis, raters who were ASKED it always sort above the never-asked
+      // ("—") rows, regardless of the high/low direction; within each group,
+      // the chosen direction applies.
+      if (axis) {
+        const aAsked = askedAxis(a, axis.k);
+        const bAsked = askedAxis(b, axis.k);
+        if (aAsked !== bAsked) return aAsked ? -1 : 1;
+        return sign * ((a.filled[axis.k] ?? 0) - (b.filled[axis.k] ?? 0));
+      }
+      return sign * ((a.rating.score || 0) - (b.rating.score || 0));
+    });
+  // Header count reflects who actually drove the axis (asked it) — the "—"
+  // never-asked rows are shown but don't inflate the label.
+  const total = axis ? base.filter((r) => askedAxis(r, axis.k)).length : base.length;
   // Same cap-aware sizing as the picker: dynamic fit-to-content while the
   // unfiltered list fits under 85%; else the CountrySheet recipe (fixed snap,
-  // pinned head/controls, scrollable rows).
+  // pinned head/controls, scrollable rows). Sizing counts the RENDERED rows
+  // (incl. "—" ones), not the asked-only header total.
+  const renderCount = base.length;
   const rowH = Math.max(17, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 17;
-  const needsScroll = 178 + insets.bottom + total * rowH > windowH * 0.85;
+  const needsScroll = 178 + insets.bottom + renderCount * rowH > windowH * 0.85;
   const headBlock = (
     <>
         <View style={{ paddingTop: 4, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
@@ -1208,7 +1275,7 @@ function ShowAllSheet({
             ) : null}
           </VText>
           <VText variant="caption" color="inkSoft" style={{ marginTop: 2 }}>
-            {axis ? axis.l : 'Scores'} · {total} {total === 1 ? 'person' : 'people'}
+            {axis ? axis.l : 'Scores'} · {axis && total === 0 ? 'nobody asked' : `${total} ${total === 1 ? 'person' : 'people'}`}
           </VText>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 }}>
@@ -1244,12 +1311,16 @@ function ShowAllSheet({
           {rows.map((r, i) => (
             <PersonRow key={r.id} first={i === 0} name={r.displayName}>
               {axis ? (
-                <>
-                  <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
-                  <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
-                    {r.filled[axis.k] ?? 0}
-                  </VText>
-                </>
+                askedAxis(r, axis.k) ? (
+                  <>
+                    <VText color="inkSoft" style={phone.text('small')}>{intensityWord(r.filled[axis.k] ?? 0)}</VText>
+                    <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>
+                      {r.filled[axis.k] ?? 0}
+                    </VText>
+                  </>
+                ) : (
+                  <VText color="inkFaint" style={{ ...phone.text('body'), minWidth: 16, textAlign: 'right' }}>—</VText>
+                )
               ) : (
                 <View style={{ minWidth: 67 }}>
                   {(r.rating.score || 0) > 0 ? (
