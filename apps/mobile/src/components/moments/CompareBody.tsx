@@ -707,7 +707,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           ) : null}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          {item.avg !== null ? <StarScore value={item.avg} size={15} /> : null}
+          {item.avg !== null ? <StarScore value={item.avg} size={17} /> : null}
           <Animated.View style={{ transform: [{ rotate: chev.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] }) }] }}>
             <Icon name="chevrondown" size={18} color={theme.inkSoft} />
           </Animated.View>
