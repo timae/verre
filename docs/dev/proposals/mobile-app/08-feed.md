@@ -1,8 +1,10 @@
 # 08 — Mobile feed
 
-**Status**: PROPOSED (2026-07-06). Part of the [mobile-app meta-proposal](README.md); the feed was listed there as "not started / breadth," never owned by a numbered doc — this is that doc. The **backend is complete and shipped** (`/api/feed` + the whole social-feed surface, see [docs/dev/social-feed.md](../../social-feed.md)); this proposal is a **native client** over it, plus one net-new read screen. No backend changes are required for Phase 1.
+**Status**: Phase-1 **checkpoint 1 BUILT** on `feature/mobile-feed` (commit `6be1320`, 2026-07-06) — feed list + session glass card + backend payload extension, typecheck/lint/bundle-export green, device-iterated. **NOT merged, NOT pushed.** Remaining Phase-1: the full impression detail screen (checkpoint 2 — `feed/impression/[id].tsx` is a placeholder) + "Had it too". Part of the [mobile-app meta-proposal](README.md). The `/api/feed` backend was already shipped (see [docs/dev/social-feed.md](../../social-feed.md)); this adds a native client + one additive payload field-set (§3, done) + the detail screen.
 
-Design source: the 03·12 exploration in `.local/design/vero-feed.js` (`sessG`/`gpanelInner`/`impSheet`/`gFull`) + the `## Feed` decisions in `.local/design/CLAUDE.md`. Simon picked **03·12 ("linked · glass")** with three deviations from the mock, recorded in §2.
+Design source: the 03·12 exploration in `.local/design/vero-feed.js` (`sessG`/`gpanelInner`/`impSheet`/`gFull`) + the `## Feed` decisions in `.local/design/CLAUDE.md`. Simon picked **03·12 ("linked · glass")** with deviations from the mock, recorded in §2 + §2b (as-built).
+
+**As-built files** (`apps/mobile/src/`): `app/(tabs)/feed/index.tsx` (list) · `app/(tabs)/feed/impression/[id].tsx` (detail, PLACEHOLDER) · `components/feed/SessionFeedCard.tsx` · `components/feed/StandaloneFeedCard.tsx` · `lib/api/feed.ts` (fetcher + wire types) · `lib/feedAspect.ts` (IG framing) · `lib/feedFitMode.ts` (dev toggle) · `lib/flavourAxes.ts`. Backend: `lib/feedTypes.ts` + `lib/sessionFeedWines.ts`.
 
 ---
 
@@ -50,6 +52,29 @@ Compose with `react-native-gesture-handler` the same way the app already does el
 
 ---
 
+## 2b. As-built card behaviour (device-iterated, 2026-07-06) — SUPERSEDES §2 where they differ
+
+Decisions made iterating the card on a real device this session. Where §2 and §2b conflict, **§2b wins** (it's later + device-verified).
+
+**Photo aspect — IG-style framing (`lib/feedAspect.ts`).** §2's "edge-to-edge square carousel" is superseded: the feed doesn't carry image dimensions, and forcing a square cropped portraits (Simon's "cutting images in height"). The model:
+- **Frame band** = `h/w ∈ [3/4 (4:3 landscape) … 4/3 (3:4 portrait)]` — the phone-camera default aspect (4:3 sensor held either way), so a **standard phone photo fills the frame whole, no crop, in either orientation**. Only unusual shapes are affected (a >3:4 tall screenshot crops to 3:4; a >4:3 wide shot crops/bars to 4:3). *(We briefly used a 4:5 tall cap; reverted to 3:4 because 4:5 cropped the common 3:4 phone portrait ~6% — Simon.)*
+- **Carousel frame rule**: the **tallest photo wins**, clamped to the band → the frame is always ≥ every slide, so a shorter (landscape) slide never pillarboxes. An all-landscape moment gets a landscape (≈4:3) frame; a portrait-containing moment gets up to a 3:4 frame.
+- **Dimensions are measured via `expo-image`'s `onLoad`** (`e.source.width/height`), NOT `RNImage.getSize` — getSize did a *separate* fetch that failed silently against MinIO, leaving every photo on the cover fallback (the whole aspect system silently didn't work until this was fixed). Frame settles from a 4:5 default while images resolve.
+- **Fit within the frame — CROP is the chosen default (Simon), `bars` is the alternative.** A dev toggle (`lib/feedFitMode.ts`, exposed in the dev gallery's "Feed photo fit" section) flips between:
+  - `'crop'` — every photo `cover`-fills the frame (crops the overflow, no bars). **Simon's pick.** A photo that matches the frame isn't cropped (cover on an exact match is a no-op) — so crop only bites the *minority orientation in a mixed moment*.
+  - `'bars'` — a photo shorter than the frame `contain`s with **tint letterbox bars** (`surfaceSunk`, "alternate background tint"); a photo *taller* than the frame still crops (we **never pillarbox** — Simon: "rather crop, like Insta").
+  - ⚠️ **Delete this toggle before ship** (hardcode crop, remove `feedFitMode.ts` + the dev-gallery section).
+
+**Panel travels with the photo.** §2 had the glass panel as a static overlay swapping content on scroll-end; Simon: it must **slide with the photo**. So the panel lives INSIDE each carousel slide (`WineSlide`), not as one overlay. The dot strip + heart-burst stay static overlays.
+
+**Overscroll shows flat tint, not background.** Pulling past the carousel ends reveals the carousel container's `surfaceSunk` background (matching the letterbox tint), **sitting flat — no shadow** (Simon rejected the lifted-shadow version; RN ScrollViews clip child shadows anyway).
+
+**Glass panel content (as-built, `GlassPanelInner`):** name + `- vintage` + producer·type + **★ score (bigger — no score WORD**, Simon cut "Really good"/"Good") + mini wheel + a **`chevron-right`** disclosure glyph (the design's `.fpg-chev` = `i-back` rotated 180° — NOT the `more`/⋯ icon, which was the initial mistake). The year is **same colour as the name**, one weight lighter (medium vs semibold), one size smaller — consistent across both cards.
+
+**Feed-list extras:** tapping the Feed tab while on Feed **scrolls to top** (`useScrollToTop` from `expo-router`, wired to the FlatList ref).
+
+---
+
 ## 3. The full impression page — NEW read-only screen (not 02e)
 
 **Decision (Simon, 2026-07-06): build a NEW feed detail screen, do not reuse 02e.** Rationale: 02e (`impression/[wineId].tsx`, 1155 lines) is a **write** interface — it carries `ScoreInput`, `FlavourInput`, the rate-commit flow, the host reveal/hide controls, the live `/state` poll, and the wine-editing machinery. The feed detail is a **read** surface: someone else's impression, no editing, no live poll. Reusing 02e would mean threading a read-only mode through all of that. Cleaner to build a focused read screen. **It must speak the same design language** — same hero + collapsing-title pattern, same rating-block layout, same `FullscreenImage` hero-tap — reusing the same primitives, just without the write controls.
@@ -70,13 +95,18 @@ Compose with `react-native-gesture-handler` the same way the app already does el
 
 ## 4. Build plan — Phase 1
 
-1. **Feed fetcher + wire types** (`src/lib/api/feed.ts`) — mirror `lib/feedTypes.ts`; `useInfiniteQuery` over `GET /api/feed` with cursor paging; `ApiError` mapping like `sessions.ts`. Wire the like mutation (`/api/feed-items/:id/like`).
-2. **Feed list screen** (`(tabs)/feed.tsx`, replacing the placeholder) — `FlatList` of cards, pull-to-refresh, infinite scroll, the query-failure affordances (`ConnectionState`), empty state.
-3. **Session glass card** (`components/feed/SessionFeedCard.tsx`) — 03·12 anatomy: header, edge-to-edge carousel + dot strip, glass panel (per-photo switch), action row, likes line, caption. Pixel-spec off `vero-feed.js` `sessG`/`gpanelInner` + `vero-feed.css` (translate class-by-class per the brand-custom rule).
-4. **Double-tap-to-like gesture + heart-burst** on the card photo (§2), optimistic like.
-5. **Backend: extend `SessionFeedWine` + `loadSessionFeedWines`** with `region`/`country`/`vinification`/`description`/`purchaseUrl` (§3), guarded by the existing redaction fork. The single backend change in Phase 1.
-6. **Full impression detail screen** (`components/feed/` + a route) — §3, a pure client render off the extended payload.
-7. **Standalone card** — minimal render only (or omit); real redesign is Phase 2.
+**Checkpoint 1 — DONE** (commit `6be1320`, device-iterated; see §2b for as-built card behaviour):
+1. ✅ **Feed fetcher + wire types** (`src/lib/api/feed.ts`) — `useInfiniteQuery` over `GET /api/feed`, cursor paging, `ApiError` mapping, like mutation.
+2. ✅ **Feed list screen** (`(tabs)/feed/index.tsx` — `feed.tsx` became a `feed/` STACK so the detail pushes within the tab) — `FlatList`, pull-to-refresh, infinite scroll, focus-refetch, empty/error states, tab-repress scroll-to-top.
+3. ✅ **Session glass card** (`components/feed/SessionFeedCard.tsx`) — 03·12 anatomy, but see §2b (IG framing, panel-slides-with-photo, crop default, flat overscroll tint, chevron, no score word).
+4. ✅ **Double-tap-to-like + heart-burst**, optimistic like.
+5. ✅ **Backend: extend `SessionFeedWine` + `loadSessionFeedWines`** with `region`/`country`/`vinification`/`description`/`purchaseUrl`, guarded by the existing redaction fork. Verified end-to-end vs real Postgres.
+
+**Checkpoint 2 — REMAINING:**
+6. ⬜ **Full impression detail screen** (`feed/impression/[id].tsx` — currently a PLACEHOLDER; §3) — pure client render off the extended payload. Photo hero + rating below + swipe between the moment's impressions + tap-hero→`FullscreenImage`. Read the collapsing-hero pattern doc FIRST.
+7. ⬜ **"Had it too"** wiring (card action row + detail page) — `POST /api/checkins` with `copyFromCheckinId`.
+8. ⬜ **Standalone card** — minimal render exists (`StandaloneFeedCard.tsx`); real redesign is Phase 2 (§5).
+9. ⬜ **Delete the `feedFitMode` dev toggle** — hardcode `crop`, remove `lib/feedFitMode.ts` + the dev-gallery section (§2b).
 
 **Known-hard, budget for it:** the collapsing hero (read the pattern doc), the full-bleed `contentInsetAdjustmentBehavior` trap (`apps/mobile/CLAUDE.md` scoring §: the zero-size `<View collapsable={false}>` dead-end — applies to any edge-to-edge screen, "feed hero cards" is called out by name), and the two-gesture composition on the carousel photo.
 
