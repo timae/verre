@@ -6,7 +6,7 @@ import { Icon, type IconName } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { GLASS_FILL, GUTTER } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
@@ -67,6 +67,7 @@ export function SetNav({
   soon?: boolean;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const tint = disabled ? theme.inkFaint : critical ? theme.critical : theme.ink;
   const iconTint = disabled ? theme.inkFaint : critical ? theme.critical : theme.inkSoft;
   return (
@@ -78,8 +79,8 @@ export function SetNav({
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        gap: 12,
-        paddingVertical: 13,
+        gap: phone.lerp(12, 16),
+        paddingVertical: phone.lerp(13, 17),
         paddingHorizontal: 14,
         // Every row draws a top hairline; the first row's overlaps the group's
         // own top border so it reads as one line (.setnav + .setnav rule).

@@ -1921,11 +1921,11 @@ function LuRow({
               <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
                 Tap the photo to hide
               </VText>
-            ) : !hostSeesHidden && (wine.grape || wine.type) ? (
-              <VText surface="compactList" variant="caption" color="inkFaint" numberOfLines={1} style={{ marginTop: 1 }}>
-                {wine.grape || wineTypeLabel(wine.type)}
-              </VText>
             ) : null}
+            {/* Normal (non-blind) rows drop the grape/type caption entirely —
+                the row sizes to name + producer centered against the thumb.
+                Blind/host rows keep their 3 lines. Grape/type still lives on
+                the impression detail. (Simon) */}
           </>
         )}
       </View>

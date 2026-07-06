@@ -41,7 +41,7 @@ export type WineStyle = 'red' | 'white' | 'rose' | 'spark' | 'nonalc'
 // (theme/flavourColors.ts KEY_TO_LABEL + palette.js labels 'Aroma'/'Flavour'),
 // so ONLY the display label `l` changed here, never `k`.
 const WINE_BASE: StructureAxis[] = [
-  { k: 'sweet',   l: 'Sweet' }, // short label: 'Sweetness' (9ch) clipped at a side wheel cardinal past PolarChart's viewBox pad
+  { k: 'sweet',   l: 'Sweetness' }, // sits at the TOP wheel cardinal — no side-cardinal viewBox-pad clip (which is why the earlier short 'Sweet' was safe to lengthen)
   { k: 'acid',    l: 'Acidity' },
   { k: 'body',    l: 'Body' },
   { k: 'finish',  l: 'Finish' },

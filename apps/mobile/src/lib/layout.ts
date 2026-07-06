@@ -126,6 +126,20 @@ export function phoneSizeToken(name: PhoneSizeToken, comfort: number): number {
   return lerp(token.size, token.comfortSize, comfort);
 }
 
+// Proportional comfort growth for list-row structure (thumbs, avatars, row
+// gap/padding) so EVERY list row breathes the same WAY on big phones while
+// keeping its own authored base size (Simon's ruling: consistent feel, not
+// one uniform size — People stays denser than a wine row, etc.). The ratio
+// matches the recentThumb token the line-up + Moments-home cards already use
+// (56/46 ≈ 1.22), so all list rows now scale by the same factor. Use for
+// per-row structural dimensions; NOT for chart canvases, sheet-snap math,
+// borders, or icon-in-control sizes (those stay flat — load-bearing).
+export const ROW_COMFORT_RATIO = 56 / 46;
+
+export function phoneGrow(base: number, comfort: number, ratio = ROW_COMFORT_RATIO): number {
+  return lerp(base, base * ratio, comfort);
+}
+
 export function usePhoneTokens() {
   const phone = usePhoneMetrics();
   return useMemo(() => ({
@@ -136,6 +150,9 @@ export function usePhoneTokens() {
     lerp: phone.lerp,
     text: (name: PhoneTextToken, scale?: number) => phoneTextToken(name, phone.comfort, scale),
     size: (name: PhoneSizeToken) => phoneSizeToken(name, phone.comfort),
+    // Proportional row-structure growth (thumbs/avatars/gaps/padding) — see
+    // phoneGrow. Rounds so callers get a clean pixel value.
+    grow: (base: number, ratio?: number) => Math.round(phoneGrow(base, phone.comfort, ratio)),
     surface: (name: FontSurfaceName) => phoneSurface(name, phone.fontScale),
   }), [phone]);
 }

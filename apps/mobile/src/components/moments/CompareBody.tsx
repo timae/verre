@@ -386,7 +386,11 @@ export function ComparePickerSheet({
   // BottomSheetScrollView (which needs the fixed snap — it measures 0 under
   // dynamic sizing). The estimate only picks the MODE; near the boundary the
   // two render identically.
-  const rowH = Math.max(30, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 19;
+  // Row padding + avatar GROW on big phones (phone.lerp/grow), so the estimate
+  // feeds the SAME grown values in — a flat estimate would under-count and keep
+  // a near-cap roster in dynamic-fit mode where its bottom rows clip (reviewer
+  // catch).
+  const rowH = Math.max(phone.grow(30), Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + phone.lerp(9, 12) * 2 + 1;
   const needsScroll = 214 + insets.bottom + people.length * rowH > windowH * 0.85;
   const headBlock = (
     <>
@@ -433,12 +437,12 @@ export function ComparePickerSheet({
                 accessibilityState={{ selected: on }}
                 onPress={() => onToggle(p.id)}
                 style={({ pressed }) => ({
-                  flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 9,
+                  flexDirection: 'row', alignItems: 'center', gap: phone.lerp(10, 13), paddingVertical: phone.lerp(9, 12),
                   borderTopWidth: i === 0 ? 0 : 1, borderTopColor: theme.ruleSoft,
                   backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
                 })}
               >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={30} anon={p.id.startsWith('a:')} />
+                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(30)} anon={p.id.startsWith('a:')} />
                 <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
                   {/* Unregistered read QUIETLY, with the SAME tokens as the
                       People sheet's anon rows (regular weight + inkSoft; no
@@ -675,11 +679,11 @@ function CmpAccItem({ item }: { item: CmpItem }) {
         accessibilityLabel={`${displayName}${item.avg !== null ? `, group average ${item.avg}` : ''}`}
         onPress={toggleOpen}
         style={({ pressed }) => ({
-          flexDirection: 'row', alignItems: 'center', gap: 12, padding: 12,
+          flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), padding: phone.lerp(12, 16),
           backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
         })}
       >
-        <Thumb uri={wine._blind ? undefined : wine.imageUrl || wine.image || undefined} size={48} radius={radius.sm} />
+        <Thumb uri={wine._blind ? undefined : wine.imageUrl || wine.image || undefined} size={phone.grow(48)} radius={radius.sm} />
         <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
           <VText surface="compactList" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
             {displayName}
@@ -914,7 +918,7 @@ function PersonRow({
   );
   if (!onPress) {
     return (
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8, borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(10, 13), paddingVertical: phone.lerp(8, 11), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
         {inner}
       </View>
     );
@@ -926,7 +930,7 @@ function PersonRow({
       accessibilityLabel={accessibilityLabel ?? (active ? `Hide ${name}'s rating detail` : `Show ${name}'s rating detail`)}
       onPress={onPress}
       style={({ pressed }) => ({
-        flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,
+        flexDirection: 'row', alignItems: 'center', gap: phone.lerp(10, 13), paddingVertical: phone.lerp(8, 11),
         marginHorizontal: -6, paddingHorizontal: 6, borderRadius: radius.sm,
         borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft,
         backgroundColor: pressed ? theme.surfaceSunk : 'transparent',

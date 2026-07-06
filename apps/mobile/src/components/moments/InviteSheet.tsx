@@ -257,8 +257,8 @@ function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first:
   const phone = usePhoneTokens();
   const surface = phone.surface('compactList');
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: surface.paddingY(9), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
-      <Avatar imageUrl={friend.imageUrl} name={friend.name} size={42} initialsSize={14} />
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(9, 13)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
+      <Avatar imageUrl={friend.imageUrl} name={friend.name} size={phone.grow(42)} />
       <View style={{ flex: 1, minWidth: 0 }}>
         <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{friend.name}</VText>
         <VText surface="compactList" variant="small" color="inkSoft">Friend</VText>
