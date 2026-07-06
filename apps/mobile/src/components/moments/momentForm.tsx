@@ -261,12 +261,14 @@ export function SelectField({
 // seed exists only inside the sheet and commits only on Done; swipe-dismiss
 // discards.
 export function DateField({
-  label, value, onChange, defaultValue, minimumDate, maximumDate, mode = 'datetime',
+  label, value, onChange, defaultValue, minimumDate, maximumDate, mode = 'datetime', error,
 }: {
   label: string;
   value: Date | null;
   onChange: (d: Date | null) => void;
   defaultValue: () => Date;
+  /** Red border flag (the failing-field indicator; the form summary carries the copy). */
+  error?: boolean;
   // Bound the picker so an invalid window can't be chosen at all (the OS greys
   // out out-of-range dates): To passes minimumDate=From, From passes
   // maximumDate=To. Server is the real authority (applySessionFields), this is
@@ -309,7 +311,7 @@ export function DateField({
           paddingVertical: surface.paddingY(10),
           backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
           borderWidth: 1,
-          borderColor: theme.rule,
+          borderColor: error ? theme.critical : theme.rule,
           borderRadius: radius.sm,
         })}
       >

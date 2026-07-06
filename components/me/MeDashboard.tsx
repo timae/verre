@@ -29,6 +29,9 @@ export function MeDashboard({ user }: { user: User }) {
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [createError, setCreateError] = useState('')
+  // Which required create fields failed the last submit (red border). Cleared
+  // per-field as the user edits it.
+  const [badFields, setBadFields] = useState({ hostName: false, sessionName: false, start: false })
   const [joinError, setJoinError] = useState('')
   const isPro = user.pro
 
@@ -42,10 +45,20 @@ export function MeDashboard({ user }: { user: User }) {
   })
 
   async function createSession() {
-    if (!name.trim()) { setCreateError('Enter your name'); return }
-    // Name + start date are required (Simon, 2026-07-06 — server enforces it too).
-    if (!sessionName.trim()) { setCreateError('Please name your moment.'); return }
-    if (!dateFromDate || !dateFromTime) { setCreateError('Please set a start date and time.'); return }
+    // Collect ALL missing required fields, flag each with a red border, and show
+    // one summary (specific copy for a single miss, generic for several).
+    const bad = { hostName: !name.trim(), sessionName: !sessionName.trim(), start: !dateFromDate || !dateFromTime }
+    setBadFields(bad)
+    const missCount = Number(bad.hostName) + Number(bad.sessionName) + Number(bad.start)
+    if (missCount > 0) {
+      setCreateError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.hostName ? 'Enter your name'
+        : bad.sessionName ? 'Please name your moment.'
+        : 'Please set a start date and time.',
+      )
+      return
+    }
     const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
     const res = await fetch('/api/session', {
@@ -125,17 +138,17 @@ export function MeDashboard({ user }: { user: User }) {
           <p style={{fontSize:9,letterSpacing:'0.18em',textTransform:'uppercase',color:'var(--accent2)',marginBottom:14}}>start or join</p>
           <div className="field">
             <div className="fl">your name</div>
-            <input className="fi" value={name} onChange={e => setName(e.target.value)} placeholder="firstname or alias" />
+            <input className={`fi${badFields.hostName ? ' error' : ''}`} value={name} onChange={e => { setName(e.target.value); if (badFields.hostName && e.target.value.trim()) setBadFields(b => ({ ...b, hostName: false })) }} placeholder="firstname or alias" />
           </div>
           <div className="field">
             <div className="fl">session name</div>
-            <input className="fi" value={sessionName} onChange={e => setSessionName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+            <input className={`fi${badFields.sessionName ? ' error' : ''}`} value={sessionName} onChange={e => { setSessionName(e.target.value); if (badFields.sessionName && e.target.value.trim()) setBadFields(b => ({ ...b, sessionName: false })) }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
           </div>
           <div className="field">
             <div className="fl">start</div>
             <div style={{display:'flex',gap:8}}>
-              <input className="fi" type="date" value={dateFromDate} onChange={e => setDateFromDate(e.target.value)} style={{flex:1,minWidth:0}} />
-              <input className="fi" type="time" value={dateFromTime} onChange={e => setDateFromTime(e.target.value)} style={{width:110,flexShrink:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) setBadFields(b => ({ ...b, start: false })) }} style={{flex:1,minWidth:0}} />
+              <input className={`fi${badFields.start ? ' error' : ''}`} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) setBadFields(b => ({ ...b, start: false })) }} style={{width:110,flexShrink:0}} />
             </div>
           </div>
           <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />

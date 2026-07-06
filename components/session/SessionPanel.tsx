@@ -96,6 +96,9 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [copied,        setCopied]        = useState(false)
   const [saving,        setSaving]        = useState(false)
   const [saveError,     setSaveError]     = useState('')
+  // Which required settings fields failed the last save (red border), cleared
+  // per-field as the user edits.
+  const [badFields, setBadFields] = useState({ name: false, start: false })
   const [showParticipants, setShowParticipants] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleting,      setDeleting]      = useState(false)
@@ -163,9 +166,20 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     setSaveError('')
     // Name + start date are required and can't be cleared (Simon, 2026-07-06 —
     // the same invariant the server enforces; also applies to old dateless
-    // moments, which must gain a start date before their next save).
-    if (!name.trim()) { setSaveError('Please name your moment.'); return }
-    if (!dateFromDate || !dateFromTime) { setSaveError('Please set a start date and time.'); return }
+    // moments, which must gain a start date before their next save). Collect all
+    // required misses first (red border on each, one summary), then the To-pair
+    // consistency checks (a lone date/time).
+    const bad = { name: !name.trim(), start: !dateFromDate || !dateFromTime }
+    setBadFields(bad)
+    const missCount = Number(bad.name) + Number(bad.start)
+    if (missCount > 0) {
+      setSaveError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.name ? 'Please name your moment.'
+        : 'Please set a start date and time.',
+      )
+      return
+    }
     if (dateToDate   && !dateToTime)   { setSaveError('Please add a time to the end date.');   return }
     if (dateToTime   && !dateToDate)   { setSaveError('Please add a date to the end time.');   return }
     setSaving(true)
@@ -437,7 +451,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           <div>
             <div className="field">
               <div className="fl">session name</div>
-              <input className="fi" value={name} onChange={e => setName(e.target.value)} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
+              <input className={`fi${badFields.name ? ' error' : ''}`} value={name} onChange={e => { setName(e.target.value); if (badFields.name && e.target.value.trim()) setBadFields(b => ({ ...b, name: false })) }} maxLength={80} placeholder="e.g. Friday Bordeaux tasting" />
             </div>
             <div className="field">
               <div className="fl">address</div>
@@ -447,8 +461,8 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div className="field" style={{flex:'1 1 220px',minWidth:0}}>
                 <div className="fl">from</div>
                 <div style={{display:'flex',gap:4}}>
-                  <input className="fi" type="date" value={dateFromDate} onChange={e => setDateFromDate(e.target.value)} style={{flex:1,minWidth:0}} />
-                  <input className="fi" type="time" value={dateFromTime} onChange={e => setDateFromTime(e.target.value)} style={{width:96,flexShrink:0}} />
+                  <input className={`fi${badFields.start ? ' error' : ''}`} type="date" value={dateFromDate} onChange={e => { setDateFromDate(e.target.value); if (badFields.start && e.target.value && dateFromTime) setBadFields(b => ({ ...b, start: false })) }} style={{flex:1,minWidth:0}} />
+                  <input className={`fi${badFields.start ? ' error' : ''}`} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) setBadFields(b => ({ ...b, start: false })) }} style={{width:96,flexShrink:0}} />
                 </div>
               </div>
               <div className="field" style={{flex:'1 1 220px',minWidth:0}}>

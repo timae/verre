@@ -74,6 +74,9 @@ function DetailsForm({
   const [coverFullscreen, setCoverFullscreen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which required fields failed the last save (red border), cleared per-field
+  // as the user edits.
+  const [badFields, setBadFields] = useState({ name: false, start: false });
 
   const onPickCover = async () => {
     setCoverError(null);
@@ -94,18 +97,21 @@ function DetailsForm({
   const onSave = async () => {
     setError(null);
     // Name + start date are required and can't be CLEARED (Simon, 2026-07-06 —
-    // the same absolute invariant as create; the server rejects a clear for
-    // every caller, this is the friendly copy). Applies to old dateless moments
-    // too: they must gain a start date before their next save goes through.
-    if (!name.trim()) {
-      setError('Please name your moment.');
+    // the same absolute invariant as create). Collect ALL misses, flag each
+    // field (red border), one summary. Applies to old dateless moments too:
+    // they must gain a start date before their next save goes through.
+    const bad = { name: !name.trim(), start: !dateFrom };
+    setBadFields(bad);
+    const missCount = Number(bad.name) + Number(bad.start);
+    if (missCount > 0) {
+      setError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.name ? 'Please name your moment.'
+        : 'Please set a start date.',
+      );
       return;
     }
-    if (!dateFrom) {
-      setError('Please set a start date.');
-      return;
-    }
-    if (dateTo && dateTo < dateFrom) {
+    if (dateTo && dateFrom && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
     }
@@ -189,10 +195,10 @@ function DetailsForm({
         ) : null}
 
         <View style={{ marginBottom: 14 }}>
-          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) setBadFields((b) => ({ ...b, name: false })); }} invalid={badFields.name} autoCorrect={false} />
         </View>
         <View style={{ flexDirection: 'row', gap: 12, marginBottom: 14 }}>
-          <DateField label="From" value={dateFrom} onChange={setDateFrom} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
+          <DateField label="From" value={dateFrom} error={badFields.start} onChange={(d) => { setDateFrom(d); if (d && badFields.start) setBadFields((b) => ({ ...b, start: false })); }} defaultValue={() => nextFullHour()} maximumDate={dateTo ?? undefined} />
           <DateField label="To" value={dateTo} onChange={setDateTo} defaultValue={() => new Date((dateFrom ?? nextFullHour()).getTime() + 6 * 3600_000)} minimumDate={dateFrom ?? undefined} />
         </View>
         <View style={{ marginBottom: 14 }}>

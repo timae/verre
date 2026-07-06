@@ -67,6 +67,9 @@ export default function CreateMoment() {
   const [link, setLink] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Which required fields failed the last submit (red border), cleared per-field
+  // as the user edits.
+  const [badFields, setBadFields] = useState({ name: false, start: false });
   const [coverError, setCoverError] = useState<string | null>(null);
   const scrollRef = useRef<ScrollView>(null);
   // Return-key chaining for the disclosure sub-chain (Address → Link, skipping
@@ -87,16 +90,21 @@ export default function CreateMoment() {
 
   const onCreate = async () => {
     setError(null);
-    // Name + start date are REQUIRED (Simon, 2026-07-06 — server enforces it for
-    // every caller; these guards just give nice copy instead of the raw 400).
-    if (!name.trim()) {
-      setError('Please name your moment.');
+    // Name + start date are REQUIRED (Simon, 2026-07-06). Collect ALL misses,
+    // flag each field (red border), show one summary (specific for a single
+    // miss, generic for several).
+    const bad = { name: !name.trim(), start: !dateFrom };
+    setBadFields(bad);
+    const missCount = Number(bad.name) + Number(bad.start);
+    if (missCount > 0) {
+      setError(
+        missCount > 1 ? 'Please fill in the highlighted fields.'
+        : bad.name ? 'Please name your moment.'
+        : 'Please set a start date.',
+      );
       return;
     }
-    if (!dateFrom) {
-      setError('Please set a start date.');
-      return;
-    }
+    if (!dateFrom) return; // unreachable (missCount caught it) — narrows for TS below
     if (dateTo && dateTo < dateFrom) {
       setError('The end time can’t be before the start time.');
       return;
@@ -161,7 +169,7 @@ export default function CreateMoment() {
 
         <View style={{ marginBottom: 14 }}>
           {/* Next field is a date picker (non-text), so return = done. */}
-          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="done" />
+          <TextField label="Moment Name" placeholder="Friday natural wines" value={name} onChangeText={(t) => { setName(t); if (badFields.name && t.trim()) setBadFields((b) => ({ ...b, name: false })); }} invalid={badFields.name} autoCorrect={false} returnKeyType="done" />
         </View>
 
         {/* "What are you tasting?" — wine-only v1, field per spec but
@@ -200,8 +208,10 @@ export default function CreateMoment() {
           <DateField
             label="From"
             value={dateFrom}
+            error={badFields.start}
             onChange={(d) => {
               setDateFrom(d);
+              if (d && badFields.start) setBadFields((b) => ({ ...b, start: false }));
               // Hide line-up needs a start time — clearing From retracts the
               // row, so reset its state too (else a stale `true` would ship
               // with no date).
