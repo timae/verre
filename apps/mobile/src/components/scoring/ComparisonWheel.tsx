@@ -10,6 +10,11 @@ export type ComparisonAxis = {
   min: number;
   max: number;
   avg: number;
+  /** No taster in the selection was ever ASKED this axis (aggregate n=0 — e.g.
+   *  bubbles on a wine since flipped to spark). The slot is KEPT (fixed
+   *  geometry across wines) but drawn as an absent placeholder: base wedge only,
+   *  no band/avg arc, quiet dashed rule + faint label. NOT a real perceived 0. */
+  absent?: boolean;
 };
 
 // Comparison wheel · C1b (design vero-scoring.js ~326, DECIDED for 5+ tasters):
@@ -62,6 +67,29 @@ export function ComparisonWheel({
       {geo.wedges.map((w) => {
         const a = axes[w.index];
         const sel = selected === w.index;
+        // An ABSENT axis (no taster asked) keeps its slot but shows no band —
+        // just a quiet dashed rule at the rim so the empty wedge reads as
+        // "not rated," not a real 0 pinned at the hub. The base wedge (drawn
+        // above) stays the tap target so the split is still reachable.
+        if (a.absent) {
+          return (
+            <Path
+              key={`band-${w.index}`}
+              d={w.baseD}
+              fill="none"
+              stroke={theme.ruleSoft}
+              strokeWidth={1}
+              strokeDasharray="2 3"
+              onPress={onSelect ? () => onSelect(w.index) : undefined}
+              accessible={!!onSelect}
+              accessibilityLabel={
+                onSelect
+                  ? `${a.label}, not rated by this group${sel ? ', selected' : ''}. Double tap for the split.`
+                  : undefined
+              }
+            />
+          );
+        }
         // Two solid tones off the axis colour (mock: color-mix 42% / 92% into
         // --surface); the band wears the light tone, the avg arc the dark —
         // inverted on the selected wedge.
@@ -88,6 +116,7 @@ export function ComparisonWheel({
       })}
       {geo.wedges.map((w) => {
         const a = axes[w.index];
+        if (a.absent) return null; // no average arc for a never-asked axis
         const sel = selected === w.index;
         return (
           <Path
@@ -110,7 +139,8 @@ export function ComparisonWheel({
           fontFamily="InstrumentSans_500Medium"
           // Deliberate addition over the mock (which keeps labels ink-soft):
           // the selected wedge's label darkens to ink as a selection affordance.
-          fill={selected === l.index ? theme.ink : theme.inkSoft}
+          // An absent axis (never asked) reads faint — quieter than a rated one.
+          fill={axes[l.index].absent ? theme.inkFaint : selected === l.index ? theme.ink : theme.inkSoft}
           textAnchor={l.anchor}
         >
           {axes[l.index].label}
