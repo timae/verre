@@ -141,7 +141,7 @@ async function bodyError(res: Response): Promise<string | undefined> {
   }
 }
 
-async function throwApiError(res: Response): Promise<never> {
+export async function throwApiError(res: Response): Promise<never> {
   const vrAuth = res.headers.get('X-Vr-Auth');
   if (vrAuth === 'removed') throw new ApiError('removed', res.status);
   if (vrAuth === 'invalid') throw new ApiError('invalid', res.status);

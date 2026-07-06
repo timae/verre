@@ -25,6 +25,19 @@ export type SessionFeedWine = {
   score: number | null
   flavors: Record<string, number>
   notes: string | null
+  // Wine-catalog metadata for the full impression detail page (mobile
+  // feed → "About this impression": Origin · Variety · Process + buy).
+  // `grape` above is Variety. `country` is the raw ISO 3166-1 alpha-2
+  // code — the CLIENT resolves it to a name via @verre/core `countryName`
+  // (matches the 02e WineInfoPane), so the wire stays the raw column.
+  // ALL of these blank to null on a blind-redacted wine — they flow
+  // through the same redaction fork as name/producer, so identity never
+  // leaks before reveal.
+  region: string | null
+  country: string | null
+  vinification: string | null
+  description: string | null
+  purchaseUrl: string | null
   // Set when the wine is blind-redacted. UI renders the mystery card
   // and skips identity-bearing fields.
   _blind?: boolean

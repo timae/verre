@@ -104,6 +104,10 @@ export async function loadSessionFeedWines(
           id: true, name: true, producer: true, vintage: true,
           grape: true, style: true, imageUrl: true, revealedAt: true,
           addedByIdentityId: true,
+          // Catalog metadata for the feed's full impression detail page.
+          // Blanked on a redacted wine (below) so blind identity can't leak.
+          region: true, country: true, vinification: true,
+          description: true, purchaseUrl: true,
         },
       },
       images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
@@ -156,6 +160,13 @@ export async function loadSessionFeedWines(
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
           notes: r.notes,
+          // Catalog metadata is identity-bearing (region/process/buy point
+          // straight at the wine) — blank it, same as name/producer above.
+          region: null,
+          country: null,
+          vinification: null,
+          description: null,
+          purchaseUrl: null,
           _blind: true,
         }
       : {
@@ -169,6 +180,11 @@ export async function loadSessionFeedWines(
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
           notes: r.notes,
+          region: w.region,
+          country: w.country,
+          vinification: w.vinification,
+          description: w.description,
+          purchaseUrl: w.purchaseUrl,
         }
     const arr = out.get(key)
     if (arr) arr.push(wireWine)

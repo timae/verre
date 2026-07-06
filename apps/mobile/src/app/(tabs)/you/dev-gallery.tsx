@@ -15,6 +15,7 @@ import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { contrastRatio } from '@/lib/contrast';
+import { setFeedFitMode, useFeedFitMode } from '@/lib/feedFitMode';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
@@ -368,6 +369,7 @@ export default function DevGallery() {
   const { theme, choice, setChoice } = useTheme();
   const axisColor = useFlavourColors();
   const [levels, setLevels] = useState<Record<string, number>>(SAMPLE_LEVELS);
+  const fitMode = useFeedFitMode();
   if (!__DEV__) return <Redirect href="/moments" />;
 
   // Wheel reads the SAME resolved axes + theme colours the input writes.
@@ -388,6 +390,25 @@ export default function DevGallery() {
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs }}>
             {(['system', ...Object.keys(themes)] as ThemeChoice[]).map((c) => (
               <Button key={c} title={c} size="sm" variant={choice === c ? 'primary' : 'secondary'} onPress={() => setChoice(c)} />
+            ))}
+          </View>
+        </View>
+
+        <View style={{ gap: space.xs }}>
+          <VText variant="heading">Feed photo fit</VText>
+          <VText variant="small" color="inkSoft">
+            How a feed photo that doesn&apos;t match the carousel frame is shown. Bars = show the whole
+            photo with tint letterbox bars; Crop = fill the frame, cropping the overflow.
+          </VText>
+          <View style={{ flexDirection: 'row', gap: space.xs }}>
+            {(['bars', 'crop'] as const).map((m) => (
+              <Button
+                key={m}
+                title={m === 'bars' ? 'Bars (contain)' : 'Crop (cover)'}
+                size="sm"
+                variant={fitMode === m ? 'primary' : 'secondary'}
+                onPress={() => setFeedFitMode(m)}
+              />
             ))}
           </View>
         </View>
