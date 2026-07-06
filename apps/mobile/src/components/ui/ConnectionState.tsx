@@ -46,7 +46,7 @@ export function ErrorState({
       <VText variant="small" color="inkSoft" style={{ textAlign: 'center', maxWidth: 260 }}>
         {message}
       </VText>
-      <Button title="Try again" loading={retrying} onPress={onRetry} style={{ marginTop: 10 }} />
+      <Button title="Try Again" loading={retrying} onPress={onRetry} style={{ marginTop: 10 }} />
     </View>
   );
 }

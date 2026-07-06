@@ -43,7 +43,7 @@ export default function RevealBlind() {
       onDiscard={() => router.back()}
     />
   ) : (
-    <SettingsScreenFallback title="Reveal & blind" isError={isError} retrying={isFetching} onRetry={refetch} />
+    <SettingsScreenFallback title="Reveal & Blind" isError={isError} retrying={isFetching} onRetry={refetch} />
   );
 }
 
@@ -90,7 +90,7 @@ function RevealForm({
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Reveal & blind" />
+        <VBar title="Reveal & Blind" />
       </View>
       <ScrollView
         style={{ flex: 1 }}
@@ -98,7 +98,7 @@ function RevealForm({
         showsVerticalScrollIndicator={false}
       >
         <ToggleRow
-          title="Hide line-up"
+          title="Hide Line-up"
           subtitle="Guests can only see it from the reveal time"
           value={hasStart && hideLineup}
           onChange={setHideLineup}
@@ -122,7 +122,7 @@ function RevealForm({
           </View>
         ) : null}
         <ToggleRow
-          title="Blind tasting"
+          title="Blind Tasting"
           proBadge
           subtitle="Hide each impression until revealed"
           value={blind}
@@ -137,7 +137,7 @@ function RevealForm({
             badge (the mock shows it — it's a premium feature at the session
             level), but never block on `!pro` here. */}
         <ToggleRow
-          title="Blind for all"
+          title="Blind for All"
           proBadge
           subtitle="Even you cannot see them — you still control reveals"
           value={blind && blindForEveryone}

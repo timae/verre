@@ -154,11 +154,14 @@ export function PeopleSheet({
   // fit-to-content while the estimate fits; else a fixed 85% snap with the
   // rows in a BottomSheetScrollView (which measures 0 under dynamic sizing,
   // so it needs the fixed snap). The estimate only picks the MODE — near the
-  // boundary both render identically. Per-row ~= the body line box (scaled)
-  // + vertical padding + the role-chip line most rows carry; chrome = head +
-  // search + hint + paddings. Deliberately generous so it flips to scroll
-  // BEFORE anything clips rather than after.
-  const rowH = Math.max(34, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 34;
+  // boundary both render identically. Per-row ~= the taller of the body line
+  // box (scaled) and the comfort-grown avatar + vertical padding + the role-
+  // chip line most rows carry; chrome = head + search + hint + paddings.
+  // Deliberately generous so it flips to scroll BEFORE anything clips. The
+  // row's padding + avatar GROW on big phones (phone.grow/lerp), so the
+  // estimate feeds the SAME grown values in — a flat estimate under-counts and
+  // a near-cap roster clips its bottom rows in dynamic-fit mode (reviewer catch).
+  const rowH = Math.max(phone.grow(40), Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale) + 16 /* role-chip caption line most rows carry */) + phone.surface('compactList').paddingY(phone.lerp(11, 15)) * 2 + 4;
   const chrome = 150 + (searchable ? 52 : 0) + insets.bottom;
   const needsScroll = chrome + ordered.length * rowH > windowH * 0.85;
 
@@ -451,10 +454,10 @@ function PersonRow({
   return (
     <View
       ref={rowRef}
-      style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: surface.paddingY(11), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(11, 15)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}
     >
       {/* .pl-av — host = accent; anon = user glyph. */}
-      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={40} anon={isAnon} host={role === 'host'} initialsSize={14} />
+      <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(40)} anon={isAnon} host={role === 'host'} />
 
       <View style={{ flex: 1, minWidth: 0 }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>

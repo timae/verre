@@ -55,13 +55,13 @@ export default function SignUp() {
         contentContainerStyle={{ paddingTop: insets.top + space.xl, paddingBottom: insets.bottom + space.lg, paddingHorizontal: space.lg, gap: space.md }}
         keyboardShouldPersistTaps="handled"
       >
-        <VText variant="subhead" style={{ marginBottom: space.xs }}>Create your account</VText>
+        <VText variant="subhead" style={{ marginBottom: space.xs }}>Create Your Account</VText>
         <TextField label="Name" value={name} onChangeText={setName} autoComplete="name" textContentType="name" autoCapitalize="words" returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => emailRef.current?.focus()} />
         <TextField ref={emailRef} label="Email" value={email} onChangeText={setEmail} autoComplete="email" textContentType="username" keyboardType="email-address" autoCapitalize="none" autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => passwordRef.current?.focus()} />
         <TextField ref={passwordRef} label="Password" value={password} onChangeText={setPassword} autoComplete="new-password" textContentType="newPassword" secureTextEntry returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => confirmRef.current?.focus()} />
-        <TextField ref={confirmRef} label="Confirm password" value={confirm} onChangeText={setConfirm} autoComplete="new-password" textContentType="newPassword" secureTextEntry returnKeyType="go" onSubmitEditing={submit} />
+        <TextField ref={confirmRef} label="Confirm Password" value={confirm} onChangeText={setConfirm} autoComplete="new-password" textContentType="newPassword" secureTextEntry returnKeyType="go" onSubmitEditing={submit} />
         {error ? <VText variant="small" color="critical">{error}</VText> : null}
-        <Button title="Create account" loadingTitle="Creating account…" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
+        <Button title="Create Account" loadingTitle="Creating account…" block loading={busy} onPress={submit} style={{ marginTop: space['2xs'] }} />
         <Pressable onPress={() => router.replace('/sign-in')} style={{ alignItems: 'center', marginTop: space.md }}>
           <VText variant="small" color="inkSoft">
             Already have an account? <VText variant="small" color="accent">Sign in</VText>

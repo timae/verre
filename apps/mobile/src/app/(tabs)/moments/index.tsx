@@ -145,7 +145,7 @@ export default function Moments() {
                 <PushRow
                   first
                   icon="clock"
-                  label="Upcoming moments"
+                  label="Upcoming Moments"
                   count={upcomingCount}
                   onPress={() => router.push({ pathname: '/moments/recents', params: { filter: 'upcoming' } })}
                 />
@@ -154,7 +154,7 @@ export default function Moments() {
                 <PushRow
                   first={upcomingCount === 0}
                   icon="sparkles"
-                  label="Recent moments"
+                  label="Recent Moments"
                   count={recentCount}
                   onPress={() => router.push('/moments/recents')}
                 />
@@ -352,7 +352,7 @@ function LiveCard({
     <Host matchContents style={{ width }}>
       <ContextMenu>
         <ContextMenu.Items>
-          <MenuButton label="Remove from home" systemImage="trash" role="destructive" onPress={onRemove} />
+          <MenuButton label="Remove from Home" systemImage="trash" role="destructive" onPress={onRemove} />
         </ContextMenu.Items>
         <ContextMenu.Preview>
           <RNHostView matchContents>
@@ -458,7 +458,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
         surface="carousel"
         style={{ paddingHorizontal: GUTTER, fontFamily: 'InstrumentSans_600SemiBold' }}
       >
-        Moments of interest
+        Moments of Interest
       </VText>
       <ScrollView
         ref={scrollRef}
@@ -539,7 +539,7 @@ function JoinBlock() {
     <View style={{ paddingHorizontal: GUTTER, gap: 10, marginTop: 6 }}>
       {/* .sh-sheettitle */}
       <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-        Join a moment
+        Join a Moment
       </VText>
       <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>Enter the code your host shared.</VText>
       {/* .gs-codewrap: row, gap 8, stretch */}

@@ -249,7 +249,7 @@ export default function AllMoments() {
     <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title={upcoming ? 'Upcoming moments' : 'Recent moments'} />
+        <VBar title={upcoming ? 'Upcoming Moments' : 'Recent Moments'} />
       </View>
       {/* Search + filter line (compare-toolbar pattern: pill matches the chip
           skin). Shown whenever there's anything to narrow OR a narrow is
@@ -324,7 +324,7 @@ export default function AllMoments() {
           ) : null}
           {activeCount > 1 ? (
             <Pressable accessibilityRole="button" onPress={() => setFilters(NO_FILTERS)} hitSlop={6} style={({ pressed }) => ({ justifyContent: 'center', paddingHorizontal: 6, opacity: pressed ? 0.5 : 1 })}>
-              <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Clear all</VText>
+              <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Clear All</VText>
             </Pressable>
           ) : null}
         </View>
@@ -502,7 +502,7 @@ function FilterSheet({
     <>
       <Sheet open={open} onClose={onClose}>
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 12, paddingBottom: insets.bottom + 16, gap: 18 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Filter moments</VText>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Filter Moments</VText>
           <View style={{ gap: 10 }}>
             {section('DATE')}
             {/* Whole days — the moment's shown date (or its created date when no
@@ -544,7 +544,7 @@ function FilterSheet({
       <MultiPickSheet
         open={picker === 'roles'}
         onClose={() => setPicker(null)}
-        title="Your role"
+        title="Your Role"
         options={ROLE_OPTIONS.map((o) => ({ key: o.key, label: o.label }))}
         selected={filters.roles}
         onClear={() => onChange({ ...filters, roles: [] })}
@@ -567,7 +567,7 @@ function FilterSheet({
       <MultiPickSheet
         open={picker === 'people'}
         onClose={() => setPicker(null)}
-        title="Friends there"
+        title="Friends There"
         options={peopleOptions}
         selected={filters.people}
         withAvatars
@@ -616,9 +616,13 @@ function MultiPickSheet({
     .filter((o) => !friendsOnly || !friendKeys || friendKeys.has(o.key))
     .filter((o) => !q.trim() || fuzzyIncludes(o.label, q));
   const searchable = search || options.length > 7;
-  // Row = paddingVertical 10×2 + the taller of the text line and the 30pt
-  // avatar; chrome = handle/title/paddings + the pinned footer.
-  const rowH = Math.max(30, Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + 21;
+  // Row = paddingVertical (comfort-scaled) ×2 + the taller of the text line
+  // and the comfort-grown avatar; chrome = handle/title/paddings + the pinned
+  // footer. The row's padding + avatar GROW on big phones (phone.lerp/grow),
+  // so the estimate must feed the SAME grown values in — a flat estimate would
+  // under-count and keep a near-cap roster in dynamic-fit mode where its bottom
+  // rows clip unreachably (reviewer catch).
+  const rowH = Math.max(phone.grow(30), Math.ceil((phone.text('body').lineHeight ?? 22) * fontScale)) + phone.lerp(10, 13) * 2 + 1;
   const chrome = 92 + (searchable ? 48 : 0) + 78 + insets.bottom;
   const estimate = chrome + options.length * rowH;
   const needsSnap = searchable || estimate > windowH * 0.85;
@@ -676,12 +680,12 @@ function MultiPickSheet({
         accessibilityLabel={`${on ? 'Remove' : 'Add'} ${o.label}`}
         onPress={() => onToggle(o.key)}
         style={({ pressed }) => ({
-          flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10,
+          flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: phone.lerp(10, 13),
           borderTopWidth: i === 0 ? 0 : 1, borderTopColor: theme.ruleSoft,
           opacity: pressed ? 0.6 : 1,
         })}
       >
-        {withAvatars ? <Avatar imageUrl={o.imageUrl ?? null} name={o.label} size={30} anon={o.anon} /> : null}
+        {withAvatars ? <Avatar imageUrl={o.imageUrl ?? null} name={o.label} size={phone.grow(30)} anon={o.anon} /> : null}
         <View style={{ flex: 1, minWidth: 0 }}>
           <VText
             variant="body"
