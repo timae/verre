@@ -40,7 +40,6 @@ export type SessionFeedWine = {
 };
 
 // A standalone check-in ("<name> had a wine"). One impression, one photo.
-// Phase 1 renders this minimally — the redesign is Phase 2 (proposal §5).
 export type CheckinPayload = {
   id: number; // feed_items.id
   wineName: string;
@@ -51,9 +50,20 @@ export type CheckinPayload = {
   score: number | null;
   notes: string | null;
   imageUrl: string | null;
+  // VENUE location (where they had it) — the header line venueName · city.
+  // `country` is the venue country, NOT the wine's origin.
   venueName: string | null;
   city: string | null;
   country: string | null;
+  // WINE catalog metadata for the detail "About this impression" block —
+  // `wineRegion`/`wineCountry` are the wine's ORIGIN (distinct from `country`,
+  // the venue). Parity with SessionFeedWine so a standalone detail page shows
+  // the same About table.
+  wineRegion: string | null;
+  wineCountry: string | null;
+  vinification: string | null;
+  description: string | null;
+  purchaseUrl: string | null;
   flavors: Record<string, number>;
   likeCount: number;
   createdAt: string;
@@ -134,9 +144,20 @@ export function detailFromItem(item: FeedItem): {
   author: FeedAuthor;
   wines: SessionFeedWine[];
   isSession: boolean;
+  // Attribution: the moment this came from (session posts only). `momentName`
+  // is null for a tombstoned moment; `sessionId` drives the enter-moment match
+  // against the viewer's own sessions (never a join code on the wire).
+  momentName: string | null;
+  sessionId: number | null;
 } {
   if (item.type === 'session') {
-    return { author: item.author, wines: item.session.wines, isSession: true };
+    return {
+      author: item.author,
+      wines: item.session.wines,
+      isSession: true,
+      momentName: item.session.deleted ? null : item.session.sessionName,
+      sessionId: item.session.sessionId,
+    };
   }
   const c = item.checkin;
   const wine: SessionFeedWine = {
@@ -150,13 +171,15 @@ export function detailFromItem(item: FeedItem): {
     score: c.score,
     flavors: c.flavors,
     notes: c.notes,
-    region: null,
-    country: c.country,
-    vinification: null,
-    description: null,
-    purchaseUrl: null,
+    // The WINE's origin (not the venue country) → About "Origin" row.
+    region: c.wineRegion,
+    country: c.wineCountry,
+    vinification: c.vinification,
+    description: c.description,
+    purchaseUrl: c.purchaseUrl,
   };
-  return { author: item.author, wines: [wine], isSession: false };
+  // A standalone has no moment — no attribution moment name / sessionId.
+  return { author: item.author, wines: [wine], isSession: false, momentName: null, sessionId: null };
 }
 
 export { ApiError };

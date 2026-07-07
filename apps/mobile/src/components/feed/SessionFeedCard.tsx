@@ -29,6 +29,7 @@ import { fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { useFeedFitMode } from '@/lib/feedFitMode';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
+import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
 import { formatScore } from '@verre/core';
@@ -65,6 +66,9 @@ export function SessionFeedCard({
   const fitMode = useFeedFitMode(); // dev toggle: 'bars' | 'crop' (dev gallery)
   const { width: screenW } = useWindowDimensions();
   const photoW = screenW; // full-bleed at x=0
+  // The moment name is tappable → open the moment, but ONLY if the viewer was a
+  // member (code resolved from their own sessions; never on the feed wire).
+  const { code: momentCode, enter: enterMoment } = useEnterableMoment(session.sessionId);
 
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
@@ -168,9 +172,20 @@ export function SessionFeedCard({
             </VText>
           </VText>
           <VText variant="caption" color="inkSoft" numberOfLines={1}>
-            {[session.deleted ? '[deleted moment]' : session.sessionName, timeAgo(createdAt)]
-              .filter(Boolean)
-              .join(' · ')}
+            {session.deleted ? (
+              '[deleted moment]'
+            ) : session.sessionName ? (
+              // Tappable when the viewer was a member (momentCode resolved).
+              momentCode ? (
+                <VText variant="caption" color="accent" style={styles.bold} onPress={enterMoment}>
+                  {session.sessionName}
+                </VText>
+              ) : (
+                session.sessionName
+              )
+            ) : null}
+            {(session.deleted || session.sessionName) ? ' · ' : ''}
+            {timeAgo(createdAt)}
           </VText>
         </View>
       </View>

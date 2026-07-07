@@ -59,10 +59,9 @@ export function StandaloneFeedCard({
 
   // Adapt the CheckinPayload into the SessionFeedWine shape the shared panel +
   // hero speak. A standalone check-in is never blind (the author's own public
-  // post). It carries country + grape but no region/vinification/description/
-  // purchaseUrl (session-wine catalog fields the /api/feed checkin shape omits);
-  // the shared panel only reads name/producer/type/score/flavors/vintage, so the
-  // nulls are harmless.
+  // post). The checkin payload now carries the full wine-catalog metadata
+  // (wineRegion/wineCountry/vinification/description/purchaseUrl) so the detail
+  // About block matches a session's.
   const wine = useMemo<SessionFeedWine>(
     () => ({
       id: String(checkin.id),
@@ -75,11 +74,14 @@ export function StandaloneFeedCard({
       score: checkin.score,
       flavors: checkin.flavors,
       notes: checkin.notes,
-      region: null,
-      country: checkin.country,
-      vinification: null,
-      description: null,
-      purchaseUrl: null,
+      // The WINE's origin (wineRegion/wineCountry) — NOT checkin.country, which
+      // is the VENUE country (the old card conflated them, showing the venue as
+      // the wine's origin).
+      region: checkin.wineRegion,
+      country: checkin.wineCountry,
+      vinification: checkin.vinification,
+      description: checkin.description,
+      purchaseUrl: checkin.purchaseUrl,
     }),
     [checkin],
   );

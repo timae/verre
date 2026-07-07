@@ -288,7 +288,21 @@ export async function GET(req: NextRequest) {
             imageUrl: ratingImage ?? wine.imageUrl,
             venueName: f.venueName,
             city: f.city,
+            // `country` is the VENUE country (where they had it) — the location
+            // line (venueName · city · country). Distinct from the WINE's
+            // origin below.
             country: f.country,
+            // Wine-catalog metadata for the detail page's "About this
+            // impression" block (parity with SessionFeedWine). `wine: true`
+            // already loads these columns; a standalone check-in is never blind,
+            // so no redaction fork. `wineRegion`/`wineCountry` are the WINE's
+            // ORIGIN (Origin row) — deliberately NOT `f.country` (the venue), a
+            // conflation the old standalone card had.
+            wineRegion: wine.region,
+            wineCountry: wine.country,
+            vinification: wine.vinification,
+            description: wine.description,
+            purchaseUrl: wine.purchaseUrl,
             flavors: f.rating.flavors,
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             createdAt: f.createdAt,
