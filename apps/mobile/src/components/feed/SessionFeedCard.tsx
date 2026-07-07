@@ -27,7 +27,7 @@ import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { topFlavours } from '@/lib/flavourAxes';
 import { fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { useFeedFitMode } from '@/lib/feedFitMode';
-import { GUTTER } from '@/lib/layout';
+import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
@@ -77,14 +77,14 @@ export function SessionFeedCard({
   // photoless/blind slides keep the placeholder (a placeholder makes sense
   // alongside real photos; the artsy topic-doodle placeholder is a later pass).
   const anyPhoto = wines.some((w) => !w._blind && !!w.imageUrl);
-  // For the all-photoless carousel: does ANY impression have a flavour wheel (or
-  // a blind mystery)? If so the slides reserve the tall square (the wheel needs
-  // it) and bare slides bottom-align their panel within it. If NONE do (an
-  // all-bare moment — just names+scores), the carousel collapses to the panel's
-  // own height instead of a screen-tall square of empty space (the bug the
-  // 22:44 device shot caught). Height is left undefined then → each NonPhotoHero
-  // sizes to its content (just the panel).
-  const anyWheel = !anyPhoto && wines.some((w) => w._blind || topFlavours(w.flavors, w.type, axisColor).length > 0);
+  // For the all-photoless carousel: does ANY impression have a flavour wheel? If
+  // so the slides reserve the tall square (the wheel needs it) and bare slides
+  // bottom-align their panel within it. If NONE do (an all-bare moment — just
+  // names+scores), the carousel collapses to the panel's own height instead of a
+  // screen-tall square of empty space (the 22:44 device bug). A blind wine is
+  // NOT special here — it draws its real flavors like any wine (identity is
+  // masked in the panel), so the plain flavour check covers it.
+  const anyWheel = !anyPhoto && wines.some((w) => topFlavours(w.flavors, w.type, axisColor).length > 0);
   const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
   // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band,
@@ -363,7 +363,7 @@ function WineSlide({
       )}
       {/* bottom scrim so the glass panel + text keep contrast over any photo */}
       <LinearGradient
-        colors={['rgba(15,12,10,0)', 'rgba(15,12,10,0.55)']}
+        colors={FEED_PANEL_SCRIM}
         style={StyleSheet.absoluteFill}
         pointerEvents="none"
       />

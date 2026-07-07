@@ -45,7 +45,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    height: 26,
+    // minHeight + vertical padding (not a fixed height) so the chip grows with
+    // the label at large accessibility text sizes instead of clipping it.
+    minHeight: 26,
+    paddingVertical: 3,
     paddingHorizontal: 10,
     borderRadius: radius.pill,
   },

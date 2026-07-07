@@ -12,8 +12,10 @@ import type { SessionFeedWine } from '@/lib/api/feed';
 // The shared over-photo glass panel used by BOTH the session card (per photo,
 // switches with the carousel) and the standalone card (one photo). Content:
 // name · - vintage · producer·type · ★ score (no word) · mini-wheel · chevron.
-// A redacted (_blind) wine renders "Wine N" and skips the identity fields —
-// the mystery slot, keyed on `_blind` alone (root CLAUDE.md cross-cutting rule).
+// A redacted (_blind) wine masks IDENTITY only — "Wine N", no producer/vintage —
+// but STILL shows the subjective rating (★ score + flavour wheel), matching the
+// in-session view + what the server ships. Keyed on `_blind` alone; the client
+// never re-derives the predicate (root CLAUDE.md cross-cutting rule).
 // Year = smaller (small) + thinner (medium) + same colour (#fff) as the name
 // (§2b). Extracted from SessionFeedCard so the two cards share one panel face.
 
@@ -34,7 +36,12 @@ export function GlassPanelInner({
   const blind = !!wine._blind;
   const typeLabel = wineTypeLabel(wine.type);
   const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, typeLabel].filter(Boolean).join(' · ');
-  const axes = blind ? [] : buildWheelAxes(wine.flavors, wine.type, axisColor);
+  // Blind masks IDENTITY only (name→"Wine N", no producer/vintage) — the
+  // subjective rating STAYS: the score (below) AND the flavour wheel. The
+  // server ships a redacted wine's flavors/score unblanked on purpose (the
+  // author's own take; same as the in-session view). So the wheel is NOT gated
+  // on blind — only identity fields are. (Simon, reverses an earlier over-redact.)
+  const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
   return (
     <>
       <View style={styles.panelMain}>

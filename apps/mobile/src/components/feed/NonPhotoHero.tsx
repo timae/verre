@@ -1,6 +1,4 @@
 import { StyleSheet, View } from 'react-native';
-import { Icon } from '@/components/ui/Icon';
-import { VText } from '@/components/ui/VText';
 import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { FeedImpressionPanel } from '@/components/feed/FeedImpressionPanel';
 import { TastesLike } from '@/components/feed/TastesLike';
@@ -12,15 +10,16 @@ import type { SessionFeedWine } from '@/lib/api/feed';
 
 // The no-photo impression hero — NO glass panel (glass reads only over real
 // photos, Simon). Two shapes:
-//   • has flavour (or blind) → a FULL-BLEED lighter `surface` HERO, exactly the
-//     photo's slot (edge-to-edge, flush under the header). The wheel + "Tastes
-//     like" chips (or the blind mystery) fill it, and the DARKER `surfaceSunk`
-//     themed panel rides INSIDE it at the bottom — structurally identical to the
-//     glass panel riding inside a photo, but themed (ink) since it's a designed
-//     surface, not a photo (Simon: card lighter, panel darker; full-width "like
-//     an image"; panel inside the card).
+//   • has flavour → a FULL-BLEED lighter `surface` HERO, exactly the photo's
+//     slot (edge-to-edge, flush under the header). The wheel + "Tastes like"
+//     chips fill it, and the DARKER `surfaceSunk` themed panel rides INSIDE it
+//     at the bottom — structurally identical to the glass panel riding inside a
+//     photo, but themed (ink) since it's a designed surface, not a photo (Simon:
+//     card lighter, panel darker; full-width "like an image"; panel inside).
 //   • bare (no flavour) → JUST the panel (inset), flush under the header — no
 //     hero (Simon: "no card when no tasting details, only the panel").
+// A BLIND wine takes the same two shapes (its flavors/score are real + shown);
+// only its IDENTITY is masked, inside the panel ("Wine N"). No mystery branch.
 // Shared by the standalone card (one impression) AND each slide of an
 // all-photoless session carousel. `width` = one screen wide. Optional `height`
 // pins a uniform carousel-slide height; the standalone card omits it so the
@@ -41,22 +40,23 @@ export function NonPhotoHero({
   onOpen: () => void;
 }) {
   const { theme, themeKey } = useTheme();
-  const blind = !!wine._blind;
-  const tastes = blind ? [] : topFlavours(wine.flavors, wine.type, axisColor);
+  // Blind masks IDENTITY only — the subjective rating (score + flavour) STAYS.
+  // So a blind wine flows through the SAME path as any wine: has-flavour → the
+  // wheel hero, else the bare panel. Identity masking ("Wine N", no producer/
+  // vintage) happens inside FeedImpressionPanel + the wheel here draws off the
+  // server's real (unblanked) flavors. No special mystery-only branch.
+  const tastes = topFlavours(wine.flavors, wine.type, axisColor);
   const hasFlavour = tastes.length > 0;
-  // A full-bleed hero exists ONLY when there's a wheel (has flavour) or a blind
-  // mystery to show. A bare impression is just the panel — no hero.
-  const hasHero = blind || hasFlavour;
 
   // Bare: no hero, just the panel — inset by space.xs so its width MATCHES the
   // panel that rides inside the wheel hero AND the glass panel over a photo
   // (all three = W − 2·space.xs; Simon: panels always the same width). Flush
   // under the header. In a fixed-height carousel slide it bottom-aligns so it
   // sits where the hero slides' panels do.
-  if (!hasHero) {
+  if (!hasFlavour) {
     return (
       <View style={[styles.bare, { width }, height != null && [{ height }, styles.bottomAlign]]}>
-        <FeedImpressionPanel wine={wine} axisColor={axisColor} onPress={onOpen} />
+        <FeedImpressionPanel wine={wine} index={index} axisColor={axisColor} onPress={onOpen} />
       </View>
     );
   }
@@ -82,33 +82,21 @@ export function NonPhotoHero({
   const chipBg: 'surface' | 'surfaceSunk' = swap ? (apricot ? 'surfaceSunk' : 'surface') : 'surfaceSunk';
   return (
     <View style={[styles.hero, { width, backgroundColor: heroBg }, height != null && { height }]}>
+      {/* The wheel + chips draw off the wine's REAL flavors — shown for blind too
+          (subjective rating isn't masked). Identity masking is the panel's job. */}
       <View style={styles.heroBody}>
-        {blind ? (
-          <>
-            <Icon name="glass" size={Math.round(width * 0.2)} color={theme.inkFaint} />
-            <VText variant="subhead" style={styles.blindName}>
-              Wine {index + 1}
-            </VText>
-            <VText variant="caption" color="inkSoft" style={styles.blindHint}>
-              Hidden until the host reveals it
-            </VText>
-          </>
-        ) : (
-          <>
-            <FlavourWheel
-              axes={buildWheelAxes(wine.flavors, wine.type, axisColor)}
-              size={168}
-              labels
-              maxWidth={width - GUTTER * 2}
-            />
-            <View style={styles.chips}>
-              <TastesLike flavours={tastes} align="center" chipBg={chipBg} />
-            </View>
-          </>
-        )}
+        <FlavourWheel
+          axes={buildWheelAxes(wine.flavors, wine.type, axisColor)}
+          size={168}
+          labels
+          maxWidth={width - GUTTER * 2}
+        />
+        <View style={styles.chips}>
+          <TastesLike flavours={tastes} align="center" chipBg={chipBg} />
+        </View>
       </View>
       <View style={styles.panelInside}>
-        <FeedImpressionPanel wine={wine} axisColor={axisColor} onPress={onOpen} surface={panelSurface} />
+        <FeedImpressionPanel wine={wine} index={index} axisColor={axisColor} onPress={onOpen} surface={panelSurface} />
       </View>
     </View>
   );
@@ -127,13 +115,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: GUTTER,
-    paddingTop: space.xl,
-    paddingBottom: space.md,
+    // A little more breathing room above the wheel + before the panel (Simon).
+    // No token between xl(32) and 2xl(48), so xl + xs for a modest +8.
+    paddingTop: space.xl + space.xs,
+    paddingBottom: space.lg,
   },
   chips: { marginTop: space.sm },
   // Panel below the body, in-flow (never overlaps the chips), inset space.xs to
   // match the bare + glass panels; a small bottom gap inside the hero.
   panelInside: { paddingHorizontal: space.xs, paddingBottom: space.xs },
-  blindName: { fontFamily: 'InstrumentSans_600SemiBold', marginTop: space.sm },
-  blindHint: { marginTop: space['3xs'] },
 });

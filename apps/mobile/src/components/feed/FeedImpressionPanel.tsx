@@ -18,15 +18,20 @@ import type { SessionFeedWine } from '@/lib/api/feed';
 // (the wheel) is the lighter `surface`, the panel below is the darker one.
 // Used by the standalone non-photo hero AND each slide of an all-photoless
 // session carousel. In-flow (not an absolute overlay) so it never overlaps.
-// A blind wine never reaches here (a blind slide keeps its masked placeholder),
-// so there's no _blind branch.
+// A blind wine CAN reach here (an all-photoless blind moment): it masks IDENTITY
+// only — name→"Wine N", no producer/vintage — but KEEPS the subjective rating
+// (score + flavour wheel), matching the glass panel + the in-session view. The
+// server ships a redacted wine's flavors/score unblanked on purpose.
 export function FeedImpressionPanel({
   wine,
+  index = 0,
   axisColor,
   onPress,
   surface = 'surfaceSunk',
 }: {
   wine: SessionFeedWine;
+  // Position in the moment — names a blind slot ("Wine N"). 0 for a standalone.
+  index?: number;
   axisColor: (k: string) => string;
   onPress: () => void;
   // Which theme surface the panel sits on. Default `surfaceSunk` (the darker of
@@ -36,21 +41,26 @@ export function FeedImpressionPanel({
   surface?: 'surface' | 'surfaceSunk';
 }) {
   const { theme } = useTheme();
-  const sub = [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
+  const blind = !!wine._blind;
+  const name = blind ? `Wine ${index + 1}` : wine.name;
+  // Producer/type sub is identity → hidden on blind; the wheel + score below are
+  // the subjective rating → always shown.
+  const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
   const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      accessibilityLabel={`Impression details${wine.name ? `: ${wine.name}` : ''}`}
+      accessibilityLabel={`Impression details${blind ? '' : name ? `: ${name}` : ''}`}
       style={[styles.panel, { backgroundColor: theme[surface] }]}
     >
       <View style={styles.main}>
         <VText variant="body" numberOfLines={1} style={styles.bold}>
-          {wine.name}
+          {name}
           {/* year = same colour as the name, one weight lighter + one size
-              smaller (§2b) — same styling as the glass panel, just ink not #fff. */}
-          {wine.vintage ? (
+              smaller (§2b) — same styling as the glass panel, just ink not #fff.
+              Vintage is identity → hidden on blind. */}
+          {!blind && wine.vintage ? (
             <VText variant="small" style={styles.vin}>
               {' - '}
               {wine.vintage}

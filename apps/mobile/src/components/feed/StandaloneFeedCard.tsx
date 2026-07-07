@@ -18,7 +18,7 @@ import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { DEFAULT_ASPECT, fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { useFeedFitMode, type FeedFitMode } from '@/lib/feedFitMode';
-import { GUTTER } from '@/lib/layout';
+import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
@@ -222,7 +222,7 @@ function PhotoHero({
           }}
         />
         <LinearGradient
-          colors={['rgba(15,12,10,0)', 'rgba(15,12,10,0.55)']}
+          colors={FEED_PANEL_SCRIM}
           style={StyleSheet.absoluteFill}
           pointerEvents="none"
         />
