@@ -105,7 +105,7 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 **Checkpoint 2 — REMAINING:**
 6. ⬜ **Full impression detail screen** (`feed/impression/[id].tsx` — currently a PLACEHOLDER; §3) — pure client render off the extended payload. Photo hero + rating below + swipe between the moment's impressions + tap-hero→`FullscreenImage`. Read the collapsing-hero pattern doc FIRST.
 7. ⬜ **"Had it too"** wiring (card action row + detail page) — `POST /api/checkins` with `copyFromCheckinId`.
-8. ⬜ **Standalone card** — minimal render exists (`StandaloneFeedCard.tsx`); real redesign is Phase 2 (§5).
+8. ✅ **Standalone card redesigned** + the all-photoless session case (§5, built 2026-07-06; device-iteration pending). Awaiting on-device check.
 9. ⬜ **Delete the `feedFitMode` dev toggle** — hardcode `crop`, remove `lib/feedFitMode.ts` + the dev-gallery section (§2b).
 
 **Known-hard, budget for it:** the collapsing hero (read the pattern doc), the full-bleed `contentInsetAdjustmentBehavior` trap (`apps/mobile/CLAUDE.md` scoring §: the zero-size `<View collapsable={false}>` dead-end — applies to any edge-to-edge screen, "feed hero cards" is called out by name), and the two-gesture composition on the carousel photo.
@@ -114,9 +114,23 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 
 ---
 
-## 5. Phase 2 — standalone check-in card (its own design round)
+## 5. Standalone check-in card — AS-BUILT (Simon, 2026-07-06; device-iteration pending)
 
-Not scoped here beyond the constraint that it exists and Phase 1 unblocks it. The open question is purely the **card face** (what a single-impression check-in looks like in the feed — glass panel? wheel? cleaner caption block?), because the **detail path is free** once §3 ships (a standalone routes to the same detail page, single impression, no swipe). Treat as a fresh design decision against `vero-feed.js` (the photoless-post + single-check-in explorations) when Phase 1 is on-device and judgeable.
+The standalone card ("<name> had a wine", one impression) now shares the session card's design language, adapting its **hero** to whatever the check-in carries. Card face decisions (all Simon):
+
+- **Photo present** → the IG-framed photo (reusing `feedAspect` crop/fit) + the **over-photo glass panel** (`FeedGlassPanel`, shared with the session card) + double-tap-to-like + heart-burst. The glass panel is **identical to the session panel**.
+- **No photo** → a `NonPhotoHero`. **Glass is only used over real photos** (Simon: over a non-photo hero it looked weird + overlapped). Two shapes (the earlier note/origin text "about" hero was CUT — Simon: "the wine details on the card don't look good" + "no card when no tasting details, only the panel"):
+  - **has flavour (or blind)** → a **FULL-BLEED lighter `surface` HERO** occupying the photo's exact slot (edge-to-edge, flush under the header — Simon: "the card even is just full width, like an image"). The `FlavourWheel` (168) + **"Tastes like"** chips (`TastesLike`, new — the design's `topNotes`/`.fpw-chip`; reads the SAME axes as the wheel via `topFlavours`) fill it, and the **darker `surfaceSunk` themed panel rides INSIDE it at the bottom** (`FeedImpressionPanel`, absolute + inset — same placement as the glass panel over a photo, but themed/ink since it's a designed surface). Structurally identical to the photo layout: the wheel replaces the photo.
+  - **no flavour (bare)** → **JUST the panel** (inset, flush under the header) — no hero. The note (if any) shows as the caption below.
+  - ⭐**Colour inversion (Simon):** the HERO surface is the LIGHTER `surface`, the PANEL is the DARKER `surfaceSunk` (`surfaceSunk` is the darker of the two in every theme). Chips on the lighter hero use `surfaceSunk` for contrast.
+  - **Flush top (Simon):** the hero/panel sits flush against the header, exactly where a photo starts (no top gap).
+- **Detail path** is one tap → the §3 detail page (chevron on the panel signals it), same as the session panel.
+
+**All-photoless SESSION post (built same round):** a session where **no** impression has a photo no longer renders a strip of glyph placeholders (Simon rejected that). Instead the photo carousel is replaced by a **carousel of `NonPhotoHero` slides** (one per impression — has-flavour → lighter card + wheel, bare → just the darker panel — uniform slide height, panel bottom-aligned so it's stable across swipes, same dots). When **≥1** impression has a photo, the photo carousel stays and its photoless/blind slides keep the glyph placeholder (a placeholder makes sense **alongside** real photos). A **blind** wine in an all-photoless moment renders the mystery placeholder (glyph + "Wine N" + hint) inside `NonPhotoHero`. **Deferred idea (Simon):** replace the plain glyph placeholder (the alongside-photos case) with **playful/artsy topic-matched doodle art** — needs illustration assets + a topic→art map; its own pass.
+
+**Shared components introduced** (`components/feed/`): `FeedGlassPanel` (over-photo glass, extracted from `SessionFeedCard` so both cards share one panel) · `FeedImpressionPanel` (themed ink-on-surface panel) · `NonPhotoHero` (the adaptive tint-stage hero, used by the standalone card AND the all-photoless session carousel) · `TastesLike` (chip legend). Helper: `topFlavours` in `lib/flavourAxes.ts`.
+
+The **detail path** for a standalone is free once §3 ships (routes to the same detail page, single impression, no swipe).
 
 ---
 

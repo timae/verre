@@ -18,3 +18,21 @@ export function buildWheelAxes(
     value: levels[a.k] ?? 0,
   }));
 }
+
+// The top-N flavours by intensity — the "Tastes like" chip legend (design
+// `topNotes`, the un-scientific wheel description: highest-scored axes as
+// words+swatches instead of axis labels). Reads the SAME axes the wheel does
+// (buildWheelAxes) so the chips and the wheel never disagree; filters to rated
+// axes (value > 0), sorts desc, keeps N. Empty when nothing is rated — the
+// caller uses that to decide the flavour-vs-text hero fork.
+export function topFlavours(
+  flavors: Record<string, number> | null | undefined,
+  wineType: string | null | undefined,
+  axisColor: (key: string) => string,
+  n = 3,
+): WheelAxis[] {
+  return buildWheelAxes(flavors, wineType, axisColor)
+    .filter((a) => a.value > 0)
+    .sort((a, b) => b.value - a.value)
+    .slice(0, n);
+}

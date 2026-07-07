@@ -22,14 +22,15 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
-import { buildWheelAxes } from '@/lib/flavourAxes';
+import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
+import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
+import { topFlavours } from '@/lib/flavourAxes';
 import { fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { useFeedFitMode } from '@/lib/feedFitMode';
-import { GLASS_FILL, GUTTER } from '@/lib/layout';
-import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
+import { GUTTER } from '@/lib/layout';
+import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { radius, space, useTheme } from '@/theme';
+import { space, useTheme } from '@/theme';
 import { formatScore } from '@verre/core';
 import type { FeedAuthor, SessionFeedPayload, SessionFeedWine } from '@/lib/api/feed';
 
@@ -68,6 +69,23 @@ export function SessionFeedCard({
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
   const avg = groupAvg(wines);
+  // Does ANY impression in this moment have a real photo? A blind wine's photo
+  // is redacted (imageUrl null + _blind), so it doesn't count. If none do, the
+  // photo carousel would be a strip of glyph placeholders (Simon: don't show
+  // that) — we render a themed impression carousel instead (NonPhotoHero per
+  // slide). When at least one has a photo, the photo carousel stays and its
+  // photoless/blind slides keep the placeholder (a placeholder makes sense
+  // alongside real photos; the artsy topic-doodle placeholder is a later pass).
+  const anyPhoto = wines.some((w) => !w._blind && !!w.imageUrl);
+  // For the all-photoless carousel: does ANY impression have a flavour wheel (or
+  // a blind mystery)? If so the slides reserve the tall square (the wheel needs
+  // it) and bare slides bottom-align their panel within it. If NONE do (an
+  // all-bare moment — just names+scores), the carousel collapses to the panel's
+  // own height instead of a screen-tall square of empty space (the bug the
+  // 22:44 device shot caught). Height is left undefined then → each NonPhotoHero
+  // sizes to its content (just the panel).
+  const anyWheel = !anyPhoto && wines.some((w) => w._blind || topFlavours(w.flavors, w.type, axisColor).length > 0);
+  const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
   // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band,
   // so the frame is always ≥ every slide → shorter (landscape) slides
@@ -157,51 +175,87 @@ export function SessionFeedCard({
         </View>
       </View>
 
-      {/* photo carousel. Full-bleed: the card content is NOT horizontally
-          padded (each text block self-insets by GUTTER), so photos sit at x=0
-          spanning the full screen width. The glass panel lives INSIDE each
-          slide (Simon) so it travels with its photo instead of a static
-          overlay that pops content on scroll-end. The CONTAINER carries the
-          tint background so an overscroll pull reveals the tint (matching the
-          letterbox bars), sitting FLAT — no shadow (Simon). */}
-      <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
-        <GestureDetector gesture={doubleTap}>
-          <ScrollView
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onScroll={onScroll}
-            scrollEventThrottle={16}
-            style={StyleSheet.absoluteFill}
-          >
-            {wines.map((w, i) => (
-              <WineSlide
-                key={w.id}
-                wine={w}
-                index={i}
-                width={photoW}
-                height={photoH}
-                axisColor={axisColor}
-                fit={
-                  fitMode === 'crop'
-                    ? 'cover'
-                    : w.imageUrl && aspects[w.imageUrl]
-                      ? fitInFrame(aspects[w.imageUrl], frameAspect)
-                      : 'cover'
-                }
-                onMeasure={reportAspect}
-                onPressPanel={() => onOpenImpression(i)}
-              />
-            ))}
-          </ScrollView>
-        </GestureDetector>
+      {anyPhoto ? (
+        /* photo carousel. Full-bleed: the card content is NOT horizontally
+           padded (each text block self-insets by GUTTER), so photos sit at x=0
+           spanning the full screen width. The glass panel lives INSIDE each
+           slide (Simon) so it travels with its photo instead of a static
+           overlay that pops content on scroll-end. The CONTAINER carries the
+           tint background so an overscroll pull reveals the tint (matching the
+           letterbox bars), sitting FLAT — no shadow (Simon). */
+        <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
+          <GestureDetector gesture={doubleTap}>
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onScroll={onScroll}
+              scrollEventThrottle={16}
+              style={StyleSheet.absoluteFill}
+            >
+              {wines.map((w, i) => (
+                <WineSlide
+                  key={w.id}
+                  wine={w}
+                  index={i}
+                  width={photoW}
+                  height={photoH}
+                  axisColor={axisColor}
+                  fit={
+                    fitMode === 'crop'
+                      ? 'cover'
+                      : w.imageUrl && aspects[w.imageUrl]
+                        ? fitInFrame(aspects[w.imageUrl], frameAspect)
+                        : 'cover'
+                  }
+                  onMeasure={reportAspect}
+                  onPressPanel={() => onOpenImpression(i)}
+                />
+              ))}
+            </ScrollView>
+          </GestureDetector>
 
-        {/* heart-burst overlay (centered, non-interactive) — stays static; it
-            fires on the active slide, doesn't slide with the carousel. */}
-        <AnimatedView pointerEvents="none" style={[styles.burst, burstStyle]}>
-          <Icon name="heart-fill" size={96} color="#fff" />
-        </AnimatedView>
-      </View>
+          {/* heart-burst overlay (centered, non-interactive) — stays static; it
+              fires on the active slide, doesn't slide with the carousel. */}
+          <AnimatedView pointerEvents="none" style={[styles.burst, burstStyle]}>
+            <Icon name="heart-fill" size={96} color="#fff" />
+          </AnimatedView>
+        </View>
+      ) : (
+        /* all-photoless moment: no photo carousel (a strip of glyph
+           placeholders is the thing Simon rejected). Instead a themed
+           impression carousel — one NonPhotoHero per wine (has-flavour → a
+           lighter card with the wheel; bare → just the darker panel), same
+           swipe + dots. No backdrop tint (the hero matches the scene, Simon);
+           no double-tap-like (no photo target); the heart button still likes. A
+           blind wine renders the mystery placeholder inside NonPhotoHero.
+           Height: a screen-tall SQUARE only when some slide shows a wheel/blind
+           (it needs the room; bare slides bottom-align their panel within it).
+           When ALL slides are bare (just names+scores) the height is undefined
+           → the ScrollView sizes to the panels' own height, so there's no
+           screen-tall void (the 22:44 device bug). Auto-height paging is fine
+           because all-bare slides are naturally the same height. */
+        <ScrollView
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          onScroll={onScroll}
+          scrollEventThrottle={16}
+          style={nonPhotoSlideH != null ? { width: photoW, height: nonPhotoSlideH } : { width: photoW }}
+        >
+          {wines.map((w, i) => (
+            <NonPhotoHero
+              key={w.id}
+              wine={w}
+              index={i}
+              axisColor={axisColor}
+              width={photoW}
+              height={nonPhotoSlideH}
+              onOpen={() => onOpenImpression(i)}
+            />
+          ))}
+        </ScrollView>
+      )}
 
       {/* dot strip */}
       {wines.length > 1 && (
@@ -253,69 +307,6 @@ export function SessionFeedCard({
         )}
       </View>
     </View>
-  );
-}
-
-// The glass-panel content: name - vintage · producer·type · ★ score ·
-// mini wheel · chevron. Redacted (_blind) wines render "Wine N" and skip
-// the identity fields — the mystery slot, keyed on `_blind` alone.
-function GlassPanelInner({
-  wine,
-  activeIdx,
-  axisColor,
-}: {
-  wine: SessionFeedWine | undefined;
-  activeIdx: number;
-  axisColor: (k: string) => string;
-}) {
-  if (!wine) return null;
-  const blind = !!wine._blind;
-  const typeLabel = wineTypeLabel(wine.type);
-  const sub = blind ? 'Hidden until the host reveals it' : [wine.producer, typeLabel].filter(Boolean).join(' · ');
-  const axes = blind ? [] : buildWheelAxes(wine.flavors, wine.type, axisColor);
-  return (
-    <>
-      <View style={styles.panelMain}>
-        <VText variant="body" numberOfLines={1} style={[styles.panelName, { color: '#fff' }]}>
-          {blind ? `Wine ${activeIdx + 1}` : wine.name}
-          {/* year = smaller (small=13 vs the name's body=15) + thinner (medium)
-              + same colour as the name — matches the standalone look (Simon).
-              caption=12 read too small; small is a 2px drop, closer feel.
-              color="#fff" is REQUIRED: VText defaults color='ink' and always
-              re-injects its own resolved colour, so a nested VText does NOT
-              inherit the parent's #fff — it'd paint the year theme-ink. */}
-          {!blind && wine.vintage ? (
-            <VText variant="small" color="#fff" style={styles.vin}>
-              {' - '}
-              {wine.vintage}
-            </VText>
-          ) : null}
-        </VText>
-        {sub ? (
-          <VText variant="caption" numberOfLines={1} style={styles.panelSub}>
-            {sub}
-          </VText>
-        ) : null}
-        {wine.score != null && wine.score > 0 && (
-          <View style={styles.panelScore}>
-            <Icon name="starf" size={17} color="#fff" />
-            <VText variant="subhead" style={[styles.bold, { color: '#fff' }]}>
-              {formatScore(wine.score)}
-            </VText>
-          </View>
-        )}
-      </View>
-      {axes.length > 0 && (
-        <View style={styles.mini}>
-          <FlavourWheel axes={axes} size={62} labels={false} />
-        </View>
-      )}
-      {/* disclosure chevron (design .fpg-chev = i-back rotated 180° = a
-          right-pointing chevron) — signals the panel opens the detail page. */}
-      <View style={styles.chev}>
-        <Icon name="chevron-right" size={16} color="#fff" />
-      </View>
-    </>
   );
 }
 
@@ -377,17 +368,9 @@ function WineSlide({
         pointerEvents="none"
       />
       {/* glass panel — inside the slide, so it slides with the photo. Opens the
-          full impression page on tap (anywhere on the panel). */}
-      <View style={styles.panelWrap} pointerEvents="box-none">
-        <Pressable
-          style={[styles.panel, { backgroundColor: GLASS_FILL }]}
-          onPress={onPressPanel}
-          accessibilityRole="button"
-          accessibilityLabel={`Impression details${wine._blind ? '' : `: ${wine.name}`}`}
-        >
-          <GlassPanelInner wine={wine} activeIdx={index} axisColor={axisColor} />
-        </Pressable>
-      </View>
+          full impression page on tap (anywhere on the panel). Shared with the
+          standalone card (FeedGlassPanel). */}
+      <FeedGlassPanel wine={wine} index={index} axisColor={axisColor} onPress={onPressPanel} />
     </View>
   );
 }
@@ -408,25 +391,6 @@ const styles = StyleSheet.create({
   who: { flex: 1, minWidth: 0 },
   bold: { fontFamily: 'InstrumentSans_600SemiBold' },
   burst: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
-  panelWrap: { position: 'absolute', left: space.xs, right: space.xs, bottom: space.xs },
-  panel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.sm,
-    paddingVertical: space.sm,
-    paddingHorizontal: 14,
-    borderRadius: radius.md,
-  },
-  panelMain: { flex: 1, minWidth: 0 },
-  panelName: { fontFamily: 'InstrumentSans_600SemiBold' },
-  // Same colour as the name (Simon's call) — the year is distinguished by
-  // weight (medium vs semibold) alone, not colour. No opacity dim (0.72/0.85
-  // read as murky low-contrast grey over a busy photo).
-  vin: { fontFamily: 'InstrumentSans_500Medium' },
-  panelSub: { color: '#fff', opacity: 0.78, marginTop: 1 },
-  panelScore: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 5 },
-  mini: { flexShrink: 0 },
-  chev: { flexShrink: 0, opacity: 0.65 },
   dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5, paddingVertical: space.xs },
   dot: { width: 6, height: 6, borderRadius: 999 },
   dotOn: { transform: [{ scale: 1.15 }] },
