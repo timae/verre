@@ -24,10 +24,16 @@ export function FeedImpressionPanel({
   wine,
   axisColor,
   onPress,
+  surface = 'surfaceSunk',
 }: {
   wine: SessionFeedWine;
   axisColor: (k: string) => string;
   onPress: () => void;
+  // Which theme surface the panel sits on. Default `surfaceSunk` (the darker of
+  // the two — the panel is the darker element in the standard layout). The
+  // wheel-hero colour-swap experiment passes `surface` so the panel is lighter
+  // than its (then darker) hero.
+  surface?: 'surface' | 'surfaceSunk';
 }) {
   const { theme } = useTheme();
   const sub = [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
@@ -37,7 +43,7 @@ export function FeedImpressionPanel({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={`Impression details${wine.name ? `: ${wine.name}` : ''}`}
-      style={[styles.panel, { backgroundColor: theme.surfaceSunk }]}
+      style={[styles.panel, { backgroundColor: theme[surface] }]}
     >
       <View style={styles.main}>
         <VText variant="body" numberOfLines={1} style={styles.bold}>

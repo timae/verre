@@ -7,6 +7,7 @@ import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { GUTTER } from '@/lib/layout';
 import { space, useTheme } from '@/theme';
+import { mix } from '@/theme/color';
 import type { SessionFeedWine } from '@/lib/api/feed';
 
 // The no-photo impression hero — NO glass panel (glass reads only over real
@@ -39,7 +40,7 @@ export function NonPhotoHero({
   height?: number;
   onOpen: () => void;
 }) {
-  const { theme } = useTheme();
+  const { theme, themeKey } = useTheme();
   const blind = !!wine._blind;
   const tastes = blind ? [] : topFlavours(wine.flavors, wine.type, axisColor);
   const hasFlavour = tastes.length > 0;
@@ -60,20 +61,27 @@ export function NonPhotoHero({
     );
   }
 
-  // Full-bleed hero: the lighter `surface` fills the photo slot (edge-to-edge,
-  // flush). It's a flex COLUMN — the body flex-grows and centres the wheel, the
-  // panel sits below it IN-FLOW (not absolute), so it can never clip the "Tastes
-  // like" chips no matter how they wrap. The panel is inset space.xs to match
-  // the bare + glass panels' width. Both share the hero's `surface` background,
-  // so the panel reads as "inside the card".
+  // Full-bleed hero (photo slot, edge-to-edge, flush). Flex COLUMN — the body
+  // flex-grows and centres the wheel, the panel sits below IN-FLOW (never clips
+  // the chips). Panel inset space.xs to match the bare + glass panels' width.
+  //
+  // COLOUR (Simon, checkins with intensity + no image): a TINT card with a
+  // distinct panel. Two arrangements, per theme — same visual intent, opposite
+  // tokens because Apricot's `surfaceSunk` is too dark to be the card:
+  //   • 5 themes (unchanged original) → card = `surfaceSunk` (darker), panel +
+  //     chips = `surface` (lighter).
+  //   • Apricot → card = a lighter custom blend halfway from `surface` toward
+  //     `surfaceSunk` (#f6e6d3 — Apricot's `surfaceSunk` is too dark a card and
+  //     its `bg` collides with the scene), panel + chips = `surfaceSunk` (the
+  //     darker tone, matching the standalone bare panel).
+  // Blind (non-swap) keeps the lighter `surface` card + `surfaceSunk` panel.
+  const swap = hasFlavour;
+  const apricot = themeKey === 'apricot';
+  const heroBg = swap ? (apricot ? mix(theme.surfaceSunk, theme.surface, 0.5) : theme.surfaceSunk) : theme.surface;
+  const panelSurface: 'surface' | 'surfaceSunk' = swap ? (apricot ? 'surfaceSunk' : 'surface') : 'surfaceSunk';
+  const chipBg: 'surface' | 'surfaceSunk' = swap ? (apricot ? 'surfaceSunk' : 'surface') : 'surfaceSunk';
   return (
-    <View
-      style={[
-        styles.hero,
-        { width, backgroundColor: theme.surface },
-        height != null && { height },
-      ]}
-    >
+    <View style={[styles.hero, { width, backgroundColor: heroBg }, height != null && { height }]}>
       <View style={styles.heroBody}>
         {blind ? (
           <>
@@ -94,13 +102,13 @@ export function NonPhotoHero({
               maxWidth={width - GUTTER * 2}
             />
             <View style={styles.chips}>
-              <TastesLike flavours={tastes} align="center" chipBg="surfaceSunk" />
+              <TastesLike flavours={tastes} align="center" chipBg={chipBg} />
             </View>
           </>
         )}
       </View>
       <View style={styles.panelInside}>
-        <FeedImpressionPanel wine={wine} axisColor={axisColor} onPress={onOpen} />
+        <FeedImpressionPanel wine={wine} axisColor={axisColor} onPress={onOpen} surface={panelSurface} />
       </View>
     </View>
   );
