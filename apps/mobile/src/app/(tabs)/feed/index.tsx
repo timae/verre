@@ -1,6 +1,7 @@
+import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
-import { useCallback, useMemo, useRef } from 'react';
+import { useRouter, useScrollToTop } from 'expo-router';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
@@ -36,16 +37,33 @@ export default function Feed() {
     staleTime: 15_000,
   });
 
-  // Refetch on focus — a post liked/created elsewhere (or by a followed user)
-  // shows up on return without an app reload. Prefix invalidation is
-  // closure-independent (mirrors recents.tsx).
-  useFocusEffect(
-    useCallback(() => {
-      queryClient.invalidateQueries({ queryKey: FEED_KEY });
-    }, [queryClient]),
-  );
+  // NO focus invalidate. `invalidateQueries` on an infinite query resets it
+  // toward the first page and re-identifies every item, which (a) shrinks the
+  // list mid-refetch so the scroll offset clamps UPWARD — the "feed creeps up a
+  // bit every time I nav away and back" bug — and (b) reloads content already
+  // on screen. Freshness instead comes from `staleTime` (15s) + the app-
+  // foreground `focusManager` refetch (lib/query.tsx) + pull-to-refresh below.
+  // A pull runs `feed.refetch()`, which refetches the LOADED pages IN PLACE
+  // (content updates, count preserved, scroll holds) — "update without
+  // reloading what's already there."
 
   const items = useMemo(() => (feed.data?.pages ?? []).flatMap((p) => p.items), [feed.data]);
+
+  // Pull-to-refresh (mirrors the moments home pattern): an explicit `pulling`
+  // state drives the spinner — NOT feed.isRefetching, which also fires for the
+  // app-foreground refetch AND can go true→false within a frame on a fast/cached
+  // refetch (spinner never paints). A 600ms min-visible floor guarantees the
+  // spinner reads as "it refreshed". feed.refetch() refetches the loaded pages
+  // in place, so content updates without dropping what's on screen or moving
+  // the scroll.
+  const [pulling, setPulling] = useState(false);
+  const onPullRefresh = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setPulling(true);
+    const minVisible = new Promise<void>((r) => setTimeout(r, 600));
+    Promise.allSettled([feed.refetch(), minVisible]).then(() => setPulling(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Optimistic like: flip liked + adjust likeCount in the cache immediately,
   // fire the server call, invalidate on error (never a frozen-snapshot
@@ -146,9 +164,14 @@ export default function Feed() {
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
-            refreshing={feed.isRefetching && !feed.isFetchingNextPage}
-            onRefresh={() => feed.refetch()}
+            refreshing={pulling}
+            onRefresh={onPullRefresh}
             tintColor={theme.inkSoft}
+            // The list has a large top contentInset (status bar). Without this
+            // the spinner draws ABOVE the visible area (hidden under the status
+            // bar) — "the list moves but no spinner shows". Offset it down into
+            // view by the same top pad.
+            progressViewOffset={topPad}
           />
         }
         onEndReachedThreshold={0.6}

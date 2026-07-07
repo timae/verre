@@ -5,7 +5,7 @@ import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { GLASS_FILL } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
-import { radius, space } from '@/theme';
+import { radius, space, useTheme } from '@/theme';
 import { formatScore } from '@verre/core';
 import type { SessionFeedWine } from '@/lib/api/feed';
 
@@ -29,6 +29,7 @@ export function GlassPanelInner({
   index: number;
   axisColor: (k: string) => string;
 }) {
+  const { theme } = useTheme();
   if (!wine) return null;
   const blind = !!wine._blind;
   const typeLabel = wineTypeLabel(wine.type);
@@ -57,7 +58,10 @@ export function GlassPanelInner({
         ) : null}
         {wine.score != null && wine.score > 0 && (
           <View style={styles.panelScore}>
-            <Icon name="starf" size={17} color="#fff" />
+            {/* accent star (matches the themed panel), white value — Simon:
+                the star carries the colour, over-photo the number stays white
+                for contrast on the scrim. */}
+            <Icon name="starf" size={17} color={theme.accent} />
             <VText variant="subhead" style={[styles.bold, { color: '#fff' }]}>
               {formatScore(wine.score)}
             </VText>

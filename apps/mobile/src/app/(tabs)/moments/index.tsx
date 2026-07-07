@@ -79,6 +79,13 @@ export default function Moments() {
   return (
     <ScrollView
       style={{ flex: 1 }}
+      // A short moments list (a couple cards) doesn't fill the viewport, and an
+      // iOS ScrollView won't bounce — so RefreshControl never engages — unless
+      // bouncing is forced. `alwaysBounceVertical` makes pull-to-refresh work
+      // regardless of content height (the content is deliberately NOT flexGrow:1,
+      // see contentContainerStyle, so without this the pull is dead on a short
+      // list).
+      alwaysBounceVertical
       // iOS-native keyboard dismissal for the join-code field: drag the list to
       // dismiss (interactive = finger-tracked), and persistTaps="handled" so a
       // tap on Join still fires while the field is focused. (Apple convention is
@@ -102,7 +109,15 @@ export default function Moments() {
         // wine counts, recents. `pulling` (not isRefetching) so the spinner
         // shows ONLY for a user-initiated pull — never the focus/background
         // refetch, which would otherwise animate on every back navigation.
-        <RefreshControl refreshing={pulling} onRefresh={onPullRefresh} tintColor={theme.inkSoft} />
+        <RefreshControl
+          refreshing={pulling}
+          onRefresh={onPullRefresh}
+          tintColor={theme.inkSoft}
+          // Large top contentInset (status bar) pushes the spinner above the
+          // visible area otherwise — "list moves but no spinner shows". Offset
+          // it down by the same top pad.
+          progressViewOffset={insets.top + 8}
+        />
       }
     >
       {/* .vbar-root — top-right carries the page's primary action as the
