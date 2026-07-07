@@ -111,4 +111,52 @@ export function feedItemId(item: FeedItem): number {
   return item.type === 'checkin' ? item.checkin.id : item.session.id;
 }
 
+// The impression detail screen (proposal 08 §3) is a PURE client render off the
+// data the feed already delivered — no new fetch. It reads the ['feed'] infinite
+// cache, finds the post by feed_item id, and normalises both variants into ONE
+// list of wines to page over: a session → its wines[]; a standalone check-in →
+// a single synthesized wine (so the pager/hero speak one shape). Returns null
+// when the post isn't in the cache (e.g. deep-linked before the feed loaded, or
+// scrolled out of a trimmed cache) — the screen shows a terminal "gone" state.
+export function findFeedItem(pages: FeedPage[] | undefined, id: number): FeedItem | null {
+  for (const page of pages ?? []) {
+    for (const item of page.items) if (feedItemId(item) === id) return item;
+  }
+  return null;
+}
+
+// The detail screen's uniform wine list + author + whether it's a moment (dots
+// + "#N of M") or a standalone (single, no dots). A standalone's check-in maps
+// onto SessionFeedWine (it lacks region/vinification/description/purchaseUrl —
+// those are session-wine catalog fields the checkin payload omits, so the About
+// block renders only what's present: country + grape).
+export function detailFromItem(item: FeedItem): {
+  author: FeedAuthor;
+  wines: SessionFeedWine[];
+  isSession: boolean;
+} {
+  if (item.type === 'session') {
+    return { author: item.author, wines: item.session.wines, isSession: true };
+  }
+  const c = item.checkin;
+  const wine: SessionFeedWine = {
+    id: String(c.id),
+    name: c.wineName,
+    producer: c.producer,
+    vintage: c.vintage,
+    grape: c.grape,
+    type: c.type,
+    imageUrl: c.imageUrl,
+    score: c.score,
+    flavors: c.flavors,
+    notes: c.notes,
+    region: null,
+    country: c.country,
+    vinification: null,
+    description: null,
+    purchaseUrl: null,
+  };
+  return { author: item.author, wines: [wine], isSession: false };
+}
+
 export { ApiError };
