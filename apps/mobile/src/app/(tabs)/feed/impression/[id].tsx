@@ -22,10 +22,11 @@ import { StarScore } from '@/components/scoring/StarScore';
 import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
-import { getFeed, findFeedItem, detailFromItem, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
+import { Avatar } from '@/components/ui/Avatar';
+import { getFeed, findFeedItem, detailFromItem, type FeedAuthor, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
-import { wineTypeLabel } from '@/lib/momentFormat';
+import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, useTheme } from '@/theme';
@@ -106,7 +107,7 @@ export default function FeedImpression() {
     );
   }
 
-  const { wines, author, momentName, sessionId } = detailFromItem(item);
+  const { wines, author, createdAt, verb, place, momentName, sessionId } = detailFromItem(item);
   const total = wines.length;
   const barSolid = !!collapsed[active];
 
@@ -123,7 +124,10 @@ export default function FeedImpression() {
           wine={wines[0]}
           index={0}
           total={1}
-          authorName={author.name}
+          author={author}
+          createdAt={createdAt}
+          verb={verb}
+          place={place}
           momentName={momentName}
           sessionId={sessionId}
           onCollapse={(c) => reportCollapse(0, c)}
@@ -146,7 +150,10 @@ export default function FeedImpression() {
                 wine={w}
                 index={i}
                 total={total}
-                authorName={author.name}
+                author={author}
+                createdAt={createdAt}
+                verb={verb}
+                place={place}
                 momentName={momentName}
                 sessionId={sessionId}
                 onCollapse={(c) => reportCollapse(i, c)}
@@ -229,7 +236,10 @@ function DetailPage({
   wine,
   index,
   total,
-  authorName,
+  author,
+  createdAt,
+  verb,
+  place,
   momentName,
   sessionId,
   onCollapse,
@@ -240,7 +250,10 @@ function DetailPage({
   wine: SessionFeedWine;
   index: number;
   total: number;
-  authorName: string;
+  author: FeedAuthor;
+  createdAt: string;
+  verb: string;
+  place: string | null;
   momentName: string | null;
   sessionId: number | null;
   onCollapse: (collapsed: boolean) => void;
@@ -383,31 +396,35 @@ function DetailPage({
           </View>
         ) : null}
 
-        {/* attribution — from whom + which moment (below the dots, above the
-            rating; Simon wanted the hero to stay full-bleed). The moment name is
-            TAPPABLE when the viewer was a member (momentCode resolved from their
-            own sessions — see useEnterableMoment); otherwise plain text. */}
-        <View style={styles.attrib}>
-          <VText variant="small" color="inkSoft" numberOfLines={1}>
-            {'from '}
-            <VText variant="small" color="ink" style={styles.attribName}>
-              {authorName}
+        {/* full header — avatar · name + verb · place · time (mirrors the feed
+            card's header, in-content below the dots so the hero stays full-bleed;
+            Simon). The moment name (the "place" of a session) is TAPPABLE when the
+            viewer was a member (momentCode from their own sessions). */}
+        <View style={styles.header}>
+          <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+          <View style={styles.headerWho}>
+            <VText variant="body" numberOfLines={1}>
+              <VText variant="body" style={styles.attribName}>
+                {author.name}
+              </VText>
+              <VText variant="body" color="inkSoft">
+                {` ${verb}`}
+              </VText>
             </VText>
-            {momentName ? (
-              <>
-                {'  ·  '}
-                {momentCode ? (
-                  <VText variant="small" color="accent" style={styles.attribName} onPress={enterMoment}>
-                    {momentName}
-                  </VText>
-                ) : (
-                  <VText variant="small" color="inkSoft">
-                    {momentName}
-                  </VText>
-                )}
-              </>
-            ) : null}
-          </VText>
+            <VText variant="caption" color="inkSoft" numberOfLines={1}>
+              {/* place: for a session it's the (tappable) moment name; for a
+                  standalone it's the venue. Time always trails. */}
+              {place && momentName && momentCode ? (
+                <VText variant="caption" color="accent" style={styles.attribName} onPress={enterMoment}>
+                  {place}
+                </VText>
+              ) : place ? (
+                place
+              ) : null}
+              {place ? ' · ' : ''}
+              {timeAgo(createdAt)}
+            </VText>
+          </View>
         </View>
 
         {/* score + word */}
@@ -512,7 +529,8 @@ const styles = StyleSheet.create({
   dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5, paddingBottom: space.md },
   dot: { width: 6, height: 6, borderRadius: 999 },
   dotOn: { transform: [{ scale: 1.15 }] },
-  attrib: { marginBottom: space.md },
+  header: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginBottom: space.md },
+  headerWho: { flex: 1, minWidth: 0 },
   attribName: { fontFamily: 'InstrumentSans_600SemiBold' },
   scoreRow: { flexDirection: 'row', alignItems: 'center', marginBottom: space.md },
   wheelWrap: { alignItems: 'center', marginTop: space.xs },

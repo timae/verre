@@ -144,6 +144,11 @@ export function detailFromItem(item: FeedItem): {
   author: FeedAuthor;
   wines: SessionFeedWine[];
   isSession: boolean;
+  createdAt: string; // the post time (from the FeedItem wrapper)
+  // The header's "where" line: a session → "shared a moment" + the moment name;
+  // a standalone → "had a wine" + the venue (venueName · city).
+  verb: string;
+  place: string | null;
   // Attribution: the moment this came from (session posts only). `momentName`
   // is null for a tombstoned moment; `sessionId` drives the enter-moment match
   // against the viewer's own sessions (never a join code on the wire).
@@ -151,11 +156,15 @@ export function detailFromItem(item: FeedItem): {
   sessionId: number | null;
 } {
   if (item.type === 'session') {
+    const momentName = item.session.deleted ? null : item.session.sessionName;
     return {
       author: item.author,
       wines: item.session.wines,
       isSession: true,
-      momentName: item.session.deleted ? null : item.session.sessionName,
+      createdAt: item.createdAt,
+      verb: 'shared a moment',
+      place: item.session.deleted ? '[deleted moment]' : momentName,
+      momentName,
       sessionId: item.session.sessionId,
     };
   }
@@ -178,8 +187,17 @@ export function detailFromItem(item: FeedItem): {
     description: c.description,
     purchaseUrl: c.purchaseUrl,
   };
-  // A standalone has no moment — no attribution moment name / sessionId.
-  return { author: item.author, wines: [wine], isSession: false, momentName: null, sessionId: null };
+  // A standalone has no moment — the "where" is the venue.
+  return {
+    author: item.author,
+    wines: [wine],
+    isSession: false,
+    createdAt: item.createdAt,
+    verb: 'had a wine',
+    place: [c.venueName, c.city].filter(Boolean).join(', ') || null,
+    momentName: null,
+    sessionId: null,
+  };
 }
 
 export { ApiError };
