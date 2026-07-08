@@ -25,8 +25,7 @@ import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { topFlavours } from '@/lib/flavourAxes';
-import { fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
-import { useFeedFitMode } from '@/lib/feedFitMode';
+import { frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
@@ -63,7 +62,6 @@ export function SessionFeedCard({
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
-  const fitMode = useFeedFitMode(); // dev toggle: 'bars' | 'crop' (dev gallery)
   const { width: screenW } = useWindowDimensions();
   const photoW = screenW; // full-bleed at x=0
   // The moment name is tappable → open the moment, but ONLY if the viewer was a
@@ -216,13 +214,6 @@ export function SessionFeedCard({
                   width={photoW}
                   height={photoH}
                   axisColor={axisColor}
-                  fit={
-                    fitMode === 'crop'
-                      ? 'cover'
-                      : w.imageUrl && aspects[w.imageUrl]
-                        ? fitInFrame(aspects[w.imageUrl], frameAspect)
-                        : 'cover'
-                  }
                   onMeasure={reportAspect}
                   onPressPanel={() => onOpenImpression(i)}
                 />
@@ -333,7 +324,6 @@ function WineSlide({
   index,
   width,
   height,
-  fit,
   axisColor,
   onMeasure,
   onPressPanel,
@@ -342,9 +332,6 @@ function WineSlide({
   index: number;
   width: number;
   height: number;
-  // 'contain' = show whole photo, tint bars fill the gap. 'cover' = crop to
-  // fill (taller-than-frame, or the crop dev mode). See lib/feedAspect.
-  fit: 'cover' | 'contain';
   axisColor: (k: string) => string;
   // Report this photo's intrinsic aspect (h/w) up once loaded — the parent
   // computes the frame (tallest wins) from all slides' reports.
@@ -363,7 +350,10 @@ function WineSlide({
         <Image
           source={{ uri }}
           style={{ width, height }}
-          contentFit={fit}
+          // Crop-fill (Simon's chosen default; the bars alternative + its dev
+          // toggle were removed). The frame is still the tallest photo's aspect
+          // (clamped to the band), so the minority orientation crops.
+          contentFit="cover"
           transition={120}
           alt={wine._blind ? 'Hidden wine' : wine.name || 'Wine photo'}
           onLoad={(e) => {

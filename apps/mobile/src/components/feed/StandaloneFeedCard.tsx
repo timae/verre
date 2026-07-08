@@ -16,8 +16,7 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
-import { DEFAULT_ASPECT, fitInFrame, frameAspectFor, rawAspect } from '@/lib/feedAspect';
-import { useFeedFitMode, type FeedFitMode } from '@/lib/feedFitMode';
+import { DEFAULT_ASPECT, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
@@ -54,7 +53,6 @@ export function StandaloneFeedCard({
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
-  const fitMode = useFeedFitMode(); // dev toggle: 'bars' | 'crop' (dev gallery)
   const { width: screenW } = useWindowDimensions();
 
   // Adapt the CheckinPayload into the SessionFeedWine shape the shared panel +
@@ -125,7 +123,6 @@ export function StandaloneFeedCard({
           wine={wine}
           axisColor={axisColor}
           photoW={screenW}
-          fitMode={fitMode}
           onLike={like}
           onOpen={onOpen}
         />
@@ -173,7 +170,6 @@ function PhotoHero({
   wine,
   axisColor,
   photoW,
-  fitMode,
   onLike,
   onOpen,
 }: {
@@ -181,7 +177,6 @@ function PhotoHero({
   wine: SessionFeedWine;
   axisColor: (k: string) => string;
   photoW: number;
-  fitMode: FeedFitMode;
   onLike: () => void;
   onOpen: () => void;
 }) {
@@ -189,7 +184,6 @@ function PhotoHero({
   const [raw, setRaw] = useState<number | null>(null);
   const frameAspect = raw ? frameAspectFor([raw]) : DEFAULT_ASPECT;
   const photoH = Math.round(photoW * frameAspect);
-  const fit = fitMode === 'crop' ? 'cover' : raw ? fitInFrame(raw, frameAspect) : 'cover';
 
   const burstScale = useSharedValue(0);
   const burstOpacity = useSharedValue(0);
@@ -215,7 +209,7 @@ function PhotoHero({
         <Image
           source={{ uri }}
           style={{ width: photoW, height: photoH }}
-          contentFit={fit}
+          contentFit="cover"
           transition={120}
           alt={wine.name || 'Wine photo'}
           onLoad={(e) => {
