@@ -158,6 +158,12 @@ export default function FeedImpression() {
           onScroll={onPagerScroll}
           scrollEventThrottle={16}
           contentOffset={{ x: Math.min(startIndex, maxPage) * screenW, y: 0 }}
+          // flex:1 bounds the pager to the screen so each page's own vertical
+          // ScrollView (DetailPage root) gets a real viewport height — without
+          // it the height chain is unconstrained and vertical scrolling inside
+          // a page can collapse. Page wrappers stretch to this height (a
+          // horizontal SV's content row defaults to alignItems:stretch).
+          style={{ flex: 1 }}
         >
           {wines.map((w, i) => (
             <View key={w.id} style={{ width: screenW }}>
