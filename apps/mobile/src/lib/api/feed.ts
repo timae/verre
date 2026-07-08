@@ -108,12 +108,18 @@ export async function getFeed(cursor?: string | null): Promise<FeedPage> {
 }
 
 // POST|DELETE /api/feed-items/:id/like — toggle the like. Returns the
-// authoritative liked state; the caller reconciles its optimistic write.
-export async function setFeedItemLike(feedItemId: number, liked: boolean): Promise<void> {
+// AUTHORITATIVE { liked, count } (idempotency + block-pair like hiding are
+// applied server-side, so the real count can diverge from ±1 client math);
+// the caller reconciles its optimistic write with it.
+export async function setFeedItemLike(
+  feedItemId: number,
+  liked: boolean,
+): Promise<{ liked: boolean; count: number }> {
   const res = await apiFetch(`/api/feed-items/${feedItemId}/like`, {
     method: liked ? 'POST' : 'DELETE',
   });
   if (!res.ok) await throwApiError(res);
+  return (await res.json()) as { liked: boolean; count: number };
 }
 
 // A stable id for a feed item across the checkin/session split — used as

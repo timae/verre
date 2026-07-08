@@ -1,7 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
@@ -58,6 +58,18 @@ export default function Feed() {
 
   const items = useMemo(() => (feed.data?.pages ?? []).flatMap((p) => p.items), [feed.data]);
 
+  // Drain empty pages: /api/feed may legally return items:[] with a cursor
+  // (render filters drop rows server-side; the cursor keys on the RAW page —
+  // see the route's nextCursor comment). An appended empty page doesn't grow
+  // the content height, so onEndReached never re-fires — advance explicitly
+  // until a page carries items or paging ends.
+  const pages = feed.data?.pages;
+  useEffect(() => {
+    if (!pages?.length || pages[pages.length - 1].items.length > 0) return;
+    if (feed.hasNextPage && !feed.isFetching) feed.fetchNextPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages, feed.hasNextPage, feed.isFetching]);
+
   // Pull-to-refresh (mirrors the moments home pattern): an explicit `pulling`
   // state drives the spinner — NOT feed.isRefetching, which also fires for the
   // app-foreground refetch AND can go true→false within a frame on a fast/cached
@@ -91,7 +103,21 @@ export default function Feed() {
         };
       });
       try {
-        await setFeedItemLike(id, nextLiked);
+        // Reconcile with the authoritative result — an idempotent double-like
+        // or block-pair-hidden likes make the server's count diverge from the
+        // optimistic ±1. (A rapid re-toggle mid-flight converges on the LAST
+        // response, same as the web client.)
+        const server = await setFeedItemLike(id, nextLiked);
+        queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) => {
+          if (!data) return data;
+          return {
+            ...data,
+            pages: data.pages.map((page) => ({
+              ...page,
+              items: page.items.map((it) => applyLike(it, id, server.liked, server.count)),
+            })),
+          };
+        });
       } catch {
         queryClient.invalidateQueries({ queryKey: FEED_KEY });
       }
@@ -195,30 +221,37 @@ export default function Feed() {
           ) : null
         }
         ListEmptyComponent={
-          <CenteredMessage
-            title="Nothing here yet"
-            body="Follow other tasters or join a moment — what your network drinks shows up here."
-          />
+          feed.hasNextPage || feed.isFetching ? (
+            // Nothing rendered yet but paging/refetching is still in motion
+            // (e.g. draining an empty page) — keep a spinner, not the
+            // terminal empty copy.
+            <View style={{ paddingVertical: space.lg }}>
+              <ActivityIndicator color={theme.inkSoft} />
+            </View>
+          ) : (
+            <CenteredMessage
+              title="Nothing here yet"
+              body="Follow other tasters or join a moment — what your network drinks shows up here."
+            />
+          )
         }
       />
     </View>
   );
 }
 
-// Apply an optimistic like flip to whichever payload the target id lives on.
-function applyLike(item: FeedItem, id: number, nextLiked: boolean): FeedItem {
+// Apply a like flip to whichever payload the target id lives on. Without
+// `count` this is the optimistic ±1 (no-op if liked already matches); with
+// `count` (server-authoritative) both fields reconcile to the response.
+function applyLike(item: FeedItem, id: number, nextLiked: boolean, count?: number): FeedItem {
   if (feedItemId(item) !== id) return item;
   const delta = nextLiked ? 1 : -1;
   if (item.type === 'session') {
-    if (item.session.liked === nextLiked) return item;
-    return {
-      ...item,
-      session: { ...item.session, liked: nextLiked, likeCount: Math.max(0, item.session.likeCount + delta) },
-    };
+    const likeCount = count ?? (item.session.liked === nextLiked ? item.session.likeCount : Math.max(0, item.session.likeCount + delta));
+    if (item.session.liked === nextLiked && item.session.likeCount === likeCount) return item;
+    return { ...item, session: { ...item.session, liked: nextLiked, likeCount } };
   }
-  if (item.checkin.liked === nextLiked) return item;
-  return {
-    ...item,
-    checkin: { ...item.checkin, liked: nextLiked, likeCount: Math.max(0, item.checkin.likeCount + delta) },
-  };
+  const likeCount = count ?? (item.checkin.liked === nextLiked ? item.checkin.likeCount : Math.max(0, item.checkin.likeCount + delta));
+  if (item.checkin.liked === nextLiked && item.checkin.likeCount === likeCount) return item;
+  return { ...item, checkin: { ...item.checkin, liked: nextLiked, likeCount } };
 }
