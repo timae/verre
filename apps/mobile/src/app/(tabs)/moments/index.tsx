@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { ApiError, getMySessions, isPinnedSession, joinMoment, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { ApiError, isPinnedSession, joinMoment, mySessionsQueryOptions, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -29,7 +29,7 @@ export default function Moments() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { theme } = useTheme();
-  const sessions = useQuery({ queryKey: ['my-sessions'], queryFn: getMySessions, staleTime: 15_000 });
+  const sessions = useQuery(mySessionsQueryOptions());
 
   // Coming back from a session must reflect the just-joined/just-ended state
   // without an app reload.

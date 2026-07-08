@@ -1,3 +1,4 @@
+import { infiniteQueryOptions } from '@tanstack/react-query';
 import { apiFetch } from '../apiFetch';
 import { ApiError, throwApiError } from './sessions';
 
@@ -121,6 +122,23 @@ export function feedItemId(item: FeedItem): number {
   return item.type === 'checkin' ? item.checkin.id : item.session.id;
 }
 
+// The ONE definition of the feed infinite query, consumed by the list screen
+// AND the detail screen. The detail is a pure render off the same cache — that
+// only holds while both observers attach with the identical key/options, so
+// the definition lives here (with the fetcher + wire types), not copy-pasted
+// per screen.
+export const FEED_KEY = ['feed'] as const;
+export const FEED_STALE_MS = 15_000;
+export function feedQueryOptions() {
+  return infiniteQueryOptions({
+    queryKey: FEED_KEY,
+    queryFn: ({ pageParam }) => getFeed(pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.nextCursor,
+    staleTime: FEED_STALE_MS,
+  });
+}
+
 // The impression detail screen (proposal 08 §3) is a PURE client render off the
 // data the feed already delivered — no new fetch. It reads the ['feed'] infinite
 // cache, finds the post by feed_item id, and normalises both variants into ONE
@@ -135,11 +153,37 @@ export function findFeedItem(pages: FeedPage[] | undefined, id: number): FeedIte
   return null;
 }
 
+// Adapt a standalone check-in into the SessionFeedWine shape the shared feed
+// surfaces (glass panel, heroes, detail pager) speak. ONE adapter — used by
+// both StandaloneFeedCard and detailFromItem below — so the card and the
+// detail page can never disagree about the same check-in. A standalone is
+// never blind (the author's own public post); the payload carries the full
+// wine-catalog metadata, so the About block matches a session wine's.
+export function checkinToWine(c: CheckinPayload): SessionFeedWine {
+  return {
+    id: String(c.id),
+    name: c.wineName,
+    producer: c.producer,
+    vintage: c.vintage,
+    grape: c.grape,
+    type: c.type,
+    imageUrl: c.imageUrl,
+    score: c.score,
+    flavors: c.flavors,
+    notes: c.notes,
+    // The WINE's origin (wineRegion/wineCountry) — NOT c.country, which is the
+    // VENUE country (the old standalone card conflated them).
+    region: c.wineRegion,
+    country: c.wineCountry,
+    vinification: c.vinification,
+    description: c.description,
+    purchaseUrl: c.purchaseUrl,
+  };
+}
+
 // The detail screen's uniform wine list + author + whether it's a moment (dots
 // + "#N of M") or a standalone (single, no dots). A standalone's check-in maps
-// onto SessionFeedWine (it lacks region/vinification/description/purchaseUrl —
-// those are session-wine catalog fields the checkin payload omits, so the About
-// block renders only what's present: country + grape).
+// onto SessionFeedWine via checkinToWine above.
 export function detailFromItem(item: FeedItem): {
   author: FeedAuthor;
   wines: SessionFeedWine[];
@@ -169,28 +213,10 @@ export function detailFromItem(item: FeedItem): {
     };
   }
   const c = item.checkin;
-  const wine: SessionFeedWine = {
-    id: String(c.id),
-    name: c.wineName,
-    producer: c.producer,
-    vintage: c.vintage,
-    grape: c.grape,
-    type: c.type,
-    imageUrl: c.imageUrl,
-    score: c.score,
-    flavors: c.flavors,
-    notes: c.notes,
-    // The WINE's origin (not the venue country) → About "Origin" row.
-    region: c.wineRegion,
-    country: c.wineCountry,
-    vinification: c.vinification,
-    description: c.description,
-    purchaseUrl: c.purchaseUrl,
-  };
   // A standalone has no moment — the "where" is the venue.
   return {
     author: item.author,
-    wines: [wine],
+    wines: [checkinToWine(c)],
     isSession: false,
     createdAt: item.createdAt,
     verb: 'had a wine',

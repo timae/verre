@@ -70,7 +70,7 @@ export function SessionFeedCard({
 
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
-  const avg = groupAvg(wines);
+  const avg = authorAvg(wines);
   // Does ANY impression in this moment have a real photo? A blind wine's photo
   // is redacted (imageUrl null + _blind), so it doesn't count. If none do, the
   // photo carousel would be a strip of glyph placeholders (Simon: don't show
@@ -89,11 +89,10 @@ export function SessionFeedCard({
   const anyWheel = !anyPhoto && wines.some((w) => topFlavours(w.flavors, w.type, axisColor).length > 0);
   const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
-  // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band,
-  // so the frame is always ≥ every slide → shorter (landscape) slides
-  // letterbox top/bottom with tint bars, never pillarbox. A slide TALLER than
-  // the frame (only when the frame hit the 3:4 cap) crops. Needs every wine's
-  // intrinsic aspect — the payload lacks dims, so each slide measures ITS OWN
+  // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band;
+  // every slide crop-fills the frame (contentFit cover — the contain/letterbox
+  // path and its dev toggle were deleted, see lib/feedAspect.ts). Needs every
+  // wine's intrinsic aspect — the payload lacks dims, so each slide measures ITS OWN
   // image via expo-image's onLoad (reliable — it reports the dims of the image
   // it already loaded; RNImage.getSize did a separate fetch that could fail
   // silently against MinIO, leaving every slide on the cover fallback) and
@@ -194,8 +193,8 @@ export function SessionFeedCard({
            spanning the full screen width. The glass panel lives INSIDE each
            slide (Simon) so it travels with its photo instead of a static
            overlay that pops content on scroll-end. The CONTAINER carries the
-           tint background so an overscroll pull reveals the tint (matching the
-           letterbox bars), sitting FLAT — no shadow (Simon). */
+           tint background so an overscroll pull (or a not-yet-loaded photo)
+           reveals the tint, sitting FLAT — no shadow (Simon). */
         <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
           <GestureDetector gesture={doubleTap}>
             <ScrollView
@@ -234,7 +233,8 @@ export function SessionFeedCard({
            lighter card with the wheel; bare → just the darker panel), same
            swipe + dots. No backdrop tint (the hero matches the scene, Simon);
            no double-tap-like (no photo target); the heart button still likes. A
-           blind wine renders the mystery placeholder inside NonPhotoHero.
+           blind wine renders like any other with identity masked in its panel
+           (no mystery branch — see NonPhotoHero).
            Height: a screen-tall SQUARE only when some slide shows a wheel/blind
            (it needs the room; bare slides bottom-align their panel within it).
            When ALL slides are bare (just names+scores) the height is undefined
@@ -279,7 +279,7 @@ export function SessionFeedCard({
         </View>
       )}
 
-      {/* action row — like · group-avg chip */}
+      {/* action row — like · avg-score chip */}
       <View style={[styles.acts, { paddingHorizontal: GUTTER }]}>
         <Pressable
           style={styles.actBtn}
@@ -292,9 +292,6 @@ export function SessionFeedCard({
         <View style={{ flex: 1 }} />
         {avg != null && (
           <View style={styles.scoreChip}>
-            <VText variant="caption" color="inkSoft">
-              group{' '}
-            </VText>
             <Icon name="starf" size={13} color={theme.ink} />
             <VText variant="caption" style={styles.bold}>
               {' '}
@@ -341,10 +338,10 @@ function WineSlide({
   const { theme } = useTheme();
   const uri = wine._blind ? null : wine.imageUrl;
   return (
-    // The container background IS the letterbox tint bar — surfaceSunk shows
-    // through where a contained photo doesn't reach the frame edges. (The
-    // overscroll shadow lives on the carousel CONTAINER, not here — RN
-    // ScrollViews clip child shadows, so a per-slide shadow wouldn't show.)
+    // surfaceSunk shows while the photo loads (cover-fill leaves no bars once
+    // it has). (The overscroll shadow lives on the carousel CONTAINER, not
+    // here — RN ScrollViews clip child shadows, so a per-slide shadow wouldn't
+    // show.)
     <View style={{ width, height, backgroundColor: theme.surfaceSunk }}>
       {uri ? (
         <Image
@@ -380,11 +377,15 @@ function WineSlide({
   );
 }
 
-// Group average across the author's rated wines (the "group ★" chip). Only
-// counts real scores (> 0); returns null when nothing is scored. Rounded to
-// a 0.25 step so the chip shows a clean score (formatScore expects quarter
-// steps — a raw mean like 4.083 would render "4.08").
-function groupAvg(wines: SessionFeedWine[]): number | null {
+// Average across the AUTHOR's rated wines (the action-row ★ chip). The feed
+// wire carries only the author's own ratings, so the design's cross-taster
+// "group" score isn't computable client-side — the chip dropped the "group"
+// label (Simon, 2026-07-08) until/unless the server ships a per-session
+// cross-rater aggregate. Only counts real scores (> 0); returns null when
+// nothing is scored. Rounded to a 0.25 step so the chip shows a clean score
+// (formatScore expects quarter steps — a raw mean like 4.083 would render
+// "4.08").
+function authorAvg(wines: SessionFeedWine[]): number | null {
   const scores = wines.map((w) => w.score).filter((s): s is number => s != null && s > 0);
   if (!scores.length) return null;
   const mean = scores.reduce((a, b) => a + b, 0) / scores.length;

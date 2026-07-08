@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useInfiniteQuery, type InfiniteData } from '@tanstack/react-query';
+import { useInfiniteQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -23,7 +23,7 @@ import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { getFeed, findFeedItem, detailFromItem, type FeedAuthor, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
+import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type SessionFeedWine } from '@/lib/api/feed';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
@@ -59,19 +59,22 @@ export default function FeedImpression() {
   const feedItemId = Number(id);
   const startIndex = Math.max(0, Number(index ?? 0) || 0);
 
-  // Read the feed cache (no fetch — the list already delivered this). We attach
-  // to the same infinite query so a returning viewer sees the same data; the
-  // query is already warm from the list. enabled:false-style — we never trigger
-  // a network read here, just read the cache via the shared key.
-  const feed = useInfiniteQuery({
-    queryKey: ['feed'] as const,
-    queryFn: ({ pageParam }) => getFeed(pageParam),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.nextCursor,
-    staleTime: 15_000,
-  });
-  const pages = (feed.data as InfiniteData<FeedPage> | undefined)?.pages;
+  // Read the feed cache (the list already delivered this). We attach to the
+  // SAME query — shared feedQueryOptions, so the two screens can't drift apart
+  // on key/options. refetchOnMount: false — mounting this observer must NOT
+  // refetch the loaded pages (an in-place refetch can drop a page-boundary
+  // item and flip this open screen to "gone" mid-read); list freshness belongs
+  // to the list screen. A cold deep-link (no cached data yet) still runs the
+  // INITIAL fetch — refetchOnMount only suppresses refetching existing data —
+  // so the guard below can resolve.
+  const feed = useInfiniteQuery({ ...feedQueryOptions(), refetchOnMount: false });
+  const pages = feed.data?.pages;
   const item = Number.isFinite(feedItemId) ? findFeedItem(pages, feedItemId) : null;
+  const detail = item ? detailFromItem(item) : null;
+  // Clamp seam for the pager index: `index` arrives via route params (a deep
+  // link can carry garbage) and onPagerScroll can round past the end on an
+  // overscroll bounce — both clamp against the real page count.
+  const maxPage = detail ? Math.max(0, detail.wines.length - 1) : 0;
 
   const [active, setActive] = useState(startIndex);
   // Per-page collapse state, indexed by page. The bar reads active's flag.
@@ -80,10 +83,10 @@ export default function FeedImpression() {
 
   const onPagerScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const i = Math.round(e.nativeEvent.contentOffset.x / screenW);
-      setActive((cur) => (cur === i ? cur : Math.max(0, i)));
+      const i = Math.max(0, Math.min(maxPage, Math.round(e.nativeEvent.contentOffset.x / screenW)));
+      setActive((cur) => (cur === i ? cur : i));
     },
-    [screenW],
+    [screenW, maxPage],
   );
 
   const reportCollapse = useCallback((page: number, c: boolean) => {
@@ -93,7 +96,7 @@ export default function FeedImpression() {
     setTitles((prev) => (prev[page] === t ? prev : { ...prev, [page]: t }));
   }, []);
 
-  if (!item) {
+  if (!item || !detail) {
     // Post not in the cache (deep link before the feed loaded, or trimmed out).
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -107,9 +110,12 @@ export default function FeedImpression() {
     );
   }
 
-  const { wines, author, createdAt, verb, place, momentName, sessionId } = detailFromItem(item);
+  const { wines, author, createdAt, verb, place, momentName, sessionId } = detail;
   const total = wines.length;
-  const barSolid = !!collapsed[active];
+  // Read-side clamp: `active` seeds from the raw route param before wines are
+  // known, so index the per-page maps through the clamped value.
+  const page = Math.min(active, maxPage);
+  const barSolid = !!collapsed[page];
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
@@ -142,7 +148,7 @@ export default function FeedImpression() {
           showsHorizontalScrollIndicator={false}
           onScroll={onPagerScroll}
           scrollEventThrottle={16}
-          contentOffset={{ x: startIndex * screenW, y: 0 }}
+          contentOffset={{ x: Math.min(startIndex, maxPage) * screenW, y: 0 }}
         >
           {wines.map((w, i) => (
             <View key={w.id} style={{ width: screenW }}>
@@ -169,7 +175,7 @@ export default function FeedImpression() {
       {/* Shared floating bar — over ALL pages, collapse tracks the active one. */}
       <FloatBar
         solid={barSolid}
-        title={barSolid ? titles[active] ?? '' : ''}
+        title={barSolid ? titles[page] ?? '' : ''}
         onBack={() => router.back()}
         insetTop={insets.top}
       />
@@ -518,7 +524,11 @@ function AboutBlock({ wine }: { wine: SessionFeedWine }) {
 }
 
 const styles = StyleSheet.create({
-  barRow: { height: BAR_ROW, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  // 44pt frame (negative margins keep the painted bar at the 36pt row) so the
+  // back button's touch target isn't clipped short: RN clips hitSlop to the
+  // PARENT's frame — a 44pt target needs a ≥44pt parent, not more slop
+  // (apps/mobile CLAUDE.md gotcha).
+  barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 10 },
   backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   barTitle: { flex: 1, fontFamily: 'InstrumentSans_600SemiBold' },
   heroPos: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' },

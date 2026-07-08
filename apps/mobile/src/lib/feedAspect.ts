@@ -13,13 +13,11 @@
 // to 3:4 so the default camera shape is shown whole.)
 //
 // Carousel frame rule (session posts): TALLEST photo wins, clamped to the band.
-// The frame is therefore always ≥ every photo's height → a shorter (landscape)
-// slide letterboxes with tint bars TOP/BOTTOM; it never pillarboxes.
 //
-// Per-slide fit rule: a photo TALLER than the frame (only possible when the
-// frame hit the 3:4 cap and the photo is taller, e.g. 9:16) is CROPPED (cover)
-// to the frame — we NEVER draw side bars (Simon: "rather crop, like Insta").
-// Everything at-or-shorter than the frame is CONTAINed with top/bottom bars.
+// Per-slide fit rule: every slide CROP-FILLS the frame (contentFit "cover",
+// hardcoded — Simon: "rather crop, like Insta"). The earlier contain/letterbox
+// alternative and its dev toggle were deleted; the minority orientation in a
+// mixed carousel crops to the frame.
 
 // Widest frame allowed (landscape 4:3): h/w = 3/4.
 export const MIN_ASPECT = 3 / 4;
@@ -49,12 +47,4 @@ export function frameAspectFor(aspects: number[]): number {
   const valid = aspects.filter((a) => Number.isFinite(a) && a > 0);
   if (!valid.length) return DEFAULT_ASPECT;
   return clampAspect(Math.max(...valid));
-}
-
-// How a single photo sits in the frame. `contain` (+ tint bars) when it's the
-// same height or shorter than the frame; `cover` (crop) when it's TALLER than
-// the frame (avoids side bars). Small epsilon so an exact match contains.
-export function fitInFrame(photoAspect: number, frameAspect: number): 'cover' | 'contain' {
-  if (!Number.isFinite(photoAspect) || photoAspect <= 0) return 'cover';
-  return photoAspect > frameAspect + 0.001 ? 'cover' : 'contain';
 }

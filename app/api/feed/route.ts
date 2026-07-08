@@ -323,6 +323,13 @@ export async function GET(req: NextRequest) {
         // (name + host) is scrubbed. Per-wine identity is still gated
         // by the blind/revealed predicate inside loadSessionFeedWines.
         const wines = !s ? [] : (sessionWines.get(pairKey(f.user.id, s.id)) ?? [])
+        // A LIVE session post with no wines has nothing to render (the
+        // author's ratings were cascade-deleted — e.g. the host deleted the
+        // only wine they'd rated; no app-level feed_items cleanup runs on that
+        // path). Drop it rather than ship a contentless shell. Tombstoned
+        // posts pass through regardless: their ratings survive the session
+        // scrub and the "[deleted session]" render is deliberate.
+        if (!deleted && wines.length === 0) return []
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,

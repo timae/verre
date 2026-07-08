@@ -4,7 +4,7 @@
 
 Design source: the 03·12 exploration in `.local/design/vero-feed.js` (`sessG`/`gpanelInner`/`impSheet`/`gFull`) + the `## Feed` decisions in `.local/design/CLAUDE.md`. Simon picked **03·12 ("linked · glass")** with deviations from the mock, recorded in §2 + §2b (as-built).
 
-**As-built files** (`apps/mobile/src/`): `app/(tabs)/feed/index.tsx` (list) · `app/(tabs)/feed/impression/[id].tsx` (detail, PLACEHOLDER) · `components/feed/SessionFeedCard.tsx` · `components/feed/StandaloneFeedCard.tsx` · `lib/api/feed.ts` (fetcher + wire types) · `lib/feedAspect.ts` (IG framing) · `lib/feedFitMode.ts` (dev toggle) · `lib/flavourAxes.ts`. Backend: `lib/feedTypes.ts` + `lib/sessionFeedWines.ts`.
+**As-built files** (`apps/mobile/src/`): `app/(tabs)/feed/index.tsx` (list) · `app/(tabs)/feed/impression/[id].tsx` (detail) · `components/feed/SessionFeedCard.tsx` · `components/feed/StandaloneFeedCard.tsx` · `components/feed/FeedGlassPanel.tsx` · `components/feed/FeedImpressionPanel.tsx` · `components/feed/NonPhotoHero.tsx` · `lib/api/feed.ts` (fetcher + wire types + shared `feedQueryOptions`) · `lib/feedAspect.ts` (IG framing) · `lib/useEnterableMoment.ts` · `lib/flavourAxes.ts`. Backend: `lib/feedTypes.ts` + `lib/sessionFeedWines.ts` + the empty-post drop in `app/api/feed/route.ts`.
 
 ---
 
@@ -63,7 +63,7 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 - **Fit within the frame — CROP is the chosen default (Simon), `bars` is the alternative.** A dev toggle (`lib/feedFitMode.ts`, exposed in the dev gallery's "Feed photo fit" section) flips between:
   - `'crop'` — every photo `cover`-fills the frame (crops the overflow, no bars). **Simon's pick.** A photo that matches the frame isn't cropped (cover on an exact match is a no-op) — so crop only bites the *minority orientation in a mixed moment*.
   - `'bars'` — a photo shorter than the frame `contain`s with **tint letterbox bars** (`surfaceSunk`, "alternate background tint"); a photo *taller* than the frame still crops (we **never pillarbox** — Simon: "rather crop, like Insta").
-  - ⚠️ **Delete this toggle before ship** (hardcode crop, remove `feedFitMode.ts` + the dev-gallery section).
+  - ✅ **Toggle DELETED** (commit `8f32e8f`): crop hardcoded, `feedFitMode.ts` + the dev-gallery section removed; the `'bars'`/contain path (incl. `fitInFrame`) was later stripped from `feedAspect.ts` too, so `'bars'` above is design history, not reachable code.
 
 **Panel travels with the photo.** §2 had the glass panel as a static overlay swapping content on scroll-end; Simon: it must **slide with the photo**. So the panel lives INSIDE each carousel slide (`WineSlide`), not as one overlay. The dot strip + heart-burst stay static overlays.
 
@@ -72,6 +72,16 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 **Glass panel content (as-built, `GlassPanelInner`):** name + `- vintage` + producer·type + **★ score (bigger — no score WORD**, Simon cut "Really good"/"Good") + mini wheel + a **`chevron-right`** disclosure glyph (the design's `.fpg-chev` = `i-back` rotated 180° — NOT the `more`/⋯ icon, which was the initial mistake). The year is **same colour as the name**, one weight lighter (medium vs semibold), one size smaller — consistent across both cards.
 
 **Feed-list extras:** tapping the Feed tab while on Feed **scrolls to top** (`useScrollToTop` from `expo-router`, wired to the FlatList ref).
+
+**Review fixes (2026-07-08, pre-merge pass; device-check pending):**
+- **★ chip label — "group" DROPPED (Simon).** The wire carries only the AUTHOR's ratings, so the design's cross-taster "group ★" isn't computable client-side; the chip now shows a bare `★ <avg>` of the author's rated wines (`authorAvg`). A real per-session cross-rater aggregate (server contract change) is the deferred alternative if "group" semantics are wanted later.
+- **One feed query definition** — `feedQueryOptions()`/`FEED_KEY` exported from `lib/api/feed.ts`, consumed by list + detail (they were two hand-typed copies). The detail attaches with `refetchOnMount: false`: mounting it must not refetch the loaded pages (an in-place refetch can drop a page-boundary item and flip the open screen to "gone"); a cold deep-link still runs the initial fetch.
+- **Tab RE-focus refresh** — `focusManager` only fires on app-foreground and tab screens stay mounted, so returning to the Feed tab never refetched. Now a `useFocusEffect` runs the scroll-safe in-place `refetch()` when the cache is actually stale.
+- **Bottom nav HIDDEN on the feed detail — RULING (Simon, 2026-07-08).** The tabs layout's `/impression/` hide-matcher catches `/feed/impression/[id]` too, and that's intended: the detail is immersive, the floating back button is the only chrome. (The review flagged it as a bug because feed/_layout's comment claimed the nav stays; the comment was wrong and is fixed. Don't "fix" the matcher.)
+- **`useEnterableMoment` subscribes** (`useQuery` via shared `mySessionsQueryOptions()`, also adopted by the Moments tab) instead of a one-shot `getQueryData` peek — the tappable moment name now appears when my-sessions resolves after the cards rendered, and self-fetches on a cold start into Feed.
+- **Detail pager clamps** both index seams (route-param `index`, overscroll rounding) against the wine count; back-button touch target raised to 44pt (barRow frame; RN clips hitSlop to the parent).
+- **`checkinToWine`** — the CheckinPayload→SessionFeedWine adapter deduped into `lib/api/feed.ts` (was copy-pasted in StandaloneFeedCard + detailFromItem, with an already-stale comment).
+- **Server drops empty LIVE session posts** (`app/api/feed/route.ts`): a host wine-delete cascades the author's ratings with no feed_items cleanup, which shipped a contentless "shared a moment" shell. Tombstoned posts still pass through ("[deleted session]" render is deliberate).
 
 ---
 

@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
-import { useRouter, useScrollToTop } from 'expo-router';
+import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,7 +8,7 @@ import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
 import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
 import { CenteredMessage, ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { VText } from '@/components/ui/VText';
-import { getFeed, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
+import { FEED_KEY, FEED_STALE_MS, feedQueryOptions, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { space, useTheme } from '@/theme';
 
@@ -16,8 +16,6 @@ import { space, useTheme } from '@/theme';
 // caller's network posts. Session-aggregate posts render as the 03·12 glass
 // card; standalone check-ins render minimally (Phase 2 redesigns them).
 // Scene background comes from the tabs layout's shared sceneStyle.
-
-const FEED_KEY = ['feed'] as const;
 
 export default function Feed() {
   const insets = useSafeAreaInsets();
@@ -29,23 +27,34 @@ export default function Feed() {
   const listRef = useRef<FlatList<FeedItem>>(null);
   useScrollToTop(listRef);
 
-  const feed = useInfiniteQuery({
-    queryKey: FEED_KEY,
-    queryFn: ({ pageParam }) => getFeed(pageParam),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.nextCursor,
-    staleTime: 15_000,
-  });
+  // The query definition is shared with the detail screen (feedQueryOptions) —
+  // the detail is a pure render off this same cache.
+  const feed = useInfiniteQuery(feedQueryOptions());
 
   // NO focus invalidate. `invalidateQueries` on an infinite query resets it
   // toward the first page and re-identifies every item, which (a) shrinks the
   // list mid-refetch so the scroll offset clamps UPWARD — the "feed creeps up a
   // bit every time I nav away and back" bug — and (b) reloads content already
-  // on screen. Freshness instead comes from `staleTime` (15s) + the app-
-  // foreground `focusManager` refetch (lib/query.tsx) + pull-to-refresh below.
-  // A pull runs `feed.refetch()`, which refetches the LOADED pages IN PLACE
-  // (content updates, count preserved, scroll holds) — "update without
-  // reloading what's already there."
+  // on screen. `feed.refetch()` is the safe path: it refetches the LOADED
+  // pages IN PLACE (content updates, count preserved, scroll holds) — "update
+  // without reloading what's already there." Freshness therefore comes from
+  // three refetch()-based triggers: the tab-refocus effect below, the
+  // app-foreground `focusManager` refetch (lib/query.tsx), and pull-to-refresh.
+
+  // Tab RE-focus: focusManager only fires on app foreground, and tab screens
+  // stay mounted, so switching Moments→Feed triggers no refetch by itself —
+  // without this, the list would sit stale until a manual pull. In-place
+  // refetch, gated on real staleness so quick tab hops stay silent. The
+  // initial mount is skipped (no data yet — the query's own fetch owns it).
+  useFocusEffect(
+    useCallback(() => {
+      const state = queryClient.getQueryState(FEED_KEY);
+      if (!state?.data || state.fetchStatus === 'fetching') return;
+      if (Date.now() - state.dataUpdatedAt < FEED_STALE_MS) return;
+      feed.refetch();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []),
+  );
 
   const items = useMemo(() => (feed.data?.pages ?? []).flatMap((p) => p.items), [feed.data]);
 

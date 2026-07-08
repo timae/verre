@@ -21,7 +21,7 @@ import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
-import type { CheckinPayload, FeedAuthor, SessionFeedWine } from '@/lib/api/feed';
+import { checkinToWine, type CheckinPayload, type FeedAuthor, type SessionFeedWine } from '@/lib/api/feed';
 
 // Standalone check-in card ("<name> had a wine") — 03·12 design language,
 // adapted to a SINGLE impression (Simon, 2026-07-06; proposal 08 §5 redesign).
@@ -56,33 +56,9 @@ export function StandaloneFeedCard({
   const { width: screenW } = useWindowDimensions();
 
   // Adapt the CheckinPayload into the SessionFeedWine shape the shared panel +
-  // hero speak. A standalone check-in is never blind (the author's own public
-  // post). The checkin payload now carries the full wine-catalog metadata
-  // (wineRegion/wineCountry/vinification/description/purchaseUrl) so the detail
-  // About block matches a session's.
-  const wine = useMemo<SessionFeedWine>(
-    () => ({
-      id: String(checkin.id),
-      name: checkin.wineName,
-      producer: checkin.producer,
-      vintage: checkin.vintage,
-      grape: checkin.grape,
-      type: checkin.type,
-      imageUrl: checkin.imageUrl,
-      score: checkin.score,
-      flavors: checkin.flavors,
-      notes: checkin.notes,
-      // The WINE's origin (wineRegion/wineCountry) — NOT checkin.country, which
-      // is the VENUE country (the old card conflated them, showing the venue as
-      // the wine's origin).
-      region: checkin.wineRegion,
-      country: checkin.wineCountry,
-      vinification: checkin.vinification,
-      description: checkin.description,
-      purchaseUrl: checkin.purchaseUrl,
-    }),
-    [checkin],
-  );
+  // hero speak — ONE adapter (checkinToWine), shared with the detail screen's
+  // detailFromItem, so the card and the detail page can never drift apart.
+  const wine = useMemo<SessionFeedWine>(() => checkinToWine(checkin), [checkin]);
 
   const uri = checkin.imageUrl;
 
