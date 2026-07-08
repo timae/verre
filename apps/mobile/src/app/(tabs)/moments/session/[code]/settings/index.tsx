@@ -13,6 +13,7 @@ import { authClient } from '@/lib/authClient';
 import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen } from '@/lib/momentFormat';
 import { useSettingsSession } from '@/lib/useSettingsSession';
+import { sessionHref, tabHomeHref, useSessionTab } from '@/lib/sessionStack';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 
 // 02f·1 Settings hub — a pushed full-screen page (not a sheet). Read-card +
@@ -25,6 +26,7 @@ export default function SettingsHub() {
   const code = String(raw ?? '');
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
@@ -65,7 +67,7 @@ export default function SettingsHub() {
           onPress: async () => {
             try {
               await deleteMoment(code);
-              router.replace('/(tabs)/moments');
+              router.replace(tabHomeHref(sessionTab));
             } catch (e) {
               const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
               Alert.alert('Could not delete', msg || 'Check your connection and try again.');
@@ -127,12 +129,12 @@ export default function SettingsHub() {
                     <SetNav
                       icon="edit"
                       label="Moment Details"
-                      onPress={() => router.push({ pathname: '/(tabs)/moments/session/[code]/settings/details', params: { code } })}
+                      onPress={() => router.push(sessionHref(sessionTab, 'settings/details', { code }))}
                     />
                     <SetNav
                       icon="eyeoff"
                       label="Reveal & Blind"
-                      onPress={() => router.push({ pathname: '/(tabs)/moments/session/[code]/settings/reveal', params: { code } })}
+                      onPress={() => router.push(sessionHref(sessionTab, 'settings/reveal', { code }))}
                     />
                   </SetGroup>
                   <SetGroup>

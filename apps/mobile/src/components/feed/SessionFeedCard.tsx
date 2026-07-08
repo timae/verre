@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -27,6 +27,7 @@ import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { topFlavours } from '@/lib/flavourAxes';
 import { frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
+import { setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useFlavourColors } from '@/theme/flavourColors';
@@ -69,6 +70,30 @@ export function SessionFeedCard({
 
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
+  // Shared-element source (proposal 09): opening an impression measures the
+  // photo carousel's window frame and hands it to the detail, whose hero clone
+  // grows out of it. A slide with no real photo (blind/placeholder) and the
+  // all-photoless carousel have nothing to share → the fade presentation.
+  const photoFrameRef = useRef<View>(null);
+  const openImpression = useCallback(
+    (i: number) => {
+      const w = wines[i];
+      const uri = !w?._blind && w?.imageUrl ? w.imageUrl : null;
+      const node = photoFrameRef.current;
+      if (!uri || !node) {
+        setFeedTransitionSource({ kind: 'fade' });
+        onOpenImpression(i);
+        return;
+      }
+      node.measureInWindow((x, y, width, height) => {
+        setFeedTransitionSource(
+          width > 0 && height > 0 ? { kind: 'photo', x, y, width, height, uri } : { kind: 'fade' },
+        );
+        onOpenImpression(i);
+      });
+    },
+    [wines, onOpenImpression],
+  );
   // Does ANY impression in this moment have a real photo? A blind wine's photo
   // is redacted (imageUrl null + _blind), so it doesn't count. If none do, the
   // photo carousel would be a strip of glyph placeholders (Simon: don't show
@@ -193,7 +218,7 @@ export function SessionFeedCard({
            overlay that pops content on scroll-end. The CONTAINER carries the
            tint background so an overscroll pull (or a not-yet-loaded photo)
            reveals the tint, sitting FLAT — no shadow (Simon). */
-        <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
+        <View ref={photoFrameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
           <GestureDetector gesture={doubleTap}>
             <ScrollView
               horizontal
@@ -212,7 +237,7 @@ export function SessionFeedCard({
                   height={photoH}
                   axisColor={axisColor}
                   onMeasure={reportAspect}
-                  onPressPanel={() => onOpenImpression(i)}
+                  onPressPanel={() => openImpression(i)}
                 />
               ))}
             </ScrollView>
@@ -255,7 +280,7 @@ export function SessionFeedCard({
               axisColor={axisColor}
               width={photoW}
               height={nonPhotoSlideH}
-              onOpen={() => onOpenImpression(i)}
+              onOpen={() => openImpression(i)}
             />
           ))}
         </ScrollView>

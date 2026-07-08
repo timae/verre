@@ -424,6 +424,30 @@ names in `src/lib/api/sessions.ts`.
   wines section that lacks the wine). Any new screen reading the shared `/state`
   poll must adopt the same merge — never read `state.data?.<section>` directly.
 
+## Navigation: the session sub-tree is DUAL-MOUNTED (proposal 09 §B)
+
+The session screens (`moments/session/[code]/…`) are mounted under BOTH tab
+stacks: Moments owns the source files; `app/(tabs)/feed/session/[code]/…`
+mirrors them as thin re-exports, so entering a moment from a feed post keeps
+back-nav on the feed. Two rules follow:
+
+- ⚠️ **Never hardcode `/(tabs)/moments/session/...` in a push/replace inside
+  the sub-tree** (or in a hook the sub-tree calls) — it would silently hop a
+  feed-stack visitor over to the Moments tab. Use `useSessionTab()` +
+  `sessionHref()` / `tabHomeHref()` from `lib/sessionStack.ts` (the one place
+  allowed to cast a computed pathname to a typed `Href`). Entry points that
+  genuinely live on one tab (moments home/recents/join/create) keep their
+  absolute paths.
+- **A new session screen needs its mirror file** under `feed/session/` (and a
+  suffix-friendly entry in the tabs layout's bar-hide matcher if it hides the
+  pill — the matchers are suffix-based on purpose so they cover both mounts).
+
+The feed impression detail (`feed/impression/[id]`) is a TRANSPARENT modal
+that draws its own shared-element open / pull-down close (proposal 09; source
+frame handed off via `lib/feedTransition.ts`). Don't give it a native
+animation or re-enable its native back gesture — both would pop the route
+without reversing the presentation.
+
 ## Theme / design
 
 - `src/theme/vero-tokens.js` is a **verbatim vendored copy** of

@@ -1,6 +1,14 @@
 import { Stack } from 'expo-router';
 import { useTheme } from '@/theme';
 
+// ⚠️ Load-bearing: declaring a <Stack.Screen> below hoists that route to the
+// FRONT of the stack's route order, and react-navigation's default initial
+// route is the first one — without this anchor, a fresh mount of the Feed tab
+// (app reload → tab press) would cold-mount impression/[id] with no params →
+// the "This impression is gone" screen. Also anchors deep links so the list
+// sits beneath a cold-opened detail (back has somewhere to go).
+export const unstable_settings = { initialRouteName: 'index' };
+
 // The Feed tab is a stack: the feed list (03·12) → the full impression
 // detail page (proposal 08 §3) pushes within the tab. The detail is
 // IMMERSIVE — the tabs layout hides the bottom nav on /impression/ routes
@@ -14,6 +22,23 @@ export default function FeedStack() {
         headerShown: false,
         contentStyle: { backgroundColor: theme.bg },
       }}
-    />
+    >
+      <Stack.Screen name="index" />
+      {/* The detail is a TRANSPARENT modal with no native animation: the
+          screen itself draws the shared-element open (hero clone grows out of
+          the tapped card's photo) and the pull-down dismiss (proposal 09),
+          with the feed showing through underneath. gestureEnabled off — the
+          pull-down IS the dismiss gesture; a native edge-swipe would pop the
+          route without reversing the presentation. */}
+      <Stack.Screen
+        name="impression/[id]"
+        options={{
+          presentation: 'transparentModal',
+          animation: 'none',
+          gestureEnabled: false,
+          contentStyle: { backgroundColor: 'transparent' },
+        }}
+      />
+    </Stack>
   );
 }
