@@ -1,22 +1,20 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { BottomSheetModalProvider, BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
-import { COUNTRIES, countryName } from '@verre/core';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import { countryName } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
-import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, pickPhoto, SelectField } from '@/components/moments/momentForm';
+import { CountrySheet, Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, reorderWines, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
-import { fuzzyIncludes } from '@/lib/search';
 import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
@@ -408,7 +406,7 @@ export function ImpressionForm({
         />
       </View>
 
-      <TypeSheet open={typeOpen} selected={type} onSelect={(t) => { setType(t); setTypeOpen(false); }} onClose={() => setTypeOpen(false)} />
+      <OptionSheet open={typeOpen} title="Type" options={WINE_TYPES} selected={type} onSelect={(t) => { setType(t); setTypeOpen(false); }} onClose={() => setTypeOpen(false)} />
       <CountrySheet open={countryOpen} selected={country} onSelect={(c) => { setCountry(c); setCountryOpen(false); }} onClose={() => setCountryOpen(false)} />
     </View>
     </BottomSheetModalProvider>
@@ -468,136 +466,8 @@ function PhotoPicker({
   );
 }
 
-// Type picker — brand bottom sheet (create.tsx CategorySheet shell). All 5 are
-// choosable; the selected one carries a check.
-function TypeSheet({
-  open, selected, onSelect, onClose,
-}: {
-  open: boolean;
-  selected: WineTypeCode | null;
-  onSelect: (t: WineTypeCode) => void;
-  onClose: () => void;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const insets = useSafeAreaInsets();
-  return (
-    <Sheet open={open} onClose={onClose}>
-      <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            Type
-          </VText>
-        </View>
-        {WINE_TYPES.map((t) => {
-          const on = t.code === selected;
-          return (
-            <Pressable
-              key={t.code}
-              accessibilityRole="button"
-              accessibilityState={{ selected: on }}
-              onPress={() => onSelect(t.code)}
-              style={({ pressed }) => ({
-                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                paddingHorizontal: 20, paddingVertical: phone.lerp(14, 18),
-                backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
-              })}
-            >
-              <VText variant="body">{t.label}</VText>
-              {on ? <Icon name="check" size={18} color={theme.accent} /> : null}
-            </Pressable>
-          );
-        })}
-      </BottomSheetView>
-    </Sheet>
-  );
-}
-
-// Country picker — brand sheet with a type-to-filter field, reusing the
-// canonical @verre/core COUNTRIES list (web↔native shared). A "Clear" row at the
-// top removes the selection. Capped height so the long list scrolls.
-function CountrySheet({
-  open, selected, onSelect, onClose,
-}: {
-  open: boolean;
-  selected: string;
-  onSelect: (code: string) => void;
-  onClose: () => void;
-}) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const insets = useSafeAreaInsets();
-  const [query, setQuery] = useState('');
-  const filtered = useMemo(() => {
-    const q = query.trim();
-    if (!q) return COUNTRIES;
-    return COUNTRIES.filter((c) => fuzzyIncludes(c.name, q));
-  }, [query]);
-  return (
-    <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
-      <BottomSheetView style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
-        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 12 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            Country
-          </VText>
-          <TextField placeholder="Type to search…" value={query} onChangeText={setQuery} autoCorrect={false} autoCapitalize="none" />
-        </View>
-        {/* gorhom's own scrollable (NOT a plain RN ScrollView) so the list scroll
-            and the sheet's pan gesture cooperate — a plain ScrollView fights the
-            sheet (drag scrolls the sheet, not the list). Safe here because the
-            sheet is a FIXED 75% snap (enableDynamicSizing off): the scrollable
-            gets a definite height from the flex:1 wrapper. (PeopleSheet avoids
-            this primitive only because IT uses dynamic sizing, where the
-            scrollable measures 0 — a different config.) */}
-        <BottomSheetScrollView
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ paddingBottom: 8 }}
-          showsVerticalScrollIndicator={false}
-        >
-          {selected ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Clear country"
-              onPress={() => onSelect('')}
-              style={({ pressed }) => ({
-                paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
-                borderBottomWidth: 1, borderBottomColor: theme.ruleSoft,
-                backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
-              })}
-            >
-              <VText variant="small" color="inkSoft">× Clear</VText>
-            </Pressable>
-          ) : null}
-          {filtered.length === 0 ? (
-            <VText variant="small" color="inkFaint" style={{ paddingHorizontal: 20, paddingVertical: 16, fontStyle: 'italic' }}>
-              No matches
-            </VText>
-          ) : (
-            filtered.map((c) => {
-              const on = c.code === selected;
-              return (
-                <Pressable
-                  key={c.code}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: on }}
-                  onPress={() => onSelect(c.code)}
-                  style={({ pressed }) => ({
-                    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-                    paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
-                    backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
-                  })}
-                >
-                  <VText variant="body" color={on ? 'accent' : 'ink'}>{c.name}</VText>
-                  <VText variant="caption" color="inkFaint">{c.code}</VText>
-                </Pressable>
-              );
-            })
-          )}
-        </BottomSheetScrollView>
-      </BottomSheetView>
-    </Sheet>
-  );
-}
+// (The Type and Country pickers are the shared OptionSheet / CountrySheet from
+// momentForm — extracted when the check-in create became their next consumer.)
 
 // .at-poswrap — the position-in-line-up picker: a pill (.at-pos-btn) that toggles
 // an anchored popover (.at-pospop) beneath it. The popover carries a typed number

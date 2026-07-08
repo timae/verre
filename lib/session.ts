@@ -360,7 +360,9 @@ export function cleanUrl(v: unknown): string {
 //
 // Requires the cleaned input to be exactly 2 chars before lookup, so a
 // 3-char typo like `'usa'` doesn't silently truncate to `'US'` and pass.
-function cleanCountry(v: unknown): string {
+// Exported for the standalone check-in create (`/api/checkins`), which
+// stores the same wine-origin country on its minted wine row.
+export function cleanCountry(v: unknown): string {
   const s = clean(v).toUpperCase()
   if (s.length !== 2) return ''
   return COUNTRY_CODES.has(s) ? s : ''
