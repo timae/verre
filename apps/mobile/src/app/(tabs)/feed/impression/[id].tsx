@@ -33,7 +33,7 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
-import { FullscreenImage } from '@/components/ui/FullscreenImage';
+import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
 import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
@@ -132,6 +132,24 @@ export default function FeedImpression() {
   // Per-page collapse state, indexed by page. The bar reads active's flag.
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [titles, setTitles] = useState<Record<number, string>>({});
+
+  // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
+  // moment's photo impressions as a swipeable fullscreen carousel; closing
+  // LANDS the pager on the impression that was being viewed (the mock's
+  // gLand). `galleryAt` = the wine index it opened from, null = closed.
+  const [galleryAt, setGalleryAt] = useState<number | null>(null);
+  const pagerRef = useRef<ScrollView>(null);
+  const landPager = useCallback(
+    (wineIndex: number) => {
+      setGalleryAt(null);
+      setActive((cur) => {
+        if (cur === wineIndex) return cur;
+        pagerRef.current?.scrollTo({ x: wineIndex * screenW, animated: false });
+        return wineIndex;
+      });
+    },
+    [screenW],
+  );
 
   // ── Presentation (proposal 09) ────────────────────────────────────────────
   // The one-shot source the tapped card measured for us; null on a deep link.
@@ -281,6 +299,11 @@ export default function FeedImpression() {
   // known, so index the per-page maps through the clamped value.
   const page = clampedActive;
   const barSolid = !!collapsed[page];
+  // Only photo-bearing impressions go fullscreen (a blind/photoless page has
+  // nothing to show); wineIndex maps a gallery page back to its pager slot.
+  const galleryPages: GalleryPage[] = wines
+    .map((w, i) => ({ uri: !w._blind && w.imageUrl ? w.imageUrl : null, wine: w, wineIndex: i }))
+    .filter((p): p is GalleryPage => p.uri !== null);
 
   return (
     // Transparent root — the feed shows through while the presentation runs.
@@ -324,9 +347,11 @@ export default function FeedImpression() {
             progress={progress}
             isClonePage={hasClone}
             onClosed={closeDetail}
+            onOpenGallery={() => setGalleryAt(0)}
           />
         ) : (
           <ScrollView
+            ref={pagerRef}
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
@@ -359,6 +384,7 @@ export default function FeedImpression() {
                   progress={progress}
                   isClonePage={hasClone && i === page}
                   onClosed={closeDetail}
+                  onOpenGallery={() => setGalleryAt(i)}
                 />
               </View>
             ))}
@@ -412,6 +438,15 @@ export default function FeedImpression() {
           insetTop={insets.top}
         />
       </Reanimated.View>
+
+      {/* fullscreen gallery — a Modal, so its place in this tree is chrome-
+          independent. Closing lands the pager on the viewed impression. */}
+      <FullscreenGallery
+        pages={galleryPages}
+        startWineIndex={galleryAt ?? 0}
+        visible={galleryAt != null}
+        onClose={landPager}
+      />
     </View>
   );
 }
@@ -490,6 +525,7 @@ function DetailPage({
   progress,
   isClonePage,
   onClosed,
+  onOpenGallery,
 }: {
   wine: SessionFeedWine;
   index: number;
@@ -512,6 +548,9 @@ function DetailPage({
   isClonePage: boolean;
   // Pop the route (called after the dismiss animation lands at 0).
   onClosed: () => void;
+  // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
+  // spans ALL the moment's photo impressions, not just this page's).
+  onOpenGallery: () => void;
 }) {
   const { theme } = useTheme();
   const { width: screenW, height: windowH } = useWindowDimensions();
@@ -521,7 +560,6 @@ function DetailPage({
   const heroH = Math.round(windowH * HERO_RATIO);
   const BAR_H = barHeight(insetTop);
 
-  const [fullscreen, setFullscreen] = useState(false);
   // Collapse is MEASURED: flip solid when the on-photo name's bottom scrolls
   // under the bar (never a magic constant — the hero is proportional height).
   // atTop mirrors "scroll offset is at rest (≤ 1)" into state to flip
@@ -627,7 +665,7 @@ function DetailPage({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Open photo fullscreen"
-            onPress={() => setFullscreen(true)}
+            onPress={onOpenGallery}
             style={{ width: '100%', height: '100%' }}
           >
             {/* transparent while the parent's clone is mid-flight (handoff) */}
@@ -658,7 +696,6 @@ function DetailPage({
               </VText>
             ) : null}
           </View>
-          <FullscreenImage uri={wine.imageUrl!} visible={fullscreen} label={name} onClose={() => setFullscreen(false)} />
         </View>
       ) : (
         // No-photo / masked hero: a dark name block that clears the status bar

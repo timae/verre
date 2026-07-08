@@ -60,8 +60,11 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   warn loudly and the patch must be regenerated (`npx patch-package
   react-native-gesture-image-viewer` after re-applying the edits to
   `lib/module/useGestureViewer.js`), or upstreamed as a PR (the proper fix is
-  configurable props). It powers `components/ui/FullscreenImage.tsx` and is the
-  intended base for the future multi-image feed gallery.
+  configurable props). It powers `components/ui/FullscreenImage.tsx` (single
+  image, tap dismisses) and `components/feed/FullscreenGallery.tsx` (the feed
+  detail's cross-impression gallery: glass panel rides the bottom, tap
+  TOGGLES the info per the design's `gFull`, closing lands the pager — a
+  deliberate behavioural fork, keep both).
 
 ## Auth (Better Auth client)
 
