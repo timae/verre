@@ -1,7 +1,7 @@
 // Engagement-deletion cascade — rewire.md §3 lines 360-388.
 //
 // When a user's session rating ends up empty (score 0/NULL + no chips +
-// no notes), the row is reaped. If it was the user's only rating in the
+// no aromas + no notes), the row is reaped. If it was the user's only rating in the
 // session, the session feed_item is reaped too. S3 reclaim runs AFTER
 // commit so a rollback never leaves "DB row + dead bytes" inconsistency.
 //
@@ -57,7 +57,7 @@ async function reclaimImage(url: string | null | undefined) {
  * shared semantics for the feed_item cleanup and S3 reclaim:
  *
  * - mode='empty-only' (POST path): only deletes the rating if it's
- *   actually empty (score 0/NULL + no chips + no notes). Safe to call
+ *   actually empty (score 0/NULL + no chips + no aromas + no notes). Safe to call
  *   after every upsert; no-ops when the row still carries data. The
  *   empty-payload SQL predicate IS the gate on destruction.
  *
@@ -105,6 +105,7 @@ export async function engagementDeletionCascade(
          WHERE id = ${ratingId}
            AND (score = 0 OR score IS NULL)
            AND flavors = '{}'::jsonb
+           AND aromas = '[]'::jsonb
            AND (notes IS NULL OR notes = '')
          RETURNING user_id, session_id`
 

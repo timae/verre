@@ -15,7 +15,7 @@ its subset when it ships.
 |---|---|---|
 | `structure` (wine subset) | sweet · acid · body · finish · aroma · flavour · tannin (+ bubbles on spark) | ✅ derived at load by `../flavourColors.ts` (imports this file), used by the native flavour input + wheel |
 | `structure` (other-category keys) | Warmth · Bitterness · Umami · Saltyness · Funk | ❌ future categories (cheese/beer/spirits) — NOT extra wine axes |
-| `aroma` (12 keys) | Fruity · Spice · Nut/Cocoa · Roasted · Woody · Sweet · Savory · Vegetal · Mineral · Chemical · Funky · Floral | ❌ later feature (aroma descriptor tree) |
+| `aroma` (12 keys) | Fruity · Spice · Kernel · Fire · Woody · Sweet · Savory · Vegetal · Mineral · Chemical · Funky · Floral | ❌ not wired to a screen yet — keys match the taxonomy tier-1 family labels (`@verre/core` `aroma/taxonomy.json`; re-keyed Nut/Cocoa→Kernel, Roasted→Fire with the design source, Simon 2026-07-08) |
 
 The rated axes today are WINE only — 8 structure intensities. The registry lives
 in `@verre/core` `structureAxes.ts` (`resolveAxes(category, style)`), carries NO

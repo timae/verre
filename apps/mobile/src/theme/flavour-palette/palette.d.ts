@@ -25,8 +25,8 @@ export type StructureLabel =
 export type AromaLabel =
   | 'Fruity'
   | 'Spice'
-  | 'Nut/Cocoa'
-  | 'Roasted'
+  | 'Kernel'
+  | 'Fire'
   | 'Woody'
   | 'Sweet'
   | 'Savory'

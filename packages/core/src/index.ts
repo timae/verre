@@ -78,3 +78,21 @@ export {
   type FlavourAggregate,
   type ConsensusKey,
 } from './compareAggregate'
+export {
+  AROMA_MODIFIERS,
+  AROMA_FAMILIES,
+  AROMA_SELECTION_CAP,
+  getAromaModifier,
+  getAromaLeaf,
+  aromaTierPath,
+  aromaAllowedModifiers,
+  aromaModifierDisplay,
+  isValidAromaSelection,
+  gateAromaSelections,
+  type AromaModifier,
+  type AromaLeaf,
+  type AromaSubfamily,
+  type AromaFamily,
+  type AromaSelection,
+  type AromaTierPath,
+} from './aroma/taxonomy'

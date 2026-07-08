@@ -1,0 +1,2432 @@
+{
+ "schema_version": "1.1",
+ "description": "Universal aroma descriptor tree for a multi-category tasting app (wine, coffee, beer, tea, cheese, chocolate, spirits, food). Three tiers: family (tier1) -> subfamily (tier2) -> leaf (tier3). Placement follows perception, not origin. Each leaf has one home. Faults are neutral descriptors. Modifiers are orthogonal state-transformations stored separately as (aroma_id, modifier_id); the tree holds base descriptors in fresh/default state only, and each node declares which modifiers may attach.",
+ "conventions": {
+  "id_scheme": "tier1 = family slug; tier2 = family.subfamily (qualified — bare subfamily slugs collide: stone/cured/dairy). tier3 (leaf) = bare label-derived slug, unique tree-wide via the one-leaf-one-home rule. ONLY leaf ids are ever persisted in user data, as (aroma_id, modifier_id) pairs. Tier membership is derived from tree position at read time — never parse an id for structure. Re-parenting a leaf therefore re-homes all historical data automatically. A label rename keeps the slug; deleting/merging a leaf requires an explicit superseded_by alias (content-pass mechanism, none exist yet). Changed from v1.0's path-encoded leaf ids — see docs/dev/proposals/aroma/aroma-layer.md §3.",
+  "modifier_inheritance": "A modifier attached at a leaf also aggregates at that leaf's subfamily and family.",
+  "allowed_modifiers_field": "Per node. If a node omits it, it inherits its parent's allowed set. Leaf-level lists override.",
+  "promoted_leaves": "base+modifier combos that became distinct enough to be their own leaf (e.g. raisin, prune) are listed as leaves and carry no redundant modifier.",
+  "fresh_is_implicit": "The 'fresh' state is the default and is never selected or shown.",
+  "modifier_display": "Optional per-leaf override of a modifier's displayed word. Absent -> use the modifier's default label. Data still stores (aroma_id, modifier_id); this only changes the shown badge word. e.g. malt+roasted shows 'toasted', strawberry+cooked shows 'jammy', onion+cooked shows 'stewed'."
+ },
+ "modifiers": [
+  {
+   "id": "ripe",
+   "label": "(over)ripe"
+  },
+  {
+   "id": "dried",
+   "label": "dried"
+  },
+  {
+   "id": "cooked",
+   "label": "cooked",
+   "search_aliases": [
+    "stewed",
+    "jammy"
+   ]
+  },
+  {
+   "id": "candied",
+   "label": "candied"
+  },
+  {
+   "id": "roasted",
+   "label": "roasted",
+   "search_aliases": [
+    "toasted",
+    "grilled"
+   ]
+  },
+  {
+   "id": "smoked",
+   "label": "smoked"
+  },
+  {
+   "id": "burnt",
+   "label": "burnt",
+   "search_aliases": [
+    "charred"
+   ]
+  },
+  {
+   "id": "pickled",
+   "label": "pickled",
+   "search_aliases": [
+    "brined"
+   ]
+  }
+ ],
+ "families": [
+  {
+   "id": "fruity",
+   "label": "Fruity",
+   "subfamilies": [
+    {
+     "id": "fruity.citrus",
+     "label": "Citrus",
+     "allowed_modifiers": [
+      "candied",
+      "cooked",
+      "dried"
+     ],
+     "leaves": [
+      {
+       "id": "lemon",
+       "label": "lemon",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "lime",
+       "label": "lime",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "grapefruit",
+       "label": "grapefruit",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "orange",
+       "label": "orange",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "mandarin",
+       "label": "mandarin",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "bergamot",
+       "label": "bergamot",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "yuzu",
+       "label": "yuzu",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "citrus_peel",
+       "label": "citrus peel",
+       "allowed_modifiers": [
+        "candied",
+        "dried"
+       ]
+      },
+      {
+       "id": "kaffir_lime",
+       "label": "kaffir lime",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "blood_orange",
+       "label": "blood orange",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "clementine",
+       "label": "clementine",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "pomelo",
+       "label": "pomelo",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "tangerine",
+       "label": "tangerine",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "kumquat",
+       "label": "kumquat",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      }
+     ]
+    },
+    {
+     "id": "fruity.berry",
+     "label": "Berry",
+     "allowed_modifiers": [
+      "ripe",
+      "dried",
+      "cooked"
+     ],
+     "leaves": [
+      {
+       "id": "strawberry",
+       "label": "strawberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "raspberry",
+       "label": "raspberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "blackberry",
+       "label": "blackberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "blueberry",
+       "label": "blueberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "blackcurrant",
+       "label": "blackcurrant",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "redcurrant",
+       "label": "redcurrant",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "cranberry",
+       "label": "cranberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "gooseberry",
+       "label": "gooseberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "elderberry",
+       "label": "elderberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "mulberry",
+       "label": "mulberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "boysenberry",
+       "label": "boysenberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "acai",
+       "label": "acai",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "huckleberry",
+       "label": "huckleberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "lingonberry",
+       "label": "lingonberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "loganberry",
+       "label": "loganberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "cloudberry",
+       "label": "cloudberry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "sloe",
+       "label": "sloe",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "physalis",
+       "label": "physalis",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      }
+     ]
+    },
+    {
+     "id": "fruity.orchard",
+     "label": "Orchard / tree fruit",
+     "allowed_modifiers": [
+      "ripe",
+      "dried",
+      "cooked"
+     ],
+     "leaves": [
+      {
+       "id": "apple",
+       "label": "apple",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "pear",
+       "label": "pear",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "quince",
+       "label": "quince",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "medlar",
+       "label": "medlar",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      }
+     ]
+    },
+    {
+     "id": "fruity.stone",
+     "label": "Stone fruit",
+     "allowed_modifiers": [
+      "ripe",
+      "dried",
+      "cooked",
+      "candied"
+     ],
+     "leaves": [
+      {
+       "id": "peach",
+       "label": "peach",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "apricot",
+       "label": "apricot",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "nectarine",
+       "label": "nectarine",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "cherry",
+       "label": "cherry",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "plum",
+       "label": "plum",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "greengage",
+       "label": "greengage",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      }
+     ]
+    },
+    {
+     "id": "fruity.tropical",
+     "label": "Tropical",
+     "allowed_modifiers": [
+      "ripe",
+      "dried",
+      "candied"
+     ],
+     "leaves": [
+      {
+       "id": "pineapple",
+       "label": "pineapple"
+      },
+      {
+       "id": "mango",
+       "label": "mango"
+      },
+      {
+       "id": "banana",
+       "label": "banana"
+      },
+      {
+       "id": "passionfruit",
+       "label": "passionfruit"
+      },
+      {
+       "id": "lychee",
+       "label": "lychee"
+      },
+      {
+       "id": "guava",
+       "label": "guava"
+      },
+      {
+       "id": "kiwi",
+       "label": "kiwi"
+      },
+      {
+       "id": "papaya",
+       "label": "papaya"
+      },
+      {
+       "id": "coconut",
+       "label": "coconut"
+      },
+      {
+       "id": "jackfruit",
+       "label": "jackfruit"
+      },
+      {
+       "id": "dragonfruit",
+       "label": "dragonfruit"
+      },
+      {
+       "id": "tamarind",
+       "label": "tamarind"
+      },
+      {
+       "id": "persimmon",
+       "label": "persimmon"
+      }
+     ]
+    },
+    {
+     "id": "fruity.melon",
+     "label": "Melon",
+     "allowed_modifiers": [
+      "ripe"
+     ],
+     "leaves": [
+      {
+       "id": "watermelon",
+       "label": "watermelon"
+      },
+      {
+       "id": "cantaloupe",
+       "label": "cantaloupe"
+      },
+      {
+       "id": "honeydew",
+       "label": "honeydew"
+      }
+     ]
+    },
+    {
+     "id": "fruity.other",
+     "label": "Other / vine",
+     "allowed_modifiers": [
+      "ripe",
+      "dried",
+      "cooked"
+     ],
+     "leaves": [
+      {
+       "id": "grape",
+       "label": "grape",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "fig",
+       "label": "fig",
+       "allowed_modifiers": [
+        "dried",
+        "cooked"
+       ],
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "date",
+       "label": "date",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "raisin",
+       "label": "raisin",
+       "note": "promoted (grape+dried); distinct percept",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "prune",
+       "label": "prune",
+       "note": "promoted (plum+dried); distinct cooked-caramel percept",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "pomegranate",
+       "label": "pomegranate",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      },
+      {
+       "id": "prickly_pear",
+       "label": "prickly pear",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "floral",
+   "label": "Floral",
+   "subfamilies": [
+    {
+     "id": "floral.white",
+     "label": "White flowers",
+     "allowed_modifiers": [
+      "dried"
+     ],
+     "leaves": [
+      {
+       "id": "elderflower",
+       "label": "elderflower"
+      },
+      {
+       "id": "honeysuckle",
+       "label": "honeysuckle"
+      },
+      {
+       "id": "jasmine",
+       "label": "jasmine"
+      },
+      {
+       "id": "acacia",
+       "label": "acacia"
+      },
+      {
+       "id": "lily",
+       "label": "lily"
+      },
+      {
+       "id": "magnolia",
+       "label": "magnolia"
+      }
+     ]
+    },
+    {
+     "id": "floral.red",
+     "label": "Red / pink flowers",
+     "allowed_modifiers": [
+      "dried",
+      "candied"
+     ],
+     "leaves": [
+      {
+       "id": "rose",
+       "label": "rose"
+      },
+      {
+       "id": "violet",
+       "label": "violet"
+      },
+      {
+       "id": "geranium",
+       "label": "geranium"
+      },
+      {
+       "id": "peony",
+       "label": "peony"
+      },
+      {
+       "id": "orris",
+       "label": "orris / iris",
+       "note": "powdery violet-like"
+      }
+     ]
+    },
+    {
+     "id": "floral.aromatic",
+     "label": "Aromatic flowers",
+     "allowed_modifiers": [
+      "dried"
+     ],
+     "leaves": [
+      {
+       "id": "lavender",
+       "label": "lavender"
+      },
+      {
+       "id": "chamomile",
+       "label": "chamomile"
+      },
+      {
+       "id": "hibiscus",
+       "label": "hibiscus"
+      },
+      {
+       "id": "osmanthus",
+       "label": "osmanthus"
+      },
+      {
+       "id": "heather",
+       "label": "heather"
+      }
+     ]
+    },
+    {
+     "id": "floral.blossom",
+     "label": "Blossom",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "apple_blossom",
+       "label": "apple blossom"
+      },
+      {
+       "id": "linden",
+       "label": "linden / lime blossom"
+      },
+      {
+       "id": "orange_blossom",
+       "label": "orange blossom"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "vegetal",
+   "label": "Vegetal",
+   "note": "Fresh/raw green plant matter, herbs and fresh vegetables. Cured/cooked/dried plant notes route elsewhere via family or modifier.",
+   "subfamilies": [
+    {
+     "id": "vegetal.green",
+     "label": "Green / leafy",
+     "allowed_modifiers": [
+      "dried"
+     ],
+     "leaves": [
+      {
+       "id": "cut_grass",
+       "label": "fresh-cut grass"
+      },
+      {
+       "id": "green_leaves",
+       "label": "green leaves"
+      },
+      {
+       "id": "nettle",
+       "label": "nettle"
+      },
+      {
+       "id": "boxwood",
+       "label": "boxwood"
+      },
+      {
+       "id": "tomato_leaf",
+       "label": "tomato leaf"
+      },
+      {
+       "id": "blackcurrant_leaf",
+       "label": "blackcurrant leaf"
+      },
+      {
+       "id": "hay",
+       "label": "hay",
+       "note": "grass+dried; promoted as distinct"
+      },
+      {
+       "id": "green_tea",
+       "label": "green tea"
+      }
+     ]
+    },
+    {
+     "id": "vegetal.herbs",
+     "label": "Fresh herbs",
+     "allowed_modifiers": [
+      "dried",
+      "smoked",
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "mint",
+       "label": "mint"
+      },
+      {
+       "id": "thyme",
+       "label": "thyme"
+      },
+      {
+       "id": "rosemary",
+       "label": "rosemary"
+      },
+      {
+       "id": "basil",
+       "label": "basil"
+      },
+      {
+       "id": "sage",
+       "label": "sage"
+      },
+      {
+       "id": "oregano",
+       "label": "oregano"
+      },
+      {
+       "id": "dill",
+       "label": "dill"
+      },
+      {
+       "id": "tarragon",
+       "label": "tarragon"
+      },
+      {
+       "id": "eucalyptus",
+       "label": "eucalyptus"
+      },
+      {
+       "id": "lemongrass",
+       "label": "lemongrass"
+      },
+      {
+       "id": "bay_leaf",
+       "label": "bay leaf"
+      },
+      {
+       "id": "cilantro",
+       "label": "cilantro"
+      },
+      {
+       "id": "parsley",
+       "label": "parsley"
+      },
+      {
+       "id": "marjoram",
+       "label": "marjoram"
+      },
+      {
+       "id": "curry_leaf",
+       "label": "curry leaf"
+      },
+      {
+       "id": "chervil",
+       "label": "chervil"
+      },
+      {
+       "id": "kaffir_lime_leaf",
+       "label": "kaffir lime leaf"
+      },
+      {
+       "id": "lemon_balm",
+       "label": "lemon balm / melissa"
+      },
+      {
+       "id": "wormwood",
+       "label": "wormwood / mugwort"
+      },
+      {
+       "id": "shiso",
+       "label": "shiso"
+      }
+     ]
+    },
+    {
+     "id": "vegetal.vegetables",
+     "label": "Fresh vegetables",
+     "allowed_modifiers": [
+      "cooked",
+      "pickled",
+      "roasted",
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "bell_pepper",
+       "label": "green bell pepper",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "tomato",
+       "label": "tomato",
+       "modifier_display": {
+        "cooked": "stewed"
+       },
+       "allowed_modifiers": [
+        "cooked",
+        "pickled",
+        "dried"
+       ]
+      },
+      {
+       "id": "pea",
+       "label": "pea",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "asparagus",
+       "label": "asparagus",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "artichoke",
+       "label": "artichoke",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "cucumber",
+       "label": "cucumber",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "green_bean",
+       "label": "green bean",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "beetroot",
+       "label": "beetroot",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "corn",
+       "label": "corn",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "fennel_bulb",
+       "label": "fennel",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "spinach",
+       "label": "spinach",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "carrot",
+       "label": "carrot",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "potato",
+       "label": "potato",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "sweet_potato",
+       "label": "sweet potato / yam",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "pumpkin",
+       "label": "pumpkin",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "garlic",
+       "label": "garlic",
+       "note": "allium",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "onion",
+       "label": "onion",
+       "note": "allium",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      }
+     ]
+    },
+    {
+     "id": "vegetal.stalky",
+     "label": "Stalky",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "celery",
+       "label": "celery"
+      },
+      {
+       "id": "rhubarb",
+       "label": "rhubarb"
+      }
+     ]
+    },
+    {
+     "id": "vegetal.brassica",
+     "label": "Brassica",
+     "allowed_modifiers": [
+      "cooked",
+      "pickled",
+      "roasted",
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "cabbage",
+       "label": "cabbage",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "cauliflower",
+       "label": "cauliflower",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "broccoli",
+       "label": "broccoli",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "brussels_sprout",
+       "label": "brussels sprout",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "kale",
+       "label": "kale",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "radish",
+       "label": "radish",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "mustard_greens",
+       "label": "mustard greens",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      },
+      {
+       "id": "turnip",
+       "label": "turnip",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
+      }
+     ]
+    },
+    {
+     "id": "vegetal.cured",
+     "label": "Cured / brined veg",
+     "allowed_modifiers": [
+      "pickled"
+     ],
+     "leaves": [
+      {
+       "id": "olive",
+       "label": "olive"
+      },
+      {
+       "id": "caper",
+       "label": "caper"
+      },
+      {
+       "id": "pickle",
+       "label": "pickle / gherkin"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "spice",
+   "label": "Spice",
+   "note": "Aromatic spices. Chili HEAT is a structure axis (Spiciness), not an aroma leaf; chili as a smell can appear as a leaf.",
+   "subfamilies": [
+    {
+     "id": "spice.warm",
+     "label": "Warm / baking spice",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "cinnamon",
+       "label": "cinnamon"
+      },
+      {
+       "id": "clove",
+       "label": "clove"
+      },
+      {
+       "id": "nutmeg",
+       "label": "nutmeg"
+      },
+      {
+       "id": "allspice",
+       "label": "allspice"
+      },
+      {
+       "id": "star_anise",
+       "label": "star anise"
+      },
+      {
+       "id": "cardamom",
+       "label": "cardamom"
+      },
+      {
+       "id": "saffron",
+       "label": "saffron"
+      },
+      {
+       "id": "tonka",
+       "label": "tonka bean"
+      },
+      {
+       "id": "chai",
+       "label": "chai",
+       "note": "promoted spice-blend composite"
+      },
+      {
+       "id": "cassia",
+       "label": "cassia bark"
+      }
+     ]
+    },
+    {
+     "id": "spice.pungent",
+     "label": "Pungent spice",
+     "allowed_modifiers": [
+      "dried"
+     ],
+     "leaves": [
+      {
+       "id": "black_pepper",
+       "label": "black pepper"
+      },
+      {
+       "id": "white_pepper",
+       "label": "white pepper"
+      },
+      {
+       "id": "pink_pepper",
+       "label": "pink pepper"
+      },
+      {
+       "id": "sichuan_pepper",
+       "label": "sichuan pepper"
+      },
+      {
+       "id": "chili",
+       "label": "chili (aroma)",
+       "note": "smell only; heat = Spiciness structure axis"
+      },
+      {
+       "id": "mustard",
+       "label": "mustard"
+      },
+      {
+       "id": "horseradish",
+       "label": "horseradish / wasabi"
+      },
+      {
+       "id": "grains_paradise",
+       "label": "grains of paradise"
+      }
+     ]
+    },
+    {
+     "id": "spice.seed",
+     "label": "Seed spice",
+     "allowed_modifiers": [
+      "roasted"
+     ],
+     "leaves": [
+      {
+       "id": "coriander_seed",
+       "label": "coriander seed"
+      },
+      {
+       "id": "fennel_seed",
+       "label": "fennel seed"
+      },
+      {
+       "id": "cumin",
+       "label": "cumin"
+      },
+      {
+       "id": "caraway",
+       "label": "caraway"
+      }
+     ]
+    },
+    {
+     "id": "spice.anise",
+     "label": "Anise / licorice",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "anise",
+       "label": "anise"
+      },
+      {
+       "id": "licorice",
+       "label": "licorice"
+      },
+      {
+       "id": "juniper",
+       "label": "juniper"
+      }
+     ]
+    },
+    {
+     "id": "spice.root",
+     "label": "Root spice",
+     "allowed_modifiers": [
+      "dried",
+      "candied"
+     ],
+     "leaves": [
+      {
+       "id": "ginger",
+       "label": "ginger",
+       "allowed_modifiers": [
+        "dried",
+        "candied"
+       ]
+      },
+      {
+       "id": "galangal",
+       "label": "galangal"
+      },
+      {
+       "id": "turmeric",
+       "label": "turmeric"
+      },
+      {
+       "id": "angelica",
+       "label": "angelica root",
+       "note": "earthy-herbal"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sweet",
+   "label": "Sweet",
+   "note": "Aromatic sweetness (the smell), not the Sweetness taste axis. Includes cooked/sweetened dairy.",
+   "subfamilies": [
+    {
+     "id": "sweet.caramelized",
+     "label": "Caramel & sugar",
+     "allowed_modifiers": [
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "sugar",
+       "label": "sugar",
+       "allowed_modifiers": [
+        "burnt"
+       ]
+      },
+      {
+       "id": "caramel",
+       "label": "caramel",
+       "note": "own base, not burnt sugar"
+      },
+      {
+       "id": "toffee",
+       "label": "toffee"
+      },
+      {
+       "id": "butterscotch",
+       "label": "butterscotch"
+      },
+      {
+       "id": "brown_sugar",
+       "label": "brown sugar"
+      },
+      {
+       "id": "molasses",
+       "label": "molasses"
+      },
+      {
+       "id": "maple",
+       "label": "maple syrup"
+      }
+     ]
+    },
+    {
+     "id": "sweet.confection",
+     "label": "Confection",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "marshmallow",
+       "label": "marshmallow"
+      },
+      {
+       "id": "cotton_candy",
+       "label": "cotton candy"
+      },
+      {
+       "id": "bubblegum",
+       "label": "bubblegum"
+      },
+      {
+       "id": "nougat",
+       "label": "nougat"
+      },
+      {
+       "id": "cola",
+       "label": "cola",
+       "note": "promoted composite (kola/caramel/citrus/spice)"
+      }
+     ]
+    },
+    {
+     "id": "sweet.honey",
+     "label": "Honey",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "honey",
+       "label": "honey"
+      },
+      {
+       "id": "beeswax",
+       "label": "beeswax"
+      }
+     ]
+    },
+    {
+     "id": "sweet.vanilla",
+     "label": "Vanilla",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "vanilla",
+       "label": "vanilla"
+      },
+      {
+       "id": "custard",
+       "label": "custard"
+      },
+      {
+       "id": "cream_soda",
+       "label": "cream soda"
+      }
+     ]
+    },
+    {
+     "id": "sweet.dairy",
+     "label": "Sweet dairy",
+     "note": "Cooked / sweetened dairy; plain and cultured dairy live in Savory.",
+     "allowed_modifiers": [
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "brown_butter",
+       "label": "brown butter"
+      },
+      {
+       "id": "buttercream",
+       "label": "buttercream"
+      },
+      {
+       "id": "condensed_milk",
+       "label": "condensed milk"
+      },
+      {
+       "id": "dulce_de_leche",
+       "label": "dulce de leche"
+      },
+      {
+       "id": "caramelized_dairy",
+       "label": "caramelized dairy"
+      }
+     ]
+    },
+    {
+     "id": "sweet.nut_confection",
+     "label": "Nut confection",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "marzipan",
+       "label": "marzipan"
+      },
+      {
+       "id": "praline",
+       "label": "praline"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "kernel",
+   "label": "Kernel",
+   "subfamilies": [
+    {
+     "id": "kernel.tree_nuts",
+     "label": "Tree nuts",
+     "allowed_modifiers": [
+      "roasted",
+      "candied"
+     ],
+     "leaves": [
+      {
+       "id": "almond",
+       "label": "almond"
+      },
+      {
+       "id": "hazelnut",
+       "label": "hazelnut"
+      },
+      {
+       "id": "walnut",
+       "label": "walnut"
+      },
+      {
+       "id": "pecan",
+       "label": "pecan"
+      },
+      {
+       "id": "cashew",
+       "label": "cashew"
+      },
+      {
+       "id": "pistachio",
+       "label": "pistachio"
+      },
+      {
+       "id": "macadamia",
+       "label": "macadamia"
+      },
+      {
+       "id": "chestnut",
+       "label": "chestnut",
+       "allowed_modifiers": [
+        "roasted",
+        "candied"
+       ]
+      },
+      {
+       "id": "pine_nut",
+       "label": "pine nut"
+      },
+      {
+       "id": "brazil_nut",
+       "label": "brazil nut"
+      }
+     ]
+    },
+    {
+     "id": "kernel.legume_nut",
+     "label": "Ground nuts",
+     "allowed_modifiers": [
+      "roasted",
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "peanut",
+       "label": "peanut"
+      }
+     ]
+    },
+    {
+     "id": "kernel.seeds",
+     "label": "Seeds",
+     "allowed_modifiers": [
+      "roasted"
+     ],
+     "leaves": [
+      {
+       "id": "sunflower",
+       "label": "sunflower seed"
+      },
+      {
+       "id": "pumpkin_seed",
+       "label": "pumpkin seed"
+      },
+      {
+       "id": "sesame",
+       "label": "sesame"
+      }
+     ]
+    },
+    {
+     "id": "kernel.cocoa",
+     "label": "Cocoa",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "cocoa",
+       "label": "cocoa"
+      },
+      {
+       "id": "dark_chocolate",
+       "label": "dark chocolate"
+      },
+      {
+       "id": "milk_chocolate",
+       "label": "milk chocolate"
+      },
+      {
+       "id": "cacao_nib",
+       "label": "cacao nib"
+      }
+     ]
+    },
+    {
+     "id": "kernel.grain",
+     "label": "Grain / Cereal",
+     "allowed_modifiers": [
+      "roasted",
+      "cooked"
+     ],
+     "note": "Raw/kilned cereal + malt. Roasted versions (chocolate malt, roasted barley) reached via the roasted modifier.",
+     "leaves": [
+      {
+       "id": "malt",
+       "label": "malt",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "wort",
+       "label": "wort / grainy",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "cereal",
+       "label": "cereal",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "barley",
+       "label": "barley",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "wheat",
+       "label": "wheat",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "rye",
+       "label": "rye",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "buckwheat",
+       "label": "buckwheat",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "oat",
+       "label": "oat",
+       "allowed_modifiers": [
+        "roasted",
+        "cooked"
+       ],
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "bran",
+       "label": "bran",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "flour",
+       "label": "flour",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      },
+      {
+       "id": "husk",
+       "label": "husk / chaff",
+       "modifier_display": {
+        "roasted": "toasted"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "fire",
+   "label": "Fire",
+   "note": "Notes whose identity is roast/toast/smoke/char. Distinct from the roasted/smoked/burnt modifiers.",
+   "subfamilies": [
+    {
+     "id": "fire.baked",
+     "label": "Toasted / baked",
+     "allowed_modifiers": [
+      "burnt"
+     ],
+     "leaves": [
+      {
+       "id": "toast",
+       "label": "toast"
+      },
+      {
+       "id": "biscuit",
+       "label": "biscuit"
+      },
+      {
+       "id": "brioche",
+       "label": "brioche"
+      },
+      {
+       "id": "cracker",
+       "label": "cracker"
+      },
+      {
+       "id": "graham_cracker",
+       "label": "graham cracker"
+      }
+     ]
+    },
+    {
+     "id": "fire.roast",
+     "label": "Coffee / roast",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "coffee",
+       "label": "coffee"
+      },
+      {
+       "id": "chicory",
+       "label": "chicory"
+      }
+     ]
+    },
+    {
+     "id": "fire.smoke",
+     "label": "Smoke",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "woodsmoke",
+       "label": "woodsmoke"
+      },
+      {
+       "id": "bonfire",
+       "label": "bonfire"
+      },
+      {
+       "id": "peat",
+       "label": "peat"
+      },
+      {
+       "id": "incense",
+       "label": "incense"
+      }
+     ]
+    },
+    {
+     "id": "fire.char",
+     "label": "Char",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "char",
+       "label": "char"
+      },
+      {
+       "id": "ash",
+       "label": "ash"
+      },
+      {
+       "id": "tar",
+       "label": "tar"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "woody",
+   "label": "Woody",
+   "subfamilies": [
+    {
+     "id": "woody.fresh_wood",
+     "label": "Fresh wood",
+     "allowed_modifiers": [
+      "smoked"
+     ],
+     "leaves": [
+      {
+       "id": "oak",
+       "label": "oak"
+      },
+      {
+       "id": "cedar",
+       "label": "cedar"
+      },
+      {
+       "id": "pine",
+       "label": "pine"
+      },
+      {
+       "id": "sandalwood",
+       "label": "sandalwood"
+      },
+      {
+       "id": "sawdust",
+       "label": "sawdust"
+      },
+      {
+       "id": "fresh_cut_wood",
+       "label": "fresh-cut wood"
+      },
+      {
+       "id": "pencil_shavings",
+       "label": "pencil shavings",
+       "allowed_modifiers": []
+      },
+      {
+       "id": "spruce",
+       "label": "spruce"
+      },
+      {
+       "id": "birch",
+       "label": "birch"
+      }
+     ]
+    },
+    {
+     "id": "woody.resin",
+     "label": "Resin / sap",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "pine_resin",
+       "label": "pine resin"
+      },
+      {
+       "id": "sap",
+       "label": "sap"
+      },
+      {
+       "id": "balsam",
+       "label": "balsam"
+      },
+      {
+       "id": "camphor",
+       "label": "camphor"
+      },
+      {
+       "id": "hops",
+       "label": "hops / dank resinous"
+      },
+      {
+       "id": "pine_needle",
+       "label": "pine needle"
+      }
+     ]
+    },
+    {
+     "id": "woody.dry_aged",
+     "label": "Dry-aged organic",
+     "note": "Leather placed here (dry cigar-box perception), not Funky/animal.",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "leather",
+       "label": "leather"
+      },
+      {
+       "id": "old_books",
+       "label": "old books / aged paper"
+      },
+      {
+       "id": "black_tea",
+       "label": "black tea",
+       "note": "tannic dried leaf"
+      }
+     ]
+    },
+    {
+     "id": "woody.tobacco",
+     "label": "Tobacco",
+     "allowed_modifiers": [
+      "smoked"
+     ],
+     "note": "Unlit is the base state; lit/smoked reached via the smoked modifier.",
+     "leaves": [
+      {
+       "id": "cigar",
+       "label": "cigar / cigar box"
+      },
+      {
+       "id": "cigarette",
+       "label": "cigarette"
+      },
+      {
+       "id": "pipe_tobacco",
+       "label": "pipe tobacco"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "mineral",
+   "label": "Mineral",
+   "note": "Inorganic + earthy (nested) + saline. Petrol lives in Chemical; flint lives here.",
+   "subfamilies": [
+    {
+     "id": "mineral.stone",
+     "label": "Stone / rock",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "wet_stone",
+       "label": "wet stone"
+      },
+      {
+       "id": "flint",
+       "label": "flint",
+       "note": "prized version; struck-match = Chemical"
+      },
+      {
+       "id": "slate",
+       "label": "slate"
+      },
+      {
+       "id": "chalk",
+       "label": "chalk"
+      },
+      {
+       "id": "graphite",
+       "label": "graphite"
+      },
+      {
+       "id": "gravel",
+       "label": "gravel"
+      }
+     ]
+    },
+    {
+     "id": "mineral.earthy",
+     "label": "Earthy",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "soil",
+       "label": "soil"
+      },
+      {
+       "id": "forest_floor",
+       "label": "forest floor"
+      },
+      {
+       "id": "potting_earth",
+       "label": "potting earth"
+      },
+      {
+       "id": "dust",
+       "label": "dust"
+      },
+      {
+       "id": "clay",
+       "label": "clay"
+      }
+     ]
+    },
+    {
+     "id": "mineral.fungal",
+     "label": "Fungal",
+     "allowed_modifiers": [
+      "dried",
+      "roasted"
+     ],
+     "leaves": [
+      {
+       "id": "mushroom",
+       "label": "mushroom"
+      },
+      {
+       "id": "truffle",
+       "label": "truffle"
+      },
+      {
+       "id": "porcini",
+       "label": "porcini"
+      },
+      {
+       "id": "button_mushroom",
+       "label": "button mushroom"
+      },
+      {
+       "id": "shiitake",
+       "label": "shiitake"
+      },
+      {
+       "id": "chanterelle",
+       "label": "chanterelle"
+      },
+      {
+       "id": "yeasty_mushroom",
+       "label": "cellar / mushroom"
+      }
+     ]
+    },
+    {
+     "id": "mineral.saline",
+     "label": "Saline / marine",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "sea_spray",
+       "label": "sea spray"
+      },
+      {
+       "id": "brine",
+       "label": "brine"
+      },
+      {
+       "id": "oyster_shell",
+       "label": "oyster shell"
+      },
+      {
+       "id": "seaweed",
+       "label": "seaweed / nori"
+      },
+      {
+       "id": "iodine",
+       "label": "iodine"
+      }
+     ]
+    },
+    {
+     "id": "mineral.metallic",
+     "label": "Metallic",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "iron",
+       "label": "iron"
+      },
+      {
+       "id": "blood",
+       "label": "blood"
+      },
+      {
+       "id": "copper",
+       "label": "copper"
+      },
+      {
+       "id": "rust",
+       "label": "rust"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "savory",
+   "label": "Savory",
+   "note": "Umami core + savory/plain dairy + cheese. Olive here (cured, not fresh).",
+   "subfamilies": [
+    {
+     "id": "savory.brothy",
+     "label": "Brothy / meaty",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "broth",
+       "label": "broth"
+      },
+      {
+       "id": "bouillon",
+       "label": "bouillon"
+      },
+      {
+       "id": "meat",
+       "label": "meat"
+      },
+      {
+       "id": "gravy",
+       "label": "gravy"
+      },
+      {
+       "id": "stock",
+       "label": "stock"
+      },
+      {
+       "id": "liver",
+       "label": "liver / offal"
+      },
+      {
+       "id": "tallow",
+       "label": "tallow / suet"
+      }
+     ]
+    },
+    {
+     "id": "savory.cured",
+     "label": "Cured",
+     "allowed_modifiers": [
+      "smoked"
+     ],
+     "leaves": [
+      {
+       "id": "cured_meat",
+       "label": "cured meat"
+      },
+      {
+       "id": "salami",
+       "label": "salami"
+      },
+      {
+       "id": "ham",
+       "label": "ham"
+      },
+      {
+       "id": "bacon",
+       "label": "bacon",
+       "note": "cured+smoked reads as its own leaf"
+      }
+     ]
+    },
+    {
+     "id": "savory.umami",
+     "label": "Aged / umami",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "parmesan_savory",
+       "label": "parmesan"
+      },
+      {
+       "id": "yeast_extract",
+       "label": "yeast extract"
+      },
+      {
+       "id": "soy_sauce",
+       "label": "soy sauce"
+      },
+      {
+       "id": "miso",
+       "label": "miso"
+      }
+     ]
+    },
+    {
+     "id": "savory.marine",
+     "label": "Marine-savory",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "fish_sauce",
+       "label": "fish sauce"
+      },
+      {
+       "id": "anchovy",
+       "label": "anchovy"
+      },
+      {
+       "id": "dashi",
+       "label": "dashi"
+      },
+      {
+       "id": "bonito",
+       "label": "bonito / katsuobushi"
+      },
+      {
+       "id": "fish",
+       "label": "fish",
+       "allowed_modifiers": [
+        "smoked"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "savory.dairy",
+     "label": "Dairy / cheese",
+     "note": "Plain and cultured dairy + all cheese. Cooked/sweet dairy = Sweet; blue cheese = Funky.",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "butter",
+       "label": "butter"
+      },
+      {
+       "id": "ghee",
+       "label": "ghee"
+      },
+      {
+       "id": "cheese",
+       "label": "cheese",
+       "allowed_modifiers": [
+        "roasted",
+        "smoked"
+       ]
+      },
+      {
+       "id": "cream_cheese",
+       "label": "cream cheese"
+      },
+      {
+       "id": "yogurt",
+       "label": "yogurt"
+      },
+      {
+       "id": "kefir",
+       "label": "kefir"
+      },
+      {
+       "id": "sour_milk",
+       "label": "sour milk"
+      },
+      {
+       "id": "quark",
+       "label": "quark / fresh curd"
+      },
+      {
+       "id": "milk",
+       "label": "milk"
+      },
+      {
+       "id": "cooked_milk",
+       "label": "scalded / cooked milk"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "funky",
+   "label": "Funky",
+   "note": "Prized fermentation / animal notes. Named neutrally; context + spread decide good/bad.",
+   "subfamilies": [
+    {
+     "id": "funky.yeasty",
+     "label": "Yeasty / leesy",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "yeast",
+       "label": "yeast"
+      },
+      {
+       "id": "bread_dough",
+       "label": "bread dough"
+      },
+      {
+       "id": "lees",
+       "label": "lees"
+      },
+      {
+       "id": "sourdough_starter",
+       "label": "sourdough"
+      }
+     ]
+    },
+    {
+     "id": "funky.animal",
+     "label": "Animal / barnyard",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "barnyard",
+       "label": "barnyard"
+      },
+      {
+       "id": "hay_barn",
+       "label": "hay-barn"
+      },
+      {
+       "id": "brett",
+       "label": "brett"
+      },
+      {
+       "id": "horse",
+       "label": "horse"
+      },
+      {
+       "id": "wet_wool",
+       "label": "wet wool"
+      },
+      {
+       "id": "lanolin",
+       "label": "lanolin"
+      },
+      {
+       "id": "sweat",
+       "label": "sweat"
+      },
+      {
+       "id": "game",
+       "label": "game",
+       "allowed_modifiers": [
+        "cooked",
+        "smoked"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "funky.cheese_funk",
+     "label": "Cheese-funk",
+     "note": "The mould percept; all other cheese is Savory.",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "blue_cheese",
+       "label": "blue cheese"
+      }
+     ]
+    },
+    {
+     "id": "funky.sour_ferment",
+     "label": "Sour-ferment",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "sauerkraut",
+       "label": "sauerkraut"
+      },
+      {
+       "id": "kombucha",
+       "label": "kombucha"
+      },
+      {
+       "id": "vinegar",
+       "label": "vinegar"
+      },
+      {
+       "id": "kimchi",
+       "label": "kimchi"
+      },
+      {
+       "id": "miso_funk",
+       "label": "natto"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "chemical",
+   "label": "Chemical",
+   "note": "Off-notes, named neutrally (no fault flag). Petrol here. Kept neutral because one category's fault is another's character.",
+   "subfamilies": [
+    {
+     "id": "chemical.sulphur",
+     "label": "Sulphury / eggy",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "struck_match",
+       "label": "struck match"
+      },
+      {
+       "id": "rubber",
+       "label": "rubber",
+       "allowed_modifiers": [
+        "burnt"
+       ]
+      },
+      {
+       "id": "rotten_egg",
+       "label": "rotten egg"
+      },
+      {
+       "id": "cabbage_sulphur",
+       "label": "cabbage / sulphur"
+      },
+      {
+       "id": "garlic_sulphur",
+       "label": "garlic-sulphur"
+      },
+      {
+       "id": "catty",
+       "label": "catty / cat pee",
+       "note": "thiol; varietal in Sauvignon, fault elsewhere"
+      },
+      {
+       "id": "skunky",
+       "label": "skunky",
+       "note": "lightstruck"
+      }
+     ]
+    },
+    {
+     "id": "chemical.oxidative",
+     "label": "Oxidative / solvent",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "acetone",
+       "label": "acetone / nail varnish"
+      },
+      {
+       "id": "glue",
+       "label": "glue"
+      },
+      {
+       "id": "ethyl_acetate",
+       "label": "ethyl acetate"
+      },
+      {
+       "id": "volatile_acidity",
+       "label": "volatile acidity"
+      },
+      {
+       "id": "turpentine",
+       "label": "turpentine"
+      },
+      {
+       "id": "paint",
+       "label": "paint / varnish"
+      },
+      {
+       "id": "rancid",
+       "label": "rancid",
+       "note": "oxidised fat"
+      }
+     ]
+    },
+    {
+     "id": "chemical.petrol",
+     "label": "Petrol / hydrocarbon",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "petrol",
+       "label": "petrol / kerosene"
+      },
+      {
+       "id": "diesel",
+       "label": "diesel"
+      },
+      {
+       "id": "wax",
+       "label": "wax"
+      }
+     ]
+    },
+    {
+     "id": "chemical.taint",
+     "label": "Taint / spoilage",
+     "note": "Kept neutral, no fault flag (open decision: some are near-always spoilage).",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "cork",
+       "label": "cork / TCA"
+      },
+      {
+       "id": "musty",
+       "label": "musty"
+      },
+      {
+       "id": "mouldy",
+       "label": "mouldy"
+      },
+      {
+       "id": "wet_cardboard",
+       "label": "wet cardboard"
+      },
+      {
+       "id": "mousy",
+       "label": "mousy"
+      },
+      {
+       "id": "paper",
+       "label": "cardboard",
+       "allowed_modifiers": [
+        "burnt"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "chemical.medicinal",
+     "label": "Medicinal / plastic",
+     "allowed_modifiers": [],
+     "leaves": [
+      {
+       "id": "plastic",
+       "label": "plastic",
+       "allowed_modifiers": [
+        "burnt"
+       ]
+      },
+      {
+       "id": "band_aid",
+       "label": "band-aid"
+      },
+      {
+       "id": "disinfectant",
+       "label": "disinfectant"
+      },
+      {
+       "id": "chlorine",
+       "label": "chlorine"
+      },
+      {
+       "id": "iodine_med",
+       "label": "iodine (medicinal)"
+      },
+      {
+       "id": "tcp",
+       "label": "TCP / antiseptic"
+      },
+      {
+       "id": "soapy",
+       "label": "soapy"
+      },
+      {
+       "id": "ink",
+       "label": "ink"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
