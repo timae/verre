@@ -104,10 +104,24 @@ export async function loadSessionFeedWines(
           id: true, name: true, producer: true, vintage: true,
           grape: true, style: true, imageUrl: true, revealedAt: true,
           addedByIdentityId: true,
+          // Catalog metadata for the feed's full impression detail page.
+          // Blanked on a redacted wine (below) so blind identity can't leak.
+          region: true, country: true, vinification: true,
+          description: true, purchaseUrl: true,
         },
       },
       images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
     },
+    // Author's rating order (their tasting journey) — NOT the session line-up
+    // order, which lives only in the Redis wines array (mutated by
+    // /wines/reorder) and has no PG mirror. KNOWN DEVIATION: a blind wine's
+    // "Wine N" label (clients render it by array index) can therefore
+    // disagree with the live session's line-up numbering, and the feed
+    // carousel order can diverge from the line-up after a reorder. No leak —
+    // both surfaces mask identity — just cross-surface numbering. Right fix =
+    // a PG line-up-position mirror (durable-sessions work), NOT a Redis
+    // lookup here (same ruling as the deferred cohost-bypass gap: this loader
+    // stays PG-only).
     orderBy: { ratedAt: 'asc' },
   })
 
@@ -156,6 +170,13 @@ export async function loadSessionFeedWines(
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
           notes: r.notes,
+          // Catalog metadata is identity-bearing (region/process/buy point
+          // straight at the wine) — blank it, same as name/producer above.
+          region: null,
+          country: null,
+          vinification: null,
+          description: null,
+          purchaseUrl: null,
           _blind: true,
         }
       : {
@@ -169,6 +190,11 @@ export async function loadSessionFeedWines(
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
           notes: r.notes,
+          region: w.region,
+          country: w.country,
+          vinification: w.vinification,
+          description: w.description,
+          purchaseUrl: w.purchaseUrl,
         }
     const arr = out.get(key)
     if (arr) arr.push(wireWine)

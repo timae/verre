@@ -113,3 +113,22 @@ export function wineTypeLabel(code: string | null | undefined): string | null {
   if (!code) return null;
   return WINE_TYPES.find((t) => t.code === code)?.label ?? code;
 }
+
+// Compact relative age for a feed post header ("now", "2h", "3d", "5w").
+// Feed posts are minutes-to-weeks old; anything past ~8 weeks falls back to
+// an absolute short date so "62w" never shows. Presentation-only.
+export function timeAgo(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return '';
+  const secs = Math.max(0, (Date.now() - then) / 1000);
+  if (secs < 60) return 'now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  if (days < 7) return `${days}d`;
+  const wks = Math.floor(days / 7);
+  if (wks <= 8) return `${wks}w`;
+  return new Date(then).toLocaleDateString(DATE_LOCALE, { day: 'numeric', month: 'short' });
+}

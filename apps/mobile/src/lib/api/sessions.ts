@@ -141,7 +141,7 @@ async function bodyError(res: Response): Promise<string | undefined> {
   }
 }
 
-async function throwApiError(res: Response): Promise<never> {
+export async function throwApiError(res: Response): Promise<never> {
   const vrAuth = res.headers.get('X-Vr-Auth');
   if (vrAuth === 'removed') throw new ApiError('removed', res.status);
   if (vrAuth === 'invalid') throw new ApiError('invalid', res.status);
@@ -176,6 +176,15 @@ export async function getMySessions(): Promise<MySessionsResult> {
   const upcomingTotal = Number.isFinite(upNum) && res.headers.get('X-Upcoming-Total') !== null ? upNum : pageUpcoming;
   const recentTotal = Number.isFinite(reNum) && res.headers.get('X-Recent-Total') !== null ? reNum : rows.length - pageUpcoming;
   return { rows, upcomingTotal, recentTotal };
+}
+
+// The ONE definition of the home my-sessions query — consumed by the Moments
+// tab AND useEnterableMoment (feed). Both observers must attach with the same
+// key/staleTime for the shared cache to work, so the definition lives here.
+// Sub-key invalidations still match: invalidateQueries({queryKey:
+// ['my-sessions']}) is a prefix match.
+export function mySessionsQueryOptions() {
+  return { queryKey: ['my-sessions'] as const, queryFn: getMySessions, staleTime: 15_000 };
 }
 
 // Server-side filtered + paginated moments (recents.tsx). The server owns

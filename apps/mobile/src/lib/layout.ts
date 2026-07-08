@@ -202,3 +202,9 @@ export const HERO_SCRIM = ['rgba(15,12,10,0.25)', 'rgba(15,12,10,0.05)', 'rgba(1
 // (copy + buttons). Distinct from HERO_SCRIM by design, same literal family.
 export const WELCOME_SCRIM = ['rgba(15,12,10,0.42)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.06)', 'rgba(15,12,10,0.74)'] as const;
 export const WELCOME_SCRIM_STOPS = [0, 0.26, 0.56, 1] as const;
+
+// Feed-card photo scrim: a simple 2-stop bottom gradient (clear → dark) so the
+// over-photo glass panel + text keep contrast against the bottom of any photo.
+// Distinct from HERO_SCRIM (a 3-stop full-height scrim) — the feed card only
+// darkens the bottom edge. Same literal family, one home (the token gate).
+export const FEED_PANEL_SCRIM = ['rgba(15,12,10,0)', 'rgba(15,12,10,0.55)'] as const;

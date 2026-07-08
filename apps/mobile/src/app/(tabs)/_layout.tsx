@@ -66,6 +66,10 @@ export default function TabsLayout() {
   const hidden =
     overlayHidesBar ||
     keyboardShown ||
+    // Matches BOTH impression surfaces: 02e (/moments/…/impression/, footer
+    // bar replaces the nav) AND the read-only feed detail (/feed/impression/,
+    // no footer — Simon's ruling 2026-07-08: immersive, no bottom nav; the
+    // floating back button is the only chrome).
     pathname.includes('/impression/') ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||

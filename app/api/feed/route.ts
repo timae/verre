@@ -288,7 +288,21 @@ export async function GET(req: NextRequest) {
             imageUrl: ratingImage ?? wine.imageUrl,
             venueName: f.venueName,
             city: f.city,
+            // `country` is the VENUE country (where they had it) — the location
+            // line (venueName · city · country). Distinct from the WINE's
+            // origin below.
             country: f.country,
+            // Wine-catalog metadata for the detail page's "About this
+            // impression" block (parity with SessionFeedWine). `wine: true`
+            // already loads these columns; a standalone check-in is never blind,
+            // so no redaction fork. `wineRegion`/`wineCountry` are the WINE's
+            // ORIGIN (Origin row) — deliberately NOT `f.country` (the venue), a
+            // conflation the old standalone card had.
+            wineRegion: wine.region,
+            wineCountry: wine.country,
+            vinification: wine.vinification,
+            description: wine.description,
+            purchaseUrl: wine.purchaseUrl,
             flavors: f.rating.flavors,
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             createdAt: f.createdAt,
@@ -309,6 +323,13 @@ export async function GET(req: NextRequest) {
         // (name + host) is scrubbed. Per-wine identity is still gated
         // by the blind/revealed predicate inside loadSessionFeedWines.
         const wines = !s ? [] : (sessionWines.get(pairKey(f.user.id, s.id)) ?? [])
+        // A LIVE session post with no wines has nothing to render (the
+        // author's ratings were cascade-deleted — e.g. the host deleted the
+        // only wine they'd rated; no app-level feed_items cleanup runs on that
+        // path). Drop it rather than ship a contentless shell. Tombstoned
+        // posts pass through regardless: their ratings survive the session
+        // scrub and the "[deleted session]" render is deliberate.
+        if (!deleted && wines.length === 0) return []
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
@@ -333,8 +354,16 @@ export async function GET(req: NextRequest) {
     }),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, PAGE)
 
-  const nextCursor = items.length === PAGE
-    ? items[items.length - 1].createdAt.toISOString()
+  // "More rows may exist" keys on whether the RAW page filled — NOT on how
+  // many items survived the render filters (the empty-live-session drop above,
+  // the defensive kind/rating drops). Filtering must advance the cursor, never
+  // terminate paging: keying on items.length would return nextCursor:null the
+  // moment one row on a full page got dropped, hiding every older post. The
+  // cursor is the last RAW row's createdAt so dropped trailing rows aren't
+  // rescanned; a page may ship fewer than PAGE items with a non-null cursor —
+  // clients just keep paging.
+  const nextCursor = feedItems.length === PAGE
+    ? feedItems[feedItems.length - 1].createdAt.toISOString()
     : null
 
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
