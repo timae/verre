@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -27,11 +27,11 @@ import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { topFlavours } from '@/lib/flavourAxes';
 import { frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
+import { setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
-import { formatScore } from '@verre/core';
 import type { FeedAuthor, SessionFeedPayload, SessionFeedWine } from '@/lib/api/feed';
 
 // The 03·12 "linked · glass" session card (proposal 08 §2). Pixel-spec off
@@ -70,7 +70,30 @@ export function SessionFeedCard({
 
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
-  const avg = authorAvg(wines);
+  // Shared-element source (proposal 09): opening an impression measures the
+  // photo carousel's window frame and hands it to the detail, whose hero clone
+  // grows out of it. A slide with no real photo (blind/placeholder) and the
+  // all-photoless carousel have nothing to share → the fade presentation.
+  const photoFrameRef = useRef<View>(null);
+  const openImpression = useCallback(
+    (i: number) => {
+      const w = wines[i];
+      const uri = !w?._blind && w?.imageUrl ? w.imageUrl : null;
+      const node = photoFrameRef.current;
+      if (!uri || !node) {
+        setFeedTransitionSource({ kind: 'fade' });
+        onOpenImpression(i);
+        return;
+      }
+      node.measureInWindow((x, y, width, height) => {
+        setFeedTransitionSource(
+          width > 0 && height > 0 ? { kind: 'photo', x, y, width, height, uri } : { kind: 'fade' },
+        );
+        onOpenImpression(i);
+      });
+    },
+    [wines, onOpenImpression],
+  );
   // Does ANY impression in this moment have a real photo? A blind wine's photo
   // is redacted (imageUrl null + _blind), so it doesn't count. If none do, the
   // photo carousel would be a strip of glyph placeholders (Simon: don't show
@@ -195,7 +218,7 @@ export function SessionFeedCard({
            overlay that pops content on scroll-end. The CONTAINER carries the
            tint background so an overscroll pull (or a not-yet-loaded photo)
            reveals the tint, sitting FLAT — no shadow (Simon). */
-        <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
+        <View ref={photoFrameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
           <GestureDetector gesture={doubleTap}>
             <ScrollView
               horizontal
@@ -214,7 +237,7 @@ export function SessionFeedCard({
                   height={photoH}
                   axisColor={axisColor}
                   onMeasure={reportAspect}
-                  onPressPanel={() => onOpenImpression(i)}
+                  onPressPanel={() => openImpression(i)}
                 />
               ))}
             </ScrollView>
@@ -257,7 +280,7 @@ export function SessionFeedCard({
               axisColor={axisColor}
               width={photoW}
               height={nonPhotoSlideH}
-              onOpen={() => onOpenImpression(i)}
+              onOpen={() => openImpression(i)}
             />
           ))}
         </ScrollView>
@@ -279,7 +302,8 @@ export function SessionFeedCard({
         </View>
       )}
 
-      {/* action row — like · avg-score chip */}
+      {/* action row — like (the ★ avg chip was removed entirely; Simon
+          2026-07-08 — the author's own average isn't a useful card signal) */}
       <View style={[styles.acts, { paddingHorizontal: GUTTER }]}>
         <Pressable
           style={styles.actBtn}
@@ -289,16 +313,6 @@ export function SessionFeedCard({
         >
           <Icon name={session.liked ? 'heart-fill' : 'heart'} size={21} color={session.liked ? theme.accent : theme.ink} />
         </Pressable>
-        <View style={{ flex: 1 }} />
-        {avg != null && (
-          <View style={styles.scoreChip}>
-            <Icon name="starf" size={13} color={theme.ink} />
-            <VText variant="caption" style={styles.bold}>
-              {' '}
-              {formatScore(avg)}
-            </VText>
-          </View>
-        )}
       </View>
 
       {/* likes line */}
@@ -377,21 +391,6 @@ function WineSlide({
   );
 }
 
-// Average across the AUTHOR's rated wines (the action-row ★ chip). The feed
-// wire carries only the author's own ratings, so the design's cross-taster
-// "group" score isn't computable client-side — the chip dropped the "group"
-// label (Simon, 2026-07-08) until/unless the server ships a per-session
-// cross-rater aggregate. Only counts real scores (> 0); returns null when
-// nothing is scored. Rounded to a 0.25 step so the chip shows a clean score
-// (formatScore expects quarter steps — a raw mean like 4.083 would render
-// "4.08").
-function authorAvg(wines: SessionFeedWine[]): number | null {
-  const scores = wines.map((w) => w.score).filter((s): s is number => s != null && s > 0);
-  if (!scores.length) return null;
-  const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return Math.round(mean * 4) / 4;
-}
-
 const styles = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'center', gap: space.xs, paddingVertical: space.sm },
   who: { flex: 1, minWidth: 0 },
@@ -402,5 +401,4 @@ const styles = StyleSheet.create({
   dotOn: { transform: [{ scale: 1.15 }] },
   acts: { flexDirection: 'row', alignItems: 'center', gap: space.xs, paddingTop: space.xs, paddingBottom: space['3xs'] },
   actBtn: { paddingVertical: space['3xs'], paddingHorizontal: space['3xs'] },
-  scoreChip: { flexDirection: 'row', alignItems: 'center' },
 });

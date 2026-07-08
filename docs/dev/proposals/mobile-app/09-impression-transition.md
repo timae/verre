@@ -1,9 +1,13 @@
 # 09 — Impression detail: shared-element open/close transition
 
-**Status**: NOT STARTED — handoff/prep doc so a fresh session can build it cold.
+**Status**: BUILT (2026-07-08, `feature/impression-transition`) — both the
+transition and the §B back-nav wrapper, per the plan below. **Device-verify
+pending** (gesture/animation feel can't be judged from the sandbox). See §"As
+built" at the end for the implementation map, the defaults picked for the open
+decisions, and the device checklist.
 Requested by Simon (2026-07-07). Builds on the read-only detail screen shipped
 in `08-feed.md` §3 (commit `7e40d1b`). **Also carries the deferred FEED→SESSION
-back-nav rework (§B below) — do it in this pass since both reshape feed nav.**
+back-nav rework (§B below) — done in this pass since both reshape feed nav.**
 
 ## §B — Deferred: enter-a-moment-from-feed returns to the feed post
 
@@ -160,3 +164,114 @@ animated overlay**. Sketch:
 - The bar title tracks the active page via a `titles`/`collapsed` map keyed by
   page index — fine, but if the transition changes the presentation, re-verify
   the active-page tracking survives.
+
+## As built (2026-07-08, `feature/impression-transition`)
+
+### §B — the dual-mounted session sub-tree
+
+- **`lib/sessionStack.ts`** (new): `useSessionTab()` reads `useSegments()[1]`
+  (`'feed' | 'moments'`); `sessionHref(tab, sub, params)` builds the typed
+  `Href` (the one sanctioned cast — a computed pathname can't satisfy the
+  typed-routes literal union); `tabHomeHref(tab)` for home bounces.
+- **7 mirror route files** under `app/(tabs)/feed/session/[code]/…` (index,
+  add, impression/[wineId], edit-impression/[wineId], settings/{index,
+  details,reveal}) — thin `export { default } from '@/app/(tabs)/moments/…'`.
+- **All 10 in-subtree absolute pushes converted** (the 9 verified in the plan
+  + `useSettingsSession`'s fatal bounce, which post-dates the count), plus:
+  `useEnterableMoment` now pushes the session onto the CURRENT tab's stack
+  (feed cards/detail → `/feed/session/[code]`), and the settings hub's
+  delete-moment bounce goes to the OWNING tab's home (`tabHomeHref`), so a
+  feed-entered delete lands back on Feed.
+- Moments-tab entry points (home carousel, recents, join, create) still push
+  `/moments/session/[code]` — correct, they live on that stack.
+- The tabs layout's bar-hide matchers are suffix-based (`/impression/`,
+  `/add`, `/settings/details`, `/settings/reveal`) so they cover the mirrors
+  with no change.
+
+### The transition
+
+- **Route presentation** (`feed/_layout.tsx`): `impression/[id]` is
+  `presentation: 'transparentModal'`, `animation: 'none'`, `gestureEnabled:
+  false` (the pull-down IS the dismiss; a native edge-swipe would pop without
+  reversing the presentation), transparent `contentStyle`. Android hardware
+  back is intercepted (`BackHandler` → `requestClose`) so it takes the same
+  reversed presentation instead of a native instant pop. ⚠️ The layout MUST
+  keep `unstable_settings = { initialRouteName: 'index' }` (+ `<Stack.Screen
+  name="index" />` declared first): declaring a `Stack.Screen` hoists that
+  route to the front of the route order, and react-navigation's default
+  initial route is the first one — without the anchor, a fresh Feed-tab mount
+  (app reload → tab press) cold-mounted `impression/[id]` with no params →
+  a stuck "This impression is gone" screen (Simon's device catch,
+  2026-07-08).
+- **Source handoff** (`lib/feedTransition.ts`, new): the tapped card measures
+  its photo frame (`measureInWindow`) and stores `{kind:'photo', x,y,w,h,
+  uri}` — or `{kind:'fade'}` when there's no real photo (NonPhotoHero, blind
+  slide, placeholder) — in a one-shot module store (1.5s freshness window);
+  the detail consumes it on mount. Cards: `SessionFeedCard.openImpression`
+  (carousel container ref) + `StandaloneFeedCard.PhotoHero`.
+- **One shared `progress` value** (0 = at card, 1 = open) drives everything in
+  `feed/impression/[id].tsx`. Layer order (bottom → top): settle bg (opacity)
+  · content (pager/body, opacity ramp [0.35,1] + 56px rise) · the hero CLONE
+  (expo-image cover, interpolating left/top/width/height source-frame → hero
+  slot, plus a FEED_PANEL_SCRIM→HERO_SCRIM crossfade so both handoff
+  endpoints are pixel-identical) · the GLASS-PANEL CLONE · the bar (own
+  layer, fade only — chrome, no rise). **The photo slides BEHIND the card's
+  glass panel** (Simon's device ruling 2026-07-08, round 2): a pixel-matched
+  `FeedGlassPanel` clone (the ENTRY wine — the card beneath keeps showing the
+  tapped slide) sits pinned at the measured card frame ABOVE the photo,
+  opacity [0→0.35 progress]→[1→0], handing off seamlessly to the real card
+  panel at rest. The clone also rides above the fading body content (round 1:
+  no detail text drawn over the traveling photo). The real hero image renders
+  transparent while `isClonePage && progress < 1` and takes over at
+  coincidence — the Dynamic-Overlay opacity-handoff discipline. Open:
+  `withTiming` 360ms ease-out-cubic. No source → progress seeds 1 (deep link
+  renders as before).
+- **Pull-down dismiss** (per `DetailPage`): pages became
+  `Reanimated.ScrollView` (animated ref + `useScrollOffset`; the plain JS
+  `onScroll` keeps the measured collapse). A `Gesture.Pan`
+  (`activeOffsetY(12)`, `failOffsetY(-12)`, `failOffsetX(±16)`,
+  simultaneous with the scroll's `Gesture.Native()`) arms only when the touch
+  went down at scrollY ≤ 1 (`dismissArmed` shared value — a drag that starts
+  mid-list can't jump-start a dismiss), maps `translationY / 340` to
+  progress, and on release closes below 0.6 (or velocity > 900) else springs
+  back. `bounces` flips off while the page sits at the top so the iOS
+  rubber-band doesn't double the motion. The bar's back button reverses the
+  same presentation (230ms) before popping.
+- **Dismiss after paging** targets the ORIGINAL card frame (the card's photo
+  carousel occupies the same frame for every slide, so it's spatially honest);
+  the clone shows the ACTIVE page's photo. A photoless active page → fade
+  dismiss (no clone).
+
+### Defaults picked for the "open decisions" (flag to Simon, cheap to change)
+
+1. **No-photo open** = fade + 56px rise of the whole detail (no clone), same
+   progress choreography. (Same for no-photo dismiss.)
+2. **Pull-down target when the source card is "off-screen"** — moot for
+   paging (same frame, see above); the feed can't scroll while the modal is
+   up. Kept the original frame unconditionally.
+3. **The body "unfolds" as one block** (single content layer fading/rising);
+   the reverse-animate-fields-into-the-panel variant was NOT built. If the
+   close should literally slide the rating into the glass panel, that's a
+   follow-up on this scaffolding.
+
+### Device checklist (Simon)
+
+- Open from: session card photo slide · standalone photo card · NonPhotoHero
+  (fade) · blind slide (fade) · all-photoless carousel (fade).
+- Clone↔hero handoff seam (any flicker at settle / at pull-start), expo-image
+  re-decode flicker mid-flight (if seen: try `recyclingKey` or a plain RN
+  Image for the clone), layout-prop interpolation smoothness on device (if
+  janky: switch the clone to transform-based scaling).
+- Panel clone: pixel match with the real card panel at rest (font/wheel/glass
+  fill), the [0→0.35] fade window feel on open AND pull-down, the ENTRY-wine
+  panel showing when dismissing from a swiped-to page.
+- Pull-down: arm only at top · horizontal swipe still pages · pager swipe vs
+  pan · release threshold feel (0.6 / velocity 900 / drag 340) · cancel
+  spring-back · dismiss from a swiped-to page (clone shows THAT photo, lands
+  on the card frame) · back button reverse.
+- Bottom nav pops out instantly when the modal mounts (pathname matcher) —
+  acceptable? (Animating the pill with the presentation is a follow-up.)
+- §B: feed → detail → moment → back walks back to the post; Moments tab keeps
+  its own independent session state; settings/add/edit/impression pushes stay
+  on the feed stack; delete-a-moment from a feed-entered settings lands on
+  Feed; kicked/fatal bounces land on the feed-stack line-up.

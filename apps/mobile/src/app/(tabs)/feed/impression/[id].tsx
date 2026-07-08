@@ -4,6 +4,7 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  BackHandler,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Pressable,
@@ -14,18 +15,34 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
+import Reanimated, {
+  Easing,
+  Extrapolation,
+  interpolate,
+  runOnJS,
+  useAnimatedProps,
+  useAnimatedRef,
+  useAnimatedStyle,
+  useScrollOffset,
+  useSharedValue,
+  withTiming,
+  type SharedValue,
+} from 'react-native-reanimated';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
-import { FullscreenImage } from '@/components/ui/FullscreenImage';
+import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
+import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
 import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
 import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { consumeFeedTransitionSource } from '@/lib/feedTransition';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
-import { FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
+import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
@@ -43,6 +60,24 @@ import { countryName } from '@verre/core';
 // SHARED chrome overlaid outside the pager; its collapsed/solid state tracks the
 // ACTIVE page. Dots live IN-CONTENT under each hero (Simon), so there's no
 // "where do dots go when collapsed" problem — they just scroll away.
+//
+// PRESENTATION (proposal 09): the route is a TRANSPARENT modal with no native
+// animation — this screen draws its own shared-element open/close. One shared
+// `progress` value (0 = at the feed card, 1 = fully open) drives every layer:
+//   • a hero CLONE (expo-image, cover) interpolates from the tapped card's
+//     measured photo frame (lib/feedTransition handoff) to the hero slot; the
+//     real hero image renders transparent while the clone is mid-flight and
+//     takes over at coincidence (progress === 1 — the Dynamic-Overlay opacity-
+//     handoff discipline, see docs/design/patterns/).
+//   • the settle background + content (bar, body) fade/rise in behind it.
+//   • pull-DOWN on a page at scrollY 0 drives progress back down interactively
+//     (hero shrinks toward the card, content sinks away); release past the
+//     threshold finishes the dismiss and pops the route, else springs back.
+// A no-photo source (NonPhotoHero, blind slide) or a cold deep link has no
+// frame to share → kind 'fade' / null: same progress choreography, no clone.
+// Dismissing after paging targets the ORIGINAL card frame — the card's photo
+// carousel occupies the same frame for every slide, so it stays spatially
+// honest; the clone shows the ACTIVE page's photo (no photo → fade dismiss).
 
 // The bar's true painted height = safe inset + the 36px row + paddings.
 const BAR_ROW = 36;
@@ -50,11 +85,19 @@ function barHeight(insetTop: number) {
   return insetTop + BAR_ROW + 4;
 }
 
+// Finger travel that maps a pull-down to progress 1→0. ~a third of a screen
+// reads as "fully let go" (the FullscreenImage lib uses 200; the card is a
+// bigger element, give it more room). Device-tune with Simon.
+const DISMISS_DRAG = 340;
+const OPEN_TIMING = { duration: 360, easing: Easing.out(Easing.cubic) };
+const CLOSE_TIMING = { duration: 230, easing: Easing.out(Easing.cubic) };
+
 export default function FeedImpression() {
   const { theme } = useTheme();
+  const axisColor = useFlavourColors();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width: screenW } = useWindowDimensions();
+  const { width: screenW, height: windowH } = useWindowDimensions();
   const { id, index } = useLocalSearchParams<{ id: string; index?: string }>();
   const feedItemId = Number(id);
   const startIndex = Math.max(0, Number(index ?? 0) || 0);
@@ -90,6 +133,136 @@ export default function FeedImpression() {
   const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
   const [titles, setTitles] = useState<Record<number, string>>({});
 
+  // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
+  // moment's photo impressions as a swipeable fullscreen carousel; closing
+  // LANDS the pager on the impression that was being viewed (the mock's
+  // gLand). `galleryAt` = the wine index it opened from, null = closed.
+  const [galleryAt, setGalleryAt] = useState<number | null>(null);
+  const pagerRef = useRef<ScrollView>(null);
+  const landPager = useCallback(
+    (wineIndex: number) => {
+      setGalleryAt(null);
+      setActive((cur) => {
+        if (cur === wineIndex) return cur;
+        pagerRef.current?.scrollTo({ x: wineIndex * screenW, animated: false });
+        return wineIndex;
+      });
+    },
+    [screenW],
+  );
+
+  // ── Presentation (proposal 09) ────────────────────────────────────────────
+  // The one-shot source the tapped card measured for us; null on a deep link.
+  // Lazy useState, not a useRef initializer: consume() clears the store, and a
+  // ref initializer's argument re-executes (and re-clears) on every render.
+  const [source] = useState(() => consumeFeedTransitionSource());
+  const sourceFrame = source?.kind === 'photo' ? source : null;
+  // 0 = at the feed card, 1 = fully open. Seeds 0 only when a card handed us a
+  // presentation to run; a cold mount renders open, exactly as before.
+  const progress = useSharedValue(source ? 0 : 1);
+  useEffect(() => {
+    if (source) progress.value = withTiming(1, OPEN_TIMING);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The clone always shows the ACTIVE page's photo: the entry page on open,
+  // whatever page you're on at pull-down. A photoless active page (blind /
+  // NonPhotoHero) has no clone → the dismiss is the plain fade.
+  const clampedActive = detail ? Math.min(active, maxPage) : 0;
+  const activeWine = detail ? detail.wines[clampedActive] : null;
+  const activeUri = activeWine && !activeWine._blind && activeWine.imageUrl ? activeWine.imageUrl : null;
+  const hasClone = !!(sourceFrame && activeUri);
+  const heroCloneH = Math.round(windowH * HERO_RATIO) + radius.xl;
+  // The glass-panel clone shows the ENTRY wine — the card beneath keeps
+  // showing the tapped slide's panel no matter which page you dismiss from.
+  const entryIndex = detail ? Math.min(startIndex, maxPage) : 0;
+  const entryWine = detail ? detail.wines[entryIndex] ?? null : null;
+
+  // Plain pop. The visual close (reversing progress) happens before this; a
+  // cold deep link has no feed beneath the modal, so fall back to the tab.
+  // Idempotent — a bar-back close and a pan close can't double-pop.
+  const closedRef = useRef(false);
+  const closeDetail = useCallback(() => {
+    if (closedRef.current) return;
+    closedRef.current = true;
+    if (router.canGoBack()) router.back();
+    else router.replace('/feed');
+  }, [router]);
+  // The bar's back button: reverse the presentation, then pop. Without a
+  // presentation (deep link) it's just the pop.
+  const requestClose = useCallback(() => {
+    if (!source) {
+      closeDetail();
+      return;
+    }
+    progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+      if (finished) runOnJS(closeDetail)();
+    });
+  }, [source, progress, closeDetail]);
+  // Android hardware back must take the same reversed presentation — without
+  // this it pops the transparent modal natively (instant vanish, no close
+  // animation). Claiming the event (return true) suppresses the default pop;
+  // requestClose pops after the animation. No-op on iOS.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (closedRef.current) return false;
+      requestClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [requestClose]);
+
+  const bgStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+  const cloneStyle = useAnimatedStyle(() => {
+    const p = progress.value;
+    if (!sourceFrame) return { opacity: 0 };
+    return {
+      // The real hero owns the pixels at rest — the clone exists mid-flight.
+      opacity: p < 1 ? 1 : 0,
+      left: interpolate(p, [0, 1], [sourceFrame.x, 0]),
+      top: interpolate(p, [0, 1], [sourceFrame.y, 0]),
+      width: interpolate(p, [0, 1], [sourceFrame.width, screenW]),
+      height: interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]),
+    };
+  });
+  // Bar + pager fade/rise in behind the traveling photo (the "unfold") and
+  // sink away on dismiss. Late opacity ramp so the card shows through early.
+  const contentStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0.35, 1], [0, 1], Extrapolation.CLAMP),
+    transform: [{ translateY: (1 - progress.value) * 56 }],
+  }));
+  // NEW touches only land while fully open: a tap during the close animation
+  // (invisible but otherwise hit-testable content) could push a route and make
+  // the deferred back() pop THAT instead — an invisible ghost modal over the
+  // feed. Hit-testing happens at touch-down, so an in-flight dismiss pan is
+  // unaffected when this flips mid-gesture.
+  const contentPointerProps = useAnimatedProps(() => ({
+    pointerEvents: (progress.value < 1 ? 'none' : 'auto') as 'none' | 'auto',
+  }));
+  // The card's GLASS PANEL stays IN FRONT of the traveling photo (Simon: the
+  // image slides BEHIND the panel — out from behind it on open, back behind
+  // it on close). A pixel-matched panel clone sits pinned at the card frame
+  // above the photo clone, fully there at the card and gone by 35% open; at
+  // rest it hands off seamlessly to the real card panel beneath the modal.
+  const panelCloneStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 0.35], [1, 0], Extrapolation.CLAMP),
+  }));
+  // Scrim crossfade inside the photo clone: the card photo carries
+  // FEED_PANEL_SCRIM, the detail hero carries HERO_SCRIM — fade one into the
+  // other with progress so BOTH endpoints are pixel-identical (no brightness
+  // flash at either handoff).
+  const cardScrimStyle = useAnimatedStyle(() => ({ opacity: 1 - progress.value }));
+  const heroScrimStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+  // The bar rides its own layer ABOVE the clone (chrome over the traveling
+  // photo, no rise — see the layer comments in the render). Same tap gate;
+  // 'box-none' so the wrapper never swallows touches meant for the pages.
+  const barStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0.35, 1], [0, 1], Extrapolation.CLAMP),
+  }));
+  const barPointerProps = useAnimatedProps(() => ({
+    pointerEvents: (progress.value < 1 ? 'none' : 'box-none') as 'none' | 'box-none',
+  }));
+
   const onPagerScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const i = Math.max(0, Math.min(maxPage, Math.round(e.nativeEvent.contentOffset.x / screenW)));
@@ -106,10 +279,11 @@ export default function FeedImpression() {
   }, []);
 
   if (!item || !detail) {
-    // Post not in the cache (deep link before the feed loaded, or trimmed out).
+    // Post not in the cache (deep link before the feed loaded, or trimmed
+    // out). Solid + un-animated — there's no source frame worth honoring.
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg }}>
-        <FloatBar solid title="" onBack={() => router.back()} insetTop={insets.top} pending={feed.isPending} />
+        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={feed.isPending} />
         <CenteredMessage
           title="This impression is gone"
           body="It may have been removed, or the feed hasn't loaded it yet."
@@ -123,76 +297,155 @@ export default function FeedImpression() {
   const total = wines.length;
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
-  const page = Math.min(active, maxPage);
+  const page = clampedActive;
   const barSolid = !!collapsed[page];
+  // Only photo-bearing impressions go fullscreen (a blind/photoless page has
+  // nothing to show); wineIndex maps a gallery page back to its pager slot.
+  const galleryPages: GalleryPage[] = wines
+    .map((w, i) => ({ uri: !w._blind && w.imageUrl ? w.imageUrl : null, wine: w, wineIndex: i }))
+    .filter((p): p is GalleryPage => p.uri !== null);
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.bg }}>
+    // Transparent root — the feed shows through while the presentation runs.
+    // The settle bg below fades to opaque with progress.
+    <View style={{ flex: 1 }}>
       {/* RNS dead-end — stops react-native-screens flipping the first
           descendant ScrollView's contentInsetAdjustmentBehavior never→automatic
           (which would top-inset the hero below the status bar). Load-bearing;
           see apps/mobile/CLAUDE.md "full-bleed scroll content vs RNS". */}
       <View collapsable={false} style={{ width: 0, height: 0 }} />
 
-      {total === 1 ? (
-        <DetailPage
-          wine={wines[0]}
-          index={0}
-          total={1}
-          author={author}
-          createdAt={createdAt}
-          verb={verb}
-          place={place}
-          momentName={momentName}
-          sessionId={sessionId}
-          onCollapse={(c) => reportCollapse(0, c)}
-          onTitle={(t) => reportTitle(0, t)}
-          insetTop={insets.top}
-          bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
-        />
-      ) : (
-        <ScrollView
-          horizontal
-          pagingEnabled
-          showsHorizontalScrollIndicator={false}
-          onScroll={onPagerScroll}
-          scrollEventThrottle={16}
-          contentOffset={{ x: Math.min(startIndex, maxPage) * screenW, y: 0 }}
-          // flex:1 bounds the pager to the screen so each page's own vertical
-          // ScrollView (DetailPage root) gets a real viewport height — without
-          // it the height chain is unconstrained and vertical scrolling inside
-          // a page can collapse. Page wrappers stretch to this height (a
-          // horizontal SV's content row defaults to alignItems:stretch).
-          style={{ flex: 1 }}
-        >
-          {wines.map((w, i) => (
-            <View key={w.id} style={{ width: screenW }}>
-              <DetailPage
-                wine={w}
-                index={i}
-                total={total}
-                author={author}
-                createdAt={createdAt}
-                verb={verb}
-                place={place}
-                momentName={momentName}
-                sessionId={sessionId}
-                onCollapse={(c) => reportCollapse(i, c)}
-                onTitle={(t) => reportTitle(i, t)}
-                insetTop={insets.top}
-                bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
-              />
-            </View>
-          ))}
-        </ScrollView>
-      )}
+      {/* settle background — the screen's bg, faded by progress */}
+      <Reanimated.View
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, { backgroundColor: theme.bg }, bgStyle]}
+      />
 
-      {/* Shared floating bar — over ALL pages, collapse tracks the active one. */}
-      <FloatBar
-        solid={barSolid}
-        title={barSolid ? titles[page] ?? '' : ''}
-        onBack={() => router.back()}
-        insetTop={insets.top}
+      {/* Layer order (bottom → top): settle bg · content (pager/body) · hero
+          clone (photo + scrim crossfade) · glass-panel clone · bar. The
+          traveling photo rides ABOVE the fading body content, and the card's
+          glass panel rides ABOVE the photo — so the image slides out from
+          behind the panel on open and tucks back behind it on close (Simon's
+          device feedback, 2026-07-08). The real hero's image slot renders
+          transparent until coincidence, when the clone hands off. */}
+      <Reanimated.View style={[{ flex: 1 }, contentStyle]} animatedProps={contentPointerProps}>
+        {total === 1 ? (
+          <DetailPage
+            wine={wines[0]}
+            index={0}
+            total={1}
+            author={author}
+            createdAt={createdAt}
+            verb={verb}
+            place={place}
+            momentName={momentName}
+            sessionId={sessionId}
+            onCollapse={(c) => reportCollapse(0, c)}
+            onTitle={(t) => reportTitle(0, t)}
+            insetTop={insets.top}
+            bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
+            progress={progress}
+            isClonePage={hasClone}
+            onClosed={closeDetail}
+            onOpenGallery={() => setGalleryAt(0)}
+          />
+        ) : (
+          <ScrollView
+            ref={pagerRef}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onScroll={onPagerScroll}
+            scrollEventThrottle={16}
+            contentOffset={{ x: Math.min(startIndex, maxPage) * screenW, y: 0 }}
+            // flex:1 bounds the pager to the screen so each page's own vertical
+            // ScrollView (DetailPage root) gets a real viewport height — without
+            // it the height chain is unconstrained and vertical scrolling inside
+            // a page can collapse. Page wrappers stretch to this height (a
+            // horizontal SV's content row defaults to alignItems:stretch).
+            style={{ flex: 1 }}
+          >
+            {wines.map((w, i) => (
+              <View key={w.id} style={{ width: screenW }}>
+                <DetailPage
+                  wine={w}
+                  index={i}
+                  total={total}
+                  author={author}
+                  createdAt={createdAt}
+                  verb={verb}
+                  place={place}
+                  momentName={momentName}
+                  sessionId={sessionId}
+                  onCollapse={(c) => reportCollapse(i, c)}
+                  onTitle={(t) => reportTitle(i, t)}
+                  insetTop={insets.top}
+                  bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
+                  progress={progress}
+                  isClonePage={hasClone && i === page}
+                  onClosed={closeDetail}
+                  onOpenGallery={() => setGalleryAt(i)}
+                />
+              </View>
+            ))}
+          </ScrollView>
+        )}
+
+      </Reanimated.View>
+
+      {/* hero clone — the traveling photo, above the body (see layer order),
+          with the card→hero scrim crossfade so both handoffs are seamless. */}
+      {hasClone ? (
+        <Reanimated.View pointerEvents="none" style={[styles.clone, cloneStyle]}>
+          <Image source={{ uri: activeUri! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt="" />
+          <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
+            <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
+          </Reanimated.View>
+          <Reanimated.View style={[StyleSheet.absoluteFill, heroScrimStyle]}>
+            <LinearGradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+          </Reanimated.View>
+        </Reanimated.View>
+      ) : null}
+
+      {/* glass-panel clone — the card's panel face, pinned at the card frame
+          IN FRONT of the photo; the real panel beneath takes over at rest. */}
+      {sourceFrame && entryWine ? (
+        <Reanimated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: 'absolute',
+              left: sourceFrame.x,
+              top: sourceFrame.y,
+              width: sourceFrame.width,
+              height: sourceFrame.height,
+            },
+            panelCloneStyle,
+          ]}
+        >
+          <FeedGlassPanel wine={entryWine} index={entryIndex} axisColor={axisColor} onPress={() => {}} />
+        </Reanimated.View>
+      ) : null}
+
+      {/* Shared floating bar — over ALL pages (and over the clone), collapse
+          tracks the active one. Fades with the presentation but does NOT rise
+          with the body (it's chrome, not content). */}
+      <Reanimated.View style={[StyleSheet.absoluteFill, barStyle]} animatedProps={barPointerProps}>
+        <FloatBar
+          solid={barSolid}
+          title={barSolid ? titles[page] ?? '' : ''}
+          onBack={requestClose}
+          insetTop={insets.top}
+        />
+      </Reanimated.View>
+
+      {/* fullscreen gallery — a Modal, so its place in this tree is chrome-
+          independent. Closing lands the pager on the viewed impression. */}
+      <FullscreenGallery
+        pages={galleryPages}
+        startWineIndex={galleryAt ?? 0}
+        visible={galleryAt != null}
+        onClose={landPager}
       />
     </View>
   );
@@ -252,7 +505,9 @@ function FloatBar({
 
 // One impression's full read screen: a collapsing hero (photo under the status
 // bar) + the rating body below. Reports its collapse + on-photo title up so the
-// shared bar can track it.
+// shared bar can track it. Owns its slice of the presentation: the pull-down
+// dismiss pan (arms only at scrollY 0, writes the SHARED progress) and the
+// hero-image opacity handoff with the parent's clone.
 function DetailPage({
   wine,
   index,
@@ -267,6 +522,10 @@ function DetailPage({
   onTitle,
   insetTop,
   bottomPad,
+  progress,
+  isClonePage,
+  onClosed,
+  onOpenGallery,
 }: {
   wine: SessionFeedWine;
   index: number;
@@ -281,6 +540,17 @@ function DetailPage({
   onTitle: (title: string) => void;
   insetTop: number;
   bottomPad: number;
+  // Shared presentation progress (see the header comment): the pan writes it,
+  // the hero image keys its clone handoff on it.
+  progress: SharedValue<number>;
+  // True when the parent's hero clone represents THIS page — the real hero
+  // image stays transparent while the clone is mid-flight.
+  isClonePage: boolean;
+  // Pop the route (called after the dismiss animation lands at 0).
+  onClosed: () => void;
+  // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
+  // spans ALL the moment's photo impressions, not just this page's).
+  onOpenGallery: () => void;
 }) {
   const { theme } = useTheme();
   const { width: screenW, height: windowH } = useWindowDimensions();
@@ -290,14 +560,67 @@ function DetailPage({
   const heroH = Math.round(windowH * HERO_RATIO);
   const BAR_H = barHeight(insetTop);
 
-  const [fullscreen, setFullscreen] = useState(false);
   // Collapse is MEASURED: flip solid when the on-photo name's bottom scrolls
   // under the bar (never a magic constant — the hero is proportional height).
+  // atTop mirrors "scroll offset is at rest (≤ 1)" into state to flip
+  // `bounces`: with the top rubber-band off, a pull-down at rest feeds the
+  // dismiss pan instead of fighting it with a second motion (the bottom
+  // overscroll keeps its bounce the moment the list scrolls).
   const nameBottom = useRef(0);
+  const [atTop, setAtTop] = useState(true);
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     onCollapse(y >= nameBottom.current - BAR_H);
+    // Same inequality as the pan's arm check (≤ 1) — a fractional iOS rest
+    // offset must not leave bounce on while the dismiss arms.
+    setAtTop((prev) => {
+      const v = y <= 1;
+      return prev === v ? prev : v;
+    });
   };
+
+  // ── Pull-down dismiss (proposal 09) ──────────────────────────────────────
+  // Declaration order is load-bearing: every value a gesture worklet captures
+  // must exist before the builder runs (the PillTabBar crash class).
+  const scrollRef = useAnimatedRef<Reanimated.ScrollView>();
+  const scrollY = useScrollOffset(scrollRef);
+  // Armed = the touch went down while the page sat at the top. Without it, a
+  // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
+  // the accumulated translation.
+  const dismissArmed = useSharedValue(false);
+  const nativeScroll = Gesture.Native();
+  const dismissPan = Gesture.Pan()
+    // Vertical pull-down only: an upward intent fails into the scroll, a
+    // horizontal one fails into the pager.
+    .activeOffsetY(12)
+    .failOffsetY(-12)
+    .failOffsetX([-16, 16])
+    .simultaneousWithExternalGesture(nativeScroll)
+    .onBegin(() => {
+      dismissArmed.value = scrollY.value <= 1;
+    })
+    .onUpdate((e) => {
+      if (!dismissArmed.value || scrollY.value > 1) return;
+      progress.value = 1 - Math.min(1, Math.max(0, e.translationY) / DISMISS_DRAG);
+    })
+    .onEnd((e) => {
+      if (!dismissArmed.value || progress.value >= 1) return;
+      const close = progress.value < 0.6 || (e.velocityY > 900 && progress.value < 0.98);
+      if (close) {
+        progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+          if (finished) runOnJS(onClosed)();
+        });
+      } else {
+        progress.value = withTiming(1, CLOSE_TIMING);
+      }
+    });
+
+  // The clone↔hero opacity handoff: while the parent's clone travels
+  // (progress < 1) this page's real hero image yields the pixels; at
+  // coincidence it takes over in the same frame the clone hides.
+  const heroImgStyle = useAnimatedStyle(() => ({
+    opacity: isClonePage && progress.value < 1 ? 0 : 1,
+  }));
 
   // Identity is masked for a blind wine ("Wine N"); the subjective rating
   // (score + wheel + note) stays — same contract as the feed cards.
@@ -313,14 +636,21 @@ function DetailPage({
   }, [name, onTitle]);
 
   return (
-    <ScrollView
-      style={{ flex: 1 }}
-      contentInsetAdjustmentBehavior="never"
-      showsVerticalScrollIndicator={false}
-      scrollEventThrottle={16}
-      onScroll={onScroll}
-      contentContainerStyle={{ paddingBottom: bottomPad }}
-    >
+    // Pan OUTSIDE the scroll's native gesture, declared simultaneous — the pan
+    // reads scrollY to arm only at the top; useScrollOffset + the plain JS
+    // onScroll coexist (the collapsing-hero pattern doc).
+    <GestureDetector gesture={dismissPan}>
+      <GestureDetector gesture={nativeScroll}>
+        <Reanimated.ScrollView
+          ref={scrollRef}
+          style={{ flex: 1 }}
+          contentInsetAdjustmentBehavior="never"
+          showsVerticalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onScroll={onScroll}
+          bounces={!atTop}
+          contentContainerStyle={{ paddingBottom: bottomPad }}
+        >
       {/* HERO — full-bleed photo under the status bar (or a masked/no-photo name
           block). The photo runs radius.xl past the seam so the rounded body
           panel below overlaps it. */}
@@ -335,10 +665,13 @@ function DetailPage({
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Open photo fullscreen"
-            onPress={() => setFullscreen(true)}
+            onPress={onOpenGallery}
             style={{ width: '100%', height: '100%' }}
           >
-            <Image source={{ uri: wine.imageUrl! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt={name} />
+            {/* transparent while the parent's clone is mid-flight (handoff) */}
+            <Reanimated.View style={[{ width: '100%', height: '100%' }, heroImgStyle]}>
+              <Image source={{ uri: wine.imageUrl! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt={name} />
+            </Reanimated.View>
           </Pressable>
           <LinearGradient
             pointerEvents="none"
@@ -363,7 +696,6 @@ function DetailPage({
               </VText>
             ) : null}
           </View>
-          <FullscreenImage uri={wine.imageUrl!} visible={fullscreen} label={name} onClose={() => setFullscreen(false)} />
         </View>
       ) : (
         // No-photo / masked hero: a dark name block that clears the status bar
@@ -482,8 +814,10 @@ function DetailPage({
         {/* About this impression — identity metadata; hidden entirely for blind
             (it's all identity) and when the wine carries none. */}
         {!blind ? <AboutBlock wine={wine} /> : null}
-      </View>
-    </ScrollView>
+          </View>
+        </Reanimated.ScrollView>
+      </GestureDetector>
+    </GestureDetector>
   );
 }
 
@@ -546,6 +880,7 @@ const styles = StyleSheet.create({
   barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 10 },
   backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   barTitle: { flex: 1, fontFamily: 'InstrumentSans_600SemiBold' },
+  clone: { position: 'absolute', overflow: 'hidden' },
   heroPos: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' },
   heroPosDark: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase' },
   heroName: { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 31, marginTop: 4 },

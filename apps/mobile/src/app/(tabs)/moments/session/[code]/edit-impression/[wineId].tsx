@@ -7,6 +7,7 @@ import { VBar } from '@/components/VBar';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { ApiError, getSessionState } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { GUTTER } from '@/lib/layout';
 import { ImpressionForm } from '../add';
 
@@ -15,6 +16,7 @@ export default function EditImpression() {
   const code = String(rawCode ?? '');
   const wineId = String(rawWineId ?? '');
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const insets = useSafeAreaInsets();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
@@ -28,8 +30,8 @@ export default function EditImpression() {
     state.error instanceof ApiError &&
     (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
   useEffect(() => {
-    if (fatal) router.replace({ pathname: '/(tabs)/moments/session/[code]', params: { code } });
-  }, [fatal, code, router]);
+    if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
+  }, [fatal, code, router, sessionTab]);
 
   const meta = state.data?.meta ?? null;
   const wines = state.data?.wines ?? null;

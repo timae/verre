@@ -41,6 +41,7 @@ import {
   type WireWine,
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { INTENSITY } from '@/lib/scoreWords';
@@ -72,6 +73,7 @@ export default function ImpressionDetail() {
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const queryClient = useQueryClient();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
@@ -280,10 +282,7 @@ export default function ImpressionDetail() {
     // (same route, new params) picks it up in its Stack.Screen options.
     navDir = i < index ? 'prev' : 'next';
     seededFor.current = null;
-    router.replace({
-      pathname: '/(tabs)/moments/session/[code]/impression/[wineId]',
-      params: { code, wineId: wines[i].id },
-    });
+    router.replace(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId: wines[i].id }));
   };
   const onPrevious = async () => {
     if (await saveIfNeeded()) goTo(index - 1);
@@ -310,10 +309,7 @@ export default function ImpressionDetail() {
   };
   const editImpression = () => {
     setMenuAnchor(null);
-    router.push({
-      pathname: '/(tabs)/moments/session/[code]/edit-impression/[wineId]',
-      params: { code, wineId },
-    });
+    router.push(sessionHref(sessionTab, 'edit-impression/[wineId]', { code, wineId }));
   };
   const deleteMut = useMutation({
     mutationFn: () => deleteWine(code, wineId),

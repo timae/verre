@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useCallback } from 'react';
 import { mySessionsQueryOptions } from '@/lib/api/sessions';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 
 // "Tap a moment in the feed → open it, but ONLY if you were a member" (Simon).
 //
@@ -31,11 +32,15 @@ export function useEnterableMoment(sessionId: number | null | undefined): {
   enter: () => void;
 } {
   const router = useRouter();
+  // Stack-aware (proposal 09 §B): from the feed (cards + detail) the session
+  // opens UNDER the feed stack, so back returns to the post; from anywhere
+  // else it opens on Moments as before.
+  const sessionTab = useSessionTab();
   const rows = useQuery(mySessionsQueryOptions()).data?.rows;
   const match = sessionId != null ? rows?.find((r) => r.id === sessionId) : undefined;
   const code = match?.code ?? null;
   const enter = useCallback(() => {
-    if (code) router.push({ pathname: '/moments/session/[code]', params: { code } });
-  }, [code, router]);
+    if (code) router.push(sessionHref(sessionTab, '', { code }));
+  }, [code, router, sessionTab]);
   return { code, enter };
 }

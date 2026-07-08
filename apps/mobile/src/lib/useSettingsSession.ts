@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, getSessionState, type SessionMetaView } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 
 const SETTINGS_POLL_MS = 5000;
 
@@ -32,6 +33,7 @@ export function useSettingsSession(code: string): {
   refetch: () => void;
 } {
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
@@ -54,8 +56,8 @@ export function useSettingsSession(code: string): {
     state.error instanceof ApiError &&
     (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
   useEffect(() => {
-    if (fatal) router.replace({ pathname: '/(tabs)/moments/session/[code]', params: { code } });
-  }, [fatal, code, router]);
+    if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
+  }, [fatal, code, router, sessionTab]);
 
   // Only a network/5xx (`http`) error survives as `isError` here — the fatal
   // kinds bounce above. So Retry is the right affordance for the error the

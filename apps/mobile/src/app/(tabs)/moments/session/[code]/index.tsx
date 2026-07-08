@@ -46,6 +46,7 @@ import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { motion, radius, useTheme } from '@/theme';
 
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
@@ -138,6 +139,7 @@ export default function SessionLineup() {
   const insets = useSafeAreaInsets();
   const { height: windowH } = useWindowDimensions();
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const online = useIsOnline();
   const queryClient = useQueryClient();
 
@@ -337,8 +339,8 @@ export default function SessionLineup() {
     <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
   ) : null;
   const openImpression = (wineId: string) =>
-    router.push({ pathname: '/(tabs)/moments/session/[code]/impression/[wineId]', params: { code, wineId } });
-  const openAdd = () => router.push({ pathname: '/(tabs)/moments/session/[code]/add', params: { code } });
+    router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }));
+  const openAdd = () => router.push(sessionHref(sessionTab, 'add', { code }));
 
   // First tap arms; the second (while armed) fires the reveal.
   const onThumbTap = (wineId: string) => {
@@ -500,7 +502,7 @@ export default function SessionLineup() {
           onClose={() => setSessMenuTop(null)}
           onPeople={() => { setSessMenuTop(null); setPeopleOpen(true); }}
           onShare={() => { setSessMenuTop(null); setInviteOpen(true); }}
-          onSettings={() => { setSessMenuTop(null); router.push({ pathname: '/(tabs)/moments/session/[code]/settings', params: { code } }); }}
+          onSettings={() => { setSessMenuTop(null); router.push(sessionHref(sessionTab, 'settings', { code })); }}
         />
       ) : null}
       {meta && !fatal ? (

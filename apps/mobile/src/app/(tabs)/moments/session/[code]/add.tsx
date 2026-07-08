@@ -18,6 +18,7 @@ import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, reorderWines, updateWine, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { fuzzyIncludes } from '@/lib/search';
 import { authClient } from '@/lib/authClient';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
 import { elevation, radius, useTheme } from '@/theme';
@@ -59,6 +60,7 @@ export default function AddImpression() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
   const router = useRouter();
+  const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
 
@@ -85,8 +87,8 @@ export default function AddImpression() {
     state.error instanceof ApiError &&
     (state.error.kind === 'invalid' || state.error.kind === 'removed' || state.error.kind === 'not-found');
   useEffect(() => {
-    if (fatal) router.replace({ pathname: '/(tabs)/moments/session/[code]', params: { code } });
-  }, [fatal, code, router]);
+    if (fatal) router.replace(sessionHref(sessionTab, '', { code }));
+  }, [fatal, code, router, sessionTab]);
 
   // Position is host-only server-side (providers always append). Offer the
   // picker only to a host/cohost — same check as the line-up's isHostViewer —

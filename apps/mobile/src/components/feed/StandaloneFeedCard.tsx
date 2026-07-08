@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
 import Animated, {
   runOnJS,
@@ -18,6 +18,7 @@ import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { DEFAULT_ASPECT, frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
+import { setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { space, useTheme } from '@/theme';
@@ -103,7 +104,16 @@ export function StandaloneFeedCard({
           onOpen={onOpen}
         />
       ) : (
-        <NonPhotoHero wine={wine} axisColor={axisColor} width={screenW} onOpen={onOpen} />
+        <NonPhotoHero
+          wine={wine}
+          axisColor={axisColor}
+          width={screenW}
+          // No photo to share → the detail's fade presentation (proposal 09).
+          onOpen={() => {
+            setFeedTransitionSource({ kind: 'fade' });
+            onOpen();
+          }}
+        />
       )}
 
       {/* action row — like */}
@@ -161,6 +171,24 @@ function PhotoHero({
   const frameAspect = raw ? frameAspectFor([raw]) : DEFAULT_ASPECT;
   const photoH = Math.round(photoW * frameAspect);
 
+  // Shared-element source (proposal 09): the detail's hero clone grows out of
+  // this photo's measured window frame.
+  const frameRef = useRef<View>(null);
+  const open = useCallback(() => {
+    const node = frameRef.current;
+    if (!node) {
+      setFeedTransitionSource({ kind: 'fade' });
+      onOpen();
+      return;
+    }
+    node.measureInWindow((x, y, width, height) => {
+      setFeedTransitionSource(
+        width > 0 && height > 0 ? { kind: 'photo', x, y, width, height, uri } : { kind: 'fade' },
+      );
+      onOpen();
+    });
+  }, [uri, onOpen]);
+
   const burstScale = useSharedValue(0);
   const burstOpacity = useSharedValue(0);
   const burstStyle = useAnimatedStyle(() => ({ opacity: burstOpacity.value, transform: [{ scale: burstScale.value }] }));
@@ -181,7 +209,7 @@ function PhotoHero({
 
   return (
     <GestureDetector gesture={doubleTap}>
-      <View style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
+      <View ref={frameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
         <Image
           source={{ uri }}
           style={{ width: photoW, height: photoH }}
@@ -198,7 +226,7 @@ function PhotoHero({
           style={StyleSheet.absoluteFill}
           pointerEvents="none"
         />
-        <FeedGlassPanel wine={wine} index={0} axisColor={axisColor} onPress={onOpen} />
+        <FeedGlassPanel wine={wine} index={0} axisColor={axisColor} onPress={open} />
         <AnimatedView pointerEvents="none" style={[styles.burst, burstStyle]}>
           <Icon name="heart-fill" size={96} color="#fff" />
         </AnimatedView>
