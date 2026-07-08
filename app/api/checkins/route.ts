@@ -7,6 +7,9 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
+// From textSafe, NOT lib/session — importing session here would connect
+// Redis at module load just to use two pure sanitizers (codex finding).
+import { cleanCountry, cleanUrl } from '@/lib/textSafe'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
@@ -84,7 +87,12 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [] } = body
+  // `wineRegion`/`wineCountry` are the WINE's origin — named to stay distinct
+  // from `country`, which is the VENUE country (same split the feed payload
+  // makes). vinification/description/purchaseUrl land on the minted wine row,
+  // giving a standalone check-in the same About-block metadata as a session
+  // wine (the feed read path already surfaces them from the wine columns).
+  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl } = body
   // Scrub control chars first so a payload of pure NULL bytes doesn't
   // pass the non-empty check below.
   const wineName = scrub(rawWineName)
@@ -101,6 +109,12 @@ export async function POST(req: NextRequest) {
     ['grape', grape, 200], ['type', type, 32],
     ['venueName', venueName, 200], ['city', city, 100], ['country', country, 8],
     ['notes', notes, 4000],
+    // Wine-metadata caps mirror the wines columns (region VarChar(255),
+    // vinification/description/purchase_url VarChar(1000)); wineCountry is
+    // allow-listed to 2 chars by cleanCountry below.
+    ['wineRegion', wineRegion, 255], ['wineCountry', wineCountry, 8],
+    ['vinification', vinification, 1000], ['description', description, 1000],
+    ['purchaseUrl', purchaseUrl, 1000],
   ]
   for (const [k, v, max] of lenCheck) {
     if (typeof v === 'string' && v.length > max) return NextResponse.json({ error: `${k} too long (max ${max})` }, { status: 400 })
@@ -217,6 +231,15 @@ export async function POST(req: NextRequest) {
   const scrubVenue = scrub(venueName) || null
   const scrubCity = scrub(city) || null
   const scrubCountry = scrub(country)?.slice(0, 2).toUpperCase() || null
+  // Wine-origin metadata — same write-boundary rules as the session wine
+  // create (lib/session.ts addWineToSession): cleanCountry allow-lists the
+  // ISO-2 code, cleanUrl defangs to http(s)-only (and can EXPAND its input
+  // via the https:// auto-prefix, so re-bound to the column width after).
+  const scrubWineRegion = scrub(wineRegion) || null
+  const cleanWineCountry = cleanCountry(wineCountry) || null
+  const scrubVinification = scrub(vinification) || null
+  const scrubDescription = scrub(description) || null
+  const cleanPurchaseUrl = cleanUrl(purchaseUrl).slice(0, 1000) || null
   const ratingScore = scoreCheck.value
   const ratingFlavors = norm.value ?? {}
 
@@ -262,6 +285,11 @@ export async function POST(req: NextRequest) {
         style: wineStyle,
         category: 'wine',
         imageUrl: null,
+        region: scrubWineRegion,
+        country: cleanWineCountry,
+        vinification: scrubVinification,
+        description: scrubDescription,
+        purchaseUrl: cleanPurchaseUrl,
       },
     })
     // 2. Mint the rating. origin='standalone', sessionId=NULL (per the
@@ -370,6 +398,11 @@ export async function POST(req: NextRequest) {
     country: scrubCountry,
     lat: lat ?? null,
     lng: lng ?? null,
+    wineRegion: scrubWineRegion,
+    wineCountry: cleanWineCountry,
+    vinification: scrubVinification,
+    description: scrubDescription,
+    purchaseUrl: cleanPurchaseUrl,
     createdAt: feedItem.createdAt.toISOString(),
   }, { status: 201 })
 }

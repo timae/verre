@@ -2,15 +2,16 @@ import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, FlatList, Pressable, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
 import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
 import { CenteredMessage, ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
+import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FEED_KEY, FEED_STALE_MS, feedQueryOptions, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
-import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
-import { space, useTheme } from '@/theme';
+import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import { radius, space, useTheme } from '@/theme';
 
 // The feed tab (proposal 08). An infinite, focus-refreshed list of the
 // caller's network posts. Session-aggregate posts render as the 03·12 glass
@@ -184,8 +185,9 @@ export default function Feed() {
   if (conn === 'error') {
     return (
       <View style={{ flex: 1, paddingTop: topPad }}>
-        <View style={{ paddingHorizontal: GUTTER }}>
+        <View style={{ paddingHorizontal: GUTTER, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
           <VText variant="title">Feed</VText>
+          <CheckInPill onPress={() => router.push('/feed/check-in')} />
         </View>
         <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
       </View>
@@ -201,8 +203,11 @@ export default function Feed() {
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
         renderItem={renderItem}
         ListHeaderComponent={
-          <View style={{ paddingHorizontal: GUTTER, paddingBottom: space.sm }}>
+          // .vbar-root — top-right carries the page's primary action as the
+          // .hv-add accent pill ("+ Check In" → the standalone create form).
+          <View style={{ paddingHorizontal: GUTTER, paddingBottom: space.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
             <VText variant="title">Feed</VText>
+            <CheckInPill onPress={() => router.push('/feed/check-in')} />
           </View>
         }
         contentContainerStyle={{ paddingTop: topPad, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
@@ -247,6 +252,39 @@ export default function Feed() {
         }
       />
     </View>
+  );
+}
+
+// .hv-add base — accent pill (the moments-home NewPill shape; still a copy —
+// the <IconPill> extraction in apps/mobile/CLAUDE.md stays pending).
+function CheckInPill({ onPress }: { onPress: () => void }) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const surface = phone.surface('button');
+  const actionLabel = phone.text('small');
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="New check-in"
+      onPress={onPress}
+      hitSlop={6}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 6,
+        minHeight: surface.height(phone.size('actionPillHeight')),
+        paddingLeft: phone.lerp(11, 14),
+        paddingRight: phone.lerp(14, 17),
+        borderRadius: radius.pill,
+        backgroundColor: theme.accent,
+        opacity: pressed ? 0.8 : 1,
+      })}
+    >
+      <Icon name="plus" size={phone.size('actionIcon')} color={theme.accentInk} />
+      <VText surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...actionLabel, color: theme.accentInk }}>
+        Check In
+      </VText>
+    </Pressable>
   );
 }
 

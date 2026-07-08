@@ -1,16 +1,21 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { ActionSheetIOS, Keyboard, type LayoutChangeEvent, Modal, Platform, Pressable, TextInput, View } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
+import { COUNTRIES } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
+import { Sheet } from '@/components/ui/Sheet';
+import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
+import { fuzzyIncludes } from '@/lib/search';
 import { motion, radius, useTheme } from '@/theme';
 
 // Shared moment-form widgets, extracted from create.tsx so the 02f settings
@@ -253,6 +258,147 @@ export function SelectField({
       </VText>
       <Icon name="chevron-down" size={18} color={theme.inkSoft} />
     </Pressable>
+  );
+}
+
+// Short check-list picker in a brand bottom sheet (the add.tsx TypeSheet /
+// create.tsx CategorySheet shape, extracted per the catalog's pending
+// <OptionSheet> entry when the check-in form became the third copy). All
+// options choosable; the selected one carries a check. Dynamic sizing — for a
+// LONG searchable list (countries) this is the wrong primitive: that needs a
+// fixed snap + BottomSheetScrollView (see add.tsx CountrySheet's comment).
+export function OptionSheet<T extends string>({
+  open, title, options, selected, onSelect, onClose,
+}: {
+  open: boolean;
+  title: string;
+  options: ReadonlyArray<{ code: T; label: string }>;
+  selected: T | null;
+  onSelect: (code: T) => void;
+  onClose: () => void;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const insets = useSafeAreaInsets();
+  return (
+    <Sheet open={open} onClose={onClose}>
+      <BottomSheetView style={{ paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+            {title}
+          </VText>
+        </View>
+        {options.map((o) => {
+          const on = o.code === selected;
+          return (
+            <Pressable
+              key={o.code}
+              accessibilityRole="button"
+              accessibilityState={{ selected: on }}
+              onPress={() => onSelect(o.code)}
+              style={({ pressed }) => ({
+                flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                paddingHorizontal: 20, paddingVertical: phone.lerp(14, 18),
+                backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+              })}
+            >
+              <VText variant="body">{o.label}</VText>
+              {on ? <Icon name="check" size={18} color={theme.accent} /> : null}
+            </Pressable>
+          );
+        })}
+      </BottomSheetView>
+    </Sheet>
+  );
+}
+
+// Country picker — brand sheet with a type-to-filter field over the canonical
+// @verre/core COUNTRIES list (web↔native shared). A "Clear" row at the top
+// removes the selection. Moved here from add.tsx when the check-in create
+// became its second consumer. ⚠️ Deliberately NOT folded into OptionSheet:
+// this needs a FIXED 75% snap + BottomSheetScrollView (a long list clips
+// unreachably under dynamic sizing) + search — a load-bearing config
+// difference (see the in-body comment).
+export function CountrySheet({
+  open, selected, onSelect, onClose,
+}: {
+  open: boolean;
+  selected: string;
+  onSelect: (code: string) => void;
+  onClose: () => void;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const insets = useSafeAreaInsets();
+  const [query, setQuery] = useState('');
+  const filtered = useMemo(() => {
+    const q = query.trim();
+    if (!q) return COUNTRIES;
+    return COUNTRIES.filter((c) => fuzzyIncludes(c.name, q));
+  }, [query]);
+  return (
+    <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
+      <BottomSheetView style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 12 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+            Country
+          </VText>
+          <TextField placeholder="Type to search…" value={query} onChangeText={setQuery} autoCorrect={false} autoCapitalize="none" />
+        </View>
+        {/* gorhom's own scrollable (NOT a plain RN ScrollView) so the list scroll
+            and the sheet's pan gesture cooperate — a plain ScrollView fights the
+            sheet (drag scrolls the sheet, not the list). Safe here because the
+            sheet is a FIXED 75% snap (enableDynamicSizing off): the scrollable
+            gets a definite height from the flex:1 wrapper. (PeopleSheet avoids
+            this primitive only because IT uses dynamic sizing, where the
+            scrollable measures 0 — a different config.) */}
+        <BottomSheetScrollView
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 8 }}
+          showsVerticalScrollIndicator={false}
+        >
+          {selected ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear country"
+              onPress={() => onSelect('')}
+              style={({ pressed }) => ({
+                paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
+                borderBottomWidth: 1, borderBottomColor: theme.ruleSoft,
+                backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+              })}
+            >
+              <VText variant="small" color="inkSoft">× Clear</VText>
+            </Pressable>
+          ) : null}
+          {filtered.length === 0 ? (
+            <VText variant="small" color="inkFaint" style={{ paddingHorizontal: 20, paddingVertical: 16, fontStyle: 'italic' }}>
+              No matches
+            </VText>
+          ) : (
+            filtered.map((c) => {
+              const on = c.code === selected;
+              return (
+                <Pressable
+                  key={c.code}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: on }}
+                  onPress={() => onSelect(c.code)}
+                  style={({ pressed }) => ({
+                    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+                    paddingHorizontal: 20, paddingVertical: phone.lerp(13, 17),
+                    backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
+                  })}
+                >
+                  <VText variant="body" color={on ? 'accent' : 'ink'}>{c.name}</VText>
+                  <VText variant="caption" color="inkFaint">{c.code}</VText>
+                </Pressable>
+              );
+            })
+          )}
+        </BottomSheetScrollView>
+      </BottomSheetView>
+    </Sheet>
   );
 }
 

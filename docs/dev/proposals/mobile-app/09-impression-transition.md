@@ -242,6 +242,92 @@ animated overlay**. Sketch:
   the clone shows the ACTIVE page's photo. A photoless active page → fade
   dismiss (no clone).
 
+### Round 3 (Simon's device feedback, 2026-07-08 — built on `feature/checkin-create`)
+
+- **Open sped up, two levers**: the timings moved onto the **motion tokens**
+  (Simon's catch — the original `Easing.out(Easing.cubic)` 360ms was off-token
+  AND the cause of the "info panel lags at the end" feel: out-cubic's
+  deceleration tail spends ~half the wall-clock creeping through the last 10%
+  of progress, so the content's `[0.35→1]` fade/rise visibly crawled). Now
+  `OPEN_TIMING = motion.dur3 + motion.ease`, `CLOSE_TIMING = motion.dur2 +
+  motion.ease` — the standard ease settles into its endpoint much sooner.
+  **Round 3b (frame-by-frame off Simon's simulator recording)** found the two
+  REMAINING end-lag causes and fixed both: (1) the content/bar ramps rode
+  progress to 1.0 — now they FINISH EARLY (opacity `[0.35, 0.8]`, rise settled
+  by 0.85), so the body is crisp while the photo alone does the final settle;
+  (2) ⭐**the on-photo hero TITLE popped in at coincidence** — the traveling
+  clone paints OVER the page content, occluding the page's own name block for
+  the whole flight, so the title could only appear when the clone hid at
+  progress === 1. Fix: a second copy of the title (the shared `HeroTitle`
+  component) fades in over `[0.7, 1]`, gliding in with the settle and handing
+  off pixel-identically to the real block.
+  **Round 3c (second recording — "still a bit stuttery"):** the frame gaps
+  (~50ms at the start, 20–35ms mid-flight vs the 16.7ms budget) are DROPPED
+  FRAMES from per-frame LAYOUT work: the clone animates layout props
+  (left/top/width/height → full re-layout every frame), and round 3b's first
+  cut had put HeroTitle INSIDE that container — per-frame text re-shaping.
+  Fixed: the title is now a STATIC sibling overlay at the final hero rect,
+  opacity-only (safe because it only shows past 0.7, when the clone is within
+  a few px of final geometry). **Round 3c/3d (Simon frame-by-frame, 19→20): the body panel's rounded TOP
+  popped in at coincidence** — the body is `marginTop: -radius.xl` into the
+  hero, so with the clone painting over the content its rounded top was
+  occluded for the whole flight. A first fix (a detached seam-strip overlay
+  pinned at the final position) was REJECTED on sight — it floated over the
+  traveling photo "like scissors". **The real fix (3d) is layer order: the
+  hero CLONE now travels BENEATH the content layer**, so the body panel —
+  rounded top + content, ONE piece — slides up uniformly over the photo and
+  the photo disappears behind its edge (the card metaphor). Consequences
+  baked in: the page hero's scrim + title hide together with the image while
+  the clone flies (static chrome over a traveling photo reads as floating;
+  the clone carries the scrim crossfade, the title overlay fades the name in
+  near settle), and everything hands off pixel-identically at coincidence.
+  Watch on device: while the body is still fading in (progress 0.35→0.8) the
+  photo can show through the panel where they overlap — if that ghosting
+  bothers, finish the opacity ramp earlier (e.g. [0.35, 0.6]).
+  ⚠️ Remaining stutter levers,
+  in order: (a)
+  judge on a PHYSICAL device with a release-ish build — the simulator renders
+  on CPU and dev-mode Metro exaggerates dropped frames badly; (b) the
+  documented transform-based clone (translate/scale on a fixed-size layout —
+  compositor-only, no re-layout) — its trade-off: scaleY on a cover-fit image
+  STRETCHES the photo instead of sliding the crop window open, so it needs
+  the fixed-hero-size-image-in-a-clipping-container variant, which accepts a
+  small crop jump at flight start; (c) the entry page's mount cost (wheel SVG
+  etc.) overlaps the first ~100ms — deferring body mount to first-frame would
+  trade a beat of empty body for smoothness. And a
+  **mount-cost gate** — during
+  the presentation only the ENTRY page mounts (siblings render as empty slot
+  views, keeping pager offsets); the rest mount at coincidence (`warm`, set by
+  the open timing's completion callback + a fallback timer for an interrupted
+  open). Mounting every DetailPage up front blocked the JS thread before the
+  open animation could start. Content pointerEvents are 'none' until fully
+  open, so nothing can swipe to an unmounted page mid-flight.
+- **Pull-down commit haptic**: a light impact, fired the moment the drag
+  CROSSES the commit threshold ("release now and it closes") — Simon asked
+  for it earlier than the original release-time tick (round 3e). One tick per
+  gesture; dragging back out of the zone re-arms silently; a fast flick that
+  commits from above the threshold gets the tick at release instead. Not on
+  the bar back button. Same haptic language as the like/commit ticks.
+- **Open veil (round 3e)**: the settle background is DIRECTION-AWARE — on
+  open it snaps opaque within the first ~12% of progress (1–2 frames), so the
+  feed around the post pops away instead of shining through the flight (the
+  photo + panel clones carry all the continuity); on dismiss (`dismissing`
+  shared value, set by the pan's first movement or a back-button close, reset
+  on spring-back) it follows progress linearly so the feed grows back behind
+  the shrinking photo.
+- **LANDING SYNC — close lands the feed on the page you dismissed** (was: the
+  slide you opened from). `lib/feedTransition.ts` gained a landing registry
+  (`registerFeedLanding(feedItemId, sync)` / `requestFeedLanding`):
+  `SessionFeedCard` registers a callback that snaps its carousel
+  (`setActiveIdx` + un-animated `scrollTo`); the detail mirrors EVERY active-
+  page change into it (`landCard` in `onPagerScroll` + the gallery's
+  `landPager`, deduped via `lastLandRef`). The card sits invisible beneath the
+  opaque detail, so the mid-read churn is unseen, and any close — pull-down,
+  back button, Android back — finds the card already on the right slide.
+  Consequence: the **glass-panel clone now shows the ACTIVE wine** (was the
+  entry wine — it must match the landing-synced card panel it fades onto).
+  Standalone cards have a single impression — no registration needed.
+
 ### Defaults picked for the "open decisions" (flag to Simon, cheap to change)
 
 1. **No-photo open** = fade + 56px rise of the whole detail (no clone), same
@@ -263,12 +349,17 @@ animated overlay**. Sketch:
   Image for the clone), layout-prop interpolation smoothness on device (if
   janky: switch the clone to transform-based scaling).
 - Panel clone: pixel match with the real card panel at rest (font/wheel/glass
-  fill), the [0→0.35] fade window feel on open AND pull-down, the ENTRY-wine
-  panel showing when dismissing from a swiped-to page.
+  fill), the [0→0.35] fade window feel on open AND pull-down, the ACTIVE-wine
+  panel showing when dismissing from a swiped-to page (round 3).
 - Pull-down: arm only at top · horizontal swipe still pages · pager swipe vs
   pan · release threshold feel (0.6 / velocity 900 / drag 340) · cancel
   spring-back · dismiss from a swiped-to page (clone shows THAT photo, lands
   on the card frame) · back button reverse.
+- Round 3: open feels snappy now? (260ms + lazy siblings — swiping to page 2
+  IMMEDIATELY after open should never show a blank slot) · pull-down commit
+  haptic feel · swipe to page N, pull down → the FEED CARD sits on page N
+  (dots + photo + panel) and the close shrinks into it seamlessly · same after
+  closing via the back button · gallery → close → pull down lands right.
 - Bottom nav pops out instantly when the modal mounts (pathname matcher) —
   acceptable? (Animating the pill with the presentation is a follow-up.)
 - §B: feed → detail → moment → back walks back to the post; Moments tab keeps

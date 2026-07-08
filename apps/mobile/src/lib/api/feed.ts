@@ -122,6 +122,51 @@ export async function setFeedItemLike(
   return (await res.json()) as { liked: boolean; count: number };
 }
 
+// POST /api/checkins — create a standalone check-in (the mobile create form;
+// later "Had it too" rides the same call with copyFromCheckinId). Body mirrors
+// the route's accepted fields (app/api/checkins/route.ts) minus taggedUserIds +
+// lat/lng (tagging + map UX are their own passes). `flavors` must be the
+// filled-or-empty shape (fillFlavourZeros) — the server 400s stray off-style
+// keys. `imageData` is a base64 data URL; keep it under MAX_COVER_BYTES
+// (~2MB decoded). Oversize behavior is SPLIT server-side: above the route's
+// 3MB-encoded cap it 400s "image too large", but between ~2MB decoded and
+// that cap uploadImage() returns '' and the check-in saves with NO image,
+// silently — MAX_COVER_BYTES stays under both.
+// The response (a legacy checkin envelope) is not consumed — callers surface
+// the new post via a feed refetch()-in-place instead.
+export type CreateCheckinBody = {
+  wineName: string;
+  producer?: string;
+  vintage?: string; // server truncates to 4 chars
+  grape?: string; // design "Variety"
+  type?: string; // WineTypeCode; unknown values coerce to null server-side
+  // WINE-origin metadata, landed on the minted wine row (the About block).
+  // wineRegion/wineCountry are named apart from `country` (the VENUE country)
+  // — the same split the feed payload makes.
+  wineRegion?: string;
+  wineCountry?: string; // ISO-2; invalid codes drop server-side
+  vinification?: string; // design "Process"
+  description?: string;
+  purchaseUrl?: string; // http(s)-only server-side (cleanUrl)
+  score: number; // 0 = not rated
+  flavors: Record<string, number>;
+  notes?: string;
+  imageData?: string;
+  venueName?: string;
+  city?: string;
+  country?: string; // VENUE country, ISO-2
+  copyFromCheckinId?: number;
+};
+
+export async function createCheckin(body: CreateCheckinBody): Promise<void> {
+  const res = await apiFetch('/api/checkins', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+}
+
 // A stable id for a feed item across the checkin/session split — used as
 // the FlatList key and the like-mutation target (both carry feed_items.id).
 export function feedItemId(item: FeedItem): number {

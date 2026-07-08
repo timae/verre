@@ -277,7 +277,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
-| POST | /api/checkins | Create a standalone check-in. Body: `{wineName, type?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`. `flavors` is the same `{structure-axis: 0–5}` map as `/rate` (keys outside the type's axis set are rejected). See `docs/dev/social-feed.md`. |
+| POST | /api/checkins | Create a standalone check-in. Body: `{wineName, producer?, vintage?, grape?, type?, wineRegion?, wineCountry?, vinification?, description?, purchaseUrl?, score?, flavors?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`. `wineRegion`/`wineCountry` are the wine's origin (`country` is the venue's); the metadata fields land on the minted wine row. `flavors` is the same `{structure-axis: 0–5}` map as `/rate` (keys outside the type's axis set are rejected). See `docs/dev/social-feed.md`. |
 | PATCH | /api/checkins/:id | Edit own standalone check-in. `:id` is a `feed_items.id`. Image replace reclaims old S3. |
 | DELETE | /api/checkins/:id | Delete own standalone check-in. Cascades rating + feed_item + rating_images. |
 | POST/DELETE | /api/feed-items/:id/like | Like / unlike a feed item (check-in or session post). The `:id` value matches the legacy `/api/checkins/:id/like` shape for migrated rows — id-equality preserved by the rewire phase 2 data migration. |

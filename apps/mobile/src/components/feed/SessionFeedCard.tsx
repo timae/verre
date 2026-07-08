@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -27,7 +27,7 @@ import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
 import { topFlavours } from '@/lib/flavourAxes';
 import { frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
-import { setFeedTransitionSource } from '@/lib/feedTransition';
+import { registerFeedLanding, setFeedTransitionSource } from '@/lib/feedTransition';
 import { timeAgo } from '@/lib/momentFormat';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { useFlavourColors } from '@/theme/flavourColors';
@@ -70,6 +70,20 @@ export function SessionFeedCard({
 
   const [activeIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
+  // Landing sync (proposal 09 round 3): while the detail is open over this
+  // card, it mirrors its active page into us so a pull-down (or any close)
+  // lands on the slide being dismissed, not the one it opened from. The ref
+  // points at whichever carousel renders (photo or all-photoless — both page
+  // at photoW).
+  const carouselRef = useRef<ScrollView>(null);
+  useEffect(
+    () =>
+      registerFeedLanding(session.id, (i) => {
+        setActiveIdx((cur) => (cur === i ? cur : i));
+        carouselRef.current?.scrollTo({ x: i * photoW, animated: false });
+      }),
+    [session.id, photoW],
+  );
   // Shared-element source (proposal 09): opening an impression measures the
   // photo carousel's window frame and hands it to the detail, whose hero clone
   // grows out of it. A slide with no real photo (blind/placeholder) and the
@@ -221,6 +235,7 @@ export function SessionFeedCard({
         <View ref={photoFrameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
           <GestureDetector gesture={doubleTap}>
             <ScrollView
+              ref={carouselRef}
               horizontal
               pagingEnabled
               showsHorizontalScrollIndicator={false}
@@ -265,6 +280,7 @@ export function SessionFeedCard({
            screen-tall void (the 22:44 device bug). Auto-height paging is fine
            because all-bare slides are naturally the same height. */
         <ScrollView
+          ref={carouselRef}
           horizontal
           pagingEnabled
           showsHorizontalScrollIndicator={false}
