@@ -28,7 +28,7 @@ Design source: the 03·12 exploration in `.local/design/vero-feed.js` (`sessG`/`
 
 ## 2. The card — 03·12 "linked · glass," with Simon's deviations
 
-The session-aggregate card renders per the 03·12 anatomy (`sessG` in `vero-feed.js`): plain header (`avatar · "<name> shared a moment" · place · time · ⋯`), an **edge-to-edge square photo carousel** with a glass panel riding it (name/vintage · score+word · mini wheel, **switches per photo**), a dot strip, the icon action row (like + "Was there too" + group-score chip), the likes line, the caption.
+The session-aggregate card renders per the 03·12 anatomy (`sessG` in `vero-feed.js`): plain header (`avatar · "<name> shared a moment" · place · time · ⋯`), an **edge-to-edge square photo carousel** with a glass panel riding it (name/vintage · score+word · mini wheel, **switches per photo**), a dot strip, the icon action row (like + "Was there too" + group-score chip — the chip was removed as-built, see §2b), the likes line, the caption.
 
 **Three deviations from the 03·12 mock (Simon, 2026-07-06):**
 
@@ -74,7 +74,7 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 **Feed-list extras:** tapping the Feed tab while on Feed **scrolls to top** (`useScrollToTop` from `expo-router`, wired to the FlatList ref).
 
 **Review fixes (2026-07-08, pre-merge pass; device-check pending):**
-- **★ chip label — "group" DROPPED (Simon).** The wire carries only the AUTHOR's ratings, so the design's cross-taster "group ★" isn't computable client-side; the chip now shows a bare `★ <avg>` of the author's rated wines (`authorAvg`). A real per-session cross-rater aggregate (server contract change) is the deferred alternative if "group" semantics are wanted later.
+- **★ chip — REMOVED entirely (Simon, 2026-07-08).** The design's cross-taster "group ★" isn't computable client-side (the wire carries only the AUTHOR's ratings); the interim bare `★ <avg>` of the author's own wines (the earlier "drop the 'group' label" ruling) wasn't a useful card signal either, so the chip is deleted — not relabeled (`authorAvg` + the render block are gone). If "group" semantics are ever wanted, the path is a server-side per-session cross-rater aggregate, then a fresh chip.
 - **One feed query definition** — `feedQueryOptions()`/`FEED_KEY` exported from `lib/api/feed.ts`, consumed by list + detail (they were two hand-typed copies). The detail attaches with `refetchOnMount: false` (skips the pointless refetch on open; a cold deep-link still runs the initial fetch) **and PINS the last-found item** (the house lastRef pattern): the list observer underneath / app-foreground focus can still refetch in place and drop a page-boundary item, so once the detail has seen its item it renders the pinned copy rather than flipping to "gone" mid-read.
 - **Tab RE-focus refresh** — `focusManager` only fires on app-foreground and tab screens stay mounted, so returning to the Feed tab never refetched. Now a `useFocusEffect` runs the scroll-safe in-place `refetch()` when the cache is actually stale.
 - **Bottom nav HIDDEN on the feed detail — RULING (Simon, 2026-07-08).** The tabs layout's `/impression/` hide-matcher catches `/feed/impression/[id]` too, and that's intended: the detail is immersive, the floating back button is the only chrome. (The review flagged it as a bug because feed/_layout's comment claimed the nav stays; the comment was wrong and is fixed. Don't "fix" the matcher.)
