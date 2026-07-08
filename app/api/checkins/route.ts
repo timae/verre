@@ -7,7 +7,9 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
-import { cleanCountry, cleanUrl } from '@/lib/session'
+// From textSafe, NOT lib/session — importing session here would connect
+// Redis at module load just to use two pure sanitizers (codex finding).
+import { cleanCountry, cleanUrl } from '@/lib/textSafe'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'

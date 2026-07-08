@@ -128,8 +128,10 @@ export async function setFeedItemLike(
 // lat/lng (tagging + map UX are their own passes). `flavors` must be the
 // filled-or-empty shape (fillFlavourZeros) — the server 400s stray off-style
 // keys. `imageData` is a base64 data URL; keep it under MAX_COVER_BYTES
-// (~2MB decoded) — the checkins route uses the s3 upload pipeline, which
-// SILENTLY drops anything larger (the check-in saves with no image).
+// (~2MB decoded). Oversize behavior is SPLIT server-side: above the route's
+// 3MB-encoded cap it 400s "image too large", but between ~2MB decoded and
+// that cap uploadImage() returns '' and the check-in saves with NO image,
+// silently — MAX_COVER_BYTES stays under both.
 // The response (a legacy checkin envelope) is not consumed — callers surface
 // the new post via a feed refetch()-in-place instead.
 export type CreateCheckinBody = {
