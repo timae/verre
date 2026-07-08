@@ -46,6 +46,7 @@ const checkRefs = (list, where) => {
 const leafIds = new Set()
 const leafLabels = new Set()
 const familyIds = new Set()
+const subfamilyIds = new Set()
 
 for (const family of tax.families ?? []) {
   if (!SLUG.test(family.id)) errors.push(`family id not a slug: ${family.id}`)
@@ -58,6 +59,8 @@ for (const family of tax.families ?? []) {
     if (parts.length !== 2 || parts[0] !== family.id || !SLUG.test(parts[1])) {
       errors.push(`subfamily id must be "${family.id}.<slug>": ${sub.id}`)
     }
+    if (subfamilyIds.has(sub.id)) errors.push(`duplicate subfamily id: ${sub.id}`)
+    subfamilyIds.add(sub.id)
     checkRefs(sub.allowed_modifiers, sub.id)
 
     for (const leaf of sub.leaves ?? []) {

@@ -145,6 +145,9 @@ export function wineToWire(
 export type RatingMeta = {
   score: number
   flavors: Record<string, number>
+  // Aroma selections ({a: leafId, m: modifierId|null} against the @verre/core
+  // taxonomy). Optional: ratings written before the aromas field lack the key.
+  aromas?: { a: string; m: string | null }[]
   notes: string
   at: number
 }

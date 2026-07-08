@@ -70,7 +70,7 @@ Mirrors the flavours pattern exactly — one pure validator in core, one server 
 - **core `validateAromaSelections(input)`** — shape check: array, ≤ cap, each element `{a: string, m: string|null}`, dedupe. Shared with native for optimistic state.
 - **lib/aromas.ts `gateAromas(selections)`** — the server boundary: `a` must be a known leaf id → else **400, loudly** (`unknown aroma id`); `m` must be null or in `allowedModifiers(a)` → else **400** (`modifier not allowed for this aroma`). No silent stripping: unlike the flavours gate (where a stray zero is a fill artifact from a style race), there is no innocent way to post an unknown leaf or a disallowed modifier — reject is always correct. Returns the deduped canonical array; the cap is checked on the RAW input length (before dedupe) — stricter than strictly necessary, fine for an abuse bound.
 
-Call sites: `app/api/session/[code]/rate/route.ts`, `app/api/checkins/route.ts` POST, `app/api/checkins/[id]/route.ts` PATCH. Wire format is plain strings/null — no Decimal trap.
+Call sites, phased per §11: `app/api/session/[code]/rate/route.ts` (**wired in PR A**); `app/api/checkins/route.ts` POST + `app/api/checkins/[id]/route.ts` PATCH (**PR C** — until then the checkins routes ignore an `aromas` body field and their rating rows sit at the column default `[]`). Wire format is plain strings/null — no Decimal trap.
 
 ## 6. Input UI (native first)
 

@@ -93,13 +93,36 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // connection here.
   let storedAromas: AromaSelection[] = ar.value ?? []
   if (!aromasProvided) {
+    let preserved: AromaSelection[] | null = null
     const priorRaw = await redis.get(k.rating(c, identity.id, wineId))
     if (priorRaw) {
       try {
         const priorAromas = JSON.parse(priorRaw)?.aromas
-        if (Array.isArray(priorAromas)) storedAromas = priorAromas
+        if (Array.isArray(priorAromas)) preserved = priorAromas
       } catch {}
     }
+    // Redis has no usable prior (key TTL'd away, or the rating predates the
+    // aromas field) → hydrate from the archive. Without this, the Redis
+    // write below would rebuild the live copy with aromas:[] while PG
+    // preserves — and an aroma-AWARE client reading that live state would
+    // then save the [] back, making the wipe permanent. Logged-in only
+    // (anon ratings never archive, so Redis is their whole truth).
+    if (preserved === null && identity.kind === 'user') {
+      try {
+        const rows = await prisma.$queryRaw<{ aromas: unknown }[]>`
+          SELECT r.aromas FROM ratings r
+            JOIN sessions s ON r.session_id = s.id
+           WHERE r.wine_id = ${wineId}
+             AND r.user_id = ${Number(identity.id.slice(2))}
+             AND s.code = ${c}
+           LIMIT 1`
+        const pgAromas = rows[0]?.aromas
+        if (Array.isArray(pgAromas)) preserved = pgAromas as AromaSelection[]
+      } catch (err) {
+        console.error('rate aromas hydrate error:', err)
+      }
+    }
+    if (preserved !== null) storedAromas = preserved
   }
 
   // Rating is keyed by identity id, never by display name. Two participants
