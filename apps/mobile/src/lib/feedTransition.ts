@@ -29,3 +29,25 @@ export function consumeFeedTransitionSource(): FeedTransitionSource | null {
   if (!p || Date.now() - p.at > FRESH_MS) return null;
   return p.source;
 }
+
+// ── Landing sync (Simon's device round, 2026-07-08) ─────────────────────────
+// Closing the detail after paging must land the CARD's carousel on the page
+// being dismissed — without this the pull-down shrinks the active photo into
+// a card still showing the slide it was opened from. The card registers a
+// sync callback keyed by its feed-item id; the detail calls it on every page
+// change while open (the card sits invisible beneath the opaque detail, so
+// the mid-read churn is unseen and any close — pan, back button, Android
+// back — finds the card already on the right slide). Unregister on card
+// unmount; a request for an unregistered id is a no-op (windowed-out card).
+const landings = new Map<number, (wineIndex: number) => void>();
+
+export function registerFeedLanding(feedItemId: number, sync: (wineIndex: number) => void): () => void {
+  landings.set(feedItemId, sync);
+  return () => {
+    if (landings.get(feedItemId) === sync) landings.delete(feedItemId);
+  };
+}
+
+export function requestFeedLanding(feedItemId: number, wineIndex: number) {
+  landings.get(feedItemId)?.(wineIndex);
+}
