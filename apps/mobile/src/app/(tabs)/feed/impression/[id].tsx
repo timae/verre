@@ -23,7 +23,7 @@ import { FlavourWheel } from '@/components/scoring/FlavourWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type SessionFeedWine } from '@/lib/api/feed';
+import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
@@ -61,15 +61,24 @@ export default function FeedImpression() {
 
   // Read the feed cache (the list already delivered this). We attach to the
   // SAME query — shared feedQueryOptions, so the two screens can't drift apart
-  // on key/options. refetchOnMount: false — mounting this observer must NOT
-  // refetch the loaded pages (an in-place refetch can drop a page-boundary
-  // item and flip this open screen to "gone" mid-read); list freshness belongs
-  // to the list screen. A cold deep-link (no cached data yet) still runs the
-  // INITIAL fetch — refetchOnMount only suppresses refetching existing data —
-  // so the guard below can resolve.
+  // on key/options. refetchOnMount: false skips the pointless network round on
+  // open; a cold deep-link (no cached data yet) still runs the INITIAL fetch —
+  // refetchOnMount only suppresses refetching existing data — so the guard
+  // below can resolve.
   const feed = useInfiniteQuery({ ...feedQueryOptions(), refetchOnMount: false });
   const pages = feed.data?.pages;
-  const item = Number.isFinite(feedItemId) ? findFeedItem(pages, feedItemId) : null;
+  const found = Number.isFinite(feedItemId) ? findFeedItem(pages, feedItemId) : null;
+  // Pin the last-found item (the house lastRef pattern — cf. the session
+  // screens' per-section poll merge). refetchOnMount:false only covers THIS
+  // observer's mount: the list observer underneath (and this one, on
+  // app-foreground focus) can still refetch the query in place, and a refetch
+  // can drop a page-boundary item out of the loaded window. Once this screen
+  // has SEEN its item it must never flip to "gone" mid-read — it keeps
+  // rendering the pinned copy (a frozen read surface beats a vanishing one);
+  // while the item remains in the cache, fresh copies keep flowing through.
+  const pinnedRef = useRef<FeedItem | null>(null);
+  if (found) pinnedRef.current = found;
+  const item = found ?? pinnedRef.current;
   const detail = item ? detailFromItem(item) : null;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an

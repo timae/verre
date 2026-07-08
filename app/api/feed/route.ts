@@ -354,8 +354,16 @@ export async function GET(req: NextRequest) {
     }),
   ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, PAGE)
 
-  const nextCursor = items.length === PAGE
-    ? items[items.length - 1].createdAt.toISOString()
+  // "More rows may exist" keys on whether the RAW page filled — NOT on how
+  // many items survived the render filters (the empty-live-session drop above,
+  // the defensive kind/rating drops). Filtering must advance the cursor, never
+  // terminate paging: keying on items.length would return nextCursor:null the
+  // moment one row on a full page got dropped, hiding every older post. The
+  // cursor is the last RAW row's createdAt so dropped trailing rows aren't
+  // rescanned; a page may ship fewer than PAGE items with a non-null cursor —
+  // clients just keep paging.
+  const nextCursor = feedItems.length === PAGE
+    ? feedItems[feedItems.length - 1].createdAt.toISOString()
     : null
 
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
