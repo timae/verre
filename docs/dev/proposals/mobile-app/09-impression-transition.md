@@ -2,7 +2,57 @@
 
 **Status**: NOT STARTED — handoff/prep doc so a fresh session can build it cold.
 Requested by Simon (2026-07-07). Builds on the read-only detail screen shipped
-in `08-feed.md` §3 (commit `7e40d1b`).
+in `08-feed.md` §3 (commit `7e40d1b`). **Also carries the deferred FEED→SESSION
+back-nav rework (§B below) — do it in this pass since both reshape feed nav.**
+
+## §B — Deferred: enter-a-moment-from-feed returns to the feed post
+
+**Problem (Simon, 2026-07-07):** tapping a moment from the feed (card header or
+the detail attribution) opens `/moments/session/[code]` — which lives in the
+**Moments** tab. So it cross-navigates to Moments, and back returns to the
+Moments list, NOT the feed post you came from. Current behaviour: **accepted as
+standard tab UX for now** (deferred here).
+
+**Research verdict (expo-router v7 / SDK 56, cross-tab back nav):**
+- `router.dismissTo` / `dismiss` / `dismissAll` all operate on the **current
+  stack ONLY** — none cross tab boundaries. No one-call primitive exists.
+- `router.navigate('/feed/impression/[id]')` from the session DOES return to the
+  feed detail, but leaves the session **mounted on the Moments stack** → later
+  tapping Moments lands you inside that session (tab state is preserved by
+  design, not a bug).
+- `CommonActions.reset(...)` / `StackActions.popToTop()` (vendored RN) can force
+  it but need the exact nested route shape hardcoded — brittle, discouraged on v7.
+- Root-level MODAL presentation avoids the lingering-screen problem but signals
+  "temporary overlay," and still needs the session sub-tree paths relocated.
+
+**Chosen direction (Simon): the "wrapper under feed" — a SHARED session screen
+reachable from BOTH stacks.** Open the session under the Feed stack
+(`/feed/session/[code]`) so Feed→Detail→Session stays in Feed (back walks
+correctly); the Moments tab keeps its own `/moments/session/[code]`; both mount
+the SAME session component; each tab has independent state (so you can be viewing
+the session in Feed AND see it "normally" in Moments — Simon's exact model).
+
+**The tax (why it's deferred to a real refactor, not a one-liner):** the session
+sub-tree hardcodes **9 absolute `/(tabs)/moments/session/...` paths** for its own
+forward navigation (verified 2026-07-07):
+- `index.tsx`: open impression (340), open add (341), open settings (503)
+- `settings/index.tsx`: → details (130), → reveal (135)
+- `add.tsx` (88) + `edit-impression/[wineId].tsx` (31): fatal `router.replace` → session
+- `impression/[wineId].tsx`: → impression (284), → edit-impression (314)
+
+To make ONE shared session screen work under both `/moments/` and `/feed/`, all 9
+must become **stack-relative** (compute the base — `feed` vs `moments` — from the
+current route, e.g. via a param threaded from the entry point or `useSegments()`)
+and the route files mirrored under `app/(tabs)/feed/session/` as thin re-exports
+of the shared screen components. None currently use relative nav.
+
+**Plan when built:** (1) extract each session screen's body into a shared
+component that takes a `basePath` (or reads it from segments); (2) mirror the 7-8
+route files under `/feed/session/`; (3) convert the 9 pushes to `${basePath}/...`;
+(4) `useEnterableMoment` pushes `/feed/session/[code]` from feed contexts,
+`/moments/session/[code]` stays for the Moments tab; (5) device-verify both tabs'
+nav + back thoroughly (gesture-heavy, can't be sandbox-verified). Big, do it with
+the transition rework, not piecemeal.
 
 ## What Simon asked for (verbatim intent)
 
