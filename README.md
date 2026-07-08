@@ -269,7 +269,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/session/:code/ratings | All ratings, id-keyed (participant-gated) |
-| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes}`). `flavors` is a `{structure-axis: 0–5}` map (sweetness, acidity, body, finish, aroma, flavour, tannin; + bubbles for sparkling) — keys outside the wine's axis set are rejected. |
+| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes, aromas?}`). `flavors` is a `{structure-axis: 0–5}` map (sweetness, acidity, body, finish, aroma, flavour, tannin; + bubbles for sparkling) — keys outside the wine's axis set are rejected. `aromas` is an array of `{a, m}` descriptor selections (leaf id + modifier id or null, from the `@verre/core` taxonomy, max 30) — unknown leaves / disallowed modifiers are rejected; **omitting the field preserves stored selections, `[]` clears them**. |
 | DELETE | /api/session/:code/rate/:wineId | Reset own rating |
 
 **Social feed** (logged-in)

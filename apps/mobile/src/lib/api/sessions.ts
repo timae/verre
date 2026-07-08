@@ -105,7 +105,16 @@ export type SessionMetaView = {
   banCount: number;
 };
 
-export type RatingMeta = { score: number; flavors: Record<string, number>; notes: string; at: number };
+// `aromas` (PR A, aroma-layer.md §4): {a: leafId, m: modifierId|null} pairs
+// against the @verre/core taxonomy. Optional on the wire — ratings written
+// before the column shipped simply lack the key.
+export type RatingMeta = {
+  score: number;
+  flavors: Record<string, number>;
+  aromas?: { a: string; m: string | null }[];
+  notes: string;
+  at: number;
+};
 export type RatingsView = Record<string, { displayName: string; ratings: Record<string, RatingMeta> }>;
 
 export type SessionState = {
@@ -256,13 +265,19 @@ export type RateBody = {
   // assume "zeros omitted" (the pre-structure-wheel contract). The server's
   // validateFlavors enforces this drop-all-or-keep-all shape.
   flavors: Record<string, number>;
+  // Aroma selections. PRESENT-REPLACES / OMITTED-PRESERVES on the server:
+  // leave the field off to keep whatever is stored; send [] to clear. The
+  // rate screen doesn't edit aromas yet (input lands in PR B) — until it
+  // does, omit the field so a save never wipes selections made elsewhere.
+  aromas?: { a: string; m: string | null }[];
   notes: string;
 };
 
 // Upserts the caller's rating. Server side-effects (no client work):
 // Postgres archival, the feed_item on first engagement, and the
-// engagement-deletion cascade when score+flavors+notes are all empty —
-// so "clear my rating" is just an empty rate POST.
+// engagement-deletion cascade when score+flavors+aromas+notes are all
+// empty — so "clear my rating" is just an empty rate POST (an OMITTED
+// aromas field preserves stored aromas, which then keep the row alive).
 export async function rateWine(code: string, body: RateBody): Promise<void> {
   const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/rate`, {
     method: 'POST',

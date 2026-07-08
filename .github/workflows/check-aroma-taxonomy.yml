@@ -1,0 +1,33 @@
+name: Aroma taxonomy invariants
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: aroma-taxonomy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # Fail the build if packages/core/src/aroma/taxonomy.json violates the
+      # structural invariants stored aroma data depends on: bare-slug leaf ids
+      # unique tree-wide (the persisted keys), unique labels (one leaf, one
+      # home), qualified subfamily ids, resolvable modifier references, a
+      # declared allowed_modifiers chain for every leaf, and modifier_display
+      # only for allowed modifiers. The tree is hand-edited in content passes —
+      # this keeps the invariants safe-by-construction. See
+      # docs/dev/proposals/aroma/aroma-layer.md §2/§3.
+      #
+      # No npm ci needed — a dependency-free Node script.
+      - name: Check aroma taxonomy invariants
+        run: node scripts/check-aroma-taxonomy.mjs

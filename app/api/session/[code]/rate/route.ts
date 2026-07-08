@@ -7,6 +7,7 @@ import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
+import { gateAromas, type AromaSelection } from '@/lib/aromas'
 import { validateScore } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
@@ -23,7 +24,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // previous `score || 0` fallback let any truthy value land in Redis.
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { wineId, score, flavors, notes } = body
+  const { wineId, score, flavors, aromas, notes } = body
   // wineId is a string id minted in lib/session.ts — today nanoid(21)
   // for new rows; older rows are 13-char numeric timestamps. Strict
   // allow-list: digits, letters, underscore, dash — never colons, glob
@@ -37,6 +38,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   if (sc.error) return NextResponse.json({ error: sc.error }, { status: 400 })
   const fl = validateFlavors(flavors)
   if (fl.error) return NextResponse.json({ error: fl.error }, { status: 400 })
+  // Aromas are present-replaces / omitted-preserves (aroma-layer.md §4): a
+  // client that predates the field (web rate pane, stale binary) must not
+  // wipe selections another surface saved. `[]` present = deliberate clear.
+  const aromasProvided = aromas !== undefined
+  const ar = gateAromas(aromas)
+  if (ar.error) return NextResponse.json({ error: ar.error }, { status: 400 })
   if (notes !== undefined && notes !== null && typeof notes !== 'string') {
     return NextResponse.json({ error: 'notes must be a string' }, { status: 400 })
   }
@@ -73,12 +80,34 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
   const storedFlavors = norm.value ?? {}
 
+  // Omitted-preserves needs the prior Redis value for the live copy (the PG
+  // upsert below preserves independently via CASE on the conflict row, so a
+  // TTL'd-away Redis key can't wipe the archived selections).
+  //
+  // ACCEPTED RACE (same class as the double-bump below): this read-modify-
+  // write has no WATCH guard, so if an aromas-PRESENT post from another
+  // surface lands between this read and the set, the live Redis copy keeps
+  // the stale aromas while PG keeps the new ones — divergence until the next
+  // aromas-present write. Requires the same user saving the same wine from
+  // two clients simultaneously; not worth the mutateWines-style isolated
+  // connection here.
+  let storedAromas: AromaSelection[] = ar.value ?? []
+  if (!aromasProvided) {
+    const priorRaw = await redis.get(k.rating(c, identity.id, wineId))
+    if (priorRaw) {
+      try {
+        const priorAromas = JSON.parse(priorRaw)?.aromas
+        if (Array.isArray(priorAromas)) storedAromas = priorAromas
+      } catch {}
+    }
+  }
+
   // Rating is keyed by identity id, never by display name. Two participants
   // sharing a display name (legitimately via collision, or accidentally via
   // a client-side race) cannot overwrite each other's ratings.
   await redis.set(
     k.rating(c, identity.id, wineId),
-    JSON.stringify({ score: ratingScore, flavors: storedFlavors, notes: notes || '', at: Date.now() }),
+    JSON.stringify({ score: ratingScore, flavors: storedFlavors, aromas: storedAromas, notes: notes || '', at: Date.now() }),
     { EX: TTL },
   )
 
@@ -140,8 +169,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // exact row. ON CONFLICT DO UPDATE … RETURNING returns the
         // pre-existing id on conflict — the canonical row, not the
         // client's stale local id.
+        // `aromas` mirrors the request's present/omitted split: on conflict an
+        // omitted field keeps the existing row's value (CASE on ratings.aromas)
+        // so a client that predates aromas can't wipe them — the Redis
+        // omitted-preserves above covers the live copy, this covers the
+        // archive even when the Redis key already TTL'd away.
         const upsertRows = await prisma.$queryRaw<{ id: number }[]>`
-          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, notes, rated_at)
+          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at)
           VALUES (
             ${wineId},
             ${userId},
@@ -150,6 +184,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             ${identity.displayName},
             ${ratingScore}::numeric,
             ${JSON.stringify(storedFlavors)}::jsonb,
+            ${JSON.stringify(storedAromas)}::jsonb,
             ${notes || null},
             NOW()
           )
@@ -158,6 +193,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             rater_name = EXCLUDED.rater_name,
             score = EXCLUDED.score,
             flavors = EXCLUDED.flavors,
+            aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
             notes = EXCLUDED.notes,
             rated_at = EXCLUDED.rated_at
           RETURNING id`
@@ -182,6 +218,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // NOT NULL enforces this at the schema level.
         const hasEngagement = ratingScore > 0
           || Object.keys(storedFlavors).length > 0
+          || storedAromas.length > 0
           || (notes != null && notes.length > 0)
         let cascadeReaped = false
         if (hasEngagement) {

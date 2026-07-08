@@ -17,9 +17,12 @@
 //       — WINE uses 8 of these today (see CLAUDE.md); the other 5 (Warmth,
 //         Bitterness, Umami, Saltyness, Funk) belong to future categories
 //         (cheese/beer/spirits), NOT extra wine axes.
-//   • aroma (12): Fruity · Spice · Nut/Cocoa · Roasted · Woody · Sweet · Savory
+//   • aroma (12): Fruity · Spice · Kernel · Fire · Woody · Sweet · Savory
 //     · Vegetal · Mineral · Chemical · Funky · Floral
-//       — a LATER feature (the aroma descriptor tree); not wired anywhere yet.
+//       — the aroma descriptor tree's tier-1 families (@verre/core
+//         aroma/taxonomy.json); not wired to a screen yet. Re-keyed from
+//         Nut/Cocoa→Kernel, Roasted→Fire (Simon, 2026-07-08 — same colour
+//         values; the taxonomy renamed the families).
 //
 // Grounds are each theme's `bg`. Colours are authored to read on that ground
 // with the theme's `rule` guides.
@@ -45,8 +48,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#D9605C',
       Spice: '#BF4E30',
-      'Nut/Cocoa': '#a85f3e',
-      Roasted: '#6B3C2A',
+      Kernel: '#a85f3e',
+      Fire: '#6B3C2A',
       Woody: '#b98a37',
       Sweet: '#e0b85f',
       Savory: '#cabb74',
@@ -78,8 +81,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#d96f45',
       Spice: '#a8472c',
-      'Nut/Cocoa': '#896343',
-      Roasted: '#5e3526',
+      Kernel: '#896343',
+      Fire: '#5e3526',
       Woody: '#ab7626',
       Sweet: '#dfa847',
       Savory: '#9F9756',
@@ -111,8 +114,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#d98e5f',
       Spice: '#BF4E30',
-      'Nut/Cocoa': '#a85f3e',
-      Roasted: '#6B3C2A',
+      Kernel: '#a85f3e',
+      Fire: '#6B3C2A',
       Woody: '#b98a37',
       Sweet: '#e0b85f',
       Savory: '#cabb74',
@@ -144,8 +147,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#cf6f5a',
       Spice: '#a44a4c',
-      'Nut/Cocoa': '#b67847',
-      Roasted: '#7e4c29',
+      Kernel: '#b67847',
+      Fire: '#7e4c29',
       Woody: '#cbb077',
       Sweet: '#dba24f',
       Savory: '#9aac82',
@@ -177,8 +180,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#C77657',
       Spice: '#a84838',
-      'Nut/Cocoa': '#d8b88c',
-      Roasted: '#443340',
+      Kernel: '#d8b88c',
+      Fire: '#443340',
       Woody: '#d8a868',
       Sweet: '#d8a83f',
       Savory: '#aab39a',
@@ -210,8 +213,8 @@ export const FLAVOUR_PALETTE = {
     aroma: {
       Fruity: '#D9605C',
       Spice: '#BF4E30',
-      'Nut/Cocoa': '#a85f3e',
-      Roasted: '#6B3C2A',
+      Kernel: '#a85f3e',
+      Fire: '#6B3C2A',
       Woody: '#b98a37',
       Sweet: '#e0b85f',
       Savory: '#cabb74',
