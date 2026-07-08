@@ -104,9 +104,11 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 
 **Checkpoint 2 — REMAINING:**
 6. ✅ **Full impression detail screen** (`feed/impression/[id].tsx`, commit `7e40d1b`, 2026-07-07; §3) — read-only. Pure client render off the `['feed']` cache (`findFeedItem`/`detailFromItem` in `lib/api/feed.ts`, no fetch). Horizontal pager across the moment's impressions, **dots IN-CONTENT under each hero** (Simon — sidesteps the "dots on collapse" question); a standalone = single page, no dots. Each page = a collapsing hero (full-bleed photo, floating glass back button, measured title hand-in — mirrors 02e read mechanics) + rating body (★score+word · big labelled wheel · "Tastes like" chips · note · About block) + tap-hero→`FullscreenImage`. Blind masks identity, keeps rating. **Device-check pending.** ⬜ **DEFERRED (own pass, likely post-session-clear): the shared-element open/close transition** — see the handoff proposal `docs/dev/proposals/mobile-app/09-impression-transition.md`.
-7. ⬜ **"Had it too"** wiring (card action row + detail page) — `POST /api/checkins` with `copyFromCheckinId`.
+7. ⬜ **"Had it too"** — DEFERRED to its own pass, scoped **standalone-only** (§5a): the backend copy path is standalone + follow-gated; a session impression gets none (join the session instead — Simon).
 8. ✅ **Standalone card redesigned** + the all-photoless session case (§5, built 2026-07-06; device-iteration pending). Awaiting on-device check.
-9. ⬜ **Delete the `feedFitMode` dev toggle** — hardcode `crop`, remove `lib/feedFitMode.ts` + the dev-gallery section (§2b).
+9. ✅ **Deleted the `feedFitMode` dev toggle** — hardcoded `crop`, removed `lib/feedFitMode.ts` + the dev-gallery section (commit `8f32e8f`).
+
+**Also still open:** ⬜ the shared-element transition + feed→session back-nav wrapper (09). ⬜ **Crave** (§6 — its own branch: schema + endpoint + mobile Cravings list). ⬜ **deploy the branch** (unblocks the About-block metadata on prod). ⬜ device-verify the detail screen + header + enter-moment (unverified from the sandbox).
 
 **Known-hard, budget for it:** the collapsing hero (read the pattern doc), the full-bleed `contentInsetAdjustmentBehavior` trap (`apps/mobile/CLAUDE.md` scoring §: the zero-size `<View collapsable={false}>` dead-end — applies to any edge-to-edge screen, "feed hero cards" is called out by name), and the two-gesture composition on the carousel photo.
 
@@ -134,9 +136,11 @@ The **detail path** for a standalone is free once §3 ships (routes to the same 
 
 ---
 
-## 5a. Feed actions — Like + Had-it-too in Phase 1; Crave deferred (2026-07-06)
+## 5a. Feed actions — Like shipped; Had-it-too + Crave deferred
 
-**Like** (double-tap + heart) and **Had it too** (`POST /api/checkins` with `copyFromCheckinId`) ship in Phase 1. Both have working, non-membership-gated backend paths.
+**Like** (double-tap + heart) shipped. **Had it too** and **Crave** are both DEFERRED to their own passes (each a mobile write-flow that doesn't exist yet).
+
+**Had it too — DEFERRED, and scoped STANDALONE-ONLY (Simon, 2026-07-08).** The backend `POST /api/checkins` with `copyFromCheckinId` only copies from a **`kind:'standalone'`** check-in AND requires the viewer to **follow the author** (two gates in `app/api/checkins/route.ts` lines 156/165 — visibility + follow; a session feed_item is `kind:'session'` → 400). So "Had it too" maps only to standalone check-in cards. **A SESSION impression gets NO "Had it too"** — Simon's ruling: to re-taste a session wine you just JOIN the session (host's code, or the person you were in it with), not copy it. When built, it needs the FIRST mobile check-in-create flow: a quick check-in Sheet (`ScoreInput` slider + `NotesField` + "Add to my check-ins" → "Checked in"), a `createCheckin` API client fn, and the standalone card/detail action wiring. No backend change needed (the copy path exists).
 
 **Crave (bookmark) is DEFERRED to its own pass** — it turned out to need a schema change, and there's nowhere to land the data yet:
 - The existing bookmark POST (`/api/session/:code/wines/:id/bookmark`) **requires session membership** (deliberate anti-enumeration, stated in the route) — a feed viewer isn't a member, so there is no working Crave-from-feed path today. (The DELETE is already `wineId`-keyed + membership-free, so the two are asymmetric.)
