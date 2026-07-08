@@ -89,8 +89,17 @@ export default function Feed() {
   // Optimistic like: flip liked + adjust likeCount in the cache immediately,
   // fire the server call, invalidate on error (never a frozen-snapshot
   // restore — a focus refetch may have advanced the cache mid-flight).
+  //
+  // Per-item mutation seq: the hearts stay tappable while a request is in
+  // flight, and responses can arrive OUT OF ORDER (a quick like→unlike where
+  // the POST resolves after the DELETE would restore liked:true). Each toggle
+  // takes a seq; only the item's LATEST request may reconcile or invalidate —
+  // stale responses are dropped.
+  const likeSeq = useRef(new Map<number, number>());
   const toggleLike = useCallback(
     async (id: number, nextLiked: boolean) => {
+      const seq = (likeSeq.current.get(id) ?? 0) + 1;
+      likeSeq.current.set(id, seq);
       await queryClient.cancelQueries({ queryKey: FEED_KEY });
       queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) => {
         if (!data) return data;
@@ -105,9 +114,9 @@ export default function Feed() {
       try {
         // Reconcile with the authoritative result — an idempotent double-like
         // or block-pair-hidden likes make the server's count diverge from the
-        // optimistic ±1. (A rapid re-toggle mid-flight converges on the LAST
-        // response, same as the web client.)
+        // optimistic ±1.
         const server = await setFeedItemLike(id, nextLiked);
+        if (likeSeq.current.get(id) !== seq) return; // a newer toggle owns this item
         queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) => {
           if (!data) return data;
           return {
@@ -119,6 +128,7 @@ export default function Feed() {
           };
         });
       } catch {
+        if (likeSeq.current.get(id) !== seq) return; // ditto — don't clobber a newer toggle
         queryClient.invalidateQueries({ queryKey: FEED_KEY });
       }
     },
