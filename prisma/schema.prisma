@@ -390,12 +390,15 @@ model Rating {
   // rewire.md §3 (engagement rule) and §2 score-nullable reasoning.
   score     Decimal?      @db.Decimal(3, 2)
   flavors   Json          @default("{}")
-  // Aroma descriptor selections — array of {a: leafId, m: modifierId|null}
-  // pairs from the @verre/core taxonomy, capped + gated at the write
-  // boundary (lib/aromas.ts gateAromas). '[]' is the empty signal the
-  // engagement cascade matches alongside flavors = '{}'. Leaf-grain by
-  // design: tier roll-ups derive from the taxonomy at read time, never
-  // stored. See docs/dev/proposals/aroma/aroma-layer.md §4.
+  // Aroma descriptor selections — array of {a: nodeId, m: modifierId|null,
+  // d?: true} entries from the @verre/core taxonomy (`d` = dominant, present
+  // only when true), capped + gated at the write boundary (lib/aromas.ts
+  // gateAromas). The node may sit at any tier
+  // (leaf "strawberry", subfamily "fruity.berry", family "fruity" — the
+  // stored grain encodes the taster's confidence; any-tier ruling
+  // 2026-07-08). '[]' is the empty signal the engagement cascade matches
+  // alongside flavors = '{}'. Tier roll-ups derive from the taxonomy at
+  // read time, never stored. See docs/dev/proposals/aroma/aroma-layer.md §4.
   aromas    Json          @default("[]")
   notes     String?
   ratedAt   DateTime      @map("rated_at") @db.Timestamptz(6)

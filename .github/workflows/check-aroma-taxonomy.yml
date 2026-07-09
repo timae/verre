@@ -21,10 +21,12 @@ jobs:
 
       # Fail the build if packages/core/src/aroma/taxonomy.json violates the
       # structural invariants stored aroma data depends on: bare-slug leaf ids
-      # unique tree-wide (the persisted keys), unique labels (one leaf, one
-      # home), qualified subfamily ids, resolvable modifier references, a
-      # declared allowed_modifiers chain for every leaf, and modifier_display
-      # only for allowed modifiers. The tree is hand-edited in content passes —
+      # unique tree-wide AND disjoint from family slugs (selections persist a
+      # node id at ANY tier — the dot dichotomy plus that disjointness keeps
+      # the namespace unambiguous), unique labels (one leaf, one home),
+      # qualified subfamily ids, resolvable modifier references, a declared
+      # allowed_modifiers chain for every leaf, and modifier_display only for
+      # allowed modifiers. The tree is hand-edited in content passes —
       # this keeps the invariants safe-by-construction. See
       # docs/dev/proposals/aroma/aroma-layer.md §2/§3.
       #

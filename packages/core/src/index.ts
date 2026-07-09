@@ -84,6 +84,7 @@ export {
   AROMA_SELECTION_CAP,
   getAromaModifier,
   getAromaLeaf,
+  getAromaNode,
   aromaTierPath,
   aromaAllowedModifiers,
   aromaModifierDisplay,
@@ -94,5 +95,6 @@ export {
   type AromaSubfamily,
   type AromaFamily,
   type AromaSelection,
+  type AromaNode,
   type AromaTierPath,
 } from './aroma/taxonomy'

@@ -105,13 +105,16 @@ export type SessionMetaView = {
   banCount: number;
 };
 
-// `aromas` (PR A, aroma-layer.md §4): {a: leafId, m: modifierId|null} pairs
-// against the @verre/core taxonomy. Optional on the wire — ratings written
-// before the column shipped simply lack the key.
+// `aromas` (PR A, aroma-layer.md §4): {a: nodeId, m: modifierId|null} pairs
+// against the @verre/core taxonomy. The node may sit at ANY tier (leaf
+// "strawberry", subfamily "fruity.berry", family "fruity" — any-tier ruling
+// 2026-07-08); resolve via core's getAromaNode. Optional on the wire —
+// ratings written before the column shipped simply lack the key. `d` =
+// dominant flag, present only when true.
 export type RatingMeta = {
   score: number;
   flavors: Record<string, number>;
-  aromas?: { a: string; m: string | null }[];
+  aromas?: { a: string; m: string | null; d?: boolean }[];
   notes: string;
   at: number;
 };
@@ -269,7 +272,7 @@ export type RateBody = {
   // leave the field off to keep whatever is stored; send [] to clear. The
   // rate screen doesn't edit aromas yet (input lands in PR B) — until it
   // does, omit the field so a save never wipes selections made elsewhere.
-  aromas?: { a: string; m: string | null }[];
+  aromas?: { a: string; m: string | null; d?: boolean }[];
   notes: string;
 };
 
