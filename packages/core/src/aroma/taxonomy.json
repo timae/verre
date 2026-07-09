@@ -2,10 +2,10 @@
  "schema_version": "1.1",
  "description": "Universal aroma descriptor tree for a multi-category tasting app (wine, coffee, beer, tea, cheese, chocolate, spirits, food). Three tiers: family (tier1) -> subfamily (tier2) -> leaf (tier3). Placement follows perception, not origin. Each leaf has one home. Faults are neutral descriptors. Modifiers are orthogonal state-transformations stored separately as (aroma_id, modifier_id); the tree holds base descriptors in fresh/default state only, and each node declares which modifiers may attach.",
  "conventions": {
-  "id_scheme": "tier1 = family slug; tier2 = family.subfamily (qualified — bare subfamily slugs collide: stone/cured/dairy). tier3 (leaf) = bare label-derived slug, unique tree-wide via the one-leaf-one-home rule. ONLY leaf ids are ever persisted in user data, as (aroma_id, modifier_id) pairs. Tier membership is derived from tree position at read time — never parse an id for structure. Re-parenting a leaf therefore re-homes all historical data automatically. A label rename keeps the slug; deleting/merging a leaf requires an explicit superseded_by alias (content-pass mechanism, none exist yet). Changed from v1.0's path-encoded leaf ids — see docs/dev/proposals/aroma/aroma-layer.md §3.",
+  "id_scheme": "tier1 = family slug; tier2 = family.subfamily (qualified — bare subfamily slugs collide: stone/cured/dairy). tier3 (leaf) = bare label-derived slug, unique tree-wide via the one-leaf-one-home rule. A persisted selection references a node at ANY tier (any-tier ruling 2026-07-08: a coarse 'berries' or 'fruity' is honest data): the namespace stays unambiguous because leaf slugs never contain a dot, subfamily ids always do, and leaf slugs are CI-enforced disjoint from family slugs. Tier membership is derived from tree position at read time — never parse an id for structure. Re-parenting a leaf therefore re-homes all historical data automatically. A label rename keeps the slug; deleting/merging a node — and re-parenting a subfamily or renaming a family (both re-id stored tier-2 references) — requires an explicit superseded_by alias (content-pass mechanism, none exist yet). Modifier gating per tier: leaves take their effective declared set (leaf <- subfamily <- family downward inheritance); subfamilies/families take the UNION of their descendants' effective sets (the brief's modifiers-inherit-upward rule applied to selectability) — so 'overripe fruit' is valid via Berry's 'ripe' while 'pickled Fruity' rejects automatically. Changed from v1.0's path-encoded leaf-only ids — see docs/dev/proposals/aroma/aroma-layer.md §3.",
   "modifier_inheritance": "A modifier attached at a leaf also aggregates at that leaf's subfamily and family.",
   "allowed_modifiers_field": "Per node. If a node omits it, it inherits its parent's allowed set. Leaf-level lists override.",
-  "promoted_leaves": "base+modifier combos that became distinct enough to be their own leaf (e.g. raisin, prune) are listed as leaves and carry no redundant modifier.",
+  "promoted_leaves": "base+modifier combos that became distinct enough to be their own leaf (e.g. raisin, prune) are listed as leaves, carry no redundant modifier, AND declare `promoted_from: {a, m}` — the gate CANONICALIZES the composite form to the promoted leaf at the write boundary (grape+dried -> raisin; Simon's ruling 2026-07-09), so one percept has exactly one stored encoding.",
   "fresh_is_implicit": "The 'fresh' state is the default and is never selected or shown.",
   "modifier_display": "Optional per-leaf override of a modifier's displayed word. Absent -> use the modifier's default label. Data still stores (aroma_id, modifier_id); this only changes the shown badge word. e.g. malt+roasted shows 'toasted', strawberry+cooked shows 'jammy', onion+cooked shows 'stewed'."
  },
@@ -526,6 +526,13 @@
        "note": "promoted (grape+dried); distinct percept",
        "modifier_display": {
         "cooked": "jammy"
+       },
+       "allowed_modifiers": [
+        "cooked"
+       ],
+       "promoted_from": {
+        "a": "grape",
+        "m": "dried"
        }
       },
       {
@@ -534,6 +541,13 @@
        "note": "promoted (plum+dried); distinct cooked-caramel percept",
        "modifier_display": {
         "cooked": "jammy"
+       },
+       "allowed_modifiers": [
+        "cooked"
+       ],
+       "promoted_from": {
+        "a": "plum",
+        "m": "dried"
        }
       },
       {
@@ -681,7 +695,8 @@
      "id": "vegetal.green",
      "label": "Green / leafy",
      "allowed_modifiers": [
-      "dried"
+      "dried",
+      "cooked"
      ],
      "leaves": [
       {
@@ -951,7 +966,9 @@
     {
      "id": "vegetal.stalky",
      "label": "Stalky",
-     "allowed_modifiers": [],
+     "allowed_modifiers": [
+      "cooked"
+     ],
      "leaves": [
       {
        "id": "celery",
@@ -959,7 +976,10 @@
       },
       {
        "id": "rhubarb",
-       "label": "rhubarb"
+       "label": "rhubarb",
+       "modifier_display": {
+        "cooked": "stewed"
+       }
       }
      ]
     },
@@ -1034,9 +1054,7 @@
     {
      "id": "vegetal.cured",
      "label": "Cured / brined veg",
-     "allowed_modifiers": [
-      "pickled"
-     ],
+     "allowed_modifiers": [],
      "leaves": [
       {
        "id": "olive",
@@ -1111,7 +1129,8 @@
      "id": "spice.pungent",
      "label": "Pungent spice",
      "allowed_modifiers": [
-      "dried"
+      "dried",
+      "smoked"
      ],
      "leaves": [
       {

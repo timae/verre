@@ -5,8 +5,12 @@
 // invariants safe-by-construction instead of safe-by-review.
 //
 // Invariants (docs/dev/proposals/aroma/aroma-layer.md §2/§3):
-//   1. Leaf ids are bare label-derived slugs (no dots), unique tree-wide —
-//      they are the ONLY ids persisted in user data.
+//   1. Leaf ids are bare label-derived slugs (no dots), unique tree-wide.
+//      Selections may reference a node at ANY tier (any-tier ruling,
+//      2026-07-08), so the persisted-id namespace spans all three — kept
+//      unambiguous by construction: leaf slugs never contain a dot,
+//      subfamily ids always do, and leaf slugs must stay DISJOINT from
+//      family slugs (checked below).
 //   2. Leaf labels are unique tree-wide (one leaf, one home).
 //   3. Family ids are bare slugs; subfamily ids are `family.subfamily`
 //      qualified (bare subfamily slugs collide: stone/cured/dairy).
@@ -86,6 +90,61 @@ for (const family of tax.families ?? []) {
       }
     }
   }
+}
+
+// promoted_from mappings (gate canonicalization, decision #8): the composite
+// must resolve — base is a real leaf, modifier is real and legal on the base —
+// and the promoted leaf itself must NOT allow that modifier (else the
+// redundant pair the promotion exists to eliminate comes back).
+for (const family of tax.families ?? []) {
+  for (const sub of family.subfamilies ?? []) {
+    const subAllowed = sub.allowed_modifiers ?? family.allowed_modifiers
+    for (const leaf of sub.leaves ?? []) {
+      const pf = leaf.promoted_from
+      if (pf === undefined) continue
+      if (typeof pf?.a !== 'string' || typeof pf?.m !== 'string') {
+        errors.push(`${leaf.id}: promoted_from must be {a: string, m: string}`)
+        continue
+      }
+      if (!leafIds.has(pf.a)) errors.push(`${leaf.id}: promoted_from base is not a leaf: ${pf.a}`)
+      if (!modifierIds.has(pf.m)) errors.push(`${leaf.id}: promoted_from unknown modifier: ${pf.m}`)
+      const own = leaf.allowed_modifiers ?? subAllowed ?? []
+      if (own.includes(pf.m)) errors.push(`${leaf.id}: promoted leaf must not allow its own promoted_from modifier "${pf.m}"`)
+    }
+  }
+}
+// Second pass for base-legality (needs the full tree walked to resolve the
+// base leaf's effective set — recompute it here, dependency-free).
+{
+  const effectiveByLeaf = new Map()
+  for (const family of tax.families ?? []) {
+    for (const sub of family.subfamilies ?? []) {
+      const subAllowed = sub.allowed_modifiers ?? family.allowed_modifiers
+      for (const leaf of sub.leaves ?? []) {
+        effectiveByLeaf.set(leaf.id, leaf.allowed_modifiers ?? subAllowed ?? [])
+      }
+    }
+  }
+  for (const family of tax.families ?? []) {
+    for (const sub of family.subfamilies ?? []) {
+      for (const leaf of sub.leaves ?? []) {
+        const pf = leaf.promoted_from
+        if (!pf || typeof pf.a !== 'string' || typeof pf.m !== 'string') continue
+        const baseSet = effectiveByLeaf.get(pf.a)
+        if (baseSet && !baseSet.includes(pf.m)) {
+          errors.push(`${leaf.id}: promoted_from composite ${pf.a}+${pf.m} is not legal on the base (dead canonicalization)`)
+        }
+      }
+    }
+  }
+}
+
+// Any-tier namespace disjointness: a stored id resolves by exact match across
+// all three tiers, which is only unambiguous while no leaf slug equals a
+// family slug (dots already separate subfamilies). True today; a content pass
+// adding e.g. a leaf literally named "spice" would silently shadow the family.
+for (const id of leafIds) {
+  if (familyIds.has(id)) errors.push(`leaf slug collides with family slug: ${id}`)
 }
 
 // Non-degeneracy floors. taxonomy.ts casts the JSON to its types on the

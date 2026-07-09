@@ -1,9 +1,11 @@
 // Server-side aroma write boundary — the chokepoint every route that accepts
 // aroma selections goes through (mirrors lib/flavours.ts for structure axes).
 // The gate itself is platform-neutral and lives in @verre/core
-// (gateAromaSelections: shape + cap + taxonomy + per-leaf modifier gating +
-// (a,m)-pair dedupe, rejecting loudly — see aroma/taxonomy.ts for the
-// no-silent-stripping rationale). This module re-exports it under the
+// (gateAromaSelections: shape + cap + taxonomy + per-node modifier gating +
+// (a,m)-pair dedupe + dominant-flag normalization (`d` kept only when true;
+// duplicate pairs merge with any-true winning), rejecting loudly — see
+// aroma/taxonomy.ts for the no-silent-stripping rationale). `a` may reference
+// a node at ANY tier (any-tier ruling 2026-07-08): leaf, subfamily, or family. This module re-exports it under the
 // server-facing name so route code reads like the flavours pipeline:
 //
 //   const ar = gateAromas(body.aromas)
