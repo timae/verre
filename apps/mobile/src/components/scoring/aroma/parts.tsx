@@ -106,12 +106,16 @@ export function selectionLabel(sel: { a: string; m: string | null }): string {
 // Controlled-value operations. Every write runs through the core gate so the
 // UI state is always the canonical form (dedupe, promoted-percept rewrite,
 // p-only-when-true). A write the gate rejects (over the 30 cap — a server
-// bound, deliberately no visible counter) keeps the previous value.
+// bound, deliberately no visible counter) keeps the previous value; ops
+// return whether the write LANDED so callers never celebrate a rejected add
+// (Codex review, PR #77: the 31st add fired haptic + flash on nothing).
 export type AromaOps = ReturnType<typeof useAromaOps>;
 export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelection[]) => void) {
-  const commit = (next: AromaSelection[]) => {
+  const commit = (next: AromaSelection[]): boolean => {
     const gated = gateAromaSelections(next);
-    if (gated.value) onChange(gated.value);
+    if (!gated.value) return false;
+    onChange(gated.value);
+    return true;
   };
   const selectionFor = (a: string) => value.find((s) => s.a === a);
   return {

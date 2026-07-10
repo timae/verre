@@ -235,8 +235,13 @@ export function gateAromaSelections(input: unknown): GatedAromas {
   const byKey = new Map<string, AromaSelection>()
   for (const raw of input) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'each aroma must be an object' }
-    const { a, m, p } = raw as { a?: unknown; m?: unknown; p?: unknown }
+    const { a, m, p, d } = raw as { a?: unknown; m?: unknown; p?: unknown; d?: unknown }
     if (typeof a !== 'string') return { error: 'aroma id required' }
+    // Tombstone for the pre-rename flag: no released client ever sent `d`
+    // (the field re-keyed to `p` while zero stored data existed), so its
+    // presence is always a stale script/build — reject LOUDLY rather than
+    // silently dropping the pronounced signal (Codex review, PR #77).
+    if (d !== undefined) return { error: 'aroma flag `d` was renamed to `p` (pronounced)' }
     const mod = m === undefined || m === null ? null : m
     if (mod !== null && typeof mod !== 'string') return { error: 'aroma modifier must be a string or null' }
     // `p: null` deliberately 400s (unlike `m`, where null IS the fresh state):

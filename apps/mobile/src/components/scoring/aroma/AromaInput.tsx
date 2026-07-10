@@ -1,7 +1,7 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Easing, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
-import { AROMA_MODIFIERS, aromaAllowedModifiers, aromaModifierDisplay, getAromaNode, searchAromas, type AromaSelection } from '@verre/core';
+import { AROMA_MODIFIERS, AROMA_SELECTION_CAP, aromaAllowedModifiers, aromaModifierDisplay, getAromaNode, searchAromas, type AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
 import { Button } from '@/components/ui/Button';
@@ -128,6 +128,13 @@ export function AromaInput({
   // The freshly added chip's key (canonical — a promoted composite lands as
   // its leaf) — drives the flash cue; cleared after the pulse.
   const [flash, setFlash] = useState<string | null>(null);
+  // Cap-rejection hint (the spec bans a live COUNTER, not a rejection
+  // message): shown when an add bounces off the 30 cap, cleared once the
+  // situation changes (new query, or a removal makes room).
+  const [capHit, setCapHit] = useState(false);
+  useEffect(() => {
+    if (value.length < AROMA_SELECTION_CAP) setCapHit(false);
+  }, [value.length]);
   useEffect(() => {
     if (!flash) return;
     const t = setTimeout(() => setFlash(null), 800);
@@ -135,7 +142,14 @@ export function AromaInput({
   }, [flash]);
   const commitAdd = () => {
     if (!focus) return;
-    ops.add(pendP ? { a: focus.a, m: focus.m, p: true } : { a: focus.a, m: focus.m });
+    const ok = ops.add(pendP ? { a: focus.a, m: focus.m, p: true } : { a: focus.a, m: focus.m });
+    if (!ok) {
+      // Gate rejected (the 30 cap) — honest warning tick + a visible hint,
+      // keep the pick armed, no flash: never celebrate an add that didn't land.
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setCapHit(true);
+      return;
+    }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); // acknowledged (no-op in Sim)
     const canon = canonicalPair(focus.a, focus.m);
     setFlash(`${canon.a}|${canon.m ?? ''}`);
@@ -188,7 +202,9 @@ export function AromaInput({
       <View style={{ paddingTop: 15, paddingBottom: 11, gap: 4 }}>
         <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>Aromas</VText>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <VText variant="small" color="inkSoft">
+          {/* flexShrink so long Dynamic Type wraps instead of pushing the ⓘ
+              off-screen (Codex review, PR #77) */}
+          <VText variant="small" color="inkSoft" style={{ flexShrink: 1 }}>
             What do you perceive? Add any aromas you find.
           </VText>
           <AnchorButton icon="info" iconColor={theme.inkSoft} accessibilityLabel="How Aromas Work" onOpen={setHelpAnchor} />
@@ -464,6 +480,13 @@ export function AromaInput({
             ))}
           </AnchoredMenu>
         </View>
+      ) : null}
+      {/* cap-rejection hint — under the refine row, cleared once a removal
+          makes room (the spec bans a counter, not a rejection message). */}
+      {q && capHit ? (
+        <VText variant="small" style={{ marginTop: 8, textAlign: 'center', color: theme.critical }}>
+          Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
+        </VText>
       ) : null}
       {/* Keyboard-room spacer: while searching, guarantees the screen can
           scroll this block to the TOP of the viewport even when the section
