@@ -8,8 +8,8 @@
 // (today's input writes every axis of the wine's style, unfilled ones as 0 — the
 // server fills on write). But an axis KEY that is ABSENT from a rating's stored
 // flavours is a "never asked" — it must NOT count as 0. The live trigger is a
-// style change: a wine rated as still-wine (7 axes, no `bubbles`) later flipped
-// to `spark` (8 axes) would otherwise read every prior taster as bubbles=0 on an
+// style change: a wine rated as still-wine (8 axes, no `bubbles`) later flipped
+// to `spark` (9 axes) would otherwise read every prior taster as bubbles=0 on an
 // axis they never saw. So engagement is tracked PER AXIS via raw key-presence:
 // an axis's min/max/avg + its own denominator count only ratings whose raw map
 // HAS that key. `n` is the count of ratings engaged with ANY structure (the

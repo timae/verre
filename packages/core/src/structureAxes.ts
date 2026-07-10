@@ -31,8 +31,17 @@ export type WineStyle = 'red' | 'white' | 'rose' | 'spark' | 'nonalc'
 // The base wine set — every wine type (red/white/rose) gets exactly these, in
 // this order. No per-type pruning: a low-tannin white sits at Tannin = None
 // (valid data), it does not drop the axis (proposal §1, orange-wine rationale).
-// `spark` appends Bubbles (see WINE_SPARK below). Order is presentational
-// (wedge position) and locks once data ships (proposal §1 axis-order note).
+// `spark` INSERTS Bubbles between Taste and Funk (see wineAxes below) — an
+// in-position slot, not an append.
+//
+// ORDER (Simon's ruling, 2026-07-09 — a deliberate re-order of the shipped
+// wedge layout, superseding the original "locks once data ships" order; and
+// FUNK joined the wine set the same day, closing the drift vs the tasting-
+// model brief's wine baseline): Sweetness · Acidity · Smell · Taste ·
+// (Bubbles) · Funk · Tannin · Body · Finish. Order is presentational only —
+// storage is the keyed flavors map, so old ratings re-render in the new
+// order automatically; rows predating Funk simply lack the key (no spoke,
+// same as the Bubbles precedent).
 //
 // Aroma/Flavour are labelled directly as the plain-language "Smell"/"Taste"
 // (Simon's ruling): the label IS the disambiguation, so the separate `sub`
@@ -40,20 +49,20 @@ export type WineStyle = 'red' | 'white' | 'rose' | 'spark' | 'nonalc'
 // stored in ratings.flavors and in the colour palette's key map
 // (theme/flavourColors.ts KEY_TO_LABEL + palette.js labels 'Aroma'/'Flavour'),
 // so ONLY the display label `l` changed here, never `k`.
-const WINE_BASE: StructureAxis[] = [
+const wineAxes = (spark: boolean): StructureAxis[] => [
   { k: 'sweet',   l: 'Sweetness' }, // sits at the TOP wheel cardinal — no side-cardinal viewBox-pad clip (which is why the earlier short 'Sweet' was safe to lengthen)
   { k: 'acid',    l: 'Acidity' },
-  { k: 'body',    l: 'Body' },
-  { k: 'finish',  l: 'Finish' },
   { k: 'aroma',   l: 'Smell' },
   { k: 'flavour', l: 'Taste' },
+  ...(spark ? [{ k: 'bubbles', l: 'Bubbles' }] : []),
+  { k: 'funk',    l: 'Funk' },
   { k: 'tannin',  l: 'Tannin' },
+  { k: 'body',    l: 'Body' },
+  { k: 'finish',  l: 'Finish' },
 ]
 
-const WINE_SPARK: StructureAxis[] = [
-  ...WINE_BASE,
-  { k: 'bubbles', l: 'Bubbles' },
-]
+const WINE_BASE: StructureAxis[] = wineAxes(false)
+const WINE_SPARK: StructureAxis[] = wineAxes(true)
 
 // Per-style registry. Frozen so a call site can't mutate a shared array.
 // `nonalc` is a TRANSITIONAL style (being retired to a drink attribute in a

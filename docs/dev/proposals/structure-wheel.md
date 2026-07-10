@@ -54,13 +54,17 @@ swaps in bitterness). `wines.category` is the resolution key.
 **Wine — one set for every type (red / white / rosé / sparkling):**
 
 ```
-Sweetness · Acidity · Body · Finish · Aroma · Flavour · Tannin
+Sweetness · Acidity · Smell · Taste · Funk · Tannin · Body · Finish
 ```
 
-**`spark` appends:**
+> ⚠️ SUPERSEDED SET + ORDER (2026-07-09, Simon — see aroma-layer.md §9): the original 7-axis order
+> (Sweetness · Acidity · Body · Finish · Aroma · Flavour · Tannin, Bubbles appended) was re-ordered
+> and **Funk joined the wine set**, closing the drift vs the tasting-model brief's wine baseline.
+
+**`spark` INSERTS Bubbles between Taste and Funk** (in-position, not appended):
 
 ```
-… · Bubbles
+Sweetness · Acidity · Smell · Taste · Bubbles · Funk · …
 ```
 
 `red`/`white`/`rose` get the 7-axis base set; `spark` adds Bubbles. Nothing else is pruned by type.
@@ -96,14 +100,13 @@ low-tannin white just sits at Tannin = None, which is valid data. We do not prun
 > migration, the badge rewrites — is a separate proposal.** This doc only assumes the *end state*
 > (`nonalc` not a style) for `resolveAxes`; until that lands, see the transition note in §1a.
 
-**Axis order:** the list above for now. Tannin is already part of the base wine set (last in the
-list); only **Bubbles** is appended (for `spark`). Reorder later if a better grouping
-emerges — order is
-purely presentational (wedge position) but locks once data ships,
-so it's a deliberate "later" not a "never".
+**Axis order:** re-ordered by Simon's 2026-07-09 ruling (the block above) — the original "locks
+once data ships" append-only stance was deliberately superseded; order is purely presentational
+(wedge position), storage is the keyed map, so shipped ratings re-render in the new order
+automatically.
 
 **Future categories** (illustrative, not in this build): coffee/beer/tea → drop Sweetness/Tannin,
-add Bitterness; spirits → add Warmth. Each is one new entry in the registry (§3).
+add Bitterness; food/spiced categories → add Spiciness. Each is one new entry in the registry (§3). (Warmth was dropped from the master axis list by the 2026-07 tasting-model brief — ABV metadata covers it; the palette slot was re-keyed to Spiciness, docs/dev/proposals/aroma/aroma-layer.md §9.)
 
 ### 1a. `nonalc` transition — the wheel must tolerate the OLD style until alcohol-attribute lands
 
@@ -113,7 +116,7 @@ wheel is being built and for some time after, **`style = 'nonalc'` rows still ex
 wine-add allow-list still accepts `nonalc`. `resolveAxes` must therefore **not break on a `nonalc`
 wine in the interim**:
 
-- **`resolveAxes` handles `nonalc` defensively** — map it to the base wine set (the same 7 axes; no
+- **`resolveAxes` handles `nonalc` defensively** — map it to the base wine set (the same 8 axes incl. Funk since 2026-07-09; no
   Bubbles, matching its current still-wine treatment). This is a one-line fallback, not a real branch,
   and it disappears when the style is retired. **Do not assume `nonalc` is already gone** — that's the
   end state, not the state during this build.
@@ -943,7 +946,7 @@ per #10, no `flavors_version` column per #8. Compare-overlay: decided per #1 bel
    native input, NOT the registry/axis logic.** (Colour *home* is already decided — §3a/§10 #14: colour is
    per-platform presentation, web `WEB_PALETTE` + native theme-resolved, NOT in the core registry. Only the
    hex values remain deferred.)
-6. **Axis order** (§1) — appended for now; locks once data ships. **blocks: nothing yet.**
+6. **Axis order** (§1) — ~~appended for now; locks once data ships~~ SUPERSEDED 2026-07-09: Simon re-ordered the set + added Funk (aroma-layer.md §9). **blocks: nothing.**
 
 **✅ Decided:**
 

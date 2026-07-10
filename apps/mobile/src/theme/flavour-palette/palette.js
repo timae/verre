@@ -12,11 +12,12 @@
 // scope rules (what's live vs future) and the registry-key → label mapping.
 //
 // Two attribute sets per theme:
-//   • structure (13): Flavour · Warmth · Body · Tannin · Finish · Sweetness ·
+//   • structure (13): Flavour · Spiciness · Body · Tannin · Finish · Sweetness ·
 //     Acidity · Bitterness · Umami · Saltyness · Bubbles · Funk · Aroma
-//       — WINE uses 8 of these today (see CLAUDE.md); the other 5 (Warmth,
-//         Bitterness, Umami, Saltyness, Funk) belong to future categories
-//         (cheese/beer/spirits), NOT extra wine axes.
+//       — WINE uses 9 of these today incl. Funk (Simon's 2026-07-09 wine-set
+//         ruling; see CLAUDE.md); the other 4 (Spiciness, Bitterness, Umami,
+//         Saltyness) belong to future categories (food/beer/spirits), NOT
+//         extra wine axes.
 //   • aroma (12): Fruity · Spice · Kernel · Fire · Woody · Sweet · Savory
 //     · Vegetal · Mineral · Chemical · Funky · Floral
 //       — the aroma descriptor tree's tier-1 families (@verre/core
@@ -32,7 +33,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#f6ecde',
     structure: {
       Flavour: '#D9605C',
-      Warmth: '#BF4E30',
+      Spiciness: '#BF4E30',
       Body: '#a85f3e',
       Tannin: '#6B3C2A',
       Finish: '#b98a37',
@@ -65,7 +66,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#1a1815',
     structure: {
       Flavour: '#d96f45',
-      Warmth: '#a8472c',
+      Spiciness: '#a8472c',
       Body: '#896343',
       Tannin: '#5e3526',
       Finish: '#ab7626',
@@ -98,7 +99,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#122142',
     structure: {
       Flavour: '#d98e5f',
-      Warmth: '#BF4E30',
+      Spiciness: '#BF4E30',
       Body: '#a85f3e',
       Tannin: '#6B3C2A',
       Finish: '#b98a37',
@@ -131,7 +132,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#2b1530',
     structure: {
       Flavour: '#cf6f5a',
-      Warmth: '#a44a4c',
+      Spiciness: '#a44a4c',
       Body: '#b67847',
       Tannin: '#7e4c29',
       Finish: '#cbb077',
@@ -164,7 +165,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#b35a45',
     structure: {
       Flavour: '#C77657',
-      Warmth: '#a84838',
+      Spiciness: '#a84838',
       Body: '#443340',
       Tannin: '#6b3f2e',
       Finish: '#d8b88c',
@@ -197,7 +198,7 @@ export const FLAVOUR_PALETTE = {
     bg: '#c8a8a3',
     structure: {
       Flavour: '#D9605C',
-      Warmth: '#BF4E30',
+      Spiciness: '#BF4E30',
       Body: '#a85f3e',
       Tannin: '#6B3C2A',
       Finish: '#b98a37',

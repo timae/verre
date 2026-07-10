@@ -9,7 +9,7 @@
 // and the compiler then flags every stale consumer.
 export type StructureLabel =
   | 'Flavour'
-  | 'Warmth'
+  | 'Spiciness'
   | 'Body'
   | 'Tannin'
   | 'Finish'

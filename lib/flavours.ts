@@ -40,6 +40,7 @@ const WEB_PALETTE: Record<string, string> = {
   finish:  '#B0A0C8', // provisional
   aroma:   '#E0A860', // provisional
   flavour: '#C05878', // provisional
+  funk:    '#726E97', // provisional (apricot Funk from the design palette)
   bubbles: '#88C8E0', // provisional
 }
 

@@ -37,6 +37,10 @@ export type AromaLeaf = {
   // this leaf is the canonical encoding of. The gate rewrites the composite to
   // this leaf so one percept has one stored form (decision #8).
   promoted_from?: { a: string; m: string }
+  // Alternative search WORDS for this leaf (cassis, sultana, pyrazine) —
+  // input-time vocabulary only, consumed by PR B's searchIndex; never stored,
+  // never gated. CI enforces no-label-shadowing + tree-wide uniqueness.
+  search_aliases?: string[]
 }
 
 export type AromaSubfamily = {

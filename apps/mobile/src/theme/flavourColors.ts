@@ -24,9 +24,10 @@
 import { FLAVOUR_PALETTE, type StructureLabel } from './flavour-palette/palette';
 import { useTheme, type ThemeKey } from '@/theme';
 
-// The 8 wine axis keys carried today (structureAxes.ts WINE_BASE + Bubbles on
-// spark). A record keeps every theme's table exhaustive — TypeScript flags a
-// forgotten axis when a new theme is added or an axis renamed.
+// The 9 wine axis keys carried today (structureAxes.ts WINE_BASE incl. Funk
+// since Simon's 2026-07-09 ruling, + Bubbles on spark). A record keeps every
+// theme's table exhaustive — TypeScript flags a forgotten axis when a new
+// theme is added or an axis renamed.
 export type FlavourAxisKey =
   | 'sweet'
   | 'acid'
@@ -35,6 +36,7 @@ export type FlavourAxisKey =
   | 'finish'
   | 'aroma'
   | 'flavour'
+  | 'funk'
   | 'bubbles';
 
 type AxisPalette = Record<FlavourAxisKey, string>;
@@ -49,6 +51,7 @@ const KEY_TO_LABEL: Record<FlavourAxisKey, StructureLabel> = {
   finish: 'Finish',
   aroma: 'Aroma',
   flavour: 'Flavour',
+  funk: 'Funk',
   bubbles: 'Bubbles',
 };
 
@@ -91,7 +94,7 @@ export function useFlavourColors(): (key: string) => string {
 // `Chemical` — 13 distinct colours before wrap is plenty.
 const PERSON_LABEL_ORDER: StructureLabel[] = [
   'Flavour',
-  'Warmth',
+  'Spiciness',
   'Body',
   'Tannin',
   'Finish',

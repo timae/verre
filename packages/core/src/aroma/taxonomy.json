@@ -7,7 +7,8 @@
   "allowed_modifiers_field": "Per node. If a node omits it, it inherits its parent's allowed set. Leaf-level lists override.",
   "promoted_leaves": "base+modifier combos that became distinct enough to be their own leaf (e.g. raisin, prune) are listed as leaves, carry no redundant modifier, AND declare `promoted_from: {a, m}` — the gate CANONICALIZES the composite form to the promoted leaf at the write boundary (grape+dried -> raisin; Simon's ruling 2026-07-09), so one percept has exactly one stored encoding.",
   "fresh_is_implicit": "The 'fresh' state is the default and is never selected or shown.",
-  "modifier_display": "Optional per-leaf override of a modifier's displayed word. Absent -> use the modifier's default label. Data still stores (aroma_id, modifier_id); this only changes the shown badge word. e.g. malt+roasted shows 'toasted', strawberry+cooked shows 'jammy', onion+cooked shows 'stewed'."
+  "modifier_display": "Optional per-leaf override of a modifier's displayed word. Absent -> use the modifier's default label. Data still stores (aroma_id, modifier_id); this only changes the shown badge word. e.g. malt+roasted shows 'toasted', strawberry+cooked shows 'jammy', onion+cooked shows 'stewed'.",
+  "leaf_search_aliases": "Optional per-leaf `search_aliases`: alternative WORDS that should resolve to this leaf in search (spelling variants, UK/US terms, trade vocabulary — cassis, sultana, pyrazine). Pure input-time lookup: never stored, never gated; what persists is always the node id. Distinct from promoted_from (which canonicalizes DATA, i.e. (a,m) composites) and from the modifiers' own search_aliases (which resolve to a modifier). An alias must not equal any node label (CI-enforced, so an alias can't shadow a real node) and must be unique across leaves."
  },
  "modifiers": [
   {
@@ -111,7 +112,10 @@
        "label": "bergamot",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "earl grey"
+       ]
       },
       {
        "id": "yuzu",
@@ -126,6 +130,10 @@
        "allowed_modifiers": [
         "candied",
         "dried"
+       ],
+       "search_aliases": [
+        "zest",
+        "citrus zest"
        ]
       },
       {
@@ -133,7 +141,10 @@
        "label": "kaffir lime",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "makrut lime"
+       ]
       },
       {
        "id": "blood_orange",
@@ -214,7 +225,10 @@
        "label": "blackcurrant",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "cassis"
+       ]
       },
       {
        "id": "redcurrant",
@@ -298,14 +312,21 @@
        "label": "sloe",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "blackthorn"
+       ]
       },
       {
        "id": "physalis",
        "label": "physalis",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "cape gooseberry",
+        "goldenberry"
+       ]
       }
      ]
     },
@@ -323,7 +344,11 @@
        "label": "apple",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "green apple",
+        "red apple"
+       ]
       },
       {
        "id": "pear",
@@ -398,7 +423,10 @@
        "label": "greengage",
        "modifier_display": {
         "cooked": "jammy"
-       }
+       },
+       "search_aliases": [
+        "reine claude"
+       ]
       }
      ]
     },
@@ -425,11 +453,18 @@
       },
       {
        "id": "passionfruit",
-       "label": "passionfruit"
+       "label": "passionfruit",
+       "search_aliases": [
+        "passion fruit",
+        "maracuja"
+       ]
       },
       {
        "id": "lychee",
-       "label": "lychee"
+       "label": "lychee",
+       "search_aliases": [
+        "litchi"
+       ]
       },
       {
        "id": "guava",
@@ -437,11 +472,17 @@
       },
       {
        "id": "kiwi",
-       "label": "kiwi"
+       "label": "kiwi",
+       "search_aliases": [
+        "kiwifruit"
+       ]
       },
       {
        "id": "papaya",
-       "label": "papaya"
+       "label": "papaya",
+       "search_aliases": [
+        "pawpaw"
+       ]
       },
       {
        "id": "coconut",
@@ -453,7 +494,10 @@
       },
       {
        "id": "dragonfruit",
-       "label": "dragonfruit"
+       "label": "dragonfruit",
+       "search_aliases": [
+        "pitaya"
+       ]
       },
       {
        "id": "tamarind",
@@ -461,7 +505,10 @@
       },
       {
        "id": "persimmon",
-       "label": "persimmon"
+       "label": "persimmon",
+       "search_aliases": [
+        "kaki"
+       ]
       }
      ]
     },
@@ -478,7 +525,11 @@
       },
       {
        "id": "cantaloupe",
-       "label": "cantaloupe"
+       "label": "cantaloupe",
+       "search_aliases": [
+        "rockmelon",
+        "muskmelon"
+       ]
       },
       {
        "id": "honeydew",
@@ -533,7 +584,10 @@
        "promoted_from": {
         "a": "grape",
         "m": "dried"
-       }
+       },
+       "search_aliases": [
+        "sultana"
+       ]
       },
       {
        "id": "prune",
@@ -548,7 +602,10 @@
        "promoted_from": {
         "a": "plum",
         "m": "dried"
-       }
+       },
+       "search_aliases": [
+        "dried plum"
+       ]
       },
       {
        "id": "pomegranate",
@@ -649,7 +706,10 @@
       },
       {
        "id": "chamomile",
-       "label": "chamomile"
+       "label": "chamomile",
+       "search_aliases": [
+        "camomile"
+       ]
       },
       {
        "id": "hibiscus",
@@ -676,7 +736,11 @@
       },
       {
        "id": "linden",
-       "label": "linden blossom"
+       "label": "linden blossom",
+       "search_aliases": [
+        "lime blossom",
+        "tilleul"
+       ]
       },
       {
        "id": "orange_blossom",
@@ -701,7 +765,11 @@
      "leaves": [
       {
        "id": "cut_grass",
-       "label": "fresh-cut grass"
+       "label": "fresh-cut grass",
+       "search_aliases": [
+        "cut grass",
+        "mown grass"
+       ]
       },
       {
        "id": "green_leaves",
@@ -745,7 +813,11 @@
      "leaves": [
       {
        "id": "mint",
-       "label": "mint"
+       "label": "mint",
+       "search_aliases": [
+        "peppermint",
+        "spearmint"
+       ]
       },
       {
        "id": "thyme",
@@ -777,11 +849,17 @@
       },
       {
        "id": "eucalyptus",
-       "label": "eucalyptus"
+       "label": "eucalyptus",
+       "search_aliases": [
+        "menthol"
+       ]
       },
       {
        "id": "lemongrass",
-       "label": "lemongrass"
+       "label": "lemongrass",
+       "search_aliases": [
+        "citronella"
+       ]
       },
       {
        "id": "bay_leaf",
@@ -789,7 +867,10 @@
       },
       {
        "id": "cilantro",
-       "label": "cilantro"
+       "label": "cilantro",
+       "search_aliases": [
+        "coriander"
+       ]
       },
       {
        "id": "parsley",
@@ -809,7 +890,10 @@
       },
       {
        "id": "kaffir_lime_leaf",
-       "label": "kaffir lime leaf"
+       "label": "kaffir lime leaf",
+       "search_aliases": [
+        "makrut lime leaf"
+       ]
       },
       {
        "id": "lemon_balm",
@@ -840,7 +924,13 @@
        "label": "green bell pepper",
        "modifier_display": {
         "cooked": "stewed"
-       }
+       },
+       "search_aliases": [
+        "bell pepper",
+        "capsicum",
+        "green pepper",
+        "pyrazine"
+       ]
       },
       {
        "id": "tomato",
@@ -894,14 +984,22 @@
        "label": "beetroot",
        "modifier_display": {
         "cooked": "stewed"
-       }
+       },
+       "search_aliases": [
+        "beet",
+        "geosmin"
+       ]
       },
       {
        "id": "corn",
        "label": "corn",
        "modifier_display": {
         "cooked": "stewed"
-       }
+       },
+       "search_aliases": [
+        "sweetcorn",
+        "maize"
+       ]
       },
       {
        "id": "fennel_bulb",
@@ -1096,7 +1194,10 @@
       },
       {
        "id": "allspice",
-       "label": "allspice"
+       "label": "allspice",
+       "search_aliases": [
+        "pimento"
+       ]
       },
       {
        "id": "star_anise",
@@ -1121,7 +1222,10 @@
       },
       {
        "id": "cassia",
-       "label": "cassia bark"
+       "label": "cassia bark",
+       "search_aliases": [
+        "cassia"
+       ]
       }
      ]
     },
@@ -1147,12 +1251,18 @@
       },
       {
        "id": "sichuan_pepper",
-       "label": "sichuan pepper"
+       "label": "sichuan pepper",
+       "search_aliases": [
+        "szechuan pepper"
+       ]
       },
       {
        "id": "chili",
        "label": "chili (aroma)",
-       "note": "smell only; heat = Spiciness structure axis"
+       "note": "smell only; heat = Spiciness structure axis",
+       "search_aliases": [
+        "chilli"
+       ]
       },
       {
        "id": "mustard",
@@ -1200,11 +1310,17 @@
      "leaves": [
       {
        "id": "anise",
-       "label": "anise"
+       "label": "anise",
+       "search_aliases": [
+        "aniseed"
+       ]
       },
       {
        "id": "licorice",
-       "label": "licorice"
+       "label": "licorice",
+       "search_aliases": [
+        "liquorice"
+       ]
       },
       {
        "id": "juniper",
@@ -1283,7 +1399,10 @@
       },
       {
        "id": "molasses",
-       "label": "molasses"
+       "label": "molasses",
+       "search_aliases": [
+        "treacle"
+       ]
       },
       {
        "id": "maple",
@@ -1302,7 +1421,11 @@
       },
       {
        "id": "cotton_candy",
-       "label": "cotton candy"
+       "label": "cotton candy",
+       "search_aliases": [
+        "candy floss",
+        "fairy floss"
+       ]
       },
       {
        "id": "bubblegum",
@@ -1418,7 +1541,10 @@
       },
       {
        "id": "hazelnut",
-       "label": "hazelnut"
+       "label": "hazelnut",
+       "search_aliases": [
+        "filbert"
+       ]
       },
       {
        "id": "walnut",
@@ -1468,7 +1594,10 @@
      "leaves": [
       {
        "id": "peanut",
-       "label": "peanut"
+       "label": "peanut",
+       "search_aliases": [
+        "groundnut"
+       ]
       }
      ]
     },
@@ -1628,7 +1757,10 @@
       },
       {
        "id": "biscuit",
-       "label": "biscuit"
+       "label": "biscuit",
+       "search_aliases": [
+        "cookie"
+       ]
       },
       {
        "id": "brioche",
@@ -1720,7 +1852,10 @@
       },
       {
        "id": "cedar",
-       "label": "cedar"
+       "label": "cedar",
+       "search_aliases": [
+        "cedarwood"
+       ]
       },
       {
        "id": "pine",
@@ -1841,12 +1976,18 @@
      "leaves": [
       {
        "id": "wet_stone",
-       "label": "wet stone"
+       "label": "wet stone",
+       "search_aliases": [
+        "petrichor"
+       ]
       },
       {
        "id": "flint",
        "label": "flint",
-       "note": "prized version; struck-match = Chemical"
+       "note": "prized version; struck-match = Chemical",
+       "search_aliases": [
+        "gunflint"
+       ]
       },
       {
        "id": "slate",
@@ -1854,11 +1995,17 @@
       },
       {
        "id": "chalk",
-       "label": "chalk"
+       "label": "chalk",
+       "search_aliases": [
+        "limestone"
+       ]
       },
       {
        "id": "graphite",
-       "label": "graphite"
+       "label": "graphite",
+       "search_aliases": [
+        "pencil lead"
+       ]
       },
       {
        "id": "gravel",
@@ -1873,11 +2020,17 @@
      "leaves": [
       {
        "id": "soil",
-       "label": "soil"
+       "label": "soil",
+       "search_aliases": [
+        "earth"
+       ]
       },
       {
        "id": "forest_floor",
-       "label": "forest floor"
+       "label": "forest floor",
+       "search_aliases": [
+        "sous-bois"
+       ]
       },
       {
        "id": "potting_earth",
@@ -1911,7 +2064,11 @@
       },
       {
        "id": "porcini",
-       "label": "porcini"
+       "label": "porcini",
+       "search_aliases": [
+        "cep",
+        "boletus"
+       ]
       },
       {
        "id": "button_mushroom",
@@ -1938,7 +2095,11 @@
      "leaves": [
       {
        "id": "sea_spray",
-       "label": "sea spray"
+       "label": "sea spray",
+       "search_aliases": [
+        "ocean",
+        "sea breeze"
+       ]
       },
       {
        "id": "brine",
@@ -2032,7 +2193,10 @@
      "leaves": [
       {
        "id": "cured_meat",
-       "label": "cured meat"
+       "label": "cured meat",
+       "search_aliases": [
+        "charcuterie"
+       ]
       },
       {
        "id": "salami",
@@ -2040,7 +2204,10 @@
       },
       {
        "id": "ham",
-       "label": "ham"
+       "label": "ham",
+       "search_aliases": [
+        "prosciutto"
+       ]
       },
       {
        "id": "bacon",
@@ -2060,7 +2227,11 @@
       },
       {
        "id": "yeast_extract",
-       "label": "yeast extract"
+       "label": "yeast extract",
+       "search_aliases": [
+        "marmite",
+        "vegemite"
+       ]
       },
       {
        "id": "soy_sauce",
@@ -2130,7 +2301,10 @@
       },
       {
        "id": "yogurt",
-       "label": "yogurt"
+       "label": "yogurt",
+       "search_aliases": [
+        "yoghurt"
+       ]
       },
       {
        "id": "kefir",
@@ -2172,7 +2346,10 @@
       },
       {
        "id": "bread_dough",
-       "label": "bread dough"
+       "label": "bread dough",
+       "search_aliases": [
+        "dough"
+       ]
       },
       {
        "id": "lees",
@@ -2191,7 +2368,10 @@
      "leaves": [
       {
        "id": "barnyard",
-       "label": "barnyard"
+       "label": "barnyard",
+       "search_aliases": [
+        "farmyard"
+       ]
       },
       {
        "id": "hay_barn",
@@ -2199,7 +2379,10 @@
       },
       {
        "id": "brett",
-       "label": "brett"
+       "label": "brett",
+       "search_aliases": [
+        "brettanomyces"
+       ]
       },
       {
        "id": "horse",
@@ -2223,6 +2406,9 @@
        "allowed_modifiers": [
         "cooked",
         "smoked"
+       ],
+       "search_aliases": [
+        "gamey"
        ]
       }
      ]
@@ -2254,7 +2440,10 @@
       },
       {
        "id": "vinegar",
-       "label": "vinegar"
+       "label": "vinegar",
+       "search_aliases": [
+        "acetic"
+       ]
       },
       {
        "id": "kimchi",
@@ -2280,7 +2469,10 @@
      "leaves": [
       {
        "id": "struck_match",
-       "label": "struck match"
+       "label": "struck match",
+       "search_aliases": [
+        "matchstick"
+       ]
       },
       {
        "id": "rubber",
@@ -2291,7 +2483,11 @@
       },
       {
        "id": "rotten_egg",
-       "label": "rotten egg"
+       "label": "rotten egg",
+       "search_aliases": [
+        "hydrogen sulphide",
+        "h2s"
+       ]
       },
       {
        "id": "cabbage_sulphur",
@@ -2320,7 +2516,10 @@
      "leaves": [
       {
        "id": "acetone",
-       "label": "acetone / nail varnish"
+       "label": "acetone / nail varnish",
+       "search_aliases": [
+        "nail polish"
+       ]
       },
       {
        "id": "glue",
@@ -2356,7 +2555,11 @@
      "leaves": [
       {
        "id": "petrol",
-       "label": "petrol / kerosene"
+       "label": "petrol / kerosene",
+       "search_aliases": [
+        "gasoline",
+        "petroleum"
+       ]
       },
       {
        "id": "diesel",
@@ -2364,7 +2567,10 @@
       },
       {
        "id": "wax",
-       "label": "wax"
+       "label": "wax",
+       "search_aliases": [
+        "paraffin"
+       ]
       }
      ]
     },
@@ -2384,7 +2590,10 @@
       },
       {
        "id": "mouldy",
-       "label": "mouldy"
+       "label": "mouldy",
+       "search_aliases": [
+        "moldy"
+       ]
       },
       {
        "id": "wet_cardboard",
@@ -2417,7 +2626,10 @@
       },
       {
        "id": "band_aid",
-       "label": "band-aid"
+       "label": "band-aid",
+       "search_aliases": [
+        "plaster"
+       ]
       },
       {
        "id": "disinfectant",
