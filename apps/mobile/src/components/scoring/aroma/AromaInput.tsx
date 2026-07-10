@@ -40,22 +40,37 @@ import { BrowseSheet } from './BrowseSheet';
 // Overflow cap for the inline chips row (~2 lines; the mock's MAX=5).
 const CHIP_CAP = 5;
 
-// One scale pulse (motion tokens — never hand-rolled easing) — the "it
-// landed HERE" cue on the chip a fresh Add produced, or on the "+N more"
-// pill when the family ordering files it into the overflow.
+// The "it landed HERE" cue on the chip a fresh Add produced (or the "+N
+// more" pill when the ordering files it into the overflow): a LIGHT-UP — an
+// accent veil flashes over the chip and fades (device feedback: a bare
+// scale pulse read as nothing), plus a slight lift. Motion tokens only.
 function FlashPulse({ on, children }: { on: boolean; children: React.ReactNode }) {
+  const { theme } = useTheme();
   const v = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!on) return;
     v.setValue(0);
     Animated.sequence([
       Animated.timing(v, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.easeOut), useNativeDriver: true }),
-      Animated.timing(v, { toValue: 0, duration: motion.dur2, easing: Easing.bezier(...motion.ease), useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: motion.dur3, easing: Easing.bezier(...motion.ease), useNativeDriver: true }),
     ]).start();
   }, [on, v]);
   return (
-    <Animated.View style={{ transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.1] }) }] }}>
+    <Animated.View style={{ transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) }] }}>
       {children}
+      <Animated.View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderRadius: 999,
+          backgroundColor: theme.accent,
+          opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0, 0.35] }),
+        }}
+      />
     </Animated.View>
   );
 }
@@ -156,13 +171,13 @@ export function AromaInput({
   };
 
   const overflow = value.length - CHIP_CAP;
-  // Pronounced chips always lead (Simon's ordering rule); the remaining
-  // slots go to the NEWEST other additions (an add past the cap must produce
-  // a visible chip, not a silent counter bump — review finding).
+  // STABLE slice of the display order (pronounced → family → insertion) — an
+  // earlier "newest stays visible" eviction hack fought the family
+  // clustering and made every add reshuffle the row (device feedback:
+  // chaotic). An add that files into the overflow announces itself via the
+  // pill's flash instead of an eviction.
   const ordered = displayOrder(value);
-  const pron = ordered.filter((s) => s.p);
-  const rest = ordered.filter((s) => !s.p);
-  const visibleChips = overflow > 0 ? [...pron, ...rest.slice(-Math.max(0, CHIP_CAP - pron.length))].slice(0, CHIP_CAP) : ordered;
+  const visibleChips = overflow > 0 ? ordered.slice(0, CHIP_CAP) : ordered;
   const fieldH = phone.surface('formControl').height(36);
   const searching = fieldFocused || q.length > 0;
 
