@@ -391,9 +391,10 @@ model Rating {
   score     Decimal?      @db.Decimal(3, 2)
   flavors   Json          @default("{}")
   // Aroma descriptor selections — array of {a: nodeId, m: modifierId|null,
-  // d?: true} entries from the @verre/core taxonomy (`d` = dominant, present
-  // only when true), capped + gated at the write boundary (lib/aromas.ts
-  // gateAromas). The node may sit at any tier
+  // p?: true} entries from the @verre/core taxonomy (`p` = pronounced,
+  // present only when true; re-keyed from `d` 2026-07-10 while zero rows
+  // carried it — comment-only change, no migration). Capped + gated at the
+  // write boundary (lib/aromas.ts gateAromas). The node may sit at any tier
   // (leaf "strawberry", subfamily "fruity.berry", family "fruity" — the
   // stored grain encodes the taster's confidence; any-tier ruling
   // 2026-07-08). '[]' is the empty signal the engagement cascade matches

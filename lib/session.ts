@@ -145,11 +145,11 @@ export function wineToWire(
 export type RatingMeta = {
   score: number
   flavors: Record<string, number>
-  // Aroma selections ({a: nodeId, m: modifierId|null, d?: true} against the
+  // Aroma selections ({a: nodeId, m: modifierId|null, p?: true} against the
   // @verre/core taxonomy; the node may sit at any tier — leaf/subfamily/
-  // family; `d` = dominant, present only when true). Optional: ratings
+  // family; `p` = pronounced, present only when true). Optional: ratings
   // written before the aromas field lack the key.
-  aromas?: { a: string; m: string | null; d?: boolean }[]
+  aromas?: { a: string; m: string | null; p?: boolean }[]
   notes: string
   at: number
 }

@@ -109,12 +109,12 @@ export type SessionMetaView = {
 // against the @verre/core taxonomy. The node may sit at ANY tier (leaf
 // "strawberry", subfamily "fruity.berry", family "fruity" — any-tier ruling
 // 2026-07-08); resolve via core's getAromaNode. Optional on the wire —
-// ratings written before the column shipped simply lack the key. `d` =
-// dominant flag, present only when true.
+// ratings written before the column shipped simply lack the key. `p` =
+// pronounced flag (the note that led the impression), present only when true.
 export type RatingMeta = {
   score: number;
   flavors: Record<string, number>;
-  aromas?: { a: string; m: string | null; d?: boolean }[];
+  aromas?: { a: string; m: string | null; p?: boolean }[];
   notes: string;
   at: number;
 };
@@ -269,10 +269,8 @@ export type RateBody = {
   // validateFlavors enforces this drop-all-or-keep-all shape.
   flavors: Record<string, number>;
   // Aroma selections. PRESENT-REPLACES / OMITTED-PRESERVES on the server:
-  // leave the field off to keep whatever is stored; send [] to clear. The
-  // rate screen doesn't edit aromas yet (input lands in PR B) — until it
-  // does, omit the field so a save never wipes selections made elsewhere.
-  aromas?: { a: string; m: string | null; d?: boolean }[];
+  // leave the field off to keep whatever is stored; send [] to clear.
+  aromas?: { a: string; m: string | null; p?: boolean }[];
   notes: string;
 };
 

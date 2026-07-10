@@ -60,15 +60,16 @@ export type AromaFamily = {
 // One stored aroma selection. `a` is a taxonomy node id at any tier (leaf
 // "strawberry", subfamily "fruity.berry", family "fruity" — the stored grain
 // encodes the taster's confidence). `m: null` is the implicit fresh/default
-// state — the "fresh" modifier is never materialised as an id. `d` marks the
-// selection DOMINANT (the note that led the impression, Simon's ruling
-// 2026-07-08): canonical/stored form carries it only when true (absent =
-// not dominant), it never affects the (a, m) dedupe identity or the cap
-// unit, and the display word is UI copy (field name stays `d`). Typed as the
-// literal `true` so the only-when-true rule is compile-enforced on anything
-// CONSTRUCTING selections; wire input still tolerates `d: false` (the gate
-// normalizes it away).
-export type AromaSelection = { a: string; m: string | null; d?: true }
+// state — the "fresh" modifier is never materialised as an id. `p` marks the
+// selection PRONOUNCED (the note that led the impression — ruled as the
+// "dominant" flag 2026-07-08; display word DECIDED "Pronounced" + wire field
+// re-keyed `d`→`p` 2026-07-10, while zero stored data existed — the rename
+// window is now closed): canonical/stored form carries it only when true
+// (absent = not pronounced), it never affects the (a, m) dedupe identity or
+// the cap unit. Typed as the literal `true` so the only-when-true rule is
+// compile-enforced on anything CONSTRUCTING selections; wire input still
+// tolerates `p: false` (the gate normalizes it away).
+export type AromaSelection = { a: string; m: string | null; p?: true }
 
 // Any selectable taxonomy node, tier-tagged. `subfamily`/`leaf` are present
 // per tier; `path` is the dotted debug/display form — a DERIVED string,
@@ -234,14 +235,14 @@ export function gateAromaSelections(input: unknown): GatedAromas {
   const byKey = new Map<string, AromaSelection>()
   for (const raw of input) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'each aroma must be an object' }
-    const { a, m, d } = raw as { a?: unknown; m?: unknown; d?: unknown }
+    const { a, m, p } = raw as { a?: unknown; m?: unknown; p?: unknown }
     if (typeof a !== 'string') return { error: 'aroma id required' }
     const mod = m === undefined || m === null ? null : m
     if (mod !== null && typeof mod !== 'string') return { error: 'aroma modifier must be a string or null' }
-    // `d: null` deliberately 400s (unlike `m`, where null IS the fresh state):
+    // `p: null` deliberately 400s (unlike `m`, where null IS the fresh state):
     // JSON.stringify drops undefined properties, so no honest client emits a
     // null here — same malformed-payload stance as `aromas: null` above.
-    if (d !== undefined && typeof d !== 'boolean') return { error: 'aroma dominant flag must be a boolean' }
+    if (p !== undefined && typeof p !== 'boolean') return { error: 'aroma pronounced flag must be a boolean' }
     // Truncate echoed ids — real slugs are short; don't reflect an
     // attacker's multi-MB string back in the 400 body.
     if (!NODE_BY_ID.has(a)) return { error: `unknown aroma id: ${a.slice(0, 64)}` }
@@ -260,16 +261,16 @@ export function gateAromaSelections(input: unknown): GatedAromas {
       canonA = promoted
       canonM = null
     }
-    // Dedupe stays keyed on (a, m) — `d` is not identity. If duplicates
-    // disagree on dominance, dominant wins (an any-true upgrade loses no
-    // signal either ordering). Canonical form carries `d` only when true.
+    // Dedupe stays keyed on (a, m) — `p` is not identity. If duplicates
+    // disagree, pronounced wins (an any-true upgrade loses no signal either
+    // ordering). Canonical form carries `p` only when true.
     const key = JSON.stringify([canonA, canonM])
     const existing = byKey.get(key)
     if (existing) {
-      if (d === true) existing.d = true
+      if (p === true) existing.p = true
       continue
     }
-    const sel: AromaSelection = d === true ? { a: canonA, m: canonM, d: true } : { a: canonA, m: canonM }
+    const sel: AromaSelection = p === true ? { a: canonA, m: canonM, p: true } : { a: canonA, m: canonM }
     byKey.set(key, sel)
     out.push(sel)
   }
