@@ -359,6 +359,7 @@ const SAMPLE_LEVELS: Record<string, number> = {
   finish: 4,
   aroma: 3,
   flavour: 5,
+  funk: 1,
   tannin: 2,
   bubbles: 4,
 };

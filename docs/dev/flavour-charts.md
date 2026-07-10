@@ -16,9 +16,9 @@ Two chart types coexist:
 
 ## The structure axes (active model)
 
-Per-`(category, style)` from `resolveAxes` (`@verre/core`). Wine base (red/white/rose) = **sweetness, acidity, body, finish, aroma, flavour, tannin** (0–5 intensities); **spark** appends **bubbles**. No per-type pruning — an absent axis sits at None. Colour is per-platform (web `WEB_PALETTE` + `withColours`; native resolves from theme), not in core. The four carried-over keys (`body`/`acid`/`tannin`/`sweet`) are byte-identical to the legacy keys, so migrated data renders unchanged.
+Per-`(category, style)` from `resolveAxes` (`@verre/core`). Wine base (red/white/rose) = **Sweetness · Acidity · Smell · Taste · Funk · Tannin · Body · Finish** (0–5 intensities, display order per Simon's 2026-07-09 ruling — Funk joined the set the same day, closing the drift vs the brief's wine baseline); **spark** INSERTS **Bubbles** between Taste and Funk. Rows predating Funk lack the key → no spoke (the Bubbles precedent). No per-type pruning — an absent axis sits at None. Colour is per-platform (web `WEB_PALETTE` + `withColours`; native resolves from theme), not in core. The four carried-over keys (`body`/`acid`/`tannin`/`sweet`) are byte-identical to the legacy keys, so migrated data renders unchanged.
 
-The **profile aggregate** (`lib/profileFlavor.ts`) derives its key list from `resolveAxes('wine','red')` (the base 7) — one source of truth with the wheel.
+The **profile aggregate** (`lib/profileFlavor.ts`) derives its key list from `resolveAxes('wine','red')` (the base 8, incl. Funk since 2026-07-09) — one source of truth with the wheel.
 
 ## Legacy descriptor dimensions (removed)
 

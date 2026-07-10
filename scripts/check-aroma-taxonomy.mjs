@@ -41,8 +41,20 @@ for (const m of tax.modifiers ?? []) {
   modifierIds.add(m.id)
 }
 
+// Strings are iterable, so a malformed `"allowed_modifiers": "dried"` (or
+// `"search_aliases": "abc"`) would iterate per-CHARACTER instead of failing —
+// every optional-array field must be shape-checked before iteration. `asArray`
+// is that guard: undefined stays undefined, a real array passes through,
+// anything else records an error and yields [] so downstream checks don't
+// cascade on garbage.
+const asArray = (value, where, field) => {
+  if (value === undefined || Array.isArray(value)) return value
+  errors.push(`${where}: ${field} must be an array`)
+  return []
+}
+
 const checkRefs = (list, where) => {
-  for (const id of list ?? []) {
+  for (const id of asArray(list, where, 'allowed_modifiers') ?? []) {
     if (!modifierIds.has(id)) errors.push(`${where}: unknown modifier "${id}"`)
   }
 }
@@ -81,11 +93,53 @@ for (const family of tax.families ?? []) {
       if (effective === undefined) {
         errors.push(`no allowed_modifiers anywhere on chain for leaf: ${leaf.id}`)
       }
-      for (const modId of Object.keys(leaf.modifier_display ?? {})) {
+      const display = leaf.modifier_display
+      if (display !== undefined && (typeof display !== 'object' || display === null || Array.isArray(display))) {
+        errors.push(`${leaf.id}: modifier_display must be an object`)
+      }
+      for (const modId of Object.keys((typeof display === 'object' && display) || {})) {
         if (!modifierIds.has(modId)) {
           errors.push(`${leaf.id}: modifier_display for unknown modifier "${modId}"`)
-        } else if (effective && !effective.includes(modId)) {
+        } else if (Array.isArray(effective) && !effective.includes(modId)) {
           errors.push(`${leaf.id}: modifier_display for disallowed modifier "${modId}"`)
+        }
+      }
+    }
+  }
+}
+
+// Leaf search_aliases (input-time vocabulary — cassis→blackcurrant): each
+// alias must be a non-empty lowercase-ish string, must NOT equal any node
+// label at any tier (an alias may never shadow a real node), and must be
+// unique across all leaves (one alias, one destination).
+{
+  // Shadow set spans node labels AND modifier vocabulary (labels + the
+  // modifiers' own search_aliases) — a leaf alias equal to "dried" or
+  // "jammy" would collide in PR B's flat search index.
+  const allLabels = new Set()
+  for (const m of tax.modifiers ?? []) {
+    allLabels.add((m.label ?? '').toLowerCase())
+    for (const a of asArray(m.search_aliases, m.id, 'search_aliases') ?? []) allLabels.add(String(a).toLowerCase())
+  }
+  for (const family of tax.families ?? []) {
+    allLabels.add((family.label ?? '').toLowerCase())
+    for (const sub of family.subfamilies ?? []) {
+      allLabels.add((sub.label ?? '').toLowerCase())
+      for (const leaf of sub.leaves ?? []) allLabels.add((leaf.label ?? '').toLowerCase())
+    }
+  }
+  const seenAliases = new Map()
+  for (const family of tax.families ?? []) {
+    for (const sub of family.subfamilies ?? []) {
+      for (const leaf of sub.leaves ?? []) {
+        for (const alias of asArray(leaf.search_aliases, leaf.id, 'search_aliases') ?? []) {
+          if (typeof alias !== 'string' || !alias.trim() || alias !== alias.trim() || alias.length > 40 || alias !== alias.toLowerCase()) {
+            errors.push(`${leaf.id}: bad search alias ${JSON.stringify(alias)} (non-empty trimmed lowercase string ≤40 chars)`)
+            continue
+          }
+          if (allLabels.has(alias)) errors.push(`${leaf.id}: search alias "${alias}" shadows a node label or modifier word`)
+          if (seenAliases.has(alias)) errors.push(`duplicate search alias "${alias}" on ${seenAliases.get(alias)} and ${leaf.id}`)
+          seenAliases.set(alias, leaf.id)
         }
       }
     }
@@ -108,7 +162,7 @@ for (const family of tax.families ?? []) {
       }
       if (!leafIds.has(pf.a)) errors.push(`${leaf.id}: promoted_from base is not a leaf: ${pf.a}`)
       if (!modifierIds.has(pf.m)) errors.push(`${leaf.id}: promoted_from unknown modifier: ${pf.m}`)
-      const own = leaf.allowed_modifiers ?? subAllowed ?? []
+      const own = asArray(leaf.allowed_modifiers ?? subAllowed, leaf.id, 'allowed_modifiers') ?? []
       if (own.includes(pf.m)) errors.push(`${leaf.id}: promoted leaf must not allow its own promoted_from modifier "${pf.m}"`)
     }
   }
@@ -121,7 +175,7 @@ for (const family of tax.families ?? []) {
     for (const sub of family.subfamilies ?? []) {
       const subAllowed = sub.allowed_modifiers ?? family.allowed_modifiers
       for (const leaf of sub.leaves ?? []) {
-        effectiveByLeaf.set(leaf.id, leaf.allowed_modifiers ?? subAllowed ?? [])
+        effectiveByLeaf.set(leaf.id, asArray(leaf.allowed_modifiers ?? subAllowed, leaf.id, 'allowed_modifiers') ?? [])
       }
     }
   }

@@ -24,8 +24,8 @@ import { radius, useTheme } from '@/theme';
 // on a wide phone, one per row when narrow.
 //
 // Data model (structure wheel): the rated axes are structure INTENSITIES
-// resolved from the wine style (resolveAxes) — sweet/acid/body/finish/aroma/
-// flavour/tannin, +bubbles on sparkling. Colour is per-platform presentation:
+// resolved from the wine style (resolveAxes) — sweet/acid/aroma/flavour/
+// (+bubbles on sparkling)/funk/tannin/body/finish (2026-07-09 order). Colour is per-platform presentation:
 // native reads it from the ACTIVE THEME (useFlavourColors), never a baked hex
 // (proposal §3a).
 //

@@ -13,11 +13,11 @@ its subset when it ships.
 
 | Set | Keys | Wired today? |
 |---|---|---|
-| `structure` (wine subset) | sweet · acid · body · finish · aroma · flavour · tannin (+ bubbles on spark) | ✅ derived at load by `../flavourColors.ts` (imports this file), used by the native flavour input + wheel |
-| `structure` (other-category keys) | Warmth · Bitterness · Umami · Saltyness · Funk | ❌ future categories (cheese/beer/spirits) — NOT extra wine axes |
+| `structure` (wine subset) | sweet · acid · aroma · flavour · (bubbles on spark) · funk · tannin · body · finish — display order per Simon's 2026-07-09 ruling; funk joined wine the same day | ✅ derived at load by `../flavourColors.ts` (imports this file), used by the native flavour input + wheel |
+| `structure` (other-category keys) | Spiciness · Bitterness · Umami · Saltyness | ❌ future categories (food/beer/spirits) — NOT extra wine axes. (`Spiciness` re-keyed from `Warmth` 2026-07-09, same hexes — Warmth is dropped from the master list per the brief; Simon may re-pick the Spiciness values later. `Funk` moved INTO the wine subset 2026-07-09.) |
 | `aroma` (12 keys) | Fruity · Spice · Kernel · Fire · Woody · Sweet · Savory · Vegetal · Mineral · Chemical · Funky · Floral | ❌ not wired to a screen yet — keys match the taxonomy tier-1 family labels (`@verre/core` `aroma/taxonomy.json`; re-keyed Nut/Cocoa→Kernel, Roasted→Fire with the design source, Simon 2026-07-08) |
 
-The rated axes today are WINE only — 8 structure intensities. The registry lives
+The rated axes today are WINE only — 9 structure intensities (8 base incl. Funk, + Bubbles on spark). The registry lives
 in `@verre/core` `structureAxes.ts` (`resolveAxes(category, style)`), carries NO
 colour (colour is per-platform presentation), and reserves `category` for the
 future non-wine sets. When a category or the aroma feature lands, add its axis
@@ -32,7 +32,7 @@ keys to the registry and a key→label map beside `../flavourColors.ts`
   + literal LABEL unions per set), the same pattern as `../vero-tokens.d.ts`.
   The label unions make a misspelled/removed label in a key→label map a compile
   error; a re-paste that renames a label must update the union here too.
-- **`../flavourColors.ts`** — NO hexes: derives the wine-8 runtime subset from
+- **`../flavourColors.ts`** — NO hexes: derives the wine-9 runtime subset from
   `palette.js` at module load via its `KEY_TO_LABEL` map, plus
   `useFlavourColors()`, which resolves an axis's colour from the user's ACTIVE
   theme at render time (proposal §3a — native colour is theme-resolved, never a

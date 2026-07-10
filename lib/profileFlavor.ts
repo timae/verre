@@ -4,8 +4,8 @@ import { resolveAxes } from '@/lib/flavours'
 // Profile-aggregate keys = the STRUCTURE axes (no longer hardcoded descriptors).
 // Derived from the registry so this can't drift from the axis set — the
 // "second hardcoded list" that broke the day descriptors were dropped (§6a) is
-// gone. The base wine set (resolveAxes('wine','red')) is the 7 universal wine
-// axes; `bubbles` (sparkling-only) is intentionally excluded — the profile
+// gone. The base wine set (resolveAxes('wine','red')) is the 8 universal wine
+// axes (incl. Funk since 2026-07-09); `bubbles` (sparkling-only) is intentionally excluded — the profile
 // wheel is a cross-wine structure profile, not a per-style one.
 //
 // Strict regex (kept): these names are interpolated raw into a SQL SELECT list
