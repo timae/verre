@@ -1,3 +1,5 @@
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
@@ -12,12 +14,13 @@ import {
   Keyboard,
   Pressable,
   ScrollView,
-  TextInput,
   useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { countryName, validateScore, fillFlavourZeros } from '@verre/core';
+import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
+import { AromaInput } from '@/components/scoring/aroma/AromaInput';
+import { NotesField } from '@/components/moments/momentForm';
 import { FlavourInput } from '@/components/scoring/FlavourInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, AnchorButton, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -26,7 +29,6 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
-import { useRegisterInput } from '@/lib/keyboardDismiss';
 import {
   ApiError,
   deleteWine,
@@ -71,6 +73,7 @@ export default function ImpressionDetail() {
   const wineId = String(rawWineId ?? '');
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
+  const { height: screenHeight } = useWindowDimensions();
   const phone = usePhoneTokens();
   const router = useRouter();
   const sessionTab = useSessionTab();
@@ -146,8 +149,16 @@ export default function ImpressionDetail() {
   const [score, setScore] = useState(0);
   const [notes, setNotes] = useState('');
   const [flavors, setFlavors] = useState<Record<string, number>>({});
+  const [aromas, setAromas] = useState<AromaSelection[]>([]);
   const [detailOpen, setDetailOpen] = useState(false);
   const seededFor = useRef<string | null>(null);
+  // Whether the local aromas state is TRUSTWORTHY for this wine: seeded from
+  // a real ratings payload, or edited by the user. Until then the save must
+  // OMIT the field (omitted-preserves) — sending the unseeded [] during a
+  // degraded ratings section would present-replace the stored selections
+  // away (review finding). Score/notes claiming the seed slot does NOT make
+  // aromas trustworthy, hence the separate flag.
+  const aromasSeeded = useRef(false);
   useEffect(() => {
     if (seededFor.current === wineId || ratings === null) return;
     seededFor.current = wineId;
@@ -156,7 +167,13 @@ export default function ImpressionDetail() {
     // Seed the flavour grid from the stored structure map (keys present = rated,
     // 0 = perceived None). FlavourInput edits it in place.
     setFlavors(existing?.flavors ?? {});
-    setDetailOpen(!!(existing?.notes || Object.keys(existing?.flavors ?? {}).length));
+    // Stored aromas re-canonicalized through the gate (drops a p:false a
+    // legacy write might carry; the diff below compares canonical-to-canonical).
+    setAromas(gateAromaSelections(existing?.aromas).value ?? []);
+    aromasSeeded.current = true;
+    // Notes moved out of the panel (they sit under the score now) — the
+    // disclosure keys on structure engagement alone.
+    setDetailOpen(Object.keys(existing?.flavors ?? {}).length > 0);
   }, [wineId, ratings, existing]);
   // An edit before the first ratings payload arrives (cold cache /
   // degraded /state section) claims the seed slot — a late seed must not
@@ -173,6 +190,11 @@ export default function ImpressionDetail() {
     seededFor.current = wineId;
     setFlavors(next);
   };
+  const editAromas = (next: AromaSelection[]) => {
+    seededFor.current = wineId;
+    aromasSeeded.current = true; // a deliberate edit is authoritative
+    setAromas(next);
+  };
 
   // Crave = wine bookmark (web WineModal parity, optimistic). The local
   // override is keyed on the wine id, so a sibling-wine swap ignores it at
@@ -188,7 +210,7 @@ export default function ImpressionDetail() {
   });
 
   const rateMut = useMutation({
-    mutationFn: (body: { wineId: string; score: number; flavors: Record<string, number>; notes: string }) =>
+    mutationFn: (body: { wineId: string; score: number; flavors: Record<string, number>; aromas?: AromaSelection[]; notes: string }) =>
       rateWine(code, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['session-state', code, myIdentityId] });
@@ -250,19 +272,35 @@ export default function ImpressionDetail() {
     // reloaded filled shape ({…,acid:4,…}) — otherwise tapping Next/Back on an
     // untouched legacy rating reposts it and bumps its `at` timestamp.
     const cleanExisting = fillFlavourZeros(existing?.flavors ?? {}, 'wine', wine?.type ?? null);
+    // Aromas diff canonical-to-canonical (the local state is always gated;
+    // stored selections re-gate here) so key order / a legacy p:false can't
+    // read as a change.
+    const existingAromas = gateAromaSelections(existing?.aromas).value ?? [];
     const changed =
       score !== (existing?.score ?? 0) ||
       notes !== (existing?.notes ?? '') ||
-      JSON.stringify(cleanFlavors) !== JSON.stringify(cleanExisting);
+      JSON.stringify(cleanFlavors) !== JSON.stringify(cleanExisting) ||
+      JSON.stringify(aromas) !== JSON.stringify(existingAromas);
     if (!changed) return true;
-    const empty = score === 0 && notes.trim() === '' && Object.keys(cleanFlavors).length === 0;
+    const empty = score === 0 && notes.trim() === '' && Object.keys(cleanFlavors).length === 0 && aromas.length === 0;
     if (empty && !existing) return true; // nothing rated, nothing stored — no POST
     if (validateScore(score).error) {
       setSaveError('Scores go from 0 to 5 in quarter steps.');
       return false;
     }
     try {
-      await rateMut.mutateAsync({ wineId, score, flavors: cleanFlavors, notes });
+      // `aromas` is PRESENT once the local state is trustworthy (seeded or
+      // user-edited) — present-replaces is right for a client that owns the
+      // field (an [] clear must reach the server). While the ratings section
+      // is degraded and untouched, OMIT it (omitted-preserves) so a
+      // score/notes save can't wipe stored selections with the unseeded [].
+      await rateMut.mutateAsync({
+        wineId,
+        score,
+        flavors: cleanFlavors,
+        ...(aromasSeeded.current ? { aromas } : {}),
+        notes,
+      });
       // The local edit is now the server state; allow re-seed on next wine.
       seededFor.current = null;
       return true;
@@ -282,6 +320,7 @@ export default function ImpressionDetail() {
     // (same route, new params) picks it up in its Stack.Screen options.
     navDir = i < index ? 'prev' : 'next';
     seededFor.current = null;
+    aromasSeeded.current = false; // the sibling wine must re-earn trust
     router.replace(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId: wines[i].id }));
   };
   const onPrevious = async () => {
@@ -289,6 +328,9 @@ export default function ImpressionDetail() {
   };
   const onNext = async () => {
     if (!(await saveIfNeeded())) return;
+    // Short "acknowledged" tick on Save & next / Save & finish (Simon,
+    // 2026-07-10) — the M3 commit convention (light impact, no-op in Sim).
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (index >= total - 1) router.back();
     else goTo(index + 1);
   };
@@ -302,9 +344,11 @@ export default function ImpressionDetail() {
   const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   const clearRating = () => {
     seededFor.current = wineId; // an edit — a late seed must not undo it
+    aromasSeeded.current = true; // explicit clear: the [] must reach the server
     setScore(0);
     setNotes('');
     setFlavors({});
+    setAromas([]);
     setMenuAnchor(null);
   };
   const editImpression = () => {
@@ -350,11 +394,35 @@ export default function ImpressionDetail() {
   const [pulled, setPulled] = useState(false);
   const nameBottomRef = useRef(0);
   const headerBottomRef = useRef(0);
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollYRef = useRef(0);
   const onScroll = (y: number) => {
+    scrollYRef.current = y;
     const show = y >= nameBottomRef.current - headerBottomRef.current;
     setTitleShown((prev) => (prev === show ? prev : show));
     const p = y < -1;
     setPulled((prev) => (prev === p ? prev : p));
+  };
+  // Aroma search focus → the MINIMAL shift that fits the search block
+  // (field + suggestions + refine row, ~250pt) above the keyboard — not a
+  // jump to the top of the screen (Simon's ask). The OS keyboard-inset only
+  // bottom-aligns the field itself; the block below it needs this. Keyboard
+  // height is captured from the show events (defaults to a mid-size board
+  // for the first pre-show call; the input's late re-measure corrects it).
+  const keyboardHRef = useRef(300);
+  useEffect(() => {
+    const subs = [
+      Keyboard.addListener('keyboardWillShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
+      Keyboard.addListener('keyboardDidShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
+    ];
+    return () => subs.forEach((s) => s.remove());
+  }, []);
+  // blockBelow comes from AromaInput's own surface math (Dynamic-Type-aware),
+  // not a constant — see the prop doc there.
+  const scrollAromaSearchTo = (rowTopInWindow: number, blockBelow: number) => {
+    const visibleBottom = screenHeight - keyboardHRef.current - 8;
+    const delta = rowTopInWindow + blockBelow - visibleBottom;
+    if (delta > 4) scrollRef.current?.scrollTo({ y: scrollYRef.current + delta, animated: true });
   };
 
   if (!wine) {
@@ -403,6 +471,11 @@ export default function ImpressionDetail() {
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
       {!blind ? <AboutBlock wine={wine} /> : null}
       <ScoreInput value={score} onChange={editScore} />
+      {/* note — between score and structure (Simon, 2026-07-10); the shared
+          NotesField caps its growth (~8 lines) then scrolls internally. */}
+      <View style={{ marginTop: 16 }}>
+        <NotesField label="Your Note" placeholder="What stood out?" value={notes} onChange={editNotes} />
+      </View>
       {/* .ir-detail-toggle + panel — the adaptive "Structure profile". The ⓘ
           (open only) sits as a SIBLING of the toggle Pressable, not nested —
           nested Pressables fight for the touch responder. It opens the
@@ -445,9 +518,12 @@ export default function ImpressionDetail() {
               perceives fizz/tannin/body blind, so they rate structure while the
               identity stays hidden (mirrors web RatingPane + wineRedaction). */}
           <FlavourInput style={wine.type} value={flavors} onChange={editFlavors} />
-          <NoteField value={notes} onChange={editNotes} />
         </View>
       ) : null}
+      {/* Aromas — the descriptor layer (02e·11 search-first block). Always
+          visible, blind included: like structure, aromas are the taster's own
+          perception and never identify the wine. */}
+      <AromaInput value={aromas} onChange={editAromas} onRequestScroll={scrollAromaSearchTo} />
       {saveError ? (
         <VText variant="small" style={{ marginTop: 14, color: theme.critical }}>{saveError}</VText>
       ) : null}
@@ -455,6 +531,11 @@ export default function ImpressionDetail() {
   );
 
   return (
+    // BottomSheetModalProvider INSIDE the screen (the app's per-screen
+    // pattern, see create.tsx / session index) — the AromaInput sheets
+    // (selection + browse) need a sized provider/portal host; without one
+    // the gorhom modal throws 'BottomSheetModalInternalContext cannot be null'.
+    <BottomSheetModalProvider>
     <View style={{ flex: 1 }}>
       {/* Previous replaces with the pop animation so the slide reads as
           going back; next keeps push. gestureResponseDistance narrows the iOS
@@ -497,6 +578,7 @@ export default function ImpressionDetail() {
               never exists for the finder to hit. */}
           <View collapsable={false} style={{ width: 0, height: 0 }} />
           <ScrollView
+            ref={scrollRef}
             onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)}
             scrollEventThrottle={16}
             contentInsetAdjustmentBehavior="never"
@@ -571,6 +653,7 @@ export default function ImpressionDetail() {
             />
           </View>
           <ScrollView
+            ref={scrollRef}
             onScroll={(e) => onScroll(e.nativeEvent.contentOffset.y)}
             scrollEventThrottle={16}
             automaticallyAdjustKeyboardInsets
@@ -634,6 +717,7 @@ export default function ImpressionDetail() {
         </View>
       </AnchoredMenu>
     </View>
+    </BottomSheetModalProvider>
   );
 }
 
@@ -1072,47 +1156,8 @@ function AboutBlock({ wine }: { wine: WireWine }) {
 
 // ─── detail panel + footer ─────────────────────────────
 
-// .field-group — "Your note" label + 2-row textarea (.field focus = accent
-// border thickened inside the bounds, TextField's convention).
-function NoteField({ value, onChange }: { value: string; onChange: (s: string) => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('formControl');
-  const [focused, setFocused] = useState(false);
-  const noteRef = useRef<TextInput | null>(null);
-  useRegisterInput(noteRef);
-  return (
-    <View style={{ gap: 7, marginTop: 8 }}>
-      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>Your note</VText>
-      <TextInput
-        ref={noteRef}
-        value={value}
-        onChangeText={onChange}
-        multiline
-        placeholder="What stood out?"
-        placeholderTextColor={theme.inkFaint}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        {...surface.textProps}
-        style={{
-          minHeight: surface.height(64),
-          fontFamily: 'InstrumentSans_400Regular',
-          fontSize: phone.text('body').fontSize,
-          lineHeight: phone.text('body').lineHeight,
-          color: theme.ink,
-          backgroundColor: theme.surface,
-          borderWidth: focused ? 2 : 1,
-          borderColor: focused ? theme.accent : theme.rule,
-          borderRadius: radius.sm,
-          paddingHorizontal: focused ? 13 : 14,
-          paddingTop: surface.paddingY(focused ? 9 : 10),
-          paddingBottom: surface.paddingY(10),
-          textAlignVertical: 'top',
-        }}
-      />
-    </View>
-  );
-}
+// (The private NoteField was replaced by the shared momentForm NotesField —
+// the catalog's pending extraction — when the note moved under the score.)
 
 // .ir-foot — sticky bottom action bar replacing the nav while rating:
 // Previous (flex 1) · Save & next / Save & finish (flex 1.4).

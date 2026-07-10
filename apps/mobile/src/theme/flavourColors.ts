@@ -21,8 +21,9 @@
 // NOT the aroma-set "Sweet" — different attributes that share a hex in most
 // themes; reading `structure` scoped below makes cross-wiring impossible.
 
-import { FLAVOUR_PALETTE, type StructureLabel } from './flavour-palette/palette';
+import { FLAVOUR_PALETTE, type AromaLabel, type StructureLabel } from './flavour-palette/palette';
 import { useTheme, type ThemeKey } from '@/theme';
+import { AROMA_FAMILIES } from '@verre/core';
 
 // The 9 wine axis keys carried today (structureAxes.ts WINE_BASE incl. Funk
 // since Simon's 2026-07-09 ruling, + Bubbles on spark). A record keeps every
@@ -82,6 +83,39 @@ export function useFlavourColors(): (key: string) => string {
   const { themeKey, theme } = useTheme();
   const palette = FLAVOUR_COLORS[themeKey];
   return (key: string) => palette[key as FlavourAxisKey] ?? theme.accent;
+}
+
+// ── Aroma family colours (the descriptor layer's tier-1 tint) ──
+// Same derivation pattern as the wine subset, from the palette's `aroma`
+// block (12 families, Kernel/Fire keys since the 2026-07-08 re-key). Keyed by
+// the TAXONOMY family id (`fruity`, `kernel`, …): the taxonomy's family label
+// IS the palette's aroma label (both sides authored to match), so the id→hex
+// table is derived from @verre/core's AROMA_FAMILIES at module load — a
+// taxonomy label the palette doesn't carry falls out as undefined and the
+// hook's accent fallback covers it (visible, not a crash, same posture as
+// useFlavourColors). Any node's colour = its FAMILY's colour, all tiers.
+function aromaSubset(theme: keyof typeof FLAVOUR_PALETTE): Record<string, string> {
+  const aroma = FLAVOUR_PALETTE[theme].aroma;
+  const out: Record<string, string> = {};
+  for (const family of AROMA_FAMILIES) out[family.id] = aroma[family.label as AromaLabel];
+  return out;
+}
+
+export const AROMA_COLORS: Record<ThemeKey, Record<string, string>> = {
+  apricot: aromaSubset('apricot'),
+  charcoal: aromaSubset('charcoal'),
+  cobalt: aromaSubset('cobalt'),
+  aubergine: aromaSubset('aubergine'),
+  clay: aromaSubset('clay'),
+  mauve: aromaSubset('mauve'),
+};
+
+// Active-theme aroma-colour resolver: (family id) → hex. Callers resolve a
+// selection's family via core's getAromaNode(sel.a).family.id.
+export function useAromaColors(): (familyId: string) => string {
+  const { themeKey, theme } = useTheme();
+  const palette = AROMA_COLORS[themeKey];
+  return (familyId: string) => palette[familyId] ?? theme.accent;
 }
 
 // ── Person-series colours (02d compare — ≤4 radar polygons, people dots) ──
