@@ -417,8 +417,8 @@ export default function ImpressionDetail() {
     ];
     return () => subs.forEach((s) => s.remove());
   }, []);
-  // blockBelow comes from AromaInput's own surface math (Dynamic-Type-aware),
-  // not a constant — see the prop doc there.
+  // blockBelow is AromaInput's MEASURED rendered height (onLayout), not a
+  // constant — see the prop doc there.
   const scrollAromaSearchTo = (rowTopInWindow: number, blockBelow: number) => {
     const visibleBottom = screenHeight - keyboardHRef.current - 8;
     const delta = rowTopInWindow + blockBelow - visibleBottom;

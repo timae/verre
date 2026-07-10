@@ -25,10 +25,16 @@ export function SelectionSheet({
   open,
   onClose,
   ops,
+  stackBehavior,
+  layer,
 }: {
   open: boolean;
   onClose: () => void;
   ops: AromaOps;
+  // Pass 'push' + a layer when opening ON TOP of a still-open parent sheet
+  // (the browse sheet's "+N more") — the default 'replace' would dismiss it.
+  stackBehavior?: 'push' | 'replace' | 'switch';
+  layer?: number;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -98,6 +104,8 @@ export function SelectionSheet({
       snapPoints={scrolls ? ['70%'] : undefined}
       enableDynamicSizing={!scrolls}
       maxDynamicContentSize={height * 0.75}
+      stackBehavior={stackBehavior}
+      layer={layer}
     >
       <BottomSheetView style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
         <View style={{ paddingHorizontal: 20 }}>{header}</View>

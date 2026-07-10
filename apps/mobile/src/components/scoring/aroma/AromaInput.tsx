@@ -1,15 +1,14 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
-import { AROMA_MODIFIERS, AROMA_SELECTION_CAP, aromaAllowedModifiers, aromaModifierDisplay, getAromaNode, searchAromas, type AromaSelection } from '@verre/core';
+import { Keyboard, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
+import { AROMA_SELECTION_CAP, searchAromas, type AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
-import { Button } from '@/components/ui/Button';
 import { SheetSearchField } from '@/components/moments/CompareBody';
-import { AnchoredMenu, AnchorButton, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { usePhoneTokens } from '@/lib/layout';
-import { motion, useTheme } from '@/theme';
-import { useAromaOps, useTapOrDouble, AromaChip, ModifierPopup, canonicalPair, capFirst, displayOrder } from './parts';
+import { useTheme } from '@/theme';
+import { useAromaOps, useTapOrDouble, AromaChip, RefineAddRow, SelectedChipsRow, canonicalPair, capFirst } from './parts';
 import { SelectionSheet } from './SelectionSheet';
 import { BrowseSheet } from './BrowseSheet';
 
@@ -37,43 +36,10 @@ import { BrowseSheet } from './BrowseSheet';
 // local-until-commit like score/flavors/notes); every mutation runs through
 // the core gate inside useAromaOps.
 
-// Overflow cap for the inline chips row (~2 lines; the mock's MAX=5).
-const CHIP_CAP = 5;
-
-// The "it landed HERE" cue on the chip a fresh Add produced (or the "+N
-// more" pill when the ordering files it into the overflow): a LIGHT-UP — an
-// accent veil flashes over the chip and fades (device feedback: a bare
-// scale pulse read as nothing), plus a slight lift. Motion tokens only.
-function FlashPulse({ on, children }: { on: boolean; children: React.ReactNode }) {
-  const { theme } = useTheme();
-  const v = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    if (!on) return;
-    v.setValue(0);
-    Animated.sequence([
-      Animated.timing(v, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.easeOut), useNativeDriver: true }),
-      Animated.timing(v, { toValue: 0, duration: motion.dur3, easing: Easing.bezier(...motion.ease), useNativeDriver: true }),
-    ]).start();
-  }, [on, v]);
-  return (
-    <Animated.View style={{ transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) }] }}>
-      {children}
-      <Animated.View
-        pointerEvents="none"
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          borderRadius: 999,
-          backgroundColor: theme.accent,
-          opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0, 0.35] }),
-        }}
-      />
-    </Animated.View>
-  );
-}
+// The displayed words of one search result, as a collision key: two results
+// can read identically (the leaf "honey" under the "Honey" group — four such
+// label twins in the taxonomy) and the colliding leaf then needs context.
+const resultLabelKey = (r: ReturnType<typeof searchAromas>[number]) => `${r.node.label}|${r.modifierWord ?? ''}`.toLowerCase();
 
 export function AromaInput({
   value,
@@ -82,52 +48,54 @@ export function AromaInput({
 }: {
   value: AromaSelection[];
   onChange: (v: AromaSelection[]) => void;
-  // Called when the field focuses, with the search row's window-Y and the
-  // search block's rendered height below that point (field + suggestions +
-  // refine row, Dynamic-Type-scaled) — the screen scrolls the minimal shift
-  // that fits the block above the keyboard.
+  // Called when the field focuses (and again whenever the block's rendered
+  // height changes), with the search row's window-Y and the MEASURED height
+  // below that point (field + suggestions + refine row + cap hint) — the
+  // screen scrolls the minimal shift that fits the block above the keyboard.
   onRequestScroll?: (rowTopInWindow: number, blockBelow: number) => void;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const { height: screenH, width: screenW } = useWindowDimensions();
+  const { height: screenH } = useWindowDimensions();
   const ops = useAromaOps(value, onChange);
   const [query, setQuery] = useState('');
   const [fieldFocused, setFieldFocused] = useState(false);
   // Pending pick from the results — the refine block's target; `m` seeds
   // from the result and the rail edits it before Add commits. Pronounced is
-  // likewise pending until Add.
-  const [focus, setFocus] = useState<{ a: string; m: string | null } | null>(null);
+  // likewise pending until Add. `key` pins the tapped RESULT ROW: highlight
+  // identity, so a modifier edit on the button doesn't drop it (feedback)
+  // and two rows sharing a node (canonical rewrites can produce that) never
+  // co-highlight (review finding).
+  const [focus, setFocus] = useState<{ a: string; m: string | null; key: string } | null>(null);
   const [pendP, setPendP] = useState(false);
   const [selOpen, setSelOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
-  // Chip refine popup (tap a selected chip) — anchored at the tapped chip.
-  const [popup, setPopup] = useState<{ a: string; m: string | null; anchor: MenuAnchor; right?: number } | null>(null);
   // The ⓘ explainer by the hint line (the structure panel's pattern).
   const [helpAnchor, setHelpAnchor] = useState<MenuAnchor | null>(null);
-  const chipRefs = useRef<Record<string, View | null>>({});
   const searchRowRef = useRef<View | null>(null);
   const tap = useTapOrDouble();
-  // Modifier menu (the refine row's button) — anchored like Compare's sort
-  // menu: right edge placed a panel-width from the button's left.
-  const modBtnRef = useRef<View | null>(null);
-  const [modMenuAnchor, setModMenuAnchor] = useState<MenuAnchor | null>(null);
-  const [modMenuRight, setModMenuRight] = useState(16);
-  const openModMenu = () => {
-    modBtnRef.current?.measureInWindow((x, y, _w, h) => {
-      setModMenuRight(Math.max(12, screenW - x - 216));
-      setModMenuAnchor({ top: y, bottom: y + h });
-    });
-  };
 
   const q = query.trim();
   const results = useMemo(() => (q ? searchAromas(q) : []), [q]);
-  const allowedSet = focus ? aromaAllowedModifiers(focus.a) : null;
-  const allowedMods = allowedSet ? AROMA_MODIFIERS.filter((mod) => allowedSet.has(mod.id)) : [];
-  const focusedPairSelected = !!focus && value.some((s) => s.a === focus.a && s.m === focus.m);
-  // The freshly added chip's key (canonical — a promoted composite lands as
-  // its leaf) — drives the flash cue; cleared after the pulse.
-  const [flash, setFlash] = useState<string | null>(null);
+  // Which displayed labels appear more than once in this result list — those
+  // leaves render their ancestor context (review finding: core's `context`
+  // was otherwise discarded and colliding rows read as duplicates).
+  const dupLabels = useMemo(() => {
+    const seen = new Set<string>();
+    const dup = new Set<string>();
+    for (const r of results) {
+      const k = resultLabelKey(r);
+      if (seen.has(k)) dup.add(k);
+      else seen.add(k);
+    }
+    return dup;
+  }, [results]);
+  // "Already selected" must compare the CANONICAL pair — ops.add rewrites a
+  // promoted composite (grape+dried → raisin), so a raw {a, m} check would
+  // show a live Add + fire the success haptic on a pair the gate dedupes
+  // into an existing selection (review finding; mirrors usePendingAdd).
+  const canonFocus = focus ? canonicalPair(focus.a, focus.m) : null;
+  const focusedPairSelected = !!canonFocus && value.some((s) => s.a === canonFocus.a && s.m === canonFocus.m);
   // Cap-rejection hint (the spec bans a live COUNTER, not a rejection
   // message): shown when an add bounces off the 30 cap, cleared once the
   // situation changes (new query, or a removal makes room).
@@ -135,11 +103,6 @@ export function AromaInput({
   useEffect(() => {
     if (value.length < AROMA_SELECTION_CAP) setCapHit(false);
   }, [value.length]);
-  useEffect(() => {
-    if (!flash) return;
-    const t = setTimeout(() => setFlash(null), 800);
-    return () => clearTimeout(t);
-  }, [flash]);
   const commitAdd = () => {
     if (!focus) return;
     const ok = ops.add(pendP ? { a: focus.a, m: focus.m, p: true } : { a: focus.a, m: focus.m });
@@ -151,48 +114,32 @@ export function AromaInput({
       return;
     }
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); // acknowledged (no-op in Sim)
-    const canon = canonicalPair(focus.a, focus.m);
-    setFlash(`${canon.a}|${canon.m ?? ''}`);
+    // (The chips block detects the fresh pair itself and flashes it.)
     setFocus(null);
     setPendP(false);
   };
 
   // Scroll the block under the header when search engages. Runs on focus
-  // (the spacer below renders the same commit, so the range exists), then
-  // again after the keyboard animation in case the OS's keep-field-visible
-  // adjustment moved things meanwhile.
-  // The block the scroll must fit above the keyboard, from the SAME surface
-  // math the pieces render with (a flat constant under-measured and ignored
-  // Dynamic Type — review finding): search row + suggestions box + the
-  // fixed two-line Add row, plus their margins.
-  const blockBelow =
-    phone.surface('formControl').height(36) + 10 + 150 + 12 + Math.max(phone.surface('formControl').height(36), phone.surface('button').height(54)) + 8;
+  // (the spacer below renders the same commit, so the range exists), again
+  // after the keyboard animation in case the OS's keep-field-visible
+  // adjustment moved things meanwhile, and whenever the rendered block
+  // CHANGES height (typing grows/shrinks the results).
+  // The block the scroll must fit above the keyboard = search row + the
+  // MEASURED height of everything below it (results / no-match line / refine
+  // row / cap hint, via onLayout — a flat estimate over-scrolled blank
+  // queries and under-scrolled large text and cap states; review finding).
+  // The anchored modifier menu is a Modal overlay, so it never counts.
+  const fieldH = phone.surface('formControl').height(36);
+  const [belowH, setBelowH] = useState(0);
   useEffect(() => {
     if (!fieldFocused) return;
-    const measure = () => searchRowRef.current?.measureInWindow((_x, y) => onRequestScroll?.(y, blockBelow));
+    const measure = () => searchRowRef.current?.measureInWindow((_x, y) => onRequestScroll?.(y, fieldH + belowH));
     const raf = requestAnimationFrame(measure);
     const late = setTimeout(measure, 350);
     return () => { cancelAnimationFrame(raf); clearTimeout(late); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fieldFocused]);
+  }, [fieldFocused, belowH]);
 
-  const openPopup = (sel: { a: string; m: string | null }) => {
-    const key = `${sel.a}|${sel.m ?? ''}`;
-    chipRefs.current[key]?.measureInWindow((x, y, _w, h) => {
-      // Panel sits by the tapped chip (compare-sort placement), not full-width.
-      setPopup({ a: sel.a, m: sel.m, anchor: { top: y, bottom: y + h }, right: Math.max(12, screenW - x - 280) });
-    });
-  };
-
-  const overflow = value.length - CHIP_CAP;
-  // STABLE slice of the display order (pronounced → family → insertion) — an
-  // earlier "newest stays visible" eviction hack fought the family
-  // clustering and made every add reshuffle the row (device feedback:
-  // chaotic). An add that files into the overflow announces itself via the
-  // pill's flash instead of an eviction.
-  const ordered = displayOrder(value);
-  const visibleChips = overflow > 0 ? ordered.slice(0, CHIP_CAP) : ordered;
-  const fieldH = phone.surface('formControl').height(36);
   const searching = fieldFocused || q.length > 0;
 
   return (
@@ -237,54 +184,12 @@ export function AromaInput({
           </VText>
         </View>
       </AnchoredMenu>
-      {/* selected chips, pinned above the search row; tap = refine popup */}
+      {/* selected chips, pinned above the search row — THE shared block
+          (chips + "+N more" + refine popup + add flash), one behaviour with
+          the browse sheet. */}
       {value.length ? (
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
-          {visibleChips.map((sel) => {
-            const key = `${sel.a}|${sel.m ?? ''}`;
-            return (
-              <View key={key} ref={(n) => { chipRefs.current[key] = n; }} collapsable={false}>
-                <FlashPulse on={flash === key}>
-                  <AromaChip
-                    a={sel.a}
-                    m={sel.m}
-                    pronounced={!!sel.p}
-                    // single tap = refine popup (delayed past the double window —
-                    // an instant Modal would swallow the second tap); double tap
-                    // = toggle Pronounced directly (the mock gesture, restored).
-                    onPress={() =>
-                      tap(`chip:${key}`, () => openPopup(sel), () => ops.togglePronounced(sel.a, sel.m), 'delayed')
-                    }
-                    onRemove={() => {
-                      delete chipRefs.current[key];
-                      ops.removePair(sel.a, sel.m);
-                    }}
-                  />
-                </FlashPulse>
-              </View>
-            );
-          })}
-          {overflow > 0 ? (
-            // The pill pulses when the fresh add filed into the overflow.
-            <FlashPulse on={!!flash && !visibleChips.some((sel) => `${sel.a}|${sel.m ?? ''}` === flash)}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`${overflow} more aromas`}
-                onPress={() => setSelOpen(true)}
-                style={{
-                  justifyContent: 'center',
-                  paddingVertical: 6, // no border — visually matches the chips' 4.5+1.5
-                  paddingHorizontal: 12,
-                  borderRadius: 999,
-                  backgroundColor: theme.surface,
-                }}
-              >
-                <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkSoft }}>
-                  +{overflow} more
-                </VText>
-              </Pressable>
-            </FlashPulse>
-          ) : null}
+        <View style={{ marginBottom: 12 }}>
+          <SelectedChipsRow ops={ops} onOverflow={() => { Keyboard.dismiss(); setSelOpen(true); }} />
         </View>
       ) : null}
       {/* [browse | search] row — the Compare toolbar skin: 36pt chip button +
@@ -293,7 +198,13 @@ export function AromaInput({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Browse Aromas"
-          onPress={() => setBrowseOpen(true)}
+          onPress={() => {
+            // A sheet opened over a live keyboard inherits the screen's
+            // keyboard-inset scroll state with no field to type into — drop
+            // the keyboard first (review finding).
+            Keyboard.dismiss();
+            setBrowseOpen(true);
+          }}
           hitSlop={{ top: 4, bottom: 4 }}
           style={({ pressed }) => ({
             height: fieldH,
@@ -323,183 +234,108 @@ export function AromaInput({
           />
         </View>
       </View>
-      {/* suggestions — tap to focus (arms the refine slot below); tapping an
-          already-added one removes it; added pairs show at the deeper tint. */}
-      {q ? (
-        results.length ? (
-          <ScrollView nestedScrollEnabled style={{ maxHeight: 150, marginTop: 10 }} keyboardShouldPersistTaps="handled">
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingBottom: 2 }}>
-              {results.map((r) => {
-                const id = r.node.tier === 'leaf' ? r.node.leaf!.id : r.node.tier === 'subfamily' ? r.node.subfamily!.id : r.node.family.id;
-                // Focus matches on the NODE: picking a modifier on the button
-                // changes focus.m, and the highlighted result must not drop
-                // its highlight over that (feedback).
-                const isFocus = focus?.a === id;
-                return (
-                  <AromaChip
-                    key={`${id}|${r.m ?? ''}`}
-                    a={id}
-                    m={r.m}
-                    // Highlight + border are TRANSIENT add-process state only
-                    // (feedback): results never show added/pronounced marks —
-                    // that lives on the selected chips above. Deep tint =
-                    // currently focused; border = pending Pronounced.
-                    focused={isFocus}
-                    pronounced={isFocus && pendP}
-                    sub={r.node.tier === 'family' ? 'family' : r.node.tier === 'subfamily' ? 'group' : undefined}
-                    // single = focus toggle — for ADDED pairs too (you may
-                    // want the same aroma with a second modifier; removal is
-                    // the chip's ×, never a result tap). double = arm the
-                    // pending Pronounced flag.
-                    onPress={() =>
-                      tap(
-                        `res:${id}|${r.m ?? ''}`,
-                        () => {
-                          setFocus(isFocus ? null : { a: id, m: r.m });
-                          setPendP(false);
-                        },
-                        () => {
-                          setFocus({ a: id, m: r.m });
-                          setPendP((p) => (isFocus ? !p : true));
-                        },
-                      )
-                    }
-                  />
-                );
-              })}
-            </View>
-          </ScrollView>
-        ) : (
-          <VText variant="small" color="inkFaint" style={{ marginTop: 12 }}>
-            No aromas match “{q}”.
-          </VText>
-        )
-      ) : null}
-      {/* refine row — BELOW the results, ONE stable row for the whole search
-          (rounds 6–8): [modifier button | Pronounced switch | Add]. The
-          modifier button is the Compare-toolbar pattern — it opens an
-          anchored menu of the node's allowed modifiers and then WEARS the
-          pick ("Jammy" instead of "Modifier"). All three disable until a
-          result is focused; nothing pops or shifts. */}
-      {q ? (
-        // Chips center on Add's midline; Add is FIXED at a two-line height so
-        // a wrapping title can't change the row geometry (no jump, no sink).
-        <View style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Pressable
-            ref={modBtnRef}
-            accessibilityRole="button"
-            accessibilityLabel={focus?.m ? `Modifier — ${aromaModifierDisplay(focus.a, focus.m)}` : 'Add a modifier'}
-            disabled={!focus || !allowedMods.length}
-            onPress={openModMenu}
-            hitSlop={{ top: 4, bottom: 4 }}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 4,
-              height: fieldH,
-              // FIXED width — a long display word ("Overripe") must not
-              // resize the siblings; the label truncates instead.
-              width: 108,
-              paddingHorizontal: 12,
-              borderRadius: 999,
-              borderWidth: 1,
-              // Active = the Pronounced chip's on-state (accent fill).
-              borderColor: focus?.m ? theme.accent : theme.rule,
-              backgroundColor: focus?.m ? theme.accent : theme.surface,
-              opacity: !focus || !allowedMods.length ? 0.4 : pressed ? 0.6 : 1,
-            })}
-          >
-            {/* label centers in the flexing slot, chevron stays pinned right */}
-            <VText
-              numberOfLines={1}
-              surface="badge"
-              style={{ flex: 1, textAlign: 'center', fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: focus?.m ? theme.accentInk : theme.inkSoft }}
-            >
-              {focus?.m ? capFirst(aromaModifierDisplay(focus.a, focus.m)) : 'Modifier'}
+      {/* Everything under the search row renders inside ONE measured wrapper
+          so the keyboard fit above works with the real rendered height. */}
+      <View onLayout={(e) => { const h = Math.ceil(e.nativeEvent.layout.height); setBelowH((prev) => (prev === h ? prev : h)); }}>
+        {/* suggestions — tap to focus (arms the refine slot below); tapping an
+            already-added one removes it; added pairs show at the deeper tint. */}
+        {q ? (
+          results.length ? (
+            <ScrollView nestedScrollEnabled style={{ maxHeight: 150, marginTop: 10 }} keyboardShouldPersistTaps="handled">
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingBottom: 2 }}>
+                {results.map((r) => {
+                  const id = r.node.tier === 'leaf' ? r.node.leaf!.id : r.node.tier === 'subfamily' ? r.node.subfamily!.id : r.node.family.id;
+                  const rowKey = `${id}|${r.m ?? ''}`;
+                  // Focus pins the tapped ROW (not the node): a modifier edit
+                  // on the button must not drop the highlight (feedback), and
+                  // a sibling row sharing the node via a canonical rewrite
+                  // must not co-highlight (review finding).
+                  const isFocus = focus?.key === rowKey;
+                  // Leaf context only where the displayed words collide with
+                  // another result (honey the leaf vs Honey the group): the
+                  // nearest ancestor that actually differs.
+                  const leafCtx =
+                    r.node.tier === 'leaf' && dupLabels.has(resultLabelKey(r))
+                      ? [...r.context].reverse().find((c) => c.toLowerCase() !== r.node.label.toLowerCase())
+                      : undefined;
+                  return (
+                    <AromaChip
+                      key={rowKey}
+                      a={id}
+                      m={r.m}
+                      // Highlight + border are TRANSIENT add-process state only
+                      // (feedback): results never show added/pronounced marks —
+                      // that lives on the selected chips above. Deep tint =
+                      // currently focused; border = pending Pronounced.
+                      focused={isFocus}
+                      pronounced={isFocus && pendP}
+                      sub={r.node.tier === 'family' ? 'family' : r.node.tier === 'subfamily' ? 'group' : leafCtx ? capFirst(leafCtx) : undefined}
+                      // single = focus toggle — for ADDED pairs too (you may
+                      // want the same aroma with a second modifier; removal is
+                      // the chip's ×, never a result tap). double = arm the
+                      // pending Pronounced flag.
+                      onPress={() =>
+                        tap(
+                          `res:${rowKey}`,
+                          () => {
+                            setFocus(isFocus ? null : { a: id, m: r.m, key: rowKey });
+                            setPendP(false);
+                          },
+                          () => {
+                            setFocus({ a: id, m: r.m, key: rowKey });
+                            setPendP((p) => (isFocus ? !p : true));
+                          },
+                        )
+                      }
+                    />
+                  );
+                })}
+              </View>
+            </ScrollView>
+          ) : (
+            <VText variant="small" color="inkFaint" style={{ marginTop: 12 }}>
+              No aromas match “{q}”.
             </VText>
-            <Icon name="chevrondown" size={13} color={focus?.m ? theme.accentInk : theme.inkSoft} />
-          </Pressable>
-          {/* Pronounced = a glyph-only toggle chip (the double-chevron mark,
-              Simon's glyph — width was the constraint; the word lives in the
-              accessibility label): outlined at rest, accent-filled when on. */}
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: pendP }}
-            accessibilityLabel="Pronounced"
-            disabled={!focus}
-            onPress={() => setPendP((p) => !p)}
-            hitSlop={{ top: 4, bottom: 4 }}
-            style={({ pressed }) => ({
-              height: fieldH,
-              width: fieldH,
-              borderRadius: 999,
-              borderWidth: 1,
-              borderColor: pendP ? theme.accent : theme.rule,
-              backgroundColor: pendP ? theme.accent : theme.surface,
-              alignItems: 'center',
-              justifyContent: 'center',
-              opacity: !focus ? 0.4 : pressed ? 0.6 : 1,
-            })}
-          >
-            <Icon name="pronounced" size={17} color={pendP ? theme.accentInk : theme.inkSoft} />
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            {/* An exact (aroma, modifier) match greys out — no Update
-                semantics; changing the modifier re-arms it as a new Add.
-                Label carries the AROMA name (never the modifier — that's on
-                its own button). */}
-            <Button
-              block
-              size="md"
-              titleLines={2}
-              style={{ height: phone.surface('button').height(54) }}
-              disabled={!focus || focusedPairSelected}
-              title={focusedPairSelected ? 'Added' : focus ? `Add ${capFirst(getAromaNode(focus.a)?.label ?? '')}` : 'Add'}
-              onPress={commitAdd}
+          )
+        ) : null}
+        {/* refine row — BELOW the results, ONE stable row for the whole search
+            (rounds 6–8): [modifier select | Pronounced glyph | Add]. Now the
+            SHARED RefineAddRow (the Map/Canvas pickers wear the same anatomy —
+            Simon's device ruling). All three disable until a result is
+            focused; nothing pops or shifts. */}
+        {q ? (
+          <View style={{ marginTop: 12 }}>
+            <RefineAddRow
+              a={focus?.a ?? null}
+              m={focus?.m ?? null}
+              p={pendP}
+              added={focusedPairSelected}
+              onM={(m) => {
+                // Retargeting AWAY from an added pair drops pending Pronounced:
+                // the toggle rendered off+disabled there (`p && !added`), so a
+                // surviving true would silently arm the next addable pair.
+                if (focusedPairSelected) setPendP(false);
+                setFocus((f) => (f ? { ...f, m } : f));
+              }}
+              onP={() => setPendP((p) => !p)}
+              onAdd={commitAdd}
             />
           </View>
-          <AnchoredMenu anchor={modMenuAnchor} onClose={() => setModMenuAnchor(null)} right={modMenuRight} minWidth={190}>
-            <MenuItem
-              label="None"
-              active={!focus?.m}
-              onPress={() => {
-                if (focus) setFocus({ a: focus.a, m: null });
-                setModMenuAnchor(null);
-              }}
-            />
-            {allowedMods.map((mod) => (
-              <MenuItem
-                key={mod.id}
-                label={focus ? capFirst(aromaModifierDisplay(focus.a, mod.id)) : mod.label}
-                active={focus?.m === mod.id}
-                onPress={() => {
-                  if (focus) setFocus({ a: focus.a, m: mod.id });
-                  setModMenuAnchor(null);
-                }}
-              />
-            ))}
-          </AnchoredMenu>
-        </View>
-      ) : null}
-      {/* cap-rejection hint — under the refine row, cleared once a removal
-          makes room (the spec bans a counter, not a rejection message). */}
-      {q && capHit ? (
-        <VText variant="small" style={{ marginTop: 8, textAlign: 'center', color: theme.critical }}>
-          Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
-        </VText>
-      ) : null}
+        ) : null}
+        {/* cap-rejection hint — under the refine row, cleared once a removal
+            makes room (the spec bans a counter, not a rejection message). */}
+        {q && capHit ? (
+          <VText variant="small" style={{ marginTop: 8, textAlign: 'center', color: theme.critical }}>
+            Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
+          </VText>
+        ) : null}
+      </View>
       {/* Keyboard-room spacer: while searching, guarantees the screen can
           scroll this block to the TOP of the viewport even when the section
           sits at the end of the content — without it the scroll clamps and
           the results stay under the keyboard (feedback round 4). Sized to a
           keyboard-ish share of the screen; collapses when search ends. */}
       {searching ? <View style={{ height: Math.round(screenH * 0.45) }} /> : null}
-      <ModifierPopup
-        target={popup}
-        onClose={() => setPopup(null)}
-        ops={ops}
-        onTargetChange={(pair) => setPopup((p) => (p ? { ...p, ...pair } : p))}
-      />
       <SelectionSheet open={selOpen} onClose={() => setSelOpen(false)} ops={ops} />
       <BrowseSheet open={browseOpen} onClose={() => setBrowseOpen(false)} ops={ops} />
     </View>

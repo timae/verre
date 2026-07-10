@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { BottomSheetBackdrop, BottomSheetModal, type BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  type BottomSheetBackdropProps,
+  type BottomSheetFooterProps,
+} from '@gorhom/bottom-sheet';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
@@ -35,6 +40,8 @@ export function Sheet({
   maxDynamicContentSize,
   stackBehavior = 'replace',
   layer = 0,
+  enableContentPanningGesture = true,
+  footerComponent,
 }: {
   open: boolean;
   onClose: () => void;
@@ -44,6 +51,14 @@ export function Sheet({
   // Cap for dynamic-sized sheets (e.g. a long People roster) so they don't
   // grow past the screen.
   maxDynamicContentSize?: number;
+  // Pass false when the sheet hosts its own omni-directional pan gestures
+  // (the aroma browse pickers' ring-spin / map-roam) — the sheet's content
+  // drag would race them. The handle + backdrop still dismiss.
+  enableContentPanningGesture?: boolean;
+  // gorhom footer render prop (wrap content in <BottomSheetFooter {...props}>)
+  // — the ONLY way to pin content to the sheet's bottom edge; an absolute
+  // bottom:0 child anchors to the modal container and clips off-screen.
+  footerComponent?: React.FC<BottomSheetFooterProps>;
   // 'replace' (default): opening one sheet as another closes dismisses the
   // outgoing one (People "Add" → Invite). Pass 'push' for a sheet that opens
   // ON TOP of a still-open parent and returns to it on close (the moments
@@ -125,6 +140,8 @@ export function Sheet({
       // blur. Shell-wide default so every sheet input behaves the same.
       keyboardBehavior="extend"
       keyboardBlurBehavior="restore"
+      enableContentPanningGesture={enableContentPanningGesture}
+      footerComponent={footerComponent}
       enableDynamicSizing={enableDynamicSizing}
       maxDynamicContentSize={maxDynamicContentSize}
       snapPoints={snapPoints}

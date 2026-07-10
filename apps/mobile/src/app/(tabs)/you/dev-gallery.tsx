@@ -7,9 +7,10 @@ import Svg, { Path } from 'react-native-svg';
 import { Icon } from '@/components/ui/Icon';
 import { alpha } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { resolveAxes, perRatingAxes } from '@verre/core';
+import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
 import { FlavourWheel, type WheelAxis } from '@/components/scoring/FlavourWheel';
 import { FlavourInput } from '@/components/scoring/FlavourInput';
+import { AromaChip } from '@/components/scoring/aroma/parts';
 import { StarScore } from '@/components/scoring/StarScore';
 import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
@@ -416,6 +417,39 @@ export default function DevGallery() {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
             <FlavourWheel axes={sample} size={72} labels={false} />
             <VText variant="small" color="inkSoft">mini (feed-card scale)</VText>
+          </View>
+        </View>
+
+        <View style={{ gap: space.xs }}>
+          <VText variant="heading">Aroma badges</VText>
+          <VText variant="small" color="inkSoft">
+            One per family, on a surface card (where badges actually sit). Switch themes above.
+          </VText>
+          <View style={{ gap: 12, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">resting — readable words (the ruling) + per-family fill bumps</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} />
+                ))}
+              </View>
+            </View>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">pronounced</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} pronounced />
+                ))}
+              </View>
+            </View>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">armed</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} focused />
+                ))}
+              </View>
+            </View>
           </View>
         </View>
 
