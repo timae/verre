@@ -269,7 +269,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/session/:code/ratings | All ratings, id-keyed (participant-gated) |
-| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes, aromas?}`). `flavors` is a `{structure-axis: 0–5}` map (keys: sweet, acid, aroma, flavour, funk, tannin, body, finish; + bubbles for sparkling) — keys outside the wine's axis set are rejected. `aromas` is an array of `{a, m, d?}` descriptor selections (`d: true` marks a selection dominant) (a taxonomy node id at any tier — leaf `strawberry`, subfamily `fruity.berry`, family `fruity` — + modifier id or null, from the `@verre/core` taxonomy, max 30) — unknown ids / disallowed modifiers are rejected; **omitting the field preserves stored selections, `[]` clears them**. |
+| POST | /api/session/:code/rate | Submit own rating (body: `{wineId, score, flavors, notes, aromas?}`). `flavors` is a `{structure-axis: 0–5}` map (keys: sweet, acid, aroma, flavour, funk, tannin, body, finish; + bubbles for sparkling) — keys outside the wine's axis set are rejected. `aromas` is an array of `{a, m, p?}` descriptor selections (`p: true` marks a selection pronounced — the note that led the impression) (a taxonomy node id at any tier — leaf `strawberry`, subfamily `fruity.berry`, family `fruity` — + modifier id or null, from the `@verre/core` taxonomy, max 30) — unknown ids / disallowed modifiers are rejected; **omitting the field preserves stored selections, `[]` clears them**. |
 | DELETE | /api/session/:code/rate/:wineId | Reset own rating |
 
 **Social feed** (logged-in)

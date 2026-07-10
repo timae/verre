@@ -79,6 +79,16 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 11, cy: 11, r: 6, sw: 1.6 },
     { d: 'M15.5 15.5L20 20', sw: 1.6, cap: true },
   ],
+  // double chevron up — Pronounced, the leading aroma note (Simon's glyph,
+  // 2026-07-10). Reusable anywhere a "standout/leading" mark is needed.
+  pronounced: [{ d: 'M6 17l6-5 6 5M6 11l6-5 6 5', sw: 1.6, cap: true, join: true }],
+  // four rounded squares — the aroma browse-sheet trigger (02e·11 S variant)
+  grid: [
+    { d: 'M5.5 3.5h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Z', sw: 1.6, join: true },
+    { d: 'M15.5 3.5h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Z', sw: 1.6, join: true },
+    { d: 'M5.5 13.5h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Z', sw: 1.6, join: true },
+    { d: 'M15.5 13.5h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2Z', sw: 1.6, join: true },
+  ],
   user: [
     { cx: 12, cy: 8.5, r: 3.5, sw: 1.5 },
     { d: 'M5.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6', sw: 1.5, cap: true },

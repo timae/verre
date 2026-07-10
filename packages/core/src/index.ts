@@ -98,3 +98,4 @@ export {
   type AromaNode,
   type AromaTierPath,
 } from './aroma/taxonomy'
+export { searchAromas, type AromaSearchResult } from './aroma/search'

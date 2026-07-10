@@ -23,6 +23,9 @@ interface Props extends Omit<PressableProps, 'children' | 'style'> {
   // Shown in place of `title` when `loading` outlasts the slow threshold
   // (e.g. "Saving…"). Without it, a slow action just stays dimmed.
   loadingTitle?: string;
+  // Cap for long DYNAMIC titles ("Add Green bell pepper") — past the cap the
+  // label ellipsizes instead of growing the button further.
+  titleLines?: number;
   style?: ViewStyle;
 }
 
@@ -37,7 +40,7 @@ const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
 // .btn label scale: small / body / bodyLg.
 const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 'bodyLg' };
 
-export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, disabled, style, ...rest }: Props) {
+export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('button');
@@ -112,11 +115,15 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
         const c = colors(pressed);
         return (
           <VText
+            numberOfLines={titleLines}
             variant={LABEL_VARIANT[size]}
             surface="button"
             color={c.text}
             style={{
               fontFamily: 'InstrumentSans_600SemiBold',
+              // A wrapping title (long dynamic labels — "Add Green bell
+              // pepper") stays centered; RN text left-aligns on line break.
+              textAlign: 'center',
             }}
           >
             {loading && slow && loadingTitle ? loadingTitle : title}

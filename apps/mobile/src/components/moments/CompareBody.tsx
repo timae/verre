@@ -1163,7 +1163,7 @@ function AxisSplit({
 // .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
 // search glyph. TextField is kept for its formControl Dynamic Type surface;
 // the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder, highlight }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean }) {
+export function SheetSearchField({ value, onChangeText, placeholder, highlight, onFocus, onBlur }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean; onFocus?: () => void; onBlur?: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Clearing is part of typing — the ✕ must not bounce the keyboard.
@@ -1193,6 +1193,8 @@ export function SheetSearchField({ value, onChangeText, placeholder, highlight }
           onChangeText={onChangeText}
           autoCorrect={false}
           autoCapitalize="none"
+          onFocus={onFocus}
+          onBlur={onBlur}
           // fontSize override ⇒ lineHeight must match it (TextField's base
           // compact lineHeight is body-sized; a mismatched line box re-biases
           // the glyph — see TextField's header).
