@@ -12,7 +12,7 @@ import {
   type ConsensusKey,
 } from '@verre/core';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
+import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
@@ -827,7 +827,7 @@ function CmpChart({
     // card height jump; their score already shows on their list row.
     head = `${person.displayName} · flavour profile`;
     chart = Object.keys(person.filled).length > 0 || flavourRaters.length > 0 ? (
-      <FlavourWheel
+      <StructureWheel
         axes={axes.map((a) => ({ label: a.l, color: flavourColor(a.k), value: person.filled[a.k] ?? 0 }))}
         size={232}
         maxWidth={maxWidth}

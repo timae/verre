@@ -42,7 +42,7 @@ export function RadarOverlay({
   onSelectLabel?: (index: number) => void;
 }) {
   const { theme } = useTheme();
-  // pad 58 (mock: 56) — FlavourWheel's padding, so the size-adaptive chart
+  // pad 58 (mock: 56) — StructureWheel's padding, so the size-adaptive chart
   // swap keeps one canvas width and a fixed wheel centre (see ComparisonWheel).
   const pad = 58;
   const vpad = 14;
@@ -157,7 +157,7 @@ export function RadarOverlay({
         <SvgText
           key={l.index}
           x={l.x}
-          y={l.y + LABEL_OFFSET / 7} // optical centre nudge (FlavourWheel parity)
+          y={l.y + LABEL_OFFSET / 7} // optical centre nudge (StructureWheel parity)
           fontSize={typeScale.caption.size}
           fontFamily="InstrumentSans_500Medium"
           // Selected axis label darkens to ink (same affordance as C1b); an

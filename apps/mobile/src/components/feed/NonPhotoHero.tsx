@@ -1,5 +1,5 @@
 import { StyleSheet, View } from 'react-native';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
+import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { FeedImpressionPanel } from '@/components/feed/FeedImpressionPanel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
@@ -85,7 +85,7 @@ export function NonPhotoHero({
       {/* The wheel + chips draw off the wine's REAL flavors — shown for blind too
           (subjective rating isn't masked). Identity masking is the panel's job. */}
       <View style={styles.heroBody}>
-        <FlavourWheel
+        <StructureWheel
           axes={buildWheelAxes(wine.flavors, wine.type, axisColor)}
           size={168}
           labels

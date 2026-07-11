@@ -21,7 +21,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
 import { AromaInput } from '@/components/scoring/aroma/AromaInput';
 import { NotesField } from '@/components/moments/momentForm';
-import { FlavourInput } from '@/components/scoring/FlavourInput';
+import { StructureInput } from '@/components/scoring/StructureInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { AnchoredMenu, AnchorButton, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
@@ -165,7 +165,7 @@ export default function ImpressionDetail() {
     setScore(existing?.score ?? 0);
     setNotes(existing?.notes ?? '');
     // Seed the flavour grid from the stored structure map (keys present = rated,
-    // 0 = perceived None). FlavourInput edits it in place.
+    // 0 = perceived None). StructureInput edits it in place.
     setFlavors(existing?.flavors ?? {});
     // Stored aromas re-canonicalized through the gate (drops a p:false a
     // legacy write might carry; the diff below compares canonical-to-canonical).
@@ -517,7 +517,7 @@ export default function ImpressionDetail() {
               too: `type` (the STYLE) is NOT masked by redaction — a taster
               perceives fizz/tannin/body blind, so they rate structure while the
               identity stays hidden (mirrors web RatingPane + wineRedaction). */}
-          <FlavourInput style={wine.type} value={flavors} onChange={editFlavors} />
+          <StructureInput style={wine.type} value={flavors} onChange={editFlavors} />
         </View>
       ) : null}
       {/* Aromas — the descriptor layer (02e·11 search-first block). Always

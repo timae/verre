@@ -1,5 +1,6 @@
 import Svg, { Circle, Path, Text as SvgText } from 'react-native-svg';
 import { flavourWheelGeometry, LABEL_OFFSET } from '@verre/core';
+import { mix } from '@/theme/color';
 import { typeScale, useTheme } from '@/theme';
 
 export type WheelAxis = {
@@ -14,7 +15,21 @@ export type WheelAxis = {
 // react-native-svg render layer (the web design's SVG-string assembly does
 // not port — proposal 05 §2). Colours arrive as data: the Vero palette for
 // the real backend flavour sets is a pending design decision.
-export function FlavourWheel({ axes, size = 260, labels = true, maxWidth }: { axes: WheelAxis[]; size?: number; labels?: boolean; maxWidth?: number }) {
+export function StructureWheel({ axes, size = 260, labels = true, maxWidth, badgeTint }: {
+  axes: WheelAxis[];
+  size?: number;
+  labels?: boolean;
+  maxWidth?: number;
+  /** DEVICE-COMPARISON (dev gallery until Simon rules): the StructureInput's
+      badge-tint WEDGES — the OPAQUE mix(colour, theme.surface, 0.72), the
+      input's exact fill. ⚠️ Deliberately NOT composited over the actual
+      backdrop: a 0.72-translucent wedge over ground G IS mix(colour, G,
+      0.72), so "badge tint over the backdrop" is indistinguishable from the
+      wash (first gallery round proved it). The visible difference between
+      the modes = the bg↔surface gap per theme. Labels stay inkSoft (Simon:
+      the switch adapts the wedge colour only). */
+  badgeTint?: boolean;
+}) {
   const { theme } = useTheme();
   const pad = labels ? 58 : 4;
   const vpad = labels ? 12 : 4;
@@ -42,7 +57,12 @@ export function FlavourWheel({ axes, size = 260, labels = true, maxWidth }: { ax
         // a palette mismatch. (Web's PolarChart uses 0.85 + a 0.13 ghost — a
         // third rendering; web is frozen pre-redesign.) Changing this is a
         // design decision — ask Simon, don't "fix" it.
-        <Path key={w.index} d={w.d} fill={axes[w.index].color} fillOpacity={0.72} />
+        <Path
+          key={w.index}
+          d={w.d}
+          fill={badgeTint ? mix(axes[w.index].color, theme.surface, 0.72) : axes[w.index].color}
+          fillOpacity={badgeTint ? 1 : 0.72}
+        />
       ))}
       {labels
         ? geo.labels.map((l) => (

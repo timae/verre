@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
+import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { radius, space, useTheme } from '@/theme';
@@ -83,7 +83,7 @@ export function FeedImpressionPanel({
       </View>
       {axes.length > 0 && (
         <View style={styles.mini}>
-          <FlavourWheel axes={axes} size={56} labels={false} />
+          <StructureWheel axes={axes} size={56} labels={false} />
         </View>
       )}
       <Icon name="chevron-right" size={16} color={theme.inkSoft} />

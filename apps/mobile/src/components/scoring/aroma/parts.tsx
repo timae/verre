@@ -180,6 +180,9 @@ export function AromaChip({
   onPress,
   onRemove,
   sub,
+  tint,
+  monoWords,
+  tintSolid,
 }: {
   a: string;
   m: string | null;
@@ -188,6 +191,18 @@ export function AromaChip({
   muted?: boolean;
   onPress?: () => void;
   onRemove?: () => void;
+  /** EXPLORATION override (dev gallery): render the badge in this colour
+      instead of the family colour — the mono/theme-coloured comparison. */
+  tint?: string;
+  /** EXPLORATION (dev gallery, with `tint`): keep the mono fill but write
+      the words in the family colour — 'resting' = the resting row's EXACT
+      font (readableSolid vs the family's own resting fill, NOT re-corrected
+      against the mono fill — that pulled most families to ink on clay),
+      'solid' = the 100% palette colour. */
+  monoWords?: 'resting' | 'solid';
+  /** EXPLORATION (dev gallery, with `tint`): the fill is the 100% SOLID tint
+      colour instead of its badge transparency. */
+  tintSolid?: boolean;
   // Light trailing tag — the coarse-tier marker in search results ("family" /
   // "group"), which also disambiguates the four leaf labels that equal a
   // subfamily label (honey / vanilla / cocoa / char).
@@ -197,19 +212,29 @@ export function AromaChip({
   const familyColor = useAromaColors();
   const node = getAromaNode(a);
   if (!node) return null;
-  const color = familyColor(node.family.id);
-  // Fill ratio via aromaFillRatio (clay boost, 1:1 elsewhere); focused goes
-  // SOLID family colour.
-  const restingR = aromaFillRatio(themeKey, node.family.id, muted ? 0.09 : 0.2);
-  const fill = focused ? color : mix(color, theme.surface, restingR);
-  // A 'solid' per-family fill bump (clay Fruity) makes the resting fill the
-  // full colour too — border/words then need the focused treatment.
+  const color = tint ?? familyColor(node.family.id);
+  // (famColor below stays the true family colour even under a tint override.)
+  // Fill ratio via aromaFillRatio (clay boost, 1:1 elsewhere; a tint
+  // override skips the per-family bumps); focused goes SOLID colour.
+  const restingR = tint && tintSolid ? 1 : aromaFillRatio(themeKey, tint ? '' : node.family.id, muted ? 0.09 : 0.2);
+  const fill = focused || restingR >= 1 ? color : mix(color, theme.surface, restingR);
+  // A 'solid' fill (focused, a per-family bump like clay Fruity, or the mono
+  // rows' tintSolid switch) — border/words then need the focused treatment.
   const onSolid = focused || restingR >= 1;
+  const famColor = familyColor(node.family.id);
+  // The family's RESTING font colour (row 1 of the gallery) — reused verbatim
+  // by the mono rows' 'resting' words mode.
+  const famResting = () =>
+    readableSolid(famColor, theme.ink, mix(famColor, theme.surface, aromaFillRatio(themeKey, node.family.id, 0.2)));
   const words = muted
     ? theme.inkSoft
-    : onSolid
-      ? inkOn(color, theme.ink, theme.bg)
-      : readableSolid(color, theme.ink, fill);
+    : tint && monoWords
+      ? monoWords === 'solid'
+        ? famColor
+        : famResting()
+      : onSolid
+        ? inkOn(color, theme.ink, theme.bg)
+        : readableSolid(color, theme.ink, fill);
   const label = selectionLabel({ a, m });
   return (
     <Pressable
@@ -228,7 +253,10 @@ export function AromaChip({
         // like the words but floored at 45% colour share (a full ink pull
         // made clay's borders read WHITE; bare colour was invisible on
         // mauve Sweet / cobalt Funky / charcoal Fire — Simon's passes).
-        borderColor: pronounced ? (muted ? color : onSolid ? words : readableBorder(color, theme.ink, fill)) : 'transparent',
+        // On a mono tint the Pronounced border is the 100% SOLID family
+        // colour (Simon — the family identity carries entirely in the border
+        // there); family-coloured chips keep the readableBorder correction.
+        borderColor: pronounced ? (tint ? famColor : muted ? color : onSolid ? words : readableBorder(color, theme.ink, fill)) : 'transparent',
         backgroundColor: fill,
       }}
     >
