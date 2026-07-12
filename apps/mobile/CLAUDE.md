@@ -320,10 +320,14 @@ reference for the app; the app's design lives here + in `docs/design/`.)
   commit like the web Rate pane — the POST fires on Save & next/finish (and
   Previous, a flagged deviation to avoid silent edit loss). "Clear my rating"
   is local too; an empty save triggers the server's engagement-deletion
-  cascade. Structure intensities are edited via `StructureInput` (the fill-track
-  grid — see the component catalog) inside "Add tasting detail"; the save
+  cascade. The whole rating block renders via the shared `RatingSection`
+  (see the component catalog): score → note (no title; the placeholder
+  "Say what the stars can't." carries the affordance — the note is the
+  taster's public CAPTION, never an aroma-descriptor prompt) → the
+  "Structure Profile" fold (`StructureInput`) → `AromaInput`. The save
   boundary normalises via `fillFlavourZeros` and diffs BOTH sides normalised
-  so an untouched legacy sparse row is never re-posted.
+  so an untouched legacy sparse row is never re-posted; aromas diff
+  canonical-to-canonical and stay OMITTED until seeded (omitted-preserves).
 
 ## Moment creation (milestone 4, 02a)
 
