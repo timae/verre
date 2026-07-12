@@ -46,6 +46,35 @@ const WEB_PALETTE: Record<string, string> = {
 
 const FALLBACK_COLOUR = '#9870C0'
 
+// ---------------------------------------------------------------------------
+// Web aroma-family palette — family id (@verre/core taxonomy tier-1) → hex for
+// the read-only aroma chips (components/ui/AromaReadChips.tsx). Same posture
+// as WEB_PALETTE above: ⚠️ PROVISIONAL, flat across both web themes (the web
+// is slated for redesign — don't invest in per-theme values here). Values are
+// the design palette's charcoal aroma block (authored on dark ground, the web
+// default theme; apps/mobile/src/theme/flavour-palette/palette.js) — a one-off
+// derivation, NOT a synced copy (that palette's CLAUDE.md: don't sync casually).
+const WEB_AROMA_PALETTE: Record<string, string> = {
+  fruity:   '#d96f45',
+  spice:    '#a8472c',
+  kernel:   '#896343',
+  fire:     '#5e3526',
+  woody:    '#ab7626',
+  sweet:    '#dfa847',
+  savory:   '#9F9756',
+  vegetal:  '#67724a',
+  mineral:  '#8a9da5',
+  chemical: '#3c4f59',
+  funky:    '#6f607e',
+  floral:   '#533a50',
+}
+
+// Family colour for an aroma-family id. Unknown id → neutral fallback (never
+// colourless), matching withColours' posture.
+export function aromaFamilyColour(familyId: string): string {
+  return WEB_AROMA_PALETTE[familyId] ?? FALLBACK_COLOUR
+}
+
 // Join the web palette onto a neutral core axis array, producing the colour-
 // bearing FlItem[] the renderers consume. An axis with no palette entry gets a
 // neutral fallback (never colourless). Composes with `perRatingAxes` either
