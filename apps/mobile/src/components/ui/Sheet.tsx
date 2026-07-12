@@ -51,9 +51,12 @@ export function Sheet({
   // Cap for dynamic-sized sheets (e.g. a long People roster) so they don't
   // grow past the screen.
   maxDynamicContentSize?: number;
-  // Pass false when the sheet hosts its own omni-directional pan gestures
-  // (the aroma browse pickers' ring-spin / map-roam) — the sheet's content
-  // drag would race them. The handle + backdrop still dismiss.
+  // Pass false when a sheet hosts its own omni-directional pan gestures that
+  // the sheet's content drag would race. NOTE: no current call site passes it
+  // — the aroma browse sheet deliberately keeps content-pan ON (pull-down to
+  // dismiss must work; its stage pans win by activating first). Kept as a
+  // ready option; don't set it false on the aroma sheet, that reverses a
+  // device ruling. The handle + backdrop always dismiss regardless.
   enableContentPanningGesture?: boolean;
   // gorhom footer render prop (wrap content in <BottomSheetFooter {...props}>)
   // — the ONLY way to pin content to the sheet's bottom edge; an absolute

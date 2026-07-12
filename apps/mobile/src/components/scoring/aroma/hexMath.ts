@@ -64,11 +64,6 @@ export function honeyXY(n: number, step: number): [number, number][] {
   return pts.map((p) => [p[0] - ox, p[1] - oy]);
 }
 
-/** Cell size for a Canvas cluster of n (the mock's hexR). */
-export function hexR(n: number): number {
-  return n > 8 ? 33 : n > 6 ? 40 : n > 4 ? 44 : n > 2 ? 50 : 58;
-}
-
 /** Pan clamp shared by the stage's render, drag and pinch-conversion paths —
     ONE function so stage→content coordinate math can never diverge from what
     is drawn (a min/max reimplementation in the pinch path returned an edge

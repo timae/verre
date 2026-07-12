@@ -265,10 +265,15 @@ export function HexStage({
                     <Polygon
                       points={hexPoints(c.x, c.y, R, c.pending ? 1.04 : 0.972)}
                       fill={fill}
-                      // Pending-Pronounced wears the CHIPS' border — the
-                      // family colour pulled toward ink (device round 4),
-                      // exactly the badges' tintedInk.
-                      stroke={c.pronounced ? mix(c.color, theme.ink, 0.7) : 'none'}
+                      // Pending-Pronounced border. The cell fill is the SOLID
+                      // family colour, so — like the chips' armed/solid case —
+                      // the border takes the contrast-picked label ink
+                      // (inkOn), NOT a family-tinted stroke: the old fixed
+                      // mix(color, ink, 0.7) measured down to 1.06:1 on
+                      // apricot/mauve and gave no visible arm feedback (review
+                      // finding; the comment's "tintedInk" was deleted from the
+                      // chips in the badge-anatomy pass).
+                      stroke={c.pronounced ? labelInk : 'none'}
                       strokeWidth={c.pronounced ? 2.5 : 0}
                     />
                     <SvgText

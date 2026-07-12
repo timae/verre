@@ -10,7 +10,7 @@ import { CapHint, RefineAddRow, capFirst, usePendingAdd, type AromaOps } from '.
 import { HexStage, type HexCell } from './hexStage';
 import { LEVEL_R, placeLevel, type MapLevel as Level, type Placed } from './mapLayout';
 
-// H3 · zoomable map — one of the four device-test browse pickers (ADR-0008;
+// H3 · zoomable map — one of the five device-test browse pickers (ADR-0008;
 // mock: mapInner in vero-aroma-input.js, visual reference only). The whole
 // taxonomy as one honeycomb "map": level 1 shows the 12 families as
 // continents; tapping zooms to level 2 — EVERY group placed on one lattice,

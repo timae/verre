@@ -16,8 +16,8 @@ import Reanimated, {
 import { AROMA_FAMILIES, getAromaNode } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { useAromaColors } from '@/theme/flavourColors';
-import { mix } from '@/theme/color';
-import { contrastRatio } from '@/lib/contrast';
+import { mix, inkOn, readableSolid } from '@/theme/color';
+import { aromaFillRatio } from './aromaTint';
 import { motion, useTheme } from '@/theme';
 import { CapHint, RefineAddRow, capFirst, usePendingAdd, type AromaOps } from './parts';
 
@@ -162,7 +162,7 @@ function LabelFadeLayer({ fade, side, children }: { fade: SharedValue<number>; s
 }
 
 export function RingsPicker({ ops }: { ops: AromaOps }) {
-  const { theme } = useTheme();
+  const { theme, themeKey } = useTheme();
   const familyColor = useAromaColors();
 
   // Rotations (degrees, unbounded; ALWAYS on a detent at rest) + the
@@ -269,14 +269,17 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
     engage(ring, fi);
   };
 
-  // Cancelled mid-turn (scroll steal): still land on a detent.
+  // Cancelled mid-turn (scroll steal) OR a sub-threshold nudge that activated
+  // the pan without turning: land on the NEAREST detent AND engage it, so the
+  // ring never rests off-detent (finding 1) and act/turned never strand on a
+  // never-engaged expanded band (finding 2 — the "tier 2 sits thick with
+  // nothing picked" device bug re-entering through the cancel path). Engaging
+  // the landed slot routes through the same engage() that sets turned + act.
   const dragAbort = (ring: Ring) => {
     const step = stepFor(ring);
-    const rot = rotFor(ring);
-    const target = Math.round(rot.value / step) * step;
-    rot.value = target;
-    const sv = Math.round(target / step);
-    setSnap((s) => (ring === 1 ? { ...s, s1: sv } : ring === 2 ? { ...s, s2: sv } : { ...s, s3: sv }));
+    const N = ringItems[ring].length;
+    const fi = mod(-Math.round(rotFor(ring).value / step), N);
+    engage(ring, fi);
   };
 
   const endTap = (ring: Ring, ang: number) => {
@@ -368,6 +371,10 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
   const lastAng = useSharedValue(0);
   const movedDeg = useSharedValue(0);
   const started = useSharedValue(0);
+  // Whether the pan actually ACTIVATED (onUpdate ran ≥ once, i.e. rot moved).
+  // A pure tap grabs the pan at onBegin but the Tap wins the race and onUpdate
+  // never fires, so this stays 0 and finalize leaves the tap alone.
+  const activated = useSharedValue(0);
 
   const pan = Gesture.Pan()
     .minDistance(4)
@@ -383,11 +390,13 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
       dragRing.value = ring;
       movedDeg.value = 0;
       started.value = 0;
+      activated.value = 0;
       lastAng.value = (Math.atan2(dy, dx) * 180) / Math.PI;
     })
     .onUpdate((e) => {
       const ring = dragRing.value;
       if (!ring) return;
+      activated.value = 1;
       const dx = (e.x - centerX) / scale;
       const dy = (e.y - centerY) / scale;
       const ang = (Math.atan2(dy, dx) * 180) / Math.PI;
@@ -408,10 +417,17 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
       const ring = dragRing.value;
       if (!ring) return;
       dragRing.value = 0;
-      if (started.value === 1) {
-        if (e.state === State.CANCELLED) runOnJS(jsDragAbort)(ring);
-        else runOnJS(jsEndDrag)(ring);
-      }
+      // If the pan never activated (a pure tap won the race — onUpdate never
+      // ran, rot untouched), leave it entirely to the Tap gesture.
+      if (activated.value === 0) return;
+      activated.value = 0;
+      // started===1: a real turn (> 4°) — CANCELLED aborts to a detent, else
+      // engage the landed slot. Activated but sub-threshold (4px..4°): rot
+      // has drifted a few px off its detent and the racing Tap was cancelled,
+      // so nothing else will snap it — abort to the nearest detent so the
+      // ring never rests misaligned (finding 1).
+      if (started.value === 1 && e.state !== State.CANCELLED) runOnJS(jsEndDrag)(ring);
+      else runOnJS(jsDragAbort)(ring);
     });
 
   // Taps are a REAL tap gesture racing the pan — a pan cancelled by the
@@ -443,8 +459,6 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
   const selTier = selNode ? (selNode.leaf ? 'note' : selNode.subfamily ? 'group' : 'family') : null;
   const pend = usePendingAdd(selId, ops);
 
-  const onChroma = (color: string) =>
-    contrastRatio(color, theme.ink) >= contrastRatio(color, theme.bg) ? theme.ink : theme.bg;
 
   // ── ring layers: ONE even layout per commit for wedges AND labels ──
   const layerSide = 2 * R_MAX * scale;
@@ -513,13 +527,19 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
       const a1 = contentMid + step / 2;
       const color = familyColor(it.familyId);
       const bold = i === focusIdx && engaged;
+      // Route the resting wedge fill through the SHARED pipeline
+      // (aromaFillRatio per-theme/family boosts) — a bare 0.13 mix dissolved
+      // into the sheet at 1.0:1 on cobalt/Chemical & clay/Fruity (the exact
+      // weakness the boost table was ruled to fix; review finding). Bold
+      // (focused+engaged) stays the solid family colour.
+      const restFill = mix(color, theme.surface, aromaFillRatio(themeKey, it.familyId, 0.13));
       wedges.push(
         <RingWedge
           key={`w-${it.id}`}
           ring={ring}
           a0={a0}
           a1={a1}
-          fill={bold ? color : mix(color, theme.surface, 0.13)}
+          fill={bold ? color : restFill}
           stroke={theme.surface}
           th1={th1}
           th2={th2}
@@ -531,7 +551,10 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
       const delta = mod((i - focusIdx) * step + 180, 360) - 180;
       const worldMid = -90 + delta;
       const name = capFirst(it.label);
-      const labelFill = bold ? onChroma(color) : mix(color, theme.ink, 0.68);
+      // Bold label = inkOn the solid wedge; resting = readableSolid against
+      // its own resting wedge fill (the badges' font treatment — a fixed 0.68
+      // ink pull measured 1.08:1 on clay/Fire; review finding).
+      const labelFill = bold ? inkOn(color, theme.ink, theme.bg) : readableSolid(color, theme.ink, restFill);
       const labelOpacity = bold ? 1 : active ? 0.85 : 0.62;
       const labelFont = bold ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium';
       if (radial) {

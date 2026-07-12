@@ -11,7 +11,7 @@ import { AromaChip, AromaCrumbs, CapHint, ModifierRail, PronouncedRow, canonical
 import { aromaFillRatio } from './aromaTint';
 
 // D · badge rail — the most condensed browse picker (09 · Aroma input, kept
-// as one of the four device-test variants in the browse sheet). A horizontal
+// as one of the five device-test variants in the browse sheet). A horizontal
 // rail of badges at the current tier with a breadcrumb above it: tap a badge
 // to drill family → subfamily → leaves; the round mark on a coarse badge
 // selects the WHOLE family/group (the any-tier ruling — coarse picks are
@@ -62,7 +62,10 @@ function GroupBadge({ id, ops, onDrill, onToggle }: { id: string; ops: AromaOps;
         {on ? (
           <Icon name="check" size={18} color={onWords} />
         ) : (
-          <View style={{ width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: alpha(color, 0.55) }} />
+          // Ring in the READABLE accent (like ListPicker's mark), not raw
+          // alpha(color) — on a family whose fill sits near its own colour the
+          // bare ring vanished into the fill (review finding).
+          <View style={{ width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: alpha(readableSolid(color, theme.ink, fill), 0.7) }} />
         )}
       </Pressable>
       <VText

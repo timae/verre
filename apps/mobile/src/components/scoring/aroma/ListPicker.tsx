@@ -75,12 +75,20 @@ export function ListPicker({
     // SOLID family fill + contrast-picked label (inkOn). Plain/Cards: usual
     // rows — ink words; armed = family tint + ink.
     const restingR = aromaFillRatio(themeKey, row.familyId, 0.13);
+    // Plain/Cards armed fill (ratio 0.2) can resolve SOLID on a 'solid'
+    // per-family bump — track it so the armed pendP border takes the label
+    // ink rather than readableBorder (which floors ~1.9:1 on a same-colour
+    // solid fill; review finding).
+    const plainArmedR = aromaFillRatio(themeKey, row.familyId, 0.2);
+    const plainSolid = !tinted && armed && plainArmedR >= 1;
     const fill = tinted
       ? armed || restingR >= 1
         ? color
         : mix(color, theme.surface, restingR)
       : armed
-        ? mix(color, theme.surface, aromaFillRatio(themeKey, row.familyId, 0.2))
+        ? plainArmedR >= 1
+          ? color
+          : mix(color, theme.surface, plainArmedR)
         : cards
           ? theme.surface
           : 'transparent';
@@ -91,7 +99,9 @@ export function ListPicker({
       ? armed || restingR >= 1
         ? inkOn(color, theme.ink, theme.bg)
         : readableSolid(color, theme.ink, fill)
-      : theme.ink;
+      : plainSolid
+        ? inkOn(color, theme.ink, theme.bg) // a 'solid' armed plain/cards fill needs a contrast label
+        : theme.ink;
     // Press feedback in the FAMILY colour, not the theme sunk tone (Simon).
     const pressFill = mix(color, theme.surface, aromaFillRatio(themeKey, row.familyId, 0.13));
     // A tinted row whose fill IS the solid colour (armed, or a 'solid'
@@ -132,7 +142,7 @@ export function ListPicker({
             // tinted fill, the label ink — a same-colour border would
             // vanish). Plain rows keep a transparent border for stability.
             borderWidth: armed && pendP ? 1.5 : cards || tinted ? 1 : 1.5,
-            borderColor: armed && pendP ? (tinted ? words : readableBorder(color, theme.ink, fill)) : cards || tinted ? theme.rule : 'transparent',
+            borderColor: armed && pendP ? (tinted ? words : plainSolid ? inkOn(color, theme.ink, theme.bg) : readableBorder(color, theme.ink, fill)) : cards || tinted ? theme.rule : 'transparent',
             backgroundColor: pressed && !armed && !tinted ? pressFill : fill,
           })}
         >

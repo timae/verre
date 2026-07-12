@@ -79,7 +79,7 @@ Call sites, phased per §11: `app/api/session/[code]/rate/route.ts` (**wired in 
 
 Per the brief's input model: a **modifier bar** + tier-by-tier browse + search. Phasing:
 
-1. **Native input** — **BUILT (PR #77, `feature/aroma-input`, 2026-07-10)**: the 02e·11 search-first section on the impression screen; interaction rulings recorded in `docs/design/decisions/0008-aroma-input-search-first.md`, components catalogued in `apps/mobile/CLAUDE.md`. The browse sheet ships all four handoff picker variants for device testing (Rail live; Rings/Map/Canvas pending on the same track).
+1. **Native input** — **BUILT (PR #77, `feature/aroma-input`, 2026-07-10)**: the 02e·11 search-first section on the impression screen; interaction rulings recorded in `docs/design/decisions/0008-aroma-input-search-first.md`, components catalogued in `apps/mobile/CLAUDE.md`. The browse sheet ships FIVE picker variants for device testing (the four handoff variants Map/Rings/Rail/Canvas + a List variant added on a device ask), committed on `feature/aroma-pickers`.
 2. **Web read-only** — chips on wine detail / feed / profile render from the same core helpers. Web *input* deferred (web rate UI is slated for redesign anyway — don't build the browse tree twice).
 3. **Compare/aggregate** — later phase (§8).
 
@@ -117,7 +117,7 @@ The brief's query-time roll-up (strip modifiers → climb tiers → find the agr
 
 1. Decision #1 (id scheme) confirmed in this doc — the last open gate before PR A.
 2. PR A (backend, moments-first) — **BUILT (2026-07-08, `feature/aroma-core`)**: core taxonomy module (slug-id regeneration + pumpkin_seed fix) + validators, palette re-key (both copies), `ratings.aromas` column + migration, `gateAromas`, **session rate route only**, engagement predicate extension, session GET surfaces include `aromas`. CI taxonomy-invariants check (`scripts/check-aroma-taxonomy.mjs`). E2E pins in `.local/test-env/scripts/section-aromas.sh` (22 assertions: gate 400s, dedupe, omitted-preserves on both stores, aromas-as-engagement, extended cascade predicate).
-3. PR B (native input) — first slice **MERGED (PR #77, 2026-07-10)**: `d`→`p` re-key, core `searchAromas`, the search-first input + Rail picker (ADR-0008). Second slice (`feature/aroma-pickers`): the remaining Rings/Map/Canvas browse pickers — all four ship behind the browse sheet's segmented control for on-device feel-testing; one gets ruled after device time. Remaining on the track: the device pass + Simon's picker ruling.
+3. PR B (native input) — first slice **MERGED (PR #77, 2026-07-10)**: `d`→`p` re-key, core `searchAromas`, the search-first input + Rail picker (ADR-0008). Second slice (`feature/aroma-pickers`, committed `876499f`+`e1fd898`): the remaining Rings/Map/Canvas pickers + a List variant (device ask) — all FIVE ship behind the browse sheet's segmented control for on-device feel-testing; one gets ruled after device time. Also folded in: the Structure input/wheel rename + badge-tint ruling. Remaining on the track: the device pass + Simon's picker ruling (element decisions deferred pending external feedback).
 4. PR C (standalone check-ins): `/api/checkins` POST + `[id]` PATCH gain `aromas` (same `gateAromas` chokepoint), check-in create sheet input, feed/detail chips — applying whatever PR A/B taught. README API table updates here (checkins are the README-documented routes).
 5. PR D (remaining read surfaces): profile, web read-only chips.
 6. Later milestones: compare roll-up, Palate Fingerprint, content passes.

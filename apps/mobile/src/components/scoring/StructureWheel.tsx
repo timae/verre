@@ -49,14 +49,15 @@ export function StructureWheel({ axes, size = 260, labels = true, maxWidth, badg
       <Circle cx={geo.cx} cy={geo.cy} r={geo.R} fill="none" stroke={theme.rule} strokeWidth={1} />
       <Circle cx={geo.cx} cy={geo.cy} r={geo.r0} fill="none" stroke={theme.ruleSoft} strokeWidth={1} />
       {geo.wedges.map((w) => (
-        // 0.72 IS the mock's value (vero-scoring.js coxcomb wedge
-        // fill-opacity="0.72") — the design deliberately washes wheel wedges
-        // 28% toward the host surface while the fill-track input renders the
-        // same palette hex SOLID (.filltrack .fill { background: var(--fc) }).
-        // So wheel colours reading lighter than the input is per-design, not
-        // a palette mismatch. (Web's PolarChart uses 0.85 + a 0.13 ghost — a
-        // third rendering; web is frozen pre-redesign.) Changing this is a
-        // design decision — ask Simon, don't "fix" it.
+        // Default (wash): 0.72 IS the mock's value (vero-scoring.js coxcomb
+        // wedge fill-opacity="0.72"), translucent so wedges shift with the
+        // host ground. `badgeTint` (dev gallery until Simon rules) renders the
+        // OPAQUE mix(colour, surface, 0.72) instead — since StructureInput's
+        // ruled fill (2026-07-11) is now that same badge tint, badgeTint makes
+        // wheel and input read as ONE colour on a surface host. (Web's
+        // PolarChart uses 0.85 + a 0.13 ghost — a third rendering; web is
+        // frozen pre-redesign.) Changing the DEFAULT is a design decision —
+        // ask Simon, don't "fix" it.
         <Path
           key={w.index}
           d={w.d}

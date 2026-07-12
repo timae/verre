@@ -366,8 +366,13 @@ export function PronouncedRow({
   const familyColor = useAromaColors();
   const node = getAromaNode(a);
   const color = node ? familyColor(node.family.id) : theme.accent;
-  const onFill = mix(color, theme.surface, aromaFillRatio(themeKey, node?.family.id ?? '', 0.24));
-  const onWords = readableSolid(color, theme.ink, onFill);
+  const onR = aromaFillRatio(themeKey, node?.family.id ?? '', 0.24);
+  const onFill = onR >= 1 ? color : mix(color, theme.surface, onR);
+  // A 'solid' per-family fill (clay Fire etc.) takes the label-ink treatment
+  // for BOTH words and border — readableBorder floors at 45% share, which on
+  // a same-colour solid fill measured ~1.9:1 (review finding).
+  const onSolid = onR >= 1;
+  const onWords = onSolid ? inkOn(color, theme.ink, theme.bg) : readableSolid(color, theme.ink, onFill);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <Pressable
@@ -381,8 +386,9 @@ export function PronouncedRow({
           borderRadius: 999,
           borderWidth: 1.5,
           // The Pronounced border wears the READABLE BORDER accent (45%
-          // colour floor — the words' full pull went white on clay).
-          borderColor: on ? readableBorder(color, theme.ink, onFill) : 'transparent',
+          // colour floor — the words' full pull went white on clay); on a
+          // solid fill it takes the label ink, like the chip.
+          borderColor: on ? (onSolid ? onWords : readableBorder(color, theme.ink, onFill)) : 'transparent',
           backgroundColor: on ? onFill : theme.surfaceSunk,
         }}
       >
@@ -409,8 +415,10 @@ export function PronouncedRow({
 // (a promoted composite like grape+dried reads as its leaf) — an exact
 // already-added match greys the commit to "Added", no Update semantics
 // (ADR-0008). A cap-rejected commit answers with the warning haptic + the
-// same "Limit reached" hint the inline input shows (a rejection message,
-// never a live counter); `capHit` clears once a removal makes room.
+// `CapHint` line — the SAME COPY the inline input shows (a rejection message,
+// never a live counter); the two differ only in tone/alignment by surface
+// (browse-sheet CapHint = accent/left; the impression input = critical/
+// centred, device-passed). `capHit` clears once a removal makes room.
 export function usePendingAdd(target: string | null, ops: AromaOps) {
   const [pendM, setPendM] = useState<string | null>(null);
   const [pendP, setPendP] = useState(false);
@@ -459,8 +467,9 @@ export function CapHint({ show }: { show: boolean }) {
 }
 
 // (The pickers consume usePendingAdd + RefineAddRow directly — Map/Canvas
-// also feed the armed cell's Pronounced border from pendP, Rings splits the
-// row into the wheel's corner controls.)
+// also feed the armed cell's Pronounced border from pendP; Rings renders the
+// same shared RefineAddRow BELOW its wheel. The corner-controls design was
+// abandoned during the Rings rewrite — don't resurrect it from old comments.)
 
 // The "it landed HERE" cue on the chip a fresh Add produced (or the "+N
 // more" pill when the ordering files it into the overflow): a LIGHT-UP — an
@@ -812,8 +821,10 @@ export function ModifierSelectButton({
 
 // The refine row's Pronounced toggle — the double-chevron mark, glyph-only
 // by default (the search row's width constraint; the word lives in the
-// accessibility label), `withLabel` adds the written word where there's room
-// (the Rings corner). Outlined at rest, accent-filled when on (ADR-0008).
+// accessibility label). `withLabel` adds the written word where there's room;
+// no current caller passes it (it was for the abandoned Rings corner control)
+// — kept as a ready option for a future wide-refine surface. Outlined at
+// rest, accent-filled when on (ADR-0008).
 export function PronouncedToggle({
   on,
   onToggle,

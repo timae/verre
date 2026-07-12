@@ -272,8 +272,14 @@ export function AromaInput({
                       sub={r.node.tier === 'family' ? 'family' : r.node.tier === 'subfamily' ? 'group' : leafCtx ? capFirst(leafCtx) : undefined}
                       // single = focus toggle — for ADDED pairs too (you may
                       // want the same aroma with a second modifier; removal is
-                      // the chip's ×, never a result tap). double = arm the
-                      // pending Pronounced flag.
+                      // the chip's ×, never a result tap). double = focus the
+                      // row and ARM pending Pronounced. In immediate mode the
+                      // first tap's `single` already ran (clearing pendP), so
+                      // `double` unconditionally SETS — the old `isFocus ? !p`
+                      // toggle was timing-dependent dead code (the re-render
+                      // between taps made isFocus false; review finding), and
+                      // the help copy says double-tap "to set it". Disarm is
+                      // the PronouncedToggle in the refine row.
                       onPress={() =>
                         tap(
                           `res:${rowKey}`,
@@ -283,7 +289,7 @@ export function AromaInput({
                           },
                           () => {
                             setFocus({ a: id, m: r.m, key: rowKey });
-                            setPendP((p) => (isFocus ? !p : true));
+                            setPendP(true);
                           },
                         )
                       }
@@ -300,9 +306,9 @@ export function AromaInput({
         ) : null}
         {/* refine row — BELOW the results, ONE stable row for the whole search
             (rounds 6–8): [modifier select | Pronounced glyph | Add]. Now the
-            SHARED RefineAddRow (the Map/Canvas pickers wear the same anatomy —
-            Simon's device ruling). All three disable until a result is
-            focused; nothing pops or shifts. */}
+            SHARED RefineAddRow (Map/Canvas/Rings all wear the same anatomy;
+            List hosts it in the sheet footer — Simon's device ruling). All
+            three disable until a result is focused; nothing pops or shifts. */}
         {q ? (
           <View style={{ marginTop: 12 }}>
             <RefineAddRow

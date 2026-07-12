@@ -5,6 +5,7 @@ import { useAromaColors } from '@/theme/flavourColors';
 import { AromaCrumbs, CapHint, RefineAddRow, capFirst, usePendingAdd, type AromaOps } from './parts';
 import { HexStage, STAGE_PAD, type HexCell } from './hexStage';
 import { honeyXY } from './hexMath';
+import { LEVEL_R, type MapLevel } from './mapLayout';
 
 // H2 · zoom canvas — one of the browse picker variants (ADR-0008; mock:
 // honeyInner('H2') in vero-aroma-input.js, visual reference only). A dive
@@ -39,10 +40,11 @@ export function CanvasPicker({ ops }: { ops: AromaOps }) {
       ? family.subfamilies.map((s) => ({ id: s.id, label: s.label, familyId: family.id, drill: true }))
       : AROMA_FAMILIES.map((f) => ({ id: f.id, label: f.label, familyId: f.id, drill: true }));
 
-  // Tile size matches the Map's per-level radii (device round 2: the
-  // count-based hexR sizing left canvas tiles smaller than the map's — long
-  // labels like "chemical" sat tighter here than there).
-  const R = path.length === 0 ? 37 : path.length === 1 ? 46 : 44;
+  // Tile size = the Map's per-level radii (device round 2: the count-based
+  // sizing left canvas tiles smaller than the map's — long labels like
+  // "chemical" sat tighter here than there). path.length 0/1/2 → level 1/2/3;
+  // import LEVEL_R so a future radius tweak can't silently break the parity.
+  const R = LEVEL_R[(path.length + 1) as MapLevel];
   // Positions + a stage height SIZED TO the cluster (capped at STAGE_H): a
   // small comb vertically centred in the full-height stage floated in empty
   // bands (device round: "too much empty space above the cluster").

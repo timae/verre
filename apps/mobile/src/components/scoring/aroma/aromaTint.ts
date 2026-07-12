@@ -23,9 +23,17 @@ const FAMILY_BOOST: Record<string, Record<string, number | 'solid'>> = {
 // Cap keeps a boosted resting fill short of the pure family colour, so the
 // full-colour Pronounced border still reads against it.
 const BOOST_CAP = 0.75;
+// The resting ratio a 'solid' family should map to exactly 1.0 (the standard
+// chip/badge resting site). Sub-resting requests (a muted 0.09 rail chip)
+// then scale PROPORTIONALLY below solid instead of also snapping to 1.0 —
+// otherwise a muted clay-Fruity chip rendered at full armed strength with
+// sub-3:1 words, indistinguishable from its selected sibling (review finding).
+const SOLID_RESTING = 0.2;
 
 export function aromaFillRatio(themeKey: string, familyId: string, r: number): number {
   const f = FAMILY_BOOST[themeKey]?.[familyId] ?? THEME_BOOST[themeKey] ?? 1;
-  if (f === 'solid') return 1;
+  // 'solid': resting site → 1.0; a smaller r (muted) scales down from there.
+  // Not capped — solid is the point — but a muted request stays below solid.
+  if (f === 'solid') return Math.min(1, r / SOLID_RESTING);
   return f === 1 ? r : Math.min(BOOST_CAP, r * f);
 }

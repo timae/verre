@@ -1,6 +1,7 @@
-// WCAG relative-luminance contrast ratio between two opaque hex colors.
-// Used to decide whether a themed QR (modules vs field) clears the scan-safe
-// threshold before falling back to a fixed high-contrast pair.
+// WCAG relative-luminance contrast ratio between two opaque colours (6-digit
+// hex OR mix()'s `rgb(r,g,b)` output). Originally the themed-QR scan-safety
+// check; now also underpins `inkOn`/`readableSolid`/`readableBorder` and the
+// aroma hex-stage label picking (theme/color.ts).
 
 function relLuminance(hex: string): number {
   // Accept theme/color.ts mix() output (`rgb(r,g,b)`) beside plain hex —
