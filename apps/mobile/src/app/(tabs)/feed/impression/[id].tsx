@@ -244,6 +244,30 @@ export default function FeedImpression() {
   const activeUri = activeWine && !activeWine._blind && activeWine.imageUrl ? activeWine.imageUrl : null;
   const hasClone = !!(sourceFrame && activeUri);
   const heroCloneH = Math.round(windowH * HERO_RATIO) + radius.xl;
+  // Natural aspect (W/H) per photo uri — seeded from the card handoff for the
+  // tapped photo, kept fresh by the clone image's own onLoad (covers a
+  // dismissal from a swiped-to page, whose photo the handoff never saw; the
+  // clone mounts that photo while the screen sits open, so the aspect is in
+  // hand before any pull-down). Drives the intrinsic-aspect image layer
+  // below: expo-image bakes its cover crop at LAYOUT bounds, so a bitmap
+  // cropped at the hero box cannot recover the pixels a differently-shaped
+  // card frame shows — the "photo zooms, then snaps to the card's crop at
+  // rest" Simon saw on close (Codex P1). Unknown aspect falls back to the
+  // hero-box crop (the pre-fix behavior) until onLoad reports the ratio.
+  const [photoAspects, setPhotoAspects] = useState<Record<string, number>>(() =>
+    source?.kind === 'photo' && source.aspect ? { [source.uri]: source.aspect } : {},
+  );
+  const reportCloneAspect = useCallback((uri: string, a: number) => {
+    if (!Number.isFinite(a) || a <= 0) return;
+    setPhotoAspects((prev) => (prev[uri] ? prev : { ...prev, [uri]: a }));
+  }, []);
+  const activeAspect = activeUri ? photoAspects[activeUri] : undefined;
+  // The image layer's size = the FINAL hero box's cover fit for the real
+  // aspect, rendered UNclipped (the outer overflow:hidden crops) — identical
+  // pixels to contentFit="cover" at rest, but the counter-scale can reveal
+  // the parts a differently-shaped mid-flight box needs.
+  const cloneImgW = activeAspect ? Math.max(screenW, heroCloneH * activeAspect) : screenW;
+  const cloneImgH = activeAspect ? cloneImgW / activeAspect : heroCloneH;
   // The glass-panel clone shows the ACTIVE wine — landing sync (round 3) keeps
   // the card beneath on the page being dismissed, so the panel clone must
   // match it or the [0→0.35] fade hands off onto a different panel.
@@ -343,19 +367,23 @@ export default function FeedImpression() {
       ],
     };
   });
-  // Counter-scale for the clone's image: the outer axis scales are non-uniform
-  // (card frame aspect ≠ hero aspect), which would DISTORT the photo — the old
-  // layout animation avoided that by re-cover-cropping every frame. The inner
-  // wrapper scales by max(sx,sy)/sx|sy, so the image's net scale is UNIFORM
-  // (no distortion) and ≥ the box on both axes (still covers; outer
-  // overflow:hidden crops) — a continuous, transform-only "cover".
+  // Counter-scale for the clone's intrinsic-aspect image layer: the outer
+  // axis scales are non-uniform (card frame aspect ≠ hero aspect), which
+  // would distort the photo — the old layout animation avoided that by
+  // re-cover-cropping every frame. Per frame, u = the uniform cover scale of
+  // the intrinsic layer for the CURRENT box; dividing out the outer axis
+  // scales makes the image's net on-screen scale (u, u) — undistorted,
+  // covering (outer overflow:hidden crops), and matching the real cover crop
+  // at BOTH endpoints (u = 1 at the hero by construction of cloneImgW/H; at
+  // the card it equals the card's own cover scale) — a continuous,
+  // transform-only "cover".
   const cloneImgStyle = useAnimatedStyle(() => {
     const p = progress.value;
     if (!sourceFrame) return { transform: [{ scale: 1 }] };
-    const sx = interpolate(p, [0, 1], [sourceFrame.width, screenW]) / screenW;
-    const sy = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]) / heroCloneH;
-    const q = Math.max(sx, sy);
-    return { transform: [{ scaleX: q / sx }, { scaleY: q / sy }] };
+    const w = interpolate(p, [0, 1], [sourceFrame.width, screenW]);
+    const h = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]);
+    const u = Math.max(w / cloneImgW, h / cloneImgH);
+    return { transform: [{ scaleX: (u * screenW) / w }, { scaleY: (u * heroCloneH) / h }] };
   });
   // Bar + pager fade/rise in behind the traveling photo (the "unfold") and
   // sink away on dismiss. Late START (0.35 — the card shows through early) but
@@ -394,9 +422,10 @@ export default function FeedImpression() {
   // traveling photo reads as floating (and the pre-3d clone-over-content
   // order made the title POP at coincidence instead). This overlay fades the
   // title in near the settle. Deliberately a STATIC layer at the FINAL hero
-  // rect, NOT a child of the animating clone: the clone animates layout props
-  // (left/top/width/height), and text inside it re-shapes on every frame — a
-  // measurable stutter source (round 3c). It only shows past 0.7, when the
+  // rect, NOT a child of the animating clone: originally because the clone's
+  // layout-prop animation re-shaped child text every frame (round 3c stutter);
+  // still right now that the clone flies on transforms — a child would
+  // inherit the non-uniform axis squash and distort. It only shows past 0.7, when the
   // clone sits within a few px of the final rect, so the fixed anchor reads
   // as the title gliding in with the settle; at coincidence it yields to the
   // page's identical real block.
@@ -490,8 +519,28 @@ export default function FeedImpression() {
           pointerEvents="none"
           style={[styles.clone, { width: screenW, height: heroCloneH }, cloneStyle]}
         >
-          <Reanimated.View style={[{ width: '100%', height: '100%' }, cloneImgStyle]}>
-            <Image source={{ uri: activeUri! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt="" />
+          {/* intrinsic-aspect image layer, centered (its center coincides with
+              the outer's, so the counter-scale stays center-anchored). onLoad
+              feeds the aspect map for photos the handoff didn't cover. */}
+          <Reanimated.View
+            style={[
+              {
+                position: 'absolute',
+                left: (screenW - cloneImgW) / 2,
+                top: (heroCloneH - cloneImgH) / 2,
+                width: cloneImgW,
+                height: cloneImgH,
+              },
+              cloneImgStyle,
+            ]}
+          >
+            <Image
+              source={{ uri: activeUri! }}
+              style={{ width: '100%', height: '100%' }}
+              contentFit="cover"
+              onLoad={(e) => reportCloneAspect(activeUri!, e.source.width / e.source.height)}
+              alt=""
+            />
           </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
             <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />

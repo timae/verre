@@ -364,8 +364,10 @@ installed RN 0.85.3 / Reanimated 4.3.1 sources):
   The back-button close self-writes `progress` first to cancel a running
   spring-back (a new spring ADDS the running one's velocity — same jump-cut
   class). **The OPEN moved onto a spring after Simon's device pass confirmed
-  the close feel (2026-07-12)** — its own `springs.enter` preset (`dur2` →
-  ~300ms settle), no velocity (not gesture-driven); the warm-stage fallback
+  the close feel (2026-07-12)** — its own `springs.enter` preset (dur2/dur3
+  midpoint 260 → ~390ms settle; dur2 read "almost a bit too fast" on device,
+  dur3 would delay the pointer-events unlock), no velocity (not
+  gesture-driven); the warm-stage fallback
   timer keys on the ~1.5× physical settle (`OPEN_SETTLE_MS`). The old
   `motion.dur3 + motion.ease` open timing is gone.
 - **Entry-page mount split** (step 2): during a presentation the entry
@@ -396,12 +398,18 @@ installed RN 0.85.3 / Reanimated 4.3.1 sources):
   frames from per-frame layout, satisfying the profiling gate). The clone
   renders statically at the FINAL hero rect; the worklet derives the OLD
   lerped x/y/w/h trajectories and expresses them as center-translate + axis
-  scales, so the flight path is pixel-identical. The non-uniform axis scales
-  would distort the photo (card aspect ≠ hero aspect — the old layout
-  animation re-cover-cropped every frame), so an inner wrapper counter-scales
-  by `max(sx,sy)/sx|sy`: net image scale is uniform (no distortion) and ≥ the
-  box on both axes (still covers; outer `overflow: hidden` crops) — a
-  continuous transform-only "cover". The flag (in `apps/mobile/package.json`
+  scales, so the flight path is pixel-identical. The photo rides an
+  INTRINSIC-ASPECT image layer (Codex P1 catch, round 2 — the first cut
+  counter-scaled the image at the hero box's dimensions, but expo-image bakes
+  its cover crop at layout bounds, so a differently-shaped card frame showed
+  a zoomed crop that snapped at rest — the close artifact Simon reported):
+  the layer renders unclipped at the final box's cover-fit size for the
+  photo's REAL aspect (handed off from the card's measured `aspects` map via
+  `feedTransition.ts`, backfilled by the clone image's own `onLoad` for
+  swiped-to pages), and the per-frame counter-scale applies the CURRENT box's
+  uniform cover scale `u` — undistorted, covering (outer `overflow: hidden`
+  crops), and matching the true cover crop at BOTH endpoints — a continuous
+  transform-only "cover". The flag (in `apps/mobile/package.json`
   `reanimated.staticFeatureFlags`; needs `pod install` + native rebuild) puts
   the per-frame updates on reanimated's synchronous UI-thread fast path.
   ⚠️ Invariants + the global hit-testing caveat live in the toolchain bullet

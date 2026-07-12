@@ -39,8 +39,12 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   the edge recognizer.
 - ⚠️ **Reanimated static flag `IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS: true`**
   (`package.json` → `reanimated.staticFeatureFlags`; the pod reads
-  `<ios>/../package.json`, so it lives HERE, not repo root; takes effect on
-  `pod install` + native rebuild). It puts per-frame animated updates of an
+  `<installation_root>/../package.json` and the canonical Podfile is
+  `apps/mobile/ios/Podfile`, so it lives HERE, not repo root — a STALE,
+  gitignored `/ios` at the repo root (June 2026 prebuild artifact, lowercase
+  `verre.xcodeproj`) has misled a review into thinking otherwise; never build
+  from it, and delete it when convenient. Takes effect on `pod install` +
+  native rebuild). It puts per-frame animated updates of an
   ALLOWLISTED prop set (`transform`, `opacity`, colors, border radii — see
   `ReanimatedModuleProxy.cpp`) on a synchronous UI-thread fast path. Two
   invariants: (1) the fast path is ALL-OR-NOTHING per view — a `useAnimatedStyle`

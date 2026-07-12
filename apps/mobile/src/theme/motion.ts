@@ -23,9 +23,11 @@ import type { WithSpringConfig } from 'react-native-reanimated';
 import { motion } from './vero-tokens';
 
 export const springs = {
-  // dur2 → ~300ms actual settle. Device-validated 2026-07-12.
+  // Midpoint of dur2/dur3 (260 → ~390ms actual settle): dur2 read "almost a
+  // bit too fast" on Simon's device pass (2026-07-12), dur3's ~480ms settle
+  // would delay interactivity (pointer-events unlock at physical settle).
   enter: {
-    duration: motion.dur2,
+    duration: (motion.dur2 + motion.dur3) / 2,
     dampingRatio: 1,
     overshootClamping: true,
   } satisfies WithSpringConfig,
