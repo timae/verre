@@ -16,7 +16,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import Reanimated, {
-  Easing,
   Extrapolation,
   interpolate,
   runOnJS,
@@ -26,7 +25,6 @@ import Reanimated, {
   useScrollOffset,
   useSharedValue,
   withSpring,
-  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -49,7 +47,7 @@ import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HE
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { motion, radius, space, springs, useTheme } from '@/theme';
+import { radius, space, springs, useTheme } from '@/theme';
 import { countryName } from '@verre/core';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
@@ -100,18 +98,19 @@ function closeHaptic() {
 // reads as "fully let go" (the FullscreenImage lib uses 200; the card is a
 // bigger element, give it more room). Device-tune with Simon.
 const DISMISS_DRAG = 340;
-// Motion TOKENS, not hand-rolled curves (Simon, round 3 — the original
-// out-cubic 360ms was off-token AND the source of the end-of-open lag: its
-// deceleration tail spends ~half the wall-clock creeping through the last 10%
-// of progress, so the info panel's fade/rise visibly crawled at the end. The
-// standard `motion.ease` settles much sooner into its endpoint).
-const OPEN_TIMING = { duration: motion.dur3, easing: Easing.bezier(...motion.ease) };
-// CLOSE legs are SPRINGS (theme/motion.ts `springs.release`), not timings: the
-// pan release passes its velocity (converted into progress units — progress =
-// 1 − translationY/DISMISS_DRAG, so d(progress)/dt = −velocityY/DISMISS_DRAG),
-// so the photo keeps moving at finger speed instead of restarting on a bezier
-// — the discontinuity that read as "handbrake at release". The open stays a
-// timing until the spring feel is device-validated (snappiness plan step 1).
+// EVERY presentation leg is a SPRING on the theme/motion.ts tokens — one
+// motion physics both directions (the open joined after Simon device-validated
+// the close feel, 2026-07-12; before that it was a motion.dur3 bezier timing).
+// OPEN = `springs.enter` (no velocity, not gesture-driven); every CLOSE leg =
+// `springs.release`, one duration tier quicker (Simon: dismissal should be the
+// fastest motion here). The pan release passes its velocity (converted into
+// progress units — progress = 1 − translationY/DISMISS_DRAG, so
+// d(progress)/dt = −velocityY/DISMISS_DRAG), so the photo keeps moving at
+// finger speed instead of restarting on a curve — the "handbrake at release"
+// fix. Reanimated duration-springs settle at ~1.5× the configured perceptual
+// duration — this belt matches the physical settle (used by the warm-stage
+// fallback timer, see `warmLevel`).
+const OPEN_SETTLE_MS = springs.enter.duration * 1.5;
 
 export default function FeedImpression() {
   const { theme } = useTheme();
@@ -215,17 +214,17 @@ export default function FeedImpression() {
   const bumpWarm = useCallback((l: number) => setWarmLevel((cur) => Math.max(cur, l)), []);
   useEffect(() => {
     if (source) {
-      progress.value = withTiming(1, OPEN_TIMING, (finished) => {
+      progress.value = withSpring(1, springs.enter, (finished) => {
         if (finished) runOnJS(bumpWarm)(1);
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
-    // Belt for an interrupted open (the timing callback fires finished=false
+    // Belt for an interrupted open (the spring callback fires finished=false
     // and would leave the siblings unmounted forever).
     if (warmLevel === 0) {
-      const t = setTimeout(() => bumpWarm(1), OPEN_TIMING.duration + 120);
+      const t = setTimeout(() => bumpWarm(1), OPEN_SETTLE_MS + 120);
       return () => clearTimeout(t);
     }
     // Remaining pages mount on JS idle — requestIdleCallback, NOT the
@@ -743,8 +742,9 @@ function DetailPage({
   // Entry page during a presentation only (snappiness plan step 2): first
   // commit renders hero + shell so the open animation can start immediately;
   // the heavy body (wheel SVG, chips, about) mounts one frame later — on the
-  // JS thread, concurrently with the UI-thread flight, committed well before
-  // the content fade makes it visible (progress 0.35 ≈ 112ms in).
+  // JS thread, concurrently with the UI-thread flight, normally committed
+  // before the content fade (progress ≥ 0.35, a few frames in on the
+  // front-loaded spring) makes it visible.
   deferBody?: boolean;
 }) {
   const { theme } = useTheme();

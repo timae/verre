@@ -349,8 +349,10 @@ installed RN 0.85.3 / Reanimated 4.3.1 sources):
   spring-back, and the bar/Android-back close all use `withSpring` with the new
   `springs.release` preset (`theme/motion.ts` — engineering-owned spring tokens
   beside the vendored `motion`; critically damped, `overshootClamping` so
-  progress can't leave [0,1]; `duration: dur2`, and note reanimated's
-  duration-springs settle at ~1.5× the configured value → ~300ms actual). The
+  progress can't leave [0,1]; `duration: dur1` → ~180ms actual settle, one
+  tier quicker than the open per Simon's post-device-pass "close could be a
+  bit faster" (2026-07-12) — note reanimated's duration-springs settle at
+  ~1.5× the configured value). The
   pan release converts its gesture velocity into progress units
   (`-velocityY / DISMISS_DRAG`) so the photo keeps moving at finger speed
   instead of restarting on a bezier — the "handbrake at release" fix. The
@@ -361,8 +363,11 @@ installed RN 0.85.3 / Reanimated 4.3.1 sources):
   as a jump cut — gated to 0 instead (no "dip" on a fast cancel, by design).
   The back-button close self-writes `progress` first to cancel a running
   spring-back (a new spring ADDS the running one's velocity — same jump-cut
-  class). **The OPEN stays `withTiming` + `motion.ease` until the spring feel
-  is device-validated**; switching it is the follow-up half of step 1.
+  class). **The OPEN moved onto a spring after Simon's device pass confirmed
+  the close feel (2026-07-12)** — its own `springs.enter` preset (`dur2` →
+  ~300ms settle), no velocity (not gesture-driven); the warm-stage fallback
+  timer keys on the ~1.5× physical settle (`OPEN_SETTLE_MS`). The old
+  `motion.dur3 + motion.ease` open timing is gone.
 - **Entry-page mount split** (step 2): during a presentation the entry
   `DetailPage` commits hero + dots + header first (`deferBody`), and the heavy
   body (StructureWheel SVG, aroma chips, About) mounts one `requestAnimationFrame`
@@ -426,8 +431,11 @@ latency still disappoints.
   body (wheel/chips) must never be visibly absent during the open fade · 8px
   dismiss pickup vs scroll/pager disambiguation still clean — especially
   diagonal pager swipes (≥8px vertical drift before ±16px horizontal now claims
-  the pan) · spring close feel (dur2 perceptual ≈ 300ms actual settle; tune
-  `springs.release`) — if good, switch the OPEN to the spring too.
+  the pan) · spring close ✅ device-confirmed 2026-07-12, then sped up to dur1
+  ≈ 180ms actual on Simon's "a bit faster" — re-check the quicker close +
+  flick feel (tune `springs.release`) · OPEN on `springs.enter` (dur2 ≈ 300ms)
+  since that pass — re-check the open glide + that the entry unfold (content
+  fade from 0.35) still reads right on the spring's front-loaded curve.
 - §B: feed → detail → moment → back walks back to the post; Moments tab keeps
   its own independent session state; settings/add/edit/impression pushes stay
   on the feed stack; delete-a-moment from a feed-entered settings lands on
