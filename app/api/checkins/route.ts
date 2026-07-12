@@ -7,6 +7,7 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
+import { gateAromas } from '@/lib/aromas'
 // From textSafe, NOT lib/session — importing session here would connect
 // Redis at module load just to use two pure sanitizers (codex finding).
 import { cleanCountry, cleanUrl } from '@/lib/textSafe'
@@ -92,7 +93,7 @@ export async function POST(req: NextRequest) {
   // makes). vinification/description/purchaseUrl land on the minted wine row,
   // giving a standalone check-in the same About-block metadata as a session
   // wine (the feed read path already surfaces them from the wine columns).
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl } = body
+  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl } = body
   // Scrub control chars first so a payload of pure NULL bytes doesn't
   // pass the non-empty check below.
   const wineName = scrub(rawWineName)
@@ -121,6 +122,12 @@ export async function POST(req: NextRequest) {
   }
   const scoreCheck = validateScore(score); if (scoreCheck.error) return NextResponse.json({ error: scoreCheck.error }, { status: 400 })
   const flavorsCheck = validateFlavors(flavors); if (flavorsCheck.error) return NextResponse.json({ error: flavorsCheck.error }, { status: 400 })
+  // Aromas through the same chokepoint as the session rate route (aroma-
+  // layer.md §5): unknown node / disallowed modifier / explicit null → 400,
+  // loudly. On CREATE there is no stored prior, so present-replaces /
+  // omitted-preserves collapses to "omitted = []" (the column default).
+  const aromasCheck = gateAromas(aromas); if (aromasCheck.error) return NextResponse.json({ error: aromasCheck.error }, { status: 400 })
+  const ratingAromas = aromasCheck.value ?? []
 
   let imageUrl: string | null = null
   if (imageData?.startsWith('data:image/')) {
@@ -305,6 +312,7 @@ export async function POST(req: NextRequest) {
         raterName: userRow.name,
         score: ratingScore,
         flavors: ratingFlavors,
+        aromas: ratingAromas,
         notes: scrubNotes,
         ratedAt: new Date(),
       },
@@ -391,6 +399,7 @@ export async function POST(req: NextRequest) {
     type: wineStyle,
     score: decimalToNumber(rating.score),
     flavors: ratingFlavors,
+    aromas: ratingAromas,
     notes: scrubNotes,
     imageUrl,
     venueName: scrubVenue,

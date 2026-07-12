@@ -16,7 +16,6 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
 import Reanimated, {
-  Easing,
   Extrapolation,
   interpolate,
   runOnJS,
@@ -25,7 +24,7 @@ import Reanimated, {
   useAnimatedStyle,
   useScrollOffset,
   useSharedValue,
-  withTiming,
+  withSpring,
   type SharedValue,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -36,6 +35,7 @@ import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
+import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
@@ -47,7 +47,7 @@ import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HE
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { motion, radius, space, useTheme } from '@/theme';
+import { radius, space, springs, useTheme } from '@/theme';
 import { countryName } from '@verre/core';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
@@ -98,13 +98,19 @@ function closeHaptic() {
 // reads as "fully let go" (the FullscreenImage lib uses 200; the card is a
 // bigger element, give it more room). Device-tune with Simon.
 const DISMISS_DRAG = 340;
-// Motion TOKENS, not hand-rolled curves (Simon, round 3 — the original
-// out-cubic 360ms was off-token AND the source of the end-of-open lag: its
-// deceleration tail spends ~half the wall-clock creeping through the last 10%
-// of progress, so the info panel's fade/rise visibly crawled at the end. The
-// standard `motion.ease` settles much sooner into its endpoint).
-const OPEN_TIMING = { duration: motion.dur3, easing: Easing.bezier(...motion.ease) };
-const CLOSE_TIMING = { duration: motion.dur2, easing: Easing.bezier(...motion.ease) };
+// EVERY presentation leg is a SPRING on the theme/motion.ts tokens — one
+// motion physics both directions (the open joined after Simon device-validated
+// the close feel, 2026-07-12; before that it was a motion.dur3 bezier timing).
+// OPEN = `springs.enter` (no velocity, not gesture-driven); every CLOSE leg =
+// `springs.release`, one duration tier quicker (Simon: dismissal should be the
+// fastest motion here). The pan release passes its velocity (converted into
+// progress units — progress = 1 − translationY/DISMISS_DRAG, so
+// d(progress)/dt = −velocityY/DISMISS_DRAG), so the photo keeps moving at
+// finger speed instead of restarting on a curve — the "handbrake at release"
+// fix. Reanimated duration-springs settle at ~1.5× the configured perceptual
+// duration — this belt matches the physical settle (used by the warm-stage
+// fallback timer, see `warmLevel`).
+const OPEN_SETTLE_MS = springs.enter.duration * 1.5;
 
 export default function FeedImpression() {
   const { theme } = useTheme();
@@ -195,28 +201,40 @@ export default function FeedImpression() {
   const dismissing = useSharedValue(false);
   // Mount-cost gate ("opens too slow", Simon round 3): during the presentation
   // only the ENTRY page mounts — the siblings render as empty slot views so
-  // the pager offsets hold — and the rest mount at coincidence. Mounting every
-  // DetailPage up front blocked the JS thread before the open animation could
-  // even start. Content pointerEvents are 'none' until fully open, so nothing
-  // can swipe to an unmounted page mid-flight.
-  const [warm, setWarm] = useState(!source);
+  // the pager offsets hold. Mounting every DetailPage up front blocked the JS
+  // thread before the open animation could even start. Content pointerEvents
+  // are 'none' until fully open, so nothing can swipe to an unmounted page
+  // mid-flight. Warming is STAGED (snappiness plan step 3 — mounting ALL
+  // siblings in one commit at coincidence was a JS spike right when the user
+  // starts interacting): 0 = entry page only (flight in progress) · 1 =
+  // + the ACTIVE page's neighbours (from coincidence, following `page` as the
+  // user swipes) · 2 = everything (on JS idle). Never downgrades; `mountedLo/
+  // Hi` (below) keep every once-mounted page mounted as the window moves.
+  const [warmLevel, setWarmLevel] = useState(source ? 0 : 2);
+  const bumpWarm = useCallback((l: number) => setWarmLevel((cur) => Math.max(cur, l)), []);
   useEffect(() => {
     if (source) {
-      progress.value = withTiming(1, OPEN_TIMING, (finished) => {
-        if (finished) runOnJS(setWarm)(true);
+      progress.value = withSpring(1, springs.enter, (finished) => {
+        if (finished) runOnJS(bumpWarm)(1);
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Belt for an interrupted open (the timing callback fires finished=false and
-  // would leave the siblings unmounted forever): whenever the screen is fully
-  // open by any path, warm up.
   useEffect(() => {
-    if (!warm) {
-      const t = setTimeout(() => setWarm(true), OPEN_TIMING.duration + 120);
+    // Belt for an interrupted open (the spring callback fires finished=false
+    // and would leave the siblings unmounted forever).
+    if (warmLevel === 0) {
+      const t = setTimeout(() => bumpWarm(1), OPEN_SETTLE_MS + 120);
       return () => clearTimeout(t);
     }
-  }, [warm]);
+    // Remaining pages mount on JS idle — requestIdleCallback, NOT the
+    // deprecated InteractionManager; the timeout floor guarantees a busy
+    // thread still warms within a beat.
+    if (warmLevel === 1) {
+      const id = requestIdleCallback(() => bumpWarm(2), { timeout: 800 });
+      return () => cancelIdleCallback(id);
+    }
+  }, [warmLevel, bumpWarm]);
 
   // The clone always shows the ACTIVE page's photo: the entry page on open,
   // whatever page you're on at pull-down. A photoless active page (blind /
@@ -226,10 +244,79 @@ export default function FeedImpression() {
   const activeUri = activeWine && !activeWine._blind && activeWine.imageUrl ? activeWine.imageUrl : null;
   const hasClone = !!(sourceFrame && activeUri);
   const heroCloneH = Math.round(windowH * HERO_RATIO) + radius.xl;
+  // Natural aspect per photo uri — ⚠️ HEIGHT/WIDTH, the feed's house
+  // convention (lib/feedAspect.ts; the first cut read it as width/height,
+  // which shaped the layer as its own transpose — portrait photos flew with a
+  // landscape crop, the "zoom then settle" Simon saw in BOTH directions).
+  // Seeded from the card handoff for the
+  // tapped photo, kept fresh by the clone image's own onLoad (covers a
+  // dismissal from a swiped-to page, whose photo the handoff never saw; the
+  // clone mounts that photo while the screen sits open, so the aspect is in
+  // hand before any pull-down). Drives the intrinsic-aspect image layer
+  // below: expo-image bakes its cover crop at LAYOUT bounds, so a bitmap
+  // cropped at the hero box cannot recover the pixels a differently-shaped
+  // card frame shows — the "photo zooms, then snaps to the card's crop at
+  // rest" Simon saw on close (Codex P1). Unknown aspect falls back to the
+  // hero-box crop (the pre-fix behavior) until onLoad reports the ratio.
+  const [photoAspects, setPhotoAspects] = useState<Record<string, number>>(() =>
+    source?.kind === 'photo' && source.aspect ? { [source.uri]: source.aspect } : {},
+  );
+  // ⚠️ FROZEN during the open flight (codex P2): an onLoad aspect landing
+  // while progress < 1 would resize cloneImgW/H mid-animation — a visible
+  // crop jump when the tapped card's image hadn't finished loading. The
+  // fallback geometry holds for the whole flight; pending aspects flush at
+  // warmLevel ≥ 1 (the open leg's finish callback), where the intrinsic
+  // layer with the true aspect is pixel-identical to the fallback at the
+  // final hero rect by construction — the swap is invisible, and the
+  // pull-down that needs the aspect gets it correct.
+  const warmRef = useRef(warmLevel);
+  warmRef.current = warmLevel;
+  const pendingAspects = useRef<Record<string, number>>({});
+  const reportCloneAspect = useCallback((uri: string, hOverW: number) => {
+    if (!Number.isFinite(hOverW) || hOverW <= 0) return;
+    if (warmRef.current === 0) {
+      if (!pendingAspects.current[uri]) pendingAspects.current[uri] = hOverW;
+      return;
+    }
+    setPhotoAspects((prev) => (prev[uri] ? prev : { ...prev, [uri]: hOverW }));
+  }, []);
+  useEffect(() => {
+    if (warmLevel === 0) return;
+    const pend = pendingAspects.current;
+    const uris = Object.keys(pend);
+    if (!uris.length) return;
+    pendingAspects.current = {};
+    setPhotoAspects((prev) => {
+      const next = { ...prev };
+      for (const u of uris) if (!next[u]) next[u] = pend[u];
+      return next;
+    });
+  }, [warmLevel]);
+  const activeAspect = activeUri ? photoAspects[activeUri] : undefined;
+  // The image layer's size = the FINAL hero box's cover fit for the real
+  // aspect (h/w), rendered UNclipped (the outer overflow:hidden crops) —
+  // identical pixels to contentFit="cover" at rest, but the counter-scale can
+  // reveal the parts a differently-shaped mid-flight box needs.
+  const cloneImgW = activeAspect ? Math.max(screenW, heroCloneH / activeAspect) : screenW;
+  const cloneImgH = activeAspect ? cloneImgW * activeAspect : heroCloneH;
   // The glass-panel clone shows the ACTIVE wine — landing sync (round 3) keeps
   // the card beneath on the page being dismissed, so the panel clone must
   // match it or the [0→0.35] fade hands off onto a different panel.
   const entryIndex = detail ? Math.min(startIndex, maxPage) : 0;
+  // Monotonic mounted BOUNDS for the level-1 window (Codex P2 + render-purity
+  // note): every page the moving neighbour window has covered stays mounted
+  // (no scroll-state loss / blank back-swipe). Expanded in an EFFECT — post-
+  // commit, so render stays pure; a NEW target still mounts in the same
+  // commit via the live `page` window in the render gate, the bounds only
+  // remember where that window has been. Contiguous by construction (entry ±
+  // the window's walk), so two bounds suffice over a set.
+  const [mountedLo, setMountedLo] = useState(entryIndex);
+  const [mountedHi, setMountedHi] = useState(entryIndex);
+  useEffect(() => {
+    if (warmLevel !== 1) return;
+    setMountedLo((lo) => Math.min(lo, Math.max(0, clampedActive - 1)));
+    setMountedHi((hi) => Math.max(hi, clampedActive + 1));
+  }, [warmLevel, clampedActive]);
 
   // Plain pop. The visual close (reversing progress) happens before this; a
   // cold deep link has no feed beneath the modal, so fall back to the tab.
@@ -249,7 +336,12 @@ export default function FeedImpression() {
       return;
     }
     dismissing.value = true; // bg follows progress on the way out (see bgStyle)
-    progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+    // Plain self-write first: it cancels any running animation, so this spring
+    // starts from rest. Without it a NEW spring ADDS the running one's velocity
+    // (spring.ts onStart) — an Android back pressed during a spring-back would
+    // inherit its upward velocity, cross the clamping bound and jump-cut to 0.
+    progress.value = progress.value;
+    progress.value = withSpring(0, springs.release, (finished) => {
       if (finished) runOnJS(closeDetail)();
     });
   }, [source, progress, dismissing, closeDetail]);
@@ -277,17 +369,52 @@ export default function FeedImpression() {
     const p = progress.value;
     return { opacity: dismissing.value ? p : interpolate(p, [0, 0.12], [0, 1], Extrapolation.CLAMP) };
   });
+  // The clone flies on TRANSFORM + OPACITY ONLY (snappiness plan step 4 — the
+  // earlier left/top/width/height interpolation forced a native LAYOUT pass +
+  // expo-image/gradient re-layout every frame, the dropped-frame source round
+  // 3c measured). The view renders statically at the FINAL hero rect; the
+  // worklet derives the same edge trajectories as before (lerped x/y/w/h) and
+  // expresses them as center-translate + axis scales, so the flight path is
+  // pixel-identical. ⚠️ ALLOWLIST CONSTRAINT (IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS,
+  // see apps/mobile/package.json): reanimated's synchronous fast path is
+  // all-or-nothing per view — this worklet must return ONLY `transform` and
+  // `opacity` (colors/radii are also allowlisted; ANY other key, even a static
+  // `left: 0`, silently demotes the whole view to the shadow-tree path).
   const cloneStyle = useAnimatedStyle(() => {
     const p = progress.value;
-    if (!sourceFrame) return { opacity: 0 };
+    if (!sourceFrame) return { opacity: 0, transform: [{ scale: 1 }] };
+    const w = interpolate(p, [0, 1], [sourceFrame.width, screenW]);
+    const h = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]);
+    const x = interpolate(p, [0, 1], [sourceFrame.x, 0]);
+    const y = interpolate(p, [0, 1], [sourceFrame.y, 0]);
     return {
       // The real hero owns the pixels at rest — the clone exists mid-flight.
       opacity: p < 1 ? 1 : 0,
-      left: interpolate(p, [0, 1], [sourceFrame.x, 0]),
-      top: interpolate(p, [0, 1], [sourceFrame.y, 0]),
-      width: interpolate(p, [0, 1], [sourceFrame.width, screenW]),
-      height: interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]),
+      transform: [
+        { translateX: x + w / 2 - screenW / 2 },
+        { translateY: y + h / 2 - heroCloneH / 2 },
+        { scaleX: w / screenW },
+        { scaleY: h / heroCloneH },
+      ],
     };
+  });
+  // Counter-scale for the clone's intrinsic-aspect image layer: the outer
+  // axis scales are non-uniform (card frame aspect ≠ hero aspect), which
+  // would distort the photo — the old layout animation avoided that by
+  // re-cover-cropping every frame. Per frame, u = the uniform cover scale of
+  // the intrinsic layer for the CURRENT box; dividing out the outer axis
+  // scales makes the image's net on-screen scale (u, u) — undistorted,
+  // covering (outer overflow:hidden crops), and matching the real cover crop
+  // at BOTH endpoints (u = 1 at the hero by construction of cloneImgW/H; at
+  // the card it equals the card's own cover scale) — a continuous,
+  // transform-only "cover".
+  const cloneImgStyle = useAnimatedStyle(() => {
+    const p = progress.value;
+    if (!sourceFrame) return { transform: [{ scale: 1 }] };
+    const w = interpolate(p, [0, 1], [sourceFrame.width, screenW]);
+    const h = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]);
+    const u = Math.max(w / cloneImgW, h / cloneImgH);
+    return { transform: [{ scaleX: (u * screenW) / w }, { scaleY: (u * heroCloneH) / h }] };
   });
   // Bar + pager fade/rise in behind the traveling photo (the "unfold") and
   // sink away on dismiss. Late START (0.35 — the card shows through early) but
@@ -326,9 +453,10 @@ export default function FeedImpression() {
   // traveling photo reads as floating (and the pre-3d clone-over-content
   // order made the title POP at coincidence instead). This overlay fades the
   // title in near the settle. Deliberately a STATIC layer at the FINAL hero
-  // rect, NOT a child of the animating clone: the clone animates layout props
-  // (left/top/width/height), and text inside it re-shapes on every frame — a
-  // measurable stutter source (round 3c). It only shows past 0.7, when the
+  // rect, NOT a child of the animating clone: originally because the clone's
+  // layout-prop animation re-shaped child text every frame (round 3c stutter);
+  // still right now that the clone flies on transforms — a child would
+  // inherit the non-uniform axis squash and distort. It only shows past 0.7, when the
   // clone sits within a few px of the final rect, so the fixed anchor reads
   // as the title gliding in with the settle; at coincidence it yields to the
   // page's identical real block.
@@ -415,8 +543,36 @@ export default function FeedImpression() {
           (image + scrim + title) renders transparent until coincidence, when
           the clone hands off pixel-identically. */}
       {hasClone ? (
-        <Reanimated.View pointerEvents="none" style={[styles.clone, cloneStyle]}>
-          <Image source={{ uri: activeUri! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt="" />
+        // Static FINAL hero rect — the flight is transform-only (cloneStyle).
+        // The scrims stay direct children: the outer axis squash compresses
+        // their proportional ramps exactly like the old per-frame re-layout.
+        <Reanimated.View
+          pointerEvents="none"
+          style={[styles.clone, { width: screenW, height: heroCloneH }, cloneStyle]}
+        >
+          {/* intrinsic-aspect image layer, centered (its center coincides with
+              the outer's, so the counter-scale stays center-anchored). onLoad
+              feeds the aspect map for photos the handoff didn't cover. */}
+          <Reanimated.View
+            style={[
+              {
+                position: 'absolute',
+                left: (screenW - cloneImgW) / 2,
+                top: (heroCloneH - cloneImgH) / 2,
+                width: cloneImgW,
+                height: cloneImgH,
+              },
+              cloneImgStyle,
+            ]}
+          >
+            <Image
+              source={{ uri: activeUri! }}
+              style={{ width: '100%', height: '100%' }}
+              contentFit="cover"
+              onLoad={(e) => reportCloneAspect(activeUri!, e.source.height / e.source.width)}
+              alt=""
+            />
+          </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
             <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
@@ -447,6 +603,7 @@ export default function FeedImpression() {
             isClonePage={hasClone}
             onClosed={closeDetail}
             onOpenGallery={() => setGalleryAt(0)}
+            deferBody={!!source}
           />
         ) : (
           <ScrollView
@@ -464,11 +621,22 @@ export default function FeedImpression() {
             // horizontal SV's content row defaults to alignItems:stretch).
             style={{ flex: 1 }}
           >
-            {wines.map((w, i) => (
+            {wines.map((w, i) => {
+              // Mount-cost gate: siblings stay empty slot views until their
+              // warm stage — entry only in flight, the ACTIVE page's
+              // neighbours from coincidence, the rest on idle (see
+              // `warmLevel`). The window follows `page`, so a quick second
+              // swipe finds its target mounting mid-swipe instead of blank
+              // until the idle bump (Codex P2); the `mountedLo/Hi` bounds
+              // keep every page the window has covered mounted (no scroll-
+              // state loss / blank on a back-swipe as the window moves).
+              const mount =
+                warmLevel >= 2 ||
+                i === entryIndex ||
+                (warmLevel >= 1 && (Math.abs(i - page) <= 1 || (i >= mountedLo && i <= mountedHi)));
+              return (
               <View key={w.id} style={{ width: screenW }}>
-                {/* Mount-cost gate: siblings stay empty slot views until the
-                    open animation lands (warm) — see the comment at `warm`. */}
-                {warm || i === entryIndex ? (
+                {mount ? (
                   <DetailPage
                     wine={w}
                     index={i}
@@ -488,10 +656,12 @@ export default function FeedImpression() {
                     isClonePage={hasClone && i === page}
                     onClosed={closeDetail}
                     onOpenGallery={() => setGalleryAt(i)}
+                    deferBody={!!source && i === entryIndex}
                   />
                 ) : null}
               </View>
-            ))}
+              );
+            })}
           </ScrollView>
         )}
 
@@ -659,6 +829,7 @@ function DetailPage({
   isClonePage,
   onClosed,
   onOpenGallery,
+  deferBody,
 }: {
   wine: SessionFeedWine;
   index: number;
@@ -687,6 +858,13 @@ function DetailPage({
   // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
   // spans ALL the moment's photo impressions, not just this page's).
   onOpenGallery: () => void;
+  // Entry page during a presentation only (snappiness plan step 2): first
+  // commit renders hero + shell so the open animation can start immediately;
+  // the heavy body (wheel SVG, chips, about) mounts one frame later — on the
+  // JS thread, concurrently with the UI-thread flight, normally committed
+  // before the content fade (progress ≥ 0.35, a few frames in on the
+  // front-loaded spring) makes it visible.
+  deferBody?: boolean;
 }) {
   const { theme } = useTheme();
   const { width: screenW, height: windowH } = useWindowDimensions();
@@ -704,6 +882,14 @@ function DetailPage({
   // overscroll keeps its bounce the moment the list scrolls).
   const nameBottom = useRef(0);
   const [atTop, setAtTop] = useState(true);
+  // Deferred heavy body (see the deferBody prop): shell commits first, the
+  // rating sections mount on the next frame while the flight runs.
+  const [bodyReady, setBodyReady] = useState(!deferBody);
+  useEffect(() => {
+    if (bodyReady) return;
+    const id = requestAnimationFrame(() => setBodyReady(true));
+    return () => cancelAnimationFrame(id);
+  }, [bodyReady]);
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     onCollapse(y >= nameBottom.current - BAR_H);
@@ -732,9 +918,11 @@ function DetailPage({
   const nativeScroll = Gesture.Native();
   const dismissPan = Gesture.Pan()
     // Vertical pull-down only: an upward intent fails into the scroll, a
-    // horizontal one fails into the pager.
-    .activeOffsetY(12)
-    .failOffsetY(-12)
+    // horizontal one fails into the pager. 8px pickup (was 12 — the dead zone
+    // before the photo starts tracking is felt on every dismiss; the arm-at-
+    // top + bounce-off guards already disambiguate from the scroll).
+    .activeOffsetY(8)
+    .failOffsetY(-8)
     .failOffsetX([-16, 16])
     .simultaneousWithExternalGesture(nativeScroll)
     .onBegin(() => {
@@ -756,13 +944,23 @@ function DetailPage({
     .onEnd((e) => {
       if (!dismissArmed.value || progress.value >= 1) return;
       const close = progress.value < 0.6 || (e.velocityY > 900 && progress.value < 0.98);
+      // Release continues at finger speed: the spring inherits the gesture
+      // velocity converted into progress units (see the CLOSE-legs comment at
+      // the top of the file). DIRECTION-GATED to the leg's target: reanimated's
+      // `overshootClamping` TERMINATES the spring the moment the value leaves
+      // the [release-point, target] interval and snaps to the target
+      // (springUtils.ts) — an away-pointing velocity (cancel while still
+      // moving down, or an upward flick released under the 0.6 line) crosses
+      // the release-point bound on the first frame and reads as a jump cut.
+      const towardTarget = -e.velocityY / DISMISS_DRAG;
+      const velocity = close ? Math.min(0, towardTarget) : Math.max(0, towardTarget);
       if (close) {
         if (!dismissBuzzed.value) runOnJS(closeHaptic)(); // flick-commit, never crossed
-        progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+        progress.value = withSpring(0, { ...springs.release, velocity }, (finished) => {
           if (finished) runOnJS(onClosed)();
         });
       } else {
-        progress.value = withTiming(1, CLOSE_TIMING, (finished) => {
+        progress.value = withSpring(1, { ...springs.release, velocity }, (finished) => {
           if (finished) dismissing.value = false; // veil restored (see bgStyle)
         });
       }
@@ -919,6 +1117,10 @@ function DetailPage({
           </View>
         </View>
 
+        {/* Everything below the header is the DEFERRED body — the wheel SVG is
+            the mount cost the shell-first commit keeps off the tap path. */}
+        {bodyReady ? (
+          <>
         {/* score + word */}
         {hasScore ? (
           <View style={styles.scoreRow}>
@@ -943,6 +1145,15 @@ function DetailPage({
           </View>
         ) : null}
 
+        {/* Aroma descriptor chips — the author's selections, read-only
+            (grouped display via AromaReadChips). Shown for blind too: aromas
+            are the taster's own perception, never wine identity (§7). */}
+        {wine.aromas?.length ? (
+          <View style={{ marginTop: space.sm }}>
+            <AromaReadChips aromas={wine.aromas} lead="Aromas" />
+          </View>
+        ) : null}
+
         {/* taste note */}
         {wine.notes ? (
           <VText variant="body" color="ink" style={styles.note}>
@@ -953,6 +1164,8 @@ function DetailPage({
         {/* About this impression — identity metadata; hidden entirely for blind
             (it's all identity) and when the wine carries none. */}
         {!blind ? <AboutBlock wine={wine} /> : null}
+          </>
+        ) : null}
           </View>
         </Reanimated.ScrollView>
       </GestureDetector>
@@ -1019,7 +1232,7 @@ const styles = StyleSheet.create({
   barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 10 },
   backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   barTitle: { flex: 1, fontFamily: 'InstrumentSans_600SemiBold' },
-  clone: { position: 'absolute', overflow: 'hidden' },
+  clone: { position: 'absolute', left: 0, top: 0, overflow: 'hidden' },
   heroPos: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' },
   heroPosDark: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase' },
   heroName: { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 31, marginTop: 4 },

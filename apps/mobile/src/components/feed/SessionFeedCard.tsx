@@ -89,6 +89,12 @@ export function SessionFeedCard({
   // grows out of it. A slide with no real photo (blind/placeholder) and the
   // all-photoless carousel have nothing to share → the fade presentation.
   const photoFrameRef = useRef<View>(null);
+  // uri→rawAspect map, fed by each slide's expo-image onLoad (see the
+  // carousel-frame comment below, which consumes it for the frame height).
+  const [aspects, setAspects] = useState<Record<string, number>>({});
+  const reportAspect = useCallback((uri: string, a: number) => {
+    setAspects((prev) => (prev[uri] === a ? prev : { ...prev, [uri]: a }));
+  }, []);
   const openImpression = useCallback(
     (i: number) => {
       const w = wines[i];
@@ -101,12 +107,14 @@ export function SessionFeedCard({
       }
       node.measureInWindow((x, y, width, height) => {
         setFeedTransitionSource(
-          width > 0 && height > 0 ? { kind: 'photo', x, y, width, height, uri } : { kind: 'fade' },
+          width > 0 && height > 0
+            ? { kind: 'photo', x, y, width, height, uri, aspect: aspects[uri] }
+            : { kind: 'fade' },
         );
         onOpenImpression(i);
       });
     },
-    [wines, onOpenImpression],
+    [wines, onOpenImpression, aspects],
   );
   // Does ANY impression in this moment have a real photo? A blind wine's photo
   // is redacted (imageUrl null + _blind), so it doesn't count. If none do, the
@@ -133,11 +141,8 @@ export function SessionFeedCard({
   // image via expo-image's onLoad (reliable — it reports the dims of the image
   // it already loaded; RNImage.getSize did a separate fetch that could fail
   // silently against MinIO, leaving every slide on the cover fallback) and
-  // reports up into this uri→rawAspect map. Frame settles from the 4:5 default.
-  const [aspects, setAspects] = useState<Record<string, number>>({});
-  const reportAspect = useCallback((uri: string, a: number) => {
-    setAspects((prev) => (prev[uri] === a ? prev : { ...prev, [uri]: a }));
-  }, []);
+  // reports up into the uri→rawAspect map (declared above openImpression —
+  // the shared-element handoff sends the tapped photo's aspect along).
   const measured = wines
     .filter((w) => !w._blind && w.imageUrl)
     .map((w) => aspects[w.imageUrl as string])

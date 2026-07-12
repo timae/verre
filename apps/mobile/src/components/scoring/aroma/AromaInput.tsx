@@ -265,9 +265,11 @@ export function AromaInput({
                       m={r.m}
                       // Highlight + border are TRANSIENT add-process state only
                       // (feedback): results never show added/pronounced marks —
-                      // that lives on the selected chips above. Deep tint =
-                      // currently focused; border = pending Pronounced.
-                      focused={isFocus}
+                      // that lives on the selected chips above. ARMED keeps its
+                      // resting colours; the armed signal is every OTHER result
+                      // muting (Simon's 2026-07-12 ruling — supersedes the
+                      // earlier solid focus flip). Border = pending Pronounced.
+                      muted={!!focus && !isFocus}
                       pronounced={isFocus && pendP}
                       sub={r.node.tier === 'family' ? 'family' : r.node.tier === 'subfamily' ? 'group' : leafCtx ? capFirst(leafCtx) : undefined}
                       // single = focus toggle — for ADDED pairs too (you may

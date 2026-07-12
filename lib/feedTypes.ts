@@ -21,9 +21,12 @@ export type SessionFeedWine = {
   // canonical bottle shot. Null when neither is set OR when blind-redacted.
   imageUrl: string | null
   // The author's rating data — always visible, never redacted (it's
-  // their own data, even on a blind wine they've rated).
+  // their own data, even on a blind wine they've rated). `aromas` rides
+  // with score/flavors/notes: descriptor selections are the taster's own
+  // perception, never wine identity (aroma-layer.md §7 — no blind fork).
   score: number | null
   flavors: Record<string, number>
+  aromas: { a: string; m: string | null; p?: boolean }[]
   notes: string | null
   // Wine-catalog metadata for the full impression detail page (mobile
   // feed → "About this impression": Origin · Variety · Process + buy).

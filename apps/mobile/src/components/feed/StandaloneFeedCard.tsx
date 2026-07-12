@@ -183,11 +183,13 @@ function PhotoHero({
     }
     node.measureInWindow((x, y, width, height) => {
       setFeedTransitionSource(
-        width > 0 && height > 0 ? { kind: 'photo', x, y, width, height, uri } : { kind: 'fade' },
+        width > 0 && height > 0
+          ? { kind: 'photo', x, y, width, height, uri, aspect: raw ?? undefined }
+          : { kind: 'fade' },
       );
       onOpen();
     });
-  }, [uri, onOpen]);
+  }, [uri, raw, onOpen]);
 
   const burstScale = useSharedValue(0);
   const burstOpacity = useSharedValue(0);

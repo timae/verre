@@ -21,6 +21,9 @@ export default function FeedStack() {
       screenOptions={{
         headerShown: false,
         contentStyle: { backgroundColor: theme.bg },
+        // Edge-only back gesture — see moments/_layout.tsx (iOS 26 flipped
+        // the RNS full-screen-swipe default to true).
+        fullScreenGestureEnabled: false,
       }}
     >
       <Stack.Screen name="index" />

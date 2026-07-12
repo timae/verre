@@ -72,3 +72,23 @@ Search-in-a-sheet (weight); one-tap instant add (lost modifiers); label+
 switch Pronounced (too wide); word-only short synonyms for Pronounced
 ("Key"/"Lead"/"Bold" — not clear enough); glyph inside chips; ticks/dots on
 badges; "Update" button semantics; newest-visible chip eviction.
+
+## Addendum — armed search result keeps its colours (Simon, 2026-07-12)
+
+Supersedes the "focus tint" line above for the search results: the ARMED
+(focused) result no longer flips to the solid family fill — it keeps its
+RESTING colours (fill + readableSolid words), and the armed signal is every
+OTHER result MUTING (the rail's faint tint) while a pick is armed. This is
+the pickers' contextual focus vocabulary (hexStage: armed cell unchanged,
+siblings pale) applied to chips — normal state, armed state, and the read
+surfaces all share one badge colouring; nothing self-mutates. The
+pending-Pronounced border preview on the armed result is unchanged.
+
+Explored and rejected for the armed state along the way (dev-gallery rounds,
+same day): the solid flip (jarring, and invisible on 'solid'-bumped
+families), a deeper 0.45 tint (no headroom on FAMILY_BOOST-bumped families),
+an ink pull into the fill (hue-muddying — "ugly colors"), bold words (too
+subtle at 13.5pt), ink-coloured words (family words read better). A leading
+round-mark dot (ListPicker's armed vocabulary) remains in the dev gallery as
+an optional composable, not shipped. The gallery keeps three comparison
+modes (Ruled / old Solid / Map) under the "Aroma badges" section.

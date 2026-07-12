@@ -37,3 +37,34 @@ export function aromaFillRatio(themeKey: string, familyId: string, r: number): n
   if (f === 'solid') return Math.min(1, r / SOLID_RESTING);
   return f === 1 ? r : Math.min(BOOST_CAP, r * f);
 }
+
+// ARMED (solid-fill) intensity. The 100% palette colour is the ceiling any
+// FILL boost can reach — where even that reads weak against the theme
+// (Simon's gallery pass, 2026-07-12: clay ALL, cobalt chemical+vegetal,
+// mauve sweet+savory), the ARMED fill pulls toward theme.ink, the
+// max-contrast direction on light AND dark themes (darkens on clay,
+// lightens on cobalt). Armed/focused state ONLY — never resting fills, and
+// never the resting 'solid' bumps: the delta is what lets armed read as
+// armed on families whose resting fill is already solid.
+const ARMED_BOOST: Record<string, number | Record<string, number>> = {
+  clay: 0.2,
+  cobalt: { chemical: 0.2, vegetal: 0.2 },
+  mauve: { sweet: 0.2, savory: 0.2 },
+};
+
+// Share of theme.ink to mix INTO the armed solid fill (0 = the plain
+// 100% family colour). Caller mixes: mix(familyColor, theme.ink, ratio).
+export function aromaArmedInk(themeKey: string, familyId: string): number {
+  const t = ARMED_BOOST[themeKey];
+  if (t == null) return 0;
+  return typeof t === 'number' ? t : (t[familyId] ?? 0);
+}
+
+// ⚠️ REJECTED (Simon, 2026-07-12): an ink pull on the DEEPER-TINT armed
+// fill (a DEEP_ARMED_INK table mirroring ARMED_BOOST) — mixing toward the
+// theme ink mutates the hue and "changes to ugly colors". The deep-armed
+// delta on FAMILY_BOOST-bumped families (whose resting fill already sits at
+// BOOST_CAP / 'solid', leaving no tint headroom) is instead carried by
+// CONTEXT: siblings MUTE while a pick is armed — the hexStage focus
+// treatment Simon device-ruled for the pickers. Don't reintroduce ink/hue
+// mutation on tinted fills.

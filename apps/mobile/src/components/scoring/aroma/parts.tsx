@@ -18,7 +18,7 @@ import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/Anchore
 import { usePhoneTokens } from '@/lib/layout';
 import { useAromaColors } from '@/theme/flavourColors';
 import { mix, alpha, inkOn, readableSolid, readableBorder } from '@/theme/color';
-import { aromaFillRatio } from './aromaTint';
+import { aromaArmedInk, aromaFillRatio } from './aromaTint';
 import { motion, useTheme } from '@/theme';
 
 // Shared building blocks for the aroma descriptor input (aroma-layer.md §6).
@@ -176,6 +176,9 @@ export function AromaChip({
   m,
   pronounced,
   focused,
+  armedDot,
+  pale,
+  mapSolid,
   muted,
   onPress,
   onRemove,
@@ -187,7 +190,28 @@ export function AromaChip({
   a: string;
   m: string | null;
   pronounced?: boolean;
+  /** The SOLID armed flip (full family fill + inkOn words). ⚠️ NOT the
+      search treatment anymore — Simon's 2026-07-12 ruling: an armed search
+      result keeps its resting colours and the SIBLINGS mute (`muted`).
+      `focused` remains for surfaces that keep the solid armed look. */
   focused?: boolean;
+  /** EXPLORATION (dev gallery, 2026-07-12): the Map/Canvas focus treatment's
+      sibling PALE — the hexStage mute: 0.35 family tint, words contrast-
+      picked vs the actual pale fill (inkOn — family-tinted ink washed out on
+      the pastel, the map's round-5 device finding). Visibly alive unlike
+      `muted` (the rail's faint 0.09). Used while another chip is armed. */
+  pale?: boolean;
+  /** EXPLORATION (dev gallery, 2026-07-12): render as a MAP CELL — the flat
+      SOLID family fill + inkOn words (hexStage's normal state; no armed ink
+      boost). The map's armed signal is contextual: armed stays this solid
+      while siblings go `pale`. */
+  mapSolid?: boolean;
+  /** EXPLORATION (dev gallery, 2026-07-12): leading round mark — the
+      ListPicker's "round mark = armed" vocabulary on a chip. Explicit,
+      colour-independent, so it works on the punch-list combos where fill
+      deltas can't. The CALLER gates it on its own armed notion (ruled-mode
+      armed chips carry no `focused`, so the chip can't infer armed itself). */
+  armedDot?: boolean;
   muted?: boolean;
   onPress?: () => void;
   onRemove?: () => void;
@@ -216,8 +240,20 @@ export function AromaChip({
   // (famColor below stays the true family colour even under a tint override.)
   // Fill ratio via aromaFillRatio (clay boost, 1:1 elsewhere; a tint
   // override skips the per-family bumps); focused goes SOLID colour.
-  const restingR = tint && tintSolid ? 1 : aromaFillRatio(themeKey, tint ? '' : node.family.id, muted ? 0.09 : 0.2);
-  const fill = focused || restingR >= 1 ? color : mix(color, theme.surface, restingR);
+  // `pale` = the hexStage sibling-mute fill (flat 0.35, no per-family boosts
+  // — the map's own value); `mapSolid` = the hexStage normal cell (flat 1.0).
+  // Both bypass aromaFillRatio: the map's values are already device-ruled.
+  const restingR = tint && tintSolid ? 1 : pale ? 0.35 : mapSolid ? 1 : aromaFillRatio(themeKey, tint ? '' : node.family.id, muted ? 0.09 : 0.2);
+  // ARMED (solid) fills pull toward ink where the bare palette colour reads
+  // weak against the theme (aromaArmedInk — Simon's 2026-07-12 gallery pass);
+  // resting fills (incl. the resting 'solid' bumps) never do. mapSolid never
+  // ink-boosts: the map's armed cell IS the plain solid — its armed signal
+  // comes from the siblings' pale, not from self-mutation. (An ink pull on
+  // TINTED fills was tried and REJECTED as hue-muddying — see aromaTint.ts.)
+  const armedInk = focused && !tint && !mapSolid ? aromaArmedInk(themeKey, node.family.id) : 0;
+  const fill = focused || restingR >= 1
+    ? (armedInk ? mix(color, theme.ink, armedInk) : color)
+    : mix(color, theme.surface, restingR);
   // A 'solid' fill (focused, a per-family bump like clay Fruity, or the mono
   // rows' tintSolid switch) — border/words then need the focused treatment.
   const onSolid = focused || restingR >= 1;
@@ -232,34 +268,52 @@ export function AromaChip({
       ? monoWords === 'solid'
         ? famColor
         : famResting()
-      : onSolid
-        ? inkOn(color, theme.ink, theme.bg)
+      : onSolid || pale
+        ? inkOn(fill, theme.ink, theme.bg)
         : readableSolid(color, theme.ink, fill);
   const label = selectionLabel({ a, m });
+  // Pronounced border wears the READABLE BORDER accent — corrected like the
+  // words but floored at 45% colour share (a full ink pull made clay's
+  // borders read WHITE; bare colour was invisible on mauve Sweet / cobalt
+  // Funky / charcoal Fire — Simon's passes). On a mono tint the Pronounced
+  // border is the 100% SOLID family colour (Simon — the family identity
+  // carries entirely in the border there); family-coloured chips keep the
+  // readableBorder correction.
+  const ring = pronounced ? (tint ? famColor : muted ? color : onSolid ? words : readableBorder(color, theme.ink, fill)) : null;
   return (
     <Pressable
-      accessibilityRole="button"
+      // Read-only chips (AromaReadChips) pass no onPress — announcing them
+      // as buttons would give VoiceOver N inert controls per row.
+      accessibilityRole={onPress ? 'button' : 'text'}
       accessibilityLabel={`${label}${pronounced ? ', pronounced' : ''}`}
       onPress={onPress}
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        paddingVertical: 4.5,
-        paddingHorizontal: 12,
-        borderRadius: 999,
-        borderWidth: 1.5,
-        // Pronounced border wears the READABLE BORDER accent — corrected
-        // like the words but floored at 45% colour share (a full ink pull
-        // made clay's borders read WHITE; bare colour was invisible on
-        // mauve Sweet / cobalt Funky / charcoal Fire — Simon's passes).
-        // On a mono tint the Pronounced border is the 100% SOLID family
-        // colour (Simon — the family identity carries entirely in the border
-        // there); family-coloured chips keep the readableBorder correction.
-        borderColor: pronounced ? (tint ? famColor : muted ? color : onSolid ? words : readableBorder(color, theme.ink, fill)) : 'transparent',
-        backgroundColor: fill,
-      }}
+      // The "border" is the outer pill's 1.5 padding band in the ring colour
+      // with the fill on a nested pill — NOT borderWidth/borderColor: RN
+      // paints a view's rounded background to the OUTER edge and strokes the
+      // border inside it, so on a 999-radius pill the fill's antialiased
+      // edge peeked past the border along the curves (device finding,
+      // 2026-07-12). Stacked pills can't bleed. Padding 1.5 replaces the old
+      // borderWidth 1.5, so the footprint is unchanged and toggling
+      // pronounced still never shifts content.
+      style={{ borderRadius: 999, padding: 1.5, backgroundColor: ring ?? fill }}
     >
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          paddingVertical: 4.5,
+          paddingHorizontal: 12,
+          borderRadius: 999,
+          backgroundColor: fill,
+        }}
+      >
+      {armedDot ? (
+        <View style={{ width: 7, height: 7, borderRadius: 999, backgroundColor: words }} />
+      ) : null}
+      {/* (A bold-on-armed weight signal was tried and RULED insufficient —
+          Simon, 2026-07-12. Don't re-add; the armed cues are fill, siblings
+          muting, and the round mark below.) */}
       <VText
         surface="badge"
         style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: words }}
@@ -284,6 +338,7 @@ export function AromaChip({
           <Icon name="x" size={13} color={words} />
         </Pressable>
       ) : null}
+      </View>
     </Pressable>
   );
 }

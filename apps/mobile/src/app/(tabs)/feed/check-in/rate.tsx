@@ -1,15 +1,15 @@
-import { useRouter } from 'expo-router';
+import { Stack, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { fillFlavourZeros, resolveAxes } from '@verre/core';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
+import { fillFlavourZeros, resolveAxes, type AromaSelection } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { StructureInput } from '@/components/scoring/StructureInput';
-import { ScoreInput } from '@/components/scoring/ScoreInput';
-import { Disclosure, NotesField } from '@/components/moments/momentForm';
+import { RatingSection } from '@/components/scoring/RatingSection';
+import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { ApiError } from '@/lib/api/sessions';
 import { createCheckin, FEED_KEY } from '@/lib/api/feed';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
@@ -48,8 +48,13 @@ export default function CheckinRate() {
     for (const [k, v] of Object.entries(draft.flavors)) if (allowed.has(k)) next[k] = v;
     return next;
   });
+  // Draft aromas are already canonical (AromaInput gates every mutation),
+  // so unlike the impression screen's server seed no re-gate is needed.
+  const [aromas, setAromas] = useState<AromaSelection[]>(draft?.aromas ?? []);
   const [notes, setNotes] = useState(draft?.notes ?? '');
-  const [detailOpen, setDetailOpen] = useState(false);
+  // The impression screen's adaptive-fold behaviour: seed open when the
+  // draft already carries structure engagement (a back-swipe round trip).
+  const [detailOpen, setDetailOpen] = useState(() => Object.keys(draft?.flavors ?? {}).length > 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -64,11 +69,19 @@ export default function CheckinRate() {
   // is gone (successful post cleared it).
   const scoreRef = useRef(score); scoreRef.current = score;
   const flavorsRef = useRef(flavors); flavorsRef.current = flavors;
+  const aromasRef = useRef(aromas); aromasRef.current = aromas;
   const notesRef = useRef(notes); notesRef.current = notes;
   useEffect(() => () => {
     const d = getCheckinDraft();
-    if (d) setCheckinDraft({ ...d, score: scoreRef.current, flavors: flavorsRef.current, notes: notesRef.current });
+    if (d) setCheckinDraft({ ...d, score: scoreRef.current, flavors: flavorsRef.current, aromas: aromasRef.current, notes: notesRef.current });
   }, []);
+
+  // Aroma search focus → the minimal shift that fits the search block above
+  // the keyboard — the SHARED screen-side hook (one implementation with the
+  // impression screen; see useAromaSearchScroll).
+  const scrollRef = useRef<ScrollView>(null);
+  const scrollYRef = useRef(0);
+  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef);
 
   const onCheckIn = async () => {
     if (!draft) return;
@@ -90,6 +103,9 @@ export default function CheckinRate() {
         // Save-boundary normalisation (the rate screen's zero rule): filled
         // map when anything is rated, {} when every axis is None.
         flavors: fillFlavourZeros(flavors, 'wine', draft.type),
+        // Already canonical (AromaInput gates every write); omitted = [] on
+        // create, so the empty case just stays off the wire.
+        ...(aromas.length ? { aromas } : {}),
         ...(notes.trim() ? { notes: notes.trim() } : {}),
         ...(draft.photo ? { imageData: draft.photo.dataUrl } : {}),
         ...(draft.venue.trim() ? { venueName: draft.venue.trim() } : {}),
@@ -112,49 +128,60 @@ export default function CheckinRate() {
 
   if (!draft) return <View style={{ flex: 1 }} />; // bouncing (effect above)
 
-  const titleLine = draft.name + (draft.vintage ? ` - ${draft.vintage}` : '');
-  const subLine = [draft.producer, wineTypeLabel(draft.type)].filter(Boolean).join(' · ');
+  // Name lives in the title bar ("Rate It: <name>", Simon 2026-07-12); the
+  // remaining identity (vintage · producer · type) stays as one caption line.
+  const subLine = [draft.vintage, draft.producer, wineTypeLabel(draft.type)].filter(Boolean).join(' · ');
 
   return (
+    // BottomSheetModalProvider in-screen (the app's per-screen pattern) — the
+    // AromaInput sheets (selection + browse) need a sized provider/portal host.
+    <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
+      {/* Same narrowed iOS edge-back zone as the impression screen — the
+          structure-profile fill-tracks start ~20pt in and a leftward drag on
+          the left column kept triggering an accidental back-pop with the OS
+          default zone. Back-swipe from the very edge still works. */}
+      <Stack.Screen options={{ gestureResponseDistance: { start: 15 } }} />
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Rate It" />
+        <VBar title={`Rate It: ${draft.name}`} />
       </View>
 
       <ScrollView
+        ref={scrollRef}
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + FOOT_CLEARANCE }}
         keyboardDismissMode="interactive"
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
+        onScroll={(e) => { scrollYRef.current = e.nativeEvent.contentOffset.y; }}
+        scrollEventThrottle={16}
       >
-        {/* What you're checking in — the ciSheet's name + sub line. */}
-        <View style={{ marginBottom: 6 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{titleLine}</VText>
-          {subLine ? (
-            <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>{subLine}</VText>
-          ) : null}
-        </View>
+        {/* What you're checking in — the name is in the bar; this is the
+            rest of the identity line. */}
+        {subLine ? (
+          <VText variant="small" color="inkSoft" style={{ marginBottom: 6 }}>{subLine}</VText>
+        ) : null}
 
-        {/* Score stays optional — 0 = not rated; "just had it" is a legal
-            check-in. */}
-        <ScoreInput value={score} onChange={setScore} />
-
-        <Disclosure
-          label="Add Structure Profile"
-          open={detailOpen}
-          onToggle={() => setDetailOpen((o) => !o)}
-        >
-          <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>
-            Set each track to the intensity you perceive.
-          </VText>
-          <StructureInput style={draft.type} value={flavors} onChange={setFlavors} />
-        </Disclosure>
-
-        <View style={{ marginTop: 18 }}>
-          <NotesField label="Notes" placeholder="What stood out? (optional)" value={notes} onChange={setNotes} />
-        </View>
+        {/* THE shared rating block (score · note · structure fold · aromas) —
+            one component with the moment impression screen (Simon's 2026-07-12
+            ruling; the impression's anatomy is the spec). Score stays optional
+            — 0 = not rated; "just had it" is a legal check-in. All values are
+            local-until-commit; the POST carries them. */}
+        <RatingSection
+          style={draft.type}
+          score={score}
+          onScore={setScore}
+          notes={notes}
+          onNotes={setNotes}
+          flavors={flavors}
+          onFlavors={setFlavors}
+          aromas={aromas}
+          onAromas={setAromas}
+          structureOpen={detailOpen}
+          onToggleStructure={() => setDetailOpen((o) => !o)}
+          onRequestAromaScroll={scrollAromaSearchTo}
+        />
       </ScrollView>
 
       {/* Sticky "Check In" — the final action; error above, always visible. */}
@@ -171,5 +198,6 @@ export default function CheckinRate() {
         <Button title="Check In" loadingTitle="Checking In…" loading={saving} onPress={onCheckIn} bar block />
       </View>
     </View>
+    </BottomSheetModalProvider>
   );
 }
