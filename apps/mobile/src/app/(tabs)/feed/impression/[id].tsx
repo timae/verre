@@ -244,7 +244,11 @@ export default function FeedImpression() {
   const activeUri = activeWine && !activeWine._blind && activeWine.imageUrl ? activeWine.imageUrl : null;
   const hasClone = !!(sourceFrame && activeUri);
   const heroCloneH = Math.round(windowH * HERO_RATIO) + radius.xl;
-  // Natural aspect (W/H) per photo uri — seeded from the card handoff for the
+  // Natural aspect per photo uri — ⚠️ HEIGHT/WIDTH, the feed's house
+  // convention (lib/feedAspect.ts; the first cut read it as width/height,
+  // which shaped the layer as its own transpose — portrait photos flew with a
+  // landscape crop, the "zoom then settle" Simon saw in BOTH directions).
+  // Seeded from the card handoff for the
   // tapped photo, kept fresh by the clone image's own onLoad (covers a
   // dismissal from a swiped-to page, whose photo the handoff never saw; the
   // clone mounts that photo while the screen sits open, so the aspect is in
@@ -257,17 +261,17 @@ export default function FeedImpression() {
   const [photoAspects, setPhotoAspects] = useState<Record<string, number>>(() =>
     source?.kind === 'photo' && source.aspect ? { [source.uri]: source.aspect } : {},
   );
-  const reportCloneAspect = useCallback((uri: string, a: number) => {
-    if (!Number.isFinite(a) || a <= 0) return;
-    setPhotoAspects((prev) => (prev[uri] ? prev : { ...prev, [uri]: a }));
+  const reportCloneAspect = useCallback((uri: string, hOverW: number) => {
+    if (!Number.isFinite(hOverW) || hOverW <= 0) return;
+    setPhotoAspects((prev) => (prev[uri] ? prev : { ...prev, [uri]: hOverW }));
   }, []);
   const activeAspect = activeUri ? photoAspects[activeUri] : undefined;
   // The image layer's size = the FINAL hero box's cover fit for the real
-  // aspect, rendered UNclipped (the outer overflow:hidden crops) — identical
-  // pixels to contentFit="cover" at rest, but the counter-scale can reveal
-  // the parts a differently-shaped mid-flight box needs.
-  const cloneImgW = activeAspect ? Math.max(screenW, heroCloneH * activeAspect) : screenW;
-  const cloneImgH = activeAspect ? cloneImgW / activeAspect : heroCloneH;
+  // aspect (h/w), rendered UNclipped (the outer overflow:hidden crops) —
+  // identical pixels to contentFit="cover" at rest, but the counter-scale can
+  // reveal the parts a differently-shaped mid-flight box needs.
+  const cloneImgW = activeAspect ? Math.max(screenW, heroCloneH / activeAspect) : screenW;
+  const cloneImgH = activeAspect ? cloneImgW * activeAspect : heroCloneH;
   // The glass-panel clone shows the ACTIVE wine — landing sync (round 3) keeps
   // the card beneath on the page being dismissed, so the panel clone must
   // match it or the [0→0.35] fade hands off onto a different panel.
@@ -538,7 +542,7 @@ export default function FeedImpression() {
               source={{ uri: activeUri! }}
               style={{ width: '100%', height: '100%' }}
               contentFit="cover"
-              onLoad={(e) => reportCloneAspect(activeUri!, e.source.width / e.source.height)}
+              onLoad={(e) => reportCloneAspect(activeUri!, e.source.height / e.source.width)}
               alt=""
             />
           </Reanimated.View>

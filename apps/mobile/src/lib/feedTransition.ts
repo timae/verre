@@ -10,8 +10,10 @@
 // presentation. A missing/stale entry means "no transition" (cold deep link).
 
 export type FeedTransitionSource =
-  // aspect = the photo's NATURAL width/height ratio (the card already measures
-  // it via expo-image onLoad). The detail's transform-only clone needs it to
+  // aspect = the photo's NATURAL ratio in the feed's house convention:
+  // ⚠️ HEIGHT/WIDTH ("taller = bigger number" — lib/feedAspect.ts is the
+  // convention-of-record; the cards' measured maps store exactly this, pass
+  // it through unconverted). The detail's transform-only clone needs it to
   // render an intrinsic-aspect image layer: without it the clone's cover crop
   // is baked at the hero box and a differently-shaped card frame shows a
   // wrong (zoomed) crop mid-flight. Optional — undefined falls back to the
