@@ -37,6 +37,21 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   (Simon's edge-only ruling, 2026-07-12); keep it on any NEW Stack layout, and
   drag-heavy screens still add `gestureResponseDistance: { start: 15 }` for
   the edge recognizer.
+- ⚠️ **Reanimated static flag `IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS: true`**
+  (`package.json` → `reanimated.staticFeatureFlags`; the pod reads
+  `<ios>/../package.json`, so it lives HERE, not repo root; takes effect on
+  `pod install` + native rebuild). It puts per-frame animated updates of an
+  ALLOWLISTED prop set (`transform`, `opacity`, colors, border radii — see
+  `ReanimatedModuleProxy.cpp`) on a synchronous UI-thread fast path. Two
+  invariants: (1) the fast path is ALL-OR-NOTHING per view — a `useAnimatedStyle`
+  worklet on a hot view must return ONLY allowlisted keys (even a static
+  `left: 0` in the returned object demotes the whole view); (2) reanimated's
+  own `ENABLE_SHARED_ELEMENT_TRANSITIONS` flag DISABLES this path entirely —
+  never enable it. The flag is GLOBAL: hit-testing runs against shadow-tree
+  geometry, so a view mid-animation can briefly receive touches at its
+  pre-frame position — device-check drag surfaces (PillTabBar lens,
+  DraggableRows, pickers) after reanimated bumps. Motivation: the feed
+  detail's transform-only hero clone (proposal 09 §Snappiness pass).
 - **Monorepo**: npm workspace member; Metro auto-detects workspaces (SDK 52+)
   and resolves `@verre/core`'s raw-TS `exports` (package-exports on by default
   since SDK 53). No metro.config.js exists — don't add one just to "fix"

@@ -314,17 +314,48 @@ export default function FeedImpression() {
     const p = progress.value;
     return { opacity: dismissing.value ? p : interpolate(p, [0, 0.12], [0, 1], Extrapolation.CLAMP) };
   });
+  // The clone flies on TRANSFORM + OPACITY ONLY (snappiness plan step 4 — the
+  // earlier left/top/width/height interpolation forced a native LAYOUT pass +
+  // expo-image/gradient re-layout every frame, the dropped-frame source round
+  // 3c measured). The view renders statically at the FINAL hero rect; the
+  // worklet derives the same edge trajectories as before (lerped x/y/w/h) and
+  // expresses them as center-translate + axis scales, so the flight path is
+  // pixel-identical. ⚠️ ALLOWLIST CONSTRAINT (IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS,
+  // see apps/mobile/package.json): reanimated's synchronous fast path is
+  // all-or-nothing per view — this worklet must return ONLY `transform` and
+  // `opacity` (colors/radii are also allowlisted; ANY other key, even a static
+  // `left: 0`, silently demotes the whole view to the shadow-tree path).
   const cloneStyle = useAnimatedStyle(() => {
     const p = progress.value;
-    if (!sourceFrame) return { opacity: 0 };
+    if (!sourceFrame) return { opacity: 0, transform: [{ scale: 1 }] };
+    const w = interpolate(p, [0, 1], [sourceFrame.width, screenW]);
+    const h = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]);
+    const x = interpolate(p, [0, 1], [sourceFrame.x, 0]);
+    const y = interpolate(p, [0, 1], [sourceFrame.y, 0]);
     return {
       // The real hero owns the pixels at rest — the clone exists mid-flight.
       opacity: p < 1 ? 1 : 0,
-      left: interpolate(p, [0, 1], [sourceFrame.x, 0]),
-      top: interpolate(p, [0, 1], [sourceFrame.y, 0]),
-      width: interpolate(p, [0, 1], [sourceFrame.width, screenW]),
-      height: interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]),
+      transform: [
+        { translateX: x + w / 2 - screenW / 2 },
+        { translateY: y + h / 2 - heroCloneH / 2 },
+        { scaleX: w / screenW },
+        { scaleY: h / heroCloneH },
+      ],
     };
+  });
+  // Counter-scale for the clone's image: the outer axis scales are non-uniform
+  // (card frame aspect ≠ hero aspect), which would DISTORT the photo — the old
+  // layout animation avoided that by re-cover-cropping every frame. The inner
+  // wrapper scales by max(sx,sy)/sx|sy, so the image's net scale is UNIFORM
+  // (no distortion) and ≥ the box on both axes (still covers; outer
+  // overflow:hidden crops) — a continuous, transform-only "cover".
+  const cloneImgStyle = useAnimatedStyle(() => {
+    const p = progress.value;
+    if (!sourceFrame) return { transform: [{ scale: 1 }] };
+    const sx = interpolate(p, [0, 1], [sourceFrame.width, screenW]) / screenW;
+    const sy = interpolate(p, [0, 1], [sourceFrame.height, heroCloneH]) / heroCloneH;
+    const q = Math.max(sx, sy);
+    return { transform: [{ scaleX: q / sx }, { scaleY: q / sy }] };
   });
   // Bar + pager fade/rise in behind the traveling photo (the "unfold") and
   // sink away on dismiss. Late START (0.35 — the card shows through early) but
@@ -452,8 +483,16 @@ export default function FeedImpression() {
           (image + scrim + title) renders transparent until coincidence, when
           the clone hands off pixel-identically. */}
       {hasClone ? (
-        <Reanimated.View pointerEvents="none" style={[styles.clone, cloneStyle]}>
-          <Image source={{ uri: activeUri! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt="" />
+        // Static FINAL hero rect — the flight is transform-only (cloneStyle).
+        // The scrims stay direct children: the outer axis squash compresses
+        // their proportional ramps exactly like the old per-frame re-layout.
+        <Reanimated.View
+          pointerEvents="none"
+          style={[styles.clone, { width: screenW, height: heroCloneH }, cloneStyle]}
+        >
+          <Reanimated.View style={[{ width: '100%', height: '100%' }, cloneImgStyle]}>
+            <Image source={{ uri: activeUri! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt="" />
+          </Reanimated.View>
           <Reanimated.View style={[StyleSheet.absoluteFill, cardScrimStyle]}>
             <LinearGradient colors={FEED_PANEL_SCRIM} style={StyleSheet.absoluteFill} />
           </Reanimated.View>
@@ -1113,7 +1152,7 @@ const styles = StyleSheet.create({
   barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 10 },
   backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
   barTitle: { flex: 1, fontFamily: 'InstrumentSans_600SemiBold' },
-  clone: { position: 'absolute', overflow: 'hidden' },
+  clone: { position: 'absolute', left: 0, top: 0, overflow: 'hidden' },
   heroPos: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' },
   heroPosDark: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase' },
   heroName: { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 31, marginTop: 4 },

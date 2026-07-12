@@ -390,17 +390,29 @@ installed RN 0.85.3 / Reanimated 4.3.1 sources):
   — the dead zone before the photo tracks the finger is felt on every dismiss;
   arm-at-top + bounce-off already disambiguate from the scroll.
 
-**Deferred, in order** (see the memory note / plan of record): (4) clone
-transform rewrite + the `IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS` static flag as ONE
-package, only if device profiling shows dropped frames in the flight — the
-flag's per-frame fast path is all-or-nothing per view (`allowPartialUpdates =
-false` in `ReanimatedModuleProxy.cpp`), so the rewritten `cloneStyle` worklet
-must return ONLY allowlisted keys (`transform`/`opacity`; a static `left: 0` in
-the returned object disqualifies the whole view), and
-`ENABLE_SHARED_ELEMENT_TRANSITIONS: true` would disable the path entirely; (6)
-interruptible open + finger-tracking dismiss are DESIGN options for Simon, and
-the feed-owned overlay (clone starts before the route mounts) only if tap
-latency still disappoints.
+- **Clone flies on transform + opacity only, with the
+  `IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS` static flag** (step 4, built 2026-07-12
+  as one package — round 3c's frame-by-frame had already measured the dropped
+  frames from per-frame layout, satisfying the profiling gate). The clone
+  renders statically at the FINAL hero rect; the worklet derives the OLD
+  lerped x/y/w/h trajectories and expresses them as center-translate + axis
+  scales, so the flight path is pixel-identical. The non-uniform axis scales
+  would distort the photo (card aspect ≠ hero aspect — the old layout
+  animation re-cover-cropped every frame), so an inner wrapper counter-scales
+  by `max(sx,sy)/sx|sy`: net image scale is uniform (no distortion) and ≥ the
+  box on both axes (still covers; outer `overflow: hidden` crops) — a
+  continuous transform-only "cover". The flag (in `apps/mobile/package.json`
+  `reanimated.staticFeatureFlags`; needs `pod install` + native rebuild) puts
+  the per-frame updates on reanimated's synchronous UI-thread fast path.
+  ⚠️ Invariants + the global hit-testing caveat live in the toolchain bullet
+  in `apps/mobile/CLAUDE.md` — hot worklets must return ONLY allowlisted keys
+  (`transform`/`opacity`/colors/radii; even a static `left: 0` demotes the
+  whole view), and `ENABLE_SHARED_ELEMENT_TRANSITIONS` must stay off (it
+  disables the path entirely).
+
+**Still open**: (6) interruptible open + finger-tracking dismiss are DESIGN
+options for Simon, and the feed-owned overlay (clone starts before the route
+mounts) only if tap latency still disappoints.
 
 ### Device checklist (Simon)
 
@@ -436,6 +448,12 @@ latency still disappoints.
   flick feel (tune `springs.release`) · OPEN on `springs.enter` (dur2 ≈ 300ms)
   since that pass — re-check the open glide + that the entry unfold (content
   fade from 0.35) still reads right on the spring's front-loaded curve.
+- Step 4 (transform clone + sync flag — needs `pod install` + rebuild): flight
+  smoothness vs before · NO photo distortion mid-flight (the counter-scale) ·
+  crop at the card endpoint matches the card's own cover crop · scrims ride
+  the shrinking box correctly · GLOBAL flag check: drag surfaces still hit-test
+  right mid-animation (PillTabBar drag-lens, DraggableRows reorder, score
+  slider, Map/Canvas picker pans).
 - §B: feed → detail → moment → back walks back to the post; Moments tab keeps
   its own independent session state; settings/add/edit/impression pushes stay
   on the feed stack; delete-a-moment from a feed-entered settings lands on
