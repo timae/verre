@@ -115,21 +115,14 @@ export function ScoreInput({ value, onChange }: Props) {
   // horizontal; failOffsetY hands clearly-vertical movement to the parent
   // ScrollView before the pan can activate.
   //
-  // hitSlop stretches the (already 50pt) track box a little further: 6 up
-  // covers the gap to the numeral row, 8 down stays inside the component's
-  // own paddingBottom 8, so the expansion is never clipped by a parent
-  // frame (the RN hitSlop gotcha) on either host screen.
-  const trackSlop = { top: 6, bottom: 8 };
   const pan = Gesture.Pan()
     .runOnJS(true)
-    .hitSlop(trackSlop)
     .activeOffsetX([-6, 6])
     .failOffsetY([-8, 8])
     .onUpdate((e) => setFromX(e.x))
     .onEnd(() => commitHaptic());
   const tap = Gesture.Tap()
     .runOnJS(true)
-    .hitSlop(trackSlop)
     .onEnd((e, success) => {
       if (!success) return;
       setFromX(e.x);
@@ -235,8 +228,15 @@ export function ScoreInput({ value, onChange }: Props) {
           {scoreWord(value)}
         </VText>
       </View>
-      {/* .ir-track: 30px hit area, 6px rail centered, fill + 26px thumb */}
+      {/* .ir-track: 6px rail centered in the 50pt box, fill + 26px thumb.
+          The extra padded wrapper stretches the touch target 6 up (the gap
+          to the numeral row) / 8 down (inside the root paddingBottom) with
+          negative margins keeping layout identical — the VIEW must own the
+          expanded area: RNGH's iOS recognizer can't receive touches outside
+          the attached view, so gesture hitSlop only expands on Android
+          (codex P3). */}
       <GestureDetector gesture={gesture}>
+        <View style={{ marginTop: -6, marginBottom: -8, paddingTop: 6, paddingBottom: 8 }}>
         <View
           onLayout={(e) => setTrackW(e.nativeEvent.layout.width)}
           accessible
@@ -277,6 +277,7 @@ export function ScoreInput({ value, onChange }: Props) {
               shadowOffset: { width: 0, height: 1 },
             }}
           />
+        </View>
         </View>
       </GestureDetector>
     </View>

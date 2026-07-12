@@ -261,10 +261,37 @@ export default function FeedImpression() {
   const [photoAspects, setPhotoAspects] = useState<Record<string, number>>(() =>
     source?.kind === 'photo' && source.aspect ? { [source.uri]: source.aspect } : {},
   );
+  // ⚠️ FROZEN during the open flight (codex P2): an onLoad aspect landing
+  // while progress < 1 would resize cloneImgW/H mid-animation — a visible
+  // crop jump when the tapped card's image hadn't finished loading. The
+  // fallback geometry holds for the whole flight; pending aspects flush at
+  // warmLevel ≥ 1 (the open leg's finish callback), where the intrinsic
+  // layer with the true aspect is pixel-identical to the fallback at the
+  // final hero rect by construction — the swap is invisible, and the
+  // pull-down that needs the aspect gets it correct.
+  const warmRef = useRef(warmLevel);
+  warmRef.current = warmLevel;
+  const pendingAspects = useRef<Record<string, number>>({});
   const reportCloneAspect = useCallback((uri: string, hOverW: number) => {
     if (!Number.isFinite(hOverW) || hOverW <= 0) return;
+    if (warmRef.current === 0) {
+      if (!pendingAspects.current[uri]) pendingAspects.current[uri] = hOverW;
+      return;
+    }
     setPhotoAspects((prev) => (prev[uri] ? prev : { ...prev, [uri]: hOverW }));
   }, []);
+  useEffect(() => {
+    if (warmLevel === 0) return;
+    const pend = pendingAspects.current;
+    const uris = Object.keys(pend);
+    if (!uris.length) return;
+    pendingAspects.current = {};
+    setPhotoAspects((prev) => {
+      const next = { ...prev };
+      for (const u of uris) if (!next[u]) next[u] = pend[u];
+      return next;
+    });
+  }, [warmLevel]);
   const activeAspect = activeUri ? photoAspects[activeUri] : undefined;
   // The image layer's size = the FINAL hero box's cover fit for the real
   // aspect (h/w), rendered UNclipped (the outer overflow:hidden crops) —

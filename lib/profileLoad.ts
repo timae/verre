@@ -18,6 +18,10 @@ export type LoadedCheckin = {
   type: string | null
   score: number | null
   flavors: unknown
+  // Aroma selections, same wire shape as the feed payloads (aroma-layer.md
+  // §1). Declared so LoadedProfile consumers (the PR D web read chips) get
+  // the field without casting — the emit landed with PR C.
+  aromas: { a: string; m: string | null; p?: boolean }[]
   notes: string | null
   imageUrl: string | null
   venueName: string | null
@@ -299,7 +303,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
         // Wire parity with the feed's checkin payload — the PR D profile
         // read chips consume this; without it a profile check-in surface
         // would silently render no aromas while the data exists.
-        aromas: f.rating.aromas ?? [],
+        aromas: (f.rating.aromas as LoadedCheckin['aromas']) ?? [],
         notes: f.rating.notes,
         // Image priority: rating's own photo first, falling back to the
         // wine's canonical bottle shot (null for standalone wines today).
