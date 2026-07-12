@@ -21,6 +21,7 @@ import Link from 'next/link'
 import { Avatar } from '@/components/profile/Avatar'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
+import { AromaReadChips } from '@/components/ui/AromaReadChips'
 import { PolarChart } from '@/components/charts/PolarChart'
 import { CHART_SIZE } from '@/components/charts/sizes'
 import { LikeButton } from './LikeButton'
@@ -151,6 +152,9 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
               <PolarChart flavors={wine.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
             </div>
           )}
+          {/* Aromas render on a blind wine exactly like score/flavors — the
+              taster's own perception, never identity (aroma-layer.md §7). */}
+          <AromaReadChips aromas={wine.aromas} style={{ marginTop:4 }} />
           {wine.notes && (
             <p style={{ fontSize:11, color:'var(--fg-dim)', fontStyle:'italic', lineHeight:1.5, marginTop:4 }}>
               &ldquo;{wine.notes}&rdquo;
@@ -194,6 +198,7 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
             <PolarChart flavors={wine.flavors} fl={fl} size={CHART_SIZE.DETAIL} />
           </div>
         )}
+        <AromaReadChips aromas={wine.aromas} style={{ marginTop:4 }} />
         {wine.notes && (
           <p style={{ fontSize:11, color:'var(--fg-dim)', fontStyle:'italic', lineHeight:1.5, marginTop:4 }}>
             &ldquo;{wine.notes}&rdquo;

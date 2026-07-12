@@ -3,9 +3,10 @@ import type { AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { AromaChip, displayOrder } from './parts';
 
-// Read-only aroma chips — THE display surface for someone's stored
-// selections (feed impression detail now; profile + further read surfaces
-// reuse this, PR D). Renders the canonical badge (AromaChip — family tint,
+// Read-only aroma chips — THE native display surface for someone's stored
+// selections (feed impression detail now; further native read surfaces reuse
+// this; the web has its own twin, components/ui/AromaReadChips.tsx — no
+// shared RN/web layer). Renders the canonical badge (AromaChip — family tint,
 // aroma-then-modifier words, Pronounced border) in the shared display order
 // (pronounced first, then grouped by family — aroma-layer.md §7). No input,
 // no refine, no ×: mutations only ever happen through AromaInput.

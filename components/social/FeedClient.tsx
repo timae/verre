@@ -11,6 +11,7 @@ type CheckinPayload = {
   grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
+  aromas?: { a: string; m: string | null; p?: boolean }[]
   viewerFollowsAuthor?: boolean
   tags?: { id: number; name: string }[]
 }

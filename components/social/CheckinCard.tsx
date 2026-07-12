@@ -8,6 +8,7 @@ import { LikeButton } from './LikeButton'
 import { perRatingAxes, resolveAxesColoured } from '@/lib/flavours'
 import { openLightbox } from '@/components/ui/ImageLightbox'
 import { StarRating } from '@/components/ui/StarRating'
+import { AromaReadChips } from '@/components/ui/AromaReadChips'
 import { getLevel } from '@/lib/badges'
 import { timeAgo } from '@/lib/timeAgo'
 import { WineIdentity } from '@/components/wine/WineIdentity'
@@ -21,6 +22,7 @@ interface Props {
     grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
     venueName?: string|null; city?: string|null; country?: string|null
     flavors?: Record<string,number>|null; likeCount?: number
+    aromas?: {a:string;m:string|null;p?:boolean}[]|null
     createdAt?: string|Date|null; tags?: {id:number;name:string}[]
   }
   author?: {id:number;name:string;xp?:number;imageUrl?:string|null}|null
@@ -174,6 +176,11 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             </div>
           )}
         </div>
+      )}
+
+      {/* Aromas — the author's descriptor selections (aroma-layer.md §7) */}
+      {checkin.aromas && checkin.aromas.length > 0 && (
+        <AromaReadChips aromas={checkin.aromas} style={{ marginTop: 12 }} />
       )}
 
       {/* Notes */}
