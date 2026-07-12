@@ -51,7 +51,9 @@ function RootNavigator() {
   return (
     <NavThemeProvider value={navTheme}>
       <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg } }}>
+      {/* fullScreenGestureEnabled false: edge-only back gesture — see
+          moments/_layout.tsx (iOS 26 flipped the RNS default to true). */}
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg }, fullScreenGestureEnabled: false }}>
         <Stack.Protected guard={!!session}>
           <Stack.Screen name="(tabs)" />
         </Stack.Protected>

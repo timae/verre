@@ -12,7 +12,8 @@ import { radius, useTheme } from '@/theme';
 
 // 02e overall-score input — the decided "wide slider + editable number"
 // (.ir-rate pixel spec): 26px accent star + 40/600 editable number +
-// score word right, 30px track with 6px rail, accent fill, 26px thumb.
+// score word right, 6px rail (in a 44pt touch box — see TRACK_H), accent
+// fill, 26px thumb.
 //
 // Input behavior is native-first (Simon's ruling): gesture-handler's
 // activeOffsetX/failOffsetY lets the OS arbitrate drag-vs-scroll against
@@ -23,8 +24,12 @@ import { radius, useTheme } from '@/theme';
 
 const THUMB = 26;
 const THUMB_COMFORT = 30;
-const TRACK_H = 30;
-const TRACK_H_COMFORT = 34;
+// Track BOX = the touch target, rail centered inside. The mock's 30px box
+// was hard to grab (Simon's device pass, 2026-07-12) — grown to 50pt on his
+// follow-up ruling (44 still felt tight); the root paddingBottom shrinks in
+// compensation. Visuals (rail/thumb) are untouched — the box is invisible.
+const TRACK_H = 50;
+const TRACK_H_COMFORT = 54;
 const RAIL_H = 6;
 const RAIL_H_COMFORT = 7;
 
@@ -109,14 +114,22 @@ export function ScoreInput({ value, onChange }: Props) {
   // activeOffsetX claims the gesture natively once movement is clearly
   // horizontal; failOffsetY hands clearly-vertical movement to the parent
   // ScrollView before the pan can activate.
+  //
+  // hitSlop stretches the (already 50pt) track box a little further: 6 up
+  // covers the gap to the numeral row, 8 down stays inside the component's
+  // own paddingBottom 8, so the expansion is never clipped by a parent
+  // frame (the RN hitSlop gotcha) on either host screen.
+  const trackSlop = { top: 6, bottom: 8 };
   const pan = Gesture.Pan()
     .runOnJS(true)
+    .hitSlop(trackSlop)
     .activeOffsetX([-6, 6])
     .failOffsetY([-8, 8])
     .onUpdate((e) => setFromX(e.x))
     .onEnd(() => commitHaptic());
   const tap = Gesture.Tap()
     .runOnJS(true)
+    .hitSlop(trackSlop)
     .onEnd((e, success) => {
       if (!success) return;
       setFromX(e.x);
@@ -156,8 +169,12 @@ export function ScoreInput({ value, onChange }: Props) {
   const thumbLeft = trackW > thumb ? pct * (trackW - thumb) : 0;
 
   return (
-    // .ir-rate: padding 8 0 18, border-bottom rule. Inner column gap 6.
-    <View style={{ paddingTop: 8, paddingBottom: 18, borderBottomWidth: 1, borderBottomColor: theme.rule, gap: 6 }}>
+    // .ir-rate: padding 8 0 18. Inner column gap 6. Two sanctioned mock
+    // deviations (Simon, 2026-07-12): paddingBottom shrank to 8 — the space
+    // moved INTO the taller touch box (see TRACK_H) — and the border-bottom
+    // rule MOVED OUT of this component: it now sits below the note field in
+    // RatingSection, so score + note read as one block.
+    <View style={{ paddingTop: 8, paddingBottom: 8, gap: 6 }}>
       {/* .rate-m-head */}
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
         {/* .rate-m-numbox: 26px accent star + editable number */}

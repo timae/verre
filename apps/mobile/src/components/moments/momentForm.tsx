@@ -554,7 +554,9 @@ export function DateField({
 export function NotesField({
   label, placeholder, value, onChange,
 }: {
-  label: string;
+  // Optional since the rating block dropped its "Your Note" title (Simon,
+  // 2026-07-12) — the placeholder carries the affordance there.
+  label?: string;
   placeholder: string;
   value: string;
   onChange: (s: string) => void;
@@ -567,7 +569,9 @@ export function NotesField({
   useRegisterInput(inputRef);
   return (
     <View style={{ gap: 7 }}>
-      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
+      {label ? (
+        <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
+      ) : null}
       <TextInput
         ref={inputRef}
         value={value}

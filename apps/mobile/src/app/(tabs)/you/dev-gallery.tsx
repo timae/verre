@@ -10,7 +10,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
-import { AromaChip } from '@/components/scoring/aroma/parts';
+import { AromaChip, useTapOrDouble } from '@/components/scoring/aroma/parts';
 import { StarScore } from '@/components/scoring/StarScore';
 import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
@@ -373,6 +373,12 @@ export default function DevGallery() {
   const [monoWords, setMonoWords] = useState<'mono' | 'resting' | 'solid'>('mono');
   const [monoPronounced, setMonoPronounced] = useState<Set<string>>(new Set());
   const [monoSolidFill, setMonoSolidFill] = useState(false);
+  const [badgeArmed, setBadgeArmed] = useState<Set<string>>(new Set());
+  const [badgePron, setBadgePron] = useState<Set<string>>(new Set());
+  const [armedStyle, setArmedStyle] = useState<'ruled' | 'solid' | 'map'>('ruled');
+  const [dotArmed, setDotArmed] = useState(true);
+  const [paleAll, setPaleAll] = useState(false);
+  const galleryTap = useTapOrDouble();
   const [wheelBadge, setWheelBadge] = useState(false);
   if (!__DEV__) return <Redirect href="/moments" />;
 
@@ -453,28 +459,114 @@ export default function DevGallery() {
             One per family, on a surface card (where badges actually sit). Switch themes above.
           </VText>
           <View style={{ gap: 12, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
-            <View style={{ gap: 5 }}>
-              <VText variant="caption" color="inkFaint">resting — readable words (the ruling) + per-family fill bumps</VText>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {AROMA_FAMILIES.map((f) => (
-                  <AromaChip key={f.id} a={f.id} m={null} />
-                ))}
+            {/* ONE interactive row (Simon, 2026-07-12): every chip starts
+                resting; tap toggles ARMED, double-tap toggles PRONOUNCED
+                (useTapOrDouble runs single on tap 1, so the double handler
+                reverts that arm — a double-tap nets pronounced only). The
+                pill picks which armed treatment renders. */}
+            <View style={{ gap: 6 }}>
+              <VText variant="caption" color="inkFaint">
+                resting — tap = armed, double-tap = pronounced; armed treatment:
+              </VText>
+              {/* switches wrap onto their own lines (Simon) — no overflow on
+                  narrow screens. */}
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+                  {(['ruled', 'solid', 'map'] as const).map((k) => {
+                    const on = armedStyle === k;
+                    return (
+                      <Pressable
+                        key={k}
+                        accessibilityRole="tab"
+                        accessibilityState={{ selected: on }}
+                        onPress={() => setArmedStyle(k)}
+                        style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
+                      >
+                        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                          {k === 'ruled' ? 'Ruled: Mute Rest' : k === 'solid' ? 'Solid (old armed)' : 'Map (All Solid, Arm Pales Rest)'}
+                        </VText>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+                {/* all-or-nothing arm toggle — whole-row compare per theme. */}
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() =>
+                    setBadgeArmed((prev) =>
+                      prev.size === AROMA_FAMILIES.length ? new Set() : new Set(AROMA_FAMILIES.map((f) => f.id)),
+                    )
+                  }
+                  style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: theme.bg }}
+                >
+                  <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.inkSoft }}>
+                    {badgeArmed.size === AROMA_FAMILIES.length ? 'Disarm All' : 'Arm All'}
+                  </VText>
+                </Pressable>
+                {/* Contextual modes (deep/map) change NO colour on the armed
+                    chip — with everything armed there is no rest to pale, so
+                    Arm All is colour-inert there by design. Pale All previews
+                    the pale state on every un-armed chip instead. */}
+                {armedStyle !== 'solid' ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: paleAll }}
+                    onPress={() => setPaleAll((b) => !b)}
+                    style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: paleAll ? theme.surface : theme.bg }}
+                  >
+                    <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: paleAll ? theme.ink : theme.inkSoft }}>
+                      Pale All
+                    </VText>
+                  </Pressable>
+                ) : null}
+                {/* the ListPicker's round-mark armed vocabulary, on a chip. */}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: dotArmed }}
+                  onPress={() => setDotArmed((b) => !b)}
+                  style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: dotArmed ? theme.surface : theme.bg }}
+                >
+                  <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: dotArmed ? theme.ink : theme.inkSoft }}>
+                    ● Dot Armed
+                  </VText>
+                </Pressable>
               </View>
-            </View>
-            <View style={{ gap: 5 }}>
-              <VText variant="caption" color="inkFaint">pronounced</VText>
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {AROMA_FAMILIES.map((f) => (
-                  <AromaChip key={f.id} a={f.id} m={null} pronounced />
-                ))}
-              </View>
-            </View>
-            <View style={{ gap: 5 }}>
-              <VText variant="caption" color="inkFaint">armed</VText>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                {AROMA_FAMILIES.map((f) => (
-                  <AromaChip key={f.id} a={f.id} m={null} focused />
-                ))}
+                {AROMA_FAMILIES.map((f) => {
+                  const toggle = (set: React.Dispatch<React.SetStateAction<Set<string>>>) =>
+                    set((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(f.id)) next.delete(f.id);
+                      else next.add(f.id);
+                      return next;
+                    });
+                  const armed = badgeArmed.has(f.id);
+                  return (
+                    <AromaChip
+                      key={f.id}
+                      a={f.id}
+                      m={null}
+                      // 'ruled' = Simon's 2026-07-12 search ruling (now live in
+                      // AromaInput): armed keeps its resting colours, the ONLY
+                      // change is the rest muting. 'map' = the hexStage anatomy
+                      // verbatim (all solid, arm pales rest). 'solid' = the old
+                      // armed flip, kept for comparison.
+                      focused={(armedStyle === 'solid' || armedStyle === 'map') && armed}
+                      mapSolid={armedStyle === 'map'}
+                      muted={armedStyle === 'ruled' && (badgeArmed.size > 0 || paleAll) && !armed}
+                      pale={armedStyle === 'map' && (badgeArmed.size > 0 || paleAll) && !armed}
+                      armedDot={dotArmed && armed}
+                      pronounced={badgePron.has(f.id)}
+                      onPress={() =>
+                        galleryTap(
+                          f.id,
+                          () => toggle(setBadgeArmed),
+                          () => { toggle(setBadgeArmed); toggle(setBadgePron); },
+                        )
+                      }
+                    />
+                  );
+                })}
               </View>
             </View>
             <View style={{ gap: 6 }}>
