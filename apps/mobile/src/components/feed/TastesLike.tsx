@@ -1,7 +1,7 @@
 import { StyleSheet, View } from 'react-native';
 import { VText } from '@/components/ui/VText';
 import { radius, useTheme } from '@/theme';
-import type { WheelAxis } from '@/components/scoring/FlavourWheel';
+import type { WheelAxis } from '@/components/scoring/StructureWheel';
 
 // The "Tastes like" chip legend (design `.fpw-chips` / `.fpw-chip` / `.fpw-lead`):
 // a lead label + one pill per top flavour (colour swatch + name). The

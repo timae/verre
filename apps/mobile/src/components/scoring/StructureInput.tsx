@@ -10,18 +10,18 @@ import {
   type StructureAxis,
 } from '@verre/core';
 import { intensityWord } from '@/lib/scoreWords';
-import { contrastRatio } from '@/lib/contrast';
 import { usePhoneTokens } from '@/lib/layout';
 import { VText } from '@/components/ui/VText';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { alpha } from '@/theme/color';
+import { mix } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
-// Per-attribute flavour-intensity input — the decided "C · Fill track" control
-// (Vero - Scoring.html .filltrack pixel spec): a 38px track per axis, the axis
-// colour fills left→right in whole 0–5 steps, the axis label sits at the left
-// and the intensity word at the right, both over the fill. Two tracks per row
-// on a wide phone, one per row when narrow.
+// Per-attribute structure-intensity input — the decided "C · Fill track"
+// control (Vero - Scoring.html .filltrack pixel spec for anatomy; the FILL
+// COLOUR is a sanctioned deviation, see the ruled-look note in FillTrack): a
+// 38px track per axis, the axis colour's badge tint fills left→right in
+// whole 0–5 steps, the axis label at the left in plain ink. Two tracks per
+// row on a wide phone, one per row when narrow.
 //
 // Data model (structure wheel): the rated axes are structure INTENSITIES
 // resolved from the wine style (resolveAxes) — sweet/acid/aroma/flavour/
@@ -65,7 +65,7 @@ interface Props {
   onChange: (next: Record<string, number>) => void;
 }
 
-export function FlavourInput({ style, value, onChange }: Props) {
+export function StructureInput({ style, value, onChange }: Props) {
   const phone = usePhoneTokens();
   const axisColor = useFlavourColors();
   const axes = resolveAxes('wine', style);
@@ -192,25 +192,19 @@ function FillTrack({
   const gesture = Gesture.Race(pan, tap);
 
   const pct = Math.max(0, Math.min(FLAVOUR_MAX, level)) / FLAVOUR_MAX;
-  // Text colour is FIXED (theme.ink), never flipped by fill — the label/word each
-  // span TWO grounds at once (the fill on the left, surfaceSunk on the right), so
-  // no single solid colour can read over both; changing it also made the word
-  // jump colour when the fill was nowhere near it. Legibility comes from a HALO
-  // (text-shadow) in the ink's OPPOSITE tone: a near-black glow for light ink,
-  // a near-white glow for dark ink — so light ink over a near-white fill (Clay
-  // Bubbles) still gets a crisp dark outline. Pure black/white (softened to 0.85)
-  // is a stronger, more predictable outline than theme.bg, which on some themes
-  // (Clay's mid terracotta) was too weak against a near-white fill. Two stacked
-  // properties can't exist in RN, so the single shadow is the whole outline.
-  const inkIsLight = contrastRatio(theme.ink, '#ffffff') < contrastRatio(theme.ink, '#000000');
-  const haloColor = alpha(inkIsLight ? '#000000' : '#ffffff', 0.85);
+  // THE RULED LOOK (Simon, 2026-07-11 gallery pass — supersedes the original
+  // solid-fill + halo'd-ink .filltrack port, a sanctioned deviation from the
+  // mock): the fill is the BADGE TINT — mix(colour, surface, 0.72), exactly
+  // the structure wheel's wedge wash composited over surface — and the label
+  // is plain theme.ink with NO halo. The tint ground is mild enough that ink
+  // reads on it; the old halo existed for ink over the SOLID axis colour.
+  // (History: a 'readable' coloured-words variant and the solid fill were
+  // compared in the dev gallery and not picked.)
+  const fillColor = mix(color, theme.surface, 0.72);
   const labelStyle = {
     fontFamily: 'InstrumentSans_600SemiBold' as const,
     ...phone.text('small'),
     color: theme.ink,
-    textShadowColor: haloColor,
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 3,
   };
 
   return (
@@ -262,9 +256,11 @@ function FillTrack({
             style={{ position: 'absolute', left: 0, top: trackH / 2 - triH / 2 - 1 }}
           >
             <Svg width={TRI_W} height={triH} viewBox="0 0 9 30">
-              {/* right-pointing triangle inset ~2px so the round stroke stays in-canvas */}
+              {/* right-pointing triangle; base at x=1 so the 2px round stroke's
+                  left edge lands at 0 — flush against the track border (a 2px
+                  inset left a visible gap, Simon's nit) */}
               <Path
-                d="M2 2 L8 15 L2 28 Z"
+                d="M1 2 L7 15 L1 28 Z"
                 fill={color}
                 stroke={color}
                 strokeWidth={2}
@@ -273,7 +269,7 @@ function FillTrack({
               />
             </Svg>
           </View>
-          {/* .fill — axis colour, width = level/5. Whole-step jumps (no width
+          {/* .fill — the axis colour's badge tint, width = level/5. Whole-step jumps (no width
               tween) — matches ScoreInput's plain-View fill; crisper per tap. A
               minWidth floor keeps a few px of colour showing at level 0 (a
               resting "this fills" cue); at level ≥1 the % already exceeds it, so
@@ -285,7 +281,7 @@ function FillTrack({
               top: 0,
               bottom: 0,
               width: `${pct * 100}%`,
-              backgroundColor: color,
+              backgroundColor: fillColor,
               borderRadius: radius.sm,
             }}
           />

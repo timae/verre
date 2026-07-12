@@ -1,8 +1,10 @@
-import { useEffect, useRef } from 'react';
-import { View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
+import * as Haptics from 'expo-haptics';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
 import {
   AROMA_FAMILIES,
   AROMA_MODIFIERS,
+  AROMA_SELECTION_CAP,
   aromaAllowedModifiers,
   aromaModifierDisplay,
   gateAromaSelections,
@@ -10,11 +12,14 @@ import {
   type AromaSelection,
 } from '@verre/core';
 import { VText } from '@/components/ui/VText';
+import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
-import { AnchoredMenu, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { usePhoneTokens } from '@/lib/layout';
 import { useAromaColors } from '@/theme/flavourColors';
-import { mix, alpha } from '@/theme/color';
-import { useTheme } from '@/theme';
+import { mix, alpha, inkOn, readableSolid, readableBorder } from '@/theme/color';
+import { aromaFillRatio } from './aromaTint';
+import { motion, useTheme } from '@/theme';
 
 // Shared building blocks for the aroma descriptor input (aroma-layer.md §6).
 // Visual reference: the Vero handoff's 02e·11 search-first block + Simon's
@@ -127,10 +132,10 @@ export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelectio
     add: (sel: AromaSelection) => commit([...value, sel]),
     removeNode: (a: string) => commit(value.filter((s) => s.a !== a)),
     removePair: (a: string, m: string | null) => commit(value.filter((s) => s.a !== a || s.m !== m)),
-    toggleNode: (a: string) => {
-      if (value.some((s) => s.a === a)) commit(value.filter((s) => s.a !== a));
-      else commit([...value, { a, m: null }]);
-    },
+    toggleNode: (a: string): boolean =>
+      value.some((s) => s.a === a)
+        ? commit(value.filter((s) => s.a !== a))
+        : commit([...value, { a, m: null }]),
     // PAIR-precise modifier edit — the only modifier op. A node carrying two
     // pairs (fig AND dried fig, both addable via search) must never have
     // both collapsed by one edit (review finding: a per-node map + gate
@@ -157,6 +162,15 @@ export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelectio
 // system grants the touch to the deepest control, so an × tap does not also
 // fire the chip press (the device-verified 02b pattern: photo overlay /
 // corner badge inside the line-up row's Pressable).
+// Badge anatomy = the design system's `.badge` pattern (vero-components.css)
+// with Simon's readability ruling (2026-07-10 gallery pass): resting =
+// family-tinted fill (aromaFillRatio per-theme/family bumps) + readableSolid
+// words — the 100% palette colour wherever it clears 3:1 on the fill, pulled
+// toward ink only past that (supersedes both the ink-pulled tintedInk AND
+// the bare-solid-words iterations); focused/armed (and 'solid'-bumped fills)
+// = SOLID family-colour fill + contrast-picked label (inkOn — the hex
+// cells' treatment). Pronounced border = the full family colour on tinted
+// fills, the label ink on solid fills (same-colour border would vanish).
 export function AromaChip({
   a,
   m,
@@ -166,6 +180,9 @@ export function AromaChip({
   onPress,
   onRemove,
   sub,
+  tint,
+  monoWords,
+  tintSolid,
 }: {
   a: string;
   m: string | null;
@@ -174,22 +191,50 @@ export function AromaChip({
   muted?: boolean;
   onPress?: () => void;
   onRemove?: () => void;
+  /** EXPLORATION override (dev gallery): render the badge in this colour
+      instead of the family colour — the mono/theme-coloured comparison. */
+  tint?: string;
+  /** EXPLORATION (dev gallery, with `tint`): keep the mono fill but write
+      the words in the family colour — 'resting' = the resting row's EXACT
+      font (readableSolid vs the family's own resting fill, NOT re-corrected
+      against the mono fill — that pulled most families to ink on clay),
+      'solid' = the 100% palette colour. */
+  monoWords?: 'resting' | 'solid';
+  /** EXPLORATION (dev gallery, with `tint`): the fill is the 100% SOLID tint
+      colour instead of its badge transparency. */
+  tintSolid?: boolean;
   // Light trailing tag — the coarse-tier marker in search results ("family" /
   // "group"), which also disambiguates the four leaf labels that equal a
   // subfamily label (honey / vanilla / cocoa / char).
   sub?: string;
 }) {
-  const { theme } = useTheme();
+  const { theme, themeKey } = useTheme();
   const familyColor = useAromaColors();
   const node = getAromaNode(a);
   if (!node) return null;
-  const color = familyColor(node.family.id);
-  // Focused/added chips step WELL past the resting tint (0.2 → 0.5) with the
-  // text pulled toward ink — one shade apart wasn't readable in the results
-  // wrap (feedback). ⚠️ Device-vet across themes: deep family fills sit on
-  // surface, per the palette memory.
-  const tintedInk = mix(color, theme.ink, focused ? 0.4 : 0.7);
-  const fill = mix(color, theme.surface, muted ? 0.09 : focused ? 0.5 : 0.2);
+  const color = tint ?? familyColor(node.family.id);
+  // (famColor below stays the true family colour even under a tint override.)
+  // Fill ratio via aromaFillRatio (clay boost, 1:1 elsewhere; a tint
+  // override skips the per-family bumps); focused goes SOLID colour.
+  const restingR = tint && tintSolid ? 1 : aromaFillRatio(themeKey, tint ? '' : node.family.id, muted ? 0.09 : 0.2);
+  const fill = focused || restingR >= 1 ? color : mix(color, theme.surface, restingR);
+  // A 'solid' fill (focused, a per-family bump like clay Fruity, or the mono
+  // rows' tintSolid switch) — border/words then need the focused treatment.
+  const onSolid = focused || restingR >= 1;
+  const famColor = familyColor(node.family.id);
+  // The family's RESTING font colour (row 1 of the gallery) — reused verbatim
+  // by the mono rows' 'resting' words mode.
+  const famResting = () =>
+    readableSolid(famColor, theme.ink, mix(famColor, theme.surface, aromaFillRatio(themeKey, node.family.id, 0.2)));
+  const words = muted
+    ? theme.inkSoft
+    : tint && monoWords
+      ? monoWords === 'solid'
+        ? famColor
+        : famResting()
+      : onSolid
+        ? inkOn(color, theme.ink, theme.bg)
+        : readableSolid(color, theme.ink, fill);
   const label = selectionLabel({ a, m });
   return (
     <Pressable
@@ -204,32 +249,39 @@ export function AromaChip({
         paddingHorizontal: 12,
         borderRadius: 999,
         borderWidth: 1.5,
-        borderColor: pronounced ? tintedInk : 'transparent',
+        // Pronounced border wears the READABLE BORDER accent — corrected
+        // like the words but floored at 45% colour share (a full ink pull
+        // made clay's borders read WHITE; bare colour was invisible on
+        // mauve Sweet / cobalt Funky / charcoal Fire — Simon's passes).
+        // On a mono tint the Pronounced border is the 100% SOLID family
+        // colour (Simon — the family identity carries entirely in the border
+        // there); family-coloured chips keep the readableBorder correction.
+        borderColor: pronounced ? (tint ? famColor : muted ? color : onSolid ? words : readableBorder(color, theme.ink, fill)) : 'transparent',
         backgroundColor: fill,
       }}
     >
       <VText
         surface="badge"
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: muted ? theme.inkSoft : tintedInk }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: words }}
       >
         {capFirst(node.label)}
         {m ? (
           <VText
             surface="badge"
-            style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 13.5, color: muted ? theme.inkSoft : alpha(tintedInk, 0.75) }}
+            style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 13.5, color: muted ? theme.inkSoft : alpha(words, 0.75) }}
           >
             {', '}{aromaModifierDisplay(a, m)}
           </VText>
         ) : null}
       </VText>
       {sub ? (
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 11.5, color: theme.inkFaint }}>
+        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 11.5, color: focused ? alpha(words, 0.7) : theme.inkFaint }}>
           {sub}
         </VText>
       ) : null}
       {onRemove ? (
         <Pressable onPress={onRemove} hitSlop={8} accessibilityLabel={`Remove ${label}`}>
-          <Icon name="x" size={13} color={tintedInk} />
+          <Icon name="x" size={13} color={words} />
         </Pressable>
       ) : null}
     </Pressable>
@@ -252,14 +304,15 @@ export function ModifierRail({
   onChange: (m: string | null) => void;
   horizontal?: boolean;
 }) {
-  const { theme } = useTheme();
+  const { theme, themeKey } = useTheme();
   const familyColor = useAromaColors();
   const node = getAromaNode(a);
   if (!node) return null;
   const allowed = aromaAllowedModifiers(a);
   if (!allowed.size) return null;
   const color = familyColor(node.family.id);
-  const tintedInk = mix(color, theme.ink, 0.72);
+  const onFill = mix(color, theme.surface, aromaFillRatio(themeKey, node.family.id, 0.24));
+  const onWords = readableSolid(color, theme.ink, onFill);
   const chips = AROMA_MODIFIERS.filter((mod) => allowed.has(mod.id)).map((mod) => {
     const on = value === mod.id;
     return (
@@ -275,12 +328,12 @@ export function ModifierRail({
           // surfaceSunk at rest so the chip reads as a BADGE on any host
           // surface (the popup card is theme.surface — a surface-on-surface
           // chip was invisible there; feedback round 2).
-          backgroundColor: on ? mix(color, theme.surface, 0.24) : theme.surfaceSunk,
+          backgroundColor: on ? onFill : theme.surfaceSunk,
         }}
       >
         <VText
           surface="badge"
-          style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? tintedInk : theme.inkSoft }}
+          style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? onWords : theme.inkSoft }}
         >
           {capFirst(aromaModifierDisplay(a, mod.id))}
         </VText>
@@ -309,11 +362,17 @@ export function PronouncedRow({
   on: boolean;
   onToggle: () => void;
 }) {
-  const { theme } = useTheme();
+  const { theme, themeKey } = useTheme();
   const familyColor = useAromaColors();
   const node = getAromaNode(a);
   const color = node ? familyColor(node.family.id) : theme.accent;
-  const tintedInk = mix(color, theme.ink, 0.72);
+  const onR = aromaFillRatio(themeKey, node?.family.id ?? '', 0.24);
+  const onFill = onR >= 1 ? color : mix(color, theme.surface, onR);
+  // A 'solid' per-family fill (clay Fire etc.) takes the label-ink treatment
+  // for BOTH words and border — readableBorder floors at 45% share, which on
+  // a same-colour solid fill measured ~1.9:1 (review finding).
+  const onSolid = onR >= 1;
+  const onWords = onSolid ? inkOn(color, theme.ink, theme.bg) : readableSolid(color, theme.ink, onFill);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
       <Pressable
@@ -326,15 +385,18 @@ export function PronouncedRow({
           paddingHorizontal: 11,
           borderRadius: 999,
           borderWidth: 1.5,
-          borderColor: on ? tintedInk : 'transparent',
-          backgroundColor: on ? mix(color, theme.surface, 0.24) : theme.surfaceSunk,
+          // The Pronounced border wears the READABLE BORDER accent (45%
+          // colour floor — the words' full pull went white on clay); on a
+          // solid fill it takes the label ink, like the chip.
+          borderColor: on ? (onSolid ? onWords : readableBorder(color, theme.ink, onFill)) : 'transparent',
+          backgroundColor: on ? onFill : theme.surfaceSunk,
         }}
       >
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-          <Icon name="pronounced" size={13} color={on ? tintedInk : theme.inkSoft} />
+          <Icon name="pronounced" size={13} color={on ? onWords : theme.inkSoft} />
           <VText
             surface="badge"
-            style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? tintedInk : theme.inkSoft }}
+            style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? onWords : theme.inkSoft }}
           >
             Pronounced
           </VText>
@@ -343,6 +405,517 @@ export function PronouncedRow({
       <VText surface="badge" style={{ flex: 1, fontFamily: 'InstrumentSans_400Regular', fontSize: 12.5, color: theme.inkSoft }}>
         {on ? 'Stands out in this wine' : 'Mark if it stands out'}
       </VText>
+    </View>
+  );
+}
+
+// Pending-add state for the browse pickers (the mock's pend/pendMod/pendDom):
+// a modifier + Pronounced armed against the current pick, committed as one
+// pair. Resets when the target changes. `added` keys on the CANONICAL pair
+// (a promoted composite like grape+dried reads as its leaf) — an exact
+// already-added match greys the commit to "Added", no Update semantics
+// (ADR-0008). A cap-rejected commit answers with the warning haptic + the
+// `CapHint` line — the SAME COPY the inline input shows (a rejection message,
+// never a live counter); the two differ only in tone/alignment by surface
+// (browse-sheet CapHint = accent/left; the impression input = critical/
+// centred, device-passed). `capHit` clears once a removal makes room.
+export function usePendingAdd(target: string | null, ops: AromaOps) {
+  const [pendM, setPendM] = useState<string | null>(null);
+  const [pendP, setPendP] = useState(false);
+  const [capHit, setCapHit] = useState(false);
+  useEffect(() => {
+    setPendM(null);
+    setPendP(false);
+  }, [target]);
+  useEffect(() => {
+    if (ops.value.length < AROMA_SELECTION_CAP) setCapHit(false);
+  }, [ops.value.length]);
+  const canon = target ? canonicalPair(target, pendM) : null;
+  const added = !!canon && ops.value.some((s) => s.a === canon.a && s.m === canon.m);
+  // Retargeting AWAY from an added pair drops pending Pronounced: the toggle
+  // rendered off+disabled there (`p && !added`), so a surviving true would
+  // silently arm the next addable pair (mirrors AromaInput's onM).
+  const retargetM = (m: string | null) => {
+    if (added) setPendP(false);
+    setPendM(m);
+  };
+  const commit = (): boolean => {
+    if (!target || added) return false;
+    const ok = ops.add(pendP ? { a: target, m: pendM, p: true } : { a: target, m: pendM });
+    if (!ok) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      setCapHit(true);
+      return false;
+    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setPendM(null);
+    setPendP(false);
+    return true;
+  };
+  return { pendM, setPendM: retargetM, pendP, togglePendP: () => setPendP((p) => !p), capHit, added, commit };
+}
+
+// The cap-rejection hint line (shared copy with the inline input).
+export function CapHint({ show }: { show: boolean }) {
+  const { theme } = useTheme();
+  if (!show) return null;
+  return (
+    <VText variant="small" style={{ color: theme.accent }}>
+      Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
+    </VText>
+  );
+}
+
+// (The pickers consume usePendingAdd + RefineAddRow directly — Map/Canvas
+// also feed the armed cell's Pronounced border from pendP; Rings renders the
+// same shared RefineAddRow BELOW its wheel. The corner-controls design was
+// abandoned during the Rings rewrite — don't resurrect it from old comments.)
+
+// The "it landed HERE" cue on the chip a fresh Add produced (or the "+N
+// more" pill when the ordering files it into the overflow): a LIGHT-UP — an
+// accent veil flashes over the chip and fades (device feedback: a bare scale
+// pulse read as nothing), plus a slight lift. Motion tokens only.
+export function FlashPulse({ on, children }: { on: boolean; children: React.ReactNode }) {
+  const { theme } = useTheme();
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!on) return;
+    v.setValue(0);
+    Animated.sequence([
+      Animated.timing(v, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.easeOut), useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: motion.dur3, easing: Easing.bezier(...motion.ease), useNativeDriver: true }),
+    ]).start();
+  }, [on, v]);
+  return (
+    <Animated.View style={{ transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.06] }) }] }}>
+      {children}
+      <Animated.View
+        pointerEvents="none"
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          borderRadius: 999,
+          backgroundColor: theme.accent,
+          opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0, 0.35] }),
+        }}
+      />
+    </Animated.View>
+  );
+}
+
+// THE selected-aromas block — one behaviour everywhere (device round 4: the
+// browse sheet must read exactly like the impression page). Wrapped chips in
+// display order, tap = refine popup / double-tap = Pronounced / × removes,
+// and the light-up flash on a fresh add — detected by DIFFING the value, so
+// it fires no matter which surface (search row, a picker, the sheet)
+// committed it; the pill flashes when the ordering files the add into the
+// overflow.
+//
+// Overflow is WIDTH-based (device round 7 — a chip count ignores label
+// length): chips greedily pack into up to MAX_LINES rows of the row's
+// measured width using each chip's REAL rendered width (a hidden measuring
+// pass; estimates cut a fittable chip, device follow-up), and the "+N more"
+// pill must fit within those lines too — chips pop off the tail until it
+// does. Hard ceiling TWO lines (Simon's correction of the initial three).
+const MAX_LINES = 2;
+const CHIP_GAP = 6;
+// Fallbacks until the hidden pass reports (first frame only).
+const chipEstW = (sel: { a: string; m: string | null }) => 27 + Math.ceil(selectionLabel(sel).length * 7.2) + 19;
+const pillEstW = (n: number) => 24 + Math.ceil(`+${n} more`.length * 7.5);
+const pairKey = (s: { a: string; m: string | null }) => `${s.a}|${s.m ?? ''}`;
+export function SelectedChipsRow({ ops, onOverflow }: { ops: AromaOps; onOverflow: () => void }) {
+  const { theme } = useTheme();
+  const { width: screenW } = useWindowDimensions();
+  const [rowW, setRowW] = useState(0);
+  // Real chip widths from the hidden measuring pass, keyed by pair.
+  const [chipW, setChipW] = useState<Record<string, number>>({});
+  const [popup, setPopup] = useState<{ a: string; m: string | null; anchor: MenuAnchor; right?: number } | null>(null);
+  const chipRefs = useRef<Record<string, View | null>>({});
+  const tap = useTapOrDouble();
+  const [flash, setFlash] = useState<string | null>(null);
+  const prevKeys = useRef<Set<string>>(new Set(ops.value.map(pairKey)));
+  useEffect(() => {
+    const keys = new Set(ops.value.map(pairKey));
+    const fresh = [...keys].filter((k) => !prevKeys.current.has(k));
+    // Only a GROWN set flashes — a refine edit swaps a pair without adding.
+    const grew = keys.size > prevKeys.current.size;
+    prevKeys.current = keys;
+    if (fresh.length && grew) setFlash(fresh[0]);
+  }, [ops.value]);
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 800);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  if (!ops.value.length) return null;
+  const ordered = displayOrder(ops.value);
+  // Greedy line packing over estimated widths: how many whole chips fit in
+  // MAX_LINES, and — when some don't — how many after making room for the
+  // pill on the last line.
+  let visible = ordered;
+  let overflow = 0;
+  if (rowW > 0) {
+    const states: { line: number; cursor: number }[] = [{ line: 1, cursor: 0 }];
+    let line = 1;
+    let cursor = 0;
+    let fit = 0;
+    for (const sel of ordered) {
+      const w = chipW[pairKey(sel)] ?? chipEstW(sel);
+      let nl = line;
+      let nc = cursor;
+      if (nc > 0 && nc + CHIP_GAP + w > rowW) {
+        nl += 1;
+        nc = w;
+      } else {
+        nc += (nc > 0 ? CHIP_GAP : 0) + w;
+      }
+      if (nl > MAX_LINES) break;
+      line = nl;
+      cursor = nc;
+      fit += 1;
+      states.push({ line, cursor });
+    }
+    if (fit < ordered.length) {
+      let count = fit;
+      while (count > 0) {
+        const pw = pillEstW(ordered.length - count);
+        const st = states[count];
+        let nl = st.line;
+        let nc = st.cursor;
+        if (nc > 0 && nc + CHIP_GAP + pw > rowW) {
+          nl += 1;
+          nc = pw;
+        } else {
+          nc += (nc > 0 ? CHIP_GAP : 0) + pw;
+        }
+        if (nl <= MAX_LINES) break;
+        count -= 1;
+      }
+      visible = ordered.slice(0, count);
+      overflow = ordered.length - count;
+    }
+  }
+  const unmeasured = ordered.filter((sel) => !(pairKey(sel) in chipW));
+  return (
+    <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CHIP_GAP }}>
+      {/* hidden measuring pass — renders each not-yet-measured chip once at
+          its natural width so the packer works with real numbers. */}
+      {unmeasured.length ? (
+        <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: 4000, opacity: 0, flexDirection: 'row' }}>
+          {unmeasured.map((sel) => {
+            const key = pairKey(sel);
+            return (
+              <View
+                key={key}
+                onLayout={(e) => {
+                  const w = Math.ceil(e.nativeEvent.layout.width);
+                  setChipW((m) => (m[key] === w ? m : { ...m, [key]: w }));
+                }}
+              >
+                <AromaChip a={sel.a} m={sel.m} pronounced={!!sel.p} onRemove={() => {}} />
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
+      {visible.map((sel) => {
+        const key = pairKey(sel);
+        return (
+          <View key={key} ref={(n) => { chipRefs.current[key] = n; }} collapsable={false}>
+            <FlashPulse on={flash === key}>
+              <AromaChip
+                a={sel.a}
+                m={sel.m}
+                pronounced={!!sel.p}
+                // single tap = refine popup (delayed past the double window —
+                // an instant Modal would swallow the second tap); double tap
+                // = toggle Pronounced directly.
+                onPress={() =>
+                  tap(
+                    `chip:${key}`,
+                    () =>
+                      chipRefs.current[key]?.measureInWindow((x, y, _w, h) =>
+                        setPopup({ a: sel.a, m: sel.m, anchor: { top: y, bottom: y + h }, right: Math.max(12, screenW - x - 280) }),
+                      ),
+                    () => ops.togglePronounced(sel.a, sel.m),
+                    'delayed',
+                  )
+                }
+                onRemove={() => {
+                  delete chipRefs.current[key];
+                  if (popup?.a === sel.a && popup?.m === sel.m) setPopup(null);
+                  ops.removePair(sel.a, sel.m);
+                }}
+              />
+            </FlashPulse>
+          </View>
+        );
+      })}
+      {overflow > 0 ? (
+        // The pill pulses when the fresh add filed into the overflow.
+        <FlashPulse on={!!flash && !visible.some((sel) => pairKey(sel) === flash)}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`${overflow} more aromas`}
+            onPress={onOverflow}
+            style={{
+              justifyContent: 'center',
+              paddingVertical: 6, // no border — visually matches the chips' 4.5+1.5
+              paddingHorizontal: 12,
+              borderRadius: 999,
+              backgroundColor: theme.surface,
+            }}
+          >
+            <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkSoft }}>
+              +{overflow} more
+            </VText>
+          </Pressable>
+        </FlashPulse>
+      ) : null}
+      <ModifierPopup
+        target={popup}
+        onClose={() => setPopup(null)}
+        ops={ops}
+        onTargetChange={(pair) => setPopup((p) => (p ? { ...p, ...pair } : p))}
+      />
+    </View>
+  );
+}
+
+// The drill breadcrumb shared by the Rail / Canvas / List pickers: back
+// chevron + "All Families › fruity › berry" trail; taps jump up the path.
+export function AromaCrumbs({ path, onPop }: { path: string[]; onPop: (depth: number) => void }) {
+  const { theme } = useTheme();
+  const crumbs = [
+    { label: 'All Families', depth: 0 },
+    ...path.map((id, i) => ({ label: capFirst(getAromaNode(id)?.label ?? id), depth: i + 1 })),
+  ];
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 11, minHeight: 20 }}>
+      {path.length ? (
+        <Pressable accessibilityLabel="Back" onPress={() => onPop(path.length - 1)} hitSlop={8}>
+          <Icon name="back" size={19} color={theme.accent} />
+        </Pressable>
+      ) : null}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 5, flex: 1 }}>
+        {crumbs.map((c, i) => {
+          const last = i === crumbs.length - 1;
+          return (
+            <View key={c.depth} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Pressable disabled={last} onPress={() => onPop(c.depth)}>
+                <VText
+                  surface="badge"
+                  style={{
+                    fontFamily: last ? 'InstrumentSans_600SemiBold' : 'InstrumentSans_500Medium',
+                    fontSize: 12.5,
+                    color: last ? theme.ink : theme.accent,
+                  }}
+                >
+                  {c.label}
+                </VText>
+              </Pressable>
+              {!last ? (
+                <VText surface="badge" style={{ fontSize: 12.5, color: theme.inkFaint }}>
+                  ›
+                </VText>
+              ) : null}
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+// The refine row's modifier SELECT — the Compare-toolbar select anatomy
+// (ADR-0008): fixed 108pt width so a long display word can't resize its
+// siblings, centered label that WEARS the pick, chevron pinned right, accent
+// fill when set. Opens an anchored menu of the node's allowed modifiers
+// (self-measuring, the AromaInput pattern). Disabled when there's no target
+// or the node allows no modifiers.
+export function ModifierSelectButton({
+  a,
+  m,
+  onChange,
+}: {
+  a: string | null;
+  m: string | null;
+  onChange: (m: string | null) => void;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const { width: screenW } = useWindowDimensions();
+  const btnRef = useRef<View | null>(null);
+  const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
+  const [right, setRight] = useState(16);
+  const fieldH = phone.surface('formControl').height(36);
+  const allowedSet = a ? aromaAllowedModifiers(a) : null;
+  const allowedMods = allowedSet ? AROMA_MODIFIERS.filter((mod) => allowedSet.has(mod.id)) : [];
+  const off = !a || !allowedMods.length;
+  const openMenu = () => {
+    btnRef.current?.measureInWindow((x, y, _w, h) => {
+      setRight(Math.max(12, screenW - x - 216));
+      setAnchor({ top: y, bottom: y + h });
+    });
+  };
+  return (
+    <>
+      <Pressable
+        ref={btnRef}
+        accessibilityRole="button"
+        accessibilityLabel={a && m ? `Modifier — ${aromaModifierDisplay(a, m)}` : 'Add a modifier'}
+        disabled={off}
+        onPress={openMenu}
+        hitSlop={{ top: 4, bottom: 4 }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 4,
+          height: fieldH,
+          width: 108,
+          paddingHorizontal: 12,
+          borderRadius: 999,
+          borderWidth: 1,
+          borderColor: m ? theme.accent : theme.rule,
+          backgroundColor: m ? theme.accent : theme.surface,
+          opacity: off ? 0.4 : pressed ? 0.6 : 1,
+        })}
+      >
+        <VText
+          numberOfLines={1}
+          surface="badge"
+          style={{ flex: 1, textAlign: 'center', fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: m ? theme.accentInk : theme.inkSoft }}
+        >
+          {a && m ? capFirst(aromaModifierDisplay(a, m)) : 'Modifier'}
+        </VText>
+        <Icon name="chevrondown" size={13} color={m ? theme.accentInk : theme.inkSoft} />
+      </Pressable>
+      <AnchoredMenu anchor={anchor} onClose={() => setAnchor(null)} right={right} minWidth={190}>
+        <MenuItem
+          label="None"
+          active={!m}
+          onPress={() => {
+            onChange(null);
+            setAnchor(null);
+          }}
+        />
+        {allowedMods.map((mod) => (
+          <MenuItem
+            key={mod.id}
+            label={a ? capFirst(aromaModifierDisplay(a, mod.id)) : mod.label}
+            active={m === mod.id}
+            onPress={() => {
+              onChange(mod.id);
+              setAnchor(null);
+            }}
+          />
+        ))}
+      </AnchoredMenu>
+    </>
+  );
+}
+
+// The refine row's Pronounced toggle — the double-chevron mark, glyph-only
+// by default (the search row's width constraint; the word lives in the
+// accessibility label). `withLabel` adds the written word where there's room;
+// no current caller passes it (it was for the abandoned Rings corner control)
+// — kept as a ready option for a future wide-refine surface. Outlined at
+// rest, accent-filled when on (ADR-0008).
+export function PronouncedToggle({
+  on,
+  onToggle,
+  disabled,
+  withLabel,
+}: {
+  on: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  withLabel?: boolean;
+}) {
+  const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const fieldH = phone.surface('formControl').height(36);
+  return (
+    <Pressable
+      accessibilityRole="switch"
+      accessibilityState={{ checked: on }}
+      accessibilityLabel="Pronounced"
+      disabled={disabled}
+      onPress={onToggle}
+      hitSlop={{ top: 4, bottom: 4 }}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        height: fieldH,
+        width: withLabel ? undefined : fieldH,
+        paddingHorizontal: withLabel ? 12 : 0,
+        gap: withLabel ? 5 : 0,
+        borderRadius: 999,
+        borderWidth: 1,
+        borderColor: on ? theme.accent : theme.rule,
+        backgroundColor: on ? theme.accent : theme.surface,
+        alignItems: 'center',
+        justifyContent: 'center',
+        opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+      })}
+    >
+      <Icon name="pronounced" size={17} color={on ? theme.accentInk : theme.inkSoft} />
+      {withLabel ? (
+        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: on ? theme.accentInk : theme.inkSoft }}>
+          Pronounced
+        </VText>
+      ) : null}
+    </Pressable>
+  );
+}
+
+// The ONE refine row (rounds 6–8 of the search design, now shared by the
+// search block and the Map/Canvas pickers): [modifier select | Pronounced
+// glyph | Add]. Add is FIXED at a two-line height so a wrapping title can't
+// change the row geometry; an exact already-added pair greys it to "Added"
+// AND freezes the Pronounced toggle (no Update semantics — a toggled `p`
+// against an added pair could never commit, so a live toggle was a dead
+// control; review finding). The modifier select STAYS live when added:
+// changing it retargets to a different, addable pair. All three disable
+// until a target is armed.
+export function RefineAddRow({
+  a,
+  m,
+  p,
+  added,
+  onM,
+  onP,
+  onAdd,
+}: {
+  a: string | null;
+  m: string | null;
+  p: boolean;
+  added: boolean;
+  onM: (m: string | null) => void;
+  onP: () => void;
+  onAdd: () => void;
+}) {
+  const phone = usePhoneTokens();
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+      <ModifierSelectButton a={a} m={m} onChange={onM} />
+      <PronouncedToggle on={p && !added} onToggle={onP} disabled={!a || added} />
+      <View style={{ flex: 1 }}>
+        <Button
+          block
+          size="md"
+          titleLines={2}
+          style={{ height: phone.surface('button').height(54) }}
+          disabled={!a || added}
+          // No target yet → say what's missing, not a dead "Add" (Simon,
+          // device pass).
+          title={added ? 'Added' : a ? `Add ${capFirst(getAromaNode(a)?.label ?? '')}` : 'Pick an Aroma First'}
+          onPress={onAdd}
+        />
+      </View>
     </View>
   );
 }

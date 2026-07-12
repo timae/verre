@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { BottomSheetBackdrop, BottomSheetModal, type BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
+import {
+  BottomSheetBackdrop,
+  BottomSheetModal,
+  type BottomSheetBackdropProps,
+  type BottomSheetFooterProps,
+} from '@gorhom/bottom-sheet';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
@@ -35,6 +40,8 @@ export function Sheet({
   maxDynamicContentSize,
   stackBehavior = 'replace',
   layer = 0,
+  enableContentPanningGesture = true,
+  footerComponent,
 }: {
   open: boolean;
   onClose: () => void;
@@ -44,6 +51,17 @@ export function Sheet({
   // Cap for dynamic-sized sheets (e.g. a long People roster) so they don't
   // grow past the screen.
   maxDynamicContentSize?: number;
+  // Pass false when a sheet hosts its own omni-directional pan gestures that
+  // the sheet's content drag would race. NOTE: no current call site passes it
+  // — the aroma browse sheet deliberately keeps content-pan ON (pull-down to
+  // dismiss must work; its stage pans win by activating first). Kept as a
+  // ready option; don't set it false on the aroma sheet, that reverses a
+  // device ruling. The handle + backdrop always dismiss regardless.
+  enableContentPanningGesture?: boolean;
+  // gorhom footer render prop (wrap content in <BottomSheetFooter {...props}>)
+  // — the ONLY way to pin content to the sheet's bottom edge; an absolute
+  // bottom:0 child anchors to the modal container and clips off-screen.
+  footerComponent?: React.FC<BottomSheetFooterProps>;
   // 'replace' (default): opening one sheet as another closes dismisses the
   // outgoing one (People "Add" → Invite). Pass 'push' for a sheet that opens
   // ON TOP of a still-open parent and returns to it on close (the moments
@@ -125,6 +143,8 @@ export function Sheet({
       // blur. Shell-wide default so every sheet input behaves the same.
       keyboardBehavior="extend"
       keyboardBlurBehavior="restore"
+      enableContentPanningGesture={enableContentPanningGesture}
+      footerComponent={footerComponent}
       enableDynamicSizing={enableDynamicSizing}
       maxDynamicContentSize={maxDynamicContentSize}
       snapPoints={snapPoints}

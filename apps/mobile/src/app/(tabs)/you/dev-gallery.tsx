@@ -1,15 +1,16 @@
 import { Redirect } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { useAnimatedProps, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 import { Icon } from '@/components/ui/Icon';
 import { alpha } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { resolveAxes, perRatingAxes } from '@verre/core';
-import { FlavourWheel, type WheelAxis } from '@/components/scoring/FlavourWheel';
-import { FlavourInput } from '@/components/scoring/FlavourInput';
+import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
+import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
+import { StructureInput } from '@/components/scoring/StructureInput';
+import { AromaChip } from '@/components/scoring/aroma/parts';
 import { StarScore } from '@/components/scoring/StarScore';
 import { QrCode } from '@/components/ui/QrCode';
 import { Button } from '@/components/ui/Button';
@@ -369,6 +370,10 @@ export default function DevGallery() {
   const { theme, choice, setChoice } = useTheme();
   const axisColor = useFlavourColors();
   const [levels, setLevels] = useState<Record<string, number>>(SAMPLE_LEVELS);
+  const [monoWords, setMonoWords] = useState<'mono' | 'resting' | 'solid'>('mono');
+  const [monoPronounced, setMonoPronounced] = useState<Set<string>>(new Set());
+  const [monoSolidFill, setMonoSolidFill] = useState(false);
+  const [wheelBadge, setWheelBadge] = useState(false);
   if (!__DEV__) return <Redirect href="/moments" />;
 
   // Wheel reads the SAME resolved axes + theme colours the input writes.
@@ -403,19 +408,140 @@ export default function DevGallery() {
         </View>
 
         <View style={{ gap: space.xs }}>
-          <VText variant="heading">Flavour input</VText>
-          <VText variant="small" color="inkSoft">Fill-track — tap/drag; wheel below updates live.</VText>
-          <FlavourInput style={SAMPLE_STYLE} value={levels} onChange={setLevels} />
+          <VText variant="heading">Structure input</VText>
+          <VText variant="small" color="inkSoft">Fill-track — tap/drag; wheel below updates live. Badge-tint fill + ink font (ruled 2026-07-11).</VText>
+          <StructureInput style={SAMPLE_STYLE} value={levels} onChange={setLevels} />
         </View>
 
         <View style={{ gap: space.xs }}>
-          <VText variant="heading">Flavour wheel</VText>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <VText variant="heading">Structure wheel</VText>
+            {/* wash = the mock's 0.72 wedge opacity (shipped); badge tint =
+                the Structure input's badge look — opaque 0.72 mix over the
+                ground + readable axis-coloured labels. */}
+            <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.surface }}>
+              {([false, true] as const).map((sol) => {
+                const on = wheelBadge === sol;
+                return (
+                  <Pressable
+                    key={String(sol)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => setWheelBadge(sol)}
+                    style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, backgroundColor: on ? theme.bg : 'transparent' }}
+                  >
+                    <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                      {sol ? 'Badge Tint' : 'Wash (0.72)'}
+                    </VText>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
           <View style={{ alignItems: 'center' }}>
-            <FlavourWheel axes={sample} />
+            <StructureWheel axes={sample} badgeTint={wheelBadge} />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-            <FlavourWheel axes={sample} size={72} labels={false} />
+            <StructureWheel axes={sample} size={72} labels={false} badgeTint={wheelBadge} />
             <VText variant="small" color="inkSoft">mini (feed-card scale)</VText>
+          </View>
+        </View>
+
+        <View style={{ gap: space.xs }}>
+          <VText variant="heading">Aroma badges</VText>
+          <VText variant="small" color="inkSoft">
+            One per family, on a surface card (where badges actually sit). Switch themes above.
+          </VText>
+          <View style={{ gap: 12, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">resting — readable words (the ruling) + per-family fill bumps</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} />
+                ))}
+              </View>
+            </View>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">pronounced</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} pronounced />
+                ))}
+              </View>
+            </View>
+            <View style={{ gap: 5 }}>
+              <VText variant="caption" color="inkFaint">armed</VText>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {AROMA_FAMILIES.map((f) => (
+                  <AromaChip key={f.id} a={f.id} m={null} focused />
+                ))}
+              </View>
+            </View>
+            <View style={{ gap: 6 }}>
+              <VText variant="caption" color="inkFaint">theme-coloured rows — font (tap a chip = pronounced):</VText>
+              <View style={{ flexDirection: 'row', alignSelf: 'flex-start', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+                {(['tint', 'solid'] as const).map((k) => {
+                  const on = monoSolidFill === (k === 'solid');
+                  return (
+                    <Pressable
+                      key={k}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected: on }}
+                      onPress={() => setMonoSolidFill(k === 'solid')}
+                      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
+                    >
+                      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                        {k === 'tint' ? 'Tint Fill' : 'Solid Fill'}
+                      </VText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <View style={{ flexDirection: 'row', alignSelf: 'flex-start', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+                {(['mono', 'resting', 'solid'] as const).map((k) => {
+                  const on = monoWords === k;
+                  return (
+                    <Pressable
+                      key={k}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected: on }}
+                      onPress={() => setMonoWords(k)}
+                      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
+                    >
+                      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                        {k === 'mono' ? 'Mono' : k === 'resting' ? 'Family' : 'Family 100%'}
+                      </VText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+            {([['accent', theme.accent], ['neutral ink', theme.ink]] as const).map(([label, tintColor]) => (
+              <View key={label} style={{ gap: 5 }}>
+                <VText variant="caption" color="inkFaint">theme-coloured — {label} (exploration: all families one colour)</VText>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                  {AROMA_FAMILIES.map((f) => (
+                    <AromaChip
+                      key={f.id}
+                      a={f.id}
+                      m={null}
+                      tint={tintColor}
+                      tintSolid={monoSolidFill}
+                      monoWords={monoWords === 'mono' ? undefined : monoWords}
+                      pronounced={monoPronounced.has(f.id)}
+                      onPress={() =>
+                        setMonoPronounced((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(f.id)) next.delete(f.id);
+                          else next.add(f.id);
+                          return next;
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+              </View>
+            ))}
           </View>
         </View>
 

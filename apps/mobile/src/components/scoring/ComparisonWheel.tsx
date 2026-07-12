@@ -38,7 +38,7 @@ export function ComparisonWheel({
   onSelect?: (index: number) => void;
 }) {
   const { theme } = useTheme();
-  // pad 58 (mock: 50) — deliberately FlavourWheel's padding so all three
+  // pad 58 (mock: 50) — deliberately StructureWheel's padding so all three
   // size-adaptive charts share one canvas width and the wheel centre stays
   // fixed when the taster count flips the chart type.
   const pad = 58;
@@ -134,7 +134,7 @@ export function ComparisonWheel({
         <SvgText
           key={l.index}
           x={l.x}
-          y={l.y + LABEL_OFFSET / 7} // optical centre: RN svg baseline ≈ middle nudge (FlavourWheel parity)
+          y={l.y + LABEL_OFFSET / 7} // optical centre: RN svg baseline ≈ middle nudge (StructureWheel parity)
           fontSize={typeScale.caption.size}
           fontFamily="InstrumentSans_500Medium"
           // Deliberate addition over the mock (which keeps labels ink-soft):

@@ -1,7 +1,7 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
+import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { GLASS_FILL } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
@@ -77,7 +77,7 @@ export function GlassPanelInner({
       </View>
       {axes.length > 0 && (
         <View style={styles.mini}>
-          <FlavourWheel axes={axes} size={62} labels={false} />
+          <StructureWheel axes={axes} size={62} labels={false} />
         </View>
       )}
       {/* disclosure chevron (design .fpg-chev = i-back rotated 180° = a

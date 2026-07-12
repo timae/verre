@@ -8,3 +8,6 @@ ios/
 .next/
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Expo dev-server state (root — apps/mobile has its own ignore)
+.expo/

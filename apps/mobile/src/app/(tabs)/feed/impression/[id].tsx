@@ -35,7 +35,7 @@ import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
-import { FlavourWheel } from '@/components/scoring/FlavourWheel';
+import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
@@ -932,7 +932,7 @@ function DetailPage({
         {/* big labelled wheel */}
         {axes.length > 0 ? (
           <View style={styles.wheelWrap}>
-            <FlavourWheel axes={axes} size={182} labels maxWidth={screenW - GUTTER * 2} />
+            <StructureWheel axes={axes} size={182} labels maxWidth={screenW - GUTTER * 2} />
           </View>
         ) : null}
 

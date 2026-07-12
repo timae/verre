@@ -7,7 +7,7 @@ import { fillFlavourZeros, resolveAxes } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { FlavourInput } from '@/components/scoring/FlavourInput';
+import { StructureInput } from '@/components/scoring/StructureInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { Disclosure, NotesField } from '@/components/moments/momentForm';
 import { ApiError } from '@/lib/api/sessions';
@@ -149,7 +149,7 @@ export default function CheckinRate() {
           <VText variant="small" color="inkSoft" style={{ marginTop: -4 }}>
             Set each track to the intensity you perceive.
           </VText>
-          <FlavourInput style={draft.type} value={flavors} onChange={setFlavors} />
+          <StructureInput style={draft.type} value={flavors} onChange={setFlavors} />
         </Disclosure>
 
         <View style={{ marginTop: 18 }}>
