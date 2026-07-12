@@ -36,6 +36,7 @@ import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
+import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { TastesLike } from '@/components/feed/TastesLike';
 import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
@@ -940,6 +941,15 @@ function DetailPage({
         {tastes.length > 0 ? (
           <View style={{ marginTop: space.sm }}>
             <TastesLike flavours={tastes} chipBg="surfaceSunk" />
+          </View>
+        ) : null}
+
+        {/* Aroma descriptor chips — the author's selections, read-only
+            (grouped display via AromaReadChips). Shown for blind too: aromas
+            are the taster's own perception, never wine identity (§7). */}
+        {wine.aromas?.length ? (
+          <View style={{ marginTop: space.sm }}>
+            <AromaReadChips aromas={wine.aromas} lead="Aromas" />
           </View>
         ) : null}
 

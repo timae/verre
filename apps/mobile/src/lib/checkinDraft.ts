@@ -1,3 +1,4 @@
+import type { AromaSelection } from '@verre/core';
 import type { WineTypeCode } from '@/lib/api/sessions';
 
 // Ephemeral hand-off between the two check-in create stages (details →
@@ -28,6 +29,7 @@ export type CheckinDraft = {
   city: string;
   score: number;
   flavors: Record<string, number>;
+  aromas: AromaSelection[];
   notes: string;
 };
 

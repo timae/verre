@@ -1,4 +1,5 @@
 import { infiniteQueryOptions } from '@tanstack/react-query';
+import type { AromaSelection } from '@verre/core';
 import { apiFetch } from '../apiFetch';
 import { ApiError, throwApiError } from './sessions';
 
@@ -29,6 +30,9 @@ export type SessionFeedWine = {
   imageUrl: string | null;
   score: number | null;
   flavors: Record<string, number>;
+  // Aroma descriptor selections — the author's own perception, shipped
+  // unredacted even on a `_blind` wine (aroma-layer.md §7), like flavors.
+  aromas: AromaSelection[];
   notes: string | null;
   // Catalog metadata for the full impression detail page. Blanked (null)
   // on a blind-redacted wine — never render identity off a `_blind` wine.
@@ -66,6 +70,7 @@ export type CheckinPayload = {
   description: string | null;
   purchaseUrl: string | null;
   flavors: Record<string, number>;
+  aromas: AromaSelection[];
   likeCount: number;
   createdAt: string;
   tags: { id: number; name: string }[];
@@ -150,6 +155,10 @@ export type CreateCheckinBody = {
   purchaseUrl?: string; // http(s)-only server-side (cleanUrl)
   score: number; // 0 = not rated
   flavors: Record<string, number>;
+  // Canonical AromaSelection[] (AromaInput keeps it gated client-side); the
+  // server re-gates via gateAromas and 400s unknown ids / bad modifiers.
+  // Omitted = [] on create (present-replaces / omitted-preserves contract).
+  aromas?: AromaSelection[];
   notes?: string;
   imageData?: string;
   venueName?: string;
@@ -221,6 +230,7 @@ export function checkinToWine(c: CheckinPayload): SessionFeedWine {
     imageUrl: c.imageUrl,
     score: c.score,
     flavors: c.flavors,
+    aromas: c.aromas,
     notes: c.notes,
     // The WINE's origin (wineRegion/wineCountry) — NOT c.country, which is the
     // VENUE country (the old standalone card conflated them).

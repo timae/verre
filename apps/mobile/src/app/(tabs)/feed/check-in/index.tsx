@@ -108,6 +108,7 @@ export default function CheckinDetails() {
       venue, city,
       score: prev?.score ?? 0,
       flavors: prev?.flavors ?? {},
+      aromas: prev?.aromas ?? [],
       notes: prev?.notes ?? '',
     });
     router.push('/feed/check-in/rate');

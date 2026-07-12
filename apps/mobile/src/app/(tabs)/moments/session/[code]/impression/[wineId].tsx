@@ -19,11 +19,9 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
-import { AromaInput } from '@/components/scoring/aroma/AromaInput';
-import { NotesField } from '@/components/moments/momentForm';
-import { StructureInput } from '@/components/scoring/StructureInput';
-import { ScoreInput } from '@/components/scoring/ScoreInput';
-import { AnchoredMenu, AnchorButton, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
+import { RatingSection } from '@/components/scoring/RatingSection';
+import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -46,7 +44,6 @@ import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
-import { INTENSITY } from '@/lib/scoreWords';
 import { useIsOnline } from '@/lib/query';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -73,8 +70,6 @@ export default function ImpressionDetail() {
   const wineId = String(rawWineId ?? '');
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { height: screenHeight } = useWindowDimensions();
-  const phone = usePhoneTokens();
   const router = useRouter();
   const sessionTab = useSessionTab();
   const queryClient = useQueryClient();
@@ -338,10 +333,6 @@ export default function ImpressionDetail() {
   // ⋯ menu — the shared AnchoredMenu (.ir-menu dropdown; Simon's ruling: the
   // brand menu, not the native action sheet). Anchored to the measured ⋯ button.
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
-  // Intensity-scale help bubble — the ⓘ by "Add tasting detail". The scale
-  // legend + "tap or drag" hint moved OFF each track (they crowded the fill and
-  // read as confusing per-track labels) into one anchored panel learned once.
-  const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   const clearRating = () => {
     seededFor.current = wineId; // an edit — a late seed must not undo it
     aromasSeeded.current = true; // explicit clear: the [] must reach the server
@@ -403,27 +394,11 @@ export default function ImpressionDetail() {
     const p = y < -1;
     setPulled((prev) => (prev === p ? prev : p));
   };
-  // Aroma search focus → the MINIMAL shift that fits the search block
-  // (field + suggestions + refine row, ~250pt) above the keyboard — not a
-  // jump to the top of the screen (Simon's ask). The OS keyboard-inset only
-  // bottom-aligns the field itself; the block below it needs this. Keyboard
-  // height is captured from the show events (defaults to a mid-size board
-  // for the first pre-show call; the input's late re-measure corrects it).
-  const keyboardHRef = useRef(300);
-  useEffect(() => {
-    const subs = [
-      Keyboard.addListener('keyboardWillShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
-      Keyboard.addListener('keyboardDidShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
-    ];
-    return () => subs.forEach((s) => s.remove());
-  }, []);
-  // blockBelow is AromaInput's MEASURED rendered height (onLayout), not a
-  // constant — see the prop doc there.
-  const scrollAromaSearchTo = (rowTopInWindow: number, blockBelow: number) => {
-    const visibleBottom = screenHeight - keyboardHRef.current - 8;
-    const delta = rowTopInWindow + blockBelow - visibleBottom;
-    if (delta > 4) scrollRef.current?.scrollTo({ y: scrollYRef.current + delta, animated: true });
-  };
+  // Aroma search focus → the minimal shift that fits the search block above
+  // the keyboard — the SHARED screen-side hook (one implementation with the
+  // check-in rate stage; see useAromaSearchScroll). blockBelow is AromaInput's
+  // MEASURED rendered height (onLayout), not a constant — see the prop doc.
+  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef);
 
   if (!wine) {
     return (
@@ -470,60 +445,24 @@ export default function ImpressionDetail() {
   const body = (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
       {!blind ? <AboutBlock wine={wine} /> : null}
-      <ScoreInput value={score} onChange={editScore} />
-      {/* note — between score and structure (Simon, 2026-07-10); the shared
-          NotesField caps its growth (~8 lines) then scrolls internally. */}
-      <View style={{ marginTop: 16 }}>
-        <NotesField label="Your Note" placeholder="What stood out?" value={notes} onChange={editNotes} />
-      </View>
-      {/* .ir-detail-toggle + panel — the adaptive "Structure profile". The ⓘ
-          (open only) sits as a SIBLING of the toggle Pressable, not nested —
-          nested Pressables fight for the touch responder. It opens the
-          intensity-scale reference (numbered 0–5). */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 16 }}>
-        <Pressable
-          onPress={() => setDetailOpen((o) => !o)}
-          style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
-        >
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
-            {detailOpen ? 'Structure Profile' : 'Add Structure Profile'}
-          </VText>
-        </Pressable>
-        <Pressable
-          onPress={() => setDetailOpen((o) => !o)}
-          hitSlop={8}
-          style={{ marginLeft: 4, transform: [{ rotate: detailOpen ? '180deg' : '0deg' }] }}
-        >
-          <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-        </Pressable>
-      </View>
-      {detailOpen ? (
-        <View style={{ gap: 14 }}>
-          {/* Short "what to do" line under the title (always visible when open),
-              with the ⓘ intensity-scale bubble at the END of the line. */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: -10 }}>
-            <VText variant="small" color="inkSoft">
-              Set each track to the intensity you perceive.
-            </VText>
-            <AnchorButton
-              icon="info"
-              iconColor={theme.inkSoft}
-              accessibilityLabel="Intensity scale"
-              onOpen={setInfoAnchor}
-            />
-          </View>
-          {/* .filltrack per-attribute intensity grid — structure axes for this
-              wine's style, colour from the active theme. Shown on blind wines
-              too: `type` (the STYLE) is NOT masked by redaction — a taster
-              perceives fizz/tannin/body blind, so they rate structure while the
-              identity stays hidden (mirrors web RatingPane + wineRedaction). */}
-          <StructureInput style={wine.type} value={flavors} onChange={editFlavors} />
-        </View>
-      ) : null}
-      {/* Aromas — the descriptor layer (02e·11 search-first block). Always
-          visible, blind included: like structure, aromas are the taster's own
-          perception and never identify the wine. */}
-      <AromaInput value={aromas} onChange={editAromas} onRequestScroll={scrollAromaSearchTo} />
+      {/* THE shared rating block (score · note · structure fold · aromas) —
+          one component with the standalone check-in rate stage. Structure is
+          shown on blind wines too: `type` (the STYLE) is NOT masked by
+          redaction (mirrors web RatingPane + wineRedaction). */}
+      <RatingSection
+        style={wine.type}
+        score={score}
+        onScore={editScore}
+        notes={notes}
+        onNotes={editNotes}
+        flavors={flavors}
+        onFlavors={editFlavors}
+        aromas={aromas}
+        onAromas={editAromas}
+        structureOpen={detailOpen}
+        onToggleStructure={() => setDetailOpen((o) => !o)}
+        onRequestAromaScroll={scrollAromaSearchTo}
+      />
       {saveError ? (
         <VText variant="small" style={{ marginTop: 14, color: theme.critical }}>{saveError}</VText>
       ) : null}
@@ -694,27 +633,6 @@ export default function ImpressionDetail() {
             <MenuItem icon="trash" label="Delete" accessibilityLabel="Delete Impression" tone="danger" onPress={confirmDeleteImpression} />
           </>
         ) : null}
-      </AnchoredMenu>
-      {/* Intensity-scale reference — the numbered 0–5 levels, one per row. The
-          interaction hint moved to the inline line under the title; this bubble
-          is purely the scale legend the ⓘ opens. */}
-      <AnchoredMenu anchor={infoAnchor} onClose={() => setInfoAnchor(null)} right={16} minWidth={180}>
-        <View style={{ paddingHorizontal: 10, paddingVertical: 6, gap: 5 }}>
-          <VText variant="small" style={{ color: theme.ink, fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 3 }}>
-            Perceived Intensity
-          </VText>
-          {INTENSITY.map((word, i) => (
-            <View key={word} style={{ flexDirection: 'row', alignItems: 'baseline' }}>
-              <VText
-                variant="small"
-                style={{ color: theme.accent, fontFamily: 'InstrumentSans_600SemiBold', width: 18, fontVariant: ['tabular-nums'] }}
-              >
-                {i}
-              </VText>
-              <VText variant="small" style={{ color: theme.ink }}>{word}</VText>
-            </View>
-          ))}
-        </View>
       </AnchoredMenu>
     </View>
     </BottomSheetModalProvider>
