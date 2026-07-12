@@ -340,6 +340,63 @@ animated overlay**. Sketch:
    close should literally slide the rating into the glass panel, that's a
    follow-up on this scaffolding.
 
+### Snappiness pass (2026-07-12, `feature/aroma-checkins` — steps 1–3 + 5 of the agreed plan)
+
+Converged plan (Claude + Codex review rounds; every claim verified against the
+installed RN 0.85.3 / Reanimated 4.3.1 sources):
+
+- **Close legs are velocity-inheriting SPRINGS** (step 1): pan-release close,
+  spring-back, and the bar/Android-back close all use `withSpring` with the new
+  `springs.release` preset (`theme/motion.ts` — engineering-owned spring tokens
+  beside the vendored `motion`; critically damped, `overshootClamping` so
+  progress can't leave [0,1]; `duration: dur2`, and note reanimated's
+  duration-springs settle at ~1.5× the configured value → ~300ms actual). The
+  pan release converts its gesture velocity into progress units
+  (`-velocityY / DISMISS_DRAG`) so the photo keeps moving at finger speed
+  instead of restarting on a bezier — the "handbrake at release" fix. The
+  carried velocity is DIRECTION-GATED to the leg's target: reanimated's
+  clamping TERMINATES a spring that leaves the [release-point, target]
+  interval and snaps to the target, so an away-pointing velocity (cancel while
+  still moving down; upward flick released under the commit line) would read
+  as a jump cut — gated to 0 instead (no "dip" on a fast cancel, by design).
+  The back-button close self-writes `progress` first to cancel a running
+  spring-back (a new spring ADDS the running one's velocity — same jump-cut
+  class). **The OPEN stays `withTiming` + `motion.ease` until the spring feel
+  is device-validated**; switching it is the follow-up half of step 1.
+- **Entry-page mount split** (step 2): during a presentation the entry
+  `DetailPage` commits hero + dots + header first (`deferBody`), and the heavy
+  body (StructureWheel SVG, aroma chips, About) mounts one `requestAnimationFrame`
+  later — on the JS thread, concurrent with the UI-thread flight, committed
+  well before the content fade (progress 0.35) makes it visible.
+- **Staged sibling warming** (step 3): `warm` became `warmLevel` 0/1/2 — entry
+  only in flight → + the ACTIVE page's neighbours from coincidence (the window
+  follows the page as the user swipes, so a quick second swipe / a gallery
+  close landing far away finds its target mounted in the same commit that
+  moves `active` — Codex P2 catch) → everything on `requestIdleCallback`
+  (`{ timeout: 800 }` floor; InteractionManager is deprecated in RN 0.85).
+  Monotonic `mountedLo/Hi` BOUNDS (state, expanded in an effect — post-commit,
+  render stays pure; the union of the window's walk is contiguous so two
+  bounds suffice) keep every once-covered page mounted as the window moves
+  (no scroll-state loss / blank back-swipe). Mounting ALL siblings in one
+  commit at settle was a JS spike right when the user starts interacting. Residual sliver: mid-swipe, a target ≥2 pages out is blank
+  until `active` crosses the rounding midpoint — transient, self-heals within
+  the gesture, gone once the ≤800ms idle bump fires.
+- **Dismiss pickup 12 → 8px** (step 5): `activeOffsetY(8)` / `failOffsetY(-8)`
+  — the dead zone before the photo tracks the finger is felt on every dismiss;
+  arm-at-top + bounce-off already disambiguate from the scroll.
+
+**Deferred, in order** (see the memory note / plan of record): (4) clone
+transform rewrite + the `IOS_SYNCHRONOUSLY_UPDATE_UI_PROPS` static flag as ONE
+package, only if device profiling shows dropped frames in the flight — the
+flag's per-frame fast path is all-or-nothing per view (`allowPartialUpdates =
+false` in `ReanimatedModuleProxy.cpp`), so the rewritten `cloneStyle` worklet
+must return ONLY allowlisted keys (`transform`/`opacity`; a static `left: 0` in
+the returned object disqualifies the whole view), and
+`ENABLE_SHARED_ELEMENT_TRANSITIONS: true` would disable the path entirely; (6)
+interruptible open + finger-tracking dismiss are DESIGN options for Simon, and
+the feed-owned overlay (clone starts before the route mounts) only if tap
+latency still disappoints.
+
 ### Device checklist (Simon)
 
 - Open from: session card photo slide · standalone photo card · NonPhotoHero
@@ -360,8 +417,17 @@ animated overlay**. Sketch:
   haptic feel · swipe to page N, pull down → the FEED CARD sits on page N
   (dots + photo + panel) and the close shrinks into it seamlessly · same after
   closing via the back button · gallery → close → pull down lands right.
-- Bottom nav pops out instantly when the modal mounts (pathname matcher) —
-  acceptable? (Animating the pill with the presentation is a follow-up.)
+- Snappiness pass: release a slow drag mid-way and a fast flick — both should
+  CONTINUE at finger speed into the close (no hitch at release) · cancel a pull
+  while still moving down — the return should start from rest, NO jump cut to
+  fully-open (the away-velocity is deliberately dropped; a "dip" is not
+  achievable with clamping) · open → immediately swipe to a neighbour page
+  (must be mounted at settle; further pages within a beat) · the entry page's
+  body (wheel/chips) must never be visibly absent during the open fade · 8px
+  dismiss pickup vs scroll/pager disambiguation still clean — especially
+  diagonal pager swipes (≥8px vertical drift before ±16px horizontal now claims
+  the pan) · spring close feel (dur2 perceptual ≈ 300ms actual settle; tune
+  `springs.release`) — if good, switch the OPEN to the spring too.
 - §B: feed → detail → moment → back walks back to the post; Moments tab keeps
   its own independent session state; settings/add/edit/impression pushes stay
   on the feed stack; delete-a-moment from a feed-entered settings lands on

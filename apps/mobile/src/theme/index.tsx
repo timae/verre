@@ -4,6 +4,7 @@ import { useColorScheme, type TextStyle } from 'react-native';
 import { defaults, themes, type, type ThemeColors, type TypeStyle } from './vero-tokens';
 
 export { control, elevation, motion, radius, space, themes, type as typeScale } from './vero-tokens';
+export { springs } from './motion';
 export type { ThemeColors } from './vero-tokens';
 
 export type ThemeKey = keyof typeof themes;

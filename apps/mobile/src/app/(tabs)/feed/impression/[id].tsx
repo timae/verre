@@ -25,6 +25,7 @@ import Reanimated, {
   useAnimatedStyle,
   useScrollOffset,
   useSharedValue,
+  withSpring,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -48,7 +49,7 @@ import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HE
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { motion, radius, space, useTheme } from '@/theme';
+import { motion, radius, space, springs, useTheme } from '@/theme';
 import { countryName } from '@verre/core';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
@@ -105,7 +106,12 @@ const DISMISS_DRAG = 340;
 // of progress, so the info panel's fade/rise visibly crawled at the end. The
 // standard `motion.ease` settles much sooner into its endpoint).
 const OPEN_TIMING = { duration: motion.dur3, easing: Easing.bezier(...motion.ease) };
-const CLOSE_TIMING = { duration: motion.dur2, easing: Easing.bezier(...motion.ease) };
+// CLOSE legs are SPRINGS (theme/motion.ts `springs.release`), not timings: the
+// pan release passes its velocity (converted into progress units — progress =
+// 1 − translationY/DISMISS_DRAG, so d(progress)/dt = −velocityY/DISMISS_DRAG),
+// so the photo keeps moving at finger speed instead of restarting on a bezier
+// — the discontinuity that read as "handbrake at release". The open stays a
+// timing until the spring feel is device-validated (snappiness plan step 1).
 
 export default function FeedImpression() {
   const { theme } = useTheme();
@@ -196,28 +202,40 @@ export default function FeedImpression() {
   const dismissing = useSharedValue(false);
   // Mount-cost gate ("opens too slow", Simon round 3): during the presentation
   // only the ENTRY page mounts — the siblings render as empty slot views so
-  // the pager offsets hold — and the rest mount at coincidence. Mounting every
-  // DetailPage up front blocked the JS thread before the open animation could
-  // even start. Content pointerEvents are 'none' until fully open, so nothing
-  // can swipe to an unmounted page mid-flight.
-  const [warm, setWarm] = useState(!source);
+  // the pager offsets hold. Mounting every DetailPage up front blocked the JS
+  // thread before the open animation could even start. Content pointerEvents
+  // are 'none' until fully open, so nothing can swipe to an unmounted page
+  // mid-flight. Warming is STAGED (snappiness plan step 3 — mounting ALL
+  // siblings in one commit at coincidence was a JS spike right when the user
+  // starts interacting): 0 = entry page only (flight in progress) · 1 =
+  // + the ACTIVE page's neighbours (from coincidence, following `page` as the
+  // user swipes) · 2 = everything (on JS idle). Never downgrades; `mountedLo/
+  // Hi` (below) keep every once-mounted page mounted as the window moves.
+  const [warmLevel, setWarmLevel] = useState(source ? 0 : 2);
+  const bumpWarm = useCallback((l: number) => setWarmLevel((cur) => Math.max(cur, l)), []);
   useEffect(() => {
     if (source) {
       progress.value = withTiming(1, OPEN_TIMING, (finished) => {
-        if (finished) runOnJS(setWarm)(true);
+        if (finished) runOnJS(bumpWarm)(1);
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Belt for an interrupted open (the timing callback fires finished=false and
-  // would leave the siblings unmounted forever): whenever the screen is fully
-  // open by any path, warm up.
   useEffect(() => {
-    if (!warm) {
-      const t = setTimeout(() => setWarm(true), OPEN_TIMING.duration + 120);
+    // Belt for an interrupted open (the timing callback fires finished=false
+    // and would leave the siblings unmounted forever).
+    if (warmLevel === 0) {
+      const t = setTimeout(() => bumpWarm(1), OPEN_TIMING.duration + 120);
       return () => clearTimeout(t);
     }
-  }, [warm]);
+    // Remaining pages mount on JS idle — requestIdleCallback, NOT the
+    // deprecated InteractionManager; the timeout floor guarantees a busy
+    // thread still warms within a beat.
+    if (warmLevel === 1) {
+      const id = requestIdleCallback(() => bumpWarm(2), { timeout: 800 });
+      return () => cancelIdleCallback(id);
+    }
+  }, [warmLevel, bumpWarm]);
 
   // The clone always shows the ACTIVE page's photo: the entry page on open,
   // whatever page you're on at pull-down. A photoless active page (blind /
@@ -231,6 +249,20 @@ export default function FeedImpression() {
   // the card beneath on the page being dismissed, so the panel clone must
   // match it or the [0→0.35] fade hands off onto a different panel.
   const entryIndex = detail ? Math.min(startIndex, maxPage) : 0;
+  // Monotonic mounted BOUNDS for the level-1 window (Codex P2 + render-purity
+  // note): every page the moving neighbour window has covered stays mounted
+  // (no scroll-state loss / blank back-swipe). Expanded in an EFFECT — post-
+  // commit, so render stays pure; a NEW target still mounts in the same
+  // commit via the live `page` window in the render gate, the bounds only
+  // remember where that window has been. Contiguous by construction (entry ±
+  // the window's walk), so two bounds suffice over a set.
+  const [mountedLo, setMountedLo] = useState(entryIndex);
+  const [mountedHi, setMountedHi] = useState(entryIndex);
+  useEffect(() => {
+    if (warmLevel !== 1) return;
+    setMountedLo((lo) => Math.min(lo, Math.max(0, clampedActive - 1)));
+    setMountedHi((hi) => Math.max(hi, clampedActive + 1));
+  }, [warmLevel, clampedActive]);
 
   // Plain pop. The visual close (reversing progress) happens before this; a
   // cold deep link has no feed beneath the modal, so fall back to the tab.
@@ -250,7 +282,12 @@ export default function FeedImpression() {
       return;
     }
     dismissing.value = true; // bg follows progress on the way out (see bgStyle)
-    progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+    // Plain self-write first: it cancels any running animation, so this spring
+    // starts from rest. Without it a NEW spring ADDS the running one's velocity
+    // (spring.ts onStart) — an Android back pressed during a spring-back would
+    // inherit its upward velocity, cross the clamping bound and jump-cut to 0.
+    progress.value = progress.value;
+    progress.value = withSpring(0, springs.release, (finished) => {
       if (finished) runOnJS(closeDetail)();
     });
   }, [source, progress, dismissing, closeDetail]);
@@ -448,6 +485,7 @@ export default function FeedImpression() {
             isClonePage={hasClone}
             onClosed={closeDetail}
             onOpenGallery={() => setGalleryAt(0)}
+            deferBody={!!source}
           />
         ) : (
           <ScrollView
@@ -465,11 +503,22 @@ export default function FeedImpression() {
             // horizontal SV's content row defaults to alignItems:stretch).
             style={{ flex: 1 }}
           >
-            {wines.map((w, i) => (
+            {wines.map((w, i) => {
+              // Mount-cost gate: siblings stay empty slot views until their
+              // warm stage — entry only in flight, the ACTIVE page's
+              // neighbours from coincidence, the rest on idle (see
+              // `warmLevel`). The window follows `page`, so a quick second
+              // swipe finds its target mounting mid-swipe instead of blank
+              // until the idle bump (Codex P2); the `mountedLo/Hi` bounds
+              // keep every page the window has covered mounted (no scroll-
+              // state loss / blank on a back-swipe as the window moves).
+              const mount =
+                warmLevel >= 2 ||
+                i === entryIndex ||
+                (warmLevel >= 1 && (Math.abs(i - page) <= 1 || (i >= mountedLo && i <= mountedHi)));
+              return (
               <View key={w.id} style={{ width: screenW }}>
-                {/* Mount-cost gate: siblings stay empty slot views until the
-                    open animation lands (warm) — see the comment at `warm`. */}
-                {warm || i === entryIndex ? (
+                {mount ? (
                   <DetailPage
                     wine={w}
                     index={i}
@@ -489,10 +538,12 @@ export default function FeedImpression() {
                     isClonePage={hasClone && i === page}
                     onClosed={closeDetail}
                     onOpenGallery={() => setGalleryAt(i)}
+                    deferBody={!!source && i === entryIndex}
                   />
                 ) : null}
               </View>
-            ))}
+              );
+            })}
           </ScrollView>
         )}
 
@@ -660,6 +711,7 @@ function DetailPage({
   isClonePage,
   onClosed,
   onOpenGallery,
+  deferBody,
 }: {
   wine: SessionFeedWine;
   index: number;
@@ -688,6 +740,12 @@ function DetailPage({
   // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
   // spans ALL the moment's photo impressions, not just this page's).
   onOpenGallery: () => void;
+  // Entry page during a presentation only (snappiness plan step 2): first
+  // commit renders hero + shell so the open animation can start immediately;
+  // the heavy body (wheel SVG, chips, about) mounts one frame later — on the
+  // JS thread, concurrently with the UI-thread flight, committed well before
+  // the content fade makes it visible (progress 0.35 ≈ 112ms in).
+  deferBody?: boolean;
 }) {
   const { theme } = useTheme();
   const { width: screenW, height: windowH } = useWindowDimensions();
@@ -705,6 +763,14 @@ function DetailPage({
   // overscroll keeps its bounce the moment the list scrolls).
   const nameBottom = useRef(0);
   const [atTop, setAtTop] = useState(true);
+  // Deferred heavy body (see the deferBody prop): shell commits first, the
+  // rating sections mount on the next frame while the flight runs.
+  const [bodyReady, setBodyReady] = useState(!deferBody);
+  useEffect(() => {
+    if (bodyReady) return;
+    const id = requestAnimationFrame(() => setBodyReady(true));
+    return () => cancelAnimationFrame(id);
+  }, [bodyReady]);
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     onCollapse(y >= nameBottom.current - BAR_H);
@@ -733,9 +799,11 @@ function DetailPage({
   const nativeScroll = Gesture.Native();
   const dismissPan = Gesture.Pan()
     // Vertical pull-down only: an upward intent fails into the scroll, a
-    // horizontal one fails into the pager.
-    .activeOffsetY(12)
-    .failOffsetY(-12)
+    // horizontal one fails into the pager. 8px pickup (was 12 — the dead zone
+    // before the photo starts tracking is felt on every dismiss; the arm-at-
+    // top + bounce-off guards already disambiguate from the scroll).
+    .activeOffsetY(8)
+    .failOffsetY(-8)
     .failOffsetX([-16, 16])
     .simultaneousWithExternalGesture(nativeScroll)
     .onBegin(() => {
@@ -757,13 +825,23 @@ function DetailPage({
     .onEnd((e) => {
       if (!dismissArmed.value || progress.value >= 1) return;
       const close = progress.value < 0.6 || (e.velocityY > 900 && progress.value < 0.98);
+      // Release continues at finger speed: the spring inherits the gesture
+      // velocity converted into progress units (see the CLOSE-legs comment at
+      // the top of the file). DIRECTION-GATED to the leg's target: reanimated's
+      // `overshootClamping` TERMINATES the spring the moment the value leaves
+      // the [release-point, target] interval and snaps to the target
+      // (springUtils.ts) — an away-pointing velocity (cancel while still
+      // moving down, or an upward flick released under the 0.6 line) crosses
+      // the release-point bound on the first frame and reads as a jump cut.
+      const towardTarget = -e.velocityY / DISMISS_DRAG;
+      const velocity = close ? Math.min(0, towardTarget) : Math.max(0, towardTarget);
       if (close) {
         if (!dismissBuzzed.value) runOnJS(closeHaptic)(); // flick-commit, never crossed
-        progress.value = withTiming(0, CLOSE_TIMING, (finished) => {
+        progress.value = withSpring(0, { ...springs.release, velocity }, (finished) => {
           if (finished) runOnJS(onClosed)();
         });
       } else {
-        progress.value = withTiming(1, CLOSE_TIMING, (finished) => {
+        progress.value = withSpring(1, { ...springs.release, velocity }, (finished) => {
           if (finished) dismissing.value = false; // veil restored (see bgStyle)
         });
       }
@@ -920,6 +998,10 @@ function DetailPage({
           </View>
         </View>
 
+        {/* Everything below the header is the DEFERRED body — the wheel SVG is
+            the mount cost the shell-first commit keeps off the tap path. */}
+        {bodyReady ? (
+          <>
         {/* score + word */}
         {hasScore ? (
           <View style={styles.scoreRow}>
@@ -963,6 +1045,8 @@ function DetailPage({
         {/* About this impression — identity metadata; hidden entirely for blind
             (it's all identity) and when the wine carries none. */}
         {!blind ? <AboutBlock wine={wine} /> : null}
+          </>
+        ) : null}
           </View>
         </Reanimated.ScrollView>
       </GestureDetector>
