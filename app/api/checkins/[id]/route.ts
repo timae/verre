@@ -6,6 +6,7 @@ import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
+import { gateAromas, type AromaSelection } from '@/lib/aromas'
 import { validateScore, decimalToNumber } from '@verre/core'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
@@ -91,7 +92,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-  const { wineName, producer, vintage, grape, type, score, flavors, notes,
+  const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
     imageData, venueName, city, country, lat, lng, taggedUserIds } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
@@ -129,6 +130,18 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     const norm = gateAndFillFlavors(c.value, 'wine', effStyle)
     if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
     validFlavorsValue = norm.value
+  }
+  // Aromas: same chokepoint + present-replaces / omitted-preserves contract
+  // as the session rate route (aroma-layer.md §4/§5). A PRESENT field —
+  // including [] — is the full new truth; an OMITTED field keeps the stored
+  // selections (so a client that predates aromas can't wipe them). Explicit
+  // null → 400 inside the gate, never a silent clear.
+  const aromasProvided = aromas !== undefined
+  let validAromas: AromaSelection[] = []
+  if (aromasProvided) {
+    const c = gateAromas(aromas)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validAromas = c.value ?? []
   }
 
   // Image handling: image lives in rating_images now (not on the wine row).
@@ -224,6 +237,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
           : effStyle !== wine.style
             ? fillFlavourZeros(rating.flavors as Record<string, number>, 'wine', effStyle)
             : (rating.flavors as object),
+        aromas:  aromasProvided ? validAromas : (rating.aromas as object),
         notes:   notes   !== undefined ? scrub(notes)         : rating.notes,
       },
     })
@@ -314,6 +328,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     type: updatedWine.style,
     score: decimalToNumber(updatedRating.score),
     flavors: updatedRating.flavors,
+    aromas: updatedRating.aromas,
     notes: updatedRating.notes,
     imageUrl: updatedImageUrl,
     venueName: updatedFeedItem.venueName,

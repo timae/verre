@@ -304,6 +304,9 @@ export async function GET(req: NextRequest) {
             description: wine.description,
             purchaseUrl: wine.purchaseUrl,
             flavors: f.rating.flavors,
+            // Wire format is plain {a, m, p?} objects (JSON column — no
+            // Decimal trap). Never redacted: a standalone is never blind.
+            aromas: f.rating.aromas ?? [],
             likeCount: Math.max(0, f._count.likes - (blockAdjustedLikeCount.get(f.id) ?? 0)),
             createdAt: f.createdAt,
             // Tag filter: drop GLOBALLY block-pair tags. Same rule as

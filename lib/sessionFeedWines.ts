@@ -98,6 +98,7 @@ export async function loadSessionFeedWines(
       sessionId: true,
       score: true,
       flavors: true,
+      aromas: true,
       notes: true,
       wine: {
         select: {
@@ -169,6 +170,9 @@ export async function loadSessionFeedWines(
           imageUrl: null,
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
+          // Aromas are the taster's own perception, not wine identity —
+          // they survive redaction like score/flavors (aroma-layer.md §7).
+          aromas: (r.aromas as SessionFeedWine['aromas']) ?? [],
           notes: r.notes,
           // Catalog metadata is identity-bearing (region/process/buy point
           // straight at the wine) — blank it, same as name/producer above.
@@ -189,6 +193,7 @@ export async function loadSessionFeedWines(
           imageUrl: ratingImage ?? w.imageUrl,
           score: decimalToNumber(r.score),
           flavors: (r.flavors as Record<string, number>) ?? {},
+          aromas: (r.aromas as SessionFeedWine['aromas']) ?? [],
           notes: r.notes,
           region: w.region,
           country: w.country,

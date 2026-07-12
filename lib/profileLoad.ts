@@ -153,7 +153,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       tags: { include: { user: { select: { id: true, name: true } } } },
       rating: {
         select: {
-          score: true, flavors: true, notes: true,
+          score: true, flavors: true, aromas: true, notes: true,
           wine: { select: { name: true, producer: true, vintage: true, grape: true, style: true, imageUrl: true } },
           images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
         },
@@ -296,6 +296,10 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
         type: wine.style,
         score: decimalToNumber(f.rating.score),
         flavors: f.rating.flavors,
+        // Wire parity with the feed's checkin payload — the PR D profile
+        // read chips consume this; without it a profile check-in surface
+        // would silently render no aromas while the data exists.
+        aromas: f.rating.aromas ?? [],
         notes: f.rating.notes,
         // Image priority: rating's own photo first, falling back to the
         // wine's canonical bottle shot (null for standalone wines today).
