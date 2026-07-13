@@ -153,6 +153,18 @@ export function useAromaOps(value: AromaSelection[], onChange: (v: AromaSelectio
   };
 }
 
+// Badge vertical metrics for a vPad value (the height axis — AromaChip +
+// MoreChipsPill share it so a capped row stays one height). Padding floors at
+// 0; the negative range squeezes the label's line box instead. Base 23 = the
+// body variant's lineHeight (15 × 1.55) the badge VText inherits — the inline
+// fontSize 13.5 overrides the size but NOT the line box. Factor 2 keeps the
+// height rate uniform across the whole range (padding shrinks 2×vPad per
+// unit too).
+export const badgeVMetrics = (vPad: number | undefined) => ({
+  padV: vPad == null ? 4.5 : Math.max(0, vPad),
+  lineH: vPad != null && vPad < 0 ? Math.max(13.5, 23 + vPad * 2) : undefined,
+});
+
 // The aroma tag — selected chips, search results, and rail leaves share this
 // one look: family-tinted fill, aroma-then-modifier words, no dot, no check.
 // The ONLY border in the system marks a pronounced tag (a transparent border
@@ -186,6 +198,7 @@ export function AromaChip({
   tint,
   monoWords,
   tintSolid,
+  vPad,
 }: {
   a: string;
   m: string | null;
@@ -227,6 +240,14 @@ export function AromaChip({
   /** EXPLORATION (dev gallery, with `tint`): the fill is the 100% SOLID tint
       colour instead of its badge transparency. */
   tintSolid?: boolean;
+  /** Badge-height axis (the dev gallery's slider; see badgeVMetrics). WRITE
+      surfaces keep the 4.5 default; READ surfaces (AromaReadChips — feed
+      impression detail, compare when it grows aromas) ship the compact 0
+      (Simon, 2026-07-13). Below the padding floor the text line box binds the
+      height, so NEGATIVE values keep padding at 0 and tighten the label
+      lineHeight instead (continuing the shrink past what padding alone
+      allows). */
+  vPad?: number;
   // Light trailing tag — the coarse-tier marker in search results ("family" /
   // "group"), which also disambiguates the four leaf labels that equal a
   // subfamily label (honey / vanilla / cocoa / char).
@@ -272,6 +293,7 @@ export function AromaChip({
         ? inkOn(fill, theme.ink, theme.bg)
         : readableSolid(color, theme.ink, fill);
   const label = selectionLabel({ a, m });
+  const { padV, lineH } = badgeVMetrics(vPad);
   // Pronounced border wears the READABLE BORDER accent — corrected like the
   // words but floored at 45% colour share (a full ink pull made clay's
   // borders read WHITE; bare colour was invisible on mauve Sweet / cobalt
@@ -302,7 +324,7 @@ export function AromaChip({
           flexDirection: 'row',
           alignItems: 'center',
           gap: 6,
-          paddingVertical: 4.5,
+          paddingVertical: padV,
           paddingHorizontal: 12,
           borderRadius: 999,
           backgroundColor: fill,
@@ -316,7 +338,7 @@ export function AromaChip({
           muting, and the round mark below.) */}
       <VText
         surface="badge"
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: words }}
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: words, ...(lineH != null ? { lineHeight: lineH } : null) }}
       >
         {capFirst(node.label)}
         {m ? (
@@ -458,7 +480,8 @@ export function PronouncedRow({
         </View>
       </Pressable>
       <VText surface="badge" style={{ flex: 1, fontFamily: 'InstrumentSans_400Regular', fontSize: 12.5, color: theme.inkSoft }}>
-        {on ? 'Stands out in this wine' : 'Mark if it stands out'}
+        {/* category-neutral (not only wines); pairs with the off-state copy */}
+        {on ? 'Stands out' : 'Mark if it stands out'}
       </VText>
     </View>
   );
@@ -561,6 +584,134 @@ export function FlashPulse({ on, children }: { on: boolean; children: React.Reac
   );
 }
 
+// Overflow is WIDTH-based (device round 7 — a chip count ignores label
+// length): chips greedily pack into up to MAX_LINES rows of the row's
+// measured width using each chip's REAL rendered width (a hidden measuring
+// pass; estimates cut a fittable chip, device follow-up), and the "+N more"
+// pill must fit within those lines too — chips pop off the tail until it
+// does. Hard ceiling TWO lines (Simon's correction of the initial three).
+// Shared by the rating page's SelectedChipsRow and the read-only
+// AromaReadChips collapse — one packer, one pill, one measuring pass.
+const MAX_LINES = 2;
+export const CHIP_GAP = 6;
+// Fallbacks until the hidden pass reports (first frame only). `xW` = the
+// trailing ×'s share — read-only chips have none.
+const chipEstW = (sel: { a: string; m: string | null }, xW: number) => 27 + Math.ceil(selectionLabel(sel).length * 7.2) + xW;
+const pillEstW = (n: number) => 24 + Math.ceil(`+${n} more`.length * 7.5);
+export const pairKey = (s: { a: string; m: string | null }) => `${s.a}|${s.m ?? ''}`;
+
+// Greedy line packing over measured (fallback: estimated) widths: how many
+// whole chips fit in MAX_LINES rows of `rowW`, and — when some don't — how
+// many after making room for the "+N more" pill on the last line.
+export function packChips(
+  ordered: AromaSelection[],
+  rowW: number,
+  chipW: Record<string, number>,
+  opts?: { gap?: number; removable?: boolean },
+): { visible: AromaSelection[]; overflow: number } {
+  if (rowW <= 0) return { visible: ordered, overflow: 0 };
+  const gap = opts?.gap ?? CHIP_GAP;
+  const xW = opts?.removable === false ? 0 : 19;
+  const states: { line: number; cursor: number }[] = [{ line: 1, cursor: 0 }];
+  let line = 1;
+  let cursor = 0;
+  let fit = 0;
+  for (const sel of ordered) {
+    const w = chipW[pairKey(sel)] ?? chipEstW(sel, xW);
+    let nl = line;
+    let nc = cursor;
+    if (nc > 0 && nc + gap + w > rowW) {
+      nl += 1;
+      nc = w;
+    } else {
+      nc += (nc > 0 ? gap : 0) + w;
+    }
+    if (nl > MAX_LINES) break;
+    line = nl;
+    cursor = nc;
+    fit += 1;
+    states.push({ line, cursor });
+  }
+  if (fit >= ordered.length) return { visible: ordered, overflow: 0 };
+  let count = fit;
+  while (count > 0) {
+    const pw = pillEstW(ordered.length - count);
+    const st = states[count];
+    let nl = st.line;
+    let nc = st.cursor;
+    if (nc > 0 && nc + gap + pw > rowW) {
+      nl += 1;
+      nc = pw;
+    } else {
+      nc += (nc > 0 ? gap : 0) + pw;
+    }
+    if (nl <= MAX_LINES) break;
+    count -= 1;
+  }
+  return { visible: ordered.slice(0, count), overflow: ordered.length - count };
+}
+
+// Hidden measuring pass — renders each not-yet-measured chip once at its
+// natural width (off-screen, invisible) so the packer works with real
+// numbers. `removable` must match how the visible chips render: the × is
+// part of the width.
+export function ChipMeasurePass({
+  selections,
+  chipW,
+  onMeasure,
+  removable,
+  vPad,
+}: {
+  selections: AromaSelection[];
+  chipW: Record<string, number>;
+  onMeasure: (key: string, w: number) => void;
+  removable?: boolean;
+  vPad?: number;
+}) {
+  const unmeasured = selections.filter((sel) => !(pairKey(sel) in chipW));
+  if (!unmeasured.length) return null;
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: 4000, opacity: 0, flexDirection: 'row' }}>
+      {unmeasured.map((sel) => {
+        const key = pairKey(sel);
+        return (
+          <View key={key} onLayout={(e) => onMeasure(key, Math.ceil(e.nativeEvent.layout.width))}>
+            <AromaChip a={sel.a} m={sel.m} pronounced={!!sel.p} onRemove={removable ? () => {} : undefined} vPad={vPad} />
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// The "+N more" overflow pill — the tail of a capped chip row. `vPad` must
+// match the row's chips so the pill sits at their height (its padding carries
+// the chips' 1.5 border band on top of the shared metric).
+export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress: () => void; vPad?: number }) {
+  const { theme } = useTheme();
+  const { padV, lineH } = badgeVMetrics(vPad);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${count} more aromas`}
+      onPress={onPress}
+      style={{
+        justifyContent: 'center',
+        paddingVertical: padV + 1.5, // no border — visually matches the chips' padV+1.5
+        paddingHorizontal: 12,
+        borderRadius: 999,
+        backgroundColor: theme.surface,
+      }}
+    >
+      <VText
+        surface="badge"
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkSoft, ...(lineH != null ? { lineHeight: lineH } : null) }}
+      >
+        +{count} more
+      </VText>
+    </Pressable>
+  );
+}
 // THE selected-aromas block — one behaviour everywhere (device round 4: the
 // browse sheet must read exactly like the impression page). Wrapped chips in
 // display order, tap = refine popup / double-tap = Pronounced / × removes,
@@ -568,21 +719,7 @@ export function FlashPulse({ on, children }: { on: boolean; children: React.Reac
 // it fires no matter which surface (search row, a picker, the sheet)
 // committed it; the pill flashes when the ordering files the add into the
 // overflow.
-//
-// Overflow is WIDTH-based (device round 7 — a chip count ignores label
-// length): chips greedily pack into up to MAX_LINES rows of the row's
-// measured width using each chip's REAL rendered width (a hidden measuring
-// pass; estimates cut a fittable chip, device follow-up), and the "+N more"
-// pill must fit within those lines too — chips pop off the tail until it
-// does. Hard ceiling TWO lines (Simon's correction of the initial three).
-const MAX_LINES = 2;
-const CHIP_GAP = 6;
-// Fallbacks until the hidden pass reports (first frame only).
-const chipEstW = (sel: { a: string; m: string | null }) => 27 + Math.ceil(selectionLabel(sel).length * 7.2) + 19;
-const pillEstW = (n: number) => 24 + Math.ceil(`+${n} more`.length * 7.5);
-const pairKey = (s: { a: string; m: string | null }) => `${s.a}|${s.m ?? ''}`;
 export function SelectedChipsRow({ ops, onOverflow }: { ops: AromaOps; onOverflow: () => void }) {
-  const { theme } = useTheme();
   const { width: screenW } = useWindowDimensions();
   const [rowW, setRowW] = useState(0);
   // Real chip widths from the hidden measuring pass, keyed by pair.
@@ -608,75 +745,15 @@ export function SelectedChipsRow({ ops, onOverflow }: { ops: AromaOps; onOverflo
 
   if (!ops.value.length) return null;
   const ordered = displayOrder(ops.value);
-  // Greedy line packing over estimated widths: how many whole chips fit in
-  // MAX_LINES, and — when some don't — how many after making room for the
-  // pill on the last line.
-  let visible = ordered;
-  let overflow = 0;
-  if (rowW > 0) {
-    const states: { line: number; cursor: number }[] = [{ line: 1, cursor: 0 }];
-    let line = 1;
-    let cursor = 0;
-    let fit = 0;
-    for (const sel of ordered) {
-      const w = chipW[pairKey(sel)] ?? chipEstW(sel);
-      let nl = line;
-      let nc = cursor;
-      if (nc > 0 && nc + CHIP_GAP + w > rowW) {
-        nl += 1;
-        nc = w;
-      } else {
-        nc += (nc > 0 ? CHIP_GAP : 0) + w;
-      }
-      if (nl > MAX_LINES) break;
-      line = nl;
-      cursor = nc;
-      fit += 1;
-      states.push({ line, cursor });
-    }
-    if (fit < ordered.length) {
-      let count = fit;
-      while (count > 0) {
-        const pw = pillEstW(ordered.length - count);
-        const st = states[count];
-        let nl = st.line;
-        let nc = st.cursor;
-        if (nc > 0 && nc + CHIP_GAP + pw > rowW) {
-          nl += 1;
-          nc = pw;
-        } else {
-          nc += (nc > 0 ? CHIP_GAP : 0) + pw;
-        }
-        if (nl <= MAX_LINES) break;
-        count -= 1;
-      }
-      visible = ordered.slice(0, count);
-      overflow = ordered.length - count;
-    }
-  }
-  const unmeasured = ordered.filter((sel) => !(pairKey(sel) in chipW));
+  const { visible, overflow } = packChips(ordered, rowW, chipW);
   return (
     <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CHIP_GAP }}>
-      {/* hidden measuring pass — renders each not-yet-measured chip once at
-          its natural width so the packer works with real numbers. */}
-      {unmeasured.length ? (
-        <View pointerEvents="none" style={{ position: 'absolute', left: 0, top: 0, width: 4000, opacity: 0, flexDirection: 'row' }}>
-          {unmeasured.map((sel) => {
-            const key = pairKey(sel);
-            return (
-              <View
-                key={key}
-                onLayout={(e) => {
-                  const w = Math.ceil(e.nativeEvent.layout.width);
-                  setChipW((m) => (m[key] === w ? m : { ...m, [key]: w }));
-                }}
-              >
-                <AromaChip a={sel.a} m={sel.m} pronounced={!!sel.p} onRemove={() => {}} />
-              </View>
-            );
-          })}
-        </View>
-      ) : null}
+      <ChipMeasurePass
+        selections={ordered}
+        chipW={chipW}
+        onMeasure={(key, w) => setChipW((m) => (m[key] === w ? m : { ...m, [key]: w }))}
+        removable
+      />
       {visible.map((sel) => {
         const key = pairKey(sel);
         return (
@@ -713,22 +790,7 @@ export function SelectedChipsRow({ ops, onOverflow }: { ops: AromaOps; onOverflo
       {overflow > 0 ? (
         // The pill pulses when the fresh add filed into the overflow.
         <FlashPulse on={!!flash && !visible.some((sel) => pairKey(sel) === flash)}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${overflow} more aromas`}
-            onPress={onOverflow}
-            style={{
-              justifyContent: 'center',
-              paddingVertical: 6, // no border — visually matches the chips' 4.5+1.5
-              paddingHorizontal: 12,
-              borderRadius: 999,
-              backgroundColor: theme.surface,
-            }}
-          >
-            <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkSoft }}>
-              +{overflow} more
-            </VText>
-          </Pressable>
+          <MoreChipsPill count={overflow} onPress={onOverflow} />
         </FlashPulse>
       ) : null}
       <ModifierPopup

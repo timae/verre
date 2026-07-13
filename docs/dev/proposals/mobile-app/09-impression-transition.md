@@ -176,6 +176,11 @@ animated overlay**. Sketch:
 - **7 mirror route files** under `app/(tabs)/feed/session/[code]/…` (index,
   add, impression/[wineId], edit-impression/[wineId], settings/{index,
   details,reveal}) — thin `export { default } from '@/app/(tabs)/moments/…'`.
+  The visible native backdrop remains non-interactive; cards close explicitly,
+  one level at a time. A close-all backdrop needed coordinated version-pinned
+  patches to both RNS and Expo Router, so it was rejected as too much
+  maintenance (Simon, 2026-07-13). Revisit when upstream exposes a distinct
+  backdrop event.
 - **All 10 in-subtree absolute pushes converted** (the 9 verified in the plan
   + `useSettingsSession`'s fatal bounce, which post-dates the count), plus:
   `useEnterableMoment` now pushes the session onto the CURRENT tab's stack

@@ -365,6 +365,35 @@ const SAMPLE_LEVELS: Record<string, number> = {
   bubbles: 4,
 };
 
+// Dev-only value slider (the app has no slider dep) — pan/tap the track,
+// step-snapped. Powers the badge-height exploration in the aroma section.
+function DevSlider({ value, onChange, min, max, step }: { value: number; onChange: (v: number) => void; min: number; max: number; step: number }) {
+  const { theme } = useTheme();
+  const [trackW, setTrackW] = useState(0);
+  const setFromX = (x: number) => {
+    if (trackW <= 0) return;
+    const frac = Math.min(1, Math.max(0, x / trackW));
+    const next = Math.round((min + frac * (max - min)) / step) * step;
+    if (next !== value) onChange(next);
+  };
+  const pan = Gesture.Pan().runOnJS(true).activeOffsetX([-6, 6]).failOffsetY([-8, 8]).onUpdate((e) => setFromX(e.x));
+  const tap = Gesture.Tap().runOnJS(true).onEnd((e, ok) => { if (ok) setFromX(e.x); });
+  const frac = Math.min(1, Math.max(0, (value - min) / (max - min)));
+  return (
+    <GestureDetector gesture={Gesture.Race(pan, tap)}>
+      <View onLayout={(e) => setTrackW(e.nativeEvent.layout.width)} style={{ height: 28, justifyContent: 'center' }}>
+        <View style={{ height: 6, borderRadius: 999, backgroundColor: theme.surfaceSunk, overflow: 'hidden' }}>
+          <View style={{ width: `${frac * 100}%`, height: '100%', backgroundColor: theme.accent }} />
+        </View>
+        <View
+          pointerEvents="none"
+          style={{ position: 'absolute', left: Math.max(0, Math.min(trackW - 18, frac * trackW - 9)), width: 18, height: 18, borderRadius: 999, backgroundColor: theme.accent }}
+        />
+      </View>
+    </GestureDetector>
+  );
+}
+
 export default function DevGallery() {
   const insets = useSafeAreaInsets();
   const { theme, choice, setChoice } = useTheme();
@@ -378,8 +407,11 @@ export default function DevGallery() {
   const [armedStyle, setArmedStyle] = useState<'ruled' | 'solid' | 'map'>('ruled');
   const [dotArmed, setDotArmed] = useState(true);
   const [paleAll, setPaleAll] = useState(false);
+  const [badgeVPad, setBadgeVPad] = useState(4.5);
   const galleryTap = useTapOrDouble();
   const [wheelBadge, setWheelBadge] = useState(false);
+  const [wheelGhost, setWheelGhost] = useState(false);
+  const [wheelStraight, setWheelStraight] = useState(false);
   if (!__DEV__) return <Redirect href="/moments" />;
 
   // Wheel reads the SAME resolved axes + theme colours the input writes.
@@ -444,11 +476,55 @@ export default function DevGallery() {
               })}
             </View>
           </View>
+          {/* exploration toggles, each on its own row */}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+            {/* Ghost remainder: fill to the rating, then a paled same-colour
+                tint continues to the rim (=5) as a scale reference. */}
+            <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.surface }}>
+              {([false, true] as const).map((g) => {
+                const on = wheelGhost === g;
+                return (
+                  <Pressable
+                    key={String(g)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => setWheelGhost(g)}
+                    style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, backgroundColor: on ? theme.bg : 'transparent' }}
+                  >
+                    <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                      {g ? 'Ghost Remainder' : 'No Remainder'}
+                    </VText>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {/* Straight separators: parallel side edges (straight gaps between
+                wedges) vs the coxcomb's radial-sided (angled/triangular gap)
+                wedges. Wedge length + arcs are unchanged. */}
+            <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.surface }}>
+              {([false, true] as const).map((s) => {
+                const on = wheelStraight === s;
+                return (
+                  <Pressable
+                    key={String(s)}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: on }}
+                    onPress={() => setWheelStraight(s)}
+                    style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, backgroundColor: on ? theme.bg : 'transparent' }}
+                  >
+                    <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
+                      {s ? 'Straight Separators' : 'Angled Separators'}
+                    </VText>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
           <View style={{ alignItems: 'center' }}>
-            <StructureWheel axes={sample} badgeTint={wheelBadge} />
+            <StructureWheel axes={sample} badgeTint={wheelBadge} ghostRemainder={wheelGhost} straightSides={wheelStraight} />
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-            <StructureWheel axes={sample} size={72} labels={false} badgeTint={wheelBadge} />
+            <StructureWheel axes={sample} size={72} labels={false} badgeTint={wheelBadge} ghostRemainder={wheelGhost} straightSides={wheelStraight} />
             <VText variant="small" color="inkSoft">mini (feed-card scale)</VText>
           </View>
         </View>
@@ -459,6 +535,20 @@ export default function DevGallery() {
             One per family, on a surface card (where badges actually sit). Switch themes above.
           </VText>
           <View style={{ gap: 12, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}>
+            {/* badge-height exploration (Simon, 2026-07-13): the slider drives
+                every chip's vPad. Shipped values: 4.5 = write surfaces,
+                0 = READ surfaces (AromaReadChips). Negative range =
+                padding 0 + tightened label line (see the vPad prop doc) so
+                the shrink continues past the padding floor. */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <VText variant="caption" color="inkFaint">height</VText>
+              <View style={{ flex: 1 }}>
+                <DevSlider value={badgeVPad} onChange={setBadgeVPad} min={-4} max={12} step={0.5} />
+              </View>
+              <VText variant="caption" color="inkSoft" style={{ width: 88, textAlign: 'right' }}>
+                vPad {badgeVPad}{badgeVPad === 4.5 ? ' (write)' : badgeVPad === 0 ? ' (read)' : ''}
+              </VText>
+            </View>
             {/* ONE interactive row (Simon, 2026-07-12): every chip starts
                 resting; tap toggles ARMED, double-tap toggles PRONOUNCED
                 (useTapOrDouble runs single on tap 1, so the double handler
@@ -557,6 +647,7 @@ export default function DevGallery() {
                       pale={armedStyle === 'map' && (badgeArmed.size > 0 || paleAll) && !armed}
                       armedDot={dotArmed && armed}
                       pronounced={badgePron.has(f.id)}
+                      vPad={badgeVPad}
                       onPress={() =>
                         galleryTap(
                           f.id,
@@ -621,6 +712,7 @@ export default function DevGallery() {
                       tintSolid={monoSolidFill}
                       monoWords={monoWords === 'mono' ? undefined : monoWords}
                       pronounced={monoPronounced.has(f.id)}
+                      vPad={badgeVPad}
                       onPress={() =>
                         setMonoPronounced((prev) => {
                           const next = new Set(prev);

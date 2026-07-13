@@ -116,11 +116,43 @@ Decisions made iterating the card on a real device this session. Where §2 and �
 
 **Checkpoint 2 — REMAINING:**
 6. ✅ **Full impression detail screen** (`feed/impression/[id].tsx`, commit `7e40d1b`, 2026-07-07; §3) — read-only. Pure client render off the `['feed']` cache (`findFeedItem`/`detailFromItem` in `lib/api/feed.ts`, no fetch). Horizontal pager across the moment's impressions, **dots IN-CONTENT under each hero** (Simon — sidesteps the "dots on collapse" question); a standalone = single page, no dots. Each page = a collapsing hero (full-bleed photo, floating glass back button, measured title hand-in — mirrors 02e read mechanics) + rating body (★score+word · big labelled wheel · "Tastes like" chips · note · About block) + tap-hero→fullscreen. Blind masks identity, keeps rating. ✅ **Tap-hero now opens the fullscreen impression GALLERY** (`components/feed/FullscreenGallery.tsx`, built 2026-07-08 to the design's `gFull`/.fpg-f* spec on the same GestureViewer machinery as `FullscreenImage`): swipes across ALL the moment's photo impressions, each page carries ITS OWN glass panel (`FeedGlassPanel`) so the panel SWIPES WITH the image (the feed card's panel-rides-the-photo rule — Simon rejected the mock's static swap-on-scroll panel here too; the panel fades while zoomed since the library scales the whole page). The panel sits mostly over the BLACK viewer ground where glass reads as nothing (the same reason glass is photos-only on the cards), so it wears a viewer-scoped ELEVATED DARK CARD surface (a warm fill a step lighter than the ground, NO border — the app has none anywhere; same `GlassPanelInner` face + layout). Taps are routed by the viewer's tap gesture with a coordinate hit-test (no gesture contention): tap ON the panel → close + land = **back to the detail** (Simon); tap anywhere else toggles the info on/off (the design's `is-bare` — the deliberate fork from `FullscreenImage`'s tap-to-dismiss); while bare any tap restores the info. ✕/swipe-dismiss close too, and every close LANDS the detail pager on the viewed impression (the mock's `gLand`). Photoless/blind impressions are skipped (nothing to show fullscreen). ✅ **The shared-element open/close transition + the feed→session back-nav wrapper were BUILT 2026-07-08** — see `docs/dev/proposals/mobile-app/09-impression-transition.md` §"As built" (the detail is now a transparent-modal presentation drawing its own open/close; the session sub-tree is dual-mounted under both tabs).
-7. ⬜ **"Had it too"** — DEFERRED to its own pass, scoped **standalone-only** (§5a): the backend copy path is standalone + follow-gated; a session impression gets none (join the session instead — Simon).
+   **✅ Impression-detail REDESIGN — AS BUILT (fixes round, 2026-07-13;
+   supersedes the body/hero/chrome described above):** the photo hero carries
+   the **impression identity** at bottom-left (name/vintage, then
+   producer/style); photoless impressions render the same identity in flow.
+   The author avatar is **not** part of that title. The body now leads with the
+   enlarged score + score word, followed by an Instagram-style caption: a 38px
+   avatar, bold author inline with the note, place/time as the second line, and
+   long note copy wrapping back to full width beneath the avatar. With no note,
+   author + place/time remain, so attribution never disappears. A divider then
+   separates the centered 232px structure wheel and centered compact aroma
+   badges; both headings are removed, aromas collapse to two lines + a
+   read-only sheet, and **"Tastes like" is removed** because aromas carry that
+   job. **About this impression** sits below a separator and repeats
+   name/vintage/producer before the clamped description and
+   Origin/Variety/Process metadata. Photo pages retain the rounded overlapping
+   body; photoless pages are continuous and flat.
+
+   **Carousel/chrome:** "#N of M" is gone. One parent `DotRow` uses the Feed
+   indicator's 6px dots, 5px gap, and accent/ink-faint colors. At rest it is
+   centered between the active hero identity and the card seam; the active
+   page's scroll drives it upward until it docks as the compact second row of
+   the solid title bar. It never slides with the pager, and a standalone has no
+   dots. The bar is back · tappable title · ⋯, aligned to the same control
+   geometry as Moment impression detail; photoless pages use plain ink chrome,
+   not glass. The hero/photoless name and collapsed title scroll to About.
+   Crave, standalone Had It Too, Share, and owner Edit remain disabled "Soon"
+   items in `AnchoredMenu`; nothing writes from this screen yet. The pager,
+   fullscreen gallery, shared-element presentation, pull-down dismissal, blind
+   masking, and deferred body mount remain. Entering a session still uses the
+   dual-mounted Feed subtree; stacked native cards close explicitly one level
+   at a time, and their visible backdrop is intentionally non-interactive (see
+   proposal 09).
+7. ⬜ **"Had it too"** — DEFERRED to its own pass, scoped **standalone-only** (§5a): the backend copy path is standalone + follow-gated; a session impression gets none (join the session instead — Simon). (The detail's overflow menu now carries a DISABLED "Had it too" placeholder for standalones.)
 8. ✅ **Standalone card redesigned** + the all-photoless session case (§5, built 2026-07-06; device-iteration pending). Awaiting on-device check.
 9. ✅ **Deleted the `feedFitMode` dev toggle** — hardcoded `crop`, removed `lib/feedFitMode.ts` + the dev-gallery section (commit `8f32e8f`).
 
-**Also still open:** ⬜ the shared-element transition + feed→session back-nav wrapper (09). ⬜ **Crave** (§6 — its own branch: schema + endpoint + mobile Cravings list). ⬜ **deploy the branch** (unblocks the About-block metadata on prod). ⬜ device-verify the detail screen + header + enter-moment (unverified from the sandbox).
+**Also still open:** ⬜ **Crave** (§6 — its own branch: schema + endpoint + mobile Cravings list). ⬜ **deploy the branch** (unblocks the About-block metadata on prod). ⬜ device-verify the detail screen + header + enter-moment (unverified from the sandbox).
 
 **Known-hard, budget for it:** the collapsing hero (read the pattern doc), the full-bleed `contentInsetAdjustmentBehavior` trap (`apps/mobile/CLAUDE.md` scoring §: the zero-size `<View collapsable={false}>` dead-end — applies to any edge-to-edge screen, "feed hero cards" is called out by name), and the two-gesture composition on the carousel photo.
 
@@ -142,7 +174,7 @@ The standalone card ("<name> had a wine", one impression) now shares the session
 
 **All-photoless SESSION post (built same round):** a session where **no** impression has a photo no longer renders a strip of glyph placeholders (Simon rejected that). Instead the photo carousel is replaced by a **carousel of `NonPhotoHero` slides** (one per impression — has-flavour → lighter card + wheel, bare → just the darker panel — uniform slide height, panel bottom-aligned so it's stable across swipes, same dots). When **≥1** impression has a photo, the photo carousel stays and its photoless/blind slides keep the glyph placeholder (a placeholder makes sense **alongside** real photos). A **blind** wine takes the SAME shapes as any wine (its real flavors/score are shown; only identity is masked to "Wine N" inside the panel) — no special mystery-only branch. **Deferred idea (Simon):** replace the plain glyph placeholder (the alongside-photos case) with **playful/artsy topic-matched doodle art** — needs illustration assets + a topic→art map; its own pass.
 
-**Shared components introduced** (`components/feed/`): `FeedGlassPanel` (over-photo glass, extracted from `SessionFeedCard` so both cards share one panel) · `FeedImpressionPanel` (themed ink-on-surface panel) · `NonPhotoHero` (the adaptive tint-stage hero, used by the standalone card AND the all-photoless session carousel) · `TastesLike` (chip legend). Helper: `topFlavours` in `lib/flavourAxes.ts`.
+**Shared components introduced** (`components/feed/`): `FeedGlassPanel` (over-photo glass, extracted from `SessionFeedCard` so both cards share one panel) · `FeedImpressionPanel` (themed ink-on-surface panel) · `NonPhotoHero` (the adaptive tint-stage hero, used by the standalone card AND the all-photoless session carousel) · `TastesLike` (chip legend). Helper: `topFlavours` in `lib/flavourAxes.ts`. **⚠️ Superseded 2026-07-13 (fixes round): the "Tastes like" chips were REMOVED everywhere — feed cards AND the detail body — since the aroma layer carries that job now. `TastesLike` + `topFlavours` are deleted; the photoless-hero flavour-vs-bare fork gates on `hasRatedAxes` (`lib/flavourAxes.ts`). Earlier mentions of the chips in this doc are historical.**
 
 The **detail path** for a standalone is free once §3 ships (routes to the same detail page, single impression, no swipe).
 

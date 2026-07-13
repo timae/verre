@@ -5,7 +5,7 @@ import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedScrollHandler, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 
 const MorphPath = Reanimated.createAnimatedComponent(Path);
@@ -439,7 +439,13 @@ export default function SessionLineup() {
   // Plain-layout scroll plumbing for drag-to-reorder: the rows need a live
   // offset + max-scroll for the auto-scroll loop (the hero measures its own).
   const plainRef = useAnimatedRef<Reanimated.ScrollView>();
-  const plainScrollY = useScrollOffset(plainRef);
+  // This parent also renders the cover-hero branch, where plainRef has no
+  // scroll view. An explicit handler keeps the shared offset without asking
+  // useScrollOffset to attach to an intentionally unmounted ref.
+  const plainScrollY = useSharedValue(0);
+  const onPlainScroll = useAnimatedScrollHandler((event) => {
+    plainScrollY.value = event.contentOffset.y;
+  });
   const plainMaxScroll = useSharedValue(0);
   const plainContentH = useRef(0);
   const plainViewportH = useRef(0);
@@ -632,6 +638,7 @@ export default function SessionLineup() {
               meta poll — React.Children.toArray skips null). */}
           <Reanimated.ScrollView
             ref={plainRef}
+            onScroll={onPlainScroll}
             style={{ flex: 1 }}
             stickyHeaderIndices={[ovc ? 1 : 0]}
             keyboardShouldPersistTaps="handled"
