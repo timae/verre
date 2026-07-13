@@ -28,22 +28,25 @@ import Reanimated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { ClampText } from '@/components/ui/ClampText';
+import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { FullscreenGallery, type GalleryPage } from '@/components/feed/FullscreenGallery';
 import { StarScore } from '@/components/scoring/StarScore';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
-import { TastesLike } from '@/components/feed/TastesLike';
-import { buildWheelAxes, topFlavours } from '@/lib/flavourAxes';
+import { buildWheelAxes } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
 import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
 import { consumeFeedTransitionSource, requestFeedLanding } from '@/lib/feedTransition';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
-import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM } from '@/lib/layout';
+import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
@@ -59,8 +62,8 @@ import { countryName } from '@verre/core';
 // 02e's read surface: full-bleed photo under the status bar, a floating glass
 // bar that hands the title in on scroll, tap-hero→FullscreenImage). The bar is
 // SHARED chrome overlaid outside the pager; its collapsed/solid state tracks the
-// ACTIVE page. Dots live IN-CONTENT under each hero (Simon), so there's no
-// "where do dots go when collapsed" problem — they just scroll away.
+// ACTIVE page. One shared dot rail stays horizontally fixed across swipes,
+// travels with the active page's content, then docks below the collapsed title.
 //
 // PRESENTATION (proposal 09): the route is a TRANSPARENT modal with no native
 // animation — this screen draws its own shared-element open/close. One shared
@@ -82,11 +85,17 @@ import { countryName } from '@verre/core';
 // photo into a card already showing that same slide, and the feed sits on the
 // impression you dismissed, not the one you opened from.
 
-// The bar's true painted height = safe inset + the 36px row + paddings.
+// The title row's collision edge (used for collapse + scroll targets). A
+// paged detail paints a taller bar below this edge to host its docked dots.
 const BAR_ROW = 36;
 function barHeight(insetTop: number) {
   return insetTop + BAR_ROW + 4;
 }
+const DOT_SIZE = 6;
+const HERO_IDENTITY_SEAM_GAP = 28;
+const BAR_DOT_TOP_PAD = 8;
+const BAR_DOT_BOTTOM_PAD = 12;
+const BAR_WITH_DOTS_BOTTOM_PAD = BAR_DOT_TOP_PAD + DOT_SIZE + BAR_DOT_BOTTOM_PAD;
 
 // Pull-down commit haptic (Simon round 3): a light tick the moment the release
 // commits the dismiss — same haptic language as the like/commit ticks.
@@ -143,6 +152,7 @@ export default function FeedImpression() {
   if (found) pinnedRef.current = found;
   const item = found ?? pinnedRef.current;
   const detail = item ? detailFromItem(item) : null;
+  const { code: momentCode, enter: enterMoment } = useEnterableMoment(detail?.sessionId);
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an
   // overscroll bounce — both clamp against the real page count.
@@ -199,8 +209,14 @@ export default function FeedImpression() {
   // instant open veil to the progressive dismiss reveal (see bgStyle). Reset
   // on a spring-back so a cancelled pull restores the veil.
   const dismissing = useSharedValue(false);
-  // Mount-cost gate ("opens too slow", Simon round 3): during the presentation
-  // only the ENTRY page mounts — the siblings render as empty slot views so
+  // Carousel-dots screen-Y (multi-impression only): the ACTIVE page publishes
+  // its dots' current top in SCREEN space here on every scroll frame — rest =
+  // just under the hero/identity (dots sit in content), scrolling clamps them
+  // up to the bar's bottom edge (they "convert into the title bar", Simon's
+  // fixes round). One parent overlay renders off this (no per-page copy, so
+  // they never slide horizontally with the pager — Codex P2). Seed off-screen.
+  const dotTop = useSharedValue(-999);
+  const dotStyle = useAnimatedStyle(() => ({ transform: [{ translateY: dotTop.value }] }));
   // the pager offsets hold. Mounting every DetailPage up front blocked the JS
   // thread before the open animation could even start. Content pointerEvents
   // are 'none' until fully open, so nothing can swipe to an unmounted page
@@ -358,6 +374,17 @@ export default function FeedImpression() {
     return () => sub.remove();
   }, [requestClose]);
 
+  // ── Header actions (overflow menu) ───────────────────────────────────────
+  // Crave, Had it too, Share, and owner Edit ALL land in the deferred column
+  // (08-feed §6/§7): Crave needs sourceRatingId + a non-membership endpoint +
+  // a Cravings list (a coherent later pass — the legacy (user,wineId) bookmark
+  // can't remember WHOSE impression you craved); Had it too needs the prefilled
+  // ciSheet; Share needs a per-impression permalink (none exists yet). So the
+  // menu is placeholders this pass — no live write from this screen.
+  const meId = authClient.useSession().data?.user.id;
+  const isOwner = !!meId && detail?.author.id === Number(meId);
+  const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+
   // Settle background — DIRECTION-AWARE (Simon, round 3e): on OPEN it snaps
   // opaque within the first ~12% of progress (1–2 frames), so the feed around
   // the post pops away instead of shining through the whole flight (the
@@ -489,6 +516,18 @@ export default function FeedImpression() {
   const reportTitle = useCallback((page: number, t: string) => {
     setTitles((prev) => (prev[page] === t ? prev : { ...prev, [page]: t }));
   }, []);
+  // Each mounted page registers its "scroll to About" imperative here; the
+  // collapsed-bar title tap drives the ACTIVE page's (the wine-name tap in the
+  // hero drives its own page directly). Keyed by page so a swipe targets the
+  // right one.
+  const scrollFns = useRef<Record<number, () => void>>({});
+  const registerScrollToAbout = useCallback((page: number, fn: (() => void) | null) => {
+    if (fn) scrollFns.current[page] = fn;
+    else delete scrollFns.current[page];
+  }, []);
+  const scrollActiveToAbout = useCallback(() => {
+    scrollFns.current[clampedActive]?.();
+  }, [clampedActive]);
 
   if (!item || !detail) {
     // Post not in the cache (deep link before the feed loaded, or trimmed
@@ -505,7 +544,7 @@ export default function FeedImpression() {
     );
   }
 
-  const { wines, author, createdAt, verb, place, momentName, sessionId } = detail;
+  const { wines, author, createdAt, place } = detail;
   const total = wines.length;
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
@@ -518,8 +557,11 @@ export default function FeedImpression() {
     .filter((p): p is GalleryPage => p.uri !== null);
 
   return (
-    // Transparent root — the feed shows through while the presentation runs.
-    // The settle bg below fades to opaque with progress.
+    // BottomSheetModalProvider in-screen (the app's per-screen pattern) —
+    // hosts the aromas "+N more" read sheet.
+    <BottomSheetModalProvider>
+    {/* Transparent root — the feed shows through while the presentation runs.
+        The settle bg below fades to opaque with progress. */}
     <View style={{ flex: 1 }}>
       {/* RNS dead-end — stops react-native-screens flipping the first
           descendant ScrollView's contentInsetAdjustmentBehavior never→automatic
@@ -590,17 +632,18 @@ export default function FeedImpression() {
             total={1}
             author={author}
             createdAt={createdAt}
-            verb={verb}
             place={place}
-            momentName={momentName}
-            sessionId={sessionId}
+            onPlacePress={momentCode ? enterMoment : undefined}
             onCollapse={(c) => reportCollapse(0, c)}
             onTitle={(t) => reportTitle(0, t)}
+            onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
             insetTop={insets.top}
             bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
             progress={progress}
             dismissing={dismissing}
             isClonePage={hasClone}
+            isActive
+            dotTop={dotTop}
             onClosed={closeDetail}
             onOpenGallery={() => setGalleryAt(0)}
             deferBody={!!source}
@@ -643,17 +686,18 @@ export default function FeedImpression() {
                     total={total}
                     author={author}
                     createdAt={createdAt}
-                    verb={verb}
                     place={place}
-                    momentName={momentName}
-                    sessionId={sessionId}
+                    onPlacePress={momentCode ? enterMoment : undefined}
                     onCollapse={(c) => reportCollapse(i, c)}
                     onTitle={(t) => reportTitle(i, t)}
+                    onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
                     insetTop={insets.top}
                     bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
                     progress={progress}
                     dismissing={dismissing}
                     isClonePage={hasClone && i === page}
+                    isActive={i === page}
+                    dotTop={dotTop}
                     onClosed={closeDetail}
                     onOpenGallery={() => setGalleryAt(i)}
                     deferBody={!!source && i === entryIndex}
@@ -674,7 +718,7 @@ export default function FeedImpression() {
           pointerEvents="none"
           style={[{ position: 'absolute', left: 0, top: 0, width: screenW, height: heroCloneH }, cloneTitleStyle]}
         >
-          <HeroTitle wine={activeWine!} index={clampedActive} total={detail.wines.length} />
+          <HeroTitle wine={activeWine!} index={clampedActive} />
         </Reanimated.View>
       ) : null}
 
@@ -701,15 +745,49 @@ export default function FeedImpression() {
 
       {/* Shared floating bar — over ALL pages (and over the clone), collapse
           tracks the active one. Fades with the presentation but does NOT rise
-          with the body (it's chrome, not content). */}
+          with the body (it's chrome, not content). The collapsed title taps
+          through to About (onTitlePress). */}
       <Reanimated.View style={[StyleSheet.absoluteFill, barStyle]} animatedProps={barPointerProps}>
         <FloatBar
           solid={barSolid}
           title={barSolid ? titles[page] ?? '' : ''}
           onBack={requestClose}
+          onTitlePress={scrollActiveToAbout}
           insetTop={insets.top}
+          photoless={activeWine ? !!activeWine._blind || !activeWine.imageUrl : false}
+          hasDots={total > 1}
+          onMenu={setMenuAnchor}
         />
       </Reanimated.View>
+
+      {/* Carousel dots — ONE parent overlay (never per-page, so they don't
+          slide with the pager; Codex P2). The active page drives `dotTop`
+          (rest under the hero → clamped up to the bar as you scroll: they keep
+          their place in content, then convert into the title bar — Simon's
+          fixes round). Uses the same accent/ink-faint colors as the feed's
+          carousel indicator. Fades with the presentation like the bar. */}
+      {total > 1 ? (
+        <Reanimated.View
+          pointerEvents="none"
+          style={[{ position: 'absolute', left: 0, right: 0, top: 0, alignItems: 'center' }, dotStyle, barStyle]}
+        >
+          <DotRow total={total} index={page} />
+        </Reanimated.View>
+      ) : null}
+
+
+      {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave,
+          Had it too (standalone), Share, and owner Edit are all DISABLED
+          placeholders this pass (each renders a "Soon" tag via MenuItem):
+          Crave/Share/Had-it-too are deferred coherent passes (08-feed §6/§7),
+          and no standalone impression editor exists. */}
+      <AnchoredMenu anchor={menuAnchor} onClose={() => setMenuAnchor(null)} right={16} minWidth={220}>
+        <MenuItem icon="heart" label="Crave" disabled />
+        {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
+        <MenuItem icon="share" label="Share" disabled />
+        {isOwner ? <MenuSeparator /> : null}
+        {isOwner ? <MenuItem icon="edit" label="Edit" disabled accessibilityLabel="Edit Impression" /> : null}
+      </AnchoredMenu>
 
       {/* fullscreen gallery — a Modal, so its place in this tree is chrome-
           independent. Closing lands the pager on the viewed impression. */}
@@ -720,56 +798,92 @@ export default function FeedImpression() {
         onClose={landPager}
       />
     </View>
+    </BottomSheetModalProvider>
   );
 }
 
-// The on-photo name block at the hero's bottom-left. Shared between the
-// DetailPage hero and the parent's traveling CLONE (which occludes the page's
-// copy mid-flight — the clone fades this in over the final settle so the
-// title glides instead of popping at coincidence). Positioning matches at
-// rest by construction: both containers end at the same hero frame.
-function HeroTitle({ wine, index, total }: { wine: SessionFeedWine; index: number; total: number }) {
+// The on-photo impression identity at the hero's bottom-left: wine
+// name/vintage, then producer/style. Attribution belongs to the IG-style
+// caption in the body. Shared with the traveling clone so the title handoff is
+// pixel-identical at rest.
+function HeroTitle({ wine, index, onNamePress }: { wine: SessionFeedWine; index: number; onNamePress?: () => void }) {
   const blind = !!wine._blind;
   const name = blind ? `Wine ${index + 1}` : wine.name;
-  return (
-    <View pointerEvents="none" style={{ position: 'absolute', left: GUTTER, right: GUTTER, bottom: 16 + radius.xl }}>
-      {total > 1 ? (
-        <VText variant="label" style={styles.heroPos}>
-          {`#${index + 1} of ${total}`}
-        </VText>
+  const sub = !blind ? [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ') : '';
+  // `box-none` when interactive (the page hero): the name Pressable takes its
+  // own taps (→ scroll to About) while every other touch falls through to the
+  // photo's gallery Pressable below. The traveling CLONE passes no onNamePress
+  // and stays fully non-interactive (decorative).
+  const nameTitle = (
+    <VText numberOfLines={1} style={[styles.heroName, { color: '#fff' }]}>
+      {name}
+      {!blind && wine.vintage ? (
+        <VText style={[styles.heroVintage, { color: 'rgba(255,255,255,0.7)' }]}>{` - ${wine.vintage}`}</VText>
       ) : null}
-      <VText style={[styles.heroName, { color: '#fff' }]}>
-        {name}
-        {!blind && wine.vintage ? (
-          <VText style={[styles.heroVintage, { color: 'rgba(255,255,255,0.7)' }]}>{` - ${wine.vintage}`}</VText>
-        ) : null}
-      </VText>
-      {!blind && (wine.producer || wine.type) ? (
-        <VText style={styles.heroSub}>
-          {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+    </VText>
+  );
+  return (
+    <View pointerEvents={onNamePress ? 'box-none' : 'none'} style={{ position: 'absolute', left: GUTTER, right: GUTTER, bottom: HERO_IDENTITY_SEAM_GAP + radius.xl }}>
+      {onNamePress ? (
+        <Pressable onPress={onNamePress} accessibilityRole="button" accessibilityLabel={`${name} — about this impression`}>
+          {nameTitle}
+        </Pressable>
+      ) : (
+        nameTitle
+      )}
+      {sub ? (
+        <VText numberOfLines={1} style={styles.heroSub}>
+          {sub}
         </VText>
       ) : null}
     </View>
   );
 }
 
-// The floating→solid bar. Transparent + glass back button over the hero; solid
-// bg + ink title once collapsed. Overlaid, absolute at top. (A lean read-only
-// bar — 02e's IrBar carries crave/menu/reveal we don't want here.)
+// The floating→solid bar. Overlaid, absolute at top. Two chrome modes:
+//   • over a PHOTO hero → transparent bar + dark-glass control pills + white
+//     icons, until collapse hands the ink title in (solid bg).
+//   • a PHOTOLESS impression → in-flow INK chrome from the start (transparent
+//     bg, no glass pills, ink icons) — matching 02e's photoless bar, since
+//     there's no photo to read glass against (Codex P2).
+// Actions: back · fading title (taps → About) · ⋯ overflow. The carousel dots
+// are NOT here — they're a parent overlay that glides up and clamps at the
+// bar's bottom edge (see the dotTop overlay in the parent).
 function FloatBar({
   solid,
   title,
   onBack,
+  onTitlePress,
   insetTop,
   pending,
+  photoless,
+  hasDots,
+  onMenu,
 }: {
   solid: boolean;
   title: string;
   onBack: () => void;
+  onTitlePress?: () => void;
   insetTop: number;
   pending?: boolean;
+  photoless?: boolean;
+  hasDots?: boolean;
+  onMenu?: (anchor: MenuAnchor) => void;
 }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
+  const menuBtnRef = useRef<View>(null);
+  // Glass chrome only over a photo before collapse; photoless + collapsed = ink.
+  const onGlass = !solid && !photoless;
+  const iconColor = onGlass ? '#fff' : theme.ink;
+  const titleText = phone.text('subhead');
+  // Same responsive control geometry as Moment impression detail's IrBar:
+  // back and ⋯ always share one circle in both glass and plain modes.
+  const glassSize = phone.size('heroAction');
+  const plainSize = phone.size('compactAction');
+  const circle = onGlass
+    ? { width: glassSize, height: glassSize, borderRadius: glassSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
+    : { width: plainSize, height: plainSize, alignItems: 'center' as const, justifyContent: 'center' as const };
   return (
     <View
       style={{
@@ -780,8 +894,9 @@ function FloatBar({
         zIndex: 8,
         paddingTop: insetTop,
         paddingHorizontal: 16,
-        paddingBottom: 4,
-        // Opaque when collapsed, transparent over the photo (ADR-0003).
+        paddingBottom: hasDots ? BAR_WITH_DOTS_BOTTOM_PAD : 4,
+        // Opaque when collapsed; transparent over the photo AND on a photoless
+        // page (its own bg shows through — an in-flow bar, ADR-0003).
         backgroundColor: solid ? theme.bg : 'transparent',
       }}
     >
@@ -791,16 +906,135 @@ function FloatBar({
           accessibilityRole="button"
           accessibilityLabel="Back"
           hitSlop={8}
-          style={[styles.backBtn, solid ? null : { backgroundColor: GLASS_FILL }]}
+          style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
         >
-          <Icon name="back" size={20} color={solid ? theme.ink : '#fff'} />
+          <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
         </Pressable>
         {solid && !pending ? (
-          <VText variant="subhead" numberOfLines={1} style={[styles.barTitle, { color: theme.ink }]}>
-            {title}
-          </VText>
-        ) : null}
+          // Collapsed title taps through to About (scroll-to-section).
+          <Pressable
+            onPress={onTitlePress}
+            accessibilityRole="button"
+            style={{ flex: 1, minWidth: 0, paddingHorizontal: 10 }}
+          >
+            <VText numberOfLines={1} style={[styles.barTitle, titleText, { color: theme.ink }]}>
+              {title}
+            </VText>
+          </Pressable>
+        ) : (
+          <View style={{ flex: 1 }} />
+        )}
+        <Pressable
+          ref={menuBtnRef}
+          onPress={() => menuBtnRef.current?.measureInWindow((_x, y, _w, h) => onMenu?.({ top: y, bottom: y + h }))}
+          accessibilityRole="button"
+          accessibilityLabel="More"
+          hitSlop={8}
+          style={({ pressed }) => ({ ...circle, marginLeft: 2, opacity: pressed ? 0.5 : 1 })}
+        >
+          <Icon name="more" size={phone.size('compactActionIcon')} color={iconColor} />
+        </Pressable>
       </View>
+    </View>
+  );
+}
+
+// The carousel dot row — reuses the feed's 6px dot / 5px gap, accent / ink-faint
+// colors, and 1.15 active scale.
+function DotRow({ total, index }: { total: number; index: number }) {
+  const { theme } = useTheme();
+  return (
+    <View style={styles.dots}>
+      {Array.from({ length: total }).map((_, i) => (
+        <View
+          key={i}
+          style={[styles.dot, { backgroundColor: i === index ? theme.accent : theme.inkFaint }, i === index && styles.dotOn]}
+        />
+      ))}
+    </View>
+  );
+}
+
+// Instagram-style attribution: avatar beside the first two caption lines,
+// then long copy returns to the full content width below it. Yoga has no CSS
+// float, so an invisible, identically-styled measure pass finds the second
+// line's word boundary; the visible copy is split there. With no note, the
+// author + metadata still occupy the avatar's two-line block.
+function CaptionByline({
+  author,
+  note,
+  place,
+  createdAt,
+  onPlacePress,
+}: {
+  author: FeedAuthor;
+  note: string | null;
+  place: string | null;
+  createdAt: string;
+  onPlacePress?: () => void;
+}) {
+  const cleanNote = note?.trim() ?? '';
+  const full = cleanNote ? `${author.name} ${cleanNote}` : author.name;
+  const [layout, setLayout] = useState<{ lines: number; splitAt: number | null }>({ lines: 0, splitAt: null });
+  const headEnd = layout.splitAt ?? full.length;
+  const tail = layout.splitAt === null ? '' : full.slice(layout.splitAt).trimStart();
+  const tailStart = tail ? full.length - tail.length : null;
+  const stamp = timeAgo(createdAt);
+  const metaInside = !cleanNote || layout.lines === 1;
+  const copySlice = (start: number, end: number) => (
+    <>
+      {start < author.name.length ? (
+        <VText style={styles.captionAuthor}>{full.slice(start, Math.min(end, author.name.length))}</VText>
+      ) : null}
+      {end > author.name.length ? full.slice(Math.max(start, author.name.length), end) : null}
+    </>
+  );
+  const meta = place || stamp ? (
+    <VText variant="caption" color="inkSoft" numberOfLines={1} style={styles.captionMeta}>
+      {place ? (
+        <VText
+          variant="caption"
+          color={onPlacePress ? 'accent' : 'inkSoft'}
+          onPress={onPlacePress}
+          style={onPlacePress ? styles.captionMetaLink : undefined}
+        >
+          {place}
+        </VText>
+      ) : null}
+      {place && stamp ? ' · ' : ''}
+      {stamp}
+    </VText>
+  ) : null;
+
+  return (
+    <View style={styles.captionByline}>
+      <View style={styles.captionAvatar}>
+        <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+      </View>
+      {/* Measure at the avatar-constrained width, with the real nested weight. */}
+      <VText
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        pointerEvents="none"
+        onTextLayout={(e) => {
+          const lines = e.nativeEvent.lines;
+          const splitAt = lines.length > 2
+            ? lines.slice(0, 2).reduce((length, line) => length + line.text.length, 0)
+            : null;
+          setLayout((prev) => (prev.lines === lines.length && prev.splitAt === splitAt ? prev : { lines: lines.length, splitAt }));
+        }}
+        style={[styles.captionText, styles.captionMeasure]}
+      >
+        <VText style={styles.captionAuthor}>{author.name}</VText>
+        {cleanNote ? ` ${cleanNote}` : ''}
+      </VText>
+
+      <View style={styles.captionLead}>
+        <VText style={styles.captionText}>{copySlice(0, headEnd)}</VText>
+        {metaInside ? meta : null}
+      </View>
+      {tailStart !== null ? <VText style={styles.captionText}>{copySlice(tailStart, full.length)}</VText> : null}
+      {!metaInside ? meta : null}
     </View>
   );
 }
@@ -816,10 +1050,8 @@ function DetailPage({
   total,
   author,
   createdAt,
-  verb,
   place,
-  momentName,
-  sessionId,
+  onPlacePress,
   onCollapse,
   onTitle,
   insetTop,
@@ -827,8 +1059,11 @@ function DetailPage({
   progress,
   dismissing,
   isClonePage,
+  isActive,
+  dotTop,
   onClosed,
   onOpenGallery,
+  onRegisterScrollToAbout,
   deferBody,
 }: {
   wine: SessionFeedWine;
@@ -836,12 +1071,13 @@ function DetailPage({
   total: number;
   author: FeedAuthor;
   createdAt: string;
-  verb: string;
   place: string | null;
-  momentName: string | null;
-  sessionId: number | null;
+  onPlacePress?: () => void;
   onCollapse: (collapsed: boolean) => void;
   onTitle: (title: string) => void;
+  // Register this page's "scroll to About" imperative up to the parent (so the
+  // collapsed-bar title can drive the active page). null on unmount.
+  onRegisterScrollToAbout: (fn: (() => void) | null) => void;
   insetTop: number;
   bottomPad: number;
   // Shared presentation progress (see the header comment): the pan writes it,
@@ -853,6 +1089,12 @@ function DetailPage({
   // True when the parent's hero clone represents THIS page — the real hero
   // image stays transparent while the clone is mid-flight.
   isClonePage: boolean;
+  // True when THIS page is the active pager slot — only the active page drives
+  // the shared carousel-dots Y (a swiped-away page must not fight it).
+  isActive: boolean;
+  // Parent-owned dots screen-Y (multi-impression): this page writes its dots'
+  // current top (rest content-Y minus scroll, clamped to the bar) while active.
+  dotTop: SharedValue<number>;
   // Pop the route (called after the dismiss animation lands at 0).
   onClosed: () => void;
   // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
@@ -869,10 +1111,12 @@ function DetailPage({
   const { theme } = useTheme();
   const { width: screenW, height: windowH } = useWindowDimensions();
   const axisColor = useFlavourColors();
-  const { code: momentCode, enter: enterMoment } = useEnterableMoment(sessionId);
   const blind = !!wine._blind;
   const heroH = Math.round(windowH * HERO_RATIO);
   const BAR_H = barHeight(insetTop);
+  // Docked dots get their own compact second line, tucked just below the 44pt
+  // title-row frame. The painted bar leaves another 12pt below.
+  const BAR_DOT_DOCK = insetTop + BAR_ROW + BAR_DOT_TOP_PAD;
 
   // Collapse is MEASURED: flip solid when the on-photo name's bottom scrolls
   // under the bar (never a magic constant — the hero is proportional height).
@@ -890,9 +1134,34 @@ function DetailPage({
     const id = requestAnimationFrame(() => setBodyReady(true));
     return () => cancelAnimationFrame(id);
   }, [bodyReady]);
+  // The dots' rest screen-Y minus scroll = their live screen-Y, clamped so
+  // they never rise above the bar's bottom edge (there they've "converted into
+  // the title bar"). Rest position:
+  //   • photo → centered BETWEEN the measured identity bottom and the card
+  //     edge (heroH), matching the approved mockup's midpoint rule.
+  //   • photoless → just under the in-flow identity block.
+  const hasHeroPhoto = !blind && !!wine.imageUrl;
+  const dotRestY = useCallback(() => {
+    if (!hasHeroPhoto) return nameBottom.current + space.sm;
+    const identityBottom = nameBottom.current || heroH - HERO_IDENTITY_SEAM_GAP;
+    return Math.round((identityBottom + heroH - DOT_SIZE) / 2);
+  }, [hasHeroPhoto, heroH]);
+  const writeDotTop = useCallback(
+    (y: number) => {
+      if (total <= 1 || !isActive) return;
+      dotTop.value = Math.max(BAR_DOT_DOCK, dotRestY() - y);
+    },
+    [total, isActive, dotTop, dotRestY, BAR_DOT_DOCK],
+  );
+  // Seed / re-seed the dots when this page becomes active (or mounts) so a
+  // swipe lands them at the right rest spot before the first scroll frame.
+  useEffect(() => {
+    if (isActive) writeDotTop(0);
+  }, [isActive, writeDotTop]);
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const y = e.nativeEvent.contentOffset.y;
     onCollapse(y >= nameBottom.current - BAR_H);
+    writeDotTop(y);
     // Same inequality as the pan's arm check (≤ 1) — a fractional iOS rest
     // offset must not leave bounce on while the dismiss arms.
     setAtTop((prev) => {
@@ -906,6 +1175,19 @@ function DetailPage({
   // must exist before the builder runs (the PillTabBar crash class).
   const scrollRef = useAnimatedRef<Reanimated.ScrollView>();
   const scrollY = useScrollOffset(scrollRef);
+  // About-section content-Y (measured onLayout) + the imperative that scrolls
+  // to it — driven by a wine-name tap (this page) or the collapsed-bar title
+  // (parent, via the registered fn). Offset up by the bar so the heading
+  // clears it.
+  const aboutY = useRef(0);
+  const bodyY = useRef(0); // the body View's content-space top (hero-dependent)
+  const scrollToAbout = useCallback(() => {
+    scrollRef.current?.scrollTo({ y: Math.max(0, aboutY.current - BAR_H - 8), animated: true });
+  }, [scrollRef, BAR_H]);
+  useEffect(() => {
+    onRegisterScrollToAbout(scrollToAbout);
+    return () => onRegisterScrollToAbout(null);
+  }, [onRegisterScrollToAbout, scrollToAbout]);
   // Armed = the touch went down while the page sat at the top. Without it, a
   // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
   // the accumulated translation.
@@ -978,8 +1260,7 @@ function DetailPage({
   const name = blind ? `Wine ${index + 1}` : wine.name;
   const hasScore = wine.score != null && wine.score > 0;
   const axes = buildWheelAxes(wine.flavors, wine.type, axisColor);
-  const tastes = topFlavours(wine.flavors, wine.type, axisColor);
-  const hasPhoto = !blind && !!wine.imageUrl;
+  const hasPhoto = hasHeroPhoto;
   // Report the bar title up AFTER commit (never call a parent setState during
   // render). Re-runs if the name changes.
   useEffect(() => {
@@ -1002,16 +1283,18 @@ function DetailPage({
           bounces={!atTop}
           contentContainerStyle={{ paddingBottom: bottomPad }}
         >
-      {/* HERO — full-bleed photo under the status bar (or a masked/no-photo name
-          block). The photo runs radius.xl past the seam so the rounded body
-          panel below overlaps it. */}
+      {/* HERO — photo impressions keep the full-bleed photo under the status
+          bar with the rounded body overlapping it (Simon: rounded overlap on
+          photo only). Photoless/masked impressions are a CONTINUOUS page (02e
+          structure): the identity flows in-body, no tinted stage, no overlap. */}
       {hasPhoto ? (
         <View
           style={{ height: heroH + radius.xl, overflow: 'hidden' }}
-          onLayout={(e) =>
-            // name-bottom in content space ≈ hero bottom minus the caption inset.
-            (nameBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height - 16 - radius.xl)
-          }
+          onLayout={(e) => {
+            // Name-bottom in content space matches HeroTitle's seam inset.
+            nameBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height - HERO_IDENTITY_SEAM_GAP - radius.xl;
+            if (isActive) writeDotTop(0); // seat the dots now the rest-Y is known
+          }}
         >
           <Pressable
             accessibilityRole="button"
@@ -1024,146 +1307,136 @@ function DetailPage({
               <Image source={{ uri: wine.imageUrl! }} style={{ width: '100%', height: '100%' }} contentFit="cover" alt={name} />
             </Reanimated.View>
           </Pressable>
-          {/* Scrim + title hide WITH the image: the clone travels BENEATH the
+          {/* Scrim + identity hide WITH the image: the clone travels BENEATH the
               content layer, and a statically-positioned scrim/title over a
               traveling photo reads as floating chrome. The clone carries the
-              scrim crossfade; the parent's title overlay fades the name in
-              near settle. All hand off at coincidence. */}
-          <Reanimated.View pointerEvents="none" style={[StyleSheet.absoluteFill, heroImgStyle]}>
-            <LinearGradient colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
-            <HeroTitle wine={wine} index={index} total={total} />
+              scrim crossfade; the parent's title overlay fades the identity in
+              near settle. All hand off at coincidence. `box-none` so only the
+              name Pressable inside HeroTitle catches taps (→ scroll to About);
+              every other touch falls through to the photo's gallery Pressable.
+              The gradient stays pointerEvents none. */}
+          <Reanimated.View pointerEvents="box-none" style={[StyleSheet.absoluteFill, heroImgStyle]}>
+            <LinearGradient pointerEvents="none" colors={HERO_SCRIM} style={StyleSheet.absoluteFill} />
+            <HeroTitle wine={wine} index={index} onNamePress={scrollToAbout} />
           </Reanimated.View>
         </View>
-      ) : (
-        // No-photo / masked hero: a dark name block that clears the status bar
-        // (no photo to run under it). Same measured collapse.
-        <View
-          style={{ backgroundColor: theme.surfaceSunk, paddingTop: insetTop + BAR_ROW + 16, paddingHorizontal: GUTTER, paddingBottom: 20 + radius.xl }}
-          onLayout={(e) => (nameBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height - radius.xl)}
-        >
-          {total > 1 ? (
-            <VText variant="label" color="inkSoft" style={styles.heroPosDark}>
-              {`#${index + 1} of ${total}`}
-            </VText>
-          ) : null}
-          <VText style={[styles.heroName, { color: theme.ink }]}>{name}</VText>
-          {blind ? (
-            <VText variant="small" color="inkSoft" style={{ marginTop: 4 }}>
-              Hidden until the host reveals it
-            </VText>
-          ) : (wine.producer || wine.type) ? (
-            <VText variant="small" color="inkSoft" style={{ marginTop: 4 }}>
-              {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
-            </VText>
-          ) : null}
-        </View>
-      )}
+      ) : null}
 
-      {/* BODY — rounded panel overlapping the hero, carrying the rating. */}
+      {/* BODY — for a photo impression a rounded panel overlapping the hero;
+          for a photoless one a continuous page (flat, no overlap, no radius).
+          Its content-space top feeds the About scroll-target math. */}
       <View
-        style={{
-          marginTop: -radius.xl,
-          backgroundColor: theme.bg,
-          borderTopLeftRadius: radius.xl,
-          borderTopRightRadius: radius.xl,
-          paddingHorizontal: GUTTER,
-          paddingTop: space.lg,
-        }}
+        onLayout={(e) => (bodyY.current = e.nativeEvent.layout.y)}
+        style={
+          hasPhoto
+            ? {
+                marginTop: -radius.xl,
+                backgroundColor: theme.bg,
+                borderTopLeftRadius: radius.xl,
+                borderTopRightRadius: radius.xl,
+                paddingHorizontal: GUTTER,
+                paddingTop: space.lg,
+              }
+            : { backgroundColor: theme.bg, paddingHorizontal: GUTTER, paddingTop: insetTop + BAR_ROW + 12 }
+        }
       >
-        {/* dots — IN-CONTENT under the hero (Simon), so no collapse question. */}
-        {total > 1 ? (
-          <View style={styles.dots}>
-            {Array.from({ length: total }).map((_, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.dot,
-                  { backgroundColor: i === index ? theme.accent : theme.inkFaint },
-                  i === index && styles.dotOn,
-                ]}
-              />
-            ))}
+        {/* Photoless impression identity in-flow. Attribution now lives in the
+            IG-style caption below, just like the photo version. The body is
+            the FIRST scroll child (no hero), so this block's body-relative y
+            IS its content-space y — measured here for bar collapse. */}
+        {!hasPhoto ? (
+          <View
+            style={{ marginBottom: space.md }}
+            onLayout={(e) => {
+              nameBottom.current = bodyY.current + e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+              if (isActive) writeDotTop(0);
+            }}
+          >
+            {/* name taps → scroll to About (only when there's an About, i.e.
+                non-blind) */}
+            <Pressable onPress={blind ? undefined : scrollToAbout} disabled={blind} accessibilityRole={blind ? undefined : 'button'}>
+              <VText numberOfLines={1} style={[styles.heroName, { color: theme.ink }]}>
+                {name}
+                {!blind && wine.vintage ? (
+                  <VText color="inkSoft" style={styles.heroVintageDark}>{` - ${wine.vintage}`}</VText>
+                ) : null}
+              </VText>
+            </Pressable>
+            {blind ? (
+              <VText variant="small" color="inkSoft" style={{ marginTop: 2 }}>
+                Hidden until the host reveals it
+              </VText>
+            ) : (wine.producer || wine.type) ? (
+              <VText numberOfLines={1} variant="small" color="inkSoft" style={{ marginTop: 2 }}>
+                {[wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
+              </VText>
+            ) : null}
           </View>
         ) : null}
 
-        {/* full header — avatar · name + verb · place · time (mirrors the feed
-            card's header, in-content below the dots so the hero stays full-bleed;
-            Simon). The moment name (the "place" of a session) is TAPPABLE when the
-            viewer was a member (momentCode from their own sessions). */}
-        <View style={styles.header}>
-          <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
-          <View style={styles.headerWho}>
-            <VText variant="body" numberOfLines={1}>
-              <VText variant="body" style={styles.attribName}>
-                {author.name}
-              </VText>
-              <VText variant="body" color="inkSoft">
-                {` ${verb}`}
-              </VText>
-            </VText>
-            <VText variant="caption" color="inkSoft" numberOfLines={1}>
-              {/* place: for a session it's the (tappable) moment name; for a
-                  standalone it's the venue. Time always trails. */}
-              {place && momentName && momentCode ? (
-                <VText variant="caption" color="accent" style={styles.attribName} onPress={enterMoment}>
-                  {place}
-                </VText>
-              ) : place ? (
-                place
-              ) : null}
-              {place ? ' · ' : ''}
-              {timeAgo(createdAt)}
-            </VText>
-          </View>
-        </View>
+        {/* Photoless dots rest below the in-flow identity and need explicit
+            clearance. Photo dots live wholly above the card seam, so adding
+            this spacer there only pushes the score unnecessarily far down. */}
+        {total > 1 && !hasPhoto ? <View style={{ height: space.md }} /> : null}
 
-        {/* Everything below the header is the DEFERRED body — the wheel SVG is
-            the mount cost the shell-first commit keeps off the tap path. */}
+        {/* Everything below is the DEFERRED body — the wheel SVG is the mount
+            cost the shell-first commit keeps off the tap path. IG-caption
+            order: enlarged score · avatar-led author/note · divider · wheel
+            (centered) · aromas (centered) · About. */}
         {bodyReady ? (
           <>
-        {/* score + word */}
+        {/* Enlarged score + word — the IG-caption version's lead. */}
         {hasScore ? (
-          <View style={styles.scoreRow}>
-            <StarScore value={wine.score!} size={22} />
-            <VText variant="body" color="inkSoft" style={{ marginLeft: 10 }}>
+          <View style={styles.captionScore}>
+            <StarScore value={wine.score!} size={27} />
+            <VText variant="body" color="inkSoft" style={{ marginLeft: 9 }}>
               {scoreWord(wine.score!)}
             </VText>
           </View>
         ) : null}
 
-        {/* big labelled wheel */}
+        {/* Attribution never disappears: without a note this still renders the
+            avatar, author, place, and time. Long notes wrap under the avatar. */}
+        <CaptionByline
+          author={author}
+          note={wine.notes}
+          place={place}
+          createdAt={createdAt}
+          onPlacePress={onPlacePress}
+        />
+
+        {/* divider before the structure/aroma profile */}
+        {axes.length > 0 || wine.aromas?.length ? (
+          <View style={[styles.ratingRule, { borderTopColor: theme.rule }]} />
+        ) : null}
+
+        {/* centered structure wheel (no heading). Sized to 232 to MATCH the
+            Compare wheel — a bigger wheel makes the fixed 14px label gap read
+            proportionally tighter (Simon's insight, 2026-07-13), no shared
+            LABEL_OFFSET change. maxWidth scales it down on narrow phones. */}
         {axes.length > 0 ? (
           <View style={styles.wheelWrap}>
-            <StructureWheel axes={axes} size={182} labels maxWidth={screenW - GUTTER * 2} />
+            <StructureWheel axes={axes} size={232} labels maxWidth={screenW - GUTTER * 2} />
           </View>
         ) : null}
 
-        {/* "Tastes like" chips */}
-        {tastes.length > 0 ? (
-          <View style={{ marginTop: space.sm }}>
-            <TastesLike flavours={tastes} chipBg="surfaceSunk" />
-          </View>
-        ) : null}
-
-        {/* Aroma descriptor chips — the author's selections, read-only
-            (grouped display via AromaReadChips). Shown for blind too: aromas
-            are the taster's own perception, never wine identity (§7). */}
+        {/* centered aroma badges (no heading). Read-only, two-line overflow +
+            sheet via AromaReadChips collapse; shown for blind too (aromas are
+            the taster's own perception, never wine identity, §7). */}
         {wine.aromas?.length ? (
-          <View style={{ marginTop: space.sm }}>
-            <AromaReadChips aromas={wine.aromas} lead="Aromas" />
+          <View style={{ marginTop: axes.length > 0 ? space.md : 0, alignItems: 'center' }}>
+            <AromaReadChips aromas={wine.aromas} collapse />
           </View>
-        ) : null}
-
-        {/* taste note */}
-        {wine.notes ? (
-          <VText variant="body" color="ink" style={styles.note}>
-            {wine.notes}
-          </VText>
         ) : null}
 
         {/* About this impression — identity metadata; hidden entirely for blind
-            (it's all identity) and when the wine carries none. */}
-        {!blind ? <AboutBlock wine={wine} /> : null}
+            (it's all identity) and when the wine carries none. Its content-Y
+            (bodyY + this block's body-relative y) drives the name-tap scroll. */}
+        {!blind ? (
+          <View onLayout={(e) => (aboutY.current = bodyY.current + e.nativeEvent.layout.y)}>
+            <AboutBlock wine={wine} />
+          </View>
+        ) : null}
           </>
         ) : null}
           </View>
@@ -1173,49 +1446,67 @@ function DetailPage({
   );
 }
 
-// About this impression — Origin · Variety · Process rows + description +
-// "Where to buy". Renders only what the wine carries; the block drops when
-// there's no metadata (e.g. a standalone check-in with only country/grape shows
-// just those rows). Mirrors 02e's AboutBlock, read-only.
+// About this impression — the repeated wine identity (name/vintage + producer)
+// then its description + metadata rows (Origin · Variety · Process) +
+// "Where to buy". Renders the identity always (the block is the wine's own
+// record); the metadata rows/description drop when the wine carries none.
+// Only rendered for non-blind impressions (identity is real). Read-only.
 function AboutBlock({ wine }: { wine: SessionFeedWine }) {
   const { theme } = useTheme();
+  const phone = usePhoneTokens();
   const country = wine.country ? countryName(wine.country) || wine.country : '';
   const origin = [wine.region, country].filter(Boolean).join(' · ');
-  const rows: Array<[string, string]> = [];
-  if (origin) rows.push(['Origin', origin]);
-  if (wine.grape) rows.push(['Variety', wine.grape]);
-  if (wine.vinification) rows.push(['Process', wine.vinification]);
-  const hasTrailer = !!wine.description || !!wine.purchaseUrl;
-  if (rows.length === 0 && !hasTrailer) return null;
+  // Values render via ClampText (grape/vinification can be long) — same as 02e:
+  // origin is a short join (plain), grape/vinification clamp to 2 lines.
+  const rows: Array<[string, React.ReactNode]> = [];
+  if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
+  if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
+  if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
+  const producerLine = [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ');
   return (
-    <View style={styles.about}>
-      <VText variant="label" color="inkSoft" style={styles.aboutLabel}>
+    // Separator rule ABOVE the section (Simon's fixes round) — a full-width
+    // hairline between the rating profile and About.
+    <View style={[styles.about, { borderTopColor: theme.rule }]}>
+      <VText variant="label" color="inkSoft" style={styles.sectionLabel}>
         About this impression
       </VText>
+      {/* repeated identity: name/vintage + producer/style (heading-scale, for
+          parity with 02e's `phone.text('title')`/small) */}
+      <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('heading') }}>
+        {wine.name}
+        {wine.vintage ? <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_400Regular', ...phone.text('heading') }}>{` - ${wine.vintage}`}</VText> : null}
+      </VText>
+      {producerLine ? (
+        <VText color="inkSoft" style={{ marginTop: 3, ...phone.text('small') }}>
+          {producerLine}
+        </VText>
+      ) : null}
+      {/* description follows the identity — clamped to 3 lines w/ more/less */}
+      {wine.description ? (
+        <View style={{ marginTop: 12 }}>
+          <ClampText text={wine.description} lines={3} />
+        </View>
+      ) : null}
+      {/* then the metadata rows */}
       {rows.map(([label, value], i) => {
-        const lastRow = !hasTrailer && i === rows.length - 1;
+        // Last row drops its divider when nothing (the buy link) follows it.
+        const lastRow = !wine.purchaseUrl && i === rows.length - 1;
         return (
-          <View key={label} style={[styles.aboutRow, { borderBottomColor: theme.ruleSoft, borderBottomWidth: lastRow ? 0 : 1 }]}>
-            <VText variant="small" color="inkSoft" style={styles.aboutKey}>
+          <View key={label} style={[styles.aboutRow, i === 0 && rows.length ? { marginTop: 4 } : null, { borderBottomColor: theme.ruleSoft, borderBottomWidth: lastRow ? 0 : 1 }]}>
+            <VText color="inkSoft" style={[styles.aboutKey, phone.text('small')]}>
               {label}
             </VText>
-            <VText variant="small" color="ink" style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium' }}>
-              {value}
-            </VText>
+            <View style={{ flex: 1 }}>{value}</View>
           </View>
         );
       })}
-      {wine.description ? (
-        <VText variant="small" color="inkSoft" style={{ marginTop: rows.length ? 12 : 0 }}>
-          {wine.description}
-        </VText>
-      ) : null}
       {wine.purchaseUrl ? (
         <Pressable
           onPress={() => WebBrowser.openBrowserAsync(wine.purchaseUrl!).catch(() => {})}
-          style={{ marginTop: 12 }}
+          style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 6 }}
         >
-          <VText variant="small" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+          <Icon name="link" size={15} color={theme.accent} />
+          <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
             Where to buy
           </VText>
         </Pressable>
@@ -1229,26 +1520,35 @@ const styles = StyleSheet.create({
   // back button's touch target isn't clipped short: RN clips hitSlop to the
   // PARENT's frame — a 44pt target needs a ≥44pt parent, not more slop
   // (apps/mobile CLAUDE.md gotcha).
-  barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  backBtn: { width: 34, height: 34, borderRadius: 17, alignItems: 'center', justifyContent: 'center' },
-  barTitle: { flex: 1, fontFamily: 'InstrumentSans_600SemiBold' },
+  barRow: { height: 44, marginVertical: (BAR_ROW - 44) / 2, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  barTitle: { fontFamily: 'InstrumentSans_600SemiBold' },
   clone: { position: 'absolute', left: 0, top: 0, overflow: 'hidden' },
-  heroPos: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', color: 'rgba(255,255,255,0.85)' },
-  heroPosDark: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase' },
-  heroName: { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 31, marginTop: 4 },
+  // Hero identity title: 26/600. Vintage trails in the muted weight; the dark
+  // variant is for the photoless (ink-on-page) identity.
+  heroName: { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 26, lineHeight: 31 },
   heroVintage: { fontFamily: 'InstrumentSans_400Regular', fontSize: 26, lineHeight: 31 },
+  heroVintageDark: { fontFamily: 'InstrumentSans_400Regular', fontSize: 26, lineHeight: 31 },
   heroSub: { fontFamily: 'InstrumentSans_400Regular', fontSize: 14, color: 'rgba(255,255,255,0.82)', marginTop: 2 },
-  dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5, paddingBottom: space.md },
-  dot: { width: 6, height: 6, borderRadius: 999 },
+  // Dot row — feed dims/spacing/colors (DotRow, the gliding parent overlay).
+  dots: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 5 },
+  dot: { width: DOT_SIZE, height: DOT_SIZE, borderRadius: 999 },
   dotOn: { transform: [{ scale: 1.15 }] },
-  header: { flexDirection: 'row', alignItems: 'center', gap: space.xs, marginBottom: space.md },
-  headerWho: { flex: 1, minWidth: 0 },
-  attribName: { fontFamily: 'InstrumentSans_600SemiBold' },
-  scoreRow: { flexDirection: 'row', alignItems: 'center', marginBottom: space.md },
+  captionScore: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  captionByline: { position: 'relative', width: '100%' },
+  captionAvatar: { position: 'absolute', top: 1, left: 0 },
+  captionLead: { marginLeft: 48, minHeight: 38 },
+  captionText: { fontFamily: 'InstrumentSans_400Regular' },
+  captionAuthor: { fontFamily: 'InstrumentSans_600SemiBold' },
+  captionMeta: { marginTop: 3 },
+  captionMetaLink: { fontFamily: 'InstrumentSans_600SemiBold' },
+  captionMeasure: { position: 'absolute', left: 48, right: 0, opacity: 0 },
   wheelWrap: { alignItems: 'center', marginTop: space.xs },
-  note: { marginTop: space.lg, lineHeight: 22 },
-  about: { marginTop: space.lg },
-  aboutLabel: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 6 },
+  // Divider between the note and the structure/aroma profile.
+  ratingRule: { marginTop: space.lg, paddingTop: space.lg, borderTopWidth: 1 },
+  // About block — SEPARATOR above (full-width hairline), then padding.
+  about: { marginTop: space.lg, paddingTop: space.lg, borderTopWidth: 1 },
+  // Section-title label (About block).
+  sectionLabel: { fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 6 },
   aboutRow: { flexDirection: 'row', gap: 14, paddingVertical: 9 },
   aboutKey: { width: 78 },
 });

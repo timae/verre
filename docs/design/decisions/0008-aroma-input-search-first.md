@@ -92,3 +92,20 @@ subtle at 13.5pt), ink-coloured words (family words read better). A leading
 round-mark dot (ListPicker's armed vocabulary) remains in the dev gallery as
 an optional composable, not shipped. The gallery keeps three comparison
 modes (Ruled / old Solid / Map) under the "Aroma badges" section.
+
+## Addendum — read badges are compact (Simon, 2026-07-13)
+
+READ surfaces render the badge at a reduced height: `vPad 0` (a height axis
+on `AromaChip`/`MoreChipsPill`, mapped by `badgeVMetrics` in `parts.tsx`) —
+inner vertical padding floors at 0, the label keeps its inherited 23pt line
+box (the body variant's lineHeight, which the badge's 13.5pt font does NOT
+override; `badgeVMetrics` only tightens the line box for NEGATIVE vPad, so
+at 0 it's untouched). Net height ≈ 23pt line + 2×1.5pt outer border band =
+26pt, vs the write default's ~35pt at vPad 4.5. WRITE surfaces (the rating
+page's selected chips, search results, pickers) keep the default 4.5.
+Applied inside `AromaReadChips` (feed impression detail now; compare when it
+grows aromas — §8 roll-up), never per call site. Picked on the dev gallery's
+badge-height slider (−4…12, both shipped values marked); the negative range
+continues the shrink past the padding floor by tightening the line box (each
+−1 → −2pt, matching the +1 → +2pt padding rate), so the slider is continuous
+through 0.

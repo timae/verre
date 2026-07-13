@@ -24,7 +24,7 @@ import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
 import { NonPhotoHero } from '@/components/feed/NonPhotoHero';
-import { topFlavours } from '@/lib/flavourAxes';
+import { hasRatedAxes } from '@/lib/flavourAxes';
 import { frameAspectFor, rawAspect } from '@/lib/feedAspect';
 import { FEED_PANEL_SCRIM, GUTTER } from '@/lib/layout';
 import { registerFeedLanding, setFeedTransitionSource } from '@/lib/feedTransition';
@@ -131,7 +131,7 @@ export function SessionFeedCard({
   // screen-tall square of empty space (the 22:44 device bug). A blind wine is
   // NOT special here — it draws its real flavors like any wine (identity is
   // masked in the panel), so the plain flavour check covers it.
-  const anyWheel = !anyPhoto && wines.some((w) => topFlavours(w.flavors, w.type, axisColor).length > 0);
+  const anyWheel = !anyPhoto && wines.some((w) => hasRatedAxes(w.flavors, w.type));
   const nonPhotoSlideH = anyWheel ? photoW : undefined;
 
   // Carousel frame rule (Simon): the TALLEST photo wins, clamped to the band;
