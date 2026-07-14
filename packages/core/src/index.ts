@@ -99,3 +99,8 @@ export {
   type AromaTierPath,
 } from './aroma/taxonomy'
 export { searchAromas, type AromaSearchResult } from './aroma/search'
+export {
+  aggregateAromaRollup,
+  type AromaRollup,
+  type AromaRollupNode,
+} from './aroma/aromaAggregate'

@@ -7,7 +7,13 @@ import Svg, { Path } from 'react-native-svg';
 import { Icon } from '@/components/ui/Icon';
 import { alpha } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
+import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, type AromaSelection } from '@verre/core';
+// Types are erased at compile → safe as a static import; the RUNTIME selector is
+// lazy-required inside __DEV__ below so Metro's DCE keeps the gallery-only
+// consensus code out of the production bundle (this screen redirects in prod,
+// but a static import resolves BEFORE that runtime return — same reason the
+// glass/@expo/ui labs are require()'d).
+import type { AromaConsensusOpts, ConsensusDisplayNode } from '@/components/moments/aromaConsensus';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { AromaChip, useTapOrDouble } from '@/components/scoring/aroma/parts';
@@ -60,6 +66,18 @@ if (__DEV__) {
     LabGlass = null;
   }
 }
+// The gallery-only aroma consensus selector (experimental §8 compare roll-up).
+// Pure TS, but require()'d under __DEV__ so it never enters the production graph
+// (the redirect at the top of DevGallery runs too late — a static import would
+// already have pulled it in).
+let labAromaConsensus: typeof import('@/components/moments/aromaConsensus').aromaConsensus | null = null;
+if (__DEV__) {
+  // Relative (not '@/') so Metro resolves the require the same way regardless of
+  // tsconfig-paths handling — this file is under src/app/(tabs)/you/.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  labAromaConsensus = (require('../../../components/moments/aromaConsensus') as typeof import('@/components/moments/aromaConsensus')).aromaConsensus;
+}
+
 const LAB_W = 150;
 const LAB_H = 64;
 function LabBackdrop() {
@@ -391,6 +409,139 @@ function DevSlider({ value, onChange, min, max, step }: { value: number; onChang
         />
       </View>
     </GestureDetector>
+  );
+}
+
+// ── Aroma roll-up lab (compare §8) ───────────────────────────────────────────
+// Renders the EXPERIMENTAL role-based consensus TREE over the ten pinned panels
+// (P1–P10) so Simon can rule its two knobs (primary bar + peak bar) against the
+// real spread. The aggregate is settled (@verre/core); aromaConsensus is
+// gallery-owned until the knobs are ruled, then moves to core. The math is
+// separately pinned in .local/test-env/scripts/aroma-aggregate-units.ts (the
+// gallery must not present unverified calculations).
+const aS = (a: string, m: string | null = null): AromaSelection => ({ a, m });
+const rep = (n: number, f: () => AromaSelection[]) => Array.from({ length: n }, f);
+const ROLLUP_PANELS: { title: string; note: string; tasters: AromaSelection[][] }[] = [
+  { title: 'P1 · heading pruned (1 child)', note: '4 straw / 2 rasp / 2 lingon → Berry 8 [P] ↳ Strawberry 4 (Fruity removed)', tasters: [...rep(4, () => [aS('strawberry')]), ...rep(2, () => [aS('raspberry')]), ...rep(2, () => [aS('lingonberry')])] },
+  { title: 'P2 · context › primary › peak', note: '4 straw / 2 berry / 2 fruity → Fruity 8 [C] › Berry 6 [P] ↳ Strawberry 4', tasters: [...rep(4, () => [aS('strawberry')]), ...rep(2, () => [aS('fruity.berry')]), ...rep(2, () => [aS('fruity')])] },
+  { title: 'P3 · no strong agreement', note: '9-way rasp / veg / chem → three secondary roots; Chemical 3 > Skunky 2 survives', tasters: [aS('raspberry'), aS('raspberry'), aS('raspberry'), aS('vegetal'), aS('vegetal'), aS('cucumber'), aS('skunky'), aS('skunky'), aS('petrol')].map((s) => [s]) },
+  { title: 'P4 · heading kept (2 children)', note: '3× (distinct berry + citrus) → Fruity H › { Citrus 3 [P] · Berry 3 [P] }', tasters: [[aS('strawberry'), aS('lemon')], [aS('raspberry'), aS('lime')], [aS('blackberry'), aS('grapefruit')]] },
+  { title: 'P5 · compounding killed', note: '4 fruity / 2 berry / 2 straw → Fruity 8 [P] ↳ Berry 4 ↳ Strawberry 2 (nested peaks)', tasters: [...rep(4, () => [aS('fruity')]), ...rep(2, () => [aS('fruity.berry')]), ...rep(2, () => [aS('strawberry')])] },
+  { title: 'P6 · heading kept, collapse-to-leaf', note: '6×(straw+lemon)+cuke+petrol → Fruity H › { Lemon 6 [P] · Strawberry 6 [P] }', tasters: [...rep(6, () => [aS('strawberry'), aS('lemon')]), [aS('cucumber')], [aS('petrol')]] },
+  { title: 'P7 · primary + strong secondary', note: '5 raspberry / 4 vegetal → Raspberry 5 [P] · Vegetal 4 [S] (different families)', tasters: [...rep(5, () => [aS('raspberry')]), ...rep(4, () => [aS('vegetal')])] },
+  { title: 'P8 · shared context, mixed roles', note: '5 berry / 4 citrus (distinct) → Fruity 9 [C] › { Berry 5 [P] · Citrus 4 [S] }', tasters: [[aS('strawberry')], [aS('raspberry')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')], [aS('lemon')], [aS('lime')], [aS('grapefruit')], [aS('orange')]] },
+  { title: 'P9 · equal-primary + weaker sibling', note: '5 berry; 2 also citrus → Fruity H › { Berry 5 [P] · Citrus 2 [S] }', tasters: [[aS('strawberry'), aS('lemon')], [aS('raspberry'), aS('lime')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')]] },
+  { title: 'P10 · unbounded worst case', note: '2 spray 8 families + 6 scattered → ~8+ secondary roots; selector returns ALL (cap deferred)', tasters: [((): AromaSelection[] => [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')])(), [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')], [aS('honey')], [aS('rose')], [aS('butter')], [aS('yeast')], [aS('acetone')], [aS('lavender')]] },
+];
+
+// One display-node row: the count·label lives INSIDE the badge ("3x Strawberry"
+// — Simon's ruling), emphasis follows the role. heading = an uncounted grouping
+// label (no count, no chip fill); context = a faint counted ancestor; primary =
+// full; secondary = lighter; peak = indented. The tree recurses via children[]
+// — rendering NEVER re-derives structure. `ancestorCount` is the nearest COUNTED
+// displayed ancestor's count (headings are skipped — they're never a
+// denominator), threaded down so a peak can show BOTH denominators: count/n
+// panel prevalence and count/ancestor branch concentration.
+function ConsensusRow({ dn, depth, n, ancestorCount }: { dn: ConsensusDisplayNode; depth: number; n: number; ancestorCount: number | null }) {
+  const { theme } = useTheme();
+  const { role, counted, node, children } = dn;
+  const roleTag = role === 'primary' ? '[P]' : role === 'secondary' ? '[S]' : role === 'context' ? '[C]' : role === 'peak' ? '↳' : 'H';
+  const roleColor = role === 'primary' ? theme.ink : role === 'secondary' ? theme.inkSoft : theme.inkFaint;
+  // Both denominators, kept distinct: prevalence (count/n) for every counted
+  // node; branch concentration (count/ancestor) additionally for a peak, since
+  // the peak bar is what the ⅓/⅔ knob rules. A heading shows neither.
+  const readout = counted
+    ? role === 'peak' && ancestorCount != null
+      ? `${node.count}/${n} panel · ${node.count}/${ancestorCount} branch`
+      : `${node.count}/${n} panel`
+    : '';
+  // The counted ancestor threaded to THIS node's children: this node if counted,
+  // else the ancestor passed in (a heading is transparent — §rule 6).
+  const childAncestor = counted ? node.count : ancestorCount;
+  return (
+    <View style={{ gap: 4 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: depth * 16 }}>
+        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 10.5, color: roleColor, width: 20 }}>{roleTag}</VText>
+        {counted
+          ? <AromaChip a={node.id} m={null} sub={node.tier} count={node.count} vPad={0} />
+          : <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkFaint }}>{`${node.label} · grouping`}</VText>}
+        <VText variant="caption" color="inkFaint">{readout}</VText>
+      </View>
+      {children.map((c) => (
+        <ConsensusRow key={c.node.id} dn={c} depth={depth + 1} n={n} ancestorCount={childAncestor} />
+      ))}
+    </View>
+  );
+}
+
+function AromaRollupLab() {
+  const { theme } = useTheme();
+  const [primaryMode, setPrimaryMode] = useState<'majority' | 'twoThirds'>('majority');
+  const [peak, setPeak] = useState<'third' | 'twoThirds'>('third');
+  const opts: AromaConsensusOpts = {
+    primary: primaryMode,
+    peakNum: peak === 'third' ? 1 : 2,
+    peakDen: 3,
+  };
+  const knobPill = (on: boolean, label: string, onPress: () => void) => (
+    <Pressable
+      accessibilityRole="tab"
+      accessibilityState={{ selected: on }}
+      onPress={onPress}
+      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
+    >
+      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>{label}</VText>
+    </Pressable>
+  );
+  const tierRank = { leaf: 3, subfamily: 2, family: 1 } as const;
+  return (
+    <View style={{ gap: space.xs }}>
+      <VText variant="heading">Aroma roll-up (compare §8)</VText>
+      <VText variant="small" color="inkSoft">
+        Role-based consensus tree over the ten pinned panels — rule the two knobs here. [P]rimary · [S]econdary · [C]ontext · H grouping · ↳ peak. Two denominators, never merged: count/n prevalence (primary bar) vs count/ancestor concentration (peak bar). Counts are NOT summable across siblings.
+      </VText>
+      {/* knobs — primary bar + peak bar */}
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(primaryMode === 'majority', 'primary > n/2', () => setPrimaryMode('majority'))}
+          {knobPill(primaryMode === 'twoThirds', 'primary ≥ 2n/3', () => setPrimaryMode('twoThirds'))}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(peak === 'third', 'peak ≥ ⅓', () => setPeak('third'))}
+          {knobPill(peak === 'twoThirds', 'peak ≥ ⅔', () => setPeak('twoThirds'))}
+        </View>
+      </View>
+      {ROLLUP_PANELS.map((panel) => {
+        const rollup = aggregateAromaRollup(panel.tasters);
+        const res = labAromaConsensus!(rollup, opts);
+        // count(atGrain) distribution, count desc → finer tier → taxonomy order
+        // (NEVER atGrain). byFamily is already taxonomy-ordered; a stable sort by
+        // (−count, −tierRank) preserves taxonomy order within ties.
+        const dist = rollup.byFamily
+          .flatMap((f) => f.nodes)
+          .slice()
+          .sort((a, b) => b.count - a.count || tierRank[b.tier] - tierRank[a.tier])
+          .map((nd) => `${nd.label} ${nd.count}(${nd.atGrain})`)
+          .join(' · ');
+        return (
+          <View key={panel.title} style={{ gap: 6, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>{panel.title} · n={rollup.n}</VText>
+              {res.hasStrongAgreement
+                ? null
+                : <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, color: theme.inkFaint }}>— No strong agreement —</VText>}
+            </View>
+            <VText variant="caption" color="inkFaint">{`default knobs (> n/2, ≥ ⅓): ${panel.note}`}</VText>
+            <View style={{ gap: 6 }}>
+              {res.roots.length > 0
+                ? res.roots.map((r) => <ConsensusRow key={r.node.id} dn={r} depth={0} n={rollup.n} ancestorCount={null} />)
+                : <VText variant="caption" color="inkFaint">— nothing clears the bar —</VText>}
+            </View>
+            <VText variant="caption" color="inkFaint">{`count(atGrain): ${dist || '—'}`}</VText>
+          </View>
+        );
+      })}
+    </View>
   );
 }
 
@@ -754,6 +905,8 @@ export default function DevGallery() {
             Left = the real component (clamps to white below 3.0; all current themes pass). Right = forced theme colors, no clamp. Scan each with the Camera app.
           </VText>
         </View>
+
+        <AromaRollupLab />
 
         <GlassLab />
         <GlassLab2 />
