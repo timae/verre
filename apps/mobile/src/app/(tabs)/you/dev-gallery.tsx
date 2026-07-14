@@ -86,6 +86,14 @@ if (__DEV__) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   labBuildContributors = (require('../../../components/moments/aromaContributors') as typeof import('@/components/moments/aromaContributors')).buildAromaContributors;
 }
+// The SHARED ruled candidate — the SAME component the real CmpAccItem mounts
+// (compare §9, Slice 2b), so gallery + card render one source of truth. The
+// experiment lab below (Title Bar / Glass / knob toggles) stays separate.
+let LabAromaStrip: typeof import('@/components/moments/AromaAgreementStrip.dev').AromaAgreementStrip | null = null;
+if (__DEV__) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  LabAromaStrip = (require('../../../components/moments/AromaAgreementStrip.dev') as typeof import('@/components/moments/AromaAgreementStrip.dev')).AromaAgreementStrip;
+}
 
 const LAB_W = 150;
 const LAB_H = 64;
@@ -1107,6 +1115,29 @@ function AromaTier2Lab() {
   );
 }
 
+// The RULED candidate rendered through the SHARED AromaAgreementStrip.dev
+// component — byte-identical to what the real CmpAccItem mounts (Slice 2b). The
+// experiment lab above keeps the Title Bar / Glass / knob toggles for comparison;
+// this section is the single source of truth for the shipped look.
+function AromaRuledLab() {
+  const opts: AromaConsensusOpts = { primary: 'majority', peakNum: 1, peakDen: 3 };
+  if (!LabAromaStrip) return null;
+  return (
+    <View style={{ gap: space.xs }}>
+      <VText variant="heading">Aroma agreement · RULED candidate (shared)</VText>
+      <VText variant="small" color="inkSoft">
+        The exact `AromaAgreementStrip` component the real compare card mounts — Badge Extension + Corner popover, provisional knobs (majority / ⅓ / majority). One source of truth; the lab above is experiments only.
+      </VText>
+      {ROLLUP_PANELS.map((panel) => (
+        <View key={panel.title} style={{ gap: 6, padding: 12, borderRadius: radius.md }}>
+          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{panel.title}</VText>
+          <LabAromaStrip raters={labRaters(panel.tasters)} opts={opts} pronBar="majority" />
+        </View>
+      ))}
+    </View>
+  );
+}
+
 export default function DevGallery() {
   const insets = useSafeAreaInsets();
   const { theme, choice, setChoice } = useTheme();
@@ -1471,6 +1502,8 @@ export default function DevGallery() {
         <AromaRollupLab />
 
         <AromaTier2Lab />
+
+        <AromaRuledLab />
 
         <GlassLab />
         <GlassLab2 />

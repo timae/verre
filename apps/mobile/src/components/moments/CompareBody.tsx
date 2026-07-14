@@ -33,6 +33,63 @@ import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
 
+// DEV-ONLY (compare §9, Slice 2b): the ruled Tier-2 Aroma-agreement strip +
+// contributor popover, lazy-required so Metro's DCE keeps it — and the
+// selector/compare-view/contributor derivations it pulls in — OUT of the
+// production bundle. Production Tier 2 (slice 3b) will import it normally.
+let LabAromaStrip: typeof import('./AromaAgreementStrip.dev').AromaAgreementStrip | null = null;
+if (__DEV__) {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  LabAromaStrip = (require('./AromaAgreementStrip.dev') as typeof import('./AromaAgreementStrip.dev')).AromaAgreementStrip;
+}
+// The pinned representative panel (an edge-case-rich synthetic set) shown inside
+// the real card via the Live/Pinned toggle — live sessions alone may lack useful
+// edge cases (Codex). Verified against the selector to make ALL THREE knobs bite
+// (n=8): strip = Strawberry 5 [PRIMARY, group-pronounced] · Vegetal 4 · Oak 3 ·
+// Lemon 2 [secondaries].
+//   - primary knob: majority → Strawberry primary; twoThirds (5×3=15 < 16) →
+//     collapses to Fruity primary, Lemon drops.
+//   - peak knob: Vegetal's popover shows "cut_grass 2" (2/4 = 50%) at ⅓, and
+//     NOTHING at ⅔ (2×3=6 < 4×2=8) — the coarse `vegetal` picks make the family
+//     node the peak denominator (no subfamily buffer), so 50% is a real boundary.
+//   - pron knob: Strawberry 5/8 pronounced → group-pronounced at majority
+//     (5×2=10 > 8), NOT at twoThirds (5×3=15 < 16).
+const DEV_PINNED_RATERS: { id: string; displayName: string; aromas: { a: string; m: string | null; p?: boolean }[] }[] = [
+  { id: 'p0', displayName: 'Mara', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }, { a: 'cut_grass', m: null }] },
+  { id: 'p1', displayName: 'Jonas', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }, { a: 'cut_grass', m: null }] },
+  { id: 'p2', displayName: 'Léa', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }] },
+  { id: 'p3', displayName: 'David', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }] },
+  { id: 'p4', displayName: 'Sofia', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'oak', m: null }] },
+  { id: 'p5', displayName: 'Noah', aromas: [{ a: 'oak', m: null }, { a: 'lemon', m: null }] },
+  { id: 'p6', displayName: 'Clara', aromas: [{ a: 'oak', m: null }] },
+  { id: 'p7', displayName: 'Theo', aromas: [{ a: 'lemon', m: null }] },
+];
+
+// DEV-only segmented toggle for the 2b knob rows (a switch, styled like the
+// gallery knobs). Generic over the option value.
+function DevKnob<T extends string>({ options, value, onChange }: {
+  options: [T, string][];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+      {options.map(([v, label]) => (
+        <Pressable
+          key={v}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: value === v }}
+          onPress={() => onChange(v)}
+          style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: value === v ? theme.surface : 'transparent' }}
+        >
+          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: value === v ? theme.ink : theme.inkSoft }}>{label}</VText>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 // 02d Compare — the session screen's second TAB (in-screen swap, Simon's
 // ruling 2026-07-02: everything above the tab strip stays, no route change).
 // Accordion of rated impressions; ALL collapsed by default; cards open/close
@@ -156,8 +213,10 @@ function buildItems(
         }))
         // Compare renders scores + structure only — a notes-only (or stale
         // cleared) rating has neither and would make a dead-end card ("No
-        // structure detail" + "No scores yet").
-        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
+        // structure detail" + "No scores yet"). DEV: also keep aroma-only raters
+        // so the Slice-2b Aroma-agreement strip sees the COMPLETE aroma input
+        // (production Tier 2, slice 3b, will widen this filter for real).
+        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0 || (__DEV__ && (r.rating.aromas?.length ?? 0) > 0));
       const scores = raters.map((r) => r.rating.score || 0);
       const scoredScores = scores.filter((v) => v > 0);
       return {
@@ -586,6 +645,15 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
+  // DEV 2b: Live (this card's real raters) vs Pinned (the edge-case panel) for
+  // the Aroma-agreement strip density check — a switch, never both at once
+  // (rendering two strips would invalidate the density read — Codex). Plus the
+  // three LIVE knobs so the thresholds can actually be RULED in the real card
+  // (Codex — hardcoding them defeats 2b). Per-card state; provisional defaults.
+  const [aromaSource, setAromaSource] = useState<'live' | 'pinned'>('live');
+  const [aromaPrimary, setAromaPrimary] = useState<'majority' | 'twoThirds'>('majority');
+  const [aromaPeak, setAromaPeak] = useState<'third' | 'twoThirds'>('third');
+  const [aromaPron, setAromaPron] = useState<'majority' | 'twoThirds'>('majority');
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -768,6 +836,26 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               />
             )}
           </View>
+          {/* DEV 2b — the ruled Tier-2 Aroma-agreement strip IN the real card,
+              over Live (this card's raters) or a Pinned edge-case panel. Removed
+              entirely from production builds (LabAromaStrip is __DEV__-only). */}
+          {__DEV__ && LabAromaStrip ? (
+            <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16, gap: 8 }}>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                <DevKnob options={[['live', 'Live'], ['pinned', 'Pinned']]} value={aromaSource} onChange={setAromaSource} />
+                <DevKnob options={[['majority', 'primary > n/2'], ['twoThirds', 'primary ≥ 2n/3']]} value={aromaPrimary} onChange={setAromaPrimary} />
+                <DevKnob options={[['third', 'peak ≥ ⅓'], ['twoThirds', 'peak ≥ ⅔']]} value={aromaPeak} onChange={setAromaPeak} />
+                <DevKnob options={[['majority', 'pron > n/2'], ['twoThirds', 'pron ≥ 2n/3']]} value={aromaPron} onChange={setAromaPron} />
+              </View>
+              <LabAromaStrip
+                raters={aromaSource === 'pinned'
+                  ? DEV_PINNED_RATERS
+                  : item.raters.map((r) => ({ id: r.id, displayName: r.displayName, aromas: r.rating.aromas ?? [] }))}
+                opts={{ primary: aromaPrimary, peakNum: aromaPeak === 'third' ? 1 : 2, peakDen: 3 }}
+                pronBar={aromaPron}
+              />
+            </View>
+          ) : null}
         </View>
       ) : null}
       {sheetOpen ? (
