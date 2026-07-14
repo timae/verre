@@ -1,10 +1,12 @@
 import { Redirect } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import { Modal, Pressable, ScrollView, useWindowDimensions, View, type LayoutRectangle } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { FullWindowOverlay } from 'react-native-screens';
 import Reanimated, { useAnimatedProps, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 import { Icon } from '@/components/ui/Icon';
+import { Avatar } from '@/components/ui/Avatar';
 import { alpha } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, type AromaSelection } from '@verre/core';
@@ -14,6 +16,7 @@ import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, type 
 // but a static import resolves BEFORE that runtime return — same reason the
 // glass/@expo/ui labs are require()'d).
 import type { AromaConsensusOpts, ConsensusDisplayNode } from '@/components/moments/aromaConsensus';
+import type { StripChip, PopoverContent, CompareSelection } from '@/components/moments/aromaCompareView';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { AromaChip, useTapOrDouble } from '@/components/scoring/aroma/parts';
@@ -24,7 +27,7 @@ import { VText } from '@/components/ui/VText';
 import { contrastRatio } from '@/lib/contrast';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { useFlavourColors } from '@/theme/flavourColors';
-import { radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
+import { elevation, radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
 // Dev-only modules behind __DEV__ so Metro's constant folding + DCE strips
 // them from production bundles (codex: static imports kept lab-only code in
 // the production route module even though the screen redirects).
@@ -71,11 +74,17 @@ if (__DEV__) {
 // (the redirect at the top of DevGallery runs too late — a static import would
 // already have pulled it in).
 let labAromaConsensus: typeof import('@/components/moments/aromaConsensus').aromaConsensus | null = null;
+let labCompareView: typeof import('@/components/moments/aromaCompareView') | null = null;
+let labBuildContributors: typeof import('@/components/moments/aromaContributors').buildAromaContributors | null = null;
 if (__DEV__) {
   // Relative (not '@/') so Metro resolves the require the same way regardless of
   // tsconfig-paths handling — this file is under src/app/(tabs)/you/.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   labAromaConsensus = (require('../../../components/moments/aromaConsensus') as typeof import('@/components/moments/aromaConsensus')).aromaConsensus;
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  labCompareView = require('../../../components/moments/aromaCompareView') as typeof import('@/components/moments/aromaCompareView');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  labBuildContributors = (require('../../../components/moments/aromaContributors') as typeof import('@/components/moments/aromaContributors')).buildAromaContributors;
 }
 
 const LAB_W = 150;
@@ -420,6 +429,7 @@ function DevSlider({ value, onChange, min, max, step }: { value: number; onChang
 // separately pinned in .local/test-env/scripts/aroma-aggregate-units.ts (the
 // gallery must not present unverified calculations).
 const aS = (a: string, m: string | null = null): AromaSelection => ({ a, m });
+const aSp = (a: string, m: string | null = null): AromaSelection => ({ a, m, p: true }); // pronounced
 const rep = (n: number, f: () => AromaSelection[]) => Array.from({ length: n }, f);
 const ROLLUP_PANELS: { title: string; note: string; tasters: AromaSelection[][] }[] = [
   { title: 'P1 · heading pruned (1 child)', note: '4 straw / 2 rasp / 2 lingon → Berry 8 [P] ↳ Strawberry 4 (Fruity removed)', tasters: [...rep(4, () => [aS('strawberry')]), ...rep(2, () => [aS('raspberry')]), ...rep(2, () => [aS('lingonberry')])] },
@@ -432,6 +442,9 @@ const ROLLUP_PANELS: { title: string; note: string; tasters: AromaSelection[][] 
   { title: 'P8 · shared context, mixed roles', note: '5 berry / 4 citrus (distinct) → Fruity 9 [C] › { Berry 5 [P] · Citrus 4 [S] }', tasters: [[aS('strawberry')], [aS('raspberry')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')], [aS('lemon')], [aS('lime')], [aS('grapefruit')], [aS('orange')]] },
   { title: 'P9 · equal-primary + weaker sibling', note: '5 berry; 2 also citrus → Fruity H › { Berry 5 [P] · Citrus 2 [S] }', tasters: [[aS('strawberry'), aS('lemon')], [aS('raspberry'), aS('lime')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')]] },
   { title: 'P10 · unbounded worst case', note: '2 spray 8 families + 6 scattered → ~8+ secondary roots; selector returns ALL (cap deferred)', tasters: [((): AromaSelection[] => [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')])(), [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')], [aS('honey')], [aS('rose')], [aS('butter')], [aS('yeast')], [aS('acetone')], [aS('lavender')]] },
+  // Pronounced demos (Tier-2 only): PR-A clears the panel bar (3 of 5 pronounced, 3×2>5 → group-pronounced chip); PR-B does NOT (3 of 8, 3×2≤8 → chip stays plain, popover still reports "3 of 5 supporters").
+  { title: 'PR-A · group-pronounced (3 of 5)', note: '5 strawberry, 3 pronounced → Strawberry chip renders PRONOUNCED', tasters: [[aSp('strawberry')], [aSp('strawberry')], [aSp('strawberry')], [aS('strawberry')], [aS('strawberry')]] },
+  { title: 'PR-B · below the bar (3 of 8)', note: '5 strawberry (3 pronounced) + 3 vegetal → visible Strawberry 5 chip NOT group-pronounced (3×2 ≤ 8); popover shows "3 of 5 supporters"', tasters: [[aSp('strawberry')], [aSp('strawberry')], [aSp('strawberry')], [aS('strawberry')], [aS('strawberry')], [aS('vegetal')], [aS('vegetal')], [aS('vegetal')]] },
 ];
 
 // One display-node row: the count·label lives INSIDE the badge ("3x Strawberry"
@@ -539,6 +552,555 @@ function AromaRollupLab() {
             </View>
             <VText variant="caption" color="inkFaint">{`count(atGrain): ${dist || '—'}`}</VText>
           </View>
+        );
+      })}
+    </View>
+  );
+}
+
+// ── Tier 2 mock (compare §9, Slice 2a) ───────────────────────────────────────
+// The "Aroma agreement" strip as it would sit in the expanded compare card:
+// tappable count-chips (primaries+secondaries), an always-present "Detailed
+// aromas" action, and the anchored contributor popover (header · descendant peak
+// branch · 3-name preview · View contributors). Gallery mock over the pinned
+// panels — a PRELIMINARY density/interaction pass. The final density + knob
+// ruling happens in the real CmpAccItem card context (2b), not here.
+// The panels are anonymous AromaSelection[][]; synthesize realistic named raters so
+// the popover's contributor preview is populated.
+
+function labRaters(tasters: AromaSelection[][]) {
+  const names = ['Mara', 'Jonas', 'Léa', 'David', 'Sofia', 'Noah', 'Clara', 'Theo'];
+  return tasters.map((aromas, i) => ({ id: `t${i}`, displayName: names[i] ?? `Guest ${i + 1}`, aromas }));
+}
+
+// The strip's inter-chip gap (a layout constant; the pure packStrip lives in
+// aromaCompareView and takes gap + the MEASURED pill width as params). No role
+// suffix on chips (the chosen 2A design is plain "Nx Label"; role drives ORDER
+// only, not the label).
+const STRIP_GAP = 8;
+const COMPARE_CHIP_PAD = 2;
+
+// A compare-specific INTERACTION wrapper around the presentational AromaChip: it
+// owns tap-to-inspect + self-measure (the chip stays dumb). The wrapper footprint
+// is CONSTANT (padding 2 always, collapsable={false}) so the strip never
+// reflows and the measured anchor stays put. NO selection ring/backing — a
+// filled halo around the chip reads as a Pronounced border (Simon, device);
+// the anchored popover is itself the "this chip is selected" signal.
+function CompareChip({ chip, onLayoutWidth, onTap }: {
+  chip: StripChip;
+  onLayoutWidth: (id: string, w: number) => void;
+  onTap: (rect: LayoutRectangle) => void;
+}) {
+  const ref = useRef<View>(null);
+  // The tap goes through AromaChip.onPress (it IS a Pressable) — no nested
+  // Pressable (Codex #3: double responder/a11y). The wrapper View only measures
+  // width + the anchor rect.
+  return (
+    <View
+      ref={ref}
+      collapsable={false}
+      onLayout={(e) => onLayoutWidth(chip.id, Math.ceil(e.nativeEvent.layout.width))}
+      style={{ borderRadius: 999, padding: COMPARE_CHIP_PAD }}
+    >
+      <AromaChip
+        a={chip.id}
+        m={null}
+        count={chip.count}
+        pronounced={chip.pronounced}
+        vPad={0}
+        onPress={() => ref.current?.measureInWindow((x, y, width, height) => onTap({
+          x: x + COMPARE_CHIP_PAD,
+          y: y + COMPARE_CHIP_PAD,
+          width: width - COMPARE_CHIP_PAD * 2,
+          height: height - COMPARE_CHIP_PAD * 2,
+        }))}
+      />
+    </View>
+  );
+}
+
+// The tapped chip's window rect — a full rect (x + width too), so the popover
+// anchors HORIZONTALLY at the chip, not flush to the screen's right edge like the
+// shared AnchoredMenu (which is a right-aligned ⋯ dropdown). Gallery-local; if
+// the popover graduates to production, AnchoredMenu needs an x-anchor variant.
+type ChipRect = { x: number; y: number; width: number; height: number };
+
+// Shared horizontal placement. These are chip inspectors, not right-aligned
+// dropdown menus: align to the tapped badge and clamp only at the screen edge.
+function usePopoverFrame(rect: ChipRect, width: number, anchorInset = 0) {
+  const { width: screenW, height: screenH } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const margin = 12;
+  const maxW = screenW - margin * 2;
+  const w = Math.min(width || AROMA_POPOVER_WIDTH, maxW);
+  const left = Math.max(margin, Math.min(rect.x - anchorInset, screenW - margin - w));
+  return { left, maxW, screenH, bottomLimit: screenH - insets.bottom - 8 };
+}
+
+const cardShadow = {
+  shadowColor: '#000', shadowOpacity: elevation.menu.ios.shadowOpacity, shadowRadius: elevation.menu.ios.shadowRadius,
+  shadowOffset: { width: 0, height: elevation.menu.ios.shadowOffsetY }, elevation: elevation.menu.android.elevation,
+} as const;
+const AROMA_POPOVER_WIDTH = 228;
+
+// RECOMMENDED — the selected badge expands into the card's title bar. A duplicate
+// is drawn at the original badge's exact window coordinates while a shallow
+// family-tinted band fully surrounds it; the detail continues below. It reads as
+// one badge becoming a panel, without repeating the aroma or cutting a rule/band
+// through the pill. Near the screen bottom the title bar moves to the lower edge.
+function AttachedBadgePopover({ rect, onClose, badge, body }: {
+  rect: ChipRect;
+  onClose: () => void;
+  badge: React.ReactNode;
+  body: React.ReactNode;
+}) {
+  const { theme } = useTheme();
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const titlePad = 8;
+  const { left, maxW, bottomLimit } = usePopoverFrame(rect, size.w, titlePad);
+  const titleH = rect.height + titlePad * 2;
+  const downTop = rect.y - titlePad;
+  const flip = size.h > 0 && downTop + size.h > bottomLimit;
+  const top = flip ? rect.y + rect.height + titlePad - size.h : downTop;
+  const badgeLeft = Math.max(0, Math.min(rect.x - left, Math.max(0, (size.w || AROMA_POPOVER_WIDTH) - rect.width)));
+  const titleBar = (
+    <View
+      style={{
+        height: titleH,
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingLeft: badgeLeft,
+        paddingRight: 8,
+        backgroundColor: theme.surfaceSunk,
+        borderBottomWidth: flip ? 0 : 1,
+        borderTopWidth: flip ? 1 : 0,
+        borderColor: theme.ruleSoft,
+      }}
+    >
+      <View style={{ flexDirection: 'row', flexShrink: 0 }}>{badge}</View>
+      <VText
+        variant="caption"
+        color="inkFaint"
+        numberOfLines={1}
+        style={{ marginLeft: 'auto', paddingLeft: 8 }}
+      >
+        Agreement
+      </VText>
+    </View>
+  );
+  return (
+    <Modal transparent visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      <Pressable style={{ flex: 1 }} accessibilityLabel="Close Aroma Details" onPress={onClose}>
+        <View
+          onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
+          style={{
+            position: 'absolute', top, left, width: Math.min(AROMA_POPOVER_WIDTH, maxW),
+            borderRadius: radius.md, ...cardShadow,
+          }}
+        >
+          <View style={{ backgroundColor: theme.surface, borderRadius: radius.md, borderWidth: 1, borderColor: theme.ruleSoft, overflow: 'hidden' }}>
+            {!flip ? titleBar : null}
+            <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>{body}</View>
+            {flip ? titleBar : null}
+          </View>
+        </View>
+      </Pressable>
+    </Modal>
+  );
+}
+
+// EXPERIMENT — the popup grows directly out of the selected badge. There is no
+// full-width header: the badge overlaps the neutral detail card at either an
+// inset corner or its centre. This keeps the source unmistakable without
+// clipping the badge to an outer edge, repeating the title, or adding a tint.
+export type ExtensionAnchor = 'corner' | 'center';
+
+function BadgeExtensionPopover({ rect, onClose, badge, body, anchor, glass = false }: {
+  rect: ChipRect;
+  onClose: () => void;
+  badge: React.ReactNode;
+  body: React.ReactNode;
+  anchor: ExtensionAnchor;
+  glass?: boolean;
+}) {
+  const { theme } = useTheme();
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const desiredBadgeLeft = anchor === 'center'
+    ? Math.max(10, (AROMA_POPOVER_WIDTH - rect.width) / 2)
+    : 10;
+  const { left, maxW, bottomLimit } = usePopoverFrame(rect, size.w, desiredBadgeLeft);
+  const downTop = rect.y;
+  const flip = size.h > 0 && downTop + size.h > bottomLimit;
+  const top = flip ? rect.y + rect.height - size.h : downTop;
+  const badgeLeft = Math.max(0, Math.min(rect.x - left, Math.max(0, (size.w || AROMA_POPOVER_WIDTH) - rect.width)));
+  const badgeOverlap = rect.height / 2;
+  const badgeCap = (
+    <View
+      collapsable={false}
+      style={{
+        zIndex: 4,
+        position: 'absolute',
+        left: badgeLeft,
+        ...(flip ? { bottom: 0 } : { top: 0 }),
+        flexDirection: 'row',
+        borderRadius: radius.pill,
+      }}
+    >
+      {badge}
+    </View>
+  );
+  const detailStyle = {
+    borderRadius: radius.md,
+    paddingHorizontal: 10,
+    paddingTop: flip ? 10 : badgeOverlap + 8,
+    paddingBottom: flip ? badgeOverlap + 8 : 10,
+    shadowColor: '#000',
+    shadowOpacity: elevation.sm.ios.shadowOpacity,
+    shadowRadius: elevation.sm.ios.shadowRadius,
+    shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
+    elevation: elevation.sm.android.elevation,
+  } as const;
+  const detail = glass && LabGlass ? (
+    <LabGlass
+      glassEffectStyle="regular"
+      colorScheme={theme.scheme}
+      tintColor={alpha(theme.surface, 0.14)}
+      style={detailStyle}
+    >
+      {body}
+    </LabGlass>
+  ) : (
+    <View style={{ ...detailStyle, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.ruleSoft }}>
+      {body}
+    </View>
+  );
+  const overlay = (
+    <Pressable style={{ flex: 1 }} accessibilityLabel="Close Aroma Details" onPress={onClose}>
+        <View
+          onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
+          style={{ position: 'absolute', top, left, width: Math.min(AROMA_POPOVER_WIDTH, maxW) }}
+        >
+          <View style={flip ? { marginBottom: rect.height - badgeOverlap } : { marginTop: rect.height - badgeOverlap }}>{detail}</View>
+          {/* Always mount AFTER the native glass view. UIGlassEffect can paint
+              over an earlier React sibling even when that sibling has zIndex;
+              absolute + last-mounted keeps the duplicate badge above the
+              material for both down- and up-opening panels. */}
+          {badgeCap}
+        </View>
+    </Pressable>
+  );
+  // A React Native Modal lives in a separate native window. Liquid Glass in
+  // that window cannot sample the badges/tab bar underneath and turns into an
+  // opaque-looking slab. FullWindowOverlay stays in the app's UIWindow, above
+  // its content, so the native material can refract what it actually overlaps.
+  if (glass && LabGlass) {
+    return <FullWindowOverlay unstable_accessibilityContainerViewIsModal>{overlay}</FullWindowOverlay>;
+  }
+  return (
+    <Modal transparent visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+      {overlay}
+    </Modal>
+  );
+}
+
+// Shared compact content. Hierarchy is visual rather than prose-heavy: descendant
+// paths are real aroma badges, supporters stay one line, Pronounced gets its
+// canonical glyph, and the one navigation action is a canonical Button.
+function PopoverBody({ content, onViewContributors, onMoreBranches }: {
+  content: PopoverContent;
+  onViewContributors: () => void;
+  onMoreBranches: () => void;
+}) {
+  const { theme } = useTheme();
+  return (
+    <View style={{ gap: 10 }}>
+      {content.ledBy.length > 0 ? (
+        <View style={{ gap: 6 }}>
+          <VText variant="caption" color="inkFaint">Includes mentions of</VText>
+          {content.ledBy.map((branch, i) => (
+            <View key={i} style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+              {branch.map((step, j) => (
+                <View key={step.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  {j > 0 ? <Icon name="chevron-right" size={12} color={theme.inkFaint} /> : null}
+                  <AromaChip a={step.id} m={null} count={step.count} vPad={0} />
+                </View>
+              ))}
+            </View>
+          ))}
+          {content.moreBranches > 0 ? (
+            <Pressable onPress={onMoreBranches} accessibilityRole="button">
+              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.accent }}>{`+${content.moreBranches} More →`}</VText>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+      {content.contributorNames.length > 0 ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
+          <View style={{ flexDirection: 'row', paddingLeft: 2 }}>
+            {content.contributorNames.map((name, i) => (
+              <View key={name} style={{ marginLeft: i === 0 ? 0 : -7 }}>
+                <Avatar name={name} size={26} ring initialsSize={9.5} />
+              </View>
+            ))}
+          </View>
+          <View style={{ flex: 1, gap: 1 }}>
+            <VText variant="caption" color="inkFaint">Supported By</VText>
+            <VText numberOfLines={1} surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, color: theme.inkSoft }}>
+              {content.contributorNames.join(', ')}{content.moreContributors > 0 ? ` +${content.moreContributors}` : ''}
+            </VText>
+          </View>
+        </View>
+      ) : null}
+      {content.pronouncedCount > 0 ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <Icon name="pronounced" size={14} color={content.isPanelPronounced ? theme.accent : theme.inkFaint} />
+          <VText variant="caption" color={content.isPanelPronounced ? 'accent' : 'inkFaint'}>
+            {`${content.pronouncedCount} of ${content.count} marked pronounced`}
+          </VText>
+        </View>
+      ) : null}
+      <View style={{ borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 4 }}>
+        <Button title="View Contributors" variant="tertiary" size="sm" block onPress={onViewContributors} />
+      </View>
+    </View>
+  );
+}
+
+export type PopoverVariant = 'attached' | 'extension' | 'glass';
+
+function Tier2Popover({ content, rect, variant, extensionAnchor, onClose, onViewContributors, onMoreBranches }: {
+  content: PopoverContent;
+  rect: ChipRect;
+  variant: PopoverVariant;
+  extensionAnchor: ExtensionAnchor;
+  onClose: () => void;
+  onViewContributors: () => void;
+  onMoreBranches: () => void;
+}) {
+  const body = <PopoverBody content={content} onViewContributors={onViewContributors} onMoreBranches={onMoreBranches} />;
+  // Both variants lead with the ACTUAL tapped badge as the header — the panel
+  // literally starts with the chip you tapped (family tint + count preserved),
+  // so it reads as that badge's detail, not a generic menu.
+  const badge = (
+    <View style={{ flexDirection: 'row' }}>
+      <AromaChip
+        a={content.id}
+        m={null}
+        count={content.count}
+        pronounced={content.isPanelPronounced}
+        focused={variant === 'extension' || variant === 'glass'}
+        vPad={0}
+      />
+    </View>
+  );
+  if (variant === 'extension' || variant === 'glass') {
+    return (
+      <BadgeExtensionPopover
+        rect={rect}
+        onClose={onClose}
+        badge={badge}
+        body={body}
+        anchor={extensionAnchor}
+        glass={variant === 'glass'}
+      />
+    );
+  }
+  return <AttachedBadgePopover rect={rect} onClose={onClose} badge={badge} body={body} />;
+}
+
+// One panel card: owns its own strip-width + per-chip-width measurement and the
+// two-line pack, so overflow chips hide behind a "+N" pill while "Detailed
+// aromas" stays visible. Selection/popover/route state is LIFTED to the lab so
+// only one popover is ever open and selection is panel-scoped (the selection id
+// is `${panelTitle}|${chipId}`, globally unique — tapping Berry in one panel
+// never highlights Berry in another).
+function Tier2PanelCard({ panel, opts, pronBar, onTapChip, onDetailed, popover }: {
+  panel: { title: string; note: string; tasters: AromaSelection[][] };
+  opts: AromaConsensusOpts;
+  pronBar: 'majority' | 'twoThirds';
+  onTapChip: (fullId: string, chipId: string, rect: LayoutRectangle) => void;
+  onDetailed: () => void;
+  popover: React.ReactNode; // rendered by the lab when this card owns the open popover
+}) {
+  const { theme } = useTheme();
+  const [rowW, setRowW] = useState(0);
+  // Measure EVERY strip chip (not just the shown ones — a hidden chip would
+  // never report its width and packing could never stabilize) + the "+N" pill,
+  // off-screen, before packing. Keyed by chip id; the pill by its EXACT label so
+  // a digit-count change re-measures (Codex #1 — a hard-coded pill width can
+  // wrongly fit one extra chip and spill onto a 3rd line).
+  const [chipW, setChipW] = useState<Record<string, number>>({});
+  const [pillW, setPillW] = useState<Record<string, number>>({});
+  const res = labAromaConsensus!(aggregateAromaRollup(panel.tasters), opts);
+  const contrib = labBuildContributors!(labRaters(panel.tasters));
+  const strip = labCompareView!.tier2Strip(res, contrib, pronBar);
+  const widths = strip.map((c) => chipW[c.id] ?? 0);
+  const measured = strip.length === 0 || widths.every((w) => w > 0);
+  const pillLabelFor = (n: number) => `+${n} more`;
+  const pillWidthFor = (n: number) => pillW[pillLabelFor(n)] ?? 64; // 64 = conservative until measured
+  // Iterate to a FIXED POINT: pack with the pill width for the CURRENT produced
+  // overflow, and if that changes the overflow (so a different pill label), pack
+  // again with the new label's width — until the label the pack produces matches
+  // the label whose width was reserved (Codex #1: probe-then-lookup could measure
+  // a label it never reserved, e.g. "+9 more" → "+10 more"). All candidate pill
+  // labels are pre-measured off-screen (below), so every lookup resolves.
+  let fit = strip.length, overflow = 0;
+  if (measured && rowW > 0) {
+    let prev = -1;
+    for (let i = 0; i < strip.length + 2; i++) {
+      const r = labCompareView!.packStrip(widths, rowW, STRIP_GAP, overflow > 0 ? pillWidthFor(overflow) : 0);
+      fit = r.fit; overflow = r.overflow;
+      if (overflow === prev) break; // stable: the reserved label == the produced label
+      prev = overflow;
+    }
+  }
+  const shown = strip.slice(0, fit);
+  const pillLabel = pillLabelFor(overflow);
+  // Every overflow count the strip could produce (1..length) — pre-measured so
+  // the fixed-point loop never looks up an unmeasured label.
+  const candidateOverflows = strip.map((_, i) => i + 1);
+  return (
+    <View style={{ gap: 8, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface }}>
+      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>{`${panel.title} · n=${res.n}`}</VText>
+      <VText variant="caption" color="inkFaint">Aroma agreement</VText>
+      {/* Off-screen measure pass: every chip + EVERY candidate pill label
+          (+1..+N more) so the fixed-point pack never looks up an unmeasured
+          width, whatever overflow it settles on (Codex #1). */}
+      <View pointerEvents="none" style={{ position: 'absolute', opacity: 0, left: 0, top: 0, flexDirection: 'row', flexWrap: 'wrap' }}>
+        {strip.map((c) => (
+          <View key={c.id} onLayout={(e) => { const w = Math.ceil(e.nativeEvent.layout.width); setChipW((prev) => (prev[c.id] === w ? prev : { ...prev, [c.id]: w })); }}>
+            <View style={{ padding: COMPARE_CHIP_PAD }}><AromaChip a={c.id} m={null} count={c.count} pronounced={c.pronounced} vPad={0} /></View>
+          </View>
+        ))}
+        {candidateOverflows.map((n) => {
+          const label = pillLabelFor(n);
+          return (
+            <View key={label} onLayout={(e) => { const w = Math.ceil(e.nativeEvent.layout.width); setPillW((prev) => (prev[label] === w ? prev : { ...prev, [label]: w })); }}>
+              <View style={{ paddingVertical: 4, paddingHorizontal: 10 }}><VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12 }}>{label}</VText></View>
+            </View>
+          );
+        })}
+      </View>
+      {strip.length > 0 ? (
+        <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: STRIP_GAP }}>
+          {shown.map((chip) => (
+            <CompareChip
+              key={chip.id}
+              chip={chip}
+              onLayoutWidth={(id, w) => setChipW((prev) => (prev[id] === w ? prev : { ...prev, [id]: w }))}
+              onTap={(rect) => onTapChip(`${panel.title}|${chip.id}`, chip.id, rect)}
+            />
+          ))}
+          {overflow > 0 ? (
+            <Pressable accessibilityRole="button" onPress={onDetailed} style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, backgroundColor: theme.bg }}>
+              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: theme.inkSoft }}>{pillLabel}</VText>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : (
+        <VText variant="caption" color="inkFaint">— mixed; no shared aromas —</VText>
+      )}
+      {/* Always present — the door to Participants + All aromas, not just overflow. */}
+      <Pressable accessibilityRole="button" onPress={onDetailed}>
+        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: theme.inkSoft }}>Detailed aromas →</VText>
+      </Pressable>
+      {popover}
+    </View>
+  );
+}
+
+function AromaTier2Lab() {
+  const { theme } = useTheme();
+  const [primaryMode, setPrimaryMode] = useState<'majority' | 'twoThirds'>('majority');
+  const [peak, setPeak] = useState<'third' | 'twoThirds'>('third');
+  const [pronBar, setPronBar] = useState<'majority' | 'twoThirds'>('majority');
+  const [popVariant, setPopVariant] = useState<PopoverVariant>('extension');
+  const [extensionAnchor, setExtensionAnchor] = useState<ExtensionAnchor>('corner');
+  const opts: AromaConsensusOpts = { primary: primaryMode, peakNum: peak === 'third' ? 1 : 2, peakDen: 3 };
+  // Lifted so exactly ONE popover is open. openKey = `${title}|${chipId}`.
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<ChipRect | null>(null);
+  const [sel, dispatch] = useReducer(labCompareView!.compareSelectionReducer, { kind: 'none' } as CompareSelection);
+  const [routeNote, setRouteNote] = useState<string>('');
+  // One coordinated close: clears the reducer selection AND the popover together
+  // (Codex #4 — closing must clear selection; a retap toggles via the reducer).
+  const closeAll = () => { dispatch({ type: 'clear' }); setOpenKey(null); setAnchor(null); };
+  const knobPill = (on: boolean, label: string, onPress: () => void) => (
+    <Pressable accessibilityRole="tab" accessibilityState={{ selected: on }} onPress={onPress}
+      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}>
+      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>{label}</VText>
+    </Pressable>
+  );
+  return (
+    <View style={{ gap: space.xs }}>
+      <VText variant="heading">Aroma agreement · Tier 2 mock (§9)</VText>
+      <VText variant="small" color="inkSoft">
+        The compact strip as it sits in the expanded compare card — primaries + secondaries only, “Nx Label” chips, packed to two lines with a “+N” tail. Tap a chip → the anchored contributor popover (qualifying descendant mentions · 3-name preview · pronounced nuance · View contributors). Three knobs: primary + peak (selector) and pron (group-pronounced bar — see PR-A/PR-B panels). “Detailed aromas” always shows (opens Tier 3, not built yet). Preliminary pass — the final density + knob ruling happens in the real card context (2b), not here.
+      </VText>
+      <VText variant="caption" color="inkFaint">
+        Popup variants: Title Bar keeps the badge inside a neutral recessed header. Badge Extension overlaps a compact Verre surface. Glass Extension uses the same geometry with native regular Liquid Glass, matched to the active Verre theme’s color scheme and surface tone, with a solid fallback elsewhere.
+      </VText>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(primaryMode === 'majority', 'primary > n/2', () => setPrimaryMode('majority'))}
+          {knobPill(primaryMode === 'twoThirds', 'primary ≥ 2n/3', () => setPrimaryMode('twoThirds'))}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(peak === 'third', 'peak ≥ ⅓', () => setPeak('third'))}
+          {knobPill(peak === 'twoThirds', 'peak ≥ ⅔', () => setPeak('twoThirds'))}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(pronBar === 'majority', 'pron > n/2', () => setPronBar('majority'))}
+          {knobPill(pronBar === 'twoThirds', 'pron ≥ 2n/3', () => setPronBar('twoThirds'))}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(popVariant === 'attached', 'popup: Title Bar', () => setPopVariant('attached'))}
+          {knobPill(popVariant === 'extension', 'popup: Badge Extension', () => setPopVariant('extension'))}
+          {knobPill(popVariant === 'glass', 'popup: Glass Extension', () => setPopVariant('glass'))}
+        </View>
+        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
+          {knobPill(extensionAnchor === 'corner', 'extension: Corner', () => setExtensionAnchor('corner'))}
+          {knobPill(extensionAnchor === 'center', 'extension: Center', () => setExtensionAnchor('center'))}
+        </View>
+      </View>
+      {routeNote ? <VText variant="caption" color="inkFaint">{`route → ${routeNote}  ·  selection: ${sel.kind}${sel.kind !== 'none' ? ` ${sel.id}` : ''}`}</VText> : null}
+      {ROLLUP_PANELS.map((panel) => {
+        // Recompute (cheap) so the popover reads this panel's result/contributors.
+        const res = labAromaConsensus!(aggregateAromaRollup(panel.tasters), opts);
+        const isOpenHere = openKey?.startsWith(panel.title + '|') ?? false;
+        const openContent = isOpenHere
+          ? labCompareView!.popoverContent(res, labBuildContributors!(labRaters(panel.tasters)), openKey!.slice(panel.title.length + 1), pronBar)
+          : null;
+        return (
+          <Tier2PanelCard
+            key={panel.title}
+            panel={panel}
+            opts={opts}
+            pronBar={pronBar}
+            onTapChip={(fullId, chipId, rect) => {
+              // Retap the OPEN chip → close+clear (reducer toggles); else open it.
+              dispatch({ type: 'tapAroma', id: fullId });
+              if (openKey === fullId) { setOpenKey(null); setAnchor(null); }
+              else { setOpenKey(fullId); setAnchor({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }); }
+              setRouteNote('');
+            }}
+            onDetailed={() => { setRouteNote('Detailed aromas (Tier 3 — not built)'); closeAll(); }}
+            popover={openContent && anchor ? (
+              <Tier2Popover
+                content={openContent}
+                rect={anchor}
+                variant={popVariant}
+                extensionAnchor={extensionAnchor}
+                onClose={closeAll}
+                onMoreBranches={() => { setRouteNote(`agreement · focus=${openContent.id} (+${openContent.moreBranches} peak branches)`); closeAll(); }}
+                onViewContributors={() => {
+                  const route = labCompareView!.viewContributorsRoute(openContent.id);
+                  setRouteNote(`${route.mode} · filter=${route.aromaFilter}`);
+                  closeAll();
+                }}
+              />
+            ) : null}
+          />
         );
       })}
     </View>
@@ -907,6 +1469,8 @@ export default function DevGallery() {
         </View>
 
         <AromaRollupLab />
+
+        <AromaTier2Lab />
 
         <GlassLab />
         <GlassLab2 />
