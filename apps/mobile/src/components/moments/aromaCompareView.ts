@@ -6,7 +6,7 @@
 // selector + contributor helper until the compare surface ships.
 
 import { AROMA_FAMILIES } from '@verre/core'
-import type { AromaConsensusResult, ConsensusDisplayNode } from './aromaConsensus'
+import type { AromaConsensusResult, ConsensusDisplayNode } from '@verre/core'
 import type { AromaContributorIndex } from './aromaContributors'
 
 const TIER_RANK = { family: 1, subfamily: 2, leaf: 3 } as const

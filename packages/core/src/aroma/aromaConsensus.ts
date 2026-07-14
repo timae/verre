@@ -1,18 +1,15 @@
-// Aroma role-based CONSENSUS TREE — the experimental compare selector
-// (aroma-layer.md §8). EXPERIMENTAL + gallery-owned on purpose: the raw
-// aggregate (aggregateAromaRollup in @verre/core) is settled, but the two knobs
-// below (the primary bar + the peak bar) are still Simon's ruling. It lives here
-// (a real module, not inlined in the gallery) so the .local tsx harness can
-// import and verify the math — the gallery is the evidence Simon rules from, so
-// a selector bug would mean ruling against wrong data. Once ruled, this moves
-// into core beside aggregateAromaRollup with the chosen bars baked in.
+// Aroma role-based CONSENSUS TREE — the compare selector (aroma-layer.md §8).
+// Framework-neutral core: platform-pure (no node:*/next/@prisma/React/DOM), same
+// posture as aggregateAromaRollup beside it. Moved into core from the mobile
+// gallery once the two knobs were RULED (Simon, 2026-07-14): primary `> n/2`
+// (majority), peak `>= 1/3`. Those are baked as the defaults here — call
+// `aromaConsensus(rollup)` with no opts for the shipped behaviour; the opts stay
+// a parameter so a future re-ruling (or the dev knob lab) can override.
 //
-// Renamed from the discarded aromaFrontier.ts (the ancestor-free frontier with
-// suppress-and-descend recursion): its per-edge parent-retention COMPOUNDED —
-// 50% per edge over two tiers → 25% panel prevalence — producing false-precision
-// headlines. This model is a role-tagged DISPLAY TREE over the compressed
-// roll-up: integer counts + a tree walk, depth handled structurally (no
-// confidence weights).
+// A role-tagged DISPLAY TREE over the compressed roll-up: integer counts + a tree
+// walk, depth handled structurally (no confidence weights). (Superseded en route:
+// the ancestor-free frontier with per-edge parent-retention, which COMPOUNDED to
+// false-precision headlines.)
 //
 // Five roles (see the spec §3a table):
 //   heading   — an uncounted grouping node (its count ≡ a child's ⇒ collapsed),
@@ -36,21 +33,31 @@
 //                                              ancestor; an uncounted heading is
 //                                              NEVER a denominator (§rule 6).
 //
-// Two DEFERRED knobs, both parameters (INTEGER cross-multiplication — a single
-// numeric bar + `>` can express neither the strict-majority nor the inclusive-⅔
-// rule, and it avoids float boundaries — Codex 5):
+// Two knobs, INTEGER cross-multiplication (a single numeric bar + `>` can express
+// neither the strict-majority nor the inclusive-⅔ rule, and it avoids float
+// boundaries — Codex 5):
 //   - primary bar — count>=2 AND (majority: count*2 > n ; twoThirds: count*3 >= n*2)
 //   - peak bar     — count>=2 AND count*peakDen >= ancestorCount*peakNum
 
-import type { AromaRollup, AromaRollupNode } from '@verre/core'
+import type { AromaRollup, AromaRollupNode } from './aromaAggregate'
 
-export type AromaConsensusOpts = {
+export type AromaConsensusOpts = Readonly<{
   /** Primary-bar mode. 'majority' = strict > n/2; 'twoThirds' = inclusive >= 2n/3. */
   primary: 'majority' | 'twoThirds'
   /** Peak-bar fraction numerator/denominator (branch concentration), e.g. 1/3 or 2/3. */
   peakNum: number
   peakDen: number
-}
+}>
+
+// The RULED shipped defaults (Simon, 2026-07-14): primary strict majority, peak
+// >= 1/3. `aromaConsensus(rollup)` with no opts uses exactly these. FROZEN so a
+// caller can't mutate the shared object and silently re-rule every future
+// no-options call (Codex).
+export const DEFAULT_CONSENSUS_OPTS = Object.freeze({
+  primary: 'majority',
+  peakNum: 1,
+  peakDen: 3,
+}) satisfies AromaConsensusOpts
 
 export type ConsensusRole = 'heading' | 'context' | 'primary' | 'secondary' | 'peak'
 
@@ -102,7 +109,7 @@ type WorkNode = {
   role: ConsensusRole | null
 }
 
-export function aromaConsensus(rollup: AromaRollup, opts: AromaConsensusOpts): AromaConsensusResult {
+export function aromaConsensus(rollup: AromaRollup, opts: AromaConsensusOpts = DEFAULT_CONSENSUS_OPTS): AromaConsensusResult {
   // Pass 0 — empty guard. No engaged taster ⇒ no division ever runs on empty
   // data (Codex 2). Return the exact empty contract.
   if (rollup.n === 0) return { roots: [], hasStrongAgreement: false, n: 0 }

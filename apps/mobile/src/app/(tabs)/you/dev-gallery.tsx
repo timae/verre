@@ -9,13 +9,11 @@ import { Icon } from '@/components/ui/Icon';
 import { Avatar } from '@/components/ui/Avatar';
 import { alpha } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, type AromaSelection } from '@verre/core';
-// Types are erased at compile → safe as a static import; the RUNTIME selector is
-// lazy-required inside __DEV__ below so Metro's DCE keeps the gallery-only
-// consensus code out of the production bundle (this screen redirects in prod,
-// but a static import resolves BEFORE that runtime return — same reason the
-// glass/@expo/ui labs are require()'d).
-import type { AromaConsensusOpts, ConsensusDisplayNode } from '@/components/moments/aromaConsensus';
+import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, aromaConsensus, type AromaConsensusOpts, type ConsensusDisplayNode, type AromaSelection } from '@verre/core';
+// The compare-VIEW / contributor derivations are still mobile-gallery-owned and
+// lazy-required under __DEV__ below (Metro's DCE keeps them out of prod). The
+// aromaConsensus SELECTOR moved into @verre/core (Slice 3a) — it's a normal core
+// import now. Types are erased at compile → safe as a static import regardless.
 import type { StripChip, PopoverContent, CompareSelection } from '@/components/moments/aromaCompareView';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
@@ -69,18 +67,16 @@ if (__DEV__) {
     LabGlass = null;
   }
 }
-// The gallery-only aroma consensus selector (experimental §8 compare roll-up).
-// Pure TS, but require()'d under __DEV__ so it never enters the production graph
-// (the redirect at the top of DevGallery runs too late — a static import would
-// already have pulled it in).
-let labAromaConsensus: typeof import('@/components/moments/aromaConsensus').aromaConsensus | null = null;
+// The gallery-only compare-VIEW + contributor derivations — require()'d under
+// __DEV__ so they never enter the production graph (the redirect at the top of
+// DevGallery runs too late — a static import would already have pulled them in).
+// (aromaConsensus is NO LONGER here — it moved to @verre/core in Slice 3a and is
+// a normal static import above.)
 let labCompareView: typeof import('@/components/moments/aromaCompareView') | null = null;
 let labBuildContributors: typeof import('@/components/moments/aromaContributors').buildAromaContributors | null = null;
 if (__DEV__) {
   // Relative (not '@/') so Metro resolves the require the same way regardless of
   // tsconfig-paths handling — this file is under src/app/(tabs)/you/.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  labAromaConsensus = (require('../../../components/moments/aromaConsensus') as typeof import('@/components/moments/aromaConsensus')).aromaConsensus;
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   labCompareView = require('../../../components/moments/aromaCompareView') as typeof import('@/components/moments/aromaCompareView');
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -430,12 +426,13 @@ function DevSlider({ value, onChange, min, max, step }: { value: number; onChang
 }
 
 // ── Aroma roll-up lab (compare §8) ───────────────────────────────────────────
-// Renders the EXPERIMENTAL role-based consensus TREE over the ten pinned panels
-// (P1–P10) so Simon can rule its two knobs (primary bar + peak bar) against the
-// real spread. The aggregate is settled (@verre/core); aromaConsensus is
-// gallery-owned until the knobs are ruled, then moves to core. The math is
-// separately pinned in .local/test-env/scripts/aroma-aggregate-units.ts (the
-// gallery must not present unverified calculations).
+// Renders the role-based consensus TREE over the ten pinned panels (P1–P10) with
+// the two knobs live, so the selector's behaviour is visible against the real
+// spread. The aggregate + the selector (aromaConsensus) both live in @verre/core
+// now — the selector moved there in Slice 3a with the ruled defaults baked; the
+// knob toggles stay here for future re-evaluation. The math is separately pinned
+// in .local/test-env/scripts/aroma-aggregate-units.ts (the gallery must not
+// present unverified calculations).
 const aS = (a: string, m: string | null = null): AromaSelection => ({ a, m });
 const aSp = (a: string, m: string | null = null): AromaSelection => ({ a, m, p: true }); // pronounced
 const rep = (n: number, f: () => AromaSelection[]) => Array.from({ length: n }, f);
@@ -534,7 +531,7 @@ function AromaRollupLab() {
       </View>
       {ROLLUP_PANELS.map((panel) => {
         const rollup = aggregateAromaRollup(panel.tasters);
-        const res = labAromaConsensus!(rollup, opts);
+        const res = aromaConsensus(rollup, opts);
         // count(atGrain) distribution, count desc → finer tier → taxonomy order
         // (NEVER atGrain). byFamily is already taxonomy-ordered; a stable sort by
         // (−count, −tierRank) preserves taxonomy order within ties.
@@ -939,7 +936,7 @@ function Tier2PanelCard({ panel, opts, pronBar, onTapChip, onDetailed, popover }
   // wrongly fit one extra chip and spill onto a 3rd line).
   const [chipW, setChipW] = useState<Record<string, number>>({});
   const [pillW, setPillW] = useState<Record<string, number>>({});
-  const res = labAromaConsensus!(aggregateAromaRollup(panel.tasters), opts);
+  const res = aromaConsensus(aggregateAromaRollup(panel.tasters), opts);
   const contrib = labBuildContributors!(labRaters(panel.tasters));
   const strip = labCompareView!.tier2Strip(res, contrib, pronBar);
   const widths = strip.map((c) => chipW[c.id] ?? 0);
@@ -1074,7 +1071,7 @@ function AromaTier2Lab() {
       {routeNote ? <VText variant="caption" color="inkFaint">{`route → ${routeNote}  ·  selection: ${sel.kind}${sel.kind !== 'none' ? ` ${sel.id}` : ''}`}</VText> : null}
       {ROLLUP_PANELS.map((panel) => {
         // Recompute (cheap) so the popover reads this panel's result/contributors.
-        const res = labAromaConsensus!(aggregateAromaRollup(panel.tasters), opts);
+        const res = aromaConsensus(aggregateAromaRollup(panel.tasters), opts);
         const isOpenHere = openKey?.startsWith(panel.title + '|') ?? false;
         const openContent = isOpenHere
           ? labCompareView!.popoverContent(res, labBuildContributors!(labRaters(panel.tasters)), openKey!.slice(panel.title.length + 1), pronBar)

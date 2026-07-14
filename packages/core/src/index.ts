@@ -104,3 +104,11 @@ export {
   type AromaRollup,
   type AromaRollupNode,
 } from './aroma/aromaAggregate'
+export {
+  aromaConsensus,
+  DEFAULT_CONSENSUS_OPTS,
+  type AromaConsensusOpts,
+  type AromaConsensusResult,
+  type ConsensusDisplayNode,
+  type ConsensusRole,
+} from './aroma/aromaConsensus'
