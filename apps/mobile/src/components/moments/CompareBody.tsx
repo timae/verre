@@ -16,7 +16,7 @@ import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
-import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, AnchorButton, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
@@ -32,63 +32,6 @@ import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
-
-// DEV-ONLY (compare §9, Slice 2b): the ruled Tier-2 Aroma-agreement strip +
-// contributor popover, lazy-required so Metro's DCE keeps it — and the
-// selector/compare-view/contributor derivations it pulls in — OUT of the
-// production bundle. Production Tier 2 (slice 3b) will import it normally.
-let LabAromaStrip: typeof import('./AromaAgreementStrip.dev').AromaAgreementStrip | null = null;
-if (__DEV__) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  LabAromaStrip = (require('./AromaAgreementStrip.dev') as typeof import('./AromaAgreementStrip.dev')).AromaAgreementStrip;
-}
-// The pinned representative panel (an edge-case-rich synthetic set) shown inside
-// the real card via the Live/Pinned toggle — live sessions alone may lack useful
-// edge cases (Codex). Verified against the selector to make ALL THREE knobs bite
-// (n=8): strip = Strawberry 5 [PRIMARY, group-pronounced] · Vegetal 4 · Oak 3 ·
-// Lemon 2 [secondaries].
-//   - primary knob: majority → Strawberry primary; twoThirds (5×3=15 < 16) →
-//     collapses to Fruity primary, Lemon drops.
-//   - peak knob: Vegetal's popover shows "cut_grass 2" (2/4 = 50%) at ⅓, and
-//     NOTHING at ⅔ (2×3=6 < 4×2=8) — the coarse `vegetal` picks make the family
-//     node the peak denominator (no subfamily buffer), so 50% is a real boundary.
-//   - pron knob: Strawberry 5/8 pronounced → group-pronounced at majority
-//     (5×2=10 > 8), NOT at twoThirds (5×3=15 < 16).
-const DEV_PINNED_RATERS: { id: string; displayName: string; aromas: { a: string; m: string | null; p?: boolean }[] }[] = [
-  { id: 'p0', displayName: 'Mara', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }, { a: 'cut_grass', m: null }] },
-  { id: 'p1', displayName: 'Jonas', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }, { a: 'cut_grass', m: null }] },
-  { id: 'p2', displayName: 'Léa', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }] },
-  { id: 'p3', displayName: 'David', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'vegetal', m: null }] },
-  { id: 'p4', displayName: 'Sofia', aromas: [{ a: 'strawberry', m: null, p: true }, { a: 'oak', m: null }] },
-  { id: 'p5', displayName: 'Noah', aromas: [{ a: 'oak', m: null }, { a: 'lemon', m: null }] },
-  { id: 'p6', displayName: 'Clara', aromas: [{ a: 'oak', m: null }] },
-  { id: 'p7', displayName: 'Theo', aromas: [{ a: 'lemon', m: null }] },
-];
-
-// DEV-only segmented toggle for the 2b knob rows (a switch, styled like the
-// gallery knobs). Generic over the option value.
-function DevKnob<T extends string>({ options, value, onChange }: {
-  options: [T, string][];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  const { theme } = useTheme();
-  return (
-    <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-      {options.map(([v, label]) => (
-        <Pressable
-          key={v}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: value === v }}
-          onPress={() => onChange(v)}
-          style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: value === v ? theme.surface : 'transparent' }}
-        >
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: value === v ? theme.ink : theme.inkSoft }}>{label}</VText>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
 
 // 02d Compare — the session screen's second TAB (in-screen swap, Simon's
 // ruling 2026-07-02: everything above the tab strip stays, no route change).
@@ -213,10 +156,8 @@ function buildItems(
         }))
         // Compare renders scores + structure only — a notes-only (or stale
         // cleared) rating has neither and would make a dead-end card ("No
-        // structure detail" + "No scores yet"). DEV: also keep aroma-only raters
-        // so the Slice-2b Aroma-agreement strip sees the COMPLETE aroma input
-        // (production Tier 2, slice 3b, will widen this filter for real).
-        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0 || (__DEV__ && (r.rating.aromas?.length ?? 0) > 0));
+        // structure detail" + "No scores yet").
+        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
       const scores = raters.map((r) => r.rating.score || 0);
       const scoredScores = scores.filter((v) => v > 0);
       return {
@@ -645,15 +586,6 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
-  // DEV 2b: Live (this card's real raters) vs Pinned (the edge-case panel) for
-  // the Aroma-agreement strip density check — a switch, never both at once
-  // (rendering two strips would invalidate the density read — Codex). Plus the
-  // three LIVE knobs so the thresholds can actually be RULED in the real card
-  // (Codex — hardcoding them defeats 2b). Per-card state; provisional defaults.
-  const [aromaSource, setAromaSource] = useState<'live' | 'pinned'>('live');
-  const [aromaPrimary, setAromaPrimary] = useState<'majority' | 'twoThirds'>('majority');
-  const [aromaPeak, setAromaPeak] = useState<'third' | 'twoThirds'>('third');
-  const [aromaPron, setAromaPron] = useState<'majority' | 'twoThirds'>('majority');
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -791,7 +723,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               // the number's width). 60 holds the widest value (★19 + gap4 +
               // "4.25" ~36); the content is a fixed 17px, so this width is flat,
               // not comfort-grown.
-              <View style={{ width: 60, alignItems: 'flex-start' }}>
+              <View style={{ minWidth: 60, alignItems: 'flex-start' }}>
                 <StarScore value={item.avg} size={17} />
               </View>
             ) : null}
@@ -836,26 +768,6 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               />
             )}
           </View>
-          {/* DEV 2b — the ruled Tier-2 Aroma-agreement strip IN the real card,
-              over Live (this card's raters) or a Pinned edge-case panel. Removed
-              entirely from production builds (LabAromaStrip is __DEV__-only). */}
-          {__DEV__ && LabAromaStrip ? (
-            <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16, gap: 8 }}>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                <DevKnob options={[['live', 'Live'], ['pinned', 'Pinned']]} value={aromaSource} onChange={setAromaSource} />
-                <DevKnob options={[['majority', 'primary > n/2'], ['twoThirds', 'primary ≥ 2n/3']]} value={aromaPrimary} onChange={setAromaPrimary} />
-                <DevKnob options={[['third', 'peak ≥ ⅓'], ['twoThirds', 'peak ≥ ⅔']]} value={aromaPeak} onChange={setAromaPeak} />
-                <DevKnob options={[['majority', 'pron > n/2'], ['twoThirds', 'pron ≥ 2n/3']]} value={aromaPron} onChange={setAromaPron} />
-              </View>
-              <LabAromaStrip
-                raters={aromaSource === 'pinned'
-                  ? DEV_PINNED_RATERS
-                  : item.raters.map((r) => ({ id: r.id, displayName: r.displayName, aromas: r.rating.aromas ?? [] }))}
-                opts={{ primary: aromaPrimary, peakNum: aromaPeak === 'third' ? 1 : 2, peakDen: 3 }}
-                pronBar={aromaPron}
-              />
-            </View>
-          ) : null}
         </View>
       ) : null}
       {sheetOpen ? (
@@ -890,8 +802,10 @@ function CmpChart({
   onSelectAxis: (i: number) => void;
 }) {
   const phone = usePhoneTokens();
+  const { theme } = useTheme();
   const flavourColor = useFlavourColors();
   const personColor = usePersonColors();
+  const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   const axes = resolveAxes('wine', item.wine.type);
   // Measured host width → uniform chart scale-down (the design's .radar
   // max-width:100%): the natural canvas (232 + 2×58 label pad = 348) is wider
@@ -903,7 +817,12 @@ function CmpChart({
 
   let head: string;
   let chart: React.ReactNode;
+  // `hint` is the always-visible descriptive line (kept for the single-person
+  // wheel — it explains WHY it's one person's view). `infoHint` is the
+  // interaction how-to for the group modes (radar/wheel) — packed into the ⓘ
+  // button beside the title, matching RatingSection's intensity reference.
   let hint: string | null = null;
+  let infoHint: string | null = null;
   // Size-adaptive mode keys on the STRUCTURE-ENGAGED tasters (ruled via
   // review feedback): one structure profile among score-only raters draws
   // that person's wheel, never a one-series radar or a degenerate C1b.
@@ -940,8 +859,8 @@ function CmpChart({
       </VText>
     );
   } else if (flavourRaters.length <= 4) {
-    head = 'Group flavour';
-    hint = 'Tap a flavour name to see the split.';
+    head = 'Group structure';
+    infoHint = 'Tap a flavour name to see the split.';
     // agg.axes is built from the SAME resolveAxes('wine', type) list, in the
     // same order — so index i lines up with axes[i]. n=0 = never asked.
     chart = (
@@ -963,7 +882,7 @@ function CmpChart({
     );
   } else {
     head = 'Group intensity · range + average';
-    hint = 'Tap a wedge to see the split.';
+    infoHint = 'Tap a wedge to see the split.';
     chart = (
       <ComparisonWheel
         axes={agg.axes.map((a) => ({ label: a.l, color: flavourColor(a.k), min: a.min, max: a.max, avg: a.avg, absent: a.n === 0 }))}
@@ -976,16 +895,41 @@ function CmpChart({
   }
   return (
     <>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginBottom: 6 }}>
         <VText variant="label" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', ...phone.text('label') }}>
           {head}
         </VText>
+        {infoHint ? (
+          // 30pt real touch box (hitSlop can't extend past a small parent — RN
+          // clips it to the parent frame, so the BOX must be the target). The
+          // box already centers in the row; the glyph then reads a hair LOW
+          // because uppercase caps sit visually high in their line box (no
+          // descenders), so the icon gets a 1pt upward translate to land its
+          // midline on the caps' midline. The translate doesn't affect layout
+          // or the touch box.
+          <AnchorButton
+            size={30}
+            accessibilityLabel="How to read this chart"
+            onOpen={setInfoAnchor}
+          >
+            <View style={{ transform: [{ translateY: -1 }] }}>
+              <Icon name="info" size={14} color={theme.inkSoft} />
+            </View>
+          </AnchorButton>
+        ) : null}
       </View>
       <View onLayout={(e) => setHostW(e.nativeEvent.layout.width)} style={{ alignItems: 'center', marginVertical: -6 }}>{chart}</View>
       {hint ? (
         <VText variant="caption" color="inkSoft" style={{ textAlign: 'center', marginTop: 8, fontStyle: 'italic' }}>
           {hint}
         </VText>
+      ) : null}
+      {infoHint ? (
+        <AnchoredMenu anchor={infoAnchor} onClose={() => setInfoAnchor(null)} right={16} minWidth={180}>
+          <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
+            <VText variant="small" style={{ color: theme.ink }}>{infoHint}</VText>
+          </View>
+        </AnchoredMenu>
       ) : null}
     </>
   );
@@ -1062,7 +1006,7 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
   const phone = usePhoneTokens();
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => ({ paddingVertical: 4, marginTop: 8, alignSelf: 'flex-start', opacity: pressed ? 0.6 : 1 })}>
-      <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+      <VText color="accent" surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
         Show All {total}
       </VText>
     </Pressable>
