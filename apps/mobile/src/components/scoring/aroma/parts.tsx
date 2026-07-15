@@ -697,7 +697,9 @@ export function ChipMeasurePass({
 
 // The "+N more" overflow pill — the tail of a capped chip row. `vPad` must
 // match the row's chips so the pill sits at their height (its padding carries
-// the chips' 1.5 border band on top of the shared metric).
+// the chips' 1.5 border band on top of the shared metric). Deliberately a
+// 3-prop primitive: compare's "Aroma details" tail is its OWN component
+// (AromaCompareStrip's AromaDetailPill), not a parameterization of this one.
 export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress: () => void; vPad?: number }) {
   const { theme } = useTheme();
   const { padV, lineH } = badgeVMetrics(vPad);

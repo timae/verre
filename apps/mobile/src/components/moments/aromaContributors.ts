@@ -4,8 +4,8 @@
 // see the people + their exact picks), whereas aggregateAromaRollup deliberately
 // keeps only counts. Both are derived from the SAME per-taster picks, so a
 // tested invariant pins that they agree (every agreement node's UNIQUE
-// contributor count === its aggregate count). Gallery-owned until the compare
-// surface ships; moves beside the ruled selector then.
+// contributor count === its aggregate count). SHIPS IN PRODUCTION via
+// buildCompareAromaModel (aromaCompareView) → the strip/sheet popovers.
 //
 // Two granularities, because the compare surface reads contributors two ways
 // (Simon + Codex, 2026-07-14):

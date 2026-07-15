@@ -15,6 +15,7 @@ import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, aroma
 // aromaConsensus SELECTOR moved into @verre/core (Slice 3a) — it's a normal core
 // import now. Types are erased at compile → safe as a static import regardless.
 import type { StripChip, PopoverContent, CompareSelection } from '@/components/moments/aromaCompareView';
+import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { AromaChip, useTapOrDouble } from '@/components/scoring/aroma/parts';
@@ -67,11 +68,11 @@ if (__DEV__) {
     LabGlass = null;
   }
 }
-// The gallery-only compare-VIEW + contributor derivations — require()'d under
-// __DEV__ so they never enter the production graph (the redirect at the top of
-// DevGallery runs too late — a static import would already have pulled them in).
-// (aromaConsensus is NO LONGER here — it moved to @verre/core in Slice 3a and is
-// a normal static import above.)
+// The compare-view + contributor derivations. Both are PRODUCTION modules now
+// (CompareBody → AromaCompareStrip/AromaDetailSheet ship them), so the lazy require no
+// longer keeps anything out of the prod bundle — it's kept only so the lab's
+// access pattern stays uniform with the other DEV-only requires above.
+// (aromaConsensus moved to @verre/core in Slice 3a — a normal static import.)
 let labCompareView: typeof import('@/components/moments/aromaCompareView') | null = null;
 let labBuildContributors: typeof import('@/components/moments/aromaContributors').buildAromaContributors | null = null;
 if (__DEV__) {
@@ -83,14 +84,6 @@ if (__DEV__) {
   labBuildContributors = (require('../../../components/moments/aromaContributors') as typeof import('@/components/moments/aromaContributors')).buildAromaContributors;
 }
 // The SHARED ruled candidate — the SAME component the real CmpAccItem mounts
-// (compare §9, Slice 2b), so gallery + card render one source of truth. The
-// experiment lab below (Title Bar / Glass / knob toggles) stays separate.
-let LabAromaStrip: typeof import('@/components/moments/AromaAgreementStrip.dev').AromaAgreementStrip | null = null;
-if (__DEV__) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  LabAromaStrip = (require('../../../components/moments/AromaAgreementStrip.dev') as typeof import('@/components/moments/AromaAgreementStrip.dev')).AromaAgreementStrip;
-}
-
 const LAB_W = 150;
 const LAB_H = 64;
 function LabBackdrop() {
@@ -839,19 +832,19 @@ function PopoverBody({ content, onViewContributors, onMoreBranches }: {
           ) : null}
         </View>
       ) : null}
-      {content.contributorNames.length > 0 ? (
+      {content.contributors.length > 0 ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
           <View style={{ flexDirection: 'row', paddingLeft: 2 }}>
-            {content.contributorNames.map((name, i) => (
-              <View key={name} style={{ marginLeft: i === 0 ? 0 : -7 }}>
-                <Avatar name={name} size={26} ring initialsSize={9.5} />
+            {content.contributors.map((c, i) => (
+              <View key={c.id} style={{ marginLeft: i === 0 ? 0 : -7 }}>
+                <Avatar name={c.displayName} size={26} ring initialsSize={9.5} />
               </View>
             ))}
           </View>
           <View style={{ flex: 1, gap: 1 }}>
             <VText variant="caption" color="inkFaint">Supported By</VText>
             <VText numberOfLines={1} surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, color: theme.inkSoft }}>
-              {content.contributorNames.join(', ')}{content.moreContributors > 0 ? ` +${content.moreContributors}` : ''}
+              {content.contributors.map((c) => c.displayName).join(', ')}{content.moreContributors > 0 ? ` +${content.moreContributors}` : ''}
             </VText>
           </View>
         </View>
@@ -1112,23 +1105,23 @@ function AromaTier2Lab() {
   );
 }
 
-// The RULED candidate rendered through the SHARED AromaAgreementStrip.dev
-// component — byte-identical to what the real CmpAccItem mounts (Slice 2b). The
-// experiment lab above keeps the Title Bar / Glass / knob toggles for comparison;
-// this section is the single source of truth for the shipped look.
+// The SHIPPED AromaCompareStrip (a production component) rendered over the
+// pinned panels — the same component the real CmpAccItem mounts, with the ruled
+// defaults (no opts). "Detailed aromas" is a no-op here (the Tier 3 Agreement
+// sheet is wired in the real card). The experiment lab above keeps the Title Bar
+// / Glass / knob toggles for comparison; this is the single source of truth for
+// the shipped look.
 function AromaRuledLab() {
-  const opts: AromaConsensusOpts = { primary: 'majority', peakNum: 1, peakDen: 3 };
-  if (!LabAromaStrip) return null;
   return (
     <View style={{ gap: space.xs }}>
-      <VText variant="heading">Aroma agreement · RULED candidate (shared)</VText>
+      <VText variant="heading">Aroma agreement · shipped component</VText>
       <VText variant="small" color="inkSoft">
-        The exact `AromaAgreementStrip` component the real compare card mounts — Badge Extension + Corner popover, provisional knobs (majority / ⅓ / majority). One source of truth; the lab above is experiments only.
+        The production `AromaCompareStrip` — Badge Extension + Corner popover, ruled defaults (majority / ⅓). The experiment lab above is the parked variants only.
       </VText>
       {ROLLUP_PANELS.map((panel) => (
         <View key={panel.title} style={{ gap: 6, padding: 12, borderRadius: radius.md }}>
           <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{panel.title}</VText>
-          <LabAromaStrip raters={labRaters(panel.tasters)} opts={opts} pronBar="majority" />
+          <AromaCompareStrip model={labCompareView!.buildCompareAromaModel(labRaters(panel.tasters))} onOpenDetails={() => {}} />
         </View>
       ))}
     </View>

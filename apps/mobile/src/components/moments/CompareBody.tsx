@@ -11,6 +11,9 @@ import {
   resolveAxes,
   type ConsensusKey,
 } from '@verre/core';
+import { buildCompareAromaModel } from '@/components/moments/aromaCompareView';
+import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
+import { AromaDetailSheet } from '@/components/moments/AromaDetailSheet';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
@@ -32,6 +35,7 @@ import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
+
 
 // 02d Compare — the session screen's second TAB (in-screen swap, Simon's
 // ruling 2026-07-02: everything above the tab strip stays, no route change).
@@ -154,10 +158,11 @@ function buildItems(
           filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine.type),
           personIndex: rosterIndex.get(b.id)!,
         }))
-        // Compare renders scores + structure only — a notes-only (or stale
-        // cleared) rating has neither and would make a dead-end card ("No
-        // structure detail" + "No scores yet").
-        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
+        // Compare renders score, structure, OR aromas — an aroma-only rating is
+        // real compare input (the Aroma-agreement strip needs it); only a
+        // notes-only (or stale cleared) rating has none of the three and would
+        // make a dead-end card ("No structure detail" + "No scores yet").
+        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0 || (r.rating.aromas?.length ?? 0) > 0);
       const scores = raters.map((r) => r.rating.score || 0);
       const scoredScores = scores.filter((v) => v > 0);
       return {
@@ -586,6 +591,10 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
+  // The Tier 3 Aroma "Agreement" sheet (the full consensus tree) — opened from
+  // the strip's "Detailed aromas" (no focus) + the popover's "+N more" (focused
+  // on the tapped node's branch).
+  const [aromaSheet, setAromaSheet] = useState<{ open: boolean; focusId?: string }>({ open: false });
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -607,6 +616,19 @@ function CmpAccItem({ item }: { item: CmpItem }) {
     () => aggregateFlavourAxes(item.raters.map((r) => r.rating.flavors), 'wine', wine.type),
     [item, wine.type],
   );
+  // The ONE compare-aroma derivation for this card (consensus + contributors +
+  // mode fork + strip + all-aromas rows), computed once and passed to BOTH the
+  // Tier 2 strip and the Tier 3 sheet — they can never drift on their own
+  // recomputation (Codex architecture ruling, 2026-07-15).
+  const aromaModel = useMemo(
+    () => buildCompareAromaModel(item.raters.map((r) => ({ id: r.id, displayName: r.displayName, aromas: r.rating.aromas ?? [] }))),
+    [item],
+  );
+  // Mount the aroma block whenever there's a RESOLVABLE respondent — the strip
+  // shows the agreement OR the flat union fallback (Simon 2026-07-14). The
+  // consensus n only counts tasters with >=1 resolvable aroma, so a row of only
+  // obsolete/unknown ids won't mount a padded block that the strip then blanks.
+  const hasAnyAroma = aromaModel.result.n > 0;
 
   // .cmp-chev transform dur-2 — native-driven rotate, no re-render per frame.
   const chev = useRef(new Animated.Value(0)).current;
@@ -743,7 +765,20 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             selAxis={detail ? -1 : selAxis}
             onSelectAxis={selectAxis}
           />
-          <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16 }}>
+          {/* Aromas — DIRECTLY under the structure wheel (feed-detail order:
+              structure → aromas), before the per-person score rows. Shows the
+              consensus strip when the panel agrees, else the flat union
+              fallback ("Aromas mentioned" / "Aromas"); the strip self-guards to
+              null when nobody gave an aroma. */}
+          {hasAnyAroma ? (
+            <View style={{ marginTop: 4, paddingTop: 12, paddingBottom: 12 }}>
+              <AromaCompareStrip model={aromaModel} onOpenDetails={(focusId) => setAromaSheet({ open: true, focusId })} />
+            </View>
+          ) : null}
+          {/* marginTop 4 only when the aroma block is ABSENT (main's spacing);
+              with it present the block's paddingBottom 12 already centers the
+              rule (12 above / 12 below). */}
+          <View style={{ marginTop: hasAnyAroma ? 0 : 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16 }}>
             {drillAxis ? (
               <AxisSplit
                 item={item}
@@ -778,6 +813,15 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           agg={agg}
           axis={drillAxis ?? null}
           structureFirst={agg.n >= 1 && agg.n <= 4}
+        />
+      ) : null}
+      {aromaSheet.open ? (
+        <AromaDetailSheet
+          open={aromaSheet.open}
+          onClose={() => setAromaSheet({ open: false })}
+          model={aromaModel}
+          wineName={wine._blind ? `Impression ${item.index + 1}` : wine.name}
+          focusId={aromaSheet.focusId}
         />
       ) : null}
     </View>
