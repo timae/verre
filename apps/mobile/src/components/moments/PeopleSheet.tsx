@@ -9,7 +9,7 @@ import { Icon } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { getMyFriends } from '@/lib/api/me';
 import { fuzzyIncludes } from '@/lib/search';
 import { usePhoneTokens } from '@/lib/layout';

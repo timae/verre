@@ -4,7 +4,7 @@ import { Keyboard, View, Pressable, ScrollView, useWindowDimensions } from 'reac
 import { AROMA_SELECTION_CAP, searchAromas, type AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';

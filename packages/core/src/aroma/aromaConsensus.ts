@@ -195,10 +195,6 @@ export function aromaConsensus(rollup: AromaRollup, opts: AromaConsensusOpts = D
   // on its path → secondary. A still-unclassified counted node BELOW an emitted
   // counted head (primary OR secondary) or below an emitted peak → peak iff it
   // clears the peak bar vs the last emitted counted ancestor.
-  const branchHasPrimary = (wn: WorkNode): boolean => {
-    if (wn.role === 'primary') return true
-    return wn.children.some(branchHasPrimary)
-  }
   // Does the path from root DOWN TO (and excluding) this node contain a primary?
   // Passed down as `primaryAbove`.
   const emit = (wn: WorkNode, primaryAbove: boolean, lastCountedAncestor: WorkNode | null, headEmitted: boolean) => {
@@ -211,9 +207,10 @@ export function aromaConsensus(rollup: AromaRollup, opts: AromaConsensusOpts = D
       // Already assigned in 4a — a counted displayed head/ancestor.
     } else if (!primaryAbove && !headEmitted) {
       // First still-unclassified counted node on a primary-free branch → the
-      // branch head. It's a SECONDARY iff this subtree has no primary at all
-      // (if it did, 4a would have marked this node context, not left it null).
-      wn.role = branchHasPrimary(wn) ? 'context' : 'secondary'
+      // branch head. Pass 4a already marked every non-collapsed ancestor of a
+      // primary as context, so an unclassified node here is necessarily on a
+      // primary-free branch.
+      wn.role = 'secondary'
     } else if (clearsPeak(wn.ro.count, lastCountedAncestor?.ro.count ?? wn.ro.count, opts)) {
       wn.role = 'peak'
     } else {

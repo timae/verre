@@ -4,7 +4,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { DateField, SelectField } from '@/components/moments/momentForm';
 import { Avatar } from '@/components/ui/Avatar';
 import { RoleChip } from '@/components/moments/RoleChip';

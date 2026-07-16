@@ -11,7 +11,13 @@ import {
   resolveAxes,
   type ConsensusKey,
 } from '@verre/core';
-import { buildCompareAromaModel } from '@/components/moments/aromaCompareView';
+import {
+  buildCompareAromaModel,
+  compareAromaInputSignature,
+  hasResolvableAroma,
+  viewContributorsRoute,
+  type Tier3Route,
+} from '@/components/moments/aromaCompareView';
 import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
 import { AromaDetailSheet } from '@/components/moments/AromaDetailSheet';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
@@ -23,14 +29,13 @@ import { AnchoredMenu, AnchorButton, MenuItem, type MenuAnchor } from '@/compone
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
-import { TextField } from '@/components/ui/TextField';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Thumb } from '@/components/ui/Thumb';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
-import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
@@ -162,7 +167,10 @@ function buildItems(
         // real compare input (the Aroma-agreement strip needs it); only a
         // notes-only (or stale cleared) rating has none of the three and would
         // make a dead-end card ("No structure detail" + "No scores yet").
-        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0 || (r.rating.aromas?.length ?? 0) > 0);
+        .filter((r) =>
+          (r.rating.score || 0) > 0
+          || Object.keys(r.filled).length > 0
+          || hasResolvableAroma(r.rating.aromas));
       const scores = raters.map((r) => r.rating.score || 0);
       const scoredScores = scores.filter((v) => v > 0);
       return {
@@ -587,14 +595,20 @@ export function CompareBody({
 function CmpAccItem({ item }: { item: CmpItem }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // Fixed ACROSS cards, but large enough for the widest capped score label.
+  // `score` tops out at 1.15×; growing the shared box by the same factor keeps
+  // every star on one x-coordinate without clipping 4.25.
+  const scoreBoxWidth = Math.max(60, Math.round(60 * phone.surface('score').fontScale));
   const { wine } = item;
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
-  // The Tier 3 Aroma "Agreement" sheet (the full consensus tree) — opened from
-  // the strip's "Detailed aromas" (no focus) + the popover's "+N more" (focused
-  // on the tapped node's branch).
-  const [aromaSheet, setAromaSheet] = useState<{ open: boolean; focusId?: string }>({ open: false });
+  // The Tier 3 aroma detail sheet (tabbed since slice 3d) — opened from the
+  // strip's "Aroma Details" (default tab, no focus), the popover's "+N more"
+  // (Agreement tab, focused on the tapped node's branch), and the popover's
+  // View Contributors / Perceived-by tap (People tab filtered to the aroma,
+  // via the staged viewContributorsRoute).
+  const [aromaSheet, setAromaSheet] = useState<{ open: boolean; focusId?: string; route?: Tier3Route }>({ open: false });
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -620,15 +634,31 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   // mode fork + strip + all-aromas rows), computed once and passed to BOTH the
   // Tier 2 strip and the Tier 3 sheet — they can never drift on their own
   // recomputation (Codex architecture ruling, 2026-07-15).
+  const aromaInputs = item.raters.map((r) => ({
+    id: r.id,
+    displayName: r.displayName,
+    aromas: r.rating.aromas ?? [],
+  }));
+  const aromaInputSignature = compareAromaInputSignature(aromaInputs);
+  // Keep the input object stable while its semantic signature is unchanged.
+  // The 5s poll rebuilds `item` even for byte-identical ratings; depending on
+  // `item` made every card (including collapsed ones) rebuild the full model.
+  const stableAromaInputs = useRef({ signature: aromaInputSignature, value: aromaInputs });
+  if (stableAromaInputs.current.signature !== aromaInputSignature) {
+    stableAromaInputs.current = { signature: aromaInputSignature, value: aromaInputs };
+  }
   const aromaModel = useMemo(
-    () => buildCompareAromaModel(item.raters.map((r) => ({ id: r.id, displayName: r.displayName, aromas: r.rating.aromas ?? [] }))),
-    [item],
+    () => (open || aromaSheet.open ? buildCompareAromaModel(stableAromaInputs.current.value) : null),
+    // `aromaInputSignature` deliberately replaces the poll-churned input
+    // object as the semantic dependency; the ref above carries that exact data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aromaInputSignature, aromaSheet.open, open],
   );
   // Mount the aroma block whenever there's a RESOLVABLE respondent — the strip
   // shows the agreement OR the flat union fallback (Simon 2026-07-14). The
   // consensus n only counts tasters with >=1 resolvable aroma, so a row of only
   // obsolete/unknown ids won't mount a padded block that the strip then blanks.
-  const hasAnyAroma = aromaModel.result.n > 0;
+  const hasAnyAroma = (aromaModel?.result.n ?? 0) > 0;
 
   // .cmp-chev transform dur-2 — native-driven rotate, no re-render per frame.
   const chev = useRef(new Animated.Value(0)).current;
@@ -742,10 +772,9 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             {item.avg !== null ? (
               // Fixed-width, star-anchored-left so the ★ lands at a constant x
               // across cards (a right-aligned StarScore would float the star by
-              // the number's width). 60 holds the widest value (★19 + gap4 +
-              // "4.25" ~36); the content is a fixed 17px, so this width is flat,
-              // not comfort-grown.
-              <View style={{ minWidth: 60, alignItems: 'flex-start' }}>
+              // the number's width). The box scales only with the centrally
+              // capped score surface, never per value.
+              <View style={{ width: scoreBoxWidth, alignItems: 'flex-start' }}>
                 <StarScore value={item.avg} size={17} />
               </View>
             ) : null}
@@ -770,9 +799,13 @@ function CmpAccItem({ item }: { item: CmpItem }) {
               consensus strip when the panel agrees, else the flat union
               fallback ("Aromas mentioned" / "Aromas"); the strip self-guards to
               null when nobody gave an aroma. */}
-          {hasAnyAroma ? (
+          {hasAnyAroma && aromaModel ? (
             <View style={{ marginTop: 4, paddingTop: 12, paddingBottom: 12 }}>
-              <AromaCompareStrip model={aromaModel} onOpenDetails={(focusId) => setAromaSheet({ open: true, focusId })} />
+              <AromaCompareStrip
+                model={aromaModel}
+                onOpenDetails={(focusId) => setAromaSheet(focusId ? { open: true, focusId, route: { mode: 'agreement', aromaFilter: null } } : { open: true })}
+                onViewContributors={(aromaId) => setAromaSheet({ open: true, route: viewContributorsRoute(aromaId) })}
+              />
             </View>
           ) : null}
           {/* marginTop 4 only when the aroma block is ABSENT (main's spacing);
@@ -815,13 +848,14 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           structureFirst={agg.n >= 1 && agg.n <= 4}
         />
       ) : null}
-      {aromaSheet.open ? (
+      {aromaSheet.open && aromaModel ? (
         <AromaDetailSheet
           open={aromaSheet.open}
           onClose={() => setAromaSheet({ open: false })}
           model={aromaModel}
           wineName={wine._blind ? `Impression ${item.index + 1}` : wine.name}
           focusId={aromaSheet.focusId}
+          route={aromaSheet.route}
         />
       ) : null}
     </View>
@@ -1232,66 +1266,6 @@ function AxisSplit({
         </PersonRow>
       ))}
       {rows.length > CAP ? <ShowAllButton total={rows.length} onPress={onShowAll} /> : null}
-    </View>
-  );
-}
-
-// .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
-// search glyph. TextField is kept for its formControl Dynamic Type surface;
-// the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder, highlight, onFocus, onBlur }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean; onFocus?: () => void; onBlur?: () => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  // Clearing is part of typing — the ✕ must not bounce the keyboard.
-  const clearRef = useRef<View | null>(null);
-  useRegisterInput(clearRef, value !== '');
-  // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
-  // border, matching the chip controls — never the sunken fill. Restyle the
-  // InviteSheet pseudo-field too if this ever changes. Height rides the
-  // formControl surface — 36 at default scale, growing with the text.
-  // ⚠️ Known accepted a11y nit (Simon's call, PR #65 review round 3): the
-  // clear ✕ target is therefore ~36pt at default scale, under the 44pt
-  // guideline — RN clips a child's hitSlop to the parent frame, so the ONLY
-  // way to reach 44 was to floor the whole field at 44, which makes the pill
-  // taller than the sibling 36pt chips everywhere. Not worth the visual cost
-  // for a small, non-destructive button (the wide field-focus target is fine;
-  // a ✕ mistap just doesn't clear). Large Dynamic Type grows it past 44 anyway.
-  const fieldH = phone.surface('formControl').height(36);
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: fieldH, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
-      <Icon name="search" size={16} color={theme.inkSoft} />
-      <View style={{ flex: 1 }}>
-        <TextField
-          placeholder={placeholder}
-          // Placeholder stops being the accessible name once text is entered.
-          accessibilityLabel={placeholder}
-          value={value}
-          onChangeText={onChangeText}
-          autoCorrect={false}
-          autoCapitalize="none"
-          onFocus={onFocus}
-          onBlur={onBlur}
-          // fontSize override ⇒ lineHeight must match it (TextField's base
-          // compact lineHeight is body-sized; a mismatched line box re-biases
-          // the glyph — see TextField's header).
-          style={{ height: fieldH, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
-        />
-      </View>
-      {value !== '' ? (
-        <Pressable
-          ref={clearRef}
-          accessibilityRole="button"
-          accessibilityLabel="Clear search"
-          onPress={() => onChangeText('')}
-          // Fills the field's full height for the tallest reachable target the
-          // parent allows (RN clips slop to the parent frame — see fieldH);
-          // width 40 + horizontal slop widens it. Icon 14pt; -6 snug to edge.
-          hitSlop={{ left: 8, right: 8 }}
-          style={{ width: 40, height: fieldH, alignItems: 'center', justifyContent: 'center', marginRight: -6 }}
-        >
-          <Icon name="x" size={14} color={theme.inkFaint} />
-        </Pressable>
-      ) : null}
     </View>
   );
 }

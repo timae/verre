@@ -8,7 +8,7 @@ import { formatCode } from '@verre/core';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';

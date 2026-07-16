@@ -697,10 +697,21 @@ export function ChipMeasurePass({
 
 // The "+N more" overflow pill — the tail of a capped chip row. `vPad` must
 // match the row's chips so the pill sits at their height (its padding carries
-// the chips' 1.5 border band on top of the shared metric). Deliberately a
-// 3-prop primitive: compare's "Aroma details" tail is its OWN component
-// (AromaCompareStrip's AromaDetailPill), not a parameterization of this one.
-export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress: () => void; vPad?: number }) {
+// the chips' 1.5 border band on top of the shared metric). On normal page
+// backgrounds it uses `surface`; when hosted on a sheet's `surface`, pass
+// `onSurface` to swap to `bg` and preserve the SAME pill contrast/anatomy.
+// Compare's "Aroma Details" tail remains its OWN component.
+export function MoreChipsPill({
+  count,
+  onPress,
+  vPad,
+  onSurface = false,
+}: {
+  count: number;
+  onPress: () => void;
+  vPad?: number;
+  onSurface?: boolean;
+}) {
   const { theme } = useTheme();
   const { padV, lineH } = badgeVMetrics(vPad);
   return (
@@ -713,7 +724,7 @@ export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress
         paddingVertical: padV + 1.5, // no border — visually matches the chips' padV+1.5
         paddingHorizontal: 12,
         borderRadius: 999,
-        backgroundColor: theme.surface,
+        backgroundColor: onSurface ? theme.bg : theme.surface,
       }}
     >
       <VText

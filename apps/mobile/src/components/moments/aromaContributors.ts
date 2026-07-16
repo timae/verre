@@ -7,22 +7,25 @@
 // contributor count === its aggregate count). SHIPS IN PRODUCTION via
 // buildCompareAromaModel (aromaCompareView) → the strip/sheet popovers.
 //
-// Two granularities, because the compare surface reads contributors two ways
-// (Simon + Codex, 2026-07-14):
+// Three granularities, because the compare surface reads contributors three
+// ways (Simon + Codex, 2026-07-14; participants added for slice 3d):
 //   - AGREEMENT (subsumed): a node's contributors include finer picks that
 //     rolled UP into it (tap Berry → Ana's strawberry + Ben's raspberry + Dan's
 //     coarse "Berry" all appear). Upward-only subsumption, same as the aggregate.
-//   - ALL AROMAS (exact): grouped by BASE aroma id, each modifier a distinct
-//     tally beneath it (3x Strawberry · 2 cooked · 1 fresh). Base count = distinct
-//     tasters; each modifier count = distinct tasters using that modifier, so the
-//     modifier totals MAY exceed the base (one person, two modifiers) — they are
-//     INDEPENDENT signals, never additive parts of the base.
+//   - ALL AROMAS (exact): indexed by BASE aroma id and exact modifier. The
+//     detail sheet flattens these buckets into canonical modifier-bearing
+//     AromaChips; the base-level bucket remains useful for fallback popovers
+//     and routes. Base count = distinct tasters; each exact modifier count =
+//     distinct tasters using that modifier, so those counts MAY sum above the
+//     base when one person made several modifier-bearing picks.
+//   - PARTICIPANTS (per taster): every aroma respondent with ALL their exact
+//     picks, roster order — the detail sheet's People tab.
 //
 // One contributor appears ONCE per node/base even if several of their picks
 // support it (per-taster dedupe, like the aggregate's vote-set). Unknown /
 // re-homed ids are skipped, never thrown (read-path safety).
 
-import { getAromaNode, type AromaSelection } from '@verre/core'
+import { aromaAncestorChain, getAromaNode, type AromaSelection } from '@verre/core'
 
 // The minimal taster shape the helper needs — id + name + their raw stored
 // picks. Mirrors CompareBody's `Rater` (id/displayName/rating.aromas); the wire
@@ -74,18 +77,17 @@ export type AromaContributorIndex = {
   // ALL AROMAS: base aroma id → its exact grouping, in taxonomy-adjacent input
   // order (first-seen); the surface applies its own sort (occurrence / family).
   readonly byBase: ReadonlyArray<AromaBaseGroup>
+  // PARTICIPANTS (slice 3d): every aroma RESPONDENT (>= 1 resolvable pick) with
+  // ALL their exact picks, in roster (input) order — the People tab's
+  // unfiltered read. participants.length === the consensus n. The FILTERED
+  // read (View contributors → one aroma) uses `agreement` instead, so the
+  // filter inherits the same upward subsumption the counts use.
+  readonly participants: ReadonlyArray<AromaContributor>
 }
 
 // Private mutable builder mirror of AromaContributor — the ONLY place picks is
 // pushed to. The public type is deeply readonly; this stays inside the module.
 type MutableContributor = { id: string; displayName: string; picks: AromaSelection[] }
-
-function ancestorChain(node: NonNullable<ReturnType<typeof getAromaNode>>): string[] {
-  const chain = [node.family.id]
-  if (node.subfamily) chain.push(node.subfamily.id)
-  if (node.leaf) chain.push(node.leaf.id)
-  return chain
-}
 
 export function buildAromaContributors(
   raters: ReadonlyArray<AromaContributorInput>,
@@ -105,6 +107,10 @@ export function buildAromaContributors(
   const baseContrib = new Map<string, Map<string, MutableContributor>>()
   const baseMods = new Map<string, Map<string | null, Map<string, MutableContributor>>>()
   const baseOrder: string[] = []
+  // Respondents in roster order, each with ALL their resolvable picks (the
+  // People tab). A rater whose picks ALL fail to resolve never lands here —
+  // matching the consensus n (they're not an aroma respondent).
+  const participantByTaster = new Map<string, MutableContributor>()
 
   for (const rater of raters) {
     if (!rater.aromas || rater.aromas.length === 0) continue
@@ -114,9 +120,10 @@ export function buildAromaContributors(
       // Reconstruct the EXACT selection, preserving the Pronounced flag (only
       // when true — the type is `p?: true`, matching the canonical stored form).
       const sel: AromaSelection = raw.p === true ? { a: raw.a, m: raw.m, p: true } : { a: raw.a, m: raw.m }
+      addTo(participantByTaster, rater, sel)
 
       // AGREEMENT: attribute this pick to the node AND every ancestor.
-      for (const id of ancestorChain(node)) {
+      for (const id of aromaAncestorChain(node)) {
         let byTaster = agree.get(id)
         if (!byTaster) agree.set(id, (byTaster = new Map()))
         addTo(byTaster, rater, sel)
@@ -165,5 +172,5 @@ export function buildAromaContributors(
     })
   }
 
-  return { agreement, byBase }
+  return { agreement, byBase, participants: finish(participantByTaster) }
 }

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { View, Pressable, useWindowDimensions } from 'react-native';
+import { useRef, useState } from 'react';
+import { View, Pressable, useWindowDimensions, type LayoutRectangle } from 'react-native';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AromaSelection } from '@verre/core';
@@ -27,21 +27,45 @@ const READ_VPAD = 0;
 // `collapse` mirrors the rating page's selected-chips behaviour: the row caps
 // at two lines (the shared width-based packer), the tail files behind a
 // "+N more" pill, and the pill opens a read-only bottom sheet with the full
-// selection.
+// selection. A parent sheet passes overflowSheetStack="push" so the read sheet
+// opens above it and returns cleanly.
 export function AromaReadChips({
   aromas,
   collapse,
+  onPressAroma,
+  overflowSheetStack = 'replace',
+  overflowTitle,
+  overflowPillOnSurface = false,
+  emphasizeKeys,
 }: {
   aromas: AromaSelection[] | undefined;
   collapse?: boolean;
+  /** Optional read-side inspection. The canonical chip remains the visual;
+      this callback receives its exact screen rect for an anchored popover. */
+  onPressAroma?: (selection: AromaSelection, rect: LayoutRectangle) => void;
+  /** Use `push` when this read lives inside an already-open parent sheet, so
+      +N opens above it and returns to it instead of replacing it. */
+  overflowSheetStack?: 'replace' | 'push';
+  /** Optional personalized heading for the +N read sheet. */
+  overflowTitle?: string;
+  /** Preserve the shared overflow pill's contrast when this row sits on a
+      sheet's `surface` background. Visual anatomy remains unchanged. */
+  overflowPillOnSurface?: boolean;
+  /** Search/focus treatment: matching exact pairs move first; the rest pale. */
+  emphasizeKeys?: ReadonlySet<string>;
 }) {
   const [rowW, setRowW] = useState(0);
   // Real chip widths from the hidden measuring pass, keyed by pair.
   const [chipW, setChipW] = useState<Record<string, number>>({});
   const [sheetOpen, setSheetOpen] = useState(false);
   if (!aromas?.length) return null;
-  const ordered = displayOrder(aromas);
-  const { visible, overflow } = collapse
+  const baseOrder = displayOrder(aromas);
+  const hasEmphasis = !!emphasizeKeys?.size;
+  const ordered = hasEmphasis
+    ? [...baseOrder.filter((selection) => emphasizeKeys!.has(pairKey(selection))), ...baseOrder.filter((selection) => !emphasizeKeys!.has(pairKey(selection)))]
+    : baseOrder;
+  const collapsed = !!collapse;
+  const { visible, overflow } = collapsed
     ? packChips(ordered, rowW, chipW, { gap: CHIP_GAP, removable: false })
     : { visible: ordered, overflow: 0 };
   return (
@@ -49,7 +73,7 @@ export function AromaReadChips({
       onLayout={collapse ? (e) => setRowW(e.nativeEvent.layout.width) : undefined}
       style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: CHIP_GAP }}
     >
-      {collapse ? (
+      {collapsed ? (
         <ChipMeasurePass
           selections={ordered}
           chipW={chipW}
@@ -58,10 +82,51 @@ export function AromaReadChips({
         />
       ) : null}
       {visible.map((sel) => (
-        <AromaChip key={pairKey(sel)} a={sel.a} m={sel.m} pronounced={!!sel.p} vPad={READ_VPAD} />
+        <ReadAromaChip key={pairKey(sel)} selection={sel} muted={hasEmphasis && !emphasizeKeys!.has(pairKey(sel))} onPress={onPressAroma} />
       ))}
-      {overflow > 0 ? <MoreChipsPill count={overflow} onPress={() => setSheetOpen(true)} vPad={READ_VPAD} /> : null}
-      {collapse ? <ReadSheet open={sheetOpen} onClose={() => setSheetOpen(false)} aromas={ordered} /> : null}
+      {overflow > 0 ? (
+        <MoreChipsPill
+          count={overflow}
+          onPress={() => setSheetOpen(true)}
+          vPad={READ_VPAD}
+          onSurface={overflowPillOnSurface}
+        />
+      ) : null}
+      {collapse ? (
+        <ReadSheet
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          aromas={ordered}
+          onPressAroma={onPressAroma}
+          stackBehavior={overflowSheetStack}
+          title={overflowTitle}
+          emphasizeKeys={emphasizeKeys}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+function ReadAromaChip({
+  selection,
+  muted,
+  onPress,
+}: {
+  selection: AromaSelection;
+  muted?: boolean;
+  onPress?: (selection: AromaSelection, rect: LayoutRectangle) => void;
+}) {
+  const ref = useRef<View>(null);
+  return (
+    <View ref={ref} collapsable={false}>
+      <AromaChip
+        a={selection.a}
+        m={selection.m}
+        pronounced={!!selection.p}
+        muted={muted}
+        vPad={READ_VPAD}
+        onPress={onPress ? () => ref.current?.measureInWindow((x, y, width, height) => onPress(selection, { x, y, width, height })) : undefined}
+      />
     </View>
   );
 }
@@ -72,7 +137,23 @@ export function AromaReadChips({
 // fixed snap + BottomSheetScrollView past the threshold (content past the
 // screen cap CLIPS unreachably under dynamic sizing).
 const SCROLL_PAST = 12;
-function ReadSheet({ open, onClose, aromas }: { open: boolean; onClose: () => void; aromas: AromaSelection[] }) {
+function ReadSheet({
+  open,
+  onClose,
+  aromas,
+  onPressAroma,
+  stackBehavior,
+  title,
+  emphasizeKeys,
+}: {
+  open: boolean;
+  onClose: () => void;
+  aromas: AromaSelection[];
+  onPressAroma?: (selection: AromaSelection, rect: LayoutRectangle) => void;
+  stackBehavior: 'replace' | 'push';
+  title?: string;
+  emphasizeKeys?: ReadonlySet<string>;
+}) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
@@ -80,7 +161,12 @@ function ReadSheet({ open, onClose, aromas }: { open: boolean; onClose: () => vo
   const chips = (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CHIP_GAP }}>
       {aromas.map((sel) => (
-        <AromaChip key={pairKey(sel)} a={sel.a} m={sel.m} pronounced={!!sel.p} vPad={READ_VPAD} />
+        <ReadAromaChip
+          key={pairKey(sel)}
+          selection={sel}
+          muted={!!emphasizeKeys?.size && !emphasizeKeys.has(pairKey(sel))}
+          onPress={onPressAroma}
+        />
       ))}
     </View>
   );
@@ -88,14 +174,16 @@ function ReadSheet({ open, onClose, aromas }: { open: boolean; onClose: () => vo
     <Sheet
       open={open}
       onClose={onClose}
+      stackBehavior={stackBehavior}
+      layer={stackBehavior === 'push' ? 1 : 0}
       snapPoints={scrolls ? ['70%'] : undefined}
       enableDynamicSizing={!scrolls}
       maxDynamicContentSize={height * 0.75}
     >
       <BottomSheetView style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
         <View style={{ paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 8, paddingBottom: 14 }}>
-          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            Aromas · {aromas.length}
+          <VText numberOfLines={2} variant="subhead" style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold' }}>
+            {title ?? `Aromas · ${aromas.length}`}
           </VText>
           <Pressable accessibilityRole="button" onPress={onClose} hitSlop={8}>
             <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>

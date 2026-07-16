@@ -7,9 +7,9 @@
 // the production surfaces consume — strip and sheet must never fork on their
 // own recomputation of any of this.
 
-import { aggregateAromaRollup, aromaConsensus, AROMA_FAMILIES } from '@verre/core'
+import { aggregateAromaRollup, aromaAncestorChain, aromaConsensus, aromaModifierDisplay, getAromaNode, AROMA_FAMILIES } from '@verre/core'
 import type { AromaConsensusResult, ConsensusDisplayNode } from '@verre/core'
-import { buildAromaContributors, type AromaBaseGroup, type AromaContributorIndex, type AromaContributorInput } from './aromaContributors'
+import { buildAromaContributors, type AromaBaseGroup, type AromaContributor, type AromaContributorIndex, type AromaContributorInput } from './aromaContributors'
 // Relative (not '@/') so the node test harness can import this module directly.
 import { contrastRatio } from '../../lib/contrast'
 
@@ -41,7 +41,7 @@ const taxRank = (id: string) => TAXONOMY_ORDER.get(id) ?? Number.MAX_SAFE_INTEGE
 // detail). Ranked primaries-FIRST, then secondaries, each group by the
 // deterministic chip ranking (count desc → deeper tier first → the tree's
 // existing sibling order, already taxonomy). The renderer packs this to ~2 lines
-// and always shows "Detailed aromas"; overflow beyond the fit is Tier-3-only.
+// and always shows "Aroma Details"; overflow beyond the fit is Tier-3-only.
 
 export type StripChip = {
   id: string
@@ -55,15 +55,28 @@ export type StripChip = {
   pronounced: boolean
 }
 
-// `contributors` optional: when supplied, each chip carries its panel-level
-// pronounced flag (a presentation-only visual — never ranking/selection). The
-// caller passes the same index it feeds the popover + the same pronounced bar.
-export function tier2Strip(result: AromaConsensusResult, contributors?: AromaContributorIndex, pronBar: PronouncedBar = 'majority'): StripChip[] {
+// Measurement cache identity = everything that changes the rendered badge
+// width. The node id alone is insufficient because the live count is part of
+// the label (`9x` → `10x`).
+export const stripChipMeasureKey = (chip: StripChip): string =>
+  `${chip.id}|${chip.count}|${chip.pronounced ? 1 : 0}`
+
+// `pronouncedIds` is the model's single panel-level derivation; the flag is
+// presentation-only and never affects ranking or selection.
+const EMPTY_PRONOUNCED_IDS: ReadonlySet<string> = new Set()
+export function tier2Strip(result: AromaConsensusResult, pronouncedIds: ReadonlySet<string> = EMPTY_PRONOUNCED_IDS): StripChip[] {
   const chips: StripChip[] = []
   const walk = (dn: ConsensusDisplayNode) => {
     if (dn.role === 'primary' || dn.role === 'secondary') {
-      const pronounced = contributors ? pronouncedForNode(contributors, dn.node.id, result.n, pronBar).isPanelPronounced : false
-      chips.push({ id: dn.node.id, tier: dn.node.tier, label: dn.node.label, familyId: dn.node.familyId, count: dn.node.count, role: dn.role, pronounced })
+      chips.push({
+        id: dn.node.id,
+        tier: dn.node.tier,
+        label: dn.node.label,
+        familyId: dn.node.familyId,
+        count: dn.node.count,
+        role: dn.role,
+        pronounced: pronouncedIds.has(dn.node.id),
+      })
     }
     for (const c of dn.children) walk(c)
   }
@@ -208,10 +221,34 @@ export function pronouncedForNode(
   return { pronouncedCount, supporterCount: supporters.length, isPanelPronounced: clears }
 }
 
+// One panel-level pronounced derivation for the whole consensus tree. The
+// compact strip and detail sheet consume this same set, so their pronounced
+// rings cannot drift through duplicate per-node walks.
+export function pronouncedNodeIds(
+  result: AromaConsensusResult,
+  contributors: AromaContributorIndex,
+  bar: PronouncedBar = 'majority',
+): ReadonlySet<string> {
+  const ids = new Set<string>()
+  const walk = (dn: ConsensusDisplayNode) => {
+    if (dn.counted && pronouncedForNode(contributors, dn.node.id, result.n, bar).isPanelPronounced) ids.add(dn.node.id)
+    dn.children.forEach(walk)
+  }
+  result.roots.forEach(walk)
+  return ids
+}
+
 // A contributor reference for the popovers — the STABLE identity id + the
 // display name. Popover render keys on `id` (Codex: display names aren't unique,
 // so two "Alex"es must not collide as React keys / avatar reconciliation).
 export type ContributorRef = { id: string; displayName: string }
+
+export type ExactAromaPopoverContent = {
+  ref: Extract<AromaRef, { kind: 'pair' }>
+  count: number
+  contributors: ContributorRef[]
+  moreContributors: number
+}
 
 // One step in a descendant-detail chain (Berry 4 → Strawberry 2 is two steps).
 export type LedByStep = { id: string; label: string; count: number }
@@ -322,39 +359,149 @@ export function unionPopoverContent(contributors: AromaContributorIndex, id: str
   }
 }
 
+// One exact modifier-bearing badge in All Aromas or a People row. The focused
+// badge keeps the TOTAL distinct-taster count, while `excludeId` lets a
+// person's own row say "Also perceived by" without repeating that person.
+export function exactAromaPopoverContent(
+  contributors: AromaContributorIndex,
+  ref: Extract<AromaRef, { kind: 'pair' }>,
+  excludeId?: string,
+): ExactAromaPopoverContent | null {
+  const all = selectionContributors(contributors, ref)
+  if (all.length === 0) return null
+  const visible = excludeId ? all.filter((person) => person.id !== excludeId) : all
+  return {
+    ref,
+    count: all.length,
+    contributors: visible.slice(0, PREVIEW_CAP).map((person) => ({ id: person.id, displayName: person.displayName })),
+    moreContributors: Math.max(0, visible.length - PREVIEW_CAP),
+  }
+}
+
 // ── Selection + Tier 3 routing state (single-select, mutually exclusive) ───────
 // One aroma OR one participant selected at a time; a new selection REPLACES the
 // prior (Codex). Tapping the SAME target again clears it. `View contributors`
 // produces a Tier 3 routing descriptor: Participants mode filtered to the aroma.
+// SHIPS since slice 3d: the tabbed detail sheet runs one reducer instance PER
+// TAB, so each view preserves its own focus without leaking muting/highlighting
+// into another. Within a view the selection drives the ruled tap behaviours:
+// an agreement chip
+// highlights + shows its subsumed contributors, an All-aromas chip its exact
+// pair's, a participant highlights their supported branches / expands their
+// row. Never a nested popover or sheet.
+
+// A discriminated aroma reference (Codex rounds 1+2, 2026-07-15): the SAME
+// aroma id names THREE different supporter sets depending on where it was
+// tapped —
+//   node: an agreement/tree node — contributors resolve upward-SUBSUMED via
+//         the agreement map (a strawberry pick supports Berry and Fruity).
+//   base: a union (fallback) badge — the base aroma across ALL its modifiers,
+//         LITERAL picks only, no subsumption (one taster's coarse Fruity pick
+//         is not joined by their strawberry pick — the round-2 repro).
+//   pair: one exact (base, modifier) row from the All-aromas read.
+// A plain string couldn't tell node from pair (round 1); node vs base diverge
+// on mixed-grain panels (round 2), so the kind is explicit at every tap site.
+export type AromaRef =
+  | { kind: 'node'; a: string }
+  | { kind: 'base'; a: string }
+  | { kind: 'pair'; a: string; m: string | null }
+export const sameAromaRef = (x: AromaRef, y: AromaRef): boolean =>
+  x.kind === y.kind && x.a === y.a && (x.kind !== 'pair' || y.kind !== 'pair' || x.m === y.m)
 
 export type CompareSelection =
   | { kind: 'none' }
-  | { kind: 'aroma'; id: string }
+  | { kind: 'aroma'; ref: AromaRef }
   | { kind: 'participant'; id: string }
 
 export type CompareSelectionAction =
-  | { type: 'tapAroma'; id: string }
+  | { type: 'tapAroma'; ref: AromaRef }
   | { type: 'tapParticipant'; id: string }
   | { type: 'clear' }
 
 export function compareSelectionReducer(state: CompareSelection, action: CompareSelectionAction): CompareSelection {
   if (action.type === 'clear') return { kind: 'none' }
   if (action.type === 'tapAroma') {
-    return state.kind === 'aroma' && state.id === action.id ? { kind: 'none' } : { kind: 'aroma', id: action.id }
+    return state.kind === 'aroma' && sameAromaRef(state.ref, action.ref) ? { kind: 'none' } : { kind: 'aroma', ref: action.ref }
   }
   // tapParticipant — replaces any aroma selection too (mutually exclusive).
   return state.kind === 'participant' && state.id === action.id ? { kind: 'none' } : { kind: 'participant', id: action.id }
 }
 
-export type Tier3Mode = 'agreement' | 'participants' | 'all'
-export type Tier3Route = { mode: Tier3Mode; aromaFilter: string | null }
+// Resolve a selection's contributors at ITS OWN granularity (the discriminant's
+// whole point): node → the agreement map (subsumed); base → the base group's
+// contributor set (literal picks, all modifiers); pair → the (base, modifier)
+// group's own set. Unknown ids → [] (read-path safety; the sheet treats an
+// empty resolution as "selection no longer exists").
+export function selectionContributors(contrib: AromaContributorIndex, ref: AromaRef): ReadonlyArray<AromaContributor> {
+  if (ref.kind === 'node') return contrib.agreement.get(ref.a) ?? []
+  const base = contrib.byBase.find((b) => b.baseId === ref.a)
+  if (!base) return []
+  if (ref.kind === 'base') return base.contributors
+  const grp = base.byModifier.find((g) => g.m === ref.m)
+  return grp ? grp.contributors : []
+}
 
-// `View contributors` on an aroma → open/mutate Tier 3 in Participants mode
-// filtered to that aroma. Same descriptor whether opening the sheet (Tier 2) or
-// mutating it in place (already inside Tier 3) — the CALLER decides which; this
-// only names the target state, never opens a nested sheet.
-export function viewContributorsRoute(aromaId: string): Tier3Route {
-  return { mode: 'participants', aromaFilter: aromaId }
+// The consensus branches a base/pair selection SUPPORTS — the pick's own
+// upward chain (modifiers never change the chain). The Agreement tab dims to
+// this set contextually instead of accenting a consensus node: the node's
+// count describes a broader (subsumed) population than the selection's own
+// contributors, and pairing that count with these names would lie (Codex
+// round 2). Only a NODE selection accents a consensus node directly.
+export function aromaAncestorIds(a: string): ReadonlySet<string> {
+  const node = getAromaNode(a)
+  if (!node) return new Set()
+  return new Set(aromaAncestorChain(node))
+}
+
+// Read-path predicate shared by CompareBody's card admission and the aroma
+// model's respondent semantics. A raw non-empty array is not sufficient:
+// historical unknown/re-homed ids are safely ignored by the aggregate.
+export function hasResolvableAroma(
+  aromas: ReadonlyArray<{ a: string }> | null | undefined,
+): boolean {
+  return aromas?.some((selection) => getAromaNode(selection.a) !== undefined) ?? false
+}
+
+// One exact pick's identity key — matches all-aromas chips by (a, m), NOT by
+// row.key (a collapsed no-distinction row keys as the bare id).
+export const pickKey = (a: string, m: string | null): string => `${a}|${m ?? ''}`
+
+// The exact picks FEEDING an agreement node (for muting the All-aromas grid to
+// a tree selection): the union of the node's supporters' supporting picks.
+export function supportingPickKeys(contrib: AromaContributorIndex, nodeId: string): Set<string> {
+  const keys = new Set<string>()
+  for (const c of contrib.agreement.get(nodeId) ?? []) for (const p of c.picks) keys.add(pickKey(p.a, p.m))
+  return keys
+}
+
+// Every agreement node a participant supports (for highlighting their branches
+// in the consensus tree). Upward-subsumed for free — the agreement map already is.
+export function supportedNodeIds(contrib: AromaContributorIndex, participantId: string): Set<string> {
+  const ids = new Set<string>()
+  for (const [id, cs] of contrib.agreement) if (cs.some((c) => c.id === participantId)) ids.add(id)
+  return ids
+}
+
+export type Tier3Mode = 'agreement' | 'participants' | 'all'
+export type Tier3Route = { mode: Tier3Mode; aromaFilter: AromaRef | null }
+
+// The detail sheet's available tabs (slice 3d, Simon 2026-07-15): Agreement
+// exists only when the panel agrees; People sits before All Aromas because the
+// human read is more useful than the exhaustive inventory. Fallback mode
+// therefore opens on People. First entry = the default tab without a route.
+export function tier3Tabs(hasAgreement: boolean): Tier3Mode[] {
+  return hasAgreement ? ['agreement', 'participants', 'all'] : ['participants', 'all']
+}
+
+// `View contributors` on a popover aroma → open/mutate Tier 3 in Participants
+// mode filtered to that aroma. Same descriptor whether opening the sheet
+// (Tier 2) or mutating it in place — the CALLER decides which; this only names
+// the target state, never opens a nested sheet. The caller also owns the ref's
+// KIND (round-2 fix): an agreement popover passes a node ref (subsumed), a
+// union/fallback popover a base ref (literal picks only) — the route never
+// invents a granularity.
+export function viewContributorsRoute(ref: AromaRef): Tier3Route {
+  return { mode: 'participants', aromaFilter: ref }
 }
 
 // ── The ONE derived compare-aroma model (Codex architecture ruling, 2026-07-15) ─
@@ -371,11 +518,217 @@ export function hasModifierDistinction(mods: AromaBaseGroup['byModifier']): bool
   return mods.length > 1 || (mods.length === 1 && mods[0].m !== null)
 }
 
-// One exact (base, modifier) row for the all-aromas read — Strawberry · cooked
-// and Strawberry · fresh stay distinct; a base with no real distinction is one
-// plain row. Order: the union's base order (occurrence desc → taxonomy), then
-// the base's own modifier order.
-export type UnionChipRow = { key: string; a: string; m: string | null; count: number }
+// All Aromas now shows the literal stored selections as canonical badges:
+// `3x Strawberry`, `2x Strawberry, Jammy`, etc. The modifier stays inside the
+// same badge anatomy used on impression detail; there is no analytical
+// base-heading + modifier-tally hierarchy. Count = distinct tasters who made
+// this exact (aroma, modifier) pick, and every row therefore carries a PAIR
+// ref. Mentions is one flat occurrence-ranked field; Family only groups these
+// same rows under family headers. Family groups are ranked by the SUM of their
+// literal family/subfamily/leaf mention rows; rows inside each family remain
+// occurrence-ranked. Taxonomy order is only the deterministic tie-break.
+export type AromaMentionRow = {
+  a: string
+  m: string | null
+  count: number
+  familyId: string
+  ref: Extract<AromaRef, { kind: 'pair' }>
+}
+
+export type AromaMentionSort = 'occurrence' | 'family'
+export type AromaMentionFamily = { familyId: string; label: string; totalCount: number; rows: AromaMentionRow[] }
+
+const modifierRank = (m: string | null) => (m === null ? '' : m)
+const compareMentionRows = (a: AromaMentionRow, b: AromaMentionRow) =>
+  b.count - a.count
+  || taxRank(a.a) - taxRank(b.a)
+  || modifierRank(a.m).localeCompare(modifierRank(b.m))
+
+export function sortAromaMentions(rows: ReadonlyArray<AromaMentionRow>, sort: AromaMentionSort): AromaMentionRow[] {
+  if (sort === 'family') return groupAromaMentions(rows).flatMap((family) => family.rows)
+  return [...rows].sort(compareMentionRows)
+}
+
+export function groupAromaMentions(rows: ReadonlyArray<AromaMentionRow>): AromaMentionFamily[] {
+  return AROMA_FAMILIES.map((family) => {
+    const familyRows = rows.filter((row) => row.familyId === family.id).sort(compareMentionRows)
+    return {
+      familyId: family.id,
+      label: family.label,
+      totalCount: familyRows.reduce((sum, row) => sum + row.count, 0),
+      rows: familyRows,
+    }
+  })
+    .filter((family) => family.rows.length > 0)
+    .sort((a, b) => b.totalCount - a.totalCount || taxRank(a.familyId) - taxRank(b.familyId))
+}
+
+const searchText = (value: string) =>
+  value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim()
+const matchesTerms = (haystack: string, query: string) => {
+  const terms = searchText(query).split(/\s+/).filter(Boolean)
+  if (terms.length === 0) return true
+  const normalized = searchText(haystack)
+  return terms.every((term) => normalized.includes(term))
+}
+const aromaSearchWords = (a: string, m: string | null) => {
+  const node = getAromaNode(a)
+  if (!node) return `${a} ${m ?? ''}`
+  return [
+    a,
+    node.label,
+    node.family.label,
+    node.subfamily?.label ?? '',
+    m ?? '',
+    m ? aromaModifierDisplay(a, m) : '',
+  ].join(' ')
+}
+
+export function filterAromaMentions(rows: ReadonlyArray<AromaMentionRow>, query: string): AromaMentionRow[] {
+  if (!query.trim()) return [...rows]
+  return rows.filter((row) => matchesTerms(aromaSearchWords(row.a, row.m), query))
+}
+
+export function filterAromaParticipants(people: ReadonlyArray<AromaContributor>, query: string): AromaContributor[] {
+  if (!query.trim()) return [...people]
+  return people.filter((person) =>
+    matchesTerms(
+      `${person.displayName} ${person.picks.map((pick) => aromaSearchWords(pick.a, pick.m)).join(' ')}`,
+      query,
+    ))
+}
+
+// People-search focus inside one respondent row. A family query such as
+// "Fruity" matches every descendant Fruity pick because aromaSearchWords
+// includes the resolved family label. The renderer moves these exact pairs to
+// the front and mutes the rest; a name-only query returns an empty set, so that
+// person's full aroma row stays normally coloured.
+export function matchingParticipantPickKeys(person: AromaContributor, query: string): ReadonlySet<string> {
+  if (!query.trim()) return new Set()
+  return new Set(
+    person.picks
+      .filter((pick) => matchesTerms(aromaSearchWords(pick.a, pick.m), query))
+      .map((pick) => pickKey(pick.a, pick.m)),
+  )
+}
+
+// ── People-tab taste similarity ───────────────────────────────────────────────
+// A compact human summary, computed only while the detail sheet is mounted.
+// Each pick becomes a weighted taxonomy signature:
+//   family 1 · subfamily 2 · leaf 3 · explicit modifier 1
+// and people are compared with weighted Sørensen-Dice. This rewards exact
+// matches most, still recognises two different Berry leaves as related, and
+// treats a coarse family pick as weaker evidence than a shared leaf. Pronounced
+// is confidence, not aroma identity, so it never affects similarity.
+export type AromaTastePerson = { id: string; displayName: string }
+export type AromaTastePair = { people: readonly [AromaTastePerson, AromaTastePerson]; score: number }
+export type AromaTasteGroupMember = { person: AromaTastePerson; score: number }
+export type AromaTasteSummary = {
+  respondents: number
+  closestPair: AromaTastePair
+  farthestPair: AromaTastePair
+  closestToGroup: AromaTasteGroupMember | null
+  mostIndividual: AromaTasteGroupMember | null
+}
+
+const putTasteSignal = (signals: Map<string, number>, key: string, weight: number) => {
+  signals.set(key, Math.max(signals.get(key) ?? 0, weight))
+}
+function tasteSignals(person: AromaContributor): Map<string, number> {
+  const signals = new Map<string, number>()
+  for (const pick of person.picks) {
+    const node = getAromaNode(pick.a)
+    if (!node) continue
+    putTasteSignal(signals, `node:${node.family.id}`, 1)
+    if (node.subfamily) putTasteSignal(signals, `node:${node.subfamily.id}`, 2)
+    if (node.leaf) putTasteSignal(signals, `node:${node.leaf.id}`, 3)
+    if (pick.m) putTasteSignal(signals, `modifier:${pick.a}:${pick.m}`, 1)
+  }
+  return signals
+}
+function tasteScore(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>): number {
+  let totalA = 0
+  let totalB = 0
+  let shared = 0
+  for (const weight of a.values()) totalA += weight
+  for (const weight of b.values()) totalB += weight
+  for (const [key, weight] of a) shared += Math.min(weight, b.get(key) ?? 0)
+  return totalA + totalB > 0 ? Math.round((200 * shared) / (totalA + totalB)) : 0
+}
+
+export function aromaTasteSummary(people: ReadonlyArray<AromaContributor>): AromaTasteSummary | null {
+  if (people.length < 2) return null
+  const refs = people.map((person): AromaTastePerson => ({ id: person.id, displayName: person.displayName }))
+  const signals = people.map(tasteSignals)
+  const totals = Array.from({ length: people.length }, () => 0)
+  const pairCounts = Array.from({ length: people.length }, () => 0)
+  let closestPair: AromaTastePair | null = null
+  let farthestPair: AromaTastePair | null = null
+
+  for (let i = 0; i < people.length; i++) {
+    for (let j = i + 1; j < people.length; j++) {
+      const score = tasteScore(signals[i], signals[j])
+      const pair: AromaTastePair = { people: [refs[i], refs[j]], score }
+      if (!closestPair || score > closestPair.score) closestPair = pair
+      if (!farthestPair || score < farthestPair.score) farthestPair = pair
+      totals[i] += score
+      totals[j] += score
+      pairCounts[i]++
+      pairCounts[j]++
+    }
+  }
+
+  const group = refs.map((person, i): AromaTasteGroupMember => ({
+    person,
+    score: pairCounts[i] > 0 ? Math.round(totals[i] / pairCounts[i]) : 0,
+  }))
+  let closestToGroup: AromaTasteGroupMember | null = null
+  let mostIndividual: AromaTasteGroupMember | null = null
+  if (people.length >= 3) {
+    closestToGroup = group.reduce((best, current) => (current.score > best.score ? current : best))
+    mostIndividual = group.reduce((best, current) => (current.score < best.score ? current : best))
+  }
+
+  return {
+    respondents: people.length,
+    closestPair: closestPair!,
+    farthestPair: farthestPair!,
+    closestToGroup,
+    mostIndividual,
+  }
+}
+
+// The Aroma Bun consumes the COMPLETE counted consensus summary, not the
+// compact Tier-2 strip. Context + peak nodes therefore remain available even
+// when the two-line strip only has room for its primary/secondary heads.
+// Headings are structural only (counted=false), so they never become data
+// segments. Counts are relative agreement strengths; ancestor and descendant
+// supporter sets may overlap and must not be summed as a panel total.
+export type CompareAromaBunNote = {
+  id: string
+  label: string
+  count: number
+  familyId: string
+  role: 'context' | 'primary' | 'secondary' | 'peak'
+}
+
+export function consensusBunNotes(result: AromaConsensusResult): CompareAromaBunNote[] {
+  const notes: CompareAromaBunNote[] = []
+  const walk = (dn: ConsensusDisplayNode) => {
+    if (dn.counted && dn.role !== 'heading') {
+      notes.push({
+        id: dn.node.id,
+        label: dn.node.label.length > 0 ? dn.node.label[0].toUpperCase() + dn.node.label.slice(1) : dn.node.label,
+        count: dn.node.count,
+        familyId: dn.node.familyId,
+        role: dn.role,
+      })
+    }
+    dn.children.forEach(walk)
+  }
+  result.roots.forEach(walk)
+  return notes.sort((a, b) => b.count - a.count || taxRank(a.id) - taxRank(b.id))
+}
 
 export type CompareAromaModel = {
   result: AromaConsensusResult
@@ -385,10 +738,23 @@ export type CompareAromaModel = {
   hasAgreement: boolean
   /** Tier-2 chips: consensus primaries+secondaries, or the flat union fallback. */
   strip: StripChip[]
-  /** Every exact pick, modifier-preserving — the sheet's all-aromas read. */
-  allAromas: UnionChipRow[]
+  /** Exact modifier-bearing aroma badges, occurrence-ranked by default. */
+  allAromas: AromaMentionRow[]
   /** Consensus node ids clearing the group-pronounced bar (PRON_BAR). */
   pronouncedIds: ReadonlySet<string>
+  /** Full counted consensus summary for the Aroma Bun; no Tier-2 line cap. */
+  bun: CompareAromaBunNote[]
+}
+
+// Stable semantic key for the model input. Compare's poll rebuilds fresh item
+// objects even when aromas are unchanged; keying the memo by this value avoids
+// rebuilding every collapsed card's consensus/contributor tree every 5s.
+export function compareAromaInputSignature(raters: ReadonlyArray<AromaContributorInput>): string {
+  return JSON.stringify(raters.map((rater) => [
+    rater.id,
+    rater.displayName,
+    (rater.aromas ?? []).map((selection) => [selection.a, selection.m, selection.p === true ? 1 : 0]),
+  ]))
 }
 
 export function buildCompareAromaModel(raters: ReadonlyArray<AromaContributorInput>): CompareAromaModel {
@@ -396,26 +762,25 @@ export function buildCompareAromaModel(raters: ReadonlyArray<AromaContributorInp
   const result = aromaConsensus(aggregateAromaRollup(raters.map((x) => (x.aromas ?? []).map((a) => ({ a: a.a, m: a.m })))))
   const contrib = buildAromaContributors(raters)
   const hasAgreement = result.n >= 2 && result.roots.length > 0
-  const strip = hasAgreement ? tier2Strip(result, contrib, PRON_BAR) : unionStrip(contrib)
-  const baseOrder = hasAgreement ? unionStrip(contrib) : strip
-  const byBaseId = new Map(contrib.byBase.map((b) => [b.baseId, b]))
-  const allAromas = baseOrder.flatMap((c): UnionChipRow[] => {
-    const mods = byBaseId.get(c.id)?.byModifier ?? []
-    return hasModifierDistinction(mods)
-      ? mods.map((g) => ({ key: `${c.id}|${g.m ?? ''}`, a: c.id, m: g.m, count: g.count }))
-      : [{ key: c.id, a: c.id, m: null, count: c.count }]
-  })
-  const pronouncedIds = new Set<string>()
-  const walk = (dn: ConsensusDisplayNode) => {
-    if (dn.counted && pronouncedForNode(contrib, dn.node.id, result.n, PRON_BAR).isPanelPronounced) pronouncedIds.add(dn.node.id)
-    dn.children.forEach(walk)
-  }
-  result.roots.forEach(walk)
-  return { result, contrib, hasAgreement, strip, allAromas, pronouncedIds }
+  const pronouncedIds = pronouncedNodeIds(result, contrib, PRON_BAR)
+  const strip = hasAgreement ? tier2Strip(result, pronouncedIds) : unionStrip(contrib)
+  const allAromas = sortAromaMentions(
+    contrib.byBase.flatMap((base) =>
+      base.byModifier.map((modifier): AromaMentionRow => ({
+        a: base.baseId,
+        m: modifier.m,
+        count: modifier.count,
+        familyId: base.familyId,
+        ref: { kind: 'pair', a: base.baseId, m: modifier.m },
+      }))),
+    'occurrence',
+  )
+  const bun = hasAgreement ? consensusBunNotes(result) : []
+  return { result, contrib, hasAgreement, strip, allAromas, pronouncedIds, bun }
 }
 
 // ── Detail-pill colours (pure; pinned per-theme in the harness) ────────────────
-// The "Aroma details" pill wants the moments-filter activated-chip look
+// The "Aroma Details" pill wants the moments-filter activated-chip look
 // (accentTint fill + accentLine border + accent text), but accent-on-tint fails
 // 4.5:1 on apricot/clay, and on clay even ink-on-tint fails (~2.85). Ladder
 // (Codex contrast ruling, 2026-07-15): accent text on the tint where it reads;
@@ -443,32 +808,4 @@ export function flattenRgbaOver(rgba: string, baseHex: string): string {
   const g = Math.round(Number(m[2]) * a + ch(2) * (1 - a))
   const b = Math.round(Number(m[3]) * a + ch(4) * (1 - a))
   return `rgb(${r},${g},${b})`
-}
-
-// ── Detail-sheet scroll decision (pure; pinned at the combined boundary) ───────
-// The sheet must pick scroll-vs-dynamic BEFORE first render (gorhom: a measure-
-// then-flip clips/flashes). In agreement mode the content is tree + the
-// "All aromas" section, so the estimate must be their COMBINED height — either
-// half can fit alone while the sum overflows (Codex). Chip lines are estimated
-// at a CONSERVATIVE one-per-line (a long "3x Strawberry · cooked" label can
-// genuinely take a whole line — a 3/line average under-counted and could pick
-// an unscrollable sheet that clips, Codex 2026-07-15). Erring toward scroll a
-// touch early is harmless; clipping is not. The >12 COUNT gate stays as the
-// absolute backstop for huge caps.
-export function shouldScrollAromaDetail(p: {
-  hasAgreement: boolean
-  nodeCount: number
-  allAromasCount: number
-  /** Sheet height cap (windowH * snap fraction). */
-  cap: number
-  /** Head + insets base height. */
-  base: number
-}): boolean {
-  const ROW_H = 42
-  const CHIP_LINE_H = 34
-  const SECTION_H = 30
-  if (p.allAromasCount > 12) return true
-  const chips = p.allAromasCount > 0 ? p.allAromasCount * CHIP_LINE_H + (p.hasAgreement ? SECTION_H : 0) : 0
-  const tree = p.hasAgreement ? p.nodeCount * ROW_H : 0
-  return p.base + tree + chips > p.cap
 }

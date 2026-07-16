@@ -85,6 +85,7 @@ export {
   getAromaModifier,
   getAromaLeaf,
   getAromaNode,
+  aromaAncestorChain,
   aromaTierPath,
   aromaAllowedModifiers,
   aromaModifierDisplay,

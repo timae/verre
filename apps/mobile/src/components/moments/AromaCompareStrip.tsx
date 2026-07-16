@@ -5,36 +5,39 @@
 // union fallback ("Aromas mentioned" / "Aromas"). Chips are tappable in both
 // modes — agreement chips open the Badge-Extension popover (the focused badge
 // covers the trigger + overlaps 50% into a neutral surface), union chips the
-// simpler contributor popover. "Aroma details" and the popover's "+N more" open
-// the Tier 3 detail sheet. ("View contributors" / Participants mode is slice 3d.)
+// simpler contributor popover. "Aroma Details" and the popover's "+N more" open
+// the Tier 3 detail sheet; the popover's tappable "Perceived by …" row (with
+// its trailing chevron) opens it on the People tab filtered to the aroma
+// (slice 3d — the staged viewContributorsRoute, rendered at last).
 //
 // This file is a thin renderer: every derivation (strip content, popover
 // contents, mode fork, pack, pill colours, sheet sizing) is pure +
 // harness-pinned in aromaCompareView.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Animated, Easing, Modal, Pressable, useWindowDimensions, View, type LayoutRectangle } from 'react-native'
-import { useSafeAreaInsets } from 'react-native-safe-area-context'
+import { Pressable, useWindowDimensions, View, type LayoutRectangle } from 'react-native'
 import {
-  popoverContent, unionPopoverContent, packStrip, detailPillColors, STRIP_GAP, PRON_BAR,
-  type CompareAromaModel, type ContributorRef, type StripChip, type PopoverContent, type UnionPopoverContent,
+  popoverContent, unionPopoverContent, packStrip, detailPillColors, stripChipMeasureKey, STRIP_GAP, PRON_BAR,
+  type AromaRef, type CompareAromaModel, type StripChip, type PopoverContent, type UnionPopoverContent,
 } from './aromaCompareView'
 import { AromaChip, badgeVMetrics } from '@/components/scoring/aroma/parts'
-import { Avatar } from '@/components/ui/Avatar'
 import { Icon } from '@/components/ui/Icon'
 import { VText } from '@/components/ui/VText'
-import { elevation, motion, radius, useTheme } from '@/theme'
+import { usePhoneTokens } from '@/lib/layout'
+import { useTheme } from '@/theme'
+import { AromaBadgePopover, AromaPopoverPeople } from './AromaBadgePopover'
 
-const AROMA_POPOVER_WIDTH = 228
-const CORNER_INSET = 10
 // Pre-measure bound for the (invisible) strip row: ≈ two packed chip lines at
 // the largest badge scale. Keeps the card from briefly expanding to the full
 // unpacked height and snapping back once measurement lands.
 const PREMEASURE_MAX_H = 68
 
 type ChipRect = { x: number; y: number; width: number; height: number }
+type MeasureChip = (onMeasure: (rect: ChipRect) => void) => void
+const sameRect = (a: ChipRect, b: ChipRect) =>
+  a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 
-// ── the "Aroma details" tail pill ──────────────────────────────────────────────
+// ── the "Aroma Details" tail pill ──────────────────────────────────────────────
 // The moments-filter activated-chip look at the aroma badges' anatomy
 // (badgeVMetrics vPad 0, label 13.5). Colours come from the PURE, per-theme-
 // pinned detailPillColors ladder (accent-on-tint → ink-on-tint → solid accent —
@@ -50,7 +53,7 @@ function AromaDetailPill({ onPress }: { onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel="Aroma details"
+      accessibilityLabel="Aroma Details"
       onPress={onPress}
       style={{
         flexDirection: 'row',
@@ -67,15 +70,20 @@ function AromaDetailPill({ onPress }: { onPress: () => void }) {
     >
       <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, color: colors.ink, marginTop: 1 }}>+</VText>
       <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: colors.ink, ...(lineH != null ? { lineHeight: lineH } : null) }}>
-        Aroma details
+        Aroma Details
       </VText>
     </Pressable>
   )
 }
 
 // ── the compare chip (interaction wrapper; AromaChip stays presentational) ─────
-function CompareChip({ chip, onTap }: { chip: StripChip; onTap: (rect: LayoutRectangle) => void }) {
+function CompareChip({ chip, onTap }: {
+  chip: StripChip
+  onTap: (rect: LayoutRectangle, measure: MeasureChip) => void
+}) {
   const ref = useRef<View>(null)
+  const measure: MeasureChip = (onMeasure) =>
+    ref.current?.measureInWindow((x, y, width, height) => onMeasure({ x, y, width, height }))
   return (
     <View ref={ref} collapsable={false}>
       <AromaChip
@@ -84,37 +92,8 @@ function CompareChip({ chip, onTap }: { chip: StripChip; onTap: (rect: LayoutRec
         count={chip.count}
         pronounced={chip.pronounced}
         vPad={0}
-        onPress={() => ref.current?.measureInWindow((x, y, width, height) => onTap({ x, y, width, height }))}
+        onPress={() => measure((rect) => onTap(rect, measure))}
       />
-    </View>
-  )
-}
-
-// ── shared "Perceived by" block (identical in both popover bodies) ─────────────
-// Avatar stack is decorative for VoiceOver — the same names are spoken in the
-// text right beside it, and initials would read letter-by-letter.
-function PerceivedByRow({ contributors, more }: { contributors: ContributorRef[]; more: number }) {
-  const { theme } = useTheme()
-  if (contributors.length === 0) return null
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-      <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        style={{ flexDirection: 'row', paddingLeft: 2 }}
-      >
-        {contributors.map((c, i) => (
-          <View key={c.id} style={{ marginLeft: i === 0 ? 0 : -7 }}>
-            <Avatar name={c.displayName} size={26} ring initialsSize={9.5} />
-          </View>
-        ))}
-      </View>
-      <View style={{ flex: 1, gap: 3 }}>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft }}>Perceived by</VText>
-        <VText numberOfLines={1} surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, lineHeight: 15, color: theme.ink }}>
-          {contributors.map((c) => c.displayName).join(', ')}{more > 0 ? ` +${more}` : ''}
-        </VText>
-      </View>
     </View>
   )
 }
@@ -124,9 +103,10 @@ function PerceivedByRow({ contributors, more }: { contributors: ContributorRef[]
 // overlaps 50% of its height into a neutral Verre surface — no glass, no aroma
 // tint, no repeated title, no separate badge shadow (only the detail card is
 // elevated). "+N more" (peak branches beyond the cap) opens the Tier 3 sheet.
-function PopoverBody({ content, onMoreBranches }: {
+function PopoverBody({ content, onMoreBranches, onViewContributors }: {
   content: PopoverContent
   onMoreBranches: () => void
+  onViewContributors: () => void
 }) {
   const { theme } = useTheme()
   const sectionLabel = { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft } as const
@@ -158,7 +138,7 @@ function PopoverBody({ content, onMoreBranches }: {
           ) : null}
         </View>
       ) : null}
-      <PerceivedByRow contributors={content.contributors} more={content.moreContributors} />
+      <AromaPopoverPeople contributors={content.contributors} more={content.moreContributors} onPress={onViewContributors} />
       {content.pronouncedCount > 0 ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Icon name="pronounced" size={14} color={content.isPanelPronounced ? theme.accent : theme.inkSoft} />
@@ -174,7 +154,7 @@ function PopoverBody({ content, onMoreBranches }: {
 // The fallback (union) popover body — no consensus tree. Shows the exact
 // modifier breakdown as chips (Strawberry · cooked 2, Strawberry · fresh 1) when
 // there's a real distinction, then who perceived it.
-function UnionPopoverBody({ content }: { content: UnionPopoverContent }) {
+function UnionPopoverBody({ content, onViewContributors }: { content: UnionPopoverContent; onViewContributors: () => void }) {
   const { theme } = useTheme()
   return (
     <View style={{ gap: 10 }}>
@@ -188,74 +168,8 @@ function UnionPopoverBody({ content }: { content: UnionPopoverContent }) {
           </View>
         </View>
       ) : null}
-      <PerceivedByRow contributors={content.contributors} more={content.moreContributors} />
+      <AromaPopoverPeople contributors={content.contributors} more={content.moreContributors} onPress={onViewContributors} />
     </View>
-  )
-}
-
-function BadgeExtensionPopover({ rect, onClose, badge, body }: {
-  rect: ChipRect
-  onClose: () => void
-  badge: React.ReactNode
-  body: React.ReactNode
-}) {
-  const { theme } = useTheme()
-  const { width: screenW, height: screenH } = useWindowDimensions()
-  const insets = useSafeAreaInsets()
-  const [size, setSize] = useState({ w: 0, h: 0 })
-  // Token-motion open (the AnchoredMenu recipe): dur1 fade + 4px slide from the
-  // side it opens toward — never the opaque OS Modal fade (motion-tokens rule).
-  const anim = useRef(new Animated.Value(0)).current
-  useEffect(() => {
-    Animated.timing(anim, { toValue: 1, duration: motion.dur1, easing: Easing.bezier(...motion.ease), useNativeDriver: true }).start()
-  }, [anim])
-  const margin = 12
-  const maxW = screenW - margin * 2
-  const w = Math.min(size.w || AROMA_POPOVER_WIDTH, maxW)
-  const left = Math.max(margin, Math.min(rect.x - CORNER_INSET, screenW - margin - w))
-  const bottomLimit = screenH - insets.bottom - 8
-  const downTop = rect.y
-  const flip = size.h > 0 && downTop + size.h > bottomLimit
-  const top = flip ? rect.y + rect.height - size.h : downTop
-  const badgeLeft = Math.max(0, Math.min(rect.x - left, Math.max(0, (size.w || AROMA_POPOVER_WIDTH) - rect.width)))
-  const badgeOverlap = rect.height / 2
-  // Panel chrome (ruleSoft border + elevation.sm) is the device-ruled badge-
-  // extension look — intentionally LIGHTER than AnchoredMenu's rule/menu tokens.
-  const detailStyle = {
-    borderRadius: radius.md,
-    backgroundColor: theme.surface,
-    borderWidth: 1,
-    borderColor: theme.ruleSoft,
-    paddingHorizontal: 10,
-    paddingTop: flip ? 10 : badgeOverlap + 8,
-    paddingBottom: flip ? badgeOverlap + 8 : 10,
-    shadowColor: '#000',
-    shadowOpacity: elevation.sm.ios.shadowOpacity,
-    shadowRadius: elevation.sm.ios.shadowRadius,
-    shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
-    elevation: elevation.sm.android.elevation,
-  } as const
-  return (
-    <Modal transparent visible animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close aroma details" onPress={onClose}>
-        <Animated.View
-          onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
-          style={{
-            position: 'absolute', top, left, width: Math.min(AROMA_POPOVER_WIDTH, maxW),
-            opacity: anim,
-            transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [flip ? 4 : -4, 0] }) }],
-          }}
-        >
-          <View style={flip ? { marginBottom: rect.height - badgeOverlap } : { marginTop: rect.height - badgeOverlap }}>
-            <View style={detailStyle}>{body}</View>
-          </View>
-          {/* Duplicate badge at the trigger's EXACT rect; no own shadow. */}
-          <View collapsable={false} style={{ zIndex: 4, position: 'absolute', left: badgeLeft, ...(flip ? { bottom: 0 } : { top: 0 }), flexDirection: 'row', borderRadius: radius.pill }}>
-            {badge}
-          </View>
-        </Animated.View>
-      </Pressable>
-    </Modal>
   )
 }
 
@@ -266,13 +180,21 @@ export type AromaCompareStripProps = {
   model: CompareAromaModel
   /**
    * Open the Tier 3 detail sheet. `focusId` is the node the popover's "+N more"
-   * was viewing (the sheet scrolls/focuses there); "Aroma details" passes none.
+   * was viewing (the sheet scrolls/focuses there); "Aroma Details" passes none.
    */
   onOpenDetails: (focusId?: string) => void
+  /**
+   * Popover → People (slice 3d): open the Tier 3 sheet on the People tab
+   * filtered to the aroma. The ref's kind carries the popover's granularity —
+   * agreement popovers pass a node ref (subsumed), union popovers a base ref
+   * (literal picks only). The caller builds the route via viewContributorsRoute.
+   */
+  onViewContributors: (ref: AromaRef) => void
 }
 
-export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripProps) {
+export function AromaCompareStrip({ model, onOpenDetails, onViewContributors }: AromaCompareStripProps) {
   const { result, contrib, strip, hasAgreement } = model
+  const phone = usePhoneTokens()
   const [rowW, setRowW] = useState(0)
   const [chipW, setChipW] = useState<Record<string, number>>({})
   const [pillW, setPillW] = useState(0)
@@ -281,7 +203,7 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
   // flipped), the popover simply stops rendering — no stale frame, no effect
   // race — and the next tap opens fresh (the toggle check requires a sig match,
   // so a stale entry can't eat the first tap as a "close").
-  const [open, setOpen] = useState<{ id: string; rect: ChipRect; sig: string } | null>(null)
+  const [open, setOpen] = useState<{ id: string; rect: ChipRect; sig: string; measure: MeasureChip } | null>(null)
   const sig = `${hasAgreement}|${strip.map((c) => `${c.id}:${c.count}:${c.pronounced ? 1 : 0}`).join(',')}`
 
   // Measured widths go stale when the OS font scale OR the window geometry
@@ -295,16 +217,42 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
     prevKey.current = measureKey
     setChipW({})
     setPillW(0)
+    setOpen(null)
   }, [measureKey])
+
+  // The duplicated badge lives in a Modal at window coordinates. Re-measure
+  // after every React render while open so a poll-driven reflow above the strip
+  // cannot leave it floating at stale tap-time coordinates.
+  useEffect(() => {
+    if (!open || open.sig !== sig) return
+    open.measure((rect) => {
+      setOpen((current) => {
+        if (!current || current.id !== open.id || current.sig !== open.sig) return current
+        return sameRect(current.rect, rect) ? current : { ...current, rect }
+      })
+    })
+  })
+
+  // A content change invalidates both the open popover and any width whose
+  // visible label changed. Widths are keyed by the full rendered chip label
+  // below, so unaffected chips remain reusable.
+  useEffect(() => {
+    setOpen((current) => (current && current.sig !== sig ? null : current))
+    const liveKeys = new Set(strip.map(stripChipMeasureKey))
+    setChipW((current) => {
+      const entries = Object.entries(current).filter(([key]) => liveKeys.has(key))
+      return entries.length === Object.keys(current).length ? current : Object.fromEntries(entries)
+    })
+  }, [sig, strip])
 
   // Pack to 2 lines with the measured always-present tail reserved. Until every
   // width is in, the row renders invisible AND height-bounded (no first-frame
   // unpacked flash, no expand-then-snap while the hidden pass measures).
-  const widths = strip.map((c) => chipW[c.id] ?? 0)
+  const widths = strip.map((c) => chipW[stripChipMeasureKey(c)] ?? 0)
   const measured = widths.every((x) => x > 0) && pillW > 0
   const { fit } = measured && rowW > 0 ? packStrip(widths, rowW, STRIP_GAP, pillW, true) : { fit: strip.length }
   const shown = strip.slice(0, fit)
-  const unmeasured = strip.filter((c) => !chipW[c.id])
+  const unmeasured = strip.filter((c) => !chipW[stripChipMeasureKey(c)])
 
   // Agreement chips open the consensus popover; union (fallback) chips the
   // simpler contributor popover — both derive from the model. A sig-mismatched
@@ -314,6 +262,7 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
   const openUnion: UnionPopoverContent | null = openLive && !hasAgreement ? unionPopoverContent(contrib, openLive.id) : null
   const close = () => setOpen(null)
   const openDetails = (focusId?: string) => { close(); onOpenDetails(focusId) }
+  const viewContributors = (ref: AromaRef) => { close(); onViewContributors(ref) }
 
   // Render whenever there's ANYTHING to show. Only truly aroma-less cases (no
   // taster gave a resolvable aroma → empty union too) omit the block.
@@ -324,8 +273,13 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
 
   return (
     <View style={{ gap: 8 }}>
-      {/* Centered uppercase header — parallel to the structure "GROUP STRUCTURE". */}
-      <VText variant="label" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', textAlign: 'center' }}>{header}</VText>
+      <VText
+        variant="label"
+        color="inkSoft"
+        style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', textAlign: 'center', ...phone.text('label') }}
+      >
+        {header}
+      </VText>
       {/* Off-screen measure pass: ONLY the not-yet-measured chips (+ pill), gone
           entirely once complete. Hidden from a11y too — pointerEvents:none blocks
           touch but NOT the accessibility tree (Codex). */}
@@ -336,11 +290,14 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
           importantForAccessibility="no-hide-descendants"
           style={{ position: 'absolute', opacity: 0, left: 0, top: 0, flexDirection: 'row', flexWrap: 'wrap' }}
         >
-          {unmeasured.map((c) => (
-            <View key={c.id} onLayout={(e) => { const x = Math.ceil(e.nativeEvent.layout.width); setChipW((p) => (p[c.id] === x ? p : { ...p, [c.id]: x })) }}>
-              <AromaChip a={c.id} m={null} count={c.count} pronounced={c.pronounced} vPad={0} />
-            </View>
-          ))}
+          {unmeasured.map((c) => {
+            const key = stripChipMeasureKey(c)
+            return (
+              <View key={key} onLayout={(e) => { const x = Math.ceil(e.nativeEvent.layout.width); setChipW((p) => (p[key] === x ? p : { ...p, [key]: x })) }}>
+                <AromaChip a={c.id} m={null} count={c.count} pronounced={c.pronounced} vPad={0} />
+              </View>
+            )
+          })}
           {pillW === 0 ? (
             <View onLayout={(e) => { const x = Math.ceil(e.nativeEvent.layout.width); setPillW((p) => (p === x ? p : x)) }}>
               <AromaDetailPill onPress={() => {}} />
@@ -348,10 +305,14 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
           ) : null}
         </View>
       ) : null}
-      {/* The strip: chips packed to 2 lines + the "Aroma details" tail pill INLINE
+      {/* The strip: chips packed to 2 lines + the "Aroma Details" tail pill INLINE
           as the last item. Chips tappable in BOTH modes (Simon 2026-07-14). */}
       <View
-        onLayout={(e) => setRowW(e.nativeEvent.layout.width)}
+        onLayout={(e) => {
+          const width = e.nativeEvent.layout.width
+          if (rowW > 0 && rowW !== width) setOpen(null)
+          setRowW(width)
+        }}
         style={{
           flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center', gap: STRIP_GAP,
           opacity: measured ? 1 : 0,
@@ -362,25 +323,35 @@ export function AromaCompareStrip({ model, onOpenDetails }: AromaCompareStripPro
           <CompareChip
             key={chip.id}
             chip={chip}
-            onTap={(rect) => setOpen((cur) => (cur && cur.sig === sig && cur.id === chip.id ? null : { id: chip.id, rect, sig }))}
+            onTap={(rect, measure) => setOpen((cur) =>
+              cur && cur.sig === sig && cur.id === chip.id
+                ? null
+                : { id: chip.id, rect, sig, measure })}
           />
         ))}
         <AromaDetailPill onPress={() => openDetails()} />
       </View>
       {openContent && openLive ? (
-        <BadgeExtensionPopover
+        <AromaBadgePopover
           rect={openLive.rect}
           onClose={close}
-          badge={<View style={{ flexDirection: 'row', transform: [{ scale: 1.06 }] }}><AromaChip a={openContent.id} m={null} count={openContent.count} pronounced={openContent.isPanelPronounced} focused vPad={0} /></View>}
-          body={<PopoverBody content={openContent} onMoreBranches={() => openDetails(openContent.id)} />}
-        />
+          a={openContent.id}
+          m={null}
+          count={openContent.count}
+          pronounced={openContent.isPanelPronounced}
+        >
+          <PopoverBody content={openContent} onMoreBranches={() => openDetails(openContent.id)} onViewContributors={() => viewContributors({ kind: 'node', a: openContent.id })} />
+        </AromaBadgePopover>
       ) : openUnion && openLive ? (
-        <BadgeExtensionPopover
+        <AromaBadgePopover
           rect={openLive.rect}
           onClose={close}
-          badge={<View style={{ flexDirection: 'row', transform: [{ scale: 1.06 }] }}><AromaChip a={openUnion.id} m={null} count={openUnion.count} focused vPad={0} /></View>}
-          body={<UnionPopoverBody content={openUnion} />}
-        />
+          a={openUnion.id}
+          m={null}
+          count={openUnion.count}
+        >
+          <UnionPopoverBody content={openUnion} onViewContributors={() => viewContributors({ kind: 'base', a: openUnion.id })} />
+        </AromaBadgePopover>
       ) : null}
     </View>
   )

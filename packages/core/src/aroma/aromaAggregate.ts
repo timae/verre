@@ -42,7 +42,7 @@
 //     superseded_by alias / migration mechanism re-ids them (none exist yet);
 //     until then they are safely SKIPPED, not crashed.
 
-import { AROMA_FAMILIES, getAromaNode, type AromaSelection } from './taxonomy'
+import { AROMA_FAMILIES, aromaAncestorChain, getAromaNode, type AromaSelection } from './taxonomy'
 
 export type AromaRollupNode = {
   readonly id: string
@@ -74,16 +74,6 @@ export type AromaRollup = {
   }>
 }
 
-// The ancestor id chain of a resolved node, coarsest→finest. A family node
-// yields only [family.id] (so it never votes for a child); a leaf yields all
-// three. The node's OWN id is the last element (its grain).
-function ancestorChain(node: NonNullable<ReturnType<typeof getAromaNode>>): string[] {
-  const chain = [node.family.id]
-  if (node.subfamily) chain.push(node.subfamily.id)
-  if (node.leaf) chain.push(node.leaf.id)
-  return chain
-}
-
 function parentIdOf(node: NonNullable<ReturnType<typeof getAromaNode>>): string | null {
   if (node.tier === 'leaf') return node.subfamily!.id
   if (node.tier === 'subfamily') return node.family.id
@@ -106,7 +96,7 @@ export function aggregateAromaRollup(
     for (const sel of selections) {
       const node = getAromaNode(sel.a)
       if (!node) continue
-      const chain = ancestorChain(node)
+      const chain = aromaAncestorChain(node)
       for (const id of chain) voted.add(id)
       grain.add(chain[chain.length - 1])
     }

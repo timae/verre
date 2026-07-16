@@ -29,9 +29,9 @@ export default function You() {
         <VText variant="body" color="inkSoft">{session?.user.email ?? ''}</VText>
       </View>
       <View style={{ flex: 1 }} />
-      {__DEV__ ? (
-        <Button title="Dev gallery" variant="tertiary" onPress={() => router.push('/you/dev-gallery')} />
-      ) : null}
+      {/* Testing phase (Simon, 2026-07-16): visible in release builds too —
+          re-gate on __DEV__ before a public launch. */}
+      <Button title="Dev Gallery" variant="tertiary" onPress={() => router.push('/you/dev-gallery')} />
       <Button title="Sign Out" loadingTitle="Signing out…" variant="secondary" block loading={busy} onPress={signOut} style={{ marginBottom: insets.bottom + TAB_BAR_CLEARANCE }} />
     </View>
   );

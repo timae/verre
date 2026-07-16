@@ -1,374 +1,26 @@
-import { Redirect } from 'expo-router';
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, useWindowDimensions, View, type LayoutRectangle } from 'react-native';
+import { Fragment, useMemo, useState } from 'react';
+import { Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import { FullWindowOverlay } from 'react-native-screens';
-import Reanimated, { useAnimatedProps, useAnimatedStyle, useSharedValue, withRepeat, withTiming } from 'react-native-reanimated';
-import Svg, { Path } from 'react-native-svg';
-import { Icon } from '@/components/ui/Icon';
-import { Avatar } from '@/components/ui/Avatar';
-import { alpha } from '@/theme/color';
+import Svg, { Circle, Defs, G, Line, LinearGradient, Path, Rect, Stop, Text as SvgText, TextPath } from 'react-native-svg';
+import { AromaBunGraphic } from '@/components/moments/AromaBunGraphic';
+import { buildCompareAromaModel } from '@/components/moments/aromaCompareView';
+import { aromaMosaic, concentricRings, spiralRibbon, weightedPolar, type MosaicMode, type PolarMode, type VizFamily } from '@/components/moments/aromaVizGeometry';
+import { aromaIris, bubbleColumns, radialTreemap, ringChain, voronoiContinents, type ContinentsShape, type IrisDepth } from '@/components/moments/aromaVizGeometry2';
+import { additiveMentionFamilies, aromaVizShortLabel, irisMentionFamilies, LONG_TAIL_120_PEOPLE_1440_MENTIONS, MIXED_GRAIN_20_PEOPLE_200_MENTIONS } from '@/components/moments/aromaVizFixtures';
+import { Segmented } from '@/components/ui/Segmented';
+import { alpha, inkOn, mix } from '@/theme/color';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { AROMA_FAMILIES, resolveAxes, perRatingAxes, aggregateAromaRollup, aromaConsensus, type AromaConsensusOpts, type ConsensusDisplayNode, type AromaSelection } from '@verre/core';
-// The compare-VIEW / contributor derivations are still mobile-gallery-owned and
-// lazy-required under __DEV__ below (Metro's DCE keeps them out of prod). The
-// aromaConsensus SELECTOR moved into @verre/core (Slice 3a) — it's a normal core
-// import now. Types are erased at compile → safe as a static import regardless.
-import type { StripChip, PopoverContent, CompareSelection } from '@/components/moments/aromaCompareView';
-import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
+import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { AromaChip, useTapOrDouble } from '@/components/scoring/aroma/parts';
 import { StarScore } from '@/components/scoring/StarScore';
 import { QrCode } from '@/components/ui/QrCode';
-import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { contrastRatio } from '@/lib/contrast';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
-import { useFlavourColors } from '@/theme/flavourColors';
-import { elevation, radius, space, themes, useTheme, type ThemeChoice } from '@/theme';
-// Dev-only modules behind __DEV__ so Metro's constant folding + DCE strips
-// them from production bundles (codex: static imports kept lab-only code in
-// the production route module even though the screen redirects).
-let SwiftGlass: {
-  Host: typeof import('@expo/ui/swift-ui').Host;
-  HStack: typeof import('@expo/ui/swift-ui').HStack;
-  frame: typeof import('@expo/ui/swift-ui/modifiers').frame;
-  glassEffect: typeof import('@expo/ui/swift-ui/modifiers').glassEffect;
-} | null = null;
-if (__DEV__) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ui = require('@expo/ui/swift-ui') as typeof import('@expo/ui/swift-ui');
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mods = require('@expo/ui/swift-ui/modifiers') as typeof import('@expo/ui/swift-ui/modifiers');
-    SwiftGlass = { Host: ui.Host, HStack: ui.HStack, frame: mods.frame, glassEffect: mods.glassEffect };
-  } catch {
-    SwiftGlass = null;
-  }
-}
-
-// ── Glass lab (PillTabBar lens forensics) ───────────────────────────────────
-// Apple's Files app renders the FULL lens optic (clear center, chromatic rim,
-// heavy edge warp) in the same Simulator where our bar shows frost only. This
-// section isolates which property carries the warp: six capsules over
-// IDENTICAL high-contrast content, each varying ONE thing. Screenshot the
-// section and compare against Files' drag lens.
-let LabGlass: typeof import('expo-glass-effect').GlassView | null = null;
-let LabGlassBox: typeof import('expo-glass-effect').GlassContainer | null = null;
-if (__DEV__) {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const g = require('expo-glass-effect') as typeof import('expo-glass-effect');
-    if (g.isGlassEffectAPIAvailable() && g.isLiquidGlassAvailable()) {
-      LabGlass = g.GlassView;
-      LabGlassBox = g.GlassContainer;
-    }
-  } catch {
-    LabGlass = null;
-  }
-}
-// The compare-view + contributor derivations. Both are PRODUCTION modules now
-// (CompareBody → AromaCompareStrip/AromaDetailSheet ship them), so the lazy require no
-// longer keeps anything out of the prod bundle — it's kept only so the lab's
-// access pattern stays uniform with the other DEV-only requires above.
-// (aromaConsensus moved to @verre/core in Slice 3a — a normal static import.)
-let labCompareView: typeof import('@/components/moments/aromaCompareView') | null = null;
-let labBuildContributors: typeof import('@/components/moments/aromaContributors').buildAromaContributors | null = null;
-if (__DEV__) {
-  // Relative (not '@/') so Metro resolves the require the same way regardless of
-  // tsconfig-paths handling — this file is under src/app/(tabs)/you/.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  labCompareView = require('../../../components/moments/aromaCompareView') as typeof import('@/components/moments/aromaCompareView');
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  labBuildContributors = (require('../../../components/moments/aromaContributors') as typeof import('@/components/moments/aromaContributors')).buildAromaContributors;
-}
-// The SHARED ruled candidate — the SAME component the real CmpAccItem mounts
-const LAB_W = 150;
-const LAB_H = 64;
-function LabBackdrop() {
-  const stripes = ['#e74c3c', '#f1c40f', '#2ecc71', '#3498db', '#ffffff', '#9b59b6'];
-  return (
-    <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, flexDirection: 'row' }}>
-      {stripes.map((c) => (
-        <View key={c} style={{ flex: 1, backgroundColor: c }} />
-      ))}
-      <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, justifyContent: 'space-around' }}>
-        {[0, 1, 2].map((i) => (
-          <VText key={i} style={{ color: '#000', fontSize: 13, fontFamily: 'InstrumentSans_600SemiBold' }}>
-            waterfall ripple glass 12345 waterfall ripple
-          </VText>
-        ))}
-      </View>
-    </View>
-  );
-}
-function LabCase({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <View style={{ gap: 4 }}>
-      <View style={{ width: LAB_W + 40, height: LAB_H + 40, borderRadius: radius.md, overflow: 'hidden' }}>
-        <LabBackdrop />
-        <View style={{ position: 'absolute', left: 20, top: 20, width: LAB_W, height: LAB_H }}>{children}</View>
-      </View>
-      <VText variant="caption" color="inkSoft">{label}</VText>
-    </View>
-  );
-}
-function GlassLab() {
-  const [mounted, setMounted] = useState(false);
-  return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Glass lab (lens forensics)</VText>
-      <VText variant="small" color="inkSoft">
-        Compare each capsule{'\u2019'}s EDGES against the Files app{'\u2019'}s drag lens. Which cases warp the stripes/text at the rim vs merely blur?
-      </VText>
-      {!LabGlass ? <VText variant="small">expo-glass-effect unavailable in this binary.</VText> : null}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
-        {LabGlass ? (
-          <>
-            <LabCase label="1 UIKit regular + interactive">
-              <LabGlass glassEffectStyle="regular" isInteractive style={{ flex: 1, borderRadius: LAB_H / 2 }} />
-            </LabCase>
-            <LabCase label="2 UIKit regular, NOT interactive">
-              <LabGlass glassEffectStyle="regular" style={{ flex: 1, borderRadius: LAB_H / 2 }} />
-            </LabCase>
-            <LabCase label="3 UIKit clear + interactive">
-              <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: LAB_H / 2 }} />
-            </LabCase>
-            <LabCase label="4 UIKit regular+interactive, toggle-mounted">
-              {mounted ? <LabGlass glassEffectStyle="regular" isInteractive style={{ flex: 1, borderRadius: LAB_H / 2 }} /> : null}
-            </LabCase>
-          </>
-        ) : null}
-        {SwiftGlass ? (
-          <LabCase label="5 SwiftUI regular + interactive">
-            <SwiftGlass.Host style={{ flex: 1 }}>
-              <SwiftGlass.HStack modifiers={[SwiftGlass.frame({ width: LAB_W, height: LAB_H }), SwiftGlass.glassEffect({ glass: { variant: 'regular', interactive: true }, shape: 'capsule' })]}>
-                {null}
-              </SwiftGlass.HStack>
-            </SwiftGlass.Host>
-          </LabCase>
-        ) : null}
-        {SwiftGlass ? (
-          <LabCase label="6 SwiftUI clear + interactive">
-            <SwiftGlass.Host style={{ flex: 1 }}>
-              <SwiftGlass.HStack modifiers={[SwiftGlass.frame({ width: LAB_W, height: LAB_H }), SwiftGlass.glassEffect({ glass: { variant: 'clear', interactive: true }, shape: 'capsule' })]}>
-                {null}
-              </SwiftGlass.HStack>
-            </SwiftGlass.Host>
-          </LabCase>
-        ) : null}
-      </View>
-      <Button title={mounted ? 'Unmount case 4' : 'Mount case 4 (post-attach, like the held lens)'} size="sm" variant="secondary" onPress={() => setMounted((m) => !m)} />
-    </View>
-  );
-}
-
-// ── Glass lab 2: HOSTING conditions (established WHY a lens dies over the
-// bar: glass-over-glass without a container, cases 10 vs 12/13; transforms
-// are innocent, cases 7-9). Cases as rendered:
-//   7  animated TRANSFORM parent (survives — motion is innocent)
-//   8  animated LEFT / layout movement (survives)
-//   9  static transform parent (survives)
-//   10 over another glass, NO container (dies — the smoky slug)
-//   12 same as 10 inside ONE GlassContainer (material survives, but members
-//      can't optically see siblings — no warp of bar/items)
-//   13 container + MOVING clear lens over the slab
-const LAB2_W = 230;
-const LAB2_H = 84;
-function Lab2Case({ label, children, height = 150 }: { label: string; children: React.ReactNode; height?: number }) {
-  return (
-    <View style={{ gap: 4 }}>
-      <View style={{ width: 320, height, borderRadius: radius.md, overflow: 'hidden' }}>
-        <LabBackdrop />
-        {children}
-      </View>
-      <VText variant="caption" color="inkSoft">{label}</VText>
-    </View>
-  );
-}
-function MovingLens({ mode }: { mode: 'transform' | 'left' }) {
-  const x = useSharedValue(0);
-  useEffect(() => {
-    x.value = withRepeat(withTiming(70, { duration: 1400 }), -1, true);
-  }, [x]);
-  const st = useAnimatedStyle(() =>
-    mode === 'transform' ? { transform: [{ translateX: x.value }] } : { left: x.value },
-  );
-  if (!LabGlass) return null;
-  return (
-    <Reanimated.View style={[{ position: 'absolute', top: 32, ...(mode === 'transform' ? { left: 10 } : {}), width: LAB2_W, height: LAB2_H }, st]}>
-      <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: LAB2_H / 2 }} />
-    </Reanimated.View>
-  );
-}
-function GlassLab2() {
-  const { theme } = useTheme();
-  if (!LabGlass) return null;
-  return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Glass lab 2 (hosting conditions)</VText>
-      <VText variant="small" color="inkSoft">
-        All cases use case-3{'\u2019'}s exact lens (clear + interactive). Watch which hosting condition keeps/kills the edge warp.
-      </VText>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
-        <Lab2Case label="7 moving via animated TRANSFORM (bar's current method)">
-          <MovingLens mode="transform" />
-        </Lab2Case>
-        <Lab2Case label="8 moving via animated LEFT (layout)">
-          <MovingLens mode="left" />
-        </Lab2Case>
-        <Lab2Case label="9 static transform parent">
-          <View style={{ position: 'absolute', top: 32, left: 10, width: LAB2_W, height: LAB2_H, transform: [{ translateX: 40 }] }}>
-            <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: LAB2_H / 2 }} />
-          </View>
-        </Lab2Case>
-        <Lab2Case label="10 over another glass (regular slab beneath)">
-          <LabGlass glassEffectStyle="regular" style={{ position: 'absolute', left: 0, right: 0, top: 55, height: 70, borderRadius: 35 }} />
-          <View style={{ position: 'absolute', top: 32, left: 45, width: LAB2_W, height: LAB2_H }}>
-            <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: LAB2_H / 2 }} />
-          </View>
-        </Lab2Case>
-        {LabGlassBox ? (
-          <Lab2Case label="12 SAME as 10, but inside ONE GlassContainer (Apple's rule for overlapping glass)" height={170}>
-            <LabGlassBox spacing={20} style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
-              <LabGlass glassEffectStyle="regular" style={{ position: 'absolute', left: 0, right: 0, top: 65, height: 64, borderRadius: 32 }} />
-              <View pointerEvents="none" style={{ position: 'absolute', left: 0, right: 0, top: 88, flexDirection: 'row', justifyContent: 'space-around' }}>
-                <VText style={{ color: theme.ink, fontSize: 12, fontFamily: 'InstrumentSans_600SemiBold' }}>Feed</VText>
-                <VText style={{ color: theme.accent, fontSize: 12, fontFamily: 'InstrumentSans_600SemiBold' }}>Moments</VText>
-                <VText style={{ color: theme.ink, fontSize: 12, fontFamily: 'InstrumentSans_600SemiBold' }}>Soon</VText>
-              </View>
-              <View style={{ position: 'absolute', top: 50, left: 55, width: 170, height: 92 }}>
-                <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: 46 }} />
-              </View>
-            </LabGlassBox>
-          </Lab2Case>
-        ) : null}
-        {LabGlassBox ? (
-          <Lab2Case label="13 container, MOVING clear lens over regular slab" height={170}>
-            <LabGlassBox spacing={20} style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
-              <LabGlass glassEffectStyle="regular" style={{ position: 'absolute', left: 0, right: 0, top: 65, height: 64, borderRadius: 32 }} />
-              <MovingLens mode="transform" />
-            </LabGlassBox>
-          </Lab2Case>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-// ── Glass lab 3: the design fork as THREE working mockups (drag each lens,
-// no hold delay). A = all real glass in one container (lens alive, never
-// warps items). B = translucent solid body, containerless lens (full warp,
-// milky center — the lens magnifies the body fill). C = punch-through body
-// (hole tracks the lens) — the architecture the production bar SHIPPED.
-const DEMO_W = 336;
-const DEMO_BAR_H = 60;
-const DEMO_LENS_W = 96;
-const DEMO_LENS_H = 74;
-const DEMO_ITEMS = [
-  { icon: 'home', label: 'Feed' },
-  { icon: 'glass', label: 'Moments' },
-  { icon: 'soon', label: 'Soon' },
-  { icon: 'user', label: 'You' },
-] as const;
-function DemoItems({ ink, accent }: { ink: string; accent: string }) {
-  return (
-    <View pointerEvents="none" style={{ position: 'absolute', left: 6, right: 6, top: (DEMO_LENS_H - DEMO_BAR_H) / 2 + 8, flexDirection: 'row' }}>
-      {DEMO_ITEMS.map((it, i) => (
-        <View key={it.label} style={{ flex: 1, alignItems: 'center', gap: 3 }}>
-          <Icon name={it.icon} size={22} color={i === 1 ? accent : ink} />
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 10.5, color: i === 1 ? accent : ink }}>{it.label}</VText>
-        </View>
-      ))}
-    </View>
-  );
-}
-const AnimatedPath = Reanimated.createAnimatedComponent(Path);
-// Capsule subpath for the punch-through body (worklet-safe string builder).
-function capsulePath(x: number, y: number, w: number, h: number) {
-  'worklet';
-  const r = h / 2;
-  return `M ${x + r} ${y} L ${x + w - r} ${y} A ${r} ${r} 0 0 1 ${x + w - r} ${y + h} L ${x + r} ${y + h} A ${r} ${r} 0 0 1 ${x + r} ${y} Z`;
-}
-function DemoBar({ variant }: { variant: 'A' | 'B' | 'C' }) {
-  const { theme } = useTheme();
-  const cx = useSharedValue(DEMO_W / 2);
-  const pan = Gesture.Pan()
-    .activeOffsetX([-8, 8])
-    .onUpdate((e) => {
-      cx.value = Math.min(Math.max(e.x, DEMO_LENS_W / 2 - 10), DEMO_W - DEMO_LENS_W / 2 + 10);
-    });
-  const lensStyle = useAnimatedStyle(() => ({ transform: [{ translateX: cx.value - DEMO_LENS_W / 2 }] }));
-  // Variant C: the body is an SVG capsule with a HOLE tracking the lens
-  // (even-odd fill) — the lens samples pure backdrop through the hole, so
-  // its interior stays truly clear (B's milkiness = the lens magnifying the
-  // body's own fill; Apple's lens "punches through" its bar the same way).
-  const barTop = (DEMO_LENS_H - DEMO_BAR_H) / 2;
-  const holeW = DEMO_LENS_W - 8;
-  const holeH = DEMO_BAR_H;
-  const bodyProps = useAnimatedProps(() => ({
-    d:
-      capsulePath(0, barTop, DEMO_W - 20, DEMO_BAR_H) +
-      ' ' +
-      capsulePath(Math.min(Math.max(cx.value - holeW / 2, 0), DEMO_W - 20 - holeW), barTop, holeW, holeH),
-  }));
-  if (!LabGlass) return null;
-  const barShape = { position: 'absolute' as const, left: 0, right: 0, top: barTop, height: DEMO_BAR_H, borderRadius: DEMO_BAR_H / 2 };
-  const lens = (
-    <Reanimated.View pointerEvents="none" style={[{ position: 'absolute', left: 0, top: 0, width: DEMO_LENS_W, height: DEMO_LENS_H }, lensStyle]}>
-      <LabGlass glassEffectStyle="clear" isInteractive style={{ flex: 1, borderRadius: DEMO_LENS_H / 2 }} />
-    </Reanimated.View>
-  );
-  const inner =
-    variant === 'A' && LabGlassBox ? (
-      <LabGlassBox spacing={20} style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
-        <LabGlass glassEffectStyle="regular" style={barShape} />
-        <DemoItems ink={theme.ink} accent={theme.accent} />
-        {lens}
-      </LabGlassBox>
-    ) : variant === 'B' ? (
-      <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
-        <View style={[barShape, { backgroundColor: alpha(theme.surface, 0.45), borderWidth: 1, borderColor: theme.rule }]} />
-        <DemoItems ink={theme.ink} accent={theme.accent} />
-        {lens}
-      </View>
-    ) : (
-      <View style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}>
-        <Svg pointerEvents="none" width={DEMO_W - 20} height={DEMO_LENS_H} style={{ position: 'absolute', left: 0, top: 0 }}>
-          <AnimatedPath animatedProps={bodyProps} fill={alpha(theme.surface, 0.9)} fillRule="evenodd" />
-        </Svg>
-        <DemoItems ink={theme.ink} accent={theme.accent} />
-        {lens}
-      </View>
-    );
-  return (
-    <GestureDetector gesture={pan}>
-      <View collapsable={false} style={{ position: 'absolute', left: 10, right: 10, top: 55, height: DEMO_LENS_H }}>{inner}</View>
-    </GestureDetector>
-  );
-}
-function GlassLab3() {
-  if (!LabGlass) return null;
-  return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Glass lab 3 (the fork, drag both)</VText>
-      <VText variant="small" color="inkSoft">
-        Drag each lens horizontally. A: all-glass container — lens alive, but items pass under the rim unwarped. B: solid translucent body — full lens warp on items and backdrop, no glass bar body.
-      </VText>
-      <Lab2Case label="A · all glass, one container" height={185}>
-        <DemoBar variant="A" />
-      </Lab2Case>
-      <Lab2Case label="B · translucent body (45%) + containerless lens" height={185}>
-        <DemoBar variant="B" />
-      </Lab2Case>
-      <Lab2Case label="C · punch-through body (hole tracks the lens) + containerless lens" height={185}>
-        <DemoBar variant="C" />
-      </Lab2Case>
-    </View>
-  );
-}
-
+import { useAromaColors, useFlavourColors } from '@/theme/flavourColors';
+import { radius, space, themes, typeScale, useTheme, type ThemeChoice } from '@/theme';
 // Dev-only widget gallery + theme switcher: the Simulator verification surface
 // for the scoring widgets and the NativeTabs/theming spike. Not a user surface.
 //
@@ -418,712 +70,890 @@ function DevSlider({ value, onChange, min, max, step }: { value: number; onChang
   );
 }
 
-// ── Aroma roll-up lab (compare §8) ───────────────────────────────────────────
-// Renders the role-based consensus TREE over the ten pinned panels (P1–P10) with
-// the two knobs live, so the selector's behaviour is visible against the real
-// spread. The aggregate + the selector (aromaConsensus) both live in @verre/core
-// now — the selector moved there in Slice 3a with the ruled defaults baked; the
-// knob toggles stay here for future re-evaluation. The math is separately pinned
-// in .local/test-env/scripts/aroma-aggregate-units.ts (the gallery must not
-// present unverified calculations).
-const aS = (a: string, m: string | null = null): AromaSelection => ({ a, m });
-const aSp = (a: string, m: string | null = null): AromaSelection => ({ a, m, p: true }); // pronounced
-const rep = (n: number, f: () => AromaSelection[]) => Array.from({ length: n }, f);
-const ROLLUP_PANELS: { title: string; note: string; tasters: AromaSelection[][] }[] = [
-  { title: 'P1 · heading pruned (1 child)', note: '4 straw / 2 rasp / 2 lingon → Berry 8 [P] ↳ Strawberry 4 (Fruity removed)', tasters: [...rep(4, () => [aS('strawberry')]), ...rep(2, () => [aS('raspberry')]), ...rep(2, () => [aS('lingonberry')])] },
-  { title: 'P2 · context › primary › peak', note: '4 straw / 2 berry / 2 fruity → Fruity 8 [C] › Berry 6 [P] ↳ Strawberry 4', tasters: [...rep(4, () => [aS('strawberry')]), ...rep(2, () => [aS('fruity.berry')]), ...rep(2, () => [aS('fruity')])] },
-  { title: 'P3 · no strong agreement', note: '9-way rasp / veg / chem → three secondary roots; Chemical 3 > Skunky 2 survives', tasters: [aS('raspberry'), aS('raspberry'), aS('raspberry'), aS('vegetal'), aS('vegetal'), aS('cucumber'), aS('skunky'), aS('skunky'), aS('petrol')].map((s) => [s]) },
-  { title: 'P4 · heading kept (2 children)', note: '3× (distinct berry + citrus) → Fruity H › { Citrus 3 [P] · Berry 3 [P] }', tasters: [[aS('strawberry'), aS('lemon')], [aS('raspberry'), aS('lime')], [aS('blackberry'), aS('grapefruit')]] },
-  { title: 'P5 · compounding killed', note: '4 fruity / 2 berry / 2 straw → Fruity 8 [P] ↳ Berry 4 ↳ Strawberry 2 (nested peaks)', tasters: [...rep(4, () => [aS('fruity')]), ...rep(2, () => [aS('fruity.berry')]), ...rep(2, () => [aS('strawberry')])] },
-  { title: 'P6 · heading kept, collapse-to-leaf', note: '6×(straw+lemon)+cuke+petrol → Fruity H › { Lemon 6 [P] · Strawberry 6 [P] }', tasters: [...rep(6, () => [aS('strawberry'), aS('lemon')]), [aS('cucumber')], [aS('petrol')]] },
-  { title: 'P7 · primary + strong secondary', note: '5 raspberry / 4 vegetal → Raspberry 5 [P] · Vegetal 4 [S] (different families)', tasters: [...rep(5, () => [aS('raspberry')]), ...rep(4, () => [aS('vegetal')])] },
-  { title: 'P8 · shared context, mixed roles', note: '5 berry / 4 citrus (distinct) → Fruity 9 [C] › { Berry 5 [P] · Citrus 4 [S] }', tasters: [[aS('strawberry')], [aS('raspberry')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')], [aS('lemon')], [aS('lime')], [aS('grapefruit')], [aS('orange')]] },
-  { title: 'P9 · equal-primary + weaker sibling', note: '5 berry; 2 also citrus → Fruity H › { Berry 5 [P] · Citrus 2 [S] }', tasters: [[aS('strawberry'), aS('lemon')], [aS('raspberry'), aS('lime')], [aS('blackberry')], [aS('blueberry')], [aS('blackcurrant')]] },
-  { title: 'P10 · unbounded worst case', note: '2 spray 8 families + 6 scattered → ~8+ secondary roots; selector returns ALL (cap deferred)', tasters: [((): AromaSelection[] => [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')])(), [aS('strawberry'), aS('cucumber'), aS('black_pepper'), aS('vanilla'), aS('almond'), aS('toast'), aS('oak'), aS('flint')], [aS('honey')], [aS('rose')], [aS('butter')], [aS('yeast')], [aS('acetone')], [aS('lavender')]] },
-  // Pronounced demos (Tier-2 only): PR-A clears the panel bar (3 of 5 pronounced, 3×2>5 → group-pronounced chip); PR-B does NOT (3 of 8, 3×2≤8 → chip stays plain, popover still reports "3 of 5 supporters").
-  { title: 'PR-A · group-pronounced (3 of 5)', note: '5 strawberry, 3 pronounced → Strawberry chip renders PRONOUNCED', tasters: [[aSp('strawberry')], [aSp('strawberry')], [aSp('strawberry')], [aS('strawberry')], [aS('strawberry')]] },
-  { title: 'PR-B · below the bar (3 of 8)', note: '5 strawberry (3 pronounced) + 3 vegetal → visible Strawberry 5 chip NOT group-pronounced (3×2 ≤ 8); popover shows "3 of 5 supporters"', tasters: [[aSp('strawberry')], [aSp('strawberry')], [aSp('strawberry')], [aS('strawberry')], [aS('strawberry')], [aS('vegetal')], [aS('vegetal')], [aS('vegetal')]] },
+// ── Aroma summary visualisations (static look studies) ──────────────────────
+// These deliberately show a LEADING SUBSET, never the complete 12-family / full
+// taxonomy. The exhaustive view already belongs to All Aromas; this lab asks
+// which summary shape gives the fastest human read of the same sample panel.
+type AromaVizFamily = VizFamily;
+
+// ADDITIVE samples (reference-mock semantics: a family's count = the sum of
+// its named notes + its unnamed remainder, so segmented rings and Others
+// tails are honest). `tasters` feeds the B "by tasters" sector variant. TWO
+// sets (Simon round 5): the earthy matchy-palette one, and a WILD set whose
+// family colours clash on purpose (floral/sweet/chemical/mineral/fire/funky).
+// "Tasting" set = Simon's REAL fixture panel (20 people, 200 taxonomy-valid
+// picks, mixed grain + modifiers) converted to additive mention families —
+// replaces the hand-made earthy sample (round 7).
+const AROMA_SET_TASTING: AromaVizFamily[] = additiveMentionFamilies(MIXED_GRAIN_20_PEOPLE_200_MENTIONS).map((family) => ({
+  id: family.id,
+  label: family.label,
+  count: family.count,
+  tasters: family.tasters,
+  notes: family.notes.map((note) => ({ label: note.label, count: note.count })),
+}));
+const AROMA_SET_STRESS: AromaVizFamily[] = additiveMentionFamilies(LONG_TAIL_120_PEOPLE_1440_MENTIONS).map((family) => ({
+  id: family.id,
+  label: family.label,
+  count: family.count,
+  tasters: family.tasters,
+  notes: family.notes.map((note) => ({ label: note.label, count: note.count })),
+}));
+const AROMA_SET_WILD: AromaVizFamily[] = [
+  { id: 'sweet', label: 'Sweet', count: 88, tasters: 47, notes: [{ label: 'Honey', count: 31 }, { label: 'Vanilla', count: 22 }, { label: 'Caramel', count: 15 }] },
+  { id: 'floral', label: 'Floral', count: 66, tasters: 33, notes: [{ label: 'Rose', count: 26 }, { label: 'Violet', count: 18 }, { label: 'Honeysuckle', count: 11 }] },
+  { id: 'chemical', label: 'Chemical', count: 45, tasters: 26, notes: [{ label: 'Petrol', count: 24 }, { label: 'Skunky', count: 13 }] },
+  { id: 'mineral', label: 'Mineral', count: 39, tasters: 24, notes: [{ label: 'Flint', count: 21 }, { label: 'Chalk', count: 12 }] },
+  { id: 'fire', label: 'Fire', count: 30, tasters: 18, notes: [{ label: 'Smoke', count: 17 }, { label: 'Tar', count: 8 }] },
+  { id: 'funky', label: 'Funky', count: 28, tasters: 16, notes: [{ label: 'Blue cheese', count: 14 }, { label: 'Barnyard', count: 9 }] },
+  { id: 'other', label: 'Other families', count: 22, tasters: 13, notes: [{ label: 'Fruity', count: 12 }, { label: 'Savory', count: 10 }] },
+];
+// Round-6 stress set: ~20 tasters, 200 mentions, random-ish spread across ALL
+// 12 real families (numbers fixed, generated once — no pseudo "other" entry:
+// the omission machinery produces Others naturally at scale).
+const AROMA_SET_RANDOM200: AromaVizFamily[] = [
+  { id: 'fruity', label: 'Fruity', count: 34, tasters: 18, notes: [{ label: 'Strawberry', count: 9 }, { label: 'Lemon', count: 8 }, { label: 'Apricot', count: 6 }, { label: 'Blackcurrant', count: 4 }] },
+  { id: 'sweet', label: 'Sweet', count: 25, tasters: 14, notes: [{ label: 'Honey', count: 9 }, { label: 'Vanilla', count: 7 }, { label: 'Caramel', count: 5 }] },
+  { id: 'woody', label: 'Woody', count: 23, tasters: 13, notes: [{ label: 'Oak', count: 10 }, { label: 'Cedar', count: 6 }, { label: 'Sandalwood', count: 4 }] },
+  { id: 'vegetal', label: 'Vegetal', count: 21, tasters: 12, notes: [{ label: 'Cut grass', count: 8 }, { label: 'Bell pepper', count: 6 }, { label: 'Fennel', count: 3 }] },
+  { id: 'spice', label: 'Spice', count: 17, tasters: 10, notes: [{ label: 'Pepper', count: 7 }, { label: 'Clove', count: 5 }, { label: 'Cinnamon', count: 3 }] },
+  { id: 'mineral', label: 'Mineral', count: 16, tasters: 9, notes: [{ label: 'Flint', count: 7 }, { label: 'Wet stone', count: 6 }] },
+  { id: 'fire', label: 'Fire', count: 14, tasters: 9, notes: [{ label: 'Smoke', count: 8 }, { label: 'Tar', count: 4 }] },
+  { id: 'floral', label: 'Floral', count: 12, tasters: 8, notes: [{ label: 'Rose', count: 7 }, { label: 'Violet', count: 3 }] },
+  { id: 'funky', label: 'Funky', count: 11, tasters: 7, notes: [{ label: 'Blue cheese', count: 5 }, { label: 'Barnyard', count: 4 }] },
+  { id: 'chemical', label: 'Chemical', count: 10, tasters: 6, notes: [{ label: 'Petrol', count: 6 }, { label: 'Skunky', count: 3 }] },
+  { id: 'kernel', label: 'Kernel', count: 9, tasters: 6, notes: [{ label: 'Almond', count: 5 }, { label: 'Marzipan', count: 3 }] },
+  { id: 'savory', label: 'Savory', count: 8, tasters: 5, notes: [{ label: 'Broth', count: 4 }, { label: 'Soy', count: 2 }] },
 ];
 
-// One display-node row: the count·label lives INSIDE the badge ("3x Strawberry"
-// — Simon's ruling), emphasis follows the role. heading = an uncounted grouping
-// label (no count, no chip fill); context = a faint counted ancestor; primary =
-// full; secondary = lighter; peak = indented. The tree recurses via children[]
-// — rendering NEVER re-derives structure. `ancestorCount` is the nearest COUNTED
-// displayed ancestor's count (headings are skipped — they're never a
-// denominator), threaded down so a peak can show BOTH denominators: count/n
-// panel prevalence and count/ancestor branch concentration.
-function ConsensusRow({ dn, depth, n, ancestorCount }: { dn: ConsensusDisplayNode; depth: number; n: number; ancestorCount: number | null }) {
+const vizNotes = (families: AromaVizFamily[]) =>
+  families
+    .flatMap((family) => family.notes.map((note) => ({ ...note, shortLabel: aromaVizShortLabel(note.label), familyId: family.id })))
+    .sort((a, b) => b.count - a.count);
+
+// Geometry lives in the PURE, harness-pinned module (aromaVizGeometry —
+// d3-shape math, rnsvg rendering per Simon's stack ruling 2026-07-15); these
+// components only paint its `d` strings and placements.
+
+function AromaVizLegend({ families }: { families: AromaVizFamily[] }) {
   const { theme } = useTheme();
-  const { role, counted, node, children } = dn;
-  const roleTag = role === 'primary' ? '[P]' : role === 'secondary' ? '[S]' : role === 'context' ? '[C]' : role === 'peak' ? '↳' : 'H';
-  const roleColor = role === 'primary' ? theme.ink : role === 'secondary' ? theme.inkSoft : theme.inkFaint;
-  // Both denominators, kept distinct: prevalence (count/n) for every counted
-  // node; branch concentration (count/ancestor) additionally for a peak, since
-  // the peak bar is what the ⅓/⅔ knob rules. A heading shows neither.
-  const readout = counted
-    ? role === 'peak' && ancestorCount != null
-      ? `${node.count}/${n} panel · ${node.count}/${ancestorCount} branch`
-      : `${node.count}/${n} panel`
-    : '';
-  // The counted ancestor threaded to THIS node's children: this node if counted,
-  // else the ancestor passed in (a heading is transparent — §rule 6).
-  const childAncestor = counted ? node.count : ancestorCount;
+  const aromaColor = useAromaColors();
   return (
-    <View style={{ gap: 4 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: depth * 16 }}>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 10.5, color: roleColor, width: 20 }}>{roleTag}</VText>
-        {counted
-          ? <AromaChip a={node.id} m={null} sub={node.tier} count={node.count} vPad={0} />
-          : <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkFaint }}>{`${node.label} · grouping`}</VText>}
-        <VText variant="caption" color="inkFaint">{readout}</VText>
-      </View>
-      {children.map((c) => (
-        <ConsensusRow key={c.node.id} dn={c} depth={depth + 1} n={n} ancestorCount={childAncestor} />
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 10 }}>
+      {families.map((family) => (
+        <View key={family.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+          <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: family.id === 'other' ? theme.inkFaint : aromaColor(family.id) }} />
+          <VText surface="badge" variant="caption" color="inkSoft">{family.label}</VText>
+        </View>
       ))}
     </View>
   );
 }
 
-function AromaRollupLab() {
+function ConcentricRingsStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
   const { theme } = useTheme();
-  const [primaryMode, setPrimaryMode] = useState<'majority' | 'twoThirds'>('majority');
-  const [peak, setPeak] = useState<'third' | 'twoThirds'>('third');
-  const opts: AromaConsensusOpts = {
-    primary: primaryMode,
-    peakNum: peak === 'third' ? 1 : 2,
-    peakDen: 3,
-  };
-  const knobPill = (on: boolean, label: string, onPress: () => void) => (
-    <Pressable
-      accessibilityRole="tab"
-      accessibilityState={{ selected: on }}
-      onPress={onPress}
-      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
-    >
-      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>{label}</VText>
-    </Pressable>
-  );
-  const tierRank = { leaf: 3, subfamily: 2, family: 1 } as const;
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const [origin, setOrigin] = useState<'top' | 'bottom'>('top');
+  const [scaleMode, setScaleMode] = useState<'length' | 'angle' | 'hierarchy'>('length');
+  // Round-6 sliders: row thickness + inter-ring gap (0 = the "no space
+  // between arcs" version). The ring count auto-fits — fatter rows can cost
+  // a ring, and the layout answers "would we lose a line" live.
+  const [rowThick, setRowThick] = useState(16);
+  const [rowGap, setRowGap] = useState(3);
+  // All three studies reserve at least a 13% notch. Length compares physical distance,
+  // Angle compares family share without letting inner circumference reject a
+  // ring, and Full Rings uses radius for rank while maximizing label space.
+  const layout = concentricRings(families, {
+    size,
+    maxRings: 6,
+    fontSize,
+    originDeg: origin === 'bottom' ? 210 : 0,
+    maxSweepDeg: 313.2,
+    thicknessPx: rowThick,
+    gapPx: rowGap,
+    mode: scaleMode,
+    hierarchyStepDeg: 4,
+  });
   return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Aroma roll-up (compare §8)</VText>
-      <VText variant="small" color="inkSoft">
-        Role-based consensus tree over the ten pinned panels — rule the two knobs here. [P]rimary · [S]econdary · [C]ontext · H grouping · ↳ peak. Two denominators, never merged: count/n prevalence (primary bar) vs count/ancestor concentration (peak bar). Counts are NOT summable across siblings.
-      </VText>
-      {/* knobs — primary bar + peak bar */}
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(primaryMode === 'majority', 'primary > n/2', () => setPrimaryMode('majority'))}
-          {knobPill(primaryMode === 'twoThirds', 'primary ≥ 2n/3', () => setPrimaryMode('twoThirds'))}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(peak === 'third', 'peak ≥ ⅓', () => setPeak('third'))}
-          {knobPill(peak === 'twoThirds', 'peak ≥ ⅔', () => setPeak('twoThirds'))}
-        </View>
-      </View>
-      {ROLLUP_PANELS.map((panel) => {
-        const rollup = aggregateAromaRollup(panel.tasters);
-        const res = aromaConsensus(rollup, opts);
-        // count(atGrain) distribution, count desc → finer tier → taxonomy order
-        // (NEVER atGrain). byFamily is already taxonomy-ordered; a stable sort by
-        // (−count, −tierRank) preserves taxonomy order within ties.
-        const dist = rollup.byFamily
-          .flatMap((f) => f.nodes)
-          .slice()
-          .sort((a, b) => b.count - a.count || tierRank[b.tier] - tierRank[a.tier])
-          .map((nd) => `${nd.label} ${nd.count}(${nd.atGrain})`)
-          .join(' · ');
-        return (
-          <View key={panel.title} style={{ gap: 6, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>{panel.title} · n={rollup.n}</VText>
-              {res.hasStrongAgreement
-                ? null
-                : <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, color: theme.inkFaint }}>— No strong agreement —</VText>}
-            </View>
-            <VText variant="caption" color="inkFaint">{`default knobs (> n/2, ≥ ⅓): ${panel.note}`}</VText>
-            <View style={{ gap: 6 }}>
-              {res.roots.length > 0
-                ? res.roots.map((r) => <ConsensusRow key={r.node.id} dn={r} depth={0} n={rollup.n} ancestorCount={null} />)
-                : <VText variant="caption" color="inkFaint">— nothing clears the bar —</VText>}
-            </View>
-            <VText variant="caption" color="inkFaint">{`count(atGrain): ${dist || '—'}`}</VText>
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-// ── Tier 2 mock (compare §9, Slice 2a) ───────────────────────────────────────
-// The "Aroma agreement" strip as it would sit in the expanded compare card:
-// tappable count-chips (primaries+secondaries), an always-present "Detailed
-// aromas" action, and the anchored contributor popover (header · descendant peak
-// branch · 3-name preview · View contributors). Gallery mock over the pinned
-// panels — a PRELIMINARY density/interaction pass. The final density + knob
-// ruling happens in the real CmpAccItem card context (2b), not here.
-// The panels are anonymous AromaSelection[][]; synthesize realistic named raters so
-// the popover's contributor preview is populated.
-
-function labRaters(tasters: AromaSelection[][]) {
-  const names = ['Mara', 'Jonas', 'Léa', 'David', 'Sofia', 'Noah', 'Clara', 'Theo'];
-  return tasters.map((aromas, i) => ({ id: `t${i}`, displayName: names[i] ?? `Guest ${i + 1}`, aromas }));
-}
-
-// The strip's inter-chip gap (a layout constant; the pure packStrip lives in
-// aromaCompareView and takes gap + the MEASURED pill width as params). No role
-// suffix on chips (the chosen 2A design is plain "Nx Label"; role drives ORDER
-// only, not the label).
-const STRIP_GAP = 8;
-const COMPARE_CHIP_PAD = 2;
-
-// A compare-specific INTERACTION wrapper around the presentational AromaChip: it
-// owns tap-to-inspect + self-measure (the chip stays dumb). The wrapper footprint
-// is CONSTANT (padding 2 always, collapsable={false}) so the strip never
-// reflows and the measured anchor stays put. NO selection ring/backing — a
-// filled halo around the chip reads as a Pronounced border (Simon, device);
-// the anchored popover is itself the "this chip is selected" signal.
-function CompareChip({ chip, onLayoutWidth, onTap }: {
-  chip: StripChip;
-  onLayoutWidth: (id: string, w: number) => void;
-  onTap: (rect: LayoutRectangle) => void;
-}) {
-  const ref = useRef<View>(null);
-  // The tap goes through AromaChip.onPress (it IS a Pressable) — no nested
-  // Pressable (Codex #3: double responder/a11y). The wrapper View only measures
-  // width + the anchor rect.
-  return (
-    <View
-      ref={ref}
-      collapsable={false}
-      onLayout={(e) => onLayoutWidth(chip.id, Math.ceil(e.nativeEvent.layout.width))}
-      style={{ borderRadius: 999, padding: COMPARE_CHIP_PAD }}
-    >
-      <AromaChip
-        a={chip.id}
-        m={null}
-        count={chip.count}
-        pronounced={chip.pronounced}
-        vPad={0}
-        onPress={() => ref.current?.measureInWindow((x, y, width, height) => onTap({
-          x: x + COMPARE_CHIP_PAD,
-          y: y + COMPARE_CHIP_PAD,
-          width: width - COMPARE_CHIP_PAD * 2,
-          height: height - COMPARE_CHIP_PAD * 2,
-        }))}
+    <View style={{ gap: 10, alignItems: 'center', alignSelf: 'stretch' }}>
+      <Segmented
+        compact
+        segments={[{ key: 'top' as const, label: 'From Top' }, { key: 'bottom' as const, label: 'From Bottom' }]}
+        active={origin}
+        onSelect={setOrigin}
       />
-    </View>
-  );
-}
-
-// The tapped chip's window rect — a full rect (x + width too), so the popover
-// anchors HORIZONTALLY at the chip, not flush to the screen's right edge like the
-// shared AnchoredMenu (which is a right-aligned ⋯ dropdown). Gallery-local; if
-// the popover graduates to production, AnchoredMenu needs an x-anchor variant.
-type ChipRect = { x: number; y: number; width: number; height: number };
-
-// Shared horizontal placement. These are chip inspectors, not right-aligned
-// dropdown menus: align to the tapped badge and clamp only at the screen edge.
-function usePopoverFrame(rect: ChipRect, width: number, anchorInset = 0) {
-  const { width: screenW, height: screenH } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
-  const margin = 12;
-  const maxW = screenW - margin * 2;
-  const w = Math.min(width || AROMA_POPOVER_WIDTH, maxW);
-  const left = Math.max(margin, Math.min(rect.x - anchorInset, screenW - margin - w));
-  return { left, maxW, screenH, bottomLimit: screenH - insets.bottom - 8 };
-}
-
-const cardShadow = {
-  shadowColor: '#000', shadowOpacity: elevation.menu.ios.shadowOpacity, shadowRadius: elevation.menu.ios.shadowRadius,
-  shadowOffset: { width: 0, height: elevation.menu.ios.shadowOffsetY }, elevation: elevation.menu.android.elevation,
-} as const;
-const AROMA_POPOVER_WIDTH = 228;
-
-// RECOMMENDED — the selected badge expands into the card's title bar. A duplicate
-// is drawn at the original badge's exact window coordinates while a shallow
-// family-tinted band fully surrounds it; the detail continues below. It reads as
-// one badge becoming a panel, without repeating the aroma or cutting a rule/band
-// through the pill. Near the screen bottom the title bar moves to the lower edge.
-function AttachedBadgePopover({ rect, onClose, badge, body }: {
-  rect: ChipRect;
-  onClose: () => void;
-  badge: React.ReactNode;
-  body: React.ReactNode;
-}) {
-  const { theme } = useTheme();
-  const [size, setSize] = useState({ w: 0, h: 0 });
-  const titlePad = 8;
-  const { left, maxW, bottomLimit } = usePopoverFrame(rect, size.w, titlePad);
-  const titleH = rect.height + titlePad * 2;
-  const downTop = rect.y - titlePad;
-  const flip = size.h > 0 && downTop + size.h > bottomLimit;
-  const top = flip ? rect.y + rect.height + titlePad - size.h : downTop;
-  const badgeLeft = Math.max(0, Math.min(rect.x - left, Math.max(0, (size.w || AROMA_POPOVER_WIDTH) - rect.width)));
-  const titleBar = (
-    <View
-      style={{
-        height: titleH,
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingLeft: badgeLeft,
-        paddingRight: 8,
-        backgroundColor: theme.surfaceSunk,
-        borderBottomWidth: flip ? 0 : 1,
-        borderTopWidth: flip ? 1 : 0,
-        borderColor: theme.ruleSoft,
-      }}
-    >
-      <View style={{ flexDirection: 'row', flexShrink: 0 }}>{badge}</View>
-      <VText
-        variant="caption"
-        color="inkFaint"
-        numberOfLines={1}
-        style={{ marginLeft: 'auto', paddingLeft: 8 }}
+      <Segmented
+        compact
+        segments={[
+          { key: 'length' as const, label: 'Length' },
+          { key: 'angle' as const, label: 'Angle' },
+          { key: 'hierarchy' as const, label: 'Full Rings' },
+        ]}
+        active={scaleMode}
+        onSelect={setScaleMode}
+      />
+      <View style={{ alignSelf: 'stretch', gap: 2 }}>
+        <VText variant="caption" color="inkFaint">{`${scaleMode === 'length' ? 'Shared physical length' : scaleMode === 'angle' ? 'Shared proportional angle' : 'Ranked near-full rings'} · row ${rowThick} · rings ${layout.rings.length}`}</VText>
+        <DevSlider value={rowThick} onChange={setRowThick} min={10} max={22} step={1} />
+        <VText variant="caption" color="inkFaint">{`Ring gap ${rowGap} (default 3)${rowGap === 0 ? ' · touching' : ''}`}</VText>
+        <DevSlider value={rowGap} onChange={setRowGap} min={0} max={8} step={1} />
+      </View>
+      <Svg
+        // ⚠️ Remount on toggle: rnsvg TextPath keeps MOUNT-time path geometry —
+        // without the key, flipping the origin moved the rings but left every
+        // label stranded at its old position (the round-4 device mess).
+        key={`${origin}-${scaleMode}-${dataKey}-${rowThick}-${rowGap}`}
+        pointerEvents="none"
+        accessible
+        accessibilityLabel={scaleMode === 'length'
+          ? "Ranked physical-length family rings. The strongest family is outermost and physical arc length compares family mentions."
+          : scaleMode === 'angle'
+            ? "Ranked proportional-angle family rings. The six strongest families use one common angular scale, with the strongest reaching eighty-seven percent."
+            : "Ranked full family rings. The six strongest families run outermost to innermost on near-full arcs, and each ring shows that family's aroma mix."}
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
       >
-        Agreement
-      </VText>
-    </View>
-  );
-  return (
-    <Modal transparent visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close Aroma Details" onPress={onClose}>
-        <View
-          onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
-          style={{
-            position: 'absolute', top, left, width: Math.min(AROMA_POPOVER_WIDTH, maxW),
-            borderRadius: radius.md, ...cardShadow,
-          }}
-        >
-          <View style={{ backgroundColor: theme.surface, borderRadius: radius.md, borderWidth: 1, borderColor: theme.ruleSoft, overflow: 'hidden' }}>
-            {!flip ? titleBar : null}
-            <View style={{ paddingHorizontal: 12, paddingVertical: 10 }}>{body}</View>
-            {flip ? titleBar : null}
-          </View>
-        </View>
-      </Pressable>
-    </Modal>
-  );
-}
-
-// EXPERIMENT — the popup grows directly out of the selected badge. There is no
-// full-width header: the badge overlaps the neutral detail card at either an
-// inset corner or its centre. This keeps the source unmistakable without
-// clipping the badge to an outer edge, repeating the title, or adding a tint.
-export type ExtensionAnchor = 'corner' | 'center';
-
-function BadgeExtensionPopover({ rect, onClose, badge, body, anchor, glass = false }: {
-  rect: ChipRect;
-  onClose: () => void;
-  badge: React.ReactNode;
-  body: React.ReactNode;
-  anchor: ExtensionAnchor;
-  glass?: boolean;
-}) {
-  const { theme } = useTheme();
-  const [size, setSize] = useState({ w: 0, h: 0 });
-  const desiredBadgeLeft = anchor === 'center'
-    ? Math.max(10, (AROMA_POPOVER_WIDTH - rect.width) / 2)
-    : 10;
-  const { left, maxW, bottomLimit } = usePopoverFrame(rect, size.w, desiredBadgeLeft);
-  const downTop = rect.y;
-  const flip = size.h > 0 && downTop + size.h > bottomLimit;
-  const top = flip ? rect.y + rect.height - size.h : downTop;
-  const badgeLeft = Math.max(0, Math.min(rect.x - left, Math.max(0, (size.w || AROMA_POPOVER_WIDTH) - rect.width)));
-  const badgeOverlap = rect.height / 2;
-  const badgeCap = (
-    <View
-      collapsable={false}
-      style={{
-        zIndex: 4,
-        position: 'absolute',
-        left: badgeLeft,
-        ...(flip ? { bottom: 0 } : { top: 0 }),
-        flexDirection: 'row',
-        borderRadius: radius.pill,
-      }}
-    >
-      {badge}
-    </View>
-  );
-  const detailStyle = {
-    borderRadius: radius.md,
-    paddingHorizontal: 10,
-    paddingTop: flip ? 10 : badgeOverlap + 8,
-    paddingBottom: flip ? badgeOverlap + 8 : 10,
-    shadowColor: '#000',
-    shadowOpacity: elevation.sm.ios.shadowOpacity,
-    shadowRadius: elevation.sm.ios.shadowRadius,
-    shadowOffset: { width: 0, height: elevation.sm.ios.shadowOffsetY },
-    elevation: elevation.sm.android.elevation,
-  } as const;
-  const detail = glass && LabGlass ? (
-    <LabGlass
-      glassEffectStyle="regular"
-      colorScheme={theme.scheme}
-      tintColor={alpha(theme.surface, 0.14)}
-      style={detailStyle}
-    >
-      {body}
-    </LabGlass>
-  ) : (
-    <View style={{ ...detailStyle, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.ruleSoft }}>
-      {body}
-    </View>
-  );
-  const overlay = (
-    <Pressable style={{ flex: 1 }} accessibilityLabel="Close Aroma Details" onPress={onClose}>
-        <View
-          onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
-          style={{ position: 'absolute', top, left, width: Math.min(AROMA_POPOVER_WIDTH, maxW) }}
-        >
-          <View style={flip ? { marginBottom: rect.height - badgeOverlap } : { marginTop: rect.height - badgeOverlap }}>{detail}</View>
-          {/* Always mount AFTER the native glass view. UIGlassEffect can paint
-              over an earlier React sibling even when that sibling has zIndex;
-              absolute + last-mounted keeps the duplicate badge above the
-              material for both down- and up-opening panels. */}
-          {badgeCap}
-        </View>
-    </Pressable>
-  );
-  // A React Native Modal lives in a separate native window. Liquid Glass in
-  // that window cannot sample the badges/tab bar underneath and turns into an
-  // opaque-looking slab. FullWindowOverlay stays in the app's UIWindow, above
-  // its content, so the native material can refract what it actually overlaps.
-  if (glass && LabGlass) {
-    return <FullWindowOverlay unstable_accessibilityContainerViewIsModal>{overlay}</FullWindowOverlay>;
-  }
-  return (
-    <Modal transparent visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
-      {overlay}
-    </Modal>
-  );
-}
-
-// Shared compact content. Hierarchy is visual rather than prose-heavy: descendant
-// paths are real aroma badges, supporters stay one line, Pronounced gets its
-// canonical glyph, and the one navigation action is a canonical Button.
-function PopoverBody({ content, onViewContributors, onMoreBranches }: {
-  content: PopoverContent;
-  onViewContributors: () => void;
-  onMoreBranches: () => void;
-}) {
-  const { theme } = useTheme();
-  return (
-    <View style={{ gap: 10 }}>
-      {content.ledBy.length > 0 ? (
-        <View style={{ gap: 6 }}>
-          <VText variant="caption" color="inkFaint">Includes mentions of</VText>
-          {content.ledBy.map((branch, i) => (
-            <View key={i} style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-              {branch.map((step, j) => (
-                <View key={step.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  {j > 0 ? <Icon name="chevron-right" size={12} color={theme.inkFaint} /> : null}
-                  <AromaChip a={step.id} m={null} count={step.count} vPad={0} />
-                </View>
-              ))}
-            </View>
-          ))}
-          {content.moreBranches > 0 ? (
-            <Pressable onPress={onMoreBranches} accessibilityRole="button">
-              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.accent }}>{`+${content.moreBranches} More →`}</VText>
-            </Pressable>
+        <G x={layout.cx} y={layout.cy}>
+          {layout.rings.map((ring) => {
+            const color = aromaColor(ring.familyId);
+            // OPAQUE pale (mix, not alpha): translucent tails stacked with the
+            // cap nubs and read as darker overlap blobs at the row ends.
+            const pale = mix(color, theme.bg, 0.34);
+            const segColor = (others: boolean) => (others ? pale : color);
+            const first = ring.segments[0];
+            const last = ring.segments[ring.segments.length - 1];
+            return (
+              <Fragment key={ring.familyId}>
+                {/* Pill ends: tiny nub arcs with round caps at the row's start + end. */}
+                <Path d={ring.capStartD} fill="none" stroke={segColor(first.others)} strokeWidth={layout.thickness} strokeLinecap="round" />
+                <Path d={ring.capEndD} fill="none" stroke={segColor(last.others)} strokeWidth={layout.thickness} strokeLinecap="round" />
+                {ring.segments.map((seg, i) => {
+                  const id = `viz1-${origin}-${scaleMode}-${dataKey}-${ring.familyId}-${i}`;
+                  return (
+                    <Fragment key={id}>
+                      <Path d={seg.arcD} fill="none" stroke={segColor(seg.others)} strokeWidth={layout.thickness} strokeLinecap="butt" />
+                      {seg.labelText ? (
+                        <>
+                          <Path id={id} d={seg.labelPathD} fill="none" stroke="none" />
+                          <SvgText fill={inkOn(segColor(seg.others), theme.ink, theme.bg)} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle" dy={3.5}>
+                            <TextPath href={`#${id}`} startOffset="50%">{seg.labelText}</TextPath>
+                          </SvgText>
+                        </>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
+                {/* STRAIGHT radial cuts between segments (angular gaps read as
+                    diverging slivers — round 5). */}
+                {ring.separators.map((s, i) => (
+                  <Line key={`rsep-${ring.familyId}-${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={theme.bg} strokeWidth={2} strokeLinecap="butt" />
+                ))}
+                {/* Straight family name beside the shared origin. The inner
+                    rings reserve a larger angle for the same physical width. */}
+                <SvgText x={ring.originX} y={ring.originY} textAnchor={ring.originAnchor} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} fill={color}>
+                  {ring.familyLabel}
+                </SvgText>
+              </Fragment>
+            );
+          })}
+          {layout.othersDisc ? (
+            <>
+              <Circle cx={0} cy={0} r={layout.othersDisc.r} fill={alpha(theme.inkFaint, 0.22)} />
+              <SvgText x={0} y={-2} fill={theme.inkSoft} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle">{`${layout.othersDisc.familyCount} other`}</SvgText>
+              <SvgText x={0} y={fontSize + 1} fill={theme.inkSoft} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle">{layout.othersDisc.familyCount === 1 ? 'family' : 'families'}</SvgText>
+            </>
           ) : null}
-        </View>
-      ) : null}
-      {content.contributors.length > 0 ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 9 }}>
-          <View style={{ flexDirection: 'row', paddingLeft: 2 }}>
-            {content.contributors.map((c, i) => (
-              <View key={c.id} style={{ marginLeft: i === 0 ? 0 : -7 }}>
-                <Avatar name={c.displayName} size={26} ring initialsSize={9.5} />
-              </View>
-            ))}
-          </View>
-          <View style={{ flex: 1, gap: 1 }}>
-            <VText variant="caption" color="inkFaint">Supported By</VText>
-            <VText numberOfLines={1} surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, color: theme.inkSoft }}>
-              {content.contributors.map((c) => c.displayName).join(', ')}{content.moreContributors > 0 ? ` +${content.moreContributors}` : ''}
-            </VText>
-          </View>
-        </View>
-      ) : null}
-      {content.pronouncedCount > 0 ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Icon name="pronounced" size={14} color={content.isPanelPronounced ? theme.accent : theme.inkFaint} />
-          <VText variant="caption" color={content.isPanelPronounced ? 'accent' : 'inkFaint'}>
-            {`${content.pronouncedCount} of ${content.count} marked pronounced`}
-          </VText>
-        </View>
-      ) : null}
-      <View style={{ borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 4 }}>
-        <Button title="View Contributors" variant="tertiary" size="sm" block onPress={onViewContributors} />
-      </View>
+        </G>
+      </Svg>
     </View>
   );
 }
 
-export type PopoverVariant = 'attached' | 'extension' | 'glass';
-
-function Tier2Popover({ content, rect, variant, extensionAnchor, onClose, onViewContributors, onMoreBranches }: {
-  content: PopoverContent;
-  rect: ChipRect;
-  variant: PopoverVariant;
-  extensionAnchor: ExtensionAnchor;
-  onClose: () => void;
-  onViewContributors: () => void;
-  onMoreBranches: () => void;
-}) {
-  const body = <PopoverBody content={content} onViewContributors={onViewContributors} onMoreBranches={onMoreBranches} />;
-  // Both variants lead with the ACTUAL tapped badge as the header — the panel
-  // literally starts with the chip you tapped (family tint + count preserved),
-  // so it reads as that badge's detail, not a generic menu.
-  const badge = (
-    <View style={{ flexDirection: 'row' }}>
-      <AromaChip
-        a={content.id}
-        m={null}
-        count={content.count}
-        pronounced={content.isPanelPronounced}
-        focused={variant === 'extension' || variant === 'glass'}
-        vPad={0}
-      />
-    </View>
-  );
-  if (variant === 'extension' || variant === 'glass') {
-    return (
-      <BadgeExtensionPopover
-        rect={rect}
-        onClose={onClose}
-        badge={badge}
-        body={body}
-        anchor={extensionAnchor}
-        glass={variant === 'glass'}
-      />
-    );
-  }
-  return <AttachedBadgePopover rect={rect} onClose={onClose} badge={badge} body={body} />;
-}
-
-// One panel card: owns its own strip-width + per-chip-width measurement and the
-// two-line pack, so overflow chips hide behind a "+N" pill while "Detailed
-// aromas" stays visible. Selection/popover/route state is LIFTED to the lab so
-// only one popover is ever open and selection is panel-scoped (the selection id
-// is `${panelTitle}|${chipId}`, globally unique — tapping Berry in one panel
-// never highlights Berry in another).
-function Tier2PanelCard({ panel, opts, pronBar, onTapChip, onDetailed, popover }: {
-  panel: { title: string; note: string; tasters: AromaSelection[][] };
-  opts: AromaConsensusOpts;
-  pronBar: 'majority' | 'twoThirds';
-  onTapChip: (fullId: string, chipId: string, rect: LayoutRectangle) => void;
-  onDetailed: () => void;
-  popover: React.ReactNode; // rendered by the lab when this card owns the open popover
-}) {
+function WeightedPolarStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
   const { theme } = useTheme();
-  const [rowW, setRowW] = useState(0);
-  // Measure EVERY strip chip (not just the shown ones — a hidden chip would
-  // never report its width and packing could never stabilize) + the "+N" pill,
-  // off-screen, before packing. Keyed by chip id; the pill by its EXACT label so
-  // a digit-count change re-measures (Codex #1 — a hard-coded pill width can
-  // wrongly fit one extra chip and spill onto a 3rd line).
-  const [chipW, setChipW] = useState<Record<string, number>>({});
-  const [pillW, setPillW] = useState<Record<string, number>>({});
-  const res = aromaConsensus(aggregateAromaRollup(panel.tasters), opts);
-  const contrib = labBuildContributors!(labRaters(panel.tasters));
-  const strip = labCompareView!.tier2Strip(res, contrib, pronBar);
-  const widths = strip.map((c) => chipW[c.id] ?? 0);
-  const measured = strip.length === 0 || widths.every((w) => w > 0);
-  const pillLabelFor = (n: number) => `+${n} more`;
-  const pillWidthFor = (n: number) => pillW[pillLabelFor(n)] ?? 64; // 64 = conservative until measured
-  // Iterate to a FIXED POINT: pack with the pill width for the CURRENT produced
-  // overflow, and if that changes the overflow (so a different pill label), pack
-  // again with the new label's width — until the label the pack produces matches
-  // the label whose width was reserved (Codex #1: probe-then-lookup could measure
-  // a label it never reserved, e.g. "+9 more" → "+10 more"). All candidate pill
-  // labels are pre-measured off-screen (below), so every lookup resolves.
-  let fit = strip.length, overflow = 0;
-  if (measured && rowW > 0) {
-    let prev = -1;
-    for (let i = 0; i < strip.length + 2; i++) {
-      const r = labCompareView!.packStrip(widths, rowW, STRIP_GAP, overflow > 0 ? pillWidthFor(overflow) : 0);
-      fit = r.fit; overflow = r.overflow;
-      if (overflow === prev) break; // stable: the reserved label == the produced label
-      prev = overflow;
-    }
-  }
-  const shown = strip.slice(0, fit);
-  const pillLabel = pillLabelFor(overflow);
-  // Every overflow count the strip could produce (1..length) — pre-measured so
-  // the fixed-point loop never looks up an unmeasured label.
-  const candidateOverflows = strip.map((_, i) => i + 1);
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  // Three sector weightings (Simon round 5): V1 mentions, V2 equal wedge
+  // width (family grows with its aroma count), V3 by tasters touched.
+  const [pMode, setPMode] = useState<PolarMode>('equal');
+  // Each family's unnamed remainder feeds the centre Others together with
+  // folded aromas and omitted families; only readable named bars stay radial.
+  const withTail = (f: AromaVizFamily): AromaVizFamily => {
+    const tail = f.count - f.notes.reduce((n, x) => n + x.count, 0);
+    return tail > 0 ? { ...f, notes: [...f.notes, { label: 'Others', count: tail, others: true }] } : f;
+  };
+  const source: AromaVizFamily[] = families.filter((f) => f.id !== 'other').map(withTail);
+  const layout = weightedPolar(source, { size, fontSize, mode: pMode });
+  const colorOf = (id: string) => (id === 'other' ? theme.inkFaint : aromaColor(id));
   return (
-    <View style={{ gap: 8, padding: 12, borderRadius: radius.md, backgroundColor: theme.surface }}>
-      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>{`${panel.title} · n=${res.n}`}</VText>
-      <VText variant="caption" color="inkFaint">Aroma agreement</VText>
-      {/* Off-screen measure pass: every chip + EVERY candidate pill label
-          (+1..+N more) so the fixed-point pack never looks up an unmeasured
-          width, whatever overflow it settles on (Codex #1). */}
-      <View pointerEvents="none" style={{ position: 'absolute', opacity: 0, left: 0, top: 0, flexDirection: 'row', flexWrap: 'wrap' }}>
-        {strip.map((c) => (
-          <View key={c.id} onLayout={(e) => { const w = Math.ceil(e.nativeEvent.layout.width); setChipW((prev) => (prev[c.id] === w ? prev : { ...prev, [c.id]: w })); }}>
-            <View style={{ padding: COMPARE_CHIP_PAD }}><AromaChip a={c.id} m={null} count={c.count} pronounced={c.pronounced} vPad={0} /></View>
-          </View>
+    <View style={{ gap: 10, alignItems: 'center' }}>
+      <Segmented
+        compact
+        segments={[
+          { key: 'mentions' as const, label: 'Mentions' },
+          { key: 'equal' as const, label: 'Equal Wedges' },
+          { key: 'tasters' as const, label: 'Tasters' },
+        ]}
+        active={pMode}
+        onSelect={setPMode}
+      />
+    <Svg
+      // Remount on toggle — rnsvg TextPath keeps mount-time path geometry.
+      key={`${pMode}-${dataKey}`}
+      pointerEvents="none"
+      accessible
+      accessibilityLabel="Grouped circular aroma bars. Equal wedges are the default; bar length represents aroma mentions, family names sit at the hub, and every visible aroma label stays inside its bar. The centre bundles omitted families and aromas as Others."
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+    >
+      {layout.sectors.map((s) => (
+        <Fragment key={`sector-${s.familyId}`}>
+          <Path d={s.guideD} fill="none" stroke={colorOf(s.familyId)} strokeWidth={3} strokeLinecap="round" />
+          {/* Family name INSIDE the prominence arc (round-3 ruling). */}
+          {s.labelText ? (
+            <>
+              <Path id={`viz2-fam-${s.familyId}`} d={s.labelPathD} fill="none" stroke="none" />
+              <SvgText fill={colorOf(s.familyId)} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle" dy={3.5}>
+                <TextPath href={`#viz2-fam-${s.familyId}`} startOffset="50%">{s.labelText}</TextPath>
+              </SvgText>
+            </>
+          ) : null}
+        </Fragment>
+      ))}
+      <G x={layout.cx} y={layout.cy}>
+        {layout.wedges.map((w) => (
+          <Path
+            key={`wedge-${w.familyId}-${w.label}-${w.angleDeg.toFixed(1)}`}
+            d={w.wedgeD}
+            fill={w.others ? mix(colorOf(w.familyId), theme.bg, 0.34) : colorOf(w.familyId)}
+          />
         ))}
-        {candidateOverflows.map((n) => {
-          const label = pillLabelFor(n);
+      </G>
+      {layout.wedges.map((w) => w.labelText ? (
+        <SvgText
+          key={`wlabel-${w.familyId}-${w.label}-${w.angleDeg.toFixed(1)}`}
+          x={w.labelX}
+          y={w.labelY + fontSize * 0.32}
+          fill={inkOn(w.others ? mix(colorOf(w.familyId), theme.bg, 0.34) : colorOf(w.familyId), theme.ink, theme.bg)}
+          fontFamily="InstrumentSans_500Medium"
+          fontSize={fontSize}
+          textAnchor={w.labelAnchor}
+          transform={`rotate(${w.labelRotate.toFixed(1)}, ${w.labelX.toFixed(1)}, ${w.labelY.toFixed(1)})`}
+        >
+          {w.labelText}
+        </SvgText>
+      ) : null)}
+      {/* The centre circle IS Others: omitted families + folded aromas. */}
+      <Circle cx={layout.cx} cy={layout.cy} r={layout.innerR - 30} fill={alpha(theme.inkFaint, 0.22)} />
+      <SvgText x={layout.cx} y={layout.cy + fontSize * 0.35} fill={theme.inkSoft} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle">Others</SvgText>
+    </Svg>
+    </View>
+  );
+}
+
+function SpiralRibbonStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
+  const { theme } = useTheme();
+  const fontSize = typeScale.caption.size; // +1 (round 7)
+  // Top notes ride the coil core → niche; EVERYTHING omitted (the long tail of
+  // named notes + the pseudo "other" family + family remainders) aggregates
+  // into the grey OUTER-TAIL segment — the coil's own start closes the centre.
+  const notes = vizNotes(families);
+  const [mono, setMono] = useState(false);
+  const [input, setInput] = useState<'mentions' | 'agreement'>('mentions');
+  // The geometry chooses the largest count-ranked prefix whose names all fit;
+  // the remaining exact count lives in a visually capped Others tail. The
+  // fade width remains adjustable for comparing the colour treatment.
+  const [fadePx, setFadePx] = useState(9);
+  const [labelPaddingPx, setLabelPaddingPx] = useState(6);
+  // Agreement-summary mode uses the SAME compare derivation as production.
+  // Mixed + Stress have real respondent fixtures; the two hand-authored colour
+  // studies use Mixed as their explicit compare fixture.
+  const agreementPanel = dataKey === 'stress'
+    ? LONG_TAIL_120_PEOPLE_1440_MENTIONS
+    : MIXED_GRAIN_20_PEOPLE_200_MENTIONS;
+  const agreementModel = useMemo(() => buildCompareAromaModel(agreementPanel), [agreementPanel]);
+  const mentionNotes = notes.filter((note) => note.familyId !== 'other');
+  const top = input === 'agreement' ? agreementModel.bun : mentionNotes;
+  // Others = the COMPLETE sample minus what rides the coil — family counts
+  // include unnamed remainders that plain note sums silently lost (round-7
+  // finding, confirmed: the coil's proportions must represent everything).
+  const othersCount = input === 'agreement'
+    ? 0
+    : families.reduce((sum, f) => sum + f.count, 0) - mentionNotes.reduce((sum, note) => sum + note.count, 0);
+  const layout = spiralRibbon(top, othersCount, { size, fontSize, callouts: false, fadePx, labelPaddingPx });
+  const legendFamilies = input === 'agreement'
+    ? AROMA_FAMILIES
+        .filter((family) => layout.representedFamilyIds.includes(family.id))
+        .map((family) => ({ id: family.id, label: family.label, count: 0, notes: [] }))
+    : families.filter((family) => layout.representedFamilyIds.includes(family.id));
+  return (
+    <View style={{ gap: 10, alignItems: 'center' }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6 }}>
+        <Segmented
+          compact
+          segments={[{ key: 'mentions' as const, label: 'Mentions' }, { key: 'agreement' as const, label: 'Compare summary' }]}
+          active={input}
+          onSelect={setInput}
+        />
+        <Segmented
+          compact
+          segments={[{ key: 'family' as const, label: 'Family Colours' }, { key: 'mono' as const, label: 'Accent' }]}
+          active={mono ? 'mono' : 'family'}
+          onSelect={(k) => setMono(k === 'mono')}
+        />
+      </View>
+      {input === 'agreement' && dataKey !== 'tasting' && dataKey !== 'stress' ? (
+        <VText variant="caption" color="inkFaint">Compare summary uses the Mixed respondent fixture.</VText>
+      ) : null}
+      <View style={{ alignSelf: 'stretch', gap: 2 }}>
+        <VText variant="caption" color="inkFaint">{`Colour fade width ${fadePx} (default 9)`}</VText>
+        <DevSlider value={fadePx} onChange={setFadePx} min={2} max={30} step={1} />
+        <VText variant="caption" color="inkFaint">{`Extra label padding ${labelPaddingPx}px (default 6)`}</VText>
+        <DevSlider value={labelPaddingPx} onChange={setLabelPaddingPx} min={0} max={16} step={1} />
+      </View>
+      <AromaBunGraphic
+        key={`${input}-${mono ? 'mono' : 'family'}-${fadePx}-${labelPaddingPx}-${dataKey}`}
+        layout={layout}
+        width={size}
+        fontSize={fontSize}
+        monochrome={mono}
+        backgroundColor={theme.bg}
+        accessibilityLabel="Shared-to-niche aroma coil. One continuous ribbon coils outward; segment length shows relative mentions, from widely shared at the centre to niche outside. Straight cuts mark where one aroma ends and the next begins, with the colours blending into each other on both sides of every cut; the grey tail bundles the remaining aromas as Others."
+      />
+      {mono ? null : <AromaVizLegend families={legendFamilies} />}
+    </View>
+  );
+}
+
+function AromaMosaicStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
+  const { theme } = useTheme();
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const [mode, setMode] = useState<MosaicMode>('aromas');
+  const height = size * 0.72;
+  const layout = aromaMosaic(families, { width: size, height, fontSize, mode });
+  const colorOf = (familyId: string, others: boolean) => others
+    ? mix(theme.inkFaint, theme.bg, 0.38)
+    : aromaColor(familyId);
+  return (
+    <View style={{ gap: 10, alignItems: 'center' }}>
+      <Segmented
+        compact
+        segments={[
+          { key: 'aromas' as const, label: 'Aromas' },
+          { key: 'family' as const, label: 'Family' },
+        ]}
+        active={mode}
+        onSelect={setMode}
+      />
+      <Svg
+        key={`${mode}-${dataKey}`}
+        pointerEvents="none"
+        accessible
+        accessibilityLabel={mode === 'aromas'
+          ? 'Aroma mosaic. Every column width represents its family share. Aroma height represents mentions inside that family; unreadable aromas fold into Others.'
+          : 'Aroma family mosaic. Tile area represents family mentions. All represented families remain visible.'}
+        width={size}
+        height={height}
+        viewBox={`0 0 ${size} ${height}`}
+      >
+        {layout.tiles.map((tile) => {
+          const fill = colorOf(tile.familyId, tile.others);
           return (
-            <View key={label} onLayout={(e) => { const w = Math.ceil(e.nativeEvent.layout.width); setPillW((prev) => (prev[label] === w ? prev : { ...prev, [label]: w })); }}>
-              <View style={{ paddingVertical: 4, paddingHorizontal: 10 }}><VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12 }}>{label}</VText></View>
-            </View>
+            <Fragment key={tile.key}>
+              <Rect x={tile.x} y={tile.y} width={tile.w} height={tile.h} rx={5} fill={fill} />
+              {tile.labelText ? (
+                <SvgText
+                  x={tile.x + tile.w / 2}
+                  y={tile.y + tile.h / 2 + tile.labelFontSize * 0.35}
+                  fill={inkOn(fill, theme.ink, theme.bg)}
+                  fontFamily="InstrumentSans_600SemiBold"
+                  fontSize={tile.labelFontSize}
+                  textAnchor="middle"
+                  transform={tile.labelOrientation === 'vertical'
+                    ? `rotate(-90, ${(tile.x + tile.w / 2).toFixed(1)}, ${(tile.y + tile.h / 2).toFixed(1)})`
+                    : undefined}
+                >
+                  {tile.labelText}
+                </SvgText>
+              ) : null}
+            </Fragment>
           );
         })}
-      </View>
-      {strip.length > 0 ? (
-        <View onLayout={(e) => setRowW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: STRIP_GAP }}>
-          {shown.map((chip) => (
-            <CompareChip
-              key={chip.id}
-              chip={chip}
-              onLayoutWidth={(id, w) => setChipW((prev) => (prev[id] === w ? prev : { ...prev, [id]: w }))}
-              onTap={(rect) => onTapChip(`${panel.title}|${chip.id}`, chip.id, rect)}
-            />
-          ))}
-          {overflow > 0 ? (
-            <Pressable accessibilityRole="button" onPress={onDetailed} style={{ paddingVertical: 4, paddingHorizontal: 10, borderRadius: 999, backgroundColor: theme.bg }}>
-              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: theme.inkSoft }}>{pillLabel}</VText>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : (
-        <VText variant="caption" color="inkFaint">— mixed; no shared aromas —</VText>
-      )}
-      {/* Always present — the door to Participants + All aromas, not just overflow. */}
-      <Pressable accessibilityRole="button" onPress={onDetailed}>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: theme.inkSoft }}>Detailed aromas →</VText>
-      </Pressable>
-      {popover}
+      </Svg>
     </View>
   );
 }
 
-function AromaTier2Lab() {
+// ── Batch-2 studies (E–I, Simon's reference images a–e, 2026-07-16) ──────────
+// Geometry in aromaVizGeometry2 (pure, pinned); these paint its outputs with
+// the BATCH-1 colour vocabulary (Simon's round-2 correction): named content =
+// the SOLID family colour; aggregates are the family colour paled toward bg.
+// ⚠️ theme `mix(base, press, ratio)` — ratio is the BASE share (0.34 = pale),
+// NOT a blend-toward amount; an inverted first cut painted solid content at
+// ratio 0 = pure background (the invisible-ring-chain screenshot).
+// The aggregate ratio is GEOMETRY-DEPENDENT (round 3, Simon's "empty spots"):
+// thin ribbons keep batch-1's 0.34, but big AREA fills (Voronoi cells,
+// bubbles, treemap tiles) at 0.34 read as unfilled holes over a coloured
+// ground — verified headless on mauve; area aggregates use 0.55.
+const AREA_REMAINDER = 0.55;
+
+function VoronoiContinentsStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
   const { theme } = useTheme();
-  const [primaryMode, setPrimaryMode] = useState<'majority' | 'twoThirds'>('majority');
-  const [peak, setPeak] = useState<'third' | 'twoThirds'>('third');
-  const [pronBar, setPronBar] = useState<'majority' | 'twoThirds'>('majority');
-  const [popVariant, setPopVariant] = useState<PopoverVariant>('extension');
-  const [extensionAnchor, setExtensionAnchor] = useState<ExtensionAnchor>('corner');
-  const opts: AromaConsensusOpts = { primary: primaryMode, peakNum: peak === 'third' ? 1 : 2, peakDen: 3 };
-  // Lifted so exactly ONE popover is open. openKey = `${title}|${chipId}`.
-  const [openKey, setOpenKey] = useState<string | null>(null);
-  const [anchor, setAnchor] = useState<ChipRect | null>(null);
-  const [sel, dispatch] = useReducer(labCompareView!.compareSelectionReducer, { kind: 'none' } as CompareSelection);
-  const [routeNote, setRouteNote] = useState<string>('');
-  // One coordinated close: clears the reducer selection AND the popover together
-  // (Codex #4 — closing must clear selection; a retap toggles via the reducer).
-  const closeAll = () => { dispatch({ type: 'clear' }); setOpenKey(null); setAnchor(null); };
-  const knobPill = (on: boolean, label: string, onPress: () => void) => (
-    <Pressable accessibilityRole="tab" accessibilityState={{ selected: on }} onPress={onPress}
-      style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}>
-      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>{label}</VText>
-    </Pressable>
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const [shape, setShape] = useState<ContinentsShape>('round');
+  const colorOf = (id: string) => (id === 'other' ? theme.inkFaint : aromaColor(id));
+  // The weighted-Voronoi solver iterates — memoise per data set + size.
+  const layout = useMemo(() => voronoiContinents(families, { size, fontSize, shape }), [families, size, fontSize, shape]);
+  return (
+    <View style={{ gap: 10, alignItems: 'center' }}>
+      <Segmented
+        compact
+        segments={[
+          { key: 'round' as const, label: 'Round' },
+          { key: 'rectangle' as const, label: 'Rectangle' },
+        ]}
+        active={shape}
+        onSelect={setShape}
+      />
+      <Svg
+        key={`${dataKey}-${shape}`}
+        pointerEvents="none"
+        accessible
+        accessibilityLabel={`Aroma continents. A ${shape === 'round' ? 'round' : 'rectangular'} map where each family is a connected continent and its aromas are countries. Country area represents mentions and deeper colour marks the stronger aromas; pale cells bundle each family's remaining mentions.`}
+        width={layout.width}
+        height={layout.height}
+        viewBox={`0 0 ${layout.width} ${layout.height}`}
+      >
+        {layout.cells.map((cell, i) => (
+          <Path
+            key={`cont-cell-${i}`}
+            d={cell.pathD}
+            fill={cell.others
+              ? mix(colorOf(cell.familyId), theme.bg, AREA_REMAINDER)
+              : mix(colorOf(cell.familyId), theme.bg, cell.share)}
+            stroke={theme.bg}
+            strokeWidth={1.2}
+          />
+        ))}
+        {layout.outlines.map((outline) => (
+          <Path key={`cont-line-${outline.familyId}`} d={outline.pathD} fill="none" stroke={theme.bg} strokeWidth={3} strokeLinejoin="round" />
+        ))}
+        {layout.outlines.map((outline) => {
+          if (!outline.labelText) return null;
+          const ground = outline.labelCellOthers
+            ? mix(colorOf(outline.familyId), theme.bg, AREA_REMAINDER)
+            : mix(colorOf(outline.familyId), theme.bg, outline.labelCellShare);
+          return (
+            <SvgText
+              key={`cont-label-${outline.familyId}`}
+              x={outline.labelX}
+              y={outline.labelY + (fontSize + 1) * 0.35}
+              fill={inkOn(ground, theme.ink, theme.bg)}
+              fontFamily="InstrumentSans_600SemiBold"
+              fontSize={fontSize + 1}
+              textAnchor="middle"
+            >
+              {outline.labelText}
+            </SvgText>
+          );
+        })}
+      </Svg>
+    </View>
+  );
+}
+
+function BubbleColumnsStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
+  const { theme } = useTheme();
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const colorOf = (id: string) => (id === 'other' ? theme.inkFaint : aromaColor(id));
+  const layout = useMemo(() => bubbleColumns(families, { size, fontSize }), [families, size, fontSize]);
+  return (
+    <Svg
+      key={dataKey}
+      pointerEvents="none"
+      accessible
+      accessibilityLabel="Aroma bubble columns. One column per leading family; every bubble is an aroma sized by mentions on one shared scale, settling from the top. Pale bubbles bundle each family's remainder, and a grey trailing column carries the omitted families."
+      width={size}
+      height={layout.height}
+      viewBox={`0 0 ${size} ${layout.height}`}
+    >
+      {layout.columns.map((column) => (
+        <Fragment key={`bcol-head-${column.familyId}`}>
+          <Line
+            x1={column.x0 + 5}
+            x2={column.x0 + column.w - 5}
+            y1={layout.headerH - 7}
+            y2={layout.headerH - 7}
+            stroke={mix(colorOf(column.familyId), theme.bg, column.familyId === 'other' ? 0.28 : 0.5)}
+            strokeWidth={2}
+            strokeLinecap="round"
+          />
+          {column.labelText ? (
+            <SvgText
+              x={column.x0 + column.w / 2}
+              y={fontSize + 2}
+              fill={colorOf(column.familyId)}
+              fontFamily="InstrumentSans_600SemiBold"
+              fontSize={fontSize}
+              textAnchor="middle"
+            >
+              {column.labelText}
+            </SvgText>
+          ) : null}
+        </Fragment>
+      ))}
+      {layout.bubbles.map((bubble, i) => {
+        const fill = bubble.others ? mix(colorOf(bubble.familyId), theme.bg, AREA_REMAINDER) : colorOf(bubble.familyId);
+        return (
+          <Fragment key={`bub-${i}`}>
+            <Circle cx={bubble.cx} cy={bubble.cy} r={bubble.r} fill={fill} />
+            {bubble.labelText ? (
+              <SvgText x={bubble.cx} y={bubble.cy + fontSize * 0.35} fill={inkOn(fill, theme.ink, theme.bg)} fontFamily="InstrumentSans_500Medium" fontSize={fontSize} textAnchor="middle">
+                {bubble.labelText}
+              </SvgText>
+            ) : null}
+          </Fragment>
+        );
+      })}
+    </Svg>
+  );
+}
+
+function AromaIrisStudy({ size, dataKey }: { size: number; dataKey: string }) {
+  const { theme } = useTheme();
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const [spokeMode, setSpokeMode] = useState<'all' | 'active'>('all');
+  const [tileMode, setTileMode] = useState<'mentions' | 'aromas'>('mentions');
+  // Per-aroma mention-depth encodings (Simon's round-4 asks) — only bite in
+  // Tile-per-Aroma mode; per-mention tiles are unit counters.
+  const [depthMode, setDepthMode] = useState<IrisDepth>('uniform');
+  // The iris needs SUBFAMILY grain, so it reads the respondent fixtures
+  // directly (the two hand-authored colour sets fall back to Mixed — the same
+  // convention as the Bun's compare-summary mode).
+  const panel = dataKey === 'stress' ? LONG_TAIL_120_PEOPLE_1440_MENTIONS : MIXED_GRAIN_20_PEOPLE_200_MENTIONS;
+  const iris = useMemo(() => irisMentionFamilies(panel), [panel]);
+  const layout = useMemo(
+    () => aromaIris(iris, { size, fontSize, spokes: spokeMode, tiles: tileMode, depth: depthMode }),
+    [iris, size, fontSize, spokeMode, tileMode, depthMode],
   );
   return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Aroma agreement · Tier 2 mock (§9)</VText>
-      <VText variant="small" color="inkSoft">
-        The compact strip as it sits in the expanded compare card — primaries + secondaries only, “Nx Label” chips, packed to two lines with a “+N” tail. Tap a chip → the anchored contributor popover (qualifying descendant mentions · 3-name preview · pronounced nuance · View contributors). Three knobs: primary + peak (selector) and pron (group-pronounced bar — see PR-A/PR-B panels). “Detailed aromas” always shows (opens Tier 3, not built yet). Preliminary pass — the final density + knob ruling happens in the real card context (2b), not here.
-      </VText>
-      <VText variant="caption" color="inkFaint">
-        Popup variants: Title Bar keeps the badge inside a neutral recessed header. Badge Extension overlaps a compact Verre surface. Glass Extension uses the same geometry with native regular Liquid Glass, matched to the active Verre theme’s color scheme and surface tone, with a solid fallback elsewhere.
-      </VText>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(primaryMode === 'majority', 'primary > n/2', () => setPrimaryMode('majority'))}
-          {knobPill(primaryMode === 'twoThirds', 'primary ≥ 2n/3', () => setPrimaryMode('twoThirds'))}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(peak === 'third', 'peak ≥ ⅓', () => setPeak('third'))}
-          {knobPill(peak === 'twoThirds', 'peak ≥ ⅔', () => setPeak('twoThirds'))}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(pronBar === 'majority', 'pron > n/2', () => setPronBar('majority'))}
-          {knobPill(pronBar === 'twoThirds', 'pron ≥ 2n/3', () => setPronBar('twoThirds'))}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(popVariant === 'attached', 'popup: Title Bar', () => setPopVariant('attached'))}
-          {knobPill(popVariant === 'extension', 'popup: Badge Extension', () => setPopVariant('extension'))}
-          {knobPill(popVariant === 'glass', 'popup: Glass Extension', () => setPopVariant('glass'))}
-        </View>
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
-          {knobPill(extensionAnchor === 'corner', 'extension: Corner', () => setExtensionAnchor('corner'))}
-          {knobPill(extensionAnchor === 'center', 'extension: Center', () => setExtensionAnchor('center'))}
-        </View>
+    <View style={{ gap: 10, alignItems: 'center' }}>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6 }}>
+        <Segmented
+          compact
+          segments={[{ key: 'all' as const, label: 'All 60 Spokes' }, { key: 'active' as const, label: 'Active Only' }]}
+          active={spokeMode}
+          onSelect={setSpokeMode}
+        />
+        <Segmented
+          compact
+          segments={[{ key: 'mentions' as const, label: 'Tile per Mention' }, { key: 'aromas' as const, label: 'Tile per Aroma' }]}
+          active={tileMode}
+          onSelect={setTileMode}
+        />
       </View>
-      {routeNote ? <VText variant="caption" color="inkFaint">{`route → ${routeNote}  ·  selection: ${sel.kind}${sel.kind !== 'none' ? ` ${sel.id}` : ''}`}</VText> : null}
-      {ROLLUP_PANELS.map((panel) => {
-        // Recompute (cheap) so the popover reads this panel's result/contributors.
-        const res = aromaConsensus(aggregateAromaRollup(panel.tasters), opts);
-        const isOpenHere = openKey?.startsWith(panel.title + '|') ?? false;
-        const openContent = isOpenHere
-          ? labCompareView!.popoverContent(res, labBuildContributors!(labRaters(panel.tasters)), openKey!.slice(panel.title.length + 1), pronBar)
-          : null;
+      {tileMode === 'aromas' ? (
+        <Segmented
+          compact
+          segments={[
+            { key: 'uniform' as const, label: 'Uniform' },
+            { key: 'length' as const, label: 'Length' },
+            { key: 'shade' as const, label: 'Shade' },
+            { key: 'position' as const, label: 'Position' },
+          ]}
+          active={depthMode}
+          onSelect={setDepthMode}
+        />
+      ) : null}
+      {dataKey !== 'tasting' && dataKey !== 'stress' ? (
+        <VText variant="caption" color="inkFaint">The iris uses the Mixed respondent fixture.</VText>
+      ) : null}
+      <Svg
+        // Remount on toggle — rnsvg TextPath keeps mount-time path geometry.
+        key={`${spokeMode}-${tileMode}-${depthMode}-${dataKey}`}
+        pointerEvents="none"
+        accessible
+        accessibilityLabel="Aroma iris. Twelve family arcs form an inner ring around an open centre; every subfamily is a spoke inside its family's span, and tiles stack outward on a spoke for its mentions. Family-level picks deepen the family arc itself, empty spokes stay as faint stubs, and a small chevron marks a spoke with more than fits."
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+      >
+        <G x={layout.cx} y={layout.cy}>
+          {layout.families.map((familyArc) => {
+            // Solid band when the family itself was picked (family-grain data);
+            // a readable pale band otherwise.
+            const bandFill = familyArc.familyCount > 0
+              ? aromaColor(familyArc.familyId)
+              : mix(aromaColor(familyArc.familyId), theme.bg, 0.42);
+            const id = `iris-fam-${familyArc.familyId}-${spokeMode}-${tileMode}-${depthMode}-${dataKey}`;
+            return (
+              <Fragment key={familyArc.familyId}>
+                <Path d={familyArc.arcD} fill="none" stroke={bandFill} strokeWidth={layout.bandThickness} strokeLinecap="butt" />
+                {familyArc.labelText ? (
+                  <>
+                    <Path id={id} d={familyArc.labelPathD} fill="none" stroke="none" />
+                    <SvgText fill={inkOn(bandFill, theme.ink, theme.bg)} fontFamily="InstrumentSans_600SemiBold" fontSize={familyArc.labelFontSize} textAnchor="middle" dy={3.2}>
+                      <TextPath href={`#${id}`} startOffset="50%">{familyArc.labelText}</TextPath>
+                    </SvgText>
+                  </>
+                ) : null}
+              </Fragment>
+            );
+          })}
+          {layout.spokes.map((spoke) => {
+            const color = aromaColor(spoke.familyId);
+            return (
+              <Fragment key={spoke.subId}>
+                {spoke.trackD ? <Path d={spoke.trackD} fill={mix(color, theme.bg, 0.14)} /> : null}
+                {spoke.stubD ? <Path d={spoke.stubD} fill={mix(color, theme.bg, 0.3)} /> : null}
+                {spoke.tiles.map((tile, j) => (
+                  <Path key={`${spoke.subId}-${j}`} d={tile.pathD} fill={tile.share >= 1 ? color : mix(color, theme.bg, tile.share)} />
+                ))}
+                {spoke.overflowD ? <Path d={spoke.overflowD} fill={color} /> : null}
+              </Fragment>
+            );
+          })}
+        </G>
+      </Svg>
+    </View>
+  );
+}
+
+function RingChainStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
+  const { theme } = useTheme();
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const colorOf = (id: string) => (id === 'other' ? theme.inkFaint : aromaColor(id));
+  const notes = useMemo(() => vizNotes(families).filter((note) => note.familyId !== 'other'), [families]);
+  const layout = useMemo(() => ringChain(notes, { size, fontSize }), [notes, size, fontSize]);
+  return (
+    <Svg
+      key={dataKey}
+      pointerEvents="none"
+      accessible
+      accessibilityLabel="Aroma snail. One continuous ribbon meanders top to bottom carrying every aroma in strict mention order, most mentioned first. Segments are the aromas in family colours, the ribbon flows from each loop straight into the next, and the pale tail at the very end bundles what did not fit."
+      width={size}
+      height={layout.height}
+      viewBox={`0 0 ${size} ${layout.height}`}
+    >
+      <Defs>
+        {layout.connectors.map((conn, i) => {
+          const from = conn.fromOthers ? mix(colorOf(conn.fromFamilyId), theme.bg, 0.34) : colorOf(conn.fromFamilyId);
+          const to = conn.toOthers ? mix(colorOf(conn.toFamilyId), theme.bg, 0.34) : colorOf(conn.toFamilyId);
+          return (
+            <LinearGradient
+              key={`chain-gradient-${i}`}
+              id={`chain-gradient-${dataKey}-${i}`}
+              x1={conn.x1}
+              y1={conn.y1}
+              x2={conn.x2}
+              y2={conn.y2}
+              gradientUnits="userSpaceOnUse"
+            >
+              <Stop offset="0" stopColor={from} />
+              <Stop offset="0.42" stopColor={from} />
+              <Stop offset="0.58" stopColor={to} />
+              <Stop offset="1" stopColor={to} />
+            </LinearGradient>
+          );
+        })}
+      </Defs>
+      {layout.connectors.map((conn, i) => {
         return (
-          <Tier2PanelCard
-            key={panel.title}
-            panel={panel}
-            opts={opts}
-            pronBar={pronBar}
-            onTapChip={(fullId, chipId, rect) => {
-              // Retap the OPEN chip → close+clear (reducer toggles); else open it.
-              dispatch({ type: 'tapAroma', id: fullId });
-              if (openKey === fullId) { setOpenKey(null); setAnchor(null); }
-              else { setOpenKey(fullId); setAnchor({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }); }
-              setRouteNote('');
-            }}
-            onDetailed={() => { setRouteNote('Detailed aromas (Tier 3 — not built)'); closeAll(); }}
-            popover={openContent && anchor ? (
-              <Tier2Popover
-                content={openContent}
-                rect={anchor}
-                variant={popVariant}
-                extensionAnchor={extensionAnchor}
-                onClose={closeAll}
-                onMoreBranches={() => { setRouteNote(`agreement · focus=${openContent.id} (+${openContent.moreBranches} peak branches)`); closeAll(); }}
-                onViewContributors={() => {
-                  const route = labCompareView!.viewContributorsRoute(openContent.id);
-                  setRouteNote(`${route.mode} · filter=${route.aromaFilter}`);
-                  closeAll();
-                }}
-              />
-            ) : null}
+          <Path
+            key={`chain-conn-${i}`}
+            d={conn.pathD}
+            fill="none"
+            stroke={`url(#chain-gradient-${dataKey}-${i})`}
+            strokeWidth={layout.ribbon}
+            strokeLinecap="butt"
           />
         );
       })}
+      {layout.rings.map((ring, ri) => {
+        const first = ring.segments[0];
+        const last = ring.segments[ring.segments.length - 1];
+        const segColor = (seg: { familyId: string; others: boolean }) =>
+          seg.others ? mix(colorOf(seg.familyId), theme.bg, 0.34) : colorOf(seg.familyId);
+        return (
+          <Fragment key={`chain-ring-${ri}`}>
+            {ring.capStartD ? <Path d={ring.capStartD} fill="none" stroke={segColor(first)} strokeWidth={layout.ribbon} strokeLinecap="round" /> : null}
+            {ring.capEndD ? <Path d={ring.capEndD} fill="none" stroke={segColor(last)} strokeWidth={layout.ribbon} strokeLinecap="round" /> : null}
+            {ring.segments.map((seg, i) => {
+              const segFill = segColor(seg);
+              const id = `chain-${ri}-${i}-${dataKey}`;
+              return (
+                <Fragment key={id}>
+                  <Path d={seg.arcD} fill="none" stroke={segFill} strokeWidth={layout.ribbon} strokeLinecap="butt" />
+                  {seg.labelText ? (
+                    <>
+                      <Path id={id} d={seg.labelPathD} fill="none" stroke="none" />
+                      <SvgText fill={inkOn(segFill, theme.ink, theme.bg)} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle" dy={3.5}>
+                        <TextPath href={`#${id}`} startOffset="50%">{seg.labelText}</TextPath>
+                      </SvgText>
+                    </>
+                  ) : null}
+                </Fragment>
+              );
+            })}
+            {ring.separators.map((s, i) => (
+              <Line key={`chain-sep-${ri}-${i}`} x1={s.x1} y1={s.y1} x2={s.x2} y2={s.y2} stroke={theme.bg} strokeWidth={2} strokeLinecap="butt" />
+            ))}
+          </Fragment>
+        );
+      })}
+    </Svg>
+  );
+}
+
+function RadialTreemapStudy({ size, families, dataKey }: { size: number; families: AromaVizFamily[]; dataKey: string }) {
+  const { theme } = useTheme();
+  const aromaColor = useAromaColors();
+  const fontSize = typeScale.caption.size - 1;
+  const colorOf = (id: string) => (id === 'other' ? theme.inkFaint : aromaColor(id));
+  const layout = useMemo(() => radialTreemap(families, { size, fontSize }), [families, size, fontSize]);
+  return (
+    <Svg
+      key={dataKey}
+      pointerEvents="none"
+      accessible
+      accessibilityLabel="Radial aroma treemap. Families claim wedges of the ring in proportion to their mentions, and inside a wedge every aroma's tile area is exactly its share. Deeper colour marks a family's stronger aromas; the pale tile bundles its remainder. Family names ride the outer rim."
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+    >
+      <G x={layout.cx} y={layout.cy}>
+        {layout.tiles.map((tile, i) => (
+          <Path
+            key={`rtm-${i}`}
+            d={tile.pathD}
+            fill={tile.others
+              ? mix(colorOf(tile.familyId), theme.bg, AREA_REMAINDER)
+              : mix(colorOf(tile.familyId), theme.bg, tile.share)}
+            stroke={theme.bg}
+            strokeWidth={0.8}
+          />
+        ))}
+        {layout.famLabels.map((fam) => (
+          <Path
+            key={`rtm-outline-${fam.familyId}`}
+            d={fam.outlineD}
+            fill="none"
+            stroke={theme.bg}
+            strokeWidth={3}
+            strokeLinejoin="round"
+          />
+        ))}
+        {layout.tiles.map((tile, i) => tile.labelText ? (
+          <SvgText
+            key={`rtml-${i}`}
+            x={tile.labelX}
+            y={tile.labelY + tile.labelFontSize * 0.32}
+            fill={inkOn(
+              tile.others
+                ? mix(colorOf(tile.familyId), theme.bg, AREA_REMAINDER)
+                : mix(colorOf(tile.familyId), theme.bg, tile.share),
+              theme.ink,
+              theme.bg,
+            )}
+            fontFamily="InstrumentSans_500Medium"
+            fontSize={tile.labelFontSize}
+            textAnchor={tile.labelAnchor}
+            transform={`rotate(${tile.labelRotate.toFixed(1)}, ${tile.labelX.toFixed(1)}, ${tile.labelY.toFixed(1)})`}
+          >
+            {tile.labelText}
+          </SvgText>
+        ) : null)}
+        {layout.famLabels.map((fam) => fam.labelText ? (
+          <Fragment key={`rtmf-${fam.familyId}`}>
+            <Path id={`rtm-fam-${fam.familyId}-${dataKey}`} d={fam.labelPathD} fill="none" stroke="none" />
+            <SvgText fill={colorOf(fam.familyId)} fontFamily="InstrumentSans_600SemiBold" fontSize={fontSize} textAnchor="middle" dy={3.5}>
+              <TextPath href={`#rtm-fam-${fam.familyId}-${dataKey}`} startOffset="50%">{fam.labelText}</TextPath>
+            </SvgText>
+          </Fragment>
+        ) : null)}
+      </G>
+    </Svg>
+  );
+}
+
+// FLAT sections (round 7 — no panels: the production detail view won't have
+// them either, and the charts get the breathing room).
+function AromaVizCard({ index, title, note, children }: { index: string; title: string; note: string; children: React.ReactNode }) {
+  const { theme } = useTheme();
+  return (
+    <View style={{ gap: 12, paddingVertical: 8 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
+        <View style={{ width: 24, height: 24, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.surface }}>
+          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkSoft }}>{index}</VText>
+        </View>
+        <View style={{ flex: 1, gap: 2 }}>
+          <VText surface="compactList" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{title}</VText>
+          <VText variant="caption" color="inkSoft">{note}</VText>
+        </View>
+      </View>
+      <View style={{ alignItems: 'center' }}>{children}</View>
     </View>
   );
 }
 
-// The SHIPPED AromaCompareStrip (a production component) rendered over the
-// pinned panels — the same component the real CmpAccItem mounts, with the ruled
-// defaults (no opts). "Detailed aromas" is a no-op here (the Tier 3 Agreement
-// sheet is wired in the real card). The experiment lab above keeps the Title Bar
-// / Glass / knob toggles for comparison; this is the single source of truth for
-// the shipped look.
-function AromaRuledLab() {
+// Sample distributions (Simon round 5 + 6): the real fixture panels vs the
+// hand-authored colour studies — vet every form against all four.
+type AromaSetKey = 'tasting' | 'wild' | 'random' | 'stress';
+const AROMA_SET_FOR: Record<AromaSetKey, AromaVizFamily[]> = {
+  tasting: AROMA_SET_TASTING,
+  wild: AROMA_SET_WILD,
+  random: AROMA_SET_RANDOM200,
+  stress: AROMA_SET_STRESS,
+};
+
+// The card stack only — the section intro + data-set Segmented live in
+// DevGallery as DIRECT ScrollView children so the Segmented can ride
+// stickyHeaderIndices (the line-up toolbar pattern).
+function AromaVizCards({ set }: { set: AromaSetKey }) {
+  const { width } = useWindowDimensions();
+  // Charts may use more width than the gallery's prose column; keep only the
+  // small screen-edge safety margin.
+  const chartSize = Math.min(450, width - space.sm * 2);
+  const families = AROMA_SET_FOR[set].map((family) => ({
+    ...family,
+    notes: family.notes.map((note) => ({ ...note, shortLabel: aromaVizShortLabel(note.label) })),
+  }));
   return (
-    <View style={{ gap: space.xs }}>
-      <VText variant="heading">Aroma agreement · shipped component</VText>
-      <VText variant="small" color="inkSoft">
-        The production `AromaCompareStrip` — Badge Extension + Corner popover, ruled defaults (majority / ⅓). The experiment lab above is the parked variants only.
-      </VText>
-      {ROLLUP_PANELS.map((panel) => (
-        <View key={panel.title} style={{ gap: 6, padding: 12, borderRadius: radius.md }}>
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{panel.title}</VText>
-          <AromaCompareStrip model={labCompareView!.buildCompareAromaModel(labRaters(panel.tasters))} onOpenDetails={() => {}} />
-        </View>
-      ))}
+    <View style={{ gap: space.sm }}>
+      <AromaVizCard index="A" title="Family Rings" note="Compare physical length, proportional angle, and near-full hierarchy · strongest family outermost · bounded Others tails · centre = other families">
+        <ConcentricRingsStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="B" title="Weighted Aroma Circle" note="Equal aroma wedges by default · bar length = mentions · labels stay inside bars · six leading families · centre = omitted aromas and families">
+        <WeightedPolarStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="C" title="Aroma Bun" note="Largest readable set of individual aromas · ordered by mentions · segment lengths stay proportional within the visible set · bounded Others tail">
+        <SpiralRibbonStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="D" title="Aroma Mosaic" note="Aromas: family share = column width · Family: all 12 fit · horizontal or vertical labels · bounded Others per column">
+        <AromaMosaicStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="E" title="Aroma Continents" note="Voronoi treemap · families are continents, aromas their countries · cell area = mentions · pale cell = family remainder · family labels only (countries reveal on the future zoom)">
+        <VoronoiContinentsStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="F" title="Bubble Columns" note="One packed column per leading family · bubble area = mentions on one shared scale · pale bubble = family remainder · grey column = omitted families">
+        <BubbleColumnsStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="G" title="Aroma Iris" note="Two tiers: 12 family arcs on the inner ring (family-grain picks deepen them) · subfamily spokes with tiles stacked outward · fixed 60-spoke fingerprint vs active-only · per-aroma depth: uniform, length, shade, or position (hub = most mentioned) · chevron = more than fits">
+        <AromaIrisStudy size={chartSize} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="H" title="Ring Chain" note="The Bun's winding sibling · one continuous snail, every aroma in strict mention order (most mentioned on top) · every segment carries its name, family colours · single +N tail at the end">
+        <RingChainStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
+      <AromaVizCard index="I" title="Radial Treemap" note="Family wedges by share · aromas subdivide the wedge area-true · pale +N remainder per family · family names on the rim">
+        <RadialTreemapStudy size={chartSize} families={families} dataKey={set} />
+      </AromaVizCard>
     </View>
   );
 }
@@ -1146,7 +976,10 @@ export default function DevGallery() {
   const [wheelBadge, setWheelBadge] = useState(false);
   const [wheelGhost, setWheelGhost] = useState(false);
   const [wheelStraight, setWheelStraight] = useState(false);
-  if (!__DEV__) return <Redirect href="/moments" />;
+  const [aromaSet, setAromaSet] = useState<AromaSetKey>('tasting');
+  // Testing phase (Simon, 2026-07-16): the gallery ships in RELEASE builds too
+  // so TestFlight can compare the aroma studies — re-gate on __DEV__ before a
+  // public launch.
 
   // Wheel reads the SAME resolved axes + theme colours the input writes.
   const sample: WheelAxis[] = perRatingAxes(levels, resolveAxes('wine', SAMPLE_STYLE)).map((a) => ({
@@ -1156,20 +989,39 @@ export default function DevGallery() {
   }));
 
   return (
-    <>
+    <View style={{ flex: 1, backgroundColor: theme.bg }}>
+      {/* PINNED theme switcher (Simon, 2026-07-16): always under the title bar
+          — the gallery's whole point is flipping themes while comparing. A
+          single-line swipeable RAIL of compact pills (Simon round 2); the six
+          real themes lead, System parks at the end. */}
+      <View style={{ paddingTop: space.xs, paddingBottom: space.xs, backgroundColor: theme.bg }}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: space.lg, gap: 6, alignItems: 'center' }}>
+          {([...Object.keys(themes), 'system'] as ThemeChoice[]).map((c) => {
+            const on = choice === c;
+            return (
+              <Pressable
+                key={c}
+                accessibilityRole="button"
+                accessibilityState={{ selected: on }}
+                onPress={() => setChoice(c)}
+                style={{ paddingVertical: 5, paddingHorizontal: 11, borderRadius: 999, backgroundColor: on ? theme.accent : theme.surface }}
+              >
+                <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? theme.accentInk : theme.inkSoft }}>
+                  {c[0].toUpperCase() + c.slice(1)}
+                </VText>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      </View>
       <ScrollView
-        style={{ flex: 1, backgroundColor: theme.bg }}
-        contentContainerStyle={{ padding: space.lg, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE, gap: space.lg }}
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: space.lg, paddingTop: space.xs, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE, gap: space.lg }}
+        // The aroma data-set selector docks right under the pinned theme bar
+        // (the line-up toolbar pattern). ⚠️ Index = the sticky View's position
+        // among the DIRECT children below — keep in sync when adding sections.
+        stickyHeaderIndices={[6]}
       >
-        <View style={{ gap: space.xs }}>
-          <VText variant="heading">Theme</VText>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs }}>
-            {(['system', ...Object.keys(themes)] as ThemeChoice[]).map((c) => (
-              <Button key={c} title={c} size="sm" variant={choice === c ? 'primary' : 'secondary'} onPress={() => setChoice(c)} />
-            ))}
-          </View>
-        </View>
-
         <View style={{ gap: space.xs }}>
           <VText variant="heading">Star + value</VText>
           <View style={{ flexDirection: 'row', gap: space.md }}>
@@ -1489,16 +1341,23 @@ export default function DevGallery() {
           </VText>
         </View>
 
-        <AromaRollupLab />
-
-        <AromaTier2Lab />
-
-        <AromaRuledLab />
-
-        <GlassLab />
-        <GlassLab2 />
-        <GlassLab3 />
+        <View style={{ gap: 3 }}>
+          <VText variant="heading">Aroma overview · visual studies</VText>
+          <VText variant="small" color="inkSoft">
+            Same sample distribution in every study. Each is a selective overview; All Aromas remains the exhaustive view.
+          </VText>
+        </View>
+        {/* STICKY child #6: full-bleed opaque bar so scrolling content never
+            shows through while it is docked. */}
+        <View style={{ backgroundColor: theme.bg, marginHorizontal: -space.lg, paddingHorizontal: space.lg, paddingVertical: 8 }}>
+          <Segmented
+            segments={[{ key: 'tasting' as const, label: 'Mixed' }, { key: 'wild' as const, label: 'Wild' }, { key: 'random' as const, label: 'Random' }, { key: 'stress' as const, label: 'Stress' }]}
+            active={aromaSet}
+            onSelect={setAromaSet}
+          />
+        </View>
+        <AromaVizCards set={aromaSet} />
       </ScrollView>
-    </>
+    </View>
   );
 }

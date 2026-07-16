@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { View, Pressable } from 'react-native';
 import { BottomSheetFooter, BottomSheetScrollView, type BottomSheetFooterProps } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Segmented } from '@/components/ui/Segmented';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { useTheme } from '@/theme';
@@ -141,33 +142,7 @@ export function BrowseSheet({
               (device round 4): wrap + "+N more" overflow sheet + refine
               popup + add flash. */}
           <SelectedChipsRow ops={ops} onOverflow={() => setSelOpen(true)} />
-          <View style={{ flexDirection: 'row', gap: 4, padding: 3, borderRadius: 999, backgroundColor: theme.bg }}>
-            {VARIANTS.map((v) => {
-              const on = v.key === variant;
-              return (
-                <Pressable
-                  key={v.key}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: on }}
-                  onPress={() => setVariant(v.key)}
-                  style={{
-                    flex: 1,
-                    alignItems: 'center',
-                    paddingVertical: 7,
-                    borderRadius: 999,
-                    backgroundColor: on ? theme.surface : 'transparent',
-                  }}
-                >
-                  <VText
-                    surface="badge"
-                    style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: on ? theme.ink : theme.inkSoft }}
-                  >
-                    {v.label}
-                  </VText>
-                </Pressable>
-              );
-            })}
-          </View>
+          <Segmented segments={VARIANTS} active={variant} onSelect={setVariant} />
           {variant !== 'list' ? (
             // The list is self-explanatory (device round 4) — no hint line.
             <VText variant="small" color="inkSoft">

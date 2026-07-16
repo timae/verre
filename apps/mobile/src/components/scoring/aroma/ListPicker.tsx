@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { View, Pressable } from 'react-native';
 import { AROMA_FAMILIES } from '@verre/core';
+import { Segmented } from '@/components/ui/Segmented';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
 import { useAromaColors } from '@/theme/flavourColors';
@@ -194,24 +195,7 @@ export function ListPicker({
           <AromaCrumbs path={path} onPop={popTo} />
         </View>
         {/* look switcher — mini twin of the sheet's variant control */}
-        <View style={{ flexDirection: 'row', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg, marginBottom: 8 }}>
-          {LOOKS.map((v) => {
-            const on = look === v.key;
-            return (
-              <Pressable
-                key={v.key}
-                accessibilityRole="tab"
-                accessibilityState={{ selected: on }}
-                onPress={() => setLook(v.key)}
-                style={{ paddingVertical: 4, paddingHorizontal: 9, borderRadius: 999, backgroundColor: on ? theme.surface : 'transparent' }}
-              >
-                <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: on ? theme.ink : theme.inkSoft }}>
-                  {v.label}
-                </VText>
-              </Pressable>
-            );
-          })}
-        </View>
+        <Segmented compact segments={LOOKS} active={look} onSelect={setLook} style={{ marginBottom: 8 }} />
       </View>
       <View style={{ gap: cards ? 8 : tinted ? 6 : 0 }}>{body}</View>
     </View>
