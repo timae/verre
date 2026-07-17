@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { findNodeHandle, Pressable, useWindowDimensions, View, type LayoutRectangle } from 'react-native';
-import { BottomSheetScrollView, BottomSheetView, type BottomSheetScrollViewMethods } from '@gorhom/bottom-sheet';
+import { BottomSheetScrollView, type BottomSheetScrollViewMethods } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { ConsensusDisplayNode } from '@verre/core';
 import { AromaChip } from '@/components/scoring/aroma/parts';
@@ -8,8 +8,8 @@ import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { AromaBunGraphic } from './AromaBunGraphic';
 import { spiralRibbon } from './aromaVizGeometry';
 import {
-  aromaAncestorIds, aromaTasteSummary, compareSelectionReducer, exactAromaPopoverContent, filterAromaMentions, filterAromaParticipants, groupAromaMentions, matchingParticipantPickKeys, pickKey, selectionContributors, sortAromaMentions, supportedNodeIds, supportingPickKeys, tier3Tabs, STRIP_GAP,
-  type AromaMentionSort, type AromaRef, type AromaTasteSummary, type CompareAromaModel, type CompareSelection, type Tier3Mode, type Tier3Route,
+  aromaAncestorIds, compareSelectionReducer, exactAromaPopoverContent, filterAromaMentions, filterAromaParticipants, groupAromaMentions, matchingParticipantPickKeys, pickKey, selectionContributors, sortAromaMentions, supportedNodeIds, supportingPickKeys, tasteSharedEvidence, tier3Tabs, STRIP_GAP,
+  type AromaMentionSort, type AromaRef, type AromaTasteGroupMember, type AromaTastePair, type AromaTasteSummary, type CompareAromaModel, type CompareSelection, type Tier3Mode, type Tier3Route,
 } from './aromaCompareView';
 import type { AromaContributor } from './aromaContributors';
 import { AromaBadgePopover, AromaPopoverPeople } from './AromaBadgePopover';
@@ -111,7 +111,7 @@ function ConsensusRow({ dn, depth, pronouncedIds, highlightId, highlightNames, s
           ) : (
             // Uncounted grouping heading — a quiet family label, no chip fill (its
             // count would read as additive with its children, §rule 6).
-            <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkFaint }}>
+            <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkFaint }}>
               {node.label}
             </VText>
           )}
@@ -119,7 +119,7 @@ function ConsensusRow({ dn, depth, pronouncedIds, highlightId, highlightNames, s
       </View>
       {highlighted && highlightNames ? (
         <View style={{ paddingLeft: depth * 18 + 10 }}>
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12, lineHeight: 15, color: theme.inkSoft }}>
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: theme.inkSoft }}>
             {`Perceived by ${highlightNames}`}
           </VText>
         </View>
@@ -213,52 +213,252 @@ function ParticipantRow({ contributor, selected, onToggle, onPressAroma, emphasi
   );
 }
 
-function TasteStat({ label, value, score }: { label: string; value: string; score: number }) {
+// Every stat card taps through to the ranking sheet: WHY this verdict + the
+// next few places (Simon, 2026-07-17). The quiet › is the affordance.
+function TasteStat({ label, value, score, onPress }: { label: string; value: string; score: number; onPress: () => void }) {
   const { theme } = useTheme();
   return (
-    <View style={{ flex: 1, minWidth: 132, gap: 5, padding: 10, borderRadius: radius.md, backgroundColor: theme.surface }}>
-      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 10.5, letterSpacing: 0.25, color: theme.inkFaint }}>
-        {label}
-      </VText>
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`${label}: ${value}, ${score} percent. Show the full ranking`}
+      style={({ pressed }) => ({ flex: 1, minWidth: 132, gap: 5, padding: 10, borderRadius: radius.md, backgroundColor: pressed ? theme.surfaceSunk : theme.surface })}
+    >
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        <VText variant="label" style={{ flex: 1, color: theme.inkFaint }}>
+          {label}
+        </VText>
+        <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkFaint }}>
+          ›
+        </VText>
+      </View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-        <VText numberOfLines={1} surface="badge" style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.ink }}>
+        <VText numberOfLines={1} variant="small" style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>
           {value}
         </VText>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.accent }}>
+        <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>
           {score}%
         </VText>
+      </View>
+    </Pressable>
+  );
+}
+
+export type TasteDetailKind = 'alike' | 'different' | 'closest' | 'individual';
+const TASTE_DETAIL: Record<TasteDetailKind, { title: string; method: string }> = {
+  alike: { title: 'Most Alike', method: 'Every pair ranked by overlap — exact shared aromas count most, shared families least.' },
+  different: { title: 'Most Different', method: 'Every pair ranked from the least overlap up.' },
+  closest: { title: 'Closest To Group', method: 'Each person ranked by their average overlap with every other taster.' },
+  individual: { title: 'Most Individual', method: 'Each person ranked from the lowest average overlap up.' },
+};
+
+// Only rendered from 3 aroma respondents (aromaTasteSummary returns null
+// below that — with two people every stat names the same pair).
+function TasteConnections({ summary, onPressStat }: { summary: AromaTasteSummary; onPressStat: (kind: TasteDetailKind) => void }) {
+  const { theme } = useTheme();
+  const pairName = (pair: AromaTasteSummary['closestPair']) => `${pair.people[0].displayName} + ${pair.people[1].displayName}`;
+  return (
+    <View style={{ gap: 8, padding: 10, borderRadius: radius.lg, backgroundColor: theme.surfaceSunk }}>
+      <View style={{ gap: 1 }}>
+        <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>
+          Taste connections
+        </VText>
+        <VText variant="caption" style={{ color: theme.inkFaint }}>
+          Based on shared and related aromas
+        </VText>
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
+        <TasteStat label="MOST ALIKE" value={pairName(summary.closestPair)} score={summary.closestPair.score} onPress={() => onPressStat('alike')} />
+        <TasteStat label="MOST DIFFERENT" value={pairName(summary.farthestPair)} score={summary.farthestPair.score} onPress={() => onPressStat('different')} />
+        <TasteStat label="CLOSEST TO GROUP" value={summary.closestToGroup.person.displayName} score={summary.closestToGroup.score} onPress={() => onPressStat('closest')} />
+        <TasteStat label="MOST INDIVIDUAL" value={summary.mostIndividual.person.displayName} score={summary.mostIndividual.score} onPress={() => onPressStat('individual')} />
       </View>
     </View>
   );
 }
 
-function TasteConnections({ summary }: { summary: AromaTasteSummary }) {
+// Shared/related evidence behind one pair's score — the tap-through "why".
+// Chips reuse the canonical AromaChip at compact read height; SHARED = exact
+// picks + same-leaf matches, RELATED = subfamily/family territory only.
+function TasteEvidence({ a, b }: { a: AromaContributor; b: AromaContributor }) {
   const { theme } = useTheme();
-  const pairName = (pair: AromaTasteSummary['closestPair']) => `${pair.people[0].displayName} + ${pair.people[1].displayName}`;
-  const twoPeople = summary.respondents === 2;
+  const ev = useMemo(() => tasteSharedEvidence(a, b), [a, b]);
+  const sectionLabel = (text: string) => (
+    <VText variant="label" style={{ color: theme.inkFaint }}>
+      {text}
+    </VText>
+  );
+  if (!ev.exact.length && !ev.leaves.length && !ev.related.length) {
+    return (
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: theme.inkSoft }}>
+        No shared or related aromas — two completely different reads.
+      </VText>
+    );
+  }
   return (
-    <View style={{ gap: 8, padding: 10, borderRadius: radius.lg, backgroundColor: theme.surfaceSunk }}>
-      <View style={{ gap: 1 }}>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12, color: theme.ink }}>
-          Taste connections
-        </VText>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 11.5, color: theme.inkFaint }}>
-          Based on shared and related aromas
-        </VText>
-      </View>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
-        {twoPeople ? (
-          <TasteStat label="TASTE OVERLAP" value={pairName(summary.closestPair)} score={summary.closestPair.score} />
-        ) : (
-          <>
-            <TasteStat label="MOST ALIKE" value={pairName(summary.closestPair)} score={summary.closestPair.score} />
-            <TasteStat label="MOST DIFFERENT" value={pairName(summary.farthestPair)} score={summary.farthestPair.score} />
-            {summary.closestToGroup ? <TasteStat label="CLOSEST TO GROUP" value={summary.closestToGroup.person.displayName} score={summary.closestToGroup.score} /> : null}
-            {summary.mostIndividual ? <TasteStat label="MOST INDIVIDUAL" value={summary.mostIndividual.person.displayName} score={summary.mostIndividual.score} /> : null}
-          </>
-        )}
-      </View>
+    <View style={{ gap: 8 }}>
+      {ev.exact.length || ev.leaves.length ? (
+        <View style={{ gap: 6 }}>
+          {sectionLabel('SHARED')}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: STRIP_GAP }}>
+            {ev.exact.map((pick) => <AromaChip key={pickKey(pick.a, pick.m)} a={pick.a} m={pick.m} vPad={0} />)}
+            {ev.leaves.map((id) => <AromaChip key={id} a={id} m={null} vPad={0} />)}
+          </View>
+        </View>
+      ) : null}
+      {ev.related.length ? (
+        <View style={{ gap: 6 }}>
+          {sectionLabel('RELATED')}
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: STRIP_GAP }}>
+            {ev.related.map((node) => <AromaChip key={node.id} a={node.id} m={null} vPad={0} />)}
+          </View>
+        </View>
+      ) : null}
     </View>
+  );
+}
+
+// The stat-card tap-through (Simon, 2026-07-17): a PUSHED 70% scroll sheet over
+// the detail sheet — sheet-over-sheet is the ruled navigation for this (the
+// AromaReadChips "+N more" / recents-picker anatomy, cloned verbatim; an
+// in-sheet drill variant was rejected as illegible navigation, and the FIRST
+// pushed cut stranded the parent sheet on device — cause unproven statically,
+// so this rebuild pattern-matches the proven consumers exactly). Pair kinds
+// list the top/bottom 8 pairs; group kinds list people by mean overlap. The
+// #1 row starts expanded; tapping a row swaps the expansion. Expanded pairs
+// show the shared/related evidence chips; expanded people show their closest
+// matches (WHY their average is high/low).
+export function TasteDetailSheet({ kind, summary, participants, onClose }: {
+  kind: TasteDetailKind | null;
+  summary: AromaTasteSummary | null;
+  participants: ReadonlyArray<AromaContributor>;
+  onClose: () => void;
+}) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [expanded, setExpanded] = useState(0);
+  // Keep the last real kind through the dismiss animation (the house pinned-
+  // read pattern) so the sheet doesn't blank while sliding away.
+  const shownRef = useRef<TasteDetailKind>('alike');
+  if (kind) shownRef.current = kind;
+  const shown = kind ?? shownRef.current;
+  useEffect(() => { if (kind) setExpanded(0); }, [kind]);
+  const byId = useMemo(() => new Map(participants.map((p) => [p.id, p])), [participants]);
+  const pairRows: readonly AromaTastePair[] | null = summary && (shown === 'alike' || shown === 'different')
+    ? (shown === 'alike' ? summary.pairs : [...summary.pairs].reverse()).slice(0, 8)
+    : null;
+  const memberRows: readonly AromaTasteGroupMember[] | null = summary && (shown === 'closest' || shown === 'individual')
+    ? (shown === 'closest' ? summary.group : [...summary.group].reverse()).slice(0, 8)
+    : null;
+  const total = shown === 'alike' || shown === 'different' ? summary?.pairs.length ?? 0 : summary?.group.length ?? 0;
+  const listed = pairRows?.length ?? memberRows?.length ?? 0;
+  const rank = (i: number) => (
+    <VText variant="caption" style={{ width: 22, fontFamily: 'InstrumentSans_600SemiBold', color: i === 0 ? theme.accent : theme.inkFaint }}>
+      {i + 1}
+    </VText>
+  );
+  const scorePct = (score: number) => (
+    <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>
+      {score}%
+    </VText>
+  );
+  // A person's strongest matches, from the already-sorted pair list.
+  const topPartners = (id: string) => summary
+    ? summary.pairs.filter((pair) => pair.people.some((p) => p.id === id)).slice(0, 3)
+    : [];
+  return (
+    <Sheet
+      open={kind != null}
+      onClose={onClose}
+      stackBehavior="push"
+      layer={1}
+      snapPoints={['70%']}
+      enableDynamicSizing={false}
+    >
+      {/* Plain View wrapper — the sheet-scroll invariant (apps/mobile/CLAUDE.md). */}
+      <View style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+        <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 3 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+            <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+              {TASTE_DETAIL[shown].title}
+            </VText>
+            <Pressable accessibilityRole="button" onPress={onClose} hitSlop={8}>
+              <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>
+                Done
+              </VText>
+            </Pressable>
+          </View>
+          <VText variant="caption" color="inkSoft">{TASTE_DETAIL[shown].method}</VText>
+        </View>
+        <BottomSheetScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 12 }}>
+          {pairRows?.map((pair, i) => (
+            <View key={`${pair.people[0].id}|${pair.people[1].id}`} style={{ borderTopWidth: i === 0 ? 0 : 1, borderTopColor: theme.ruleSoft }}>
+              <Pressable
+                onPress={() => setExpanded((cur) => (cur === i ? -1 : i))}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: expanded === i }}
+                accessibilityLabel={`${pair.people[0].displayName} and ${pair.people[1].displayName}, ${pair.score} percent overlap`}
+                style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
+              >
+                {rank(i)}
+                <VText numberOfLines={1} variant="body" style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium' }}>
+                  {pair.people[0].displayName} + {pair.people[1].displayName}
+                </VText>
+                {scorePct(pair.score)}
+              </Pressable>
+              {expanded === i ? (
+                <View style={{ paddingLeft: 22, paddingBottom: 12 }}>
+                  {byId.has(pair.people[0].id) && byId.has(pair.people[1].id) ? (
+                    <TasteEvidence a={byId.get(pair.people[0].id)!} b={byId.get(pair.people[1].id)!} />
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+          ))}
+          {memberRows?.map((member, i) => (
+            <View key={member.person.id} style={{ borderTopWidth: i === 0 ? 0 : 1, borderTopColor: theme.ruleSoft }}>
+              <Pressable
+                onPress={() => setExpanded((cur) => (cur === i ? -1 : i))}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: expanded === i }}
+                accessibilityLabel={`${member.person.displayName}, ${member.score} percent average overlap`}
+                style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, backgroundColor: pressed ? theme.surfaceSunk : 'transparent' })}
+              >
+                {rank(i)}
+                <Avatar name={member.person.displayName} size={30} />
+                <VText numberOfLines={1} variant="body" style={{ flex: 1, fontFamily: 'InstrumentSans_500Medium' }}>
+                  {member.person.displayName}
+                </VText>
+                {scorePct(member.score)}
+              </Pressable>
+              {expanded === i ? (
+                <View style={{ paddingLeft: 62, paddingBottom: 12, gap: 4 }}>
+                  <VText variant="label" style={{ color: theme.inkFaint }}>
+                    CLOSEST MATCHES
+                  </VText>
+                  {topPartners(member.person.id).map((pair) => {
+                    const other = pair.people[0].id === member.person.id ? pair.people[1] : pair.people[0];
+                    return (
+                      <View key={other.id} style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                        <VText numberOfLines={1} variant="small" color="inkSoft" style={{ flexShrink: 1 }}>{other.displayName}</VText>
+                        {scorePct(pair.score)}
+                      </View>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+          ))}
+          {total > listed ? (
+            <VText variant="caption" color="inkFaint" style={{ paddingTop: 12 }}>
+              {shown === 'alike' || shown === 'different'
+                ? `Top ${listed} of ${total} pairs`
+                : `${listed} of ${total} people`}
+            </VText>
+          ) : null}
+        </BottomSheetScrollView>
+      </View>
+    </Sheet>
   );
 }
 
@@ -269,6 +469,8 @@ export function AromaDetailSheet({
   wineName,
   focusId,
   route,
+  tasteSummary,
+  onOpenTasteDetail,
 }: {
   open: boolean;
   onClose: () => void;
@@ -281,6 +483,12 @@ export function AromaDetailSheet({
       Perceived-by tap passes viewContributorsRoute(ref); omitted → the
       default tab (Agreement, or All Aromas in fallback). */
   route?: Tier3Route;
+  /** CARD-owned (like the model): the taste rankings + the stat-card
+      tap-through target. The ranking sheet mounts as this sheet's SIBLING at
+      the card level — its modal lifecycle must not nest inside this
+      conditionally-mounted component (see TasteDetailSheet). */
+  tasteSummary: AromaTasteSummary | null;
+  onOpenTasteDetail: (kind: TasteDetailKind) => void;
 }) {
   const { theme } = useTheme();
   const aromaColor = useAromaColors();
@@ -486,7 +694,7 @@ export function AromaDetailSheet({
               <View key={family.familyId} style={{ gap: 8 }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
                   <View style={{ width: 8, height: 8, borderRadius: 999, backgroundColor: aromaColor(family.familyId) }} />
-                  <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 12.5, color: theme.inkSoft }}>
+                  <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.inkSoft }}>
                     {family.label}
                   </VText>
                 </View>
@@ -509,17 +717,16 @@ export function AromaDetailSheet({
   const [peopleQuery, setPeopleQuery] = useState('');
   const peopleSource: ReadonlyArray<AromaContributor> = activeFilter ? filterContribs : contrib.participants;
   const people = useMemo(() => filterAromaParticipants(peopleSource, peopleQuery), [peopleQuery, peopleSource]);
-  const tasteSummary = useMemo(() => aromaTasteSummary(contrib.participants), [contrib.participants]);
   const peopleBody = (
     <View style={{ gap: 12 }}>
-      {tasteSummary && !activeFilter ? <TasteConnections summary={tasteSummary} /> : null}
+      {tasteSummary && !activeFilter ? <TasteConnections summary={tasteSummary} onPressStat={onOpenTasteDetail} /> : null}
       {activeFilter ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft }}>Perceived</VText>
+          <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: 0.3, color: theme.inkSoft }}>Perceived</VText>
           <AromaChip a={activeFilter.a} m={activeFilter.kind === 'pair' ? activeFilter.m : null} count={peopleSource.length} pronounced={activeFilter.kind === 'node' && pronouncedIds.has(activeFilter.a)} vPad={0} />
           <View style={{ flex: 1 }} />
           <Pressable onPress={() => setPeopleFilter(null)} accessibilityRole="button" accessibilityLabel="Show All" hitSlop={8}>
-            <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.accent }}>Show All ✕</VText>
+            <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>Show All ✕</VText>
           </Pressable>
         </View>
       ) : null}
@@ -647,7 +854,12 @@ export function AromaDetailSheet({
         snapPoints={['85%']}
         enableDynamicSizing={false}
       >
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+        {/* Plain View, NEVER BottomSheetView, around a sheet scrollable —
+            BottomSheetView's mount effect re-registers the sheet's scrollable
+            as type VIEW (it runs after the child scrollable's registration),
+            which routes content drags into sheet over-drag and pins the list
+            to offset 0 (apps/mobile/CLAUDE.md sheet-scroll invariant). */}
+        <View style={{ flex: 1, paddingHorizontal: 18 }}>
           {head}
           <BottomSheetScrollView
             ref={scrollRef}
@@ -657,7 +869,7 @@ export function AromaDetailSheet({
           >
             {body}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       </Sheet>
       {popover}
     </>

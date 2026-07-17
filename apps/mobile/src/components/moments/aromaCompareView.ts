@@ -625,10 +625,15 @@ export type AromaTastePair = { people: readonly [AromaTastePerson, AromaTastePer
 export type AromaTasteGroupMember = { person: AromaTastePerson; score: number }
 export type AromaTasteSummary = {
   respondents: number
+  /** EVERY pair, best overlap first (stable i<j roster order on ties) — the
+      stat cards' tap-through ranking source. */
+  pairs: readonly AromaTastePair[]
+  /** Every respondent by mean pair overlap, highest first (stable). */
+  group: readonly AromaTasteGroupMember[]
   closestPair: AromaTastePair
   farthestPair: AromaTastePair
-  closestToGroup: AromaTasteGroupMember | null
-  mostIndividual: AromaTasteGroupMember | null
+  closestToGroup: AromaTasteGroupMember
+  mostIndividual: AromaTasteGroupMember
 }
 
 const putTasteSignal = (signals: Map<string, number>, key: string, weight: number) => {
@@ -657,18 +662,22 @@ function tasteScore(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, numbe
 }
 
 export function aromaTasteSummary(people: ReadonlyArray<AromaContributor>): AromaTasteSummary | null {
-  if (people.length < 2) return null
+  // Minimum THREE respondents (Simon, 2026-07-17): with two, every stat names
+  // the same pair — closest, farthest, and both group extrema carry nothing.
+  if (people.length < 3) return null
   const refs = people.map((person): AromaTastePerson => ({ id: person.id, displayName: person.displayName }))
   const signals = people.map(tasteSignals)
   const totals = Array.from({ length: people.length }, () => 0)
   const pairCounts = Array.from({ length: people.length }, () => 0)
   let closestPair: AromaTastePair | null = null
   let farthestPair: AromaTastePair | null = null
+  const allPairs: AromaTastePair[] = []
 
   for (let i = 0; i < people.length; i++) {
     for (let j = i + 1; j < people.length; j++) {
       const score = tasteScore(signals[i], signals[j])
       const pair: AromaTastePair = { people: [refs[i], refs[j]], score }
+      allPairs.push(pair)
       if (!closestPair || score > closestPair.score) closestPair = pair
       if (!farthestPair || score < farthestPair.score) farthestPair = pair
       totals[i] += score
@@ -682,20 +691,81 @@ export function aromaTasteSummary(people: ReadonlyArray<AromaContributor>): Arom
     person,
     score: pairCounts[i] > 0 ? Math.round(totals[i] / pairCounts[i]) : 0,
   }))
-  let closestToGroup: AromaTasteGroupMember | null = null
-  let mostIndividual: AromaTasteGroupMember | null = null
-  if (people.length >= 3) {
-    closestToGroup = group.reduce((best, current) => (current.score > best.score ? current : best))
-    mostIndividual = group.reduce((best, current) => (current.score < best.score ? current : best))
-  }
+  const closestToGroup = group.reduce((best, current) => (current.score > best.score ? current : best))
+  const mostIndividual = group.reduce((best, current) => (current.score < best.score ? current : best))
+  // Stable sorts: ties keep i<j / roster encounter order, so the sorted heads
+  // agree with the reduce-picked extremes above.
+  allPairs.sort((x, y) => y.score - x.score)
+  const sortedGroup = [...group].sort((x, y) => y.score - x.score)
 
   return {
     respondents: people.length,
+    pairs: allPairs,
+    group: sortedGroup,
     closestPair: closestPair!,
     farthestPair: farthestPair!,
     closestToGroup,
     mostIndividual,
   }
+}
+
+// ── Taste-detail evidence ─────────────────────────────────────────────────────
+// WHY a pair scores what it scores: the shared signals resolved back to
+// displayable nodes, strongest grain first. `exact` = the same canonical
+// (aroma, modifier) pick on both sides (any tier — two plain Berry picks land
+// here). `leaves` = the same leaf reached through different modifiers.
+// `related` = shared subfamily/family territory NOT already represented by a
+// finer shared node (a shared subfamily suppresses its family, a shared leaf
+// suppresses both). Mirrors the tasteSignals weights (leaf 3 · subfamily 2 ·
+// family 1), so the chips are the score's actual ingredients. Ordered by the
+// first person's pick order — deterministic, poll-stable.
+export type AromaTasteEvidence = {
+  exact: ReadonlyArray<{ a: string; m: string | null }>
+  leaves: ReadonlyArray<string>
+  related: ReadonlyArray<{ id: string; label: string }>
+}
+export function tasteSharedEvidence(a: AromaContributor, b: AromaContributor): AromaTasteEvidence {
+  const sig = (person: AromaContributor) => {
+    const exact = new Map<string, { a: string; m: string | null }>()
+    const leaves = new Set<string>()
+    const subs = new Set<string>()
+    const fams = new Set<string>()
+    for (const pick of person.picks) {
+      const node = getAromaNode(pick.a)
+      if (!node) continue
+      if (!exact.has(pickKey(pick.a, pick.m))) exact.set(pickKey(pick.a, pick.m), { a: pick.a, m: pick.m })
+      if (node.leaf) leaves.add(node.leaf.id)
+      if (node.subfamily) subs.add(node.subfamily.id)
+      fams.add(node.family.id)
+    }
+    return { exact, leaves, subs, fams }
+  }
+  const A = sig(a)
+  const B = sig(b)
+  const exact = [...A.exact.entries()].filter(([k]) => B.exact.has(k)).map(([, pick]) => pick)
+  const exactAs = new Set(exact.map((pick) => pick.a))
+  const leaves = [...A.leaves].filter((id) => B.leaves.has(id) && !exactAs.has(id))
+  const coveredSubs = new Set<string>()
+  const coveredFams = new Set<string>()
+  for (const id of [...exactAs, ...leaves]) {
+    const node = getAromaNode(id)
+    if (!node) continue
+    if (node.subfamily) coveredSubs.add(node.subfamily.id)
+    coveredFams.add(node.family.id)
+  }
+  const related: Array<{ id: string; label: string }> = []
+  for (const id of A.subs) {
+    if (!B.subs.has(id) || coveredSubs.has(id)) continue
+    const node = getAromaNode(id)
+    if (!node) continue
+    coveredFams.add(node.family.id)
+    related.push({ id, label: node.label })
+  }
+  for (const id of A.fams) {
+    if (!B.fams.has(id) || coveredFams.has(id)) continue
+    related.push({ id, label: getAromaNode(id)?.label ?? id })
+  }
+  return { exact, leaves, related }
 }
 
 // The Aroma Bun consumes the COMPLETE counted consensus summary, not the

@@ -12,6 +12,7 @@ import {
   type ConsensusKey,
 } from '@verre/core';
 import {
+  aromaTasteSummary,
   buildCompareAromaModel,
   compareAromaInputSignature,
   hasResolvableAroma,
@@ -19,7 +20,7 @@ import {
   type Tier3Route,
 } from '@/components/moments/aromaCompareView';
 import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
-import { AromaDetailSheet } from '@/components/moments/AromaDetailSheet';
+import { AromaDetailSheet, TasteDetailSheet, type TasteDetailKind } from '@/components/moments/AromaDetailSheet';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
@@ -499,12 +500,15 @@ export function ComparePickerSheet({
       {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
       {needsScroll ? (
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+        // Plain View wrapper in scroll mode — a BottomSheetView here would
+        // re-register the sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, paddingHorizontal: 18 }}>
           {headBlock}
           <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
             {rowsBlock}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       ) : (
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
           {headBlock}
@@ -609,6 +613,12 @@ function CmpAccItem({ item }: { item: CmpItem }) {
   // View Contributors / Perceived-by tap (People tab filtered to the aroma,
   // via the staged viewContributorsRoute).
   const [aromaSheet, setAromaSheet] = useState<{ open: boolean; focusId?: string; route?: Tier3Route }>({ open: false });
+  // The taste-stat ranking sheet (pushed OVER the aroma detail sheet). Owned
+  // HERE, not inside AromaDetailSheet: its modal must mount as a stable
+  // SIBLING (the screen-level sheet anatomy) — the first cut nested it inside
+  // the conditionally-mounted detail sheet and closing it stranded the parent
+  // on device.
+  const [tasteDetail, setTasteDetail] = useState<TasteDetailKind | null>(null);
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -653,6 +663,13 @@ function CmpAccItem({ item }: { item: CmpItem }) {
     // object as the semantic dependency; the ref above carries that exact data.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [aromaInputSignature, aromaSheet.open, open],
+  );
+  // Taste rankings — computed ONCE at the card (detail sheet + ranking sheet
+  // consume the same instance), and only while a sheet actually needs it (the
+  // 100-respondent pairwise pass must not ride every card poll).
+  const tasteSummary = useMemo(
+    () => (aromaModel && (aromaSheet.open || tasteDetail != null) ? aromaTasteSummary(aromaModel.contrib.participants) : null),
+    [aromaModel, aromaSheet.open, tasteDetail],
   );
   // Mount the aroma block whenever there's a RESOLVABLE respondent — the strip
   // shows the agreement OR the flat union fallback (Simon 2026-07-14). The
@@ -856,6 +873,18 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           wineName={wine._blind ? `Impression ${item.index + 1}` : wine.name}
           focusId={aromaSheet.focusId}
           route={aromaSheet.route}
+          tasteSummary={tasteSummary}
+          onOpenTasteDetail={setTasteDetail}
+        />
+      ) : null}
+      {/* SIBLING of the detail sheet, mounted whenever the model exists — its
+          lifecycle must not be gated on aromaSheet.open (see the state doc). */}
+      {aromaModel ? (
+        <TasteDetailSheet
+          kind={tasteDetail}
+          summary={tasteSummary}
+          participants={aromaModel.contrib.participants}
+          onClose={() => setTasteDetail(null)}
         />
       ) : null}
     </View>
@@ -1435,12 +1464,15 @@ function ShowAllSheet({
       {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
       {needsScroll ? (
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+        // Plain View wrapper in scroll mode — a BottomSheetView here would
+        // re-register the sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, paddingHorizontal: 18 }}>
           {headBlock}
           <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
             {rowsBlock}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       ) : (
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
           {headBlock}
