@@ -109,12 +109,12 @@ function PopoverBody({ content, onMoreBranches, onViewContributors }: {
   onViewContributors: () => void
 }) {
   const { theme } = useTheme()
-  const sectionLabel = { fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft } as const
+  const sectionLabel = { fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: 0.3, color: theme.inkSoft } as const
   return (
     <View style={{ gap: 10 }}>
       {content.ledBy.length > 0 ? (
         <View style={{ gap: 6 }}>
-          <VText surface="badge" style={sectionLabel}>Includes mentions of</VText>
+          <VText variant="caption" style={sectionLabel}>Includes mentions of</VText>
           {content.ledBy.map((branch, i) => (
             <View key={i} style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
               {branch.map((step, j) => (
@@ -133,7 +133,7 @@ function PopoverBody({ content, onMoreBranches, onViewContributors }: {
               hitSlop={8}
               style={{ alignSelf: 'flex-start', paddingVertical: 5 }}
             >
-              <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11.5, color: theme.accent }}>{`+${content.moreBranches} more →`}</VText>
+              <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accent }}>{`+${content.moreBranches} more →`}</VText>
             </Pressable>
           ) : null}
         </View>
@@ -142,7 +142,7 @@ function PopoverBody({ content, onMoreBranches, onViewContributors }: {
       {content.pronouncedCount > 0 ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
           <Icon name="pronounced" size={14} color={content.isPanelPronounced ? theme.accent : theme.inkSoft} />
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12, color: content.isPanelPronounced ? theme.accent : theme.inkSoft }}>
+          <VText variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: content.isPanelPronounced ? theme.accent : theme.inkSoft }}>
             {`${content.pronouncedCount} of ${content.count} marked pronounced`}
           </VText>
         </View>
@@ -160,7 +160,7 @@ function UnionPopoverBody({ content, onViewContributors }: { content: UnionPopov
     <View style={{ gap: 10 }}>
       {content.byModifier.length > 0 ? (
         <View style={{ gap: 6 }}>
-          <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft }}>How it was described</VText>
+          <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: 0.3, color: theme.inkSoft }}>How it was described</VText>
           <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
             {content.byModifier.map((g) => (
               <AromaChip key={g.m ?? '_'} a={content.id} m={g.m} count={g.count} vPad={0} />

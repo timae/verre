@@ -32,7 +32,7 @@ export function AromaPopoverPeople({
   const { theme } = useTheme()
   if (contributors.length === 0) {
     return emptyCopy ? (
-      <VText surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, lineHeight: 15, color: theme.inkSoft }}>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: theme.inkSoft }}>
         {emptyCopy}
       </VText>
     ) : null
@@ -58,10 +58,10 @@ export function AromaPopoverPeople({
         ))}
       </View>
       <View style={{ flex: 1, gap: 3 }}>
-        <VText surface="badge" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 11, letterSpacing: 0.3, color: theme.inkSoft }}>
+        <VText variant="caption" style={{ fontFamily: 'InstrumentSans_600SemiBold', letterSpacing: 0.3, color: theme.inkSoft }}>
           {label}
         </VText>
-        <VText numberOfLines={1} surface="badge" style={{ fontFamily: 'InstrumentSans_500Medium', fontSize: 12.5, lineHeight: 15, color: theme.ink }}>
+        <VText numberOfLines={1} variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: theme.ink }}>
           {contributors.map((c) => c.displayName).join(', ')}{more > 0 ? ` +${more}` : ''}
         </VText>
       </View>
