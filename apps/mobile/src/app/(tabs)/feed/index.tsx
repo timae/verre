@@ -10,6 +10,7 @@ import { CenteredMessage, ConnectionBanner, ErrorState, connectionView } from '@
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FEED_KEY, FEED_STALE_MS, feedQueryOptions, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
+import { authClient } from '@/lib/authClient';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { radius, space, useTheme } from '@/theme';
 
@@ -145,9 +146,15 @@ export default function Feed() {
 
   const conn = connectionView(feed.isError, items.length > 0);
 
+  // Owner gate for the cards' ⋯ Edit (the detail screen's meId/isOwner
+  // pattern) — Better Auth user ids are strings, feed author ids numbers.
+  const meId = authClient.useSession().data?.user.id;
+  const myUserId = meId != null ? Number(meId) : null;
+
   const renderItem = useCallback(
     ({ item }: { item: FeedItem }) => {
       const id = feedItemId(item);
+      const isOwner = myUserId != null && item.author.id === myUserId;
       if (item.type === 'session') {
         return (
           <SessionFeedCard
@@ -156,6 +163,7 @@ export default function Feed() {
             createdAt={item.createdAt}
             onOpenImpression={(wineIndex) => openImpression(id, wineIndex)}
             onToggleLike={(next) => toggleLike(id, next)}
+            onEdit={isOwner ? (wineId) => router.push({ pathname: '/feed/edit/[id]', params: { id: String(id), wine: wineId } }) : undefined}
           />
         );
       }
@@ -166,10 +174,11 @@ export default function Feed() {
           createdAt={item.createdAt}
           onOpen={() => openImpression(id, 0)}
           onToggleLike={(next) => toggleLike(id, next)}
+          onEdit={isOwner ? () => router.push({ pathname: '/feed/edit/[id]', params: { id: String(id) } }) : undefined}
         />
       );
     },
-    [openImpression, toggleLike],
+    [openImpression, toggleLike, myUserId, router],
   );
 
   const topPad = insets.top + space.md;

@@ -7,10 +7,12 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
-import { validateScore, decimalToNumber } from '@verre/core'
+import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
+import { redis, k, TTL, existsKey, touchWithMeta } from '@/lib/redis'
+import { engagementDeletionCascade } from '@/lib/engagementCascade'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import { scrub } from '@/lib/textSafe'
+import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -31,8 +33,12 @@ const s3 = ENDPOINT
   : null
 async function reclaimImage(url: string | null | undefined) {
   if (!s3 || !BUCKET || !url || !ENDPOINT) return
-  const prefix = `${ENDPOINT}/${BUCKET}/`
-  if (!url.startsWith(prefix)) return
+  // Stored urls carry the PUBLIC prefix (S3_PUBLIC_ENDPOINT, when split
+  // from the SDK endpoint — see lib/s3.ts); pre-split rows carry the
+  // internal one. Accept either so both generations stay reclaimable.
+  const pub = process.env.S3_PUBLIC_ENDPOINT || ENDPOINT
+  const prefix = [`${pub}/${BUCKET}/`, `${ENDPOINT}/${BUCKET}/`].find((p) => url.startsWith(p))
+  if (!prefix) return
   const key = url.slice(prefix.length)
   if (!key) return
   try {
@@ -68,8 +74,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // Walk the new model: feed_item → rating → wine → optional rating_image.
   // We need ALL of these to apply edits: the wine carries name/producer/etc.,
   // the rating carries score/flavors/notes, the rating_image carries the
-  // photo URL. Only kind='standalone' feed_items are editable here (session
-  // ratings are edited via the in-session rate endpoint, not this surface).
+  // photo URL. kind='standalone' edits everything below; kind='session'
+  // (feed-side rating edit, 2026-07-17) branches to the rating-only handler —
+  // the wine belongs to the MOMENT, not the poster, so identity fields are
+  // not editable from the feed.
   const feedItem = await prisma.feedItem.findUnique({
     where: { id: feedItemId },
     include: {
@@ -81,10 +89,12 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       },
     },
   })
-  if (!feedItem || feedItem.kind !== 'standalone' || !feedItem.rating) {
+  if (!feedItem) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+  if (feedItem.kind === 'session') return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
+  if (feedItem.kind !== 'standalone' || !feedItem.rating) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
-  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
   const rating = feedItem.rating
   const wine = rating.wine
@@ -93,7 +103,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
-    imageData, venueName, city, country, lat, lng, taggedUserIds } = body
+    imageData, venueName, city, country, lat, lng, taggedUserIds,
+    wineRegion, wineCountry, vinification, description, purchaseUrl } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   const lenCheck: Array<[string, unknown, number]> = [
@@ -101,6 +112,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     ['grape', grape, 200], ['type', type, 32],
     ['venueName', venueName, 200], ['city', city, 100], ['country', country, 8],
     ['notes', notes, 4000],
+    // Wine-origin metadata (feed-edit round, 2026-07-17) — same caps as POST.
+    ['wineRegion', wineRegion, 255], ['wineCountry', wineCountry, 8],
+    ['vinification', vinification, 1000], ['description', description, 1000],
+    ['purchaseUrl', purchaseUrl, 1000],
   ]
   for (const [k, v, max] of lenCheck) {
     if (typeof v === 'string' && v.length > max) return NextResponse.json({ error: `${k} too long (max ${max})` }, { status: 400 })
@@ -162,11 +177,15 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // Same key scheme as POST (wines/ci_<userId>_<timestamp>).
     const keyBase = `wines/ci_${userId}_${Date.now()}`
     const uploaded = await uploadImage(keyBase, imageData).catch(() => null)
-    if (uploaded) {
-      nextImageUrl = uploaded
-      freshUploadUrl = uploaded
+    if (!uploaded) {
+      // FAIL LOUDLY (2026-07-17): the caller explicitly sent a photo; a 200
+      // that silently kept the old image reads as "saved" while the photo
+      // vanished (device-observed with S3 down). 502 lets the client surface
+      // a retryable error instead.
+      return NextResponse.json({ error: 'photo upload failed — try again' }, { status: 502 })
     }
-    // If upload failed, leave the existing image untouched (undefined).
+    nextImageUrl = uploaded
+    freshUploadUrl = uploaded
   } else if (imageData === null) {
     nextImageUrl = null
   }
@@ -213,6 +232,13 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         // Validate `type` against the seeded category_styles. Unknown
         // values coerce to NULL — see POST handler for the rationale.
         style:    effStyle,
+        // Origin + metadata (POST parity: scrub, ISO-2 cleanCountry, cleanUrl
+        // http(s)-only) — partial semantics like every other field here.
+        region:       wineRegion   !== undefined ? (scrub(wineRegion) || null)          : wine.region,
+        country:      wineCountry  !== undefined ? (cleanCountry(wineCountry) || null)  : wine.country,
+        vinification: vinification !== undefined ? (scrub(vinification) || null)        : wine.vinification,
+        description:  description  !== undefined ? (scrub(description) || null)         : wine.description,
+        purchaseUrl:  purchaseUrl  !== undefined ? (cleanUrl(purchaseUrl).slice(0, 1000) || null) : wine.purchaseUrl,
         // wine.imageUrl is the catalog bottle shot, not the user's tasting
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create
@@ -326,6 +352,11 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     vintage: updatedWine.vintage,
     grape: updatedWine.grape,
     type: updatedWine.style,
+    wineRegion: updatedWine.region,
+    wineCountry: updatedWine.country,
+    vinification: updatedWine.vinification,
+    description: updatedWine.description,
+    purchaseUrl: updatedWine.purchaseUrl,
     score: decimalToNumber(updatedRating.score),
     flavors: updatedRating.flavors,
     aromas: updatedRating.aromas,
@@ -341,6 +372,130 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     lat: decimalToNumber(updatedFeedItem.lat),
     lng: decimalToNumber(updatedFeedItem.lng),
     createdAt: updatedFeedItem.createdAt.toISOString(),
+  })
+}
+
+// Feed-side edit of ONE session rating (kind='session' feed items, 2026-07-17).
+// Rating-only — body { wineId, score?, flavors?, aromas?, notes? }; the wine's
+// identity/venue belong to the moment. Owner + rate limit already checked by
+// PATCH. Honors the session-rate invariants: score validation, flavour gate
+// keyed to the wine's SERVER style, aroma present-replaces/omitted-preserves,
+// engagement cascade when an edit empties the rating (post reaped only when it
+// was the user's last engaged rating in that session), and a live-Redis mirror
+// (same JSON shape as the rate route) when the session is still alive —
+// PG-only once expired. Deliberately NOT touched: lifetime counters + HoF (an
+// edit is not new activity), rater_name (frozen snapshot). Accepted edge: a
+// banned-but-not-yet-wiped participant can still edit their own rating here —
+// it is their own data, and a kick-wipe deletes the row (→ 404).
+async function patchSessionRating(req: NextRequest, feedItemId: number, sessionId: number | null, userId: number) {
+  if (sessionId == null) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { wineId, score, flavors, aromas, notes } = body
+  if (!wineId || typeof wineId !== 'string' || wineId.length > 32 || !/^[A-Za-z0-9_-]+$/.test(wineId)) {
+    return NextResponse.json({ error: 'wineId required' }, { status: 400 })
+  }
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return NextResponse.json({ error: 'notes must be a string' }, { status: 400 })
+  }
+  if (typeof notes === 'string' && notes.length > 4000) return NextResponse.json({ error: 'notes too long (max 4000)' }, { status: 400 })
+
+  const rating = await prisma.rating.findFirst({
+    where: { userId, sessionId, wineId },
+    include: { wine: { select: { style: true } } },
+  })
+  if (!rating) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  let validScore: number | null | undefined = undefined
+  if (score !== undefined) {
+    const c = validateScore(score)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validScore = c.value
+  }
+  let validFlavorsValue: Record<string, number> | undefined = undefined
+  if (flavors !== undefined) {
+    const c = validateFlavors(flavors)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    const norm = gateAndFillFlavors(c.value, 'wine', rating.wine.style)
+    if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
+    validFlavorsValue = norm.value
+  }
+  const aromasProvided = aromas !== undefined
+  let validAromas: AromaSelection[] = []
+  if (aromasProvided) {
+    const c = gateAromas(aromas)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validAromas = c.value ?? []
+  }
+
+  // Merged next values (partial-update semantics, mirroring the standalone
+  // branch) — computed up front so the engagement check and the Redis mirror
+  // see the SAME truth the UPDATE writes.
+  const nextScore = score !== undefined ? validScore : decimalToNumber(rating.score)
+  const nextFlavors = flavors !== undefined ? (validFlavorsValue ?? {}) : (rating.flavors as Record<string, number>)
+  const nextAromas = aromasProvided ? validAromas : ((rating.aromas as AromaSelection[] | null) ?? [])
+  const nextNotes = notes !== undefined ? scrub(notes) : rating.notes
+
+  try {
+    await prisma.rating.update({
+      where: { id: rating.id },
+      data: {
+        score: nextScore,
+        flavors: nextFlavors,
+        aromas: nextAromas as object[],
+        notes: nextNotes,
+        ratedAt: new Date(),
+      },
+    })
+  } catch (err) {
+    // P2025 = concurrent delete (account cascade / kick wipe) — surface 404.
+    if ((err as { code?: string })?.code === 'P2025') return NextResponse.json({ error: 'not found' }, { status: 404 })
+    throw err
+  }
+
+  // Engagement cascade: an edit that EMPTIES the rating reaps it (and the
+  // post, iff it was the last engaged rating) — same rule as an empty rate
+  // POST. empty-only mode re-checks emptiness in SQL, so a concurrent engaged
+  // write wins and nothing is deleted.
+  const hasEngagement =
+    (nextScore ?? 0) > 0 ||
+    Object.keys(nextFlavors).length > 0 ||
+    nextAromas.length > 0 ||
+    (nextNotes ?? '').length > 0
+  let reaped = false
+  if (!hasEngagement) reaped = await engagementDeletionCascade(rating.id, 'empty-only')
+  const feedItemDeleted = reaped
+    ? !(await prisma.feedItem.findUnique({ where: { id: feedItemId }, select: { id: true } }))
+    : false
+
+  // Live-Redis mirror: while the session is alive, the compare/live screens
+  // read s:{code}:r:{identityId}:{wineId} — an unmirrored PG edit would show
+  // stale ratings in the live session until expiry. Session gone (or the
+  // sessions row tombstoned, code NULL) → PG-only, nothing to sync.
+  const sess = await prisma.session.findUnique({ where: { id: sessionId }, select: { code: true } })
+  const code = sess?.code ? normalizeCode(sess.code) : null
+  if (code && (await existsKey(k.meta(code)))) {
+    const key = k.rating(code, `u:${userId}`, wineId)
+    if (reaped) {
+      await redis.del(key)
+    } else {
+      await redis.set(key, JSON.stringify({ score: nextScore ?? 0, flavors: nextFlavors, aromas: nextAromas, notes: nextNotes ?? '', at: Date.now() }), { EX: TTL })
+    }
+    // Re-stamp the keyspace to the session's real lifespan (the EX above is
+    // the default TTL; touchWithMeta corrects pro lifespans — rate-route
+    // pattern).
+    await touchWithMeta(code)
+  }
+
+  return NextResponse.json({
+    id: feedItemId,
+    wineId,
+    score: nextScore,
+    flavors: nextFlavors,
+    aromas: nextAromas,
+    notes: nextNotes,
+    reaped,
+    feedItemDeleted,
   })
 }
 

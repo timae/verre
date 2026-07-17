@@ -812,7 +812,22 @@ export default function FeedImpression() {
         {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
         <MenuItem icon="share" label="Share" disabled />
         {isOwner ? <MenuSeparator /> : null}
-        {isOwner ? <MenuItem icon="edit" label="Edit" disabled accessibilityLabel="Edit Impression" /> : null}
+        {isOwner ? (
+          <MenuItem
+            icon="edit"
+            label="Edit"
+            accessibilityLabel="Edit Impression"
+            onPress={() => {
+              setMenuAnchor(null);
+              router.push({
+                pathname: '/feed/edit/[id]',
+                params: detail.isSession && activeWine
+                  ? { id: String(feedItemId), wine: activeWine.id }
+                  : { id: String(feedItemId) },
+              });
+            }}
+          />
+        ) : null}
       </AnchoredMenu>
 
       {/* fullscreen gallery — a Modal, so its place in this tree is chrome-

@@ -20,6 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -50,6 +51,7 @@ export function SessionFeedCard({
   createdAt,
   onOpenImpression,
   onToggleLike,
+  onEdit,
 }: {
   author: FeedAuthor;
   session: SessionFeedPayload;
@@ -59,6 +61,9 @@ export function SessionFeedCard({
   onOpenImpression: (index: number) => void;
   // Optimistic like toggle — parent owns the cache write + server call.
   onToggleLike: (nextLiked: boolean) => void;
+  // Owner-only ⋯ menu: Edit targets the ACTIVE carousel slide's rating (the
+  // wine id of the impression currently in view).
+  onEdit?: (wineId: string) => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -184,15 +189,35 @@ export function SessionFeedCard({
     fireBurst();
   }, [session.liked, onToggleLike, fireBurst]);
 
-  // Double-tap on the photo. A single-tap is declared and left inert so the
-  // double-tap doesn't wait-fail into a dismiss (there is no fullscreen from
-  // the feed — proposal §2). The horizontal carousel pan wins over both taps
-  // naturally (ScrollView owns the pan; taps only fire on a stationary touch).
+  // Double-tap on the photo likes; a SINGLE tap opens the active slide's
+  // detail (Simon 2026-07-17 — the whole post body opens, not just the glass
+  // panel). Exclusive: the single tap waits out the double-tap window. The
+  // horizontal carousel pan wins over both taps naturally (ScrollView owns
+  // the pan; taps only fire on a stationary touch). The once-guard dedupes
+  // the panel's own Pressable, which fires alongside the RNGH tap on panel
+  // touches (two recognizers, one touch).
   const doubleTap = Gesture.Tap()
     .numberOfTaps(2)
     .maxDuration(300)
     .onEnd((_e, ok) => {
       if (ok) runOnJS(like)();
+    });
+  const lastOpenRef = useRef(0);
+  const openImpressionOnce = useCallback(
+    (i: number) => {
+      const t = Date.now();
+      if (t - lastOpenRef.current < 600) return;
+      lastOpenRef.current = t;
+      openImpression(i);
+    },
+    [openImpression],
+  );
+  const openActive = useCallback(() => openImpressionOnce(activeIdx), [openImpressionOnce, activeIdx]);
+  const singleTap = Gesture.Tap()
+    .numberOfTaps(1)
+    .maxDuration(300)
+    .onEnd((_e, ok) => {
+      if (ok) runOnJS(openActive)();
     });
 
   return (
@@ -227,6 +252,7 @@ export function SessionFeedCard({
             {timeAgo(createdAt)}
           </VText>
         </View>
+        {onEdit && wines[activeIdx] ? <FeedCardMenu onEdit={() => onEdit(wines[activeIdx].id)} /> : null}
       </View>
 
       {anyPhoto ? (
@@ -238,7 +264,7 @@ export function SessionFeedCard({
            tint background so an overscroll pull (or a not-yet-loaded photo)
            reveals the tint, sitting FLAT — no shadow (Simon). */
         <View ref={photoFrameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
-          <GestureDetector gesture={doubleTap}>
+          <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
             <ScrollView
               ref={carouselRef}
               horizontal
@@ -257,7 +283,7 @@ export function SessionFeedCard({
                   height={photoH}
                   axisColor={axisColor}
                   onMeasure={reportAspect}
-                  onPressPanel={() => openImpression(i)}
+                  onPressPanel={() => openImpressionOnce(i)}
                 />
               ))}
             </ScrollView>
@@ -301,7 +327,7 @@ export function SessionFeedCard({
               axisColor={axisColor}
               width={photoW}
               height={nonPhotoSlideH}
-              onOpen={() => openImpression(i)}
+              onOpen={() => openImpressionOnce(i)}
             />
           ))}
         </ScrollView>

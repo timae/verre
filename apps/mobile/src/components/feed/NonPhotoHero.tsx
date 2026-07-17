@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { Pressable, StyleSheet, View } from 'react-native';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { FeedImpressionPanel } from '@/components/feed/FeedImpressionPanel';
 import { buildWheelAxes, hasRatedAxes } from '@/lib/flavourAxes';
@@ -52,11 +52,20 @@ export function NonPhotoHero({
   // (all three = W − 2·space.xs; Simon: panels always the same width). Flush
   // under the header. In a fixed-height carousel slide it bottom-aligns so it
   // sits where the hero slides' panels do.
+  // The WHOLE slide opens the detail (Simon 2026-07-17), not just the panel —
+  // the outer Pressable catches taps around/on the wheel; the panel's own
+  // nested Pressable keeps priority on its area (nested native Pressables
+  // don't double-fire).
   if (!hasFlavour) {
     return (
-      <View style={[styles.bare, { width }, height != null && [{ height }, styles.bottomAlign]]}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open impression"
+        onPress={onOpen}
+        style={[styles.bare, { width }, height != null && [{ height }, styles.bottomAlign]]}
+      >
         <FeedImpressionPanel wine={wine} index={index} axisColor={axisColor} onPress={onOpen} />
-      </View>
+      </Pressable>
     );
   }
 
@@ -79,7 +88,12 @@ export function NonPhotoHero({
   const heroBg = swap ? (apricot ? mix(theme.surfaceSunk, theme.surface, 0.5) : theme.surfaceSunk) : theme.surface;
   const panelSurface: 'surface' | 'surfaceSunk' = swap ? (apricot ? 'surfaceSunk' : 'surface') : 'surfaceSunk';
   return (
-    <View style={[styles.hero, { width, backgroundColor: heroBg }, height != null && { height }]}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Open impression"
+      onPress={onOpen}
+      style={[styles.hero, { width, backgroundColor: heroBg }, height != null && { height }]}
+    >
       {/* The wheel draws off the wine's REAL flavors — shown for blind too
           (subjective rating isn't masked). Identity masking is the panel's job. */}
       <View style={styles.heroBody}>
@@ -93,7 +107,7 @@ export function NonPhotoHero({
       <View style={styles.panelInside}>
         <FeedImpressionPanel wine={wine} index={index} axisColor={axisColor} onPress={onOpen} surface={panelSurface} />
       </View>
-    </View>
+    </Pressable>
   );
 }
 
