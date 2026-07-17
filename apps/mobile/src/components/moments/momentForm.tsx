@@ -338,7 +338,10 @@ export function CountrySheet({
   }, [query]);
   return (
     <Sheet open={open} onClose={onClose} snapPoints={['75%']} enableDynamicSizing={false}>
-      <BottomSheetView style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
+      {/* Plain View wrapper (NOT BottomSheetView) around the scrollable —
+          BottomSheetView would re-register the sheet's scrollable as type VIEW
+          and lock the list (apps/mobile/CLAUDE.md sheet-scroll invariant). */}
+      <View style={{ flex: 1, paddingTop: 8, paddingBottom: insets.bottom + 8 }}>
         <View style={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, gap: 12 }}>
           <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
             Country
@@ -397,7 +400,7 @@ export function CountrySheet({
             })
           )}
         </BottomSheetScrollView>
-      </BottomSheetView>
+      </View>
     </Sheet>
   );
 }

@@ -43,6 +43,7 @@ export function SelectionSheet({
   const chipRefs = useRef<Record<string, View | null>>({});
   const tap = useTapOrDouble();
   const scrolls = ops.value.length > SCROLL_PAST;
+  const Wrap = scrolls ? View : BottomSheetView;
 
   const chips = (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7 }}>
@@ -107,7 +108,12 @@ export function SelectionSheet({
       stackBehavior={stackBehavior}
       layer={layer}
     >
-      <BottomSheetView style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
+      {/* Wrap: BottomSheetView only in fit-to-content mode (dynamic sizing
+          needs its measurement). In scroll mode it must be a plain View — a
+          BottomSheetView around the scrollable re-registers the sheet's
+          scrollable as type VIEW and locks the list (apps/mobile/CLAUDE.md
+          sheet-scroll invariant). */}
+      <Wrap style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
         <View style={{ paddingHorizontal: 20 }}>{header}</View>
         {scrolls ? (
           <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 8 }}>
@@ -122,7 +128,7 @@ export function SelectionSheet({
           ops={ops}
           onTargetChange={(pair) => setPopup((p) => (p ? { ...p, ...pair } : p))}
         />
-      </BottomSheetView>
+      </Wrap>
     </Sheet>
   );
 }

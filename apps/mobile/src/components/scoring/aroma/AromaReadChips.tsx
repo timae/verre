@@ -158,6 +158,11 @@ function ReadSheet({
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
   const scrolls = aromas.length > SCROLL_PAST;
+  // BottomSheetView only in fit-to-content mode; in scroll mode a plain View —
+  // BottomSheetView around the scrollable re-registers the sheet's scrollable
+  // as type VIEW and locks the list (apps/mobile/CLAUDE.md sheet-scroll
+  // invariant).
+  const Wrap = scrolls ? View : BottomSheetView;
   const chips = (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: CHIP_GAP }}>
       {aromas.map((sel) => (
@@ -180,7 +185,7 @@ function ReadSheet({
       enableDynamicSizing={!scrolls}
       maxDynamicContentSize={height * 0.75}
     >
-      <BottomSheetView style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
+      <Wrap style={{ flex: scrolls ? 1 : undefined, paddingTop: 8, paddingBottom: insets.bottom + 16 }}>
         <View style={{ paddingHorizontal: 20, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 8, paddingBottom: 14 }}>
           <VText numberOfLines={2} variant="subhead" style={{ flex: 1, fontFamily: 'InstrumentSans_600SemiBold' }}>
             {title ?? `Aromas · ${aromas.length}`}
@@ -198,7 +203,7 @@ function ReadSheet({
         ) : (
           <View style={{ paddingHorizontal: 20 }}>{chips}</View>
         )}
-      </BottomSheetView>
+      </Wrap>
     </Sheet>
   );
 }

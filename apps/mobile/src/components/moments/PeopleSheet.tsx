@@ -337,7 +337,10 @@ export function PeopleSheet({
       {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
       {needsScroll ? (
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 20, paddingTop: 16 }}>
+        // Plain View wrapper in scroll mode — a BottomSheetView here would
+        // re-register the sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, paddingHorizontal: 20, paddingTop: 16 }}>
           {headBlock}
           <BottomSheetScrollView
             keyboardShouldPersistTaps="handled"
@@ -346,7 +349,7 @@ export function PeopleSheet({
           >
             {rowsBlock}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       ) : (
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {headBlock}
