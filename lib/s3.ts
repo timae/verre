@@ -3,6 +3,12 @@ import { Upload } from '@aws-sdk/lib-storage'
 
 const BUCKET = process.env.S3_BUCKET
 const ENDPOINT = process.env.S3_ENDPOINT
+// Public URL prefix for STORED urls (what browsers/phones fetch) — split from
+// the SDK endpoint so a dev server can upload via an internal address while
+// devices load via a reachable one (LAN/minio topology). Unset in prod →
+// falls back to S3_ENDPOINT, byte-identical behavior. NOT exported (the
+// webpack named-exports drop bug, see the checkins route header).
+const PUBLIC_ENDPOINT = process.env.S3_PUBLIC_ENDPOINT || ENDPOINT
 
 const s3 = ENDPOINT
   ? new S3Client({
@@ -143,7 +149,7 @@ export const uploadImage = async (keyBase: string, dataUrl: string): Promise<str
     params: { Bucket: BUCKET, Key: key, Body: body, ContentType: mime },
   })
   await upload.done()
-  return `${ENDPOINT}/${BUCKET}/${key}`
+  return `${PUBLIC_ENDPOINT}/${BUCKET}/${key}`
 }
 
 export const deleteImage = async (wineId: string): Promise<void> => {

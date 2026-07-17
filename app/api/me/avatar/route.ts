@@ -24,8 +24,12 @@ const s3 = ENDPOINT
   : null
 async function reclaimImage(url: string | null | undefined) {
   if (!s3 || !BUCKET || !url || !ENDPOINT) return
-  const prefix = `${ENDPOINT}/${BUCKET}/`
-  if (!url.startsWith(prefix)) return
+  // Stored urls carry the PUBLIC prefix (S3_PUBLIC_ENDPOINT, when split
+  // from the SDK endpoint — see lib/s3.ts); pre-split rows carry the
+  // internal one. Accept either so both generations stay reclaimable.
+  const pub = process.env.S3_PUBLIC_ENDPOINT || ENDPOINT
+  const prefix = [`${pub}/${BUCKET}/`, `${ENDPOINT}/${BUCKET}/`].find((p) => url.startsWith(p))
+  if (!prefix) return
   const key = url.slice(prefix.length)
   if (!key) return
   try {

@@ -21,6 +21,7 @@ Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp`
 - `AUTH_SECRET` — NextAuth + register-token HMAC. (`NEXTAUTH_SECRET` / `JWT_SECRET` accepted as fallback names by `auth.ts` and `lib/registerToken.ts`.) Better Auth (`lib/betterAuth.ts`) signs with the same secret.
 - `AUTH_URL` — public base URL; Better Auth builds callback/redirect URLs from it (fallback chain: `AUTH_URL` → `BETTER_AUTH_URL` → `NEXTAUTH_URL` → dev `http://localhost:3000`). Prod already sets `NEXTAUTH_URL`, which the chain picks up; setting `AUTH_URL` explicitly is still preferred.
 - `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION` — Object Storage.
+- `S3_PUBLIC_ENDPOINT` (optional) — public URL prefix for STORED image urls when it differs from the SDK endpoint (dev topologies where the server uploads via an internal address but devices load via a reachable one). Unset in prod → falls back to `S3_ENDPOINT`. Reclaim paths accept either prefix, so rows written before a split stay reclaimable.
 - `SERVER_ACTIONS_ALLOWED_ORIGINS` — comma-separated extra origins for Server Actions CSRF (deployed hostname; `localhost:8080` always allowed; no scheme).
 - `PUBLIC_HOSTNAME` — used as contact info in the Nominatim User-Agent header when `GOOGLE_PLACES_API_KEY` is unset; falls back to `'self-hosted'`.
 - `GOOGLE_PLACES_API_KEY` (optional) — when set, `/api/places` uses Google Places; when unset, falls back to OSM Overpass + Nominatim.
