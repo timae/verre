@@ -54,7 +54,6 @@ export default function CheckinRate() {
   const [notes, setNotes] = useState(draft?.notes ?? '');
   // The impression screen's adaptive-fold behaviour: seed open when the
   // draft already carries structure engagement (a back-swipe round trip).
-  const [detailOpen, setDetailOpen] = useState(() => Object.keys(draft?.flavors ?? {}).length > 0);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -81,7 +80,7 @@ export default function CheckinRate() {
   // impression screen; see useAromaSearchScroll).
   const scrollRef = useRef<ScrollView>(null);
   const scrollYRef = useRef(0);
-  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef);
+  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, insets.bottom + FOOT_CLEARANCE);
 
   const onCheckIn = async () => {
     if (!draft) return;
@@ -178,8 +177,6 @@ export default function CheckinRate() {
           onFlavors={setFlavors}
           aromas={aromas}
           onAromas={setAromas}
-          structureOpen={detailOpen}
-          onToggleStructure={() => setDetailOpen((o) => !o)}
           onRequestAromaScroll={scrollAromaSearchTo}
         />
       </ScrollView>

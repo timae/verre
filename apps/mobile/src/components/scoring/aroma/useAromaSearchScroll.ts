@@ -18,18 +18,29 @@ import { Keyboard, useWindowDimensions, type ScrollView } from 'react-native';
 export function useAromaSearchScroll(
   scrollRef: RefObject<ScrollView | null>,
   scrollYRef: RefObject<number>,
+  /** Height a floating footer (Save & Next bar) covers at the window bottom —
+      the fit target is above WHICHEVER covers more, keyboard or footer (the
+      canvas arm-nudge landed the Add row under the bar; Simon 2026-07-17).
+      Screens pass their scroll-clearance constant: bar + breathing. */
+  bottomObstruction = 0,
 ) {
   const { height: screenH } = useWindowDimensions();
-  const keyboardHRef = useRef(300);
+  // 0 while the keyboard is CLOSED (it also serves the canvas arm-nudge,
+  // which fits the Add row above the plain screen bottom — a stale board
+  // height there over-scrolled). A pre-show focus call may under-scroll for
+  // one beat; willShow + the input's late re-measure correct it.
+  const keyboardHRef = useRef(0);
   useEffect(() => {
     const subs = [
       Keyboard.addListener('keyboardWillShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
       Keyboard.addListener('keyboardDidShow', (e) => { keyboardHRef.current = e.endCoordinates.height; }),
+      Keyboard.addListener('keyboardWillHide', () => { keyboardHRef.current = 0; }),
+      Keyboard.addListener('keyboardDidHide', () => { keyboardHRef.current = 0; }),
     ];
     return () => subs.forEach((s) => s.remove());
   }, []);
   return (rowTopInWindow: number, blockBelow: number) => {
-    const visibleBottom = screenH - keyboardHRef.current - 8;
+    const visibleBottom = screenH - Math.max(keyboardHRef.current, bottomObstruction) - 8;
     const delta = rowTopInWindow + blockBelow - visibleBottom;
     if (delta > 4) scrollRef.current?.scrollTo({ y: scrollYRef.current + delta, animated: true });
   };

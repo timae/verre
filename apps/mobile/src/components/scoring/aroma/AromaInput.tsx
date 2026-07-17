@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
+import { Keyboard, View, ScrollView, useWindowDimensions } from 'react-native';
 import { AROMA_SELECTION_CAP, searchAromas, type AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
@@ -10,15 +10,18 @@ import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
 import { useAromaOps, useTapOrDouble, AromaChip, RefineAddRow, SelectedChipsRow, canonicalPair, capFirst } from './parts';
 import { SelectionSheet } from './SelectionSheet';
-import { BrowseSheet } from './BrowseSheet';
+import { CanvasPicker } from './CanvasPicker';
 
 // The Aromas block on the rating screen — search-first, the 02e·11 "S"
 // variant (Simon's pick, 2026-07-10; the handoff is the VISUAL reference,
 // semantics come from @verre/core / aroma-layer.md). Anatomy, top to bottom:
 // section header · selected chips (capped, overflow behind "+N more" → the
-// selection sheet; tapping a chip opens the refine POPUP) · [browse button |
-// search field, the Compare toolbar/search skin] · while searching: the
-// LAST-ADDED refine strip + suggestions.
+// selection sheet; tapping a chip opens the refine POPUP) · search field
+// (the Compare toolbar/search skin) · the INLINE CANVAS picker (Simon
+// 2026-07-17 — supersedes the browse button + BrowseSheet entry: the canvas
+// sits right under the field; a live query swaps it for the search results,
+// an empty query brings it back) · while searching: suggestions + the
+// refine/Add row.
 //
 // Search interaction (feedback rounds 2–5): tapping a suggestion FOCUSES it
 // as the pending pick (a compound query like "dried fig" arrives with dried
@@ -69,7 +72,6 @@ export function AromaInput({
   const [focus, setFocus] = useState<{ a: string; m: string | null; key: string } | null>(null);
   const [pendP, setPendP] = useState(false);
   const [selOpen, setSelOpen] = useState(false);
-  const [browseOpen, setBrowseOpen] = useState(false);
   // The ⓘ explainer by the hint line (the structure panel's pattern).
   const [helpAnchor, setHelpAnchor] = useState<MenuAnchor | null>(null);
   const searchRowRef = useRef<View | null>(null);
@@ -131,6 +133,7 @@ export function AromaInput({
   // The anchored modifier menu is a Modal overlay, so it never counts.
   const fieldH = phone.surface('formControl').height(36);
   const [belowH, setBelowH] = useState(0);
+
   useEffect(() => {
     if (!fieldFocused) return;
     const measure = () => searchRowRef.current?.measureInWindow((_x, y) => onRequestScroll?.(y, fieldH + belowH));
@@ -192,47 +195,21 @@ export function AromaInput({
           <SelectedChipsRow ops={ops} onOverflow={() => { Keyboard.dismiss(); setSelOpen(true); }} />
         </View>
       ) : null}
-      {/* [browse | search] row — the Compare toolbar skin: 36pt chip button +
-          the shared SheetSearchField pill (ONE search skin app-wide). */}
-      <View ref={searchRowRef} collapsable={false} style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Browse Aromas"
-          onPress={() => {
-            // A sheet opened over a live keyboard inherits the screen's
-            // keyboard-inset scroll state with no field to type into — drop
-            // the keyboard first (review finding).
-            Keyboard.dismiss();
-            setBrowseOpen(true);
+      {/* search row — the shared SheetSearchField pill (ONE search skin
+          app-wide). The browse button that sat beside it is GONE (Simon
+          2026-07-17): the canvas below is the browse surface now. */}
+      <View ref={searchRowRef} collapsable={false}>
+        <SheetSearchField
+          value={query}
+          onChangeText={(t) => {
+            setQuery(t);
+            setFocus(null);
+            setPendP(false);
           }}
-          hitSlop={{ top: 4, bottom: 4 }}
-          style={({ pressed }) => ({
-            height: fieldH,
-            paddingHorizontal: 12,
-            borderRadius: 999,
-            borderWidth: 1,
-            borderColor: theme.rule,
-            backgroundColor: theme.surface,
-            alignItems: 'center',
-            justifyContent: 'center',
-            opacity: pressed ? 0.6 : 1,
-          })}
-        >
-          <Icon name="grid" size={16} color={browseOpen ? theme.accent : theme.inkSoft} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <SheetSearchField
-            value={query}
-            onChangeText={(t) => {
-              setQuery(t);
-              setFocus(null);
-              setPendP(false);
-            }}
-            placeholder="Search all aromas…"
-            onFocus={() => setFieldFocused(true)}
-            onBlur={() => setFieldFocused(false)}
-          />
-        </View>
+          placeholder="Search all aromas…"
+          onFocus={() => setFieldFocused(true)}
+          onBlur={() => setFieldFocused(false)}
+        />
       </View>
       {/* Everything under the search row renders inside ONE measured wrapper
           so the keyboard fit above works with the real rendered height. */}
@@ -306,10 +283,11 @@ export function AromaInput({
             </VText>
           )
         ) : null}
-        {/* refine row — BELOW the results, ONE stable row for the whole search
-            (rounds 6–8): [modifier select | Pronounced glyph | Add]. Now the
-            SHARED RefineAddRow (Map/Canvas/Rings all wear the same anatomy;
-            List hosts it in the sheet footer — Simon's device ruling). All
+        {/* refine row — DIRECTLY below the results, ONE stable row for the
+            whole search (rounds 6–8): [modifier select | Pronounced glyph |
+            Add]. It stays close under the results ON PURPOSE (Simon
+            2026-07-17: it must be reachable with the keyboard open — a
+            canvas-height bottom-pinned variant was tried and reverted). All
             three disable until a result is focused; nothing pops or shifts. */}
         {q ? (
           <View style={{ marginTop: 12 }}>
@@ -338,6 +316,20 @@ export function AromaInput({
           </VText>
         ) : null}
       </View>
+      {/* THE inline canvas (Simon 2026-07-17) — right under the search field
+          while no query is live; typing swaps it for the results above,
+          clearing brings it back. Self-contained: drill crumbs + hex stage +
+          its own RefineAddRow/CapHint. Deliberately OUTSIDE the measured
+          keyboard-fit wrapper — focusing the empty field must fit only the
+          search block above the keyboard, not the whole stage. */}
+      {!q ? (
+        <View style={{ marginTop: 12 }}>
+          {/* onEnsureVisible: the picker measures its OWN refine row in
+              window coords; the screen hook scrolls the minimal shift that
+              fits it above the keyboard/screen bottom. */}
+          <CanvasPicker ops={ops} onEnsureVisible={onRequestScroll} />
+        </View>
+      ) : null}
       {/* Keyboard-room spacer: while searching, guarantees the screen can
           scroll this block to the TOP of the viewport even when the section
           sits at the end of the content — without it the scroll clamps and
@@ -345,7 +337,6 @@ export function AromaInput({
           keyboard-ish share of the screen; collapses when search ends. */}
       {searching ? <View style={{ height: Math.round(screenH * 0.45) }} /> : null}
       <SelectionSheet open={selOpen} onClose={() => setSelOpen(false)} ops={ops} />
-      <BrowseSheet open={browseOpen} onClose={() => setBrowseOpen(false)} ops={ops} />
     </View>
   );
 }

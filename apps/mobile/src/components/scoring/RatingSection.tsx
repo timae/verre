@@ -1,29 +1,27 @@
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { View } from 'react-native';
 import type { AromaSelection } from '@verre/core';
 import { AromaInput } from '@/components/scoring/aroma/AromaInput';
 import { ScoreInput } from '@/components/scoring/ScoreInput';
 import { StructureInput } from '@/components/scoring/StructureInput';
 import { NotesField } from '@/components/moments/momentForm';
 import { AnchoredMenu, AnchorButton, type MenuAnchor } from '@/components/ui/AnchoredMenu';
-import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { usePhoneTokens } from '@/lib/layout';
 import { INTENSITY } from '@/lib/scoreWords';
 import { useTheme } from '@/theme';
 
-// THE rating block — score · note · adaptive structure fold · aromas — shared
-// verbatim by the moment impression screen (02e) and the standalone check-in
-// rate stage (Simon's ruling, 2026-07-12: one component so a future ordering/
-// copy/behaviour change lands on BOTH surfaces; the impression's anatomy is
-// the spec — its order was the explicit 2026-07-10 "note between score and
+// THE rating block — score · note · structure · aromas — shared verbatim by
+// the moment impression screen (02e) and the standalone check-in rate stage
+// (Simon's ruling, 2026-07-12: one component so a future ordering/copy/
+// behaviour change lands on BOTH surfaces; the impression's anatomy is the
+// spec — its order was the explicit 2026-07-10 "note between score and
 // structure" ruling, and the standalone flow has no mock of its own).
 //
 // Controlled throughout: the screen owns every value (local-until-commit on
-// the impression, draft-backed on the check-in). The structure fold is
-// controlled too — the impression seeds it open on structure engagement when
-// a wine's stored rating arrives, which the component can't time itself.
-// Only the ⓘ intensity-reference anchor is internal state.
+// the impression, draft-backed on the check-in). Structure is ALWAYS OPEN
+// (Simon 2026-07-17 — supersedes the adaptive fold + its engagement-seeded
+// open state). Only the ⓘ intensity-reference anchor is internal state.
 export function RatingSection({
   style,
   score,
@@ -34,8 +32,6 @@ export function RatingSection({
   onFlavors,
   aromas,
   onAromas,
-  structureOpen,
-  onToggleStructure,
   onRequestAromaScroll,
 }: {
   // Structure-axes style for this drink (wines: red/white/spark/rose/nonalc;
@@ -50,8 +46,6 @@ export function RatingSection({
   onFlavors: (v: Record<string, number>) => void;
   aromas: AromaSelection[];
   onAromas: (v: AromaSelection[]) => void;
-  structureOpen: boolean;
-  onToggleStructure: () => void;
   // Forwarded to AromaInput — see useAromaSearchScroll for the screen half.
   onRequestAromaScroll?: (rowTopInWindow: number, blockBelow: number) => void;
 }) {
@@ -74,50 +68,34 @@ export function RatingSection({
       <View style={{ marginTop: 6, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
         <NotesField placeholder="Say what the stars can’t." value={notes} onChange={onNotes} />
       </View>
-      {/* .ir-detail-toggle + panel — the adaptive "Structure profile". The ⓘ
-          (open only) sits as a SIBLING of the toggle Pressable, not nested —
-          nested Pressables fight for the touch responder. It opens the
-          intensity-scale reference (numbered 0–5). */}
-      {/* paddingTop 24 (not the symmetric 16): breathing room below the
-          separator — 16 felt crammed once the rule moved under the note
-          (Simon, 2026-07-12). Title lost its "Add " prefix the same round. */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingTop: 24, paddingBottom: 16 }}>
-        <Pressable
-          onPress={onToggleStructure}
-          style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}
-        >
-          <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
-            Structure Profile
-          </VText>
-        </Pressable>
-        <Pressable
-          onPress={onToggleStructure}
-          hitSlop={8}
-          style={{ marginLeft: 4, transform: [{ rotate: structureOpen ? '180deg' : '0deg' }] }}
-        >
-          <Icon name="chevron-down" size={18} color={theme.inkSoft} />
-        </Pressable>
+      {/* "Structure profile" — ALWAYS OPEN (Simon 2026-07-17; the adaptive
+          fold + chevron are gone). paddingTop 24 (not the symmetric 16):
+          breathing room below the separator — 16 felt crammed once the rule
+          moved under the note (Simon, 2026-07-12). Title lost its "Add "
+          prefix the same round. */}
+      <View style={{ paddingTop: 24, paddingBottom: 16 }}>
+        <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('body') }}>
+          Structure Profile
+        </VText>
       </View>
-      {structureOpen ? (
-        <View style={{ gap: 14 }}>
-          {/* Short "what to do" line under the title (always visible when open),
-              with the ⓘ intensity-scale bubble at the END of the line. */}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: -10 }}>
-            <VText variant="small" color="inkSoft">
-              Set each track to the intensity you perceive.
-            </VText>
-            <AnchorButton
-              icon="info"
-              iconColor={theme.inkSoft}
-              accessibilityLabel="Intensity scale"
-              onOpen={setInfoAnchor}
-            />
-          </View>
-          {/* .filltrack per-attribute intensity grid — structure axes for this
-              drink's style, colour from the active theme. */}
-          <StructureInput style={style} value={flavors} onChange={onFlavors} />
+      <View style={{ gap: 14 }}>
+        {/* Short "what to do" line under the title, with the ⓘ intensity-scale
+            bubble at the END of the line. */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: -10 }}>
+          <VText variant="small" color="inkSoft">
+            Set each track to the intensity you perceive.
+          </VText>
+          <AnchorButton
+            icon="info"
+            iconColor={theme.inkSoft}
+            accessibilityLabel="Intensity scale"
+            onOpen={setInfoAnchor}
+          />
         </View>
-      ) : null}
+        {/* .filltrack per-attribute intensity grid — structure axes for this
+            drink's style, colour from the active theme. */}
+        <StructureInput style={style} value={flavors} onChange={onFlavors} />
+      </View>
       {/* Aromas — the descriptor layer (02e·11 search-first block). Always
           visible, blind included: like structure, aromas are the taster's own
           perception and never identify the wine. */}

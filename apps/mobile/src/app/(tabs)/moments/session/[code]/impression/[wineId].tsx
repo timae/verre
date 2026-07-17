@@ -146,7 +146,6 @@ export default function ImpressionDetail() {
   const [notes, setNotes] = useState('');
   const [flavors, setFlavors] = useState<Record<string, number>>({});
   const [aromas, setAromas] = useState<AromaSelection[]>([]);
-  const [detailOpen, setDetailOpen] = useState(false);
   const seededFor = useRef<string | null>(null);
   // Whether the local aromas state is TRUSTWORTHY for this wine: seeded from
   // a real ratings payload, or edited by the user. Until then the save must
@@ -167,9 +166,6 @@ export default function ImpressionDetail() {
     // legacy write might carry; the diff below compares canonical-to-canonical).
     setAromas(gateAromaSelections(existing?.aromas).value ?? []);
     aromasSeeded.current = true;
-    // Notes moved out of the panel (they sit under the score now) — the
-    // disclosure keys on structure engagement alone.
-    setDetailOpen(Object.keys(existing?.flavors ?? {}).length > 0);
   }, [wineId, ratings, existing]);
   // An edit before the first ratings payload arrives (cold cache /
   // degraded /state section) claims the seed slot — a late seed must not
@@ -399,7 +395,7 @@ export default function ImpressionDetail() {
   // the keyboard — the SHARED screen-side hook (one implementation with the
   // check-in rate stage; see useAromaSearchScroll). blockBelow is AromaInput's
   // MEASURED rendered height (onLayout), not a constant — see the prop doc.
-  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef);
+  const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, FOOT_CLEARANCE);
 
   if (!wine) {
     return (
@@ -446,7 +442,7 @@ export default function ImpressionDetail() {
   const body = (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
       {!blind ? <AboutBlock wine={wine} /> : null}
-      {/* THE shared rating block (score · note · structure fold · aromas) —
+      {/* THE shared rating block (score · note · structure · aromas) —
           one component with the standalone check-in rate stage. Structure is
           shown on blind wines too: `type` (the STYLE) is NOT masked by
           redaction (mirrors web RatingPane + wineRedaction). */}
@@ -460,8 +456,6 @@ export default function ImpressionDetail() {
         onFlavors={editFlavors}
         aromas={aromas}
         onAromas={editAromas}
-        structureOpen={detailOpen}
-        onToggleStructure={() => setDetailOpen((o) => !o)}
         onRequestAromaScroll={scrollAromaSearchTo}
       />
       {saveError ? (
