@@ -19,7 +19,6 @@ import Reanimated, {
   Extrapolation,
   interpolate,
   runOnJS,
-  useAnimatedProps,
   useAnimatedRef,
   useAnimatedStyle,
   useScrollOffset,
@@ -204,6 +203,28 @@ export default function FeedImpression() {
   // 0 = at the feed card, 1 = fully open. Seeds 0 only when a card handed us a
   // presentation to run; a cold mount renders open, exactly as before.
   const progress = useSharedValue(source ? 0 : 1);
+  // Hit-testing is deliberately React-owned, not animated. `pointerEvents` is
+  // outside Reanimated's iOS synchronous-props allowlist; combining it with
+  // opacity/transform on these hot views demotes the whole per-view batch to
+  // the shadow-tree path and caused a physical-device background-only flash
+  // after the open settled. Four transitions keep the old ghost-tap guard:
+  // blocked while opening → interactive at settle → blocked while dismissing
+  // → interactive again when a pull-down is cancelled.
+  const [presentationInteractive, setPresentationInteractive] = useState(!source);
+  const presentationCloseCommittedRef = useRef(false);
+  const presentationCloseCommitted = useSharedValue(false);
+  const blockPresentationInteractions = useCallback(() => {
+    setPresentationInteractive(false);
+  }, []);
+  const commitPresentationClose = useCallback(() => {
+    presentationCloseCommittedRef.current = true;
+    presentationCloseCommitted.value = true;
+    setPresentationInteractive(false);
+  }, [presentationCloseCommitted]);
+  const restorePresentationInteractions = useCallback(() => {
+    if (presentationCloseCommittedRef.current) return;
+    setPresentationInteractive(true);
+  }, []);
   // Whether the presentation is running BACKWARD (pull-down moving, or a
   // back-button/Android-back close) — flips the settle background from the
   // instant open veil to the progressive dismiss reveal (see bgStyle). Reset
@@ -228,10 +249,14 @@ export default function FeedImpression() {
   // Hi` (below) keep every once-mounted page mounted as the window moves.
   const [warmLevel, setWarmLevel] = useState(source ? 0 : 2);
   const bumpWarm = useCallback((l: number) => setWarmLevel((cur) => Math.max(cur, l)), []);
+  const settlePresentation = useCallback(() => {
+    bumpWarm(1);
+    if (!presentationCloseCommittedRef.current) setPresentationInteractive(true);
+  }, [bumpWarm]);
   useEffect(() => {
     if (source) {
       progress.value = withSpring(1, springs.enter, (finished) => {
-        if (finished) runOnJS(bumpWarm)(1);
+        if (finished) runOnJS(settlePresentation)();
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,7 +265,7 @@ export default function FeedImpression() {
     // Belt for an interrupted open (the spring callback fires finished=false
     // and would leave the siblings unmounted forever).
     if (warmLevel === 0) {
-      const t = setTimeout(() => bumpWarm(1), OPEN_SETTLE_MS + 120);
+      const t = setTimeout(settlePresentation, OPEN_SETTLE_MS + 120);
       return () => clearTimeout(t);
     }
     // Remaining pages mount on JS idle — requestIdleCallback, NOT the
@@ -250,7 +275,7 @@ export default function FeedImpression() {
       const id = requestIdleCallback(() => bumpWarm(2), { timeout: 800 });
       return () => cancelIdleCallback(id);
     }
-  }, [warmLevel, bumpWarm]);
+  }, [warmLevel, bumpWarm, settlePresentation]);
 
   // The clone always shows the ACTIVE page's photo: the entry page on open,
   // whatever page you're on at pull-down. A photoless active page (blind /
@@ -351,6 +376,7 @@ export default function FeedImpression() {
       closeDetail();
       return;
     }
+    commitPresentationClose();
     dismissing.value = true; // bg follows progress on the way out (see bgStyle)
     // Plain self-write first: it cancels any running animation, so this spring
     // starts from rest. Without it a NEW spring ADDS the running one's velocity
@@ -360,7 +386,7 @@ export default function FeedImpression() {
     progress.value = withSpring(0, springs.release, (finished) => {
       if (finished) runOnJS(closeDetail)();
     });
-  }, [source, progress, dismissing, closeDetail]);
+  }, [source, progress, dismissing, closeDetail, commitPresentationClose]);
   // Android hardware back must take the same reversed presentation — without
   // this it pops the transparent modal natively (instant vanish, no close
   // animation). Claiming the event (return true) suppresses the default pop;
@@ -453,14 +479,6 @@ export default function FeedImpression() {
     opacity: interpolate(progress.value, [0.35, 0.8], [0, 1], Extrapolation.CLAMP),
     transform: [{ translateY: interpolate(progress.value, [0.35, 0.85], [36, 0], Extrapolation.CLAMP) }],
   }));
-  // NEW touches only land while fully open: a tap during the close animation
-  // (invisible but otherwise hit-testable content) could push a route and make
-  // the deferred back() pop THAT instead — an invisible ghost modal over the
-  // feed. Hit-testing happens at touch-down, so an in-flight dismiss pan is
-  // unaffected when this flips mid-gesture.
-  const contentPointerProps = useAnimatedProps(() => ({
-    pointerEvents: (progress.value < 1 ? 'none' : 'auto') as 'none' | 'auto',
-  }));
   // The card's GLASS PANEL stays IN FRONT of the traveling photo (Simon: the
   // image slides BEHIND the panel — out from behind it on open, back behind
   // it on close). A pixel-matched panel clone sits pinned at the card frame
@@ -492,13 +510,10 @@ export default function FeedImpression() {
     return { opacity: p < 1 ? interpolate(p, [0.7, 1], [0, 1], Extrapolation.CLAMP) : 0 };
   });
   // The bar rides its own layer ABOVE the clone (chrome over the traveling
-  // photo, no rise — see the layer comments in the render). Same tap gate;
-  // 'box-none' so the wrapper never swallows touches meant for the pages.
+  // photo, no rise — see the layer comments in the render). `box-none` keeps
+  // the wrapper from swallowing touches meant for the pages.
   const barStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0.35, 0.8], [0, 1], Extrapolation.CLAMP),
-  }));
-  const barPointerProps = useAnimatedProps(() => ({
-    pointerEvents: (progress.value < 1 ? 'none' : 'box-none') as 'none' | 'box-none',
   }));
 
   const onPagerScroll = useCallback(
@@ -624,7 +639,7 @@ export default function FeedImpression() {
         </Reanimated.View>
       ) : null}
 
-      <Reanimated.View style={[{ flex: 1 }, contentStyle]} animatedProps={contentPointerProps}>
+      <Reanimated.View pointerEvents={presentationInteractive ? 'auto' : 'none'} style={[{ flex: 1 }, contentStyle]}>
         {total === 1 ? (
           <DetailPage
             wine={wines[0]}
@@ -645,6 +660,10 @@ export default function FeedImpression() {
             isActive
             dotTop={dotTop}
             onClosed={closeDetail}
+            closeCommitted={presentationCloseCommitted}
+            onDismissStart={blockPresentationInteractions}
+            onDismissCommit={commitPresentationClose}
+            onDismissCancel={restorePresentationInteractions}
             onOpenGallery={() => setGalleryAt(0)}
             deferBody={!!source}
           />
@@ -699,6 +718,10 @@ export default function FeedImpression() {
                     isActive={i === page}
                     dotTop={dotTop}
                     onClosed={closeDetail}
+                    closeCommitted={presentationCloseCommitted}
+                    onDismissStart={blockPresentationInteractions}
+                    onDismissCommit={commitPresentationClose}
+                    onDismissCancel={restorePresentationInteractions}
                     onOpenGallery={() => setGalleryAt(i)}
                     deferBody={!!source && i === entryIndex}
                   />
@@ -747,7 +770,10 @@ export default function FeedImpression() {
           tracks the active one. Fades with the presentation but does NOT rise
           with the body (it's chrome, not content). The collapsed title taps
           through to About (onTitlePress). */}
-      <Reanimated.View style={[StyleSheet.absoluteFill, barStyle]} animatedProps={barPointerProps}>
+      <Reanimated.View
+        pointerEvents={presentationInteractive ? 'box-none' : 'none'}
+        style={[StyleSheet.absoluteFill, barStyle]}
+      >
         <FloatBar
           solid={barSolid}
           title={barSolid ? titles[page] ?? '' : ''}
@@ -1062,6 +1088,10 @@ function DetailPage({
   isActive,
   dotTop,
   onClosed,
+  closeCommitted,
+  onDismissStart,
+  onDismissCommit,
+  onDismissCancel,
   onOpenGallery,
   onRegisterScrollToAbout,
   deferBody,
@@ -1097,6 +1127,14 @@ function DetailPage({
   dotTop: SharedValue<number>;
   // Pop the route (called after the dismiss animation lands at 0).
   onClosed: () => void;
+  // Shared with the parent close path so a system-cancelled gesture cannot
+  // override an already committed programmatic dismissal.
+  closeCommitted: SharedValue<boolean>;
+  // React-owned hit-test gate. Animated pointerEvents would demote this hot
+  // view from Reanimated's iOS synchronous-props path.
+  onDismissStart: () => void;
+  onDismissCommit: () => void;
+  onDismissCancel: () => void;
   // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
   // spans ALL the moment's photo impressions, not just this page's).
   onOpenGallery: () => void;
@@ -1192,6 +1230,7 @@ function DetailPage({
   // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
   // the accumulated translation.
   const dismissArmed = useSharedValue(false);
+  const dismissInteractionsBlocked = useSharedValue(false);
   // One tick per gesture, fired the moment the drag CROSSES the commit
   // threshold ("release now and it closes") — Simon: the release-time haptic
   // came too late. Re-crossing back out re-arms silently; a fast flick that
@@ -1210,9 +1249,14 @@ function DetailPage({
     .onBegin(() => {
       dismissArmed.value = scrollY.value <= 1;
       dismissBuzzed.value = false;
+      dismissInteractionsBlocked.value = false;
     })
     .onUpdate((e) => {
       if (!dismissArmed.value || scrollY.value > 1) return;
+      if (!dismissInteractionsBlocked.value) {
+        dismissInteractionsBlocked.value = true;
+        runOnJS(onDismissStart)();
+      }
       dismissing.value = true; // settle bg follows progress from here (bgStyle)
       progress.value = 1 - Math.min(1, Math.max(0, e.translationY) / DISMISS_DRAG);
       const inCommitZone = progress.value < 0.6;
@@ -1223,8 +1267,22 @@ function DetailPage({
         dismissBuzzed.value = false;
       }
     })
-    .onEnd((e) => {
-      if (!dismissArmed.value || progress.value >= 1) return;
+    .onEnd((e, success) => {
+      // RNGH dispatches BOTH onEnd(success=false) and onFinalize(false) when
+      // an ACTIVE gesture is cancelled/stolen. Leave that path entirely to
+      // onFinalize so the two callbacks cannot start opposing springs.
+      if (!success) return;
+      if (!dismissArmed.value || progress.value >= 1) {
+        // A pull can activate, block React-owned hit-testing, then travel back
+        // above its origin before release. `progress` is already 1, so there
+        // is no spring-back callback to re-arm the screen; restore explicitly.
+        if (dismissInteractionsBlocked.value) {
+          dismissInteractionsBlocked.value = false;
+          dismissing.value = false;
+          runOnJS(onDismissCancel)();
+        }
+        return;
+      }
       const close = progress.value < 0.6 || (e.velocityY > 900 && progress.value < 0.98);
       // Release continues at finger speed: the spring inherits the gesture
       // velocity converted into progress units (see the CLOSE-legs comment at
@@ -1237,15 +1295,35 @@ function DetailPage({
       const towardTarget = -e.velocityY / DISMISS_DRAG;
       const velocity = close ? Math.min(0, towardTarget) : Math.max(0, towardTarget);
       if (close) {
+        closeCommitted.value = true;
+        runOnJS(onDismissCommit)();
         if (!dismissBuzzed.value) runOnJS(closeHaptic)(); // flick-commit, never crossed
         progress.value = withSpring(0, { ...springs.release, velocity }, (finished) => {
           if (finished) runOnJS(onClosed)();
         });
       } else {
         progress.value = withSpring(1, { ...springs.release, velocity }, (finished) => {
-          if (finished) dismissing.value = false; // veil restored (see bgStyle)
+          if (finished) {
+            dismissing.value = false; // veil restored (see bgStyle)
+            dismissInteractionsBlocked.value = false;
+            runOnJS(onDismissCancel)();
+          }
         });
       }
+    })
+    .onFinalize((_e, success) => {
+      // RNGH calls this immediately after onEnd(success=false) when iOS
+      // cancels/steals an ACTIVE touch. onEnd deliberately leaves that path
+      // untouched; return the page to rest, then re-arm hit-testing.
+      // Successful releases already chose their close/cancel path above.
+      if (success || closeCommitted.value || !dismissInteractionsBlocked.value) return;
+      progress.value = withSpring(1, springs.release, (finished) => {
+        if (finished) {
+          dismissing.value = false;
+          dismissInteractionsBlocked.value = false;
+          runOnJS(onDismissCancel)();
+        }
+      });
     });
 
   // The clone↔hero opacity handoff: while the parent's clone travels

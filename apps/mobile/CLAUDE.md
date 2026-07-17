@@ -56,6 +56,11 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   pre-frame position — device-check drag surfaces (PillTabBar lens,
   DraggableRows, pickers) after reanimated bumps. Motivation: the feed
   detail's transform-only hero clone (proposal 09 §Snappiness pass).
+  **`pointerEvents` is NOT allowlisted.** The feed detail physically confirmed
+  that animating it on the same content/bar views as opacity/transform causes a
+  post-settle background-only flash on device (not Simulator). Keep hit-test
+  gates on those hot views in plain React state: block during open/dismiss,
+  enable at open settle, and re-enable after a cancelled dismiss.
 - **Monorepo**: npm workspace member; Metro auto-detects workspaces (SDK 52+)
   and resolves `@verre/core`'s raw-TS `exports` (package-exports on by default
   since SDK 53). No metro.config.js exists — don't add one just to "fix"
