@@ -262,6 +262,14 @@ export async function buildRatingsView(
     if (lastColon === -1) return                         // malformed — skip
     const identityId = rest.slice(0, lastColon)
     const wineId = rest.slice(lastColon + 1)
+    // Roster guard (Simon's ruling, 2026-07-18): kick-keep preserves a user's
+    // rating keys but removes their identities entry — those ratings must not
+    // render in compare or count into its math (averages, charts, aroma
+    // consensus: every surface derives from this view). Rejoin re-adds the
+    // entry and the ratings reappear (keys are never deleted). Every
+    // legitimate rater has an entry (join writes it; only kick/ban removes
+    // it), so a missing entry is always "removed", never a false positive.
+    if (!identities[identityId]) return
     if (!result[identityId]) {
       result[identityId] = {
         displayName: identities[identityId] || identityId,

@@ -8,10 +8,12 @@ import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
 import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
+import { WatchError } from 'redis'
 import { redis, k, TTL, existsKey, touchWithMeta } from '@/lib/redis'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
+import { getWines } from '@/lib/session'
 import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
@@ -86,11 +88,23 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     },
   })
   if (!feedItem) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  if (feedItem.kind === 'session') return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
+  // Kind branch BEFORE the owner check (mirrors DELETE below): a wrong-owner
+  // 403 on every kind would let any logged-in user distinguish "exists" from
+  // "doesn't" across the whole serial id space (app/api/CLAUDE.md status-code
+  // rules). Session wrong-owner is 404 HERE, before any body validation —
+  // (a) a 400-vs-404 split on a bad body would re-open the existence oracle,
+  // and (b) a caller who rated the same session/wine could otherwise edit
+  // THEIR OWN rating through someone else's feed-item id (the rating lookup
+  // is caller-scoped), and the echoed foreign id would splice their values
+  // into the other post in the client cache.
+  if (feedItem.kind === 'session') {
+    if (feedItem.userId !== userId) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
+  }
   if (feedItem.kind !== 'standalone' || !feedItem.rating) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
+  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
   const rating = feedItem.rating
   const wine = rating.wine
@@ -380,11 +394,18 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 // was the user's last engaged rating in that session), and a live-Redis mirror
 // (same JSON shape as the rate route) when the session is still alive —
 // PG-only once expired. Deliberately NOT touched: lifetime counters + HoF (an
-// edit is not new activity), rater_name (frozen snapshot). Accepted edge: a
-// banned-but-not-yet-wiped participant can still edit their own rating here —
-// it is their own data, and a kick-wipe deletes the row (→ 404).
+// edit is not new activity), rater_name (frozen snapshot), ratedAt (an edit
+// must not reorder history/bookmark recency). Kick/ban posture (Simon's
+// ruling, 2026-07-18): the rating is the user's own data, so a kick-keep'd
+// user KEEPS editing it here (PG + their feed/history update) — but a
+// non-roster editor never touches the live session keyspace (the mirror below
+// gates on identities membership; buildRatingsView additionally filters
+// kicked raters out of compare). kick-delete/ban delete the row → 404.
 async function patchSessionRating(req: NextRequest, feedItemId: number, sessionId: number | null, userId: number) {
   if (sessionId == null) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Request-start timestamp — the mirror's newer-live-write guard compares
+  // the stored payload's `at` against this (see the mirror block).
+  const t0 = Date.now()
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineId, score, flavors, aromas, notes } = body
@@ -402,6 +423,32 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   })
   if (!rating) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
+  // Resolve the live session ONCE, before validation: the flavour gate must
+  // key on the wine's CURRENT style (the PG mirror only refreshes on rate
+  // POSTs, so it lags a host's type edit — rate-route parity), and the mirror
+  // step below needs liveness + roster. Redis trouble here degrades to
+  // PG-only — it must never fail the edit.
+  const sess = await prisma.session.findUnique({ where: { id: sessionId }, select: { code: true } })
+  const code = sess?.code ? normalizeCode(sess.code) : null
+  let live = false
+  let liveStyle: string | null = null
+  let inRoster = false
+  if (code) {
+    try {
+      live = await existsKey(k.meta(code))
+      if (live) {
+        liveStyle = (await getWines(code)).find(w => w.id === wineId)?.type ?? null
+        // Kick-keep strips the identities entry but keeps this rating: the
+        // user may still edit their own data, but a non-roster editor never
+        // touches the live keyspace (Simon's ruling, 2026-07-18).
+        inRoster = !!(await redis.hGet(k.identities(code), `u:${userId}`))
+      }
+    } catch (err) {
+      console.warn('[checkins] live-session lookup failed — PG-only edit:', err)
+      live = false
+    }
+  }
+
   let validScore: number | null | undefined = undefined
   if (score !== undefined) {
     const c = validateScore(score)
@@ -412,7 +459,7 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   if (flavors !== undefined) {
     const c = validateFlavors(flavors)
     if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
-    const norm = gateAndFillFlavors(c.value, 'wine', rating.wine.style)
+    const norm = gateAndFillFlavors(c.value, 'wine', liveStyle ?? rating.wine.style)
     if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
     validFlavorsValue = norm.value
   }
@@ -424,30 +471,48 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     validAromas = c.value ?? []
   }
 
-  // Merged next values (partial-update semantics, mirroring the standalone
-  // branch) — computed up front so the engagement check and the Redis mirror
-  // see the SAME truth the UPDATE writes.
-  const nextScore = score !== undefined ? validScore : decimalToNumber(rating.score)
-  const nextFlavors = flavors !== undefined ? (validFlavorsValue ?? {}) : (rating.flavors as Record<string, number>)
-  const nextAromas = aromasProvided ? validAromas : ((rating.aromas as AromaSelection[] | null) ?? [])
-  const nextNotes = notes !== undefined ? scrub(notes) : rating.notes
+  // FIELD-PRECISE update: only the provided fields are written, so two
+  // devices editing DIFFERENT fields compose instead of overwriting each
+  // other (the old read-merge-write-all lost whichever landed first). The row
+  // Prisma returns is the committed truth — emptiness, the mirror, and the
+  // echo all read it, never the pre-read merge.
+  const data: { score?: number | null; flavors?: object; aromas?: object[]; notes?: string | null } = {}
+  if (score !== undefined) data.score = validScore
+  if (flavors !== undefined) data.flavors = validFlavorsValue ?? {}
+  if (aromasProvided) data.aromas = validAromas as object[]
+  if (notes !== undefined) data.notes = scrub(notes)
 
-  try {
-    await prisma.rating.update({
-      where: { id: rating.id },
-      data: {
-        score: nextScore,
-        flavors: nextFlavors,
-        aromas: nextAromas as object[],
-        notes: nextNotes,
-        ratedAt: new Date(),
-      },
-    })
-  } catch (err) {
-    // P2025 = concurrent delete (account cascade / kick wipe) — surface 404.
-    if ((err as { code?: string })?.code === 'P2025') return NextResponse.json({ error: 'not found' }, { status: 404 })
-    throw err
+  let updated: { score: unknown; flavors: unknown; aromas: unknown; notes: string | null } = rating
+  const didUpdate = Object.keys(data).length > 0
+  // The mirror's ordering token: concurrent UPDATEs to the same row serialize
+  // on the row lock (held to commit), so a clock_timestamp() read in the SAME
+  // transaction is a true per-row VERSION token — later commit ⇒ strictly
+  // later ts. A wall-clock stamped at mirror time (the previous design)
+  // ordered the mirror WRITES, not the payloads they carry: an older commit
+  // mirroring late would out-stamp a newer one (Codex round 4).
+  let versionTs = t0
+  if (didUpdate) {
+    try {
+      const [row, tsRows] = await prisma.$transaction([
+        prisma.rating.update({
+          where: { id: rating.id },
+          data,
+          select: { score: true, flavors: true, aromas: true, notes: true },
+        }),
+        prisma.$queryRaw<[{ ts: Date }]>`SELECT clock_timestamp() AS ts`,
+      ])
+      updated = row
+      versionTs = tsRows[0].ts.getTime()
+    } catch (err) {
+      // P2025 = concurrent delete (account cascade / kick wipe) — surface 404.
+      if ((err as { code?: string })?.code === 'P2025') return NextResponse.json({ error: 'not found' }, { status: 404 })
+      throw err
+    }
   }
+  let nextScore = decimalToNumber(updated.score as never)
+  let nextFlavors = (updated.flavors as Record<string, number> | null) ?? {}
+  let nextAromas = (updated.aromas as AromaSelection[] | null) ?? []
+  let nextNotes = updated.notes
 
   // Engagement cascade: an edit that EMPTIES the rating reaps it (and the
   // post, iff it was the last engaged rating) — same rule as an empty rate
@@ -459,7 +524,32 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
     nextAromas.length > 0 ||
     (nextNotes ?? '').length > 0
   let reaped = false
-  if (!hasEngagement) reaped = await engagementDeletionCascade(rating.id, 'empty-only')
+  let concurrentWriteWon = false
+  if (!hasEngagement) {
+    reaped = await engagementDeletionCascade(rating.id, 'empty-only')
+    if (!reaped) {
+      // A false cascade means the SQL empty-predicate did NOT delete the row
+      // — either a concurrent ENGAGED write landed after our update, or a
+      // concurrent CLEAR already deleted the row. Disambiguate on the fresh
+      // read: row present → the engaged write wins (leave Redis alone —
+      // rate-route rule — and echo the survivor); row GONE → report reaped,
+      // or the client would retain an actionable cached rating whose next
+      // action 404s.
+      const fresh = await prisma.rating.findUnique({
+        where: { id: rating.id },
+        select: { score: true, flavors: true, aromas: true, notes: true },
+      })
+      if (!fresh) {
+        reaped = true
+      } else {
+        concurrentWriteWon = true
+        nextScore = decimalToNumber(fresh.score)
+        nextFlavors = (fresh.flavors as Record<string, number> | null) ?? {}
+        nextAromas = (fresh.aromas as AromaSelection[] | null) ?? []
+        nextNotes = fresh.notes
+      }
+    }
+  }
   const feedItemDeleted = reaped
     ? !(await prisma.feedItem.findUnique({ where: { id: feedItemId }, select: { id: true } }))
     : false
@@ -468,19 +558,94 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   // read s:{code}:r:{identityId}:{wineId} — an unmirrored PG edit would show
   // stale ratings in the live session until expiry. Session gone (or the
   // sessions row tombstoned, code NULL) → PG-only, nothing to sync.
-  const sess = await prisma.session.findUnique({ where: { id: sessionId }, select: { code: true } })
-  const code = sess?.code ? normalizeCode(sess.code) : null
-  if (code && (await existsKey(k.meta(code)))) {
+  //
+  // Ordering model: the live-session writers are REDIS-FIRST (the rate POST
+  // SETs the key before its PG archive; the rate DELETE DELs it before its PG
+  // delete), so the key's payload `at` — which every writer stamps — is the
+  // live ordering token, NOT a PG re-read (a re-read would clobber a rate
+  // POST's fresh Redis value with its not-yet-archived PG state). This PATCH
+  // stamps `at` with versionTs — the row's COMMIT-ORDER token (see the
+  // transaction above) — so two PATCHes converge on the later COMMIT no
+  // matter which mirrors last. Three rules per attempt, under WATCH on the
+  // key AND the identities hash (a kick-keep only touches the hash —
+  // key-only WATCH couldn't see it):
+  //   1. key absent → skip. Every live rating's key exists (the POST wrote
+  //      it); absence means a concurrent clear/wipe just removed it — a SET
+  //      would resurrect a ghost the PG side is deleting.
+  //   2. stored `at` >= versionTs → a payload with same-or-newer provenance
+  //      already landed — its state wins, skip. (>= so a same-millisecond
+  //      stamp defers to the existing value instead of clobbering it.)
+  //   3. else SET this request's committed merge / DEL on reap. WatchError
+  //      (key or roster touched mid-attempt) → retry re-decides fresh.
+  // The roster check runs inside the WATCH so a kick after it ABORTS the
+  // EXEC (the early `inRoster` read stays as a cheap fast-path skip); the
+  // TTL re-stamp only follows a roster-approved write. Residuals (accepted,
+  // the rate route's own documented same-user-two-surfaces race class, all
+  // healing on the next write): a rate POST whose Redis write predates this
+  // entire request but whose PG archive lands after our commit (app-vs-PG
+  // clock skew makes cross-writer comparison approximate); a freak same-ms
+  // version tie between two PATCHes.
+  if (live && code && !concurrentWriteWon && (reaped || (inRoster && didUpdate))) {
     const key = k.rating(code, `u:${userId}`, wineId)
-    if (reaped) {
-      await redis.del(key)
-    } else {
-      await redis.set(key, JSON.stringify({ score: nextScore ?? 0, flavors: nextFlavors, aromas: nextAromas, notes: nextNotes ?? '', at: Date.now() }), { EX: TTL })
+    try {
+      let wrote = false
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await redis.executeIsolated(async (iso) => {
+            await iso.watch([key, k.identities(code)])
+            try {
+              const cur = await iso.get(key)
+              if (!cur) {
+                await iso.unwatch()
+                return
+              }
+              let curAt = 0
+              try { curAt = Number(JSON.parse(cur)?.at) || 0 } catch { curAt = 0 }
+              if (curAt >= versionTs) {
+                await iso.unwatch()
+                return
+              }
+              if (reaped) {
+                // Deleting the user's OWN key is cleanup, allowed off-roster.
+                await iso.multi().del(key).exec()
+                return
+              }
+              const roster = await iso.hGet(k.identities(code), `u:${userId}`)
+              if (!roster) {
+                await iso.unwatch()
+                return
+              }
+              await iso.multi().set(key, JSON.stringify({
+                score: nextScore ?? 0,
+                flavors: nextFlavors,
+                aromas: nextAromas,
+                notes: nextNotes ?? '',
+                at: versionTs,
+              }), { EX: TTL }).exec()
+              wrote = true
+            } catch (inner) {
+              // Release the WATCH before rethrowing — a leaked WATCH would
+              // poison the pooled connection's next borrower.
+              await iso.unwatch().catch(() => {})
+              throw inner
+            }
+          })
+          break
+        } catch (err) {
+          if (err instanceof WatchError) continue
+          throw err
+        }
+      }
+      // Re-stamp the keyspace to the session's real lifespan (the EX above is
+      // the default TTL; touchWithMeta corrects pro lifespans — rate-route
+      // pattern). Only after a roster-approved write.
+      if (wrote) await touchWithMeta(code)
+    } catch (err) {
+      // BEST-EFFORT: PG committed above — a Redis failure must not turn the
+      // success into a reported 500 (a retry against a reaped rating would
+      // 404). Log and return the committed state.
+      console.warn('[checkins] live mirror failed (PG committed):', err)
     }
-    // Re-stamp the keyspace to the session's real lifespan (the EX above is
-    // the default TTL; touchWithMeta corrects pro lifespans — rate-route
-    // pattern).
-    await touchWithMeta(code)
   }
 
   return NextResponse.json({
