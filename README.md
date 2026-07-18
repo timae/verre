@@ -134,16 +134,13 @@ npm run dev
 Local `.env` for the MinIO bucket:
 ```
 S3_ENDPOINT=http://localhost:9000
-# Optional: public prefix for stored URLs when devices can't reach the SDK
-# endpoint (LAN phone testing) — see below.
-# S3_PUBLIC_ENDPOINT=http://192.168.1.42:9000
 S3_BUCKET=verre-local
 S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 S3_REGION=us-east-1
 ```
 
-To test from a phone on the LAN, keep `S3_ENDPOINT` on `localhost:9000` (the server's upload path) and set `S3_PUBLIC_ENDPOINT` to your host's LAN IP (e.g. `http://192.168.1.42:9000`) — the PUBLIC endpoint is what gets stored as the literal URL prefix devices fetch. Existing rows uploaded under one public address won't resolve from another.
+To test from a phone on the LAN, replace `localhost:9000` with your host's LAN IP (e.g. `http://192.168.1.42:9000`) in BOTH `S3_ENDPOINT` and the `<img src>` it produces — the upload flow stores the endpoint as a literal prefix in `users.image_url`. Existing rows uploaded under one address won't resolve from another.
 
 Open `http://localhost:3000`, create a session, and join from a second device if you want to test the shared flow.
 
@@ -281,7 +278,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 |--------|------|-------------|
 | GET | /api/feed | Network feed — your follows + tasting buddies (cursor-paginated) |
 | POST | /api/checkins | Create a standalone check-in. Body: `{wineName, producer?, vintage?, grape?, type?, wineRegion?, wineCountry?, vinification?, description?, purchaseUrl?, score?, flavors?, aromas?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?, copyFromCheckinId?}`. `wineRegion`/`wineCountry` are the wine's origin (`country` is the venue's); the metadata fields land on the minted wine row. `flavors` is the same `{structure-axis: 0–5}` map as `/rate` (keys outside the type's axis set are rejected). `aromas` is the same `[{a, m, p?}]` descriptor list as `/rate` (unknown node / disallowed modifier → 400); omitted = `[]`. See `docs/dev/social-feed.md`. |
-| PATCH | /api/checkins/:id | Edit own feed post. `:id` is a `feed_items.id`. Standalone: partial body `{wineName?, producer?, vintage?, grape?, type?, wineRegion?, wineCountry?, vinification?, description?, purchaseUrl?, score?, flavors?, aromas?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?}` — `aromas` is present-replaces / omitted-preserves (a present `[]` clears, an omitted field keeps stored selections); image replace reclaims old S3. Session kind: rating-only body `{wineId, score?, flavors?, aromas?, notes?}` — mirrors to the live Redis copy while the session is alive; an edit that empties the rating reaps it (and the post, if it was the last engaged rating; response carries `reaped`/`feedItemDeleted`). |
+| PATCH | /api/checkins/:id | Edit own standalone check-in. `:id` is a `feed_items.id`. Partial body: `{wineName?, producer?, vintage?, grape?, type?, score?, flavors?, aromas?, notes?, imageData?, venueName?, city?, country?, lat?, lng?, taggedUserIds?}` — `aromas` is present-replaces / omitted-preserves (a present `[]` clears, an omitted field keeps stored selections). Image replace reclaims old S3. |
 | DELETE | /api/checkins/:id | Delete own standalone check-in. Cascades rating + feed_item + rating_images. |
 | POST/DELETE | /api/feed-items/:id/like | Like / unlike a feed item (check-in or session post). The `:id` value matches the legacy `/api/checkins/:id/like` shape for migrated rows — id-equality preserved by the rewire phase 2 data migration. |
 | POST/DELETE | /api/users/:id/follow | Follow / unfollow a user (no self-follow) |

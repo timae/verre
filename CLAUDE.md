@@ -39,7 +39,7 @@ npx tsc --noEmit             # type-check
 npm run lint
 ```
 
-**LAN testing gotcha**: the public S3 prefix (`S3_PUBLIC_ENDPOINT`, falling back to `S3_ENDPOINT`) is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. For phone-on-LAN testing set `S3_PUBLIC_ENDPOINT` to the host's LAN IP and keep `S3_ENDPOINT` on the server-reachable address. Switching networks → wipe the bucket and clear `users.image_url`: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`, then recreate the bucket per README.
+**LAN testing gotcha**: `S3_ENDPOINT` is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. Switching networks → wipe the bucket and clear `users.image_url`: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`, then recreate the bucket per README.
 
 Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy semantics): see `prisma/CLAUDE.md`.
 
