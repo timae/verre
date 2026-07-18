@@ -164,8 +164,15 @@ export default function ImpressionDetail() {
     setFlavors(existing?.flavors ?? {});
     // Stored aromas re-canonicalized through the gate (drops a p:false a
     // legacy write might carry; the diff below compares canonical-to-canonical).
-    setAromas(gateAromaSelections(existing?.aromas).value ?? []);
-    aromasSeeded.current = true;
+    const seedGate = gateAromaSelections(existing?.aromas);
+    setAromas(seedGate.value ?? []);
+    // The gate is ALL-OR-NOTHING: one stored id it can't resolve (a re-homed
+    // taxonomy id, or a binary bundling an older taxonomy than the server's)
+    // nulls the whole seed. That [] is NOT the truth — leave aromas
+    // untrustworthy so the save keeps OMITTING the field (omitted-preserves)
+    // instead of present-replacing the stored list away. A deliberate edit
+    // (editAromas) still becomes authoritative.
+    aromasSeeded.current = !((existing?.aromas?.length ?? 0) > 0 && !!seedGate.error);
   }, [wineId, ratings, existing]);
   // An edit before the first ratings payload arrives (cold cache /
   // degraded /state section) claims the seed slot — a late seed must not

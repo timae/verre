@@ -661,10 +661,18 @@ function tasteScore(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, numbe
   return totalA + totalB > 0 ? Math.round((200 * shared) / (totalA + totalB)) : 0
 }
 
+// The pairwise pass below is O(n²) on the JS thread. 200 respondents =
+// 19,900 pairs of small-map Dice scores — comfortably tens of ms; an
+// anonymous-inflated roster beyond that gets the panel SUPPRESSED (same
+// posture as the <3 floor) rather than a device freeze. Bound chosen well
+// above the 100-taster stress seed that device-passed.
+const TASTE_SUMMARY_MAX_RESPONDENTS = 200
+
 export function aromaTasteSummary(people: ReadonlyArray<AromaContributor>): AromaTasteSummary | null {
   // Minimum THREE respondents (Simon, 2026-07-17): with two, every stat names
   // the same pair — closest, farthest, and both group extrema carry nothing.
   if (people.length < 3) return null
+  if (people.length > TASTE_SUMMARY_MAX_RESPONDENTS) return null
   const refs = people.map((person): AromaTastePerson => ({ id: person.id, displayName: person.displayName }))
   const signals = people.map(tasteSignals)
   const totals = Array.from({ length: people.length }, () => 0)

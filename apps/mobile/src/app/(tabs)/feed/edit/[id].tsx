@@ -1,4 +1,4 @@
-import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,6 +15,8 @@ import {
   feedQueryOptions, findFeedItem, patchCheckin, patchSessionRating, FEED_KEY,
   type CheckinPayload, type FeedItem, type FeedPage, type SessionFeedWine,
 } from '@/lib/api/feed';
+import { ApiError } from '@/lib/api/sessions';
+import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { clearCheckinEditMeta, getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
@@ -73,15 +75,24 @@ export default function EditFeedPost() {
 
   // Seed ONCE from the cached payload (the impression screen's pattern) — the
   // feed cache IS the archive truth for these fields. Aromas re-canonicalize
-  // through the core gate on seed.
+  // through the core gate on seed. ⚠️ The gate is ALL-OR-NOTHING: one stored
+  // id it can't resolve (a re-homed taxonomy id, or a binary whose bundled
+  // taxonomy is older than the server's) nulls the whole seed. In that state
+  // the save must NOT send `aromas` (present-replaces would silently wipe the
+  // stored list) unless the user actually edits them — tracked by the two
+  // refs below.
   const seededRef = useRef(false);
+  const aromasSeedFailed = useRef(false);
+  const aromasDirty = useRef(false);
   useEffect(() => {
     if (seededRef.current || !wine) return;
     seededRef.current = true;
     setScore(wine.score ?? 0);
     setNotes(wine.notes ?? '');
     setFlavors((wine.flavors as Record<string, number>) ?? {});
-    setAromas(gateAromaSelections(wine.aromas).value ?? []);
+    const seedGate = gateAromaSelections(wine.aromas);
+    aromasSeedFailed.current = (wine.aromas?.length ?? 0) > 0 && !!seedGate.error;
+    setAromas(seedGate.value ?? []);
     if (item?.type === 'checkin') {
       const c = item.checkin;
       setCheckinEditMeta({
@@ -123,18 +134,31 @@ export default function EditFeedPost() {
     setError(null);
     setSaving(true);
     try {
+      // A failed aroma seed + untouched aromas → OMIT the field (the server
+      // preserves omitted aromas); anything else sends the current list.
+      const aromasPatch = aromasSeedFailed.current && !aromasDirty.current ? {} : { aromas };
       if (item.type === 'session') {
         const w = wine as SessionFeedWine;
         const res = await patchSessionRating(feedItemId, {
           wineId: w.id,
           score,
           flavors: fillFlavourZeros(flavors, 'wine', style),
-          aromas,
+          ...aromasPatch,
           notes,
         });
         if (res.feedItemDeleted || res.reaped) {
-          // The rating (and possibly the post) is gone — in-place refetch is
-          // the honest update (create-flow pattern; never invalidate).
+          // The rating (and possibly the post) is gone. Reflect it in the
+          // cache IMMEDIATELY (the delete flows' discipline): a refetch alone
+          // leaves the reaped wine actionable on the card — a follow-up
+          // "Delete Rating" would 404. The in-place refetch then reconciles
+          // (fire-and-forget: the drop already fixed actionability, and Save
+          // shouldn't block on it).
+          await applyToFeedCache((it) => {
+            if (it.type !== 'session' || it.session.id !== feedItemId) return it;
+            const wines = it.session.wines.filter((sw) => sw.id !== w.id);
+            if (wines.length === 0 || res.feedItemDeleted) return null;
+            return { ...it, session: { ...it.session, wines } };
+          });
           queryClient.refetchQueries({ queryKey: FEED_KEY });
           if (res.feedItemDeleted) {
             // The POST is gone. When the edit was opened from the impression
@@ -145,7 +169,7 @@ export default function EditFeedPost() {
             return;
           }
         } else {
-          applyToFeedCache((it) => {
+          await applyToFeedCache((it) => {
             if (it.type !== 'session' || it.session.id !== feedItemId) return it;
             return {
               ...it,
@@ -178,11 +202,11 @@ export default function EditFeedPost() {
           city: m.city,
           score,
           flavors: fillFlavourZeros(flavors, 'wine', m.type),
-          aromas,
+          ...aromasPatch,
           notes,
           ...(m.photo !== undefined ? { imageData: m.photo === null ? null : m.photo.dataUrl } : {}),
         });
-        applyToFeedCache((it) => {
+        await applyToFeedCache((it) => {
           if (it.type !== 'checkin' || it.checkin.id !== feedItemId) return it;
           return {
             ...it,
@@ -212,27 +236,35 @@ export default function EditFeedPost() {
       }
       router.back();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save. Try again.');
+      // Friendly-copy gate (the delete flows' rule): surface the server's
+      // message only for resolved 4xx — a 500/timeout must not print raw
+      // internals in the sticky bar.
+      const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+      setError(msg || 'Could not save. Try again.');
     } finally {
       setSaving(false);
     }
   };
 
-  const applyToFeedCache = (map: (item: FeedItem) => FeedItem) => {
+  // Cancel-then-write (the like-flow rule): an in-flight refetch whose GET
+  // left before the PATCH committed would otherwise resolve after this write
+  // and revert the card until the next refetch. `null` drops the item.
+  const applyToFeedCache = async (map: (item: FeedItem) => FeedItem | null) => {
+    await queryClient.cancelQueries({ queryKey: FEED_KEY });
     queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
       data
-        ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.map(map) })) }
+        ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.map(map).filter((it): it is FeedItem => it !== null) })) }
         : data,
     );
   };
 
   if (!item || !wine) {
     return (
-      <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
-        <VBar title="Edit" />
-        <VText variant="small" color="inkSoft" style={{ marginTop: 24 }}>
-          This post isn’t available to edit.
-        </VText>
+      <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
+        <View style={{ paddingHorizontal: GUTTER }}>
+          <VBar title="Edit" />
+        </View>
+        <CenteredMessage title="This post isn’t available to edit" />
       </View>
     );
   }
@@ -242,7 +274,6 @@ export default function EditFeedPost() {
   return (
     <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
-      <Stack.Screen options={{ gestureResponseDistance: { start: 15 } }} />
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title={isSession ? `Edit: ${wineName}` : 'Edit Check-In'} />
       </View>
@@ -304,7 +335,7 @@ export default function EditFeedPost() {
           flavors={flavors}
           onFlavors={setFlavors}
           aromas={aromas}
-          onAromas={setAromas}
+          onAromas={(next) => { aromasDirty.current = true; setAromas(next); }}
           onRequestAromaScroll={scrollAromaSearchTo}
         />
       </ScrollView>

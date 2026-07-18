@@ -126,7 +126,18 @@ export function AromaBadgePopover({
 
   return (
     <Modal transparent visible animationType="none" onRequestClose={onClose} statusBarTranslucent>
-      <Pressable style={{ flex: 1 }} accessibilityLabel="Close aroma details" onPress={onClose}>
+      {/* The dismiss scrim is a SIBLING of the content, never its parent: RN
+          touchables group their descendants into one accessibility element,
+          so a scrim-as-parent exposes only "Close aroma details" to
+          VoiceOver/TalkBack and hides the nested actions (View contributors,
+          Show more). */}
+      <View style={{ flex: 1 }}>
+        <Pressable
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+          accessibilityRole="button"
+          accessibilityLabel="Close aroma details"
+          onPress={onClose}
+        />
         <Animated.View
           onLayout={(e) => setSize({ w: Math.ceil(e.nativeEvent.layout.width), h: Math.ceil(e.nativeEvent.layout.height) })}
           style={{
@@ -156,7 +167,7 @@ export function AromaBadgePopover({
             <AromaChip a={a} m={m} count={count} pronounced={pronounced} focused vPad={0} />
           </View>
         </Animated.View>
-      </Pressable>
+      </View>
     </Modal>
   )
 }

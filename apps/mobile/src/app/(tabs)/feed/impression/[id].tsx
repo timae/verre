@@ -160,9 +160,12 @@ export default function FeedImpression() {
   const maxPage = detail ? Math.max(0, detail.wines.length - 1) : 0;
 
   const [active, setActive] = useState(startIndex);
-  // Per-page collapse state, indexed by page. The bar reads active's flag.
-  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
-  const [titles, setTitles] = useState<Record<number, string>>({});
+  // Per-page collapse/title state, keyed by WINE ID (not page index): a
+  // rating delete can shrink the wines array and shift indices while a page
+  // stays active — index keys would pin a stale collapsed flag/title on
+  // whichever wine slid into that slot. The bar reads the active wine's flag.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [titles, setTitles] = useState<Record<string, string>>({});
 
   // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
   // moment's photo impressions as a swipeable fullscreen carousel; closing
@@ -617,11 +620,11 @@ export default function FeedImpression() {
     [screenW, maxPage, landCard],
   );
 
-  const reportCollapse = useCallback((page: number, c: boolean) => {
-    setCollapsed((prev) => (prev[page] === c ? prev : { ...prev, [page]: c }));
+  const reportCollapse = useCallback((wineId: string, c: boolean) => {
+    setCollapsed((prev) => (prev[wineId] === c ? prev : { ...prev, [wineId]: c }));
   }, []);
-  const reportTitle = useCallback((page: number, t: string) => {
-    setTitles((prev) => (prev[page] === t ? prev : { ...prev, [page]: t }));
+  const reportTitle = useCallback((wineId: string, t: string) => {
+    setTitles((prev) => (prev[wineId] === t ? prev : { ...prev, [wineId]: t }));
   }, []);
   // Each mounted page registers its "scroll to About" imperative here; the
   // collapsed-bar title tap drives the ACTIVE page's (the wine-name tap in the
@@ -656,7 +659,8 @@ export default function FeedImpression() {
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
   const page = clampedActive;
-  const barSolid = !!collapsed[page];
+  const pageWineId = wines[page]?.id ?? '';
+  const barSolid = !!collapsed[pageWineId];
   // Only photo-bearing impressions go fullscreen (a blind/photoless page has
   // nothing to show); wineIndex maps a gallery page back to its pager slot.
   const galleryPages: GalleryPage[] = wines
@@ -741,8 +745,8 @@ export default function FeedImpression() {
             createdAt={createdAt}
             place={place}
             onPlacePress={momentCode ? enterMoment : undefined}
-            onCollapse={(c) => reportCollapse(0, c)}
-            onTitle={(t) => reportTitle(0, t)}
+            onCollapse={(c) => reportCollapse(wines[0].id, c)}
+            onTitle={(t) => reportTitle(wines[0].id, t)}
             onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
             insetTop={insets.top}
             bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -799,8 +803,8 @@ export default function FeedImpression() {
                     createdAt={createdAt}
                     place={place}
                     onPlacePress={momentCode ? enterMoment : undefined}
-                    onCollapse={(c) => reportCollapse(i, c)}
-                    onTitle={(t) => reportTitle(i, t)}
+                    onCollapse={(c) => reportCollapse(w.id, c)}
+                    onTitle={(t) => reportTitle(w.id, t)}
                     onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
                     insetTop={insets.top}
                     bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -868,7 +872,7 @@ export default function FeedImpression() {
       >
         <FloatBar
           solid={barSolid}
-          title={barSolid ? titles[page] ?? '' : ''}
+          title={barSolid ? titles[pageWineId] ?? '' : ''}
           onBack={requestClose}
           onTitlePress={scrollActiveToAbout}
           insetTop={insets.top}
@@ -1345,17 +1349,21 @@ function DetailPage({
   // A swiped-away page resets to the top (Simon, 2026-07-18): swiping back to
   // a mid-scrolled impression reads as stale state. Reset on the
   // active→inactive transition so the page already rests at the top when it
-  // swipes back in; the collapse flag + the at-top dismiss arm reset
-  // explicitly (a programmatic scrollTo isn't guaranteed to emit onScroll).
+  // swipes back in. The three scroll-derived values (collapse flag, at-top
+  // dismiss arm, the shared scrollY the pull-down gesture gates on) reset
+  // explicitly — a programmatic scrollTo isn't guaranteed to emit onScroll,
+  // and a partial reset would leave the pull-down dismiss dead on the
+  // returned page until the first manual scroll.
   const wasActive = useRef(isActive);
   useEffect(() => {
     if (wasActive.current && !isActive) {
       scrollRef.current?.scrollTo({ y: 0, animated: false });
+      scrollY.value = 0;
       onCollapse(false);
       setAtTop(true);
     }
     wasActive.current = isActive;
-  }, [isActive, onCollapse, scrollRef]);
+  }, [isActive, onCollapse, scrollRef, scrollY]);
   // Armed = the touch went down while the page sat at the top. Without it, a
   // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
   // the accumulated translation.

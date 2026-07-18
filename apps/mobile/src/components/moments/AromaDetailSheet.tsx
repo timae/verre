@@ -248,7 +248,7 @@ export type TasteDetailKind = 'alike' | 'different' | 'closest' | 'individual';
 const TASTE_DETAIL: Record<TasteDetailKind, { title: string; method: string }> = {
   alike: { title: 'Most Alike', method: 'Every pair ranked by overlap — exact shared aromas count most, shared families least.' },
   different: { title: 'Most Different', method: 'Every pair ranked from the least overlap up.' },
-  closest: { title: 'Closest To Group', method: 'Each person ranked by their average overlap with every other taster.' },
+  closest: { title: 'Closest to Group', method: 'Each person ranked by their average overlap with every other taster.' },
   individual: { title: 'Most Individual', method: 'Each person ranked from the lowest average overlap up.' },
 };
 
@@ -261,7 +261,7 @@ function TasteConnections({ summary, onPressStat }: { summary: AromaTasteSummary
     <View style={{ gap: 8, padding: 10, borderRadius: radius.lg, backgroundColor: theme.surfaceSunk }}>
       <View style={{ gap: 1 }}>
         <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.ink }}>
-          Taste connections
+          Taste Connections
         </VText>
         <VText variant="caption" style={{ color: theme.inkFaint }}>
           Based on shared and related aromas
@@ -344,11 +344,15 @@ export function TasteDetailSheet({ kind, summary, participants, onClose }: {
   const shown = kind ?? shownRef.current;
   useEffect(() => { if (kind) setExpanded(0); }, [kind]);
   const byId = useMemo(() => new Map(participants.map((p) => [p.id, p])), [participants]);
+  // Ascending = a STABLE re-sort, never reverse(): ties keep their roster
+  // encounter order, so row #1 matches the stat card's reduce-picked extreme
+  // (reverse() put the LAST tied minimum first — card and sheet disagreed on
+  // tied scores).
   const pairRows: readonly AromaTastePair[] | null = summary && (shown === 'alike' || shown === 'different')
-    ? (shown === 'alike' ? summary.pairs : [...summary.pairs].reverse()).slice(0, 8)
+    ? (shown === 'alike' ? summary.pairs : [...summary.pairs].sort((x, y) => x.score - y.score)).slice(0, 8)
     : null;
   const memberRows: readonly AromaTasteGroupMember[] | null = summary && (shown === 'closest' || shown === 'individual')
-    ? (shown === 'closest' ? summary.group : [...summary.group].reverse()).slice(0, 8)
+    ? (shown === 'closest' ? summary.group : [...summary.group].sort((x, y) => x.score - y.score)).slice(0, 8)
     : null;
   const total = shown === 'alike' || shown === 'different' ? summary?.pairs.length ?? 0 : summary?.group.length ?? 0;
   const listed = pairRows?.length ?? memberRows?.length ?? 0;
@@ -574,6 +578,15 @@ export function AromaDetailSheet({
     rect: LayoutRectangle;
     ownerId?: string;
   } | null>(null);
+  // The popover anchors at its tap-time window rect, which stays valid only
+  // while layout is static — the Modal blocks scrolling, but a live-poll
+  // model change re-ranks the chip grids and would strand the duplicated
+  // badge over the wrong chip. Close it when the model changes (the strip
+  // re-measures instead; here the rect has no live trigger handle — People
+  // badges anchor through AromaReadChips — so dismissal is the honest fork).
+  useEffect(() => {
+    setOpenAroma(null);
+  }, [contrib]);
   const openAromaContent = useMemo(
     () => (openAroma ? exactAromaPopoverContent(contrib, openAroma.ref, openAroma.ownerId) : null),
     [contrib, openAroma],
