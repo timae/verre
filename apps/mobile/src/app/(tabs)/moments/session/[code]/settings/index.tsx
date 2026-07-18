@@ -56,8 +56,9 @@ export default function SettingsHub() {
     ?? shortDay(meta ? new Date(meta.createdAt).toISOString() : null);
 
   const confirmDelete = () => {
+    // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).
     Alert.alert(
-      'Delete this moment?',
+      meta?.name ? `Delete “${meta.name}”?` : 'Delete this moment?',
       'This ends the moment for everyone and removes it from their list. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },

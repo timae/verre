@@ -257,6 +257,15 @@ export async function patchSessionRating(feedItemId: number, body: PatchSessionR
   return res.json();
 }
 
+// DELETE /api/checkins/:id — delete an owned STANDALONE check-in (the post,
+// its rating, and its photo; the server reclaims S3 after commit). Session
+// posts are never deleted directly — clearing the rating via
+// patchSessionRating reaps them when they empty out.
+export async function deleteCheckin(feedItemId: number): Promise<void> {
+  const res = await apiFetch(`/api/checkins/${feedItemId}`, { method: 'DELETE' });
+  if (!res.ok) await throwApiError(res);
+}
+
 // A stable id for a feed item across the checkin/session split — used as
 // the FlatList key and the like-mutation target (both carry feed_items.id).
 export function feedItemId(item: FeedItem): number {

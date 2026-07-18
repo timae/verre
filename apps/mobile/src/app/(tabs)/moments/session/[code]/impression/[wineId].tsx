@@ -357,8 +357,11 @@ export default function ImpressionDetail() {
   });
   const confirmDeleteImpression = () => {
     setMenuAnchor(null);
+    // Destructive confirms always NAME what's being deleted (Simon,
+    // 2026-07-18) — masked wines get their line-up alias, same as the bar.
+    const label = wine ? (wine._blind ? `Impression ${index + 1}` : wine.name) : '';
     Alert.alert(
-      'Delete this impression?',
+      label ? `Delete “${label}”?` : 'Delete this impression?',
       'This removes it from the line-up and clears ratings for it. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },

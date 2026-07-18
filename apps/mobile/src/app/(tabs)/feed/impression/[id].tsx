@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   BackHandler,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -40,7 +41,8 @@ import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { FEED_KEY, deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
+import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
 import { consumeFeedTransitionSource, requestFeedLanding } from '@/lib/feedTransition';
@@ -410,6 +412,96 @@ export default function FeedImpression() {
   const meId = authClient.useSession().data?.user.id;
   const isOwner = !!meId && detail?.author.id === Number(meId);
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+
+  // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
+  // Standalone = DELETE the check-in; session = clear the ACTIVE impression's
+  // rating (empty-PATCH reap). When the POST is gone the detail must not stay
+  // up (it pins its copy by design), so it pops straight to the feed — no
+  // reversed presentation: the card underneath is about to vanish, animating
+  // into it would land on a hole.
+  const queryClient = useQueryClient();
+  const deleteBusy = useRef(false);
+  const runDelete = useCallback(
+    async (op: () => Promise<{ feedItemDeleted: boolean } | void>, applyToCache: (item: FeedItem) => FeedItem | null) => {
+      if (deleteBusy.current) return;
+      deleteBusy.current = true;
+      try {
+        const res = await op();
+        const postGone = !res || res.feedItemDeleted;
+        // Reflect the delete in the cache IMMEDIATELY (like-flow pattern) —
+        // refetch alone leaves a window where the deleted target is still
+        // actionable and a second delete 404s (Codex). Cancel first so an
+        // in-flight refetch can't clobber the write.
+        await queryClient.cancelQueries({ queryKey: FEED_KEY });
+        queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
+          data
+            ? {
+                ...data,
+                pages: data.pages.map((p) => ({ ...p, items: p.items.map(applyToCache).filter((it): it is FeedItem => it !== null) })),
+              }
+            : data,
+        );
+        if (postGone) closeDetail();
+        await queryClient.refetchQueries({ queryKey: FEED_KEY });
+      } catch (e) {
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        Alert.alert('Could not delete', msg || 'Check your connection and try again.');
+      } finally {
+        deleteBusy.current = false;
+      }
+    },
+    [queryClient, closeDetail],
+  );
+  const confirmDelete = useCallback(() => {
+    setMenuAnchor(null);
+    // Destructive confirms always NAME what's being deleted (Simon,
+    // 2026-07-18) — a blind wine's name arrives redacted-empty, so it gets
+    // the card's own alias ("Wine N") instead.
+    const name = activeWine ? (activeWine._blind ? `Wine ${clampedActive + 1}` : activeWine.name) : '';
+    if (detail?.isSession && activeWine) {
+      const wineId = activeWine.id;
+      Alert.alert(
+        name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
+        'This resets your rating for this impression. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => patchSessionRating(feedItemId, { wineId, score: 0, flavors: {}, aromas: [], notes: '' }),
+                // Drop the cleared wine from the post; drop the whole post
+                // when that was its last impression (the server reaps it).
+                (it) => {
+                  if (it.type !== 'session' || it.session.id !== feedItemId) return it;
+                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  if (wines.length === 0) return null;
+                  return { ...it, session: { ...it.session, wines } };
+                },
+              ),
+          },
+        ],
+      );
+      return;
+    }
+    Alert.alert(
+      name ? `Delete “${name}”?` : 'Delete this check-in?',
+      'This removes the post, its rating, and its photo. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            runDelete(
+              () => deleteCheckin(feedItemId),
+              (it) => (it.type === 'checkin' && it.checkin.id === feedItemId ? null : it),
+            ),
+        },
+      ],
+    );
+  }, [detail?.isSession, activeWine, clampedActive, feedItemId, runDelete]);
 
   // Settle background — DIRECTION-AWARE (Simon, round 3e): on OPEN it snaps
   // opaque within the first ~12% of progress (1–2 frames), so the feed around
@@ -828,6 +920,15 @@ export default function FeedImpression() {
             }}
           />
         ) : null}
+        {isOwner ? (
+          <MenuItem
+            icon="trash"
+            label={detail.isSession ? 'Delete Rating' : 'Delete'}
+            tone="danger"
+            accessibilityLabel={detail.isSession ? 'Delete Rating' : 'Delete Check-In'}
+            onPress={confirmDelete}
+          />
+        ) : null}
       </AnchoredMenu>
 
       {/* fullscreen gallery — a Modal, so its place in this tree is chrome-
@@ -1241,6 +1342,20 @@ function DetailPage({
     onRegisterScrollToAbout(scrollToAbout);
     return () => onRegisterScrollToAbout(null);
   }, [onRegisterScrollToAbout, scrollToAbout]);
+  // A swiped-away page resets to the top (Simon, 2026-07-18): swiping back to
+  // a mid-scrolled impression reads as stale state. Reset on the
+  // active→inactive transition so the page already rests at the top when it
+  // swipes back in; the collapse flag + the at-top dismiss arm reset
+  // explicitly (a programmatic scrollTo isn't guaranteed to emit onScroll).
+  const wasActive = useRef(isActive);
+  useEffect(() => {
+    if (wasActive.current && !isActive) {
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+      onCollapse(false);
+      setAtTop(true);
+    }
+    wasActive.current = isActive;
+  }, [isActive, onCollapse, scrollRef]);
   // Armed = the touch went down while the page sat at the top. Without it, a
   // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
   // the accumulated translation.

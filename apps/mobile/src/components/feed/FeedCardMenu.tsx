@@ -4,9 +4,21 @@ import { useTheme } from '@/theme';
 
 // The feed cards' ⋯ menu (Simon, 2026-07-17) — owner-only today (the list
 // screen passes onEdit only for the viewer's own posts, so the trigger simply
-// doesn't render otherwise). One item for now; Crave/Share/etc. join here
-// when their deferred passes land (08-feed §6/§7).
-export function FeedCardMenu({ onEdit }: { onEdit: () => void }) {
+// doesn't render otherwise). Crave/Share/etc. join here when their deferred
+// passes land (08-feed §6/§7). `deleteLabel` forks the destructive row's copy:
+// standalone = "Delete" (the post goes), session = "Delete Rating" (the
+// active impression's rating resets; the post only goes if that emptied it).
+export function FeedCardMenu({
+  onEdit,
+  onDelete,
+  deleteLabel = 'Delete',
+  deleteAccessibilityLabel = 'Delete Post',
+}: {
+  onEdit: () => void;
+  onDelete?: () => void;
+  deleteLabel?: string;
+  deleteAccessibilityLabel?: string;
+}) {
   const { theme } = useTheme();
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   return (
@@ -22,6 +34,18 @@ export function FeedCardMenu({ onEdit }: { onEdit: () => void }) {
             onEdit();
           }}
         />
+        {onDelete ? (
+          <MenuItem
+            icon="trash"
+            label={deleteLabel}
+            tone="danger"
+            accessibilityLabel={deleteAccessibilityLabel}
+            onPress={() => {
+              setAnchor(null);
+              onDelete();
+            }}
+          />
+        ) : null}
       </AnchoredMenu>
     </>
   );

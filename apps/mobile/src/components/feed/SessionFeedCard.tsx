@@ -52,6 +52,7 @@ export function SessionFeedCard({
   onOpenImpression,
   onToggleLike,
   onEdit,
+  onDeleteRating,
 }: {
   author: FeedAuthor;
   session: SessionFeedPayload;
@@ -61,9 +62,11 @@ export function SessionFeedCard({
   onOpenImpression: (index: number) => void;
   // Optimistic like toggle — parent owns the cache write + server call.
   onToggleLike: (nextLiked: boolean) => void;
-  // Owner-only ⋯ menu: Edit targets the ACTIVE carousel slide's rating (the
-  // wine id of the impression currently in view).
+  // Owner-only ⋯ menu: Edit / Delete Rating target the ACTIVE carousel
+  // slide's rating (the wine id of the impression currently in view). The
+  // parent owns the delete confirm + server call.
   onEdit?: (wineId: string) => void;
+  onDeleteRating?: (wineId: string) => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -252,7 +255,14 @@ export function SessionFeedCard({
             {timeAgo(createdAt)}
           </VText>
         </View>
-        {onEdit && wines[activeIdx] ? <FeedCardMenu onEdit={() => onEdit(wines[activeIdx].id)} /> : null}
+        {onEdit && wines[activeIdx] ? (
+          <FeedCardMenu
+            onEdit={() => onEdit(wines[activeIdx].id)}
+            onDelete={onDeleteRating ? () => onDeleteRating(wines[activeIdx].id) : undefined}
+            deleteLabel="Delete Rating"
+            deleteAccessibilityLabel="Delete Rating"
+          />
+        ) : null}
       </View>
 
       {anyPhoto ? (

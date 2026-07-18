@@ -47,15 +47,18 @@ export function StandaloneFeedCard({
   onOpen,
   onToggleLike,
   onEdit,
+  onDelete,
 }: {
   author: FeedAuthor;
   checkin: CheckinPayload;
   createdAt: string;
   onOpen: () => void;
   onToggleLike: (nextLiked: boolean) => void;
-  // Owner-only (the list passes it only for the viewer's own posts) — renders
-  // the header's ⋯ menu with Edit.
+  // Owner-only (the list passes them only for the viewer's own posts) —
+  // renders the header's ⋯ menu with Edit + Delete. The parent owns the
+  // delete confirm + server call.
   onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -96,7 +99,9 @@ export function StandaloneFeedCard({
               .join(' · ')}
           </VText>
         </View>
-        {onEdit ? <FeedCardMenu onEdit={onEdit} /> : null}
+        {onEdit ? (
+          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" />
+        ) : null}
       </View>
 
       {/* hero — photo (glass panel) OR the themed non-photo hero */}
