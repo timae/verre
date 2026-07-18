@@ -136,6 +136,14 @@ export default function EditFeedPost() {
           // The rating (and possibly the post) is gone — in-place refetch is
           // the honest update (create-flow pattern; never invalidate).
           queryClient.refetchQueries({ queryKey: FEED_KEY });
+          if (res.feedItemDeleted) {
+            // The POST is gone. When the edit was opened from the impression
+            // detail, plain back() would land on it — and that screen pins its
+            // copy by design (frozen read surface), so it would render the
+            // deleted post. Pop the whole way to the feed list instead.
+            router.dismissTo('/feed');
+            return;
+          }
         } else {
           applyToFeedCache((it) => {
             if (it.type !== 'session' || it.session.id !== feedItemId) return it;
