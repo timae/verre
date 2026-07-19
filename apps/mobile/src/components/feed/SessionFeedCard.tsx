@@ -380,6 +380,19 @@ export function SessionFeedCard({
           </VText>
         )}
       </View>
+
+      {/* caption — the ACTIVE slide's taste note, IG-style with the author's
+          name leading in semibold (Simon 2026-07-19 — the session card never
+          rendered notes; parity with the standalone card + the detail's
+          byline). Follows the carousel: swiping to a wine swaps its note. */}
+      {wines[activeIdx]?.notes ? (
+        <View style={{ paddingHorizontal: GUTTER, paddingTop: space['3xs'] }}>
+          <VText variant="small" color="ink" numberOfLines={3}>
+            <VText variant="small" style={styles.bold}>{author.name}</VText>
+            {` ${wines[activeIdx].notes}`}
+          </VText>
+        </View>
+      ) : null}
     </View>
   );
 }

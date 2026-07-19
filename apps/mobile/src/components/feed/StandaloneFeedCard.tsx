@@ -148,11 +148,14 @@ export function StandaloneFeedCard({
         </View>
       )}
 
-      {/* caption — the taste note, always visible (Simon: the note reads here) */}
+      {/* caption — the taste note, always visible (Simon: the note reads here),
+          IG-style with the author's name leading in semibold (Simon 2026-07-19
+          — matches the detail's caption byline anatomy). */}
       {checkin.notes ? (
         <View style={{ paddingHorizontal: GUTTER, paddingTop: space['3xs'] }}>
           <VText variant="small" color="ink" numberOfLines={3}>
-            {checkin.notes}
+            <VText variant="small" style={styles.bold}>{author.name}</VText>
+            {` ${checkin.notes}`}
           </VText>
         </View>
       ) : null}
