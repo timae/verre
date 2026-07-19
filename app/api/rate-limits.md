@@ -13,6 +13,8 @@
 | `/api/me/mutes/:id` POST+DELETE | 60/h/user (shared) |
 | `/api/me/blocks/:id` POST | 30/h/user |
 | `/api/me/blocks/:id` DELETE | uncapped |
+| `/api/checkins` POST + `/api/checkins/:id` PATCH | 100/h/user (shared `rl:checkin`) |
+| `/api/checkins/:id` DELETE | uncapped |
 | `/api/session` POST | 10/10min/user-or-IP |
 | `/api/session/:code/settings` PATCH (cover) | 10/h/user (`rl:cover`, charged only on an actual cover upload) |
 | `/api/session/:code/carousel-hidden` POST+DELETE | 30/10min/user (shared) |
@@ -38,6 +40,7 @@
 - **Sessions GET (`q`/`people`)**: charged ONLY when the caller sends the two genuinely-expensive params — the `pg_trgm` `word_similarity` search (`q`) or the per-friend correlated `EXISTS` (`people`). The OTHER filter params (`tense`/`roles`/`hosts`/`category`/date/`cursor`/`limit`) are plain indexed WHEREs + keyset paging, no costlier than the unfiltered carousel read — and since the client ALWAYS sends `tense` for Recent/Upcoming, charging on "any filter param" would throttle ordinary browsing (open list → scroll → each page a request) against a search-compute cap. So the gate is `q`/`people`, not "filtered". Capped like `/api/users/search`; blast radius smaller (every query is `sm.user_id = me`-scoped, only the caller's own sessions), so 30/min is generous. The unfiltered carousel read (home hot path, every focus) stays uncapped.
 - **Mutes POST+DELETE**: stolen cookie thrashing the table or generating noise. Shared.
 - **Blocks POST**: stolen-cookie burst-blocking. DELETE intentionally **uncapped** — recovery path from a burst-block attack must always stay open.
+- **Checkins POST+PATCH**: content/storage spam from a stolen cookie (each POST can mint a wine row + S3 image; PATCH can replace images). Shared counter so creates + edits can't stack to 100+100; since 2026-07-17 the same PATCH counter also covers session-rating edit bodies (`kind='session'` feed items). DELETE is uncapped like avatar DELETE — idempotent, reclaims S3 rather than consuming it.
 - **Session POST**: code-space exhaustion (8-char Crockford, but mass enumeration would crowd legitimate creates). The create-time cover upload rides this same 10/10min counter (one create = at most one cover), so it needs no separate limit.
 - **Settings PATCH cover** (`rl:cover`): storage abuse from a stolen host cookie thrashing cover replaces. Mirrors the avatar POST limit; charged only when a data URL is present so no-op settings saves don't burn slots. Removal (`coverPhoto: null`) is uncharged — like avatar DELETE, it reclaims S3 rather than consuming it.
 - **Session join POST**: code-guessing. Counter cleared on a valid code so legitimate joiners aren't penalized.
