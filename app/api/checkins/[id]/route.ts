@@ -395,12 +395,13 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 // (same JSON shape as the rate route) when the session is still alive —
 // PG-only once expired. Deliberately NOT touched: lifetime counters + HoF (an
 // edit is not new activity), rater_name (frozen snapshot), ratedAt (an edit
-// must not reorder history/bookmark recency). Kick/ban posture (Simon's
-// ruling, 2026-07-18): the rating is the user's own data, so a kick-keep'd
-// user KEEPS editing it here (PG + their feed/history update) — but a
-// non-roster editor never touches the live session keyspace (the mirror below
-// gates on identities membership; buildRatingsView additionally filters
-// kicked raters out of compare). kick-delete/ban delete the row → 404.
+// must not reorder history/bookmark recency). Kick/ban posture (ruling,
+// 2026-07-18): the rating is the user's own data, so a kick-keep'd user
+// KEEPS editing it here (PG + their feed/history update). The live mirror
+// updates their own retained key roster-independently (buildRatingsView
+// hides it from every live view while off-roster), but a non-roster editor
+// never refreshes the session-wide TTL — see the mirror block.
+// kick-delete/ban delete the row → 404.
 async function patchSessionRating(req: NextRequest, feedItemId: number, sessionId: number | null, userId: number) {
   if (sessionId == null) return NextResponse.json({ error: 'not found' }, { status: 404 })
   // Request-start timestamp — the mirror's newer-live-write guard compares
@@ -582,7 +583,9 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   // maintenance). Residual (accepted): a freak same-ms version tie between
   // two PATCHes. The rate-POST cross-writer race is closed by that route's
   // post-commit re-assert (both writers stamp PG-clock tokens — one
-  // ordering authority, last PG committer owns both stores).
+  // ordering authority, last PG committer owns both stores; its pre-archive
+  // write carries a provisional always-loses at:0, so a skewed app clock
+  // can never out-stamp a PG token and block this mirror).
   if (live && code && !concurrentWriteWon && (reaped || didUpdate)) {
     const key = k.rating(code, `u:${userId}`, wineId)
     try {
@@ -631,8 +634,36 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
       }
       // Re-stamp the keyspace to the session's real lifespan (the EX above is
       // the default TTL; touchWithMeta corrects pro lifespans — rate-route
-      // pattern). Only after a roster-approved write.
-      if (wrote) await touchWithMeta(code)
+      // pattern) — but ONLY for a caller still on the roster. The mirror
+      // WRITE is roster-independent (own-key maintenance, see above); the
+      // session-wide TTL refresh is NOT: touchWithMeta re-stamps EVERY
+      // s:{code}:* key, so an off-roster (kicked) editor repeatedly saving
+      // their feed post could keep the whole live session alive forever
+      // (PR #81 review P2). Off-roster, clamp the just-written key to the
+      // meta key's REMAINING TTL instead — the retained rating dies with
+      // the session (never outlives it onto a recycled code) and the fresh
+      // EX above can't extend anything. PTTL, not TTL (Codex round 4): a
+      // second-resolution TTL reads 0 at expiry, and a `rem > 0` guard
+      // would leave the key on the full default TTL exactly when the
+      // session is dying. PEXPIRE with 0 deletes the key — the right
+      // semantic at the boundary. Meta GONE (-2, expired between the
+      // `live` check and here) → delete the key outright; -1 (no expiry)
+      // can't happen (lifespans are finite) → leave the default.
+      // ACCEPTED residual (Codex round 5): the PTTL→PEXPIRE round-trip
+      // means the key can outlive meta by a few ms. Exact alternatives
+      // rejected: PEXPIRETIME is Redis 7.0+ (an error here silently skips
+      // the whole clamp — worse), and a Lua script is disproportionate
+      // for a window that can't recycle a session code.
+      if (wrote) {
+        const onRoster = await redis.hExists(k.identities(code), `u:${userId}`)
+        if (onRoster) {
+          await touchWithMeta(code)
+        } else {
+          const remMs = await redis.pTTL(k.meta(code))
+          if (remMs >= 0) await redis.pExpire(key, remMs)
+          else if (remMs === -2) await redis.del(key)
+        }
+      }
     } catch (err) {
       // BEST-EFFORT: PG committed above — a Redis failure must not turn the
       // success into a reported 500 (a retry against a reaped rating would
