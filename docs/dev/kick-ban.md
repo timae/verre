@@ -72,7 +72,7 @@ The full wipe runs under `s:<C>:lock:ban` (`SET NX EX 10`) so two concurrent hos
 
 ## Ghost-rater UX note
 
-Kick-keep strips the identity from `s:<C>:identities` but leaves ratings + hof + session_members. Compare screens (which iterate over Redis rating keys) still show those ratings; the rater's display name is rendered as-is. This is a deliberate side effect of "Keep means keep" — the kicked user wanted their data preserved. If they later choose Delete (via `/leave?cleanup=full`), everything goes.
+Kick-keep strips the identity from `s:<C>:identities` but leaves ratings + hof + session_members. **Superseded 2026-07-18 (the roster guard above): compare/live views no longer render those retained ratings while the rater is off the roster** — `buildRatingsView` drops keys with no identities entry, so "Keep means keep" preserves the DATA (Redis keys + PG rows survive; rejoin makes them reappear) without ghost rows in other tasters' live views. If the kicked user later chooses Delete (via `/leave?cleanup=full`), everything goes.
 
 ## Kicked moments drop from the kicked user's Moments list
 

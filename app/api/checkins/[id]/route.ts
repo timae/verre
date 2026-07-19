@@ -432,16 +432,11 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   const code = sess?.code ? normalizeCode(sess.code) : null
   let live = false
   let liveStyle: string | null = null
-  let inRoster = false
   if (code) {
     try {
       live = await existsKey(k.meta(code))
       if (live) {
         liveStyle = (await getWines(code)).find(w => w.id === wineId)?.type ?? null
-        // Kick-keep strips the identities entry but keeps this rating: the
-        // user may still edit their own data, but a non-roster editor never
-        // touches the live keyspace (Simon's ruling, 2026-07-18).
-        inRoster = !!(await redis.hGet(k.identities(code), `u:${userId}`))
       }
     } catch (err) {
       console.warn('[checkins] live-session lookup failed — PG-only edit:', err)
@@ -576,23 +571,26 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   //      already landed — its state wins, skip. (>= so a same-millisecond
   //      stamp defers to the existing value instead of clobbering it.)
   //   3. else SET this request's committed merge / DEL on reap. WatchError
-  //      (key or roster touched mid-attempt) → retry re-decides fresh.
-  // The roster check runs inside the WATCH so a kick after it ABORTS the
-  // EXEC (the early `inRoster` read stays as a cheap fast-path skip); the
-  // TTL re-stamp only follows a roster-approved write. Residuals (accepted,
-  // the rate route's own documented same-user-two-surfaces race class, all
-  // healing on the next write): a rate POST whose Redis write predates this
-  // entire request but whose PG archive lands after our commit (app-vs-PG
-  // clock skew makes cross-writer comparison approximate); a freak same-ms
-  // version tie between two PATCHes.
-  if (live && code && !concurrentWriteWon && (reaped || (inRoster && didUpdate))) {
+  //      (key touched mid-attempt) → retry re-decides fresh.
+  // The mirror is ROSTER-INDEPENDENT (PR #81 review P1 — supersedes the
+  // earlier roster gate): the key is the caller's OWN rating, kick-keep
+  // deliberately retains it, and buildRatingsView hides it from every live
+  // view while they're off the roster — so updating it leaks nothing, while
+  // SKIPPING it left a stale payload that resurfaced on rejoin showing the
+  // pre-edit rating (and could seed a later live save with reverted state).
+  // Off-roster writes are the same class as the reap DEL below (own-key
+  // maintenance). Residual (accepted): a freak same-ms version tie between
+  // two PATCHes. The rate-POST cross-writer race is closed by that route's
+  // post-commit re-assert (both writers stamp PG-clock tokens — one
+  // ordering authority, last PG committer owns both stores).
+  if (live && code && !concurrentWriteWon && (reaped || didUpdate)) {
     const key = k.rating(code, `u:${userId}`, wineId)
     try {
       let wrote = false
       for (let attempt = 0; attempt < 5; attempt++) {
         try {
           await redis.executeIsolated(async (iso) => {
-            await iso.watch([key, k.identities(code)])
+            await iso.watch([key])
             try {
               const cur = await iso.get(key)
               if (!cur) {
@@ -608,11 +606,6 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
               if (reaped) {
                 // Deleting the user's OWN key is cleanup, allowed off-roster.
                 await iso.multi().del(key).exec()
-                return
-              }
-              const roster = await iso.hGet(k.identities(code), `u:${userId}`)
-              if (!roster) {
-                await iso.unwatch()
                 return
               }
               await iso.multi().set(key, JSON.stringify({

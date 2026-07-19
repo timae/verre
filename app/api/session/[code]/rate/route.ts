@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, TTL, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
+import { WatchError } from 'redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -197,7 +198,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // so a client that predates aromas can't wipe them — the Redis
         // omitted-preserves above covers the live copy, this covers the
         // archive even when the Redis key already TTL'd away.
-        const upsertRows = await prisma.$queryRaw<{ id: number }[]>`
+        const upsertRows = await prisma.$queryRaw<{ id: number; rated_at: Date }[]>`
           INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at)
           VALUES (
             ${wineId},
@@ -219,8 +220,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
             notes = EXCLUDED.notes,
             rated_at = EXCLUDED.rated_at
-          RETURNING id`
+          RETURNING id, rated_at`
         const ratingId = upsertRows[0]?.id
+        const pgStampMs = upsertRows[0]?.rated_at ? new Date(upsertRows[0].rated_at).getTime() : null
 
         // Materialise the session feed_item on first engagement. The engagement
         // trigger from §3 of the rewire: any rating with score > 0, flavour
@@ -263,6 +265,51 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           // the Redis cleanup AND the lifetime-counter bump on it.
           cascadeReaped = await engagementDeletionCascade(ratingId)
           if (cascadeReaped) await redis.del(k.rating(c, identity.id, wineId))
+        }
+
+        // Post-commit RE-ASSERT (PR #81 review P2 — one ordering authority).
+        // The pre-archive SET above stamps app time; the feed PATCH mirror
+        // stamps PG clock_timestamp(). A PATCH that commits between our
+        // Redis write and our PG commit overwrote the key with its (newer-
+        // stamped) payload while OUR upsert became the last PG committer —
+        // stores diverged until the next write. Re-asserting here with the
+        // upsert's own PG stamp (rated_at) puts both writers on the SAME
+        // PG-clock token: whoever committed last in PG carries the highest
+        // stamp and wins the key, so Redis always converges to the PG
+        // winner. Version-guarded like the PATCH mirror (skip when the
+        // stored payload is same-or-newer; skip when the key is gone — a
+        // concurrent clear/wipe must not be resurrected). Best-effort: PG
+        // is committed, a Redis hiccup must not fail the rate.
+        if (!cascadeReaped && pgStampMs != null) {
+          try {
+            for (let attempt = 0; attempt < 5; attempt++) {
+              try {
+                await redis.executeIsolated(async (iso) => {
+                  const key = k.rating(c, identity.id, wineId)
+                  await iso.watch([key])
+                  try {
+                    const cur = await iso.get(key)
+                    if (!cur) { await iso.unwatch(); return }
+                    let curAt = 0
+                    try { curAt = Number(JSON.parse(cur)?.at) || 0 } catch { curAt = 0 }
+                    if (curAt >= pgStampMs) { await iso.unwatch(); return }
+                    await iso.multi().set(key, JSON.stringify({
+                      score: ratingScore, flavors: storedFlavors, aromas: storedAromas, notes: notes || '', at: pgStampMs,
+                    }), { EX: TTL }).exec()
+                  } catch (inner) {
+                    await iso.unwatch().catch(() => {})
+                    throw inner
+                  }
+                })
+                break
+              } catch (err) {
+                if (err instanceof WatchError) continue
+                throw err
+              }
+            }
+          } catch (err) {
+            console.warn('rate mirror re-assert failed (PG committed):', err)
+          }
         }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with

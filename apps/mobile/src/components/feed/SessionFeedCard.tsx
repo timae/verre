@@ -76,8 +76,19 @@ export function SessionFeedCard({
   // member (code resolved from their own sessions; never on the feed wire).
   const { code: momentCode, enter: enterMoment } = useEnterableMoment(session.sessionId);
 
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [rawActiveIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
+  // Clamp against the CURRENT wine count (PR #81 review P2): an optimistic
+  // rating delete shrinks `wines` under a persistent index — deleting the
+  // last slide left wines[activeIdx] undefined (menu/caption/dots broke).
+  // Every reader consumes the DERIVED clamped index (no bad frame between
+  // the shrink and an effect); the stored value is normalized afterwards so
+  // scroll math and later writers start from a real slide.
+  const maxIdx = Math.max(0, wines.length - 1);
+  const activeIdx = Math.min(rawActiveIdx, maxIdx);
+  useEffect(() => {
+    setActiveIdx((cur) => Math.min(cur, maxIdx));
+  }, [maxIdx]);
   // Landing sync (proposal 09 round 3): while the detail is open over this
   // card, it mirrors its active page into us so a pull-down (or any close)
   // lands on the slide being dismissed, not the one it opened from. The ref
