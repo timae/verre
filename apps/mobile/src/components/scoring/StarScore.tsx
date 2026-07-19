@@ -19,6 +19,10 @@ export function StarScore({ value, size = 15 }: { value: number; size?: number }
       </Svg>
       <VText
         color="accent"
+        // `score` surface (1.15 cap): the fixed line box + the fixed-width host
+        // boxes (compare header's 60px column) clip an uncapped scale — the
+        // numeral is fixed-format, same policy as ScoreInput's editable score.
+        surface="score"
         style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: size, lineHeight: Math.round(size * 1.55) }}
       >
         {formatScore(value)}

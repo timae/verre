@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 import Svg, { G, Polygon, Text as SvgText, TSpan } from 'react-native-svg';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { Directions, Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withDecay, withTiming } from 'react-native-reanimated';
 import { motion, useTheme } from '@/theme';
 import { mix, inkOn } from '@/theme/color';
@@ -57,6 +57,7 @@ export function HexStage({
   canZoomIn,
   canZoomOut,
   enterFrom,
+  onSwipeBack,
 }: {
   cells: HexCell[];
   /** Hex circumradius in stage points. */
@@ -83,6 +84,10 @@ export function HexStage({
   /** Scale the settle-in starts from: <1 reads as diving in (default),
       >1 as pulling back out — the owner picks per travel direction. */
   enterFrom?: number;
+  /** A fast RIGHT swipe pops one level (Simon 2026-07-17 — the inline
+      canvas's back gesture). Races the pan exclusively: a flick goes back,
+      a slower drag still pans an overflowing cluster. */
+  onSwipeBack?: () => void;
 }) {
   const { theme } = useTheme();
   const [stageW, setStageW] = useState(0);
@@ -107,9 +112,12 @@ export function HexStage({
     dy.value = 0;
     pinchS.value = 1;
     zoom.value = enterFrom ?? 0.86;
-    zoom.value = withTiming(1, { duration: motion.dur3, easing: EASE });
+    // dur2/dur1 (was dur3/dur2): the longer settle read as the cluster
+    // "aligning too slow in the middle" on the inline canvas (Simon
+    // 2026-07-17).
+    zoom.value = withTiming(1, { duration: motion.dur2, easing: EASE });
     fade.value = 0.35;
-    fade.value = withTiming(1, { duration: motion.dur2, easing: EASE });
+    fade.value = withTiming(1, { duration: motion.dur1, easing: EASE });
   }, [resetKey, enterFrom, dx, dy, zoom, fade, pinchS]);
 
   // Content bbox (cell extents + R), the pan-clamp bounds.
@@ -127,11 +135,20 @@ export function HexStage({
   const overX = maxX - minX + PAD * 2 > stageW;
   const overY = maxY - minY + PAD * 2 > stageH;
 
+  // Centering is STATIC layout, never animated state (Simon 2026-07-17: a
+  // freshly drilled cluster rendered offset+clipped and only centred ~0.5-1s
+  // later — the animated transform's re-application after a commit can lag
+  // under the global sync-props flag; static left/top renders centred in the
+  // SAME commit). The worklet below carries only the pan DELTA, and the
+  // wrapper remounts per level (key=resetKey) so a stale transform from the
+  // previous level can never linger.
+  const baseTx = clampAxis(tx0, stageW - PAD - maxX, PAD - minX);
+  const baseTy = clampAxis(ty0, stageH - PAD - maxY, PAD - minY);
   const panStyle = useAnimatedStyle(() => {
-    const tx = clampAxis(tx0 + dx.value, stageW - PAD - maxX, PAD - minX);
-    const ty = clampAxis(ty0 + dy.value, stageH - PAD - maxY, PAD - minY);
-    return { transform: [{ translateX: tx }, { translateY: ty }] };
-  }, [tx0, ty0, stageW, stageH, minX, maxX, minY, maxY]);
+    const tx = clampAxis(baseTx + dx.value, stageW - PAD - maxX, PAD - minX);
+    const ty = clampAxis(baseTy + dy.value, stageH - PAD - maxY, PAD - minY);
+    return { transform: [{ translateX: tx - baseTx }, { translateY: ty - baseTy }] };
+  }, [baseTx, baseTy, stageW, stageH, minX, maxX, minY, maxY]);
   // The settle zoom scales around the STAGE centre (a stage-sized wrapper
   // scales about its own middle — where the focused cluster just landed); a
   // live pinch scales around its focal point via the translate-compensation
@@ -156,18 +173,18 @@ export function HexStage({
       // Store the CLAMPED offset, not the raw one — an over-pan past the
       // bounds must not accumulate into a dead zone the next drag has to
       // consume before the map moves again (review finding #3).
-      const tx = clampAxis(tx0 + dx0.value + e.translationX, stageW - PAD - maxX, PAD - minX);
-      const ty = clampAxis(ty0 + dy0.value + e.translationY, stageH - PAD - maxY, PAD - minY);
-      dx.value = tx - tx0;
-      dy.value = ty - ty0;
+      const tx = clampAxis(baseTx + dx0.value + e.translationX, stageW - PAD - maxX, PAD - minX);
+      const ty = clampAxis(baseTy + dy0.value + e.translationY, stageH - PAD - maxY, PAD - minY);
+      dx.value = tx - baseTx;
+      dy.value = ty - baseTy;
     })
     .onEnd((e) => {
       // Momentum with a clamped rubber-band, so a flick glides instead of
       // stopping dead (device round 4: panning felt unnatural without it).
-      const loX = stageW - PAD - maxX - tx0;
-      const hiX = PAD - minX - tx0;
-      const loY = stageH - PAD - maxY - ty0;
-      const hiY = PAD - minY - ty0;
+      const loX = stageW - PAD - maxX - baseTx;
+      const hiX = PAD - minX - baseTx;
+      const loY = stageH - PAD - maxY - baseTy;
+      const hiY = PAD - minY - baseTy;
       dx.value = withDecay({ velocity: e.velocityX, clamp: [Math.min(loX, hiX), Math.max(loX, hiX)], rubberBandEffect: true });
       dy.value = withDecay({ velocity: e.velocityY, clamp: [Math.min(loY, hiY), Math.max(loY, hiY)], rubberBandEffect: true });
     });
@@ -181,8 +198,8 @@ export function HexStage({
     // finding). The focal point itself is scale-invariant (it's the fixed
     // point of the live pinch transform), so undoing the pan is the whole
     // conversion.
-    const tx = clampAxis(tx0 + dx.value, stageW - PAD - maxX, PAD - minX);
-    const ty = clampAxis(ty0 + dy.value, stageH - PAD - maxY, PAD - minY);
+    const tx = clampAxis(baseTx + dx.value, stageW - PAD - maxX, PAD - minX);
+    const ty = clampAxis(baseTy + dy.value, stageH - PAD - maxY, PAD - minY);
     onPinchLevel(dir, sx - tx, sy - ty);
   };
   const pinch = Gesture.Pinch()
@@ -215,7 +232,17 @@ export function HexStage({
       // Rubber-band home whatever sub-threshold scale is left.
       pinchS.value = withTiming(1, { duration: motion.dur2, easing: EASE });
     });
-  const gesture = onPinchLevel ? Gesture.Simultaneous(pan, pinch) : pan;
+  const base = onPinchLevel ? Gesture.Simultaneous(pan, pinch) : pan;
+  // Back-swipe (owner-gated): EXCLUSIVE with the pan — the fling claims a
+  // fast rightward flick before the pan can, everything slower falls through
+  // to panning. runOnJS: fling callbacks land on the UI thread.
+  const backFling = Gesture.Fling()
+    .direction(Directions.RIGHT)
+    .enabled(!!onSwipeBack)
+    .onEnd(() => {
+      if (onSwipeBack) runOnJS(onSwipeBack)();
+    });
+  const gesture = onSwipeBack ? Gesture.Exclusive(backFling, base) : base;
 
   const bw = maxX - minX + PAD * 2;
   const bh = maxY - minY + PAD * 2;
@@ -227,8 +254,8 @@ export function HexStage({
         style={{ width: '100%', height: stageH, overflow: 'hidden' }}
       >
         {stageW > 0 ? (
-          <Reanimated.View style={[{ position: 'absolute', left: 0, top: 0, right: 0, height: stageH }, zoomStyle]}>
-            <Reanimated.View style={[{ position: 'absolute', left: 0, top: 0, width: bw, height: bh }, panStyle]}>
+          <Reanimated.View key={resetKey} style={[{ position: 'absolute', left: 0, top: 0, right: 0, height: stageH }, zoomStyle]}>
+            <Reanimated.View style={[{ position: 'absolute', left: baseTx, top: baseTy, width: bw, height: bh }, panStyle]}>
               <Svg
               width={bw}
               height={bh}

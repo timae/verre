@@ -176,6 +176,96 @@ export async function createCheckin(body: CreateCheckinBody): Promise<void> {
   if (!res.ok) await throwApiError(res);
 }
 
+// ── Feed-post editing (2026-07-17) ───────────────────────────────────────────
+// Both kinds PATCH /api/checkins/:feedItemId (one edit chokepoint server-side;
+// the route branches on the feed item's kind). Partial semantics: omitted
+// fields preserve; aromas are present-replaces (send the full list).
+
+// Standalone: wine metadata + rating. Everything optional — send what changed
+// (or the full truth; the server treats both the same).
+export type PatchCheckinBody = Partial<Omit<CreateCheckinBody, 'copyFromCheckinId' | 'imageData'>> & {
+  // A fresh data URL replaces the photo; null removes it; omitted keeps it.
+  imageData?: string | null;
+};
+
+// The standalone PATCH echo — the fields the edit screen maps back into the
+// cached CheckinPayload (engagement fields like likeCount/tags/liked are
+// untouched by an edit and keep their cached values).
+export type PatchCheckinResponse = {
+  id: number;
+  wineName: string;
+  producer: string | null;
+  vintage: string | null;
+  grape: string | null;
+  type: string | null;
+  wineRegion: string | null;
+  wineCountry: string | null;
+  vinification: string | null;
+  description: string | null;
+  purchaseUrl: string | null;
+  score: number | null;
+  flavors: Record<string, number>;
+  aromas: AromaSelection[];
+  notes: string | null;
+  imageUrl: string | null;
+  venueName: string | null;
+  city: string | null;
+  country: string | null;
+  createdAt: string;
+};
+
+export async function patchCheckin(feedItemId: number, body: PatchCheckinBody): Promise<PatchCheckinResponse> {
+  const res = await apiFetch(`/api/checkins/${feedItemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
+// Session kind: RATING-ONLY (the wine belongs to the moment). An edit that
+// empties the rating reaps it server-side — `reaped` + `feedItemDeleted`
+// (true when it was the caller's last engaged rating in that session) tell
+// the client whether the post itself is gone.
+export type PatchSessionRatingBody = {
+  wineId: string;
+  score?: number;
+  flavors?: Record<string, number>;
+  aromas?: AromaSelection[];
+  notes?: string;
+};
+
+export type PatchSessionRatingResponse = {
+  id: number;
+  wineId: string;
+  score: number | null;
+  flavors: Record<string, number>;
+  aromas: AromaSelection[];
+  notes: string | null;
+  reaped: boolean;
+  feedItemDeleted: boolean;
+};
+
+export async function patchSessionRating(feedItemId: number, body: PatchSessionRatingBody): Promise<PatchSessionRatingResponse> {
+  const res = await apiFetch(`/api/checkins/${feedItemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
+// DELETE /api/checkins/:id — delete an owned STANDALONE check-in (the post,
+// its rating, and its photo; the server reclaims S3 after commit). Session
+// posts are never deleted directly — clearing the rating via
+// patchSessionRating reaps them when they empty out.
+export async function deleteCheckin(feedItemId: number): Promise<void> {
+  const res = await apiFetch(`/api/checkins/${feedItemId}`, { method: 'DELETE' });
+  if (!res.ok) await throwApiError(res);
+}
+
 // A stable id for a feed item across the checkin/session split — used as
 // the FlatList key and the like-mutation target (both carry feed_items.id).
 export function feedItemId(item: FeedItem): number {

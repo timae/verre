@@ -7,10 +7,14 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
-import { validateScore, decimalToNumber } from '@verre/core'
+import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
+import { WatchError } from 'redis'
+import { redis, k, TTL, existsKey, touchWithMeta } from '@/lib/redis'
+import { engagementDeletionCascade } from '@/lib/engagementCascade'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import { scrub } from '@/lib/textSafe'
+import { getWines } from '@/lib/session'
+import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -68,8 +72,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // Walk the new model: feed_item → rating → wine → optional rating_image.
   // We need ALL of these to apply edits: the wine carries name/producer/etc.,
   // the rating carries score/flavors/notes, the rating_image carries the
-  // photo URL. Only kind='standalone' feed_items are editable here (session
-  // ratings are edited via the in-session rate endpoint, not this surface).
+  // photo URL. kind='standalone' edits everything below; kind='session'
+  // (feed-side rating edit, 2026-07-17) branches to the rating-only handler —
+  // the wine belongs to the MOMENT, not the poster, so identity fields are
+  // not editable from the feed.
   const feedItem = await prisma.feedItem.findUnique({
     where: { id: feedItemId },
     include: {
@@ -81,7 +87,21 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       },
     },
   })
-  if (!feedItem || feedItem.kind !== 'standalone' || !feedItem.rating) {
+  if (!feedItem) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Kind branch BEFORE the owner check (mirrors DELETE below): a wrong-owner
+  // 403 on every kind would let any logged-in user distinguish "exists" from
+  // "doesn't" across the whole serial id space (app/api/CLAUDE.md status-code
+  // rules). Session wrong-owner is 404 HERE, before any body validation —
+  // (a) a 400-vs-404 split on a bad body would re-open the existence oracle,
+  // and (b) a caller who rated the same session/wine could otherwise edit
+  // THEIR OWN rating through someone else's feed-item id (the rating lookup
+  // is caller-scoped), and the echoed foreign id would splice their values
+  // into the other post in the client cache.
+  if (feedItem.kind === 'session') {
+    if (feedItem.userId !== userId) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
+  }
+  if (feedItem.kind !== 'standalone' || !feedItem.rating) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
   if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -93,7 +113,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
-    imageData, venueName, city, country, lat, lng, taggedUserIds } = body
+    imageData, venueName, city, country, lat, lng, taggedUserIds,
+    wineRegion, wineCountry, vinification, description, purchaseUrl } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   const lenCheck: Array<[string, unknown, number]> = [
@@ -101,6 +122,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     ['grape', grape, 200], ['type', type, 32],
     ['venueName', venueName, 200], ['city', city, 100], ['country', country, 8],
     ['notes', notes, 4000],
+    // Wine-origin metadata (feed-edit round, 2026-07-17) — same caps as POST.
+    ['wineRegion', wineRegion, 255], ['wineCountry', wineCountry, 8],
+    ['vinification', vinification, 1000], ['description', description, 1000],
+    ['purchaseUrl', purchaseUrl, 1000],
   ]
   for (const [k, v, max] of lenCheck) {
     if (typeof v === 'string' && v.length > max) return NextResponse.json({ error: `${k} too long (max ${max})` }, { status: 400 })
@@ -162,11 +187,15 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     // Same key scheme as POST (wines/ci_<userId>_<timestamp>).
     const keyBase = `wines/ci_${userId}_${Date.now()}`
     const uploaded = await uploadImage(keyBase, imageData).catch(() => null)
-    if (uploaded) {
-      nextImageUrl = uploaded
-      freshUploadUrl = uploaded
+    if (!uploaded) {
+      // FAIL LOUDLY (2026-07-17): the caller explicitly sent a photo; a 200
+      // that silently kept the old image reads as "saved" while the photo
+      // vanished (device-observed with S3 down). 502 lets the client surface
+      // a retryable error instead.
+      return NextResponse.json({ error: 'photo upload failed — try again' }, { status: 502 })
     }
-    // If upload failed, leave the existing image untouched (undefined).
+    nextImageUrl = uploaded
+    freshUploadUrl = uploaded
   } else if (imageData === null) {
     nextImageUrl = null
   }
@@ -213,6 +242,13 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         // Validate `type` against the seeded category_styles. Unknown
         // values coerce to NULL — see POST handler for the rationale.
         style:    effStyle,
+        // Origin + metadata (POST parity: scrub, ISO-2 cleanCountry, cleanUrl
+        // http(s)-only) — partial semantics like every other field here.
+        region:       wineRegion   !== undefined ? (scrub(wineRegion) || null)          : wine.region,
+        country:      wineCountry  !== undefined ? (cleanCountry(wineCountry) || null)  : wine.country,
+        vinification: vinification !== undefined ? (scrub(vinification) || null)        : wine.vinification,
+        description:  description  !== undefined ? (scrub(description) || null)         : wine.description,
+        purchaseUrl:  purchaseUrl  !== undefined ? (cleanUrl(purchaseUrl).slice(0, 1000) || null) : wine.purchaseUrl,
         // wine.imageUrl is the catalog bottle shot, not the user's tasting
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create
@@ -326,6 +362,11 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     vintage: updatedWine.vintage,
     grape: updatedWine.grape,
     type: updatedWine.style,
+    wineRegion: updatedWine.region,
+    wineCountry: updatedWine.country,
+    vinification: updatedWine.vinification,
+    description: updatedWine.description,
+    purchaseUrl: updatedWine.purchaseUrl,
     score: decimalToNumber(updatedRating.score),
     flavors: updatedRating.flavors,
     aromas: updatedRating.aromas,
@@ -341,6 +382,305 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     lat: decimalToNumber(updatedFeedItem.lat),
     lng: decimalToNumber(updatedFeedItem.lng),
     createdAt: updatedFeedItem.createdAt.toISOString(),
+  })
+}
+
+// Feed-side edit of ONE session rating (kind='session' feed items, 2026-07-17).
+// Rating-only — body { wineId, score?, flavors?, aromas?, notes? }; the wine's
+// identity/venue belong to the moment. Owner + rate limit already checked by
+// PATCH. Honors the session-rate invariants: score validation, flavour gate
+// keyed to the wine's SERVER style, aroma present-replaces/omitted-preserves,
+// engagement cascade when an edit empties the rating (post reaped only when it
+// was the user's last engaged rating in that session), and a live-Redis mirror
+// (same JSON shape as the rate route) when the session is still alive —
+// PG-only once expired. Deliberately NOT touched: lifetime counters + HoF (an
+// edit is not new activity), rater_name (frozen snapshot), ratedAt (an edit
+// must not reorder history/bookmark recency). Kick/ban posture (ruling,
+// 2026-07-18): the rating is the user's own data, so a kick-keep'd user
+// KEEPS editing it here (PG + their feed/history update). The live mirror
+// updates their own retained key roster-independently (buildRatingsView
+// hides it from every live view while off-roster), but a non-roster editor
+// never refreshes the session-wide TTL — see the mirror block.
+// kick-delete/ban delete the row → 404.
+async function patchSessionRating(req: NextRequest, feedItemId: number, sessionId: number | null, userId: number) {
+  if (sessionId == null) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Request-start timestamp — the mirror's newer-live-write guard compares
+  // the stored payload's `at` against this (see the mirror block).
+  const t0 = Date.now()
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
+  const { wineId, score, flavors, aromas, notes } = body
+  if (!wineId || typeof wineId !== 'string' || wineId.length > 32 || !/^[A-Za-z0-9_-]+$/.test(wineId)) {
+    return NextResponse.json({ error: 'wineId required' }, { status: 400 })
+  }
+  if (notes !== undefined && notes !== null && typeof notes !== 'string') {
+    return NextResponse.json({ error: 'notes must be a string' }, { status: 400 })
+  }
+  if (typeof notes === 'string' && notes.length > 4000) return NextResponse.json({ error: 'notes too long (max 4000)' }, { status: 400 })
+
+  const rating = await prisma.rating.findFirst({
+    where: { userId, sessionId, wineId },
+    include: { wine: { select: { style: true } } },
+  })
+  if (!rating) return NextResponse.json({ error: 'not found' }, { status: 404 })
+
+  // Resolve the live session ONCE, before validation: the flavour gate must
+  // key on the wine's CURRENT style (the PG mirror only refreshes on rate
+  // POSTs, so it lags a host's type edit — rate-route parity), and the mirror
+  // step below needs liveness + roster. Redis trouble here degrades to
+  // PG-only — it must never fail the edit.
+  const sess = await prisma.session.findUnique({ where: { id: sessionId }, select: { code: true } })
+  const code = sess?.code ? normalizeCode(sess.code) : null
+  let live = false
+  let liveStyle: string | null = null
+  if (code) {
+    try {
+      live = await existsKey(k.meta(code))
+      if (live) {
+        liveStyle = (await getWines(code)).find(w => w.id === wineId)?.type ?? null
+      }
+    } catch (err) {
+      console.warn('[checkins] live-session lookup failed — PG-only edit:', err)
+      live = false
+    }
+  }
+
+  let validScore: number | null | undefined = undefined
+  if (score !== undefined) {
+    const c = validateScore(score)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validScore = c.value
+  }
+  let validFlavorsValue: Record<string, number> | undefined = undefined
+  if (flavors !== undefined) {
+    const c = validateFlavors(flavors)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    const norm = gateAndFillFlavors(c.value, 'wine', liveStyle ?? rating.wine.style)
+    if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
+    validFlavorsValue = norm.value
+  }
+  const aromasProvided = aromas !== undefined
+  let validAromas: AromaSelection[] = []
+  if (aromasProvided) {
+    const c = gateAromas(aromas)
+    if (c.error) return NextResponse.json({ error: c.error }, { status: 400 })
+    validAromas = c.value ?? []
+  }
+
+  // FIELD-PRECISE update: only the provided fields are written, so two
+  // devices editing DIFFERENT fields compose instead of overwriting each
+  // other (the old read-merge-write-all lost whichever landed first). The row
+  // Prisma returns is the committed truth — emptiness, the mirror, and the
+  // echo all read it, never the pre-read merge.
+  const data: { score?: number | null; flavors?: object; aromas?: object[]; notes?: string | null } = {}
+  if (score !== undefined) data.score = validScore
+  if (flavors !== undefined) data.flavors = validFlavorsValue ?? {}
+  if (aromasProvided) data.aromas = validAromas as object[]
+  if (notes !== undefined) data.notes = scrub(notes)
+
+  let updated: { score: unknown; flavors: unknown; aromas: unknown; notes: string | null } = rating
+  const didUpdate = Object.keys(data).length > 0
+  // The mirror's ordering token: concurrent UPDATEs to the same row serialize
+  // on the row lock (held to commit), so a clock_timestamp() read in the SAME
+  // transaction is a true per-row VERSION token — later commit ⇒ strictly
+  // later ts. A wall-clock stamped at mirror time (the previous design)
+  // ordered the mirror WRITES, not the payloads they carry: an older commit
+  // mirroring late would out-stamp a newer one (Codex round 4).
+  let versionTs = t0
+  if (didUpdate) {
+    try {
+      const [row, tsRows] = await prisma.$transaction([
+        prisma.rating.update({
+          where: { id: rating.id },
+          data,
+          select: { score: true, flavors: true, aromas: true, notes: true },
+        }),
+        prisma.$queryRaw<[{ ts: Date }]>`SELECT clock_timestamp() AS ts`,
+      ])
+      updated = row
+      versionTs = tsRows[0].ts.getTime()
+    } catch (err) {
+      // P2025 = concurrent delete (account cascade / kick wipe) — surface 404.
+      if ((err as { code?: string })?.code === 'P2025') return NextResponse.json({ error: 'not found' }, { status: 404 })
+      throw err
+    }
+  }
+  let nextScore = decimalToNumber(updated.score as never)
+  let nextFlavors = (updated.flavors as Record<string, number> | null) ?? {}
+  let nextAromas = (updated.aromas as AromaSelection[] | null) ?? []
+  let nextNotes = updated.notes
+
+  // Engagement cascade: an edit that EMPTIES the rating reaps it (and the
+  // post, iff it was the last engaged rating) — same rule as an empty rate
+  // POST. empty-only mode re-checks emptiness in SQL, so a concurrent engaged
+  // write wins and nothing is deleted.
+  const hasEngagement =
+    (nextScore ?? 0) > 0 ||
+    Object.keys(nextFlavors).length > 0 ||
+    nextAromas.length > 0 ||
+    (nextNotes ?? '').length > 0
+  let reaped = false
+  let concurrentWriteWon = false
+  if (!hasEngagement) {
+    reaped = await engagementDeletionCascade(rating.id, 'empty-only')
+    if (!reaped) {
+      // A false cascade means the SQL empty-predicate did NOT delete the row
+      // — either a concurrent ENGAGED write landed after our update, or a
+      // concurrent CLEAR already deleted the row. Disambiguate on the fresh
+      // read: row present → the engaged write wins (leave Redis alone —
+      // rate-route rule — and echo the survivor); row GONE → report reaped,
+      // or the client would retain an actionable cached rating whose next
+      // action 404s.
+      const fresh = await prisma.rating.findUnique({
+        where: { id: rating.id },
+        select: { score: true, flavors: true, aromas: true, notes: true },
+      })
+      if (!fresh) {
+        reaped = true
+      } else {
+        concurrentWriteWon = true
+        nextScore = decimalToNumber(fresh.score)
+        nextFlavors = (fresh.flavors as Record<string, number> | null) ?? {}
+        nextAromas = (fresh.aromas as AromaSelection[] | null) ?? []
+        nextNotes = fresh.notes
+      }
+    }
+  }
+  const feedItemDeleted = reaped
+    ? !(await prisma.feedItem.findUnique({ where: { id: feedItemId }, select: { id: true } }))
+    : false
+
+  // Live-Redis mirror: while the session is alive, the compare/live screens
+  // read s:{code}:r:{identityId}:{wineId} — an unmirrored PG edit would show
+  // stale ratings in the live session until expiry. Session gone (or the
+  // sessions row tombstoned, code NULL) → PG-only, nothing to sync.
+  //
+  // Ordering model: the live-session writers are REDIS-FIRST (the rate POST
+  // SETs the key before its PG archive; the rate DELETE DELs it before its PG
+  // delete), so the key's payload `at` — which every writer stamps — is the
+  // live ordering token, NOT a PG re-read (a re-read would clobber a rate
+  // POST's fresh Redis value with its not-yet-archived PG state). This PATCH
+  // stamps `at` with versionTs — the row's COMMIT-ORDER token (see the
+  // transaction above) — so two PATCHes converge on the later COMMIT no
+  // matter which mirrors last. Three rules per attempt, under WATCH on the
+  // key AND the identities hash (a kick-keep only touches the hash —
+  // key-only WATCH couldn't see it):
+  //   1. key absent → skip. Every live rating's key exists (the POST wrote
+  //      it); absence means a concurrent clear/wipe just removed it — a SET
+  //      would resurrect a ghost the PG side is deleting.
+  //   2. stored `at` >= versionTs → a payload with same-or-newer provenance
+  //      already landed — its state wins, skip. (>= so a same-millisecond
+  //      stamp defers to the existing value instead of clobbering it.)
+  //   3. else SET this request's committed merge / DEL on reap. WatchError
+  //      (key touched mid-attempt) → retry re-decides fresh.
+  // The mirror is ROSTER-INDEPENDENT (PR #81 review P1 — supersedes the
+  // earlier roster gate): the key is the caller's OWN rating, kick-keep
+  // deliberately retains it, and buildRatingsView hides it from every live
+  // view while they're off the roster — so updating it leaks nothing, while
+  // SKIPPING it left a stale payload that resurfaced on rejoin showing the
+  // pre-edit rating (and could seed a later live save with reverted state).
+  // Off-roster writes are the same class as the reap DEL below (own-key
+  // maintenance). Residual (accepted): a freak same-ms version tie between
+  // two PATCHes. The rate-POST cross-writer race is closed by that route's
+  // post-commit re-assert (both writers stamp PG-clock tokens — one
+  // ordering authority, last PG committer owns both stores; its pre-archive
+  // write carries a provisional always-loses at:0, so a skewed app clock
+  // can never out-stamp a PG token and block this mirror).
+  if (live && code && !concurrentWriteWon && (reaped || didUpdate)) {
+    const key = k.rating(code, `u:${userId}`, wineId)
+    try {
+      let wrote = false
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          await redis.executeIsolated(async (iso) => {
+            await iso.watch([key])
+            try {
+              const cur = await iso.get(key)
+              if (!cur) {
+                await iso.unwatch()
+                return
+              }
+              let curAt = 0
+              try { curAt = Number(JSON.parse(cur)?.at) || 0 } catch { curAt = 0 }
+              if (curAt >= versionTs) {
+                await iso.unwatch()
+                return
+              }
+              if (reaped) {
+                // Deleting the user's OWN key is cleanup, allowed off-roster.
+                await iso.multi().del(key).exec()
+                return
+              }
+              await iso.multi().set(key, JSON.stringify({
+                score: nextScore ?? 0,
+                flavors: nextFlavors,
+                aromas: nextAromas,
+                notes: nextNotes ?? '',
+                at: versionTs,
+              }), { EX: TTL }).exec()
+              wrote = true
+            } catch (inner) {
+              // Release the WATCH before rethrowing — a leaked WATCH would
+              // poison the pooled connection's next borrower.
+              await iso.unwatch().catch(() => {})
+              throw inner
+            }
+          })
+          break
+        } catch (err) {
+          if (err instanceof WatchError) continue
+          throw err
+        }
+      }
+      // Re-stamp the keyspace to the session's real lifespan (the EX above is
+      // the default TTL; touchWithMeta corrects pro lifespans — rate-route
+      // pattern) — but ONLY for a caller still on the roster. The mirror
+      // WRITE is roster-independent (own-key maintenance, see above); the
+      // session-wide TTL refresh is NOT: touchWithMeta re-stamps EVERY
+      // s:{code}:* key, so an off-roster (kicked) editor repeatedly saving
+      // their feed post could keep the whole live session alive forever
+      // (PR #81 review P2). Off-roster, clamp the just-written key to the
+      // meta key's REMAINING TTL instead — the retained rating dies with
+      // the session (never outlives it onto a recycled code) and the fresh
+      // EX above can't extend anything. PTTL, not TTL (Codex round 4): a
+      // second-resolution TTL reads 0 at expiry, and a `rem > 0` guard
+      // would leave the key on the full default TTL exactly when the
+      // session is dying. PEXPIRE with 0 deletes the key — the right
+      // semantic at the boundary. Meta GONE (-2, expired between the
+      // `live` check and here) → delete the key outright; -1 (no expiry)
+      // can't happen (lifespans are finite) → leave the default.
+      // ACCEPTED residual (Codex round 5): the PTTL→PEXPIRE round-trip
+      // means the key can outlive meta by a few ms. Exact alternatives
+      // rejected: PEXPIRETIME is Redis 7.0+ (an error here silently skips
+      // the whole clamp — worse), and a Lua script is disproportionate
+      // for a window that can't recycle a session code.
+      if (wrote) {
+        const onRoster = await redis.hExists(k.identities(code), `u:${userId}`)
+        if (onRoster) {
+          await touchWithMeta(code)
+        } else {
+          const remMs = await redis.pTTL(k.meta(code))
+          if (remMs >= 0) await redis.pExpire(key, remMs)
+          else if (remMs === -2) await redis.del(key)
+        }
+      }
+    } catch (err) {
+      // BEST-EFFORT: PG committed above — a Redis failure must not turn the
+      // success into a reported 500 (a retry against a reaped rating would
+      // 404). Log and return the committed state.
+      console.warn('[checkins] live mirror failed (PG committed):', err)
+    }
+  }
+
+  return NextResponse.json({
+    id: feedItemId,
+    wineId,
+    score: nextScore,
+    flavors: nextFlavors,
+    aromas: nextAromas,
+    notes: nextNotes,
+    reaped,
+    feedItemDeleted,
   })
 }
 

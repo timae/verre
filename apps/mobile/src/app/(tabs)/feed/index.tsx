@@ -2,14 +2,16 @@ import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Pressable, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
 import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
 import { CenteredMessage, ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { FEED_KEY, FEED_STALE_MS, feedQueryOptions, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
+import { FEED_KEY, FEED_STALE_MS, deleteCheckin, feedQueryOptions, patchSessionRating, setFeedItemLike, feedItemId, type FeedItem, type FeedPage } from '@/lib/api/feed';
+import { ApiError } from '@/lib/api/sessions';
+import { authClient } from '@/lib/authClient';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { radius, space, useTheme } from '@/theme';
 
@@ -143,11 +145,105 @@ export default function Feed() {
     [router],
   );
 
+  // Owner delete flows (Simon, 2026-07-18) — both confirm via the house
+  // native alert. Standalone = DELETE the whole check-in (post + rating +
+  // photo). Session = "Delete Rating": clear the active impression's rating
+  // via the empty-PATCH reap path; the post itself only disappears when that
+  // was its last content. Either way the feed refetches IN PLACE (never
+  // invalidate — the scroll-creep rule above).
+  const deleteBusy = useRef(false);
+  const runDelete = useCallback(
+    async (op: () => Promise<unknown>, applyToCache: (item: FeedItem) => FeedItem | null) => {
+      if (deleteBusy.current) return;
+      deleteBusy.current = true;
+      try {
+        await op();
+        // Reflect the delete in the cache IMMEDIATELY (like-flow pattern) —
+        // waiting for the refetch alone leaves the deleted card actionable,
+        // and a second delete would 404 (Codex). Cancel first so an in-flight
+        // focus/pull refetch can't clobber the write; the awaited refetch then
+        // reconciles with the server (and holds the busy flag meanwhile).
+        await queryClient.cancelQueries({ queryKey: FEED_KEY });
+        queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
+          data
+            ? {
+                ...data,
+                pages: data.pages.map((p) => ({ ...p, items: p.items.map(applyToCache).filter((it): it is FeedItem => it !== null) })),
+              }
+            : data,
+        );
+        await queryClient.refetchQueries({ queryKey: FEED_KEY });
+      } catch (e) {
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        Alert.alert('Could not delete', msg || 'Check your connection and try again.');
+      } finally {
+        deleteBusy.current = false;
+      }
+    },
+    [queryClient],
+  );
+  // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).
+  const confirmDeleteCheckin = useCallback(
+    (id: number, name: string) => {
+      Alert.alert(
+        name ? `Delete “${name}”?` : 'Delete this check-in?',
+        'This removes the post, its rating, and its photo. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => deleteCheckin(id),
+                (it) => (feedItemId(it) === id ? null : it),
+              ),
+          },
+        ],
+      );
+    },
+    [runDelete],
+  );
+  const confirmDeleteRating = useCallback(
+    (id: number, wineId: string, name: string) => {
+      Alert.alert(
+        name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
+        'This resets your rating for this impression. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => patchSessionRating(id, { wineId, score: 0, flavors: {}, aromas: [], notes: '' }),
+                // Drop the cleared wine from the post; drop the whole post
+                // when that was its last impression (the server reaps it).
+                (it) => {
+                  if (it.type !== 'session' || it.session.id !== id) return it;
+                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  if (wines.length === 0) return null;
+                  return { ...it, session: { ...it.session, wines } };
+                },
+              ),
+          },
+        ],
+      );
+    },
+    [runDelete],
+  );
+
   const conn = connectionView(feed.isError, items.length > 0);
+
+  // Owner gate for the cards' ⋯ Edit (the detail screen's meId/isOwner
+  // pattern) — Better Auth user ids are strings, feed author ids numbers.
+  const meId = authClient.useSession().data?.user.id;
+  const myUserId = meId != null ? Number(meId) : null;
 
   const renderItem = useCallback(
     ({ item }: { item: FeedItem }) => {
       const id = feedItemId(item);
+      const isOwner = myUserId != null && item.author.id === myUserId;
       if (item.type === 'session') {
         return (
           <SessionFeedCard
@@ -156,6 +252,18 @@ export default function Feed() {
             createdAt={item.createdAt}
             onOpenImpression={(wineIndex) => openImpression(id, wineIndex)}
             onToggleLike={(next) => toggleLike(id, next)}
+            onEdit={isOwner ? (wineId) => router.push({ pathname: '/feed/edit/[id]', params: { id: String(id), wine: wineId } }) : undefined}
+            onDeleteRating={
+              isOwner
+                ? (wineId) => {
+                    // Blind wines carry a redacted empty name — use the card's
+                    // own alias ("Wine N") so the confirm still names its target.
+                    const idx = item.session.wines.findIndex((w) => w.id === wineId);
+                    const w = idx >= 0 ? item.session.wines[idx] : undefined;
+                    confirmDeleteRating(id, wineId, w ? (w._blind ? `Wine ${idx + 1}` : w.name) : '');
+                  }
+                : undefined
+            }
           />
         );
       }
@@ -166,10 +274,12 @@ export default function Feed() {
           createdAt={item.createdAt}
           onOpen={() => openImpression(id, 0)}
           onToggleLike={(next) => toggleLike(id, next)}
+          onEdit={isOwner ? () => router.push({ pathname: '/feed/edit/[id]', params: { id: String(id) } }) : undefined}
+          onDelete={isOwner ? () => confirmDeleteCheckin(id, item.checkin.wineName) : undefined}
         />
       );
     },
-    [openImpression, toggleLike],
+    [openImpression, toggleLike, myUserId, router, confirmDeleteCheckin, confirmDeleteRating],
   );
 
   const topPad = insets.top + space.md;

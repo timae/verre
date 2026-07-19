@@ -4,7 +4,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { DateField, SelectField } from '@/components/moments/momentForm';
 import { Avatar } from '@/components/ui/Avatar';
 import { RoleChip } from '@/components/moments/RoleChip';
@@ -626,6 +626,11 @@ function MultiPickSheet({
   const chrome = 92 + (searchable ? 48 : 0) + 78 + insets.bottom;
   const estimate = chrome + options.length * rowH;
   const needsSnap = searchable || estimate > windowH * 0.85;
+  // BottomSheetView only in fit-to-content mode; in snap/scroll mode a plain
+  // View — BottomSheetView around the scrollable re-registers the sheet's
+  // scrollable as type VIEW and locks the list (apps/mobile/CLAUDE.md
+  // sheet-scroll invariant).
+  const Wrap = needsSnap ? View : BottomSheetView;
   const footer = (
     <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 20, paddingTop: 10, paddingBottom: insets.bottom + 12, borderTopWidth: 1, borderTopColor: theme.rule }}>
       <Button title="Clear" variant="secondary" block style={{ flex: 1 }} disabled={selected.length === 0} onPress={onClear} />
@@ -720,7 +725,7 @@ function MultiPickSheet({
       layer={1}
       {...(needsSnap ? { snapPoints: [Math.min(estimate, windowH * 0.85)], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
-      <BottomSheetView style={needsSnap ? { flex: 1, paddingTop: 12 } : { width: '100%', paddingTop: 12 }}>
+      <Wrap style={needsSnap ? { flex: 1, paddingTop: 12 } : { width: '100%', paddingTop: 12 }}>
         {head}
         {needsSnap ? (
           <BottomSheetScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 }}>
@@ -732,7 +737,7 @@ function MultiPickSheet({
           </View>
         )}
         {footer}
-      </BottomSheetView>
+      </Wrap>
     </Sheet>
   );
 }

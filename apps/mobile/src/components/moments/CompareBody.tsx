@@ -11,27 +11,37 @@ import {
   resolveAxes,
   type ConsensusKey,
 } from '@verre/core';
+import {
+  aromaTasteSummary,
+  buildCompareAromaModel,
+  compareAromaInputSignature,
+  hasResolvableAroma,
+  viewContributorsRoute,
+  type Tier3Route,
+} from '@/components/moments/aromaCompareView';
+import { AromaCompareStrip } from '@/components/moments/AromaCompareStrip';
+import { AromaDetailSheet, TasteDetailSheet, type TasteDetailKind } from '@/components/moments/AromaDetailSheet';
 import { ComparisonWheel } from '@/components/scoring/ComparisonWheel';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { RadarOverlay } from '@/components/scoring/RadarOverlay';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
-import { AnchoredMenu, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { AnchoredMenu, AnchorButton, MenuItem, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
-import { TextField } from '@/components/ui/TextField';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Thumb } from '@/components/ui/Thumb';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
-import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { fuzzyIncludes } from '@/lib/search';
 import { intensityWord } from '@/lib/scoreWords';
 import { motion, radius, useTheme } from '@/theme';
 import { useFlavourColors, usePersonColors } from '@/theme/flavourColors';
+
 
 // 02d Compare — the session screen's second TAB (in-screen swap, Simon's
 // ruling 2026-07-02: everything above the tab strip stays, no route change).
@@ -154,10 +164,14 @@ function buildItems(
           filled: fillFlavourZeros(b.ratings[wine.id].flavors, 'wine', wine.type),
           personIndex: rosterIndex.get(b.id)!,
         }))
-        // Compare renders scores + structure only — a notes-only (or stale
-        // cleared) rating has neither and would make a dead-end card ("No
-        // structure detail" + "No scores yet").
-        .filter((r) => (r.rating.score || 0) > 0 || Object.keys(r.filled).length > 0);
+        // Compare renders score, structure, OR aromas — an aroma-only rating is
+        // real compare input (the Aroma-agreement strip needs it); only a
+        // notes-only (or stale cleared) rating has none of the three and would
+        // make a dead-end card ("No structure detail" + "No scores yet").
+        .filter((r) =>
+          (r.rating.score || 0) > 0
+          || Object.keys(r.filled).length > 0
+          || hasResolvableAroma(r.rating.aromas));
       const scores = raters.map((r) => r.rating.score || 0);
       const scoredScores = scores.filter((v) => v > 0);
       return {
@@ -486,12 +500,15 @@ export function ComparePickerSheet({
       {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
       {needsScroll ? (
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+        // Plain View wrapper in scroll mode — a BottomSheetView here would
+        // re-register the sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, paddingHorizontal: 18 }}>
           {headBlock}
           <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
             {rowsBlock}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       ) : (
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
           {headBlock}
@@ -582,10 +599,26 @@ export function CompareBody({
 function CmpAccItem({ item }: { item: CmpItem }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // Fixed ACROSS cards, but large enough for the widest capped score label.
+  // `score` tops out at 1.15×; growing the shared box by the same factor keeps
+  // every star on one x-coordinate without clipping 4.25.
+  const scoreBoxWidth = Math.max(60, Math.round(60 * phone.surface('score').fontScale));
   const { wine } = item;
   const [open, setOpen] = useState(false);
   const [selAxis, setSelAxis] = useState(-1);
   const [selPerson, setSelPerson] = useState<string | null>(null);
+  // The Tier 3 aroma detail sheet (tabbed since slice 3d) — opened from the
+  // strip's "Aroma Details" (default tab, no focus), the popover's "+N more"
+  // (Agreement tab, focused on the tapped node's branch), and the popover's
+  // View Contributors / Perceived-by tap (People tab filtered to the aroma,
+  // via the staged viewContributorsRoute).
+  const [aromaSheet, setAromaSheet] = useState<{ open: boolean; focusId?: string; route?: Tier3Route }>({ open: false });
+  // The taste-stat ranking sheet (pushed OVER the aroma detail sheet). Owned
+  // HERE, not inside AromaDetailSheet: its modal must mount as a stable
+  // SIBLING (the screen-level sheet anatomy) — the first cut nested it inside
+  // the conditionally-mounted detail sheet and closing it stranded the parent
+  // on device.
+  const [tasteDetail, setTasteDetail] = useState<TasteDetailKind | null>(null);
   // Radar mode only (2–4 profiles): per-card chart-layer toggle — tapping a
   // person row hides/shows their LINE on the overlay (Simon's ruling; the
   // rail stays the selection surface, this is purely visual).
@@ -607,6 +640,42 @@ function CmpAccItem({ item }: { item: CmpItem }) {
     () => aggregateFlavourAxes(item.raters.map((r) => r.rating.flavors), 'wine', wine.type),
     [item, wine.type],
   );
+  // The ONE compare-aroma derivation for this card (consensus + contributors +
+  // mode fork + strip + all-aromas rows), computed once and passed to BOTH the
+  // Tier 2 strip and the Tier 3 sheet — they can never drift on their own
+  // recomputation (Codex architecture ruling, 2026-07-15).
+  const aromaInputs = item.raters.map((r) => ({
+    id: r.id,
+    displayName: r.displayName,
+    aromas: r.rating.aromas ?? [],
+  }));
+  const aromaInputSignature = compareAromaInputSignature(aromaInputs);
+  // Keep the input object stable while its semantic signature is unchanged.
+  // The 5s poll rebuilds `item` even for byte-identical ratings; depending on
+  // `item` made every card (including collapsed ones) rebuild the full model.
+  const stableAromaInputs = useRef({ signature: aromaInputSignature, value: aromaInputs });
+  if (stableAromaInputs.current.signature !== aromaInputSignature) {
+    stableAromaInputs.current = { signature: aromaInputSignature, value: aromaInputs };
+  }
+  const aromaModel = useMemo(
+    () => (open || aromaSheet.open ? buildCompareAromaModel(stableAromaInputs.current.value) : null),
+    // `aromaInputSignature` deliberately replaces the poll-churned input
+    // object as the semantic dependency; the ref above carries that exact data.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aromaInputSignature, aromaSheet.open, open],
+  );
+  // Taste rankings — computed ONCE at the card (detail sheet + ranking sheet
+  // consume the same instance), and only while a sheet actually needs it (the
+  // 100-respondent pairwise pass must not ride every card poll).
+  const tasteSummary = useMemo(
+    () => (aromaModel && (aromaSheet.open || tasteDetail != null) ? aromaTasteSummary(aromaModel.contrib.participants) : null),
+    [aromaModel, aromaSheet.open, tasteDetail],
+  );
+  // Mount the aroma block whenever there's a RESOLVABLE respondent — the strip
+  // shows the agreement OR the flat union fallback (Simon 2026-07-14). The
+  // consensus n only counts tasters with >=1 resolvable aroma, so a row of only
+  // obsolete/unknown ids won't mount a padded block that the strip then blanks.
+  const hasAnyAroma = (aromaModel?.result.n ?? 0) > 0;
 
   // .cmp-chev transform dur-2 — native-driven rotate, no re-render per frame.
   const chev = useRef(new Animated.Value(0)).current;
@@ -720,10 +789,9 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             {item.avg !== null ? (
               // Fixed-width, star-anchored-left so the ★ lands at a constant x
               // across cards (a right-aligned StarScore would float the star by
-              // the number's width). 60 holds the widest value (★19 + gap4 +
-              // "4.25" ~36); the content is a fixed 17px, so this width is flat,
-              // not comfort-grown.
-              <View style={{ width: 60, alignItems: 'flex-start' }}>
+              // the number's width). The box scales only with the centrally
+              // capped score surface, never per value.
+              <View style={{ width: scoreBoxWidth, alignItems: 'flex-start' }}>
                 <StarScore value={item.avg} size={17} />
               </View>
             ) : null}
@@ -743,7 +811,24 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             selAxis={detail ? -1 : selAxis}
             onSelectAxis={selectAxis}
           />
-          <View style={{ marginTop: 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16 }}>
+          {/* Aromas — DIRECTLY under the structure wheel (feed-detail order:
+              structure → aromas), before the per-person score rows. Shows the
+              consensus strip when the panel agrees, else the flat union
+              fallback ("Aromas mentioned" / "Aromas"); the strip self-guards to
+              null when nobody gave an aroma. */}
+          {hasAnyAroma && aromaModel ? (
+            <View style={{ marginTop: 4, paddingTop: 12, paddingBottom: 12 }}>
+              <AromaCompareStrip
+                model={aromaModel}
+                onOpenDetails={(focusId) => setAromaSheet(focusId ? { open: true, focusId } : { open: true })}
+                onViewContributors={(aromaId) => setAromaSheet({ open: true, route: viewContributorsRoute(aromaId) })}
+              />
+            </View>
+          ) : null}
+          {/* marginTop 4 only when the aroma block is ABSENT (main's spacing);
+              with it present the block's paddingBottom 12 already centers the
+              rule (12 above / 12 below). */}
+          <View style={{ marginTop: hasAnyAroma ? 0 : 4, borderTopWidth: 1, borderTopColor: theme.rule, paddingTop: 12, paddingBottom: 16 }}>
             {drillAxis ? (
               <AxisSplit
                 item={item}
@@ -780,6 +865,28 @@ function CmpAccItem({ item }: { item: CmpItem }) {
           structureFirst={agg.n >= 1 && agg.n <= 4}
         />
       ) : null}
+      {aromaSheet.open && aromaModel ? (
+        <AromaDetailSheet
+          open={aromaSheet.open}
+          onClose={() => setAromaSheet({ open: false })}
+          model={aromaModel}
+          wineName={wine._blind ? `Impression ${item.index + 1}` : wine.name}
+          focusId={aromaSheet.focusId}
+          route={aromaSheet.route}
+          tasteSummary={tasteSummary}
+          onOpenTasteDetail={setTasteDetail}
+        />
+      ) : null}
+      {/* SIBLING of the detail sheet, mounted whenever the model exists — its
+          lifecycle must not be gated on aromaSheet.open (see the state doc). */}
+      {aromaModel ? (
+        <TasteDetailSheet
+          kind={tasteDetail}
+          summary={tasteSummary}
+          participants={aromaModel.contrib.participants}
+          onClose={() => setTasteDetail(null)}
+        />
+      ) : null}
     </View>
   );
 }
@@ -802,8 +909,10 @@ function CmpChart({
   onSelectAxis: (i: number) => void;
 }) {
   const phone = usePhoneTokens();
+  const { theme } = useTheme();
   const flavourColor = useFlavourColors();
   const personColor = usePersonColors();
+  const [infoAnchor, setInfoAnchor] = useState<MenuAnchor | null>(null);
   const axes = resolveAxes('wine', item.wine.type);
   // Measured host width → uniform chart scale-down (the design's .radar
   // max-width:100%): the natural canvas (232 + 2×58 label pad = 348) is wider
@@ -815,7 +924,12 @@ function CmpChart({
 
   let head: string;
   let chart: React.ReactNode;
+  // `hint` is the always-visible descriptive line (kept for the single-person
+  // wheel — it explains WHY it's one person's view). `infoHint` is the
+  // interaction how-to for the group modes (radar/wheel) — packed into the ⓘ
+  // button beside the title, matching RatingSection's intensity reference.
   let hint: string | null = null;
+  let infoHint: string | null = null;
   // Size-adaptive mode keys on the STRUCTURE-ENGAGED tasters (ruled via
   // review feedback): one structure profile among score-only raters draws
   // that person's wheel, never a one-series radar or a degenerate C1b.
@@ -852,8 +966,8 @@ function CmpChart({
       </VText>
     );
   } else if (flavourRaters.length <= 4) {
-    head = 'Group flavour';
-    hint = 'Tap a flavour name to see the split.';
+    head = 'Group structure';
+    infoHint = 'Tap a flavour name to see the split.';
     // agg.axes is built from the SAME resolveAxes('wine', type) list, in the
     // same order — so index i lines up with axes[i]. n=0 = never asked.
     chart = (
@@ -875,7 +989,7 @@ function CmpChart({
     );
   } else {
     head = 'Group intensity · range + average';
-    hint = 'Tap a wedge to see the split.';
+    infoHint = 'Tap a wedge to see the split.';
     chart = (
       <ComparisonWheel
         axes={agg.axes.map((a) => ({ label: a.l, color: flavourColor(a.k), min: a.min, max: a.max, avg: a.avg, absent: a.n === 0 }))}
@@ -888,16 +1002,41 @@ function CmpChart({
   }
   return (
     <>
-      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginBottom: 6 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginBottom: 6 }}>
         <VText variant="label" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', ...phone.text('label') }}>
           {head}
         </VText>
+        {infoHint ? (
+          // 30pt real touch box (hitSlop can't extend past a small parent — RN
+          // clips it to the parent frame, so the BOX must be the target). The
+          // box already centers in the row; the glyph then reads a hair LOW
+          // because uppercase caps sit visually high in their line box (no
+          // descenders), so the icon gets a 1pt upward translate to land its
+          // midline on the caps' midline. The translate doesn't affect layout
+          // or the touch box.
+          <AnchorButton
+            size={30}
+            accessibilityLabel="How to read this chart"
+            onOpen={setInfoAnchor}
+          >
+            <View style={{ transform: [{ translateY: -1 }] }}>
+              <Icon name="info" size={14} color={theme.inkSoft} />
+            </View>
+          </AnchorButton>
+        ) : null}
       </View>
       <View onLayout={(e) => setHostW(e.nativeEvent.layout.width)} style={{ alignItems: 'center', marginVertical: -6 }}>{chart}</View>
       {hint ? (
         <VText variant="caption" color="inkSoft" style={{ textAlign: 'center', marginTop: 8, fontStyle: 'italic' }}>
           {hint}
         </VText>
+      ) : null}
+      {infoHint ? (
+        <AnchoredMenu anchor={infoAnchor} onClose={() => setInfoAnchor(null)} right={16} minWidth={180}>
+          <View style={{ paddingHorizontal: 10, paddingVertical: 6 }}>
+            <VText variant="small" style={{ color: theme.ink }}>{infoHint}</VText>
+          </View>
+        </AnchoredMenu>
       ) : null}
     </>
   );
@@ -974,7 +1113,7 @@ function ShowAllButton({ total, onPress }: { total: number; onPress: () => void 
   const phone = usePhoneTokens();
   return (
     <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => ({ paddingVertical: 4, marginTop: 8, alignSelf: 'flex-start', opacity: pressed ? 0.6 : 1 })}>
-      <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+      <VText color="accent" surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
         Show All {total}
       </VText>
     </Pressable>
@@ -1160,66 +1299,6 @@ function AxisSplit({
   );
 }
 
-// .cmp-sheet-search — 36px borderless pill on surface-sunk with a leading
-// search glyph. TextField is kept for its formControl Dynamic Type surface;
-// the pill spec overrides its box styles.
-export function SheetSearchField({ value, onChangeText, placeholder, highlight, onFocus, onBlur }: { value: string; onChangeText: (t: string) => void; placeholder: string; highlight?: boolean; onFocus?: () => void; onBlur?: () => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  // Clearing is part of typing — the ✕ must not bounce the keyboard.
-  const clearRef = useRef<View | null>(null);
-  useRegisterInput(clearRef, value !== '');
-  // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
-  // border, matching the chip controls — never the sunken fill. Restyle the
-  // InviteSheet pseudo-field too if this ever changes. Height rides the
-  // formControl surface — 36 at default scale, growing with the text.
-  // ⚠️ Known accepted a11y nit (Simon's call, PR #65 review round 3): the
-  // clear ✕ target is therefore ~36pt at default scale, under the 44pt
-  // guideline — RN clips a child's hitSlop to the parent frame, so the ONLY
-  // way to reach 44 was to floor the whole field at 44, which makes the pill
-  // taller than the sibling 36pt chips everywhere. Not worth the visual cost
-  // for a small, non-destructive button (the wide field-focus target is fine;
-  // a ✕ mistap just doesn't clear). Large Dynamic Type grows it past 44 anyway.
-  const fieldH = phone.surface('formControl').height(36);
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, height: fieldH, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: highlight ? 1.5 : 1, borderColor: highlight ? theme.accent : theme.rule }}>
-      <Icon name="search" size={16} color={theme.inkSoft} />
-      <View style={{ flex: 1 }}>
-        <TextField
-          placeholder={placeholder}
-          // Placeholder stops being the accessible name once text is entered.
-          accessibilityLabel={placeholder}
-          value={value}
-          onChangeText={onChangeText}
-          autoCorrect={false}
-          autoCapitalize="none"
-          onFocus={onFocus}
-          onBlur={onBlur}
-          // fontSize override ⇒ lineHeight must match it (TextField's base
-          // compact lineHeight is body-sized; a mismatched line box re-biases
-          // the glyph — see TextField's header).
-          style={{ height: fieldH, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
-        />
-      </View>
-      {value !== '' ? (
-        <Pressable
-          ref={clearRef}
-          accessibilityRole="button"
-          accessibilityLabel="Clear search"
-          onPress={() => onChangeText('')}
-          // Fills the field's full height for the tallest reachable target the
-          // parent allows (RN clips slop to the parent frame — see fieldH);
-          // width 40 + horizontal slop widens it. Icon 14pt; -6 snug to edge.
-          hitSlop={{ left: 8, right: 8 }}
-          style={{ width: 40, height: fieldH, alignItems: 'center', justifyContent: 'center', marginRight: -6 }}
-        >
-          <Icon name="x" size={14} color={theme.inkFaint} />
-        </Pressable>
-      ) : null}
-    </View>
-  );
-}
-
 // ── "Show all N" full-list sheet (.cmp-sheet — the List-overflow pattern) ────
 // Search + high/low sort over the open impression's SELECTED rows: scores, or
 // the drilled axis's intensities. Read-only rows — selection lives on the
@@ -1385,12 +1464,15 @@ function ShowAllSheet({
       {...(needsScroll ? { snapPoints: ['85%'], enableDynamicSizing: false } : { maxDynamicContentSize: windowH * 0.85 })}
     >
       {needsScroll ? (
-        <BottomSheetView style={{ flex: 1, paddingHorizontal: 18 }}>
+        // Plain View wrapper in scroll mode — a BottomSheetView here would
+        // re-register the sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, paddingHorizontal: 18 }}>
           {headBlock}
           <BottomSheetScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: insets.bottom + 8 }}>
             {rowsBlock}
           </BottomSheetScrollView>
-        </BottomSheetView>
+        </View>
       ) : (
         <BottomSheetView style={{ width: '100%', paddingHorizontal: 18, paddingBottom: insets.bottom + 8 }}>
           {headBlock}

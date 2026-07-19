@@ -1,9 +1,10 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   BackHandler,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -19,7 +20,6 @@ import Reanimated, {
   Extrapolation,
   interpolate,
   runOnJS,
-  useAnimatedProps,
   useAnimatedRef,
   useAnimatedStyle,
   useScrollOffset,
@@ -41,7 +41,8 @@ import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { feedQueryOptions, findFeedItem, detailFromItem, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { FEED_KEY, deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
+import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
 import { consumeFeedTransitionSource, requestFeedLanding } from '@/lib/feedTransition';
@@ -159,9 +160,12 @@ export default function FeedImpression() {
   const maxPage = detail ? Math.max(0, detail.wines.length - 1) : 0;
 
   const [active, setActive] = useState(startIndex);
-  // Per-page collapse state, indexed by page. The bar reads active's flag.
-  const [collapsed, setCollapsed] = useState<Record<number, boolean>>({});
-  const [titles, setTitles] = useState<Record<number, string>>({});
+  // Per-page collapse/title state, keyed by WINE ID (not page index): a
+  // rating delete can shrink the wines array and shift indices while a page
+  // stays active — index keys would pin a stale collapsed flag/title on
+  // whichever wine slid into that slot. The bar reads the active wine's flag.
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [titles, setTitles] = useState<Record<string, string>>({});
 
   // Fullscreen impression gallery (design gFull): hero tap opens ALL of the
   // moment's photo impressions as a swipeable fullscreen carousel; closing
@@ -204,6 +208,28 @@ export default function FeedImpression() {
   // 0 = at the feed card, 1 = fully open. Seeds 0 only when a card handed us a
   // presentation to run; a cold mount renders open, exactly as before.
   const progress = useSharedValue(source ? 0 : 1);
+  // Hit-testing is deliberately React-owned, not animated. `pointerEvents` is
+  // outside Reanimated's iOS synchronous-props allowlist; combining it with
+  // opacity/transform on these hot views demotes the whole per-view batch to
+  // the shadow-tree path and caused a physical-device background-only flash
+  // after the open settled. Four transitions keep the old ghost-tap guard:
+  // blocked while opening → interactive at settle → blocked while dismissing
+  // → interactive again when a pull-down is cancelled.
+  const [presentationInteractive, setPresentationInteractive] = useState(!source);
+  const presentationCloseCommittedRef = useRef(false);
+  const presentationCloseCommitted = useSharedValue(false);
+  const blockPresentationInteractions = useCallback(() => {
+    setPresentationInteractive(false);
+  }, []);
+  const commitPresentationClose = useCallback(() => {
+    presentationCloseCommittedRef.current = true;
+    presentationCloseCommitted.value = true;
+    setPresentationInteractive(false);
+  }, [presentationCloseCommitted]);
+  const restorePresentationInteractions = useCallback(() => {
+    if (presentationCloseCommittedRef.current) return;
+    setPresentationInteractive(true);
+  }, []);
   // Whether the presentation is running BACKWARD (pull-down moving, or a
   // back-button/Android-back close) — flips the settle background from the
   // instant open veil to the progressive dismiss reveal (see bgStyle). Reset
@@ -228,10 +254,14 @@ export default function FeedImpression() {
   // Hi` (below) keep every once-mounted page mounted as the window moves.
   const [warmLevel, setWarmLevel] = useState(source ? 0 : 2);
   const bumpWarm = useCallback((l: number) => setWarmLevel((cur) => Math.max(cur, l)), []);
+  const settlePresentation = useCallback(() => {
+    bumpWarm(1);
+    if (!presentationCloseCommittedRef.current) setPresentationInteractive(true);
+  }, [bumpWarm]);
   useEffect(() => {
     if (source) {
       progress.value = withSpring(1, springs.enter, (finished) => {
-        if (finished) runOnJS(bumpWarm)(1);
+        if (finished) runOnJS(settlePresentation)();
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -240,7 +270,7 @@ export default function FeedImpression() {
     // Belt for an interrupted open (the spring callback fires finished=false
     // and would leave the siblings unmounted forever).
     if (warmLevel === 0) {
-      const t = setTimeout(() => bumpWarm(1), OPEN_SETTLE_MS + 120);
+      const t = setTimeout(settlePresentation, OPEN_SETTLE_MS + 120);
       return () => clearTimeout(t);
     }
     // Remaining pages mount on JS idle — requestIdleCallback, NOT the
@@ -250,7 +280,7 @@ export default function FeedImpression() {
       const id = requestIdleCallback(() => bumpWarm(2), { timeout: 800 });
       return () => cancelIdleCallback(id);
     }
-  }, [warmLevel, bumpWarm]);
+  }, [warmLevel, bumpWarm, settlePresentation]);
 
   // The clone always shows the ACTIVE page's photo: the entry page on open,
   // whatever page you're on at pull-down. A photoless active page (blind /
@@ -351,6 +381,7 @@ export default function FeedImpression() {
       closeDetail();
       return;
     }
+    commitPresentationClose();
     dismissing.value = true; // bg follows progress on the way out (see bgStyle)
     // Plain self-write first: it cancels any running animation, so this spring
     // starts from rest. Without it a NEW spring ADDS the running one's velocity
@@ -360,7 +391,7 @@ export default function FeedImpression() {
     progress.value = withSpring(0, springs.release, (finished) => {
       if (finished) runOnJS(closeDetail)();
     });
-  }, [source, progress, dismissing, closeDetail]);
+  }, [source, progress, dismissing, closeDetail, commitPresentationClose]);
   // Android hardware back must take the same reversed presentation — without
   // this it pops the transparent modal natively (instant vanish, no close
   // animation). Claiming the event (return true) suppresses the default pop;
@@ -384,6 +415,96 @@ export default function FeedImpression() {
   const meId = authClient.useSession().data?.user.id;
   const isOwner = !!meId && detail?.author.id === Number(meId);
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
+
+  // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
+  // Standalone = DELETE the check-in; session = clear the ACTIVE impression's
+  // rating (empty-PATCH reap). When the POST is gone the detail must not stay
+  // up (it pins its copy by design), so it pops straight to the feed — no
+  // reversed presentation: the card underneath is about to vanish, animating
+  // into it would land on a hole.
+  const queryClient = useQueryClient();
+  const deleteBusy = useRef(false);
+  const runDelete = useCallback(
+    async (op: () => Promise<{ feedItemDeleted: boolean } | void>, applyToCache: (item: FeedItem) => FeedItem | null) => {
+      if (deleteBusy.current) return;
+      deleteBusy.current = true;
+      try {
+        const res = await op();
+        const postGone = !res || res.feedItemDeleted;
+        // Reflect the delete in the cache IMMEDIATELY (like-flow pattern) —
+        // refetch alone leaves a window where the deleted target is still
+        // actionable and a second delete 404s (Codex). Cancel first so an
+        // in-flight refetch can't clobber the write.
+        await queryClient.cancelQueries({ queryKey: FEED_KEY });
+        queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
+          data
+            ? {
+                ...data,
+                pages: data.pages.map((p) => ({ ...p, items: p.items.map(applyToCache).filter((it): it is FeedItem => it !== null) })),
+              }
+            : data,
+        );
+        if (postGone) closeDetail();
+        await queryClient.refetchQueries({ queryKey: FEED_KEY });
+      } catch (e) {
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        Alert.alert('Could not delete', msg || 'Check your connection and try again.');
+      } finally {
+        deleteBusy.current = false;
+      }
+    },
+    [queryClient, closeDetail],
+  );
+  const confirmDelete = useCallback(() => {
+    setMenuAnchor(null);
+    // Destructive confirms always NAME what's being deleted (Simon,
+    // 2026-07-18) — a blind wine's name arrives redacted-empty, so it gets
+    // the card's own alias ("Wine N") instead.
+    const name = activeWine ? (activeWine._blind ? `Wine ${clampedActive + 1}` : activeWine.name) : '';
+    if (detail?.isSession && activeWine) {
+      const wineId = activeWine.id;
+      Alert.alert(
+        name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
+        'This resets your rating for this impression. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => patchSessionRating(feedItemId, { wineId, score: 0, flavors: {}, aromas: [], notes: '' }),
+                // Drop the cleared wine from the post; drop the whole post
+                // when that was its last impression (the server reaps it).
+                (it) => {
+                  if (it.type !== 'session' || it.session.id !== feedItemId) return it;
+                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  if (wines.length === 0) return null;
+                  return { ...it, session: { ...it.session, wines } };
+                },
+              ),
+          },
+        ],
+      );
+      return;
+    }
+    Alert.alert(
+      name ? `Delete “${name}”?` : 'Delete this check-in?',
+      'This removes the post, its rating, and its photo. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            runDelete(
+              () => deleteCheckin(feedItemId),
+              (it) => (it.type === 'checkin' && it.checkin.id === feedItemId ? null : it),
+            ),
+        },
+      ],
+    );
+  }, [detail?.isSession, activeWine, clampedActive, feedItemId, runDelete]);
 
   // Settle background — DIRECTION-AWARE (Simon, round 3e): on OPEN it snaps
   // opaque within the first ~12% of progress (1–2 frames), so the feed around
@@ -453,14 +574,6 @@ export default function FeedImpression() {
     opacity: interpolate(progress.value, [0.35, 0.8], [0, 1], Extrapolation.CLAMP),
     transform: [{ translateY: interpolate(progress.value, [0.35, 0.85], [36, 0], Extrapolation.CLAMP) }],
   }));
-  // NEW touches only land while fully open: a tap during the close animation
-  // (invisible but otherwise hit-testable content) could push a route and make
-  // the deferred back() pop THAT instead — an invisible ghost modal over the
-  // feed. Hit-testing happens at touch-down, so an in-flight dismiss pan is
-  // unaffected when this flips mid-gesture.
-  const contentPointerProps = useAnimatedProps(() => ({
-    pointerEvents: (progress.value < 1 ? 'none' : 'auto') as 'none' | 'auto',
-  }));
   // The card's GLASS PANEL stays IN FRONT of the traveling photo (Simon: the
   // image slides BEHIND the panel — out from behind it on open, back behind
   // it on close). A pixel-matched panel clone sits pinned at the card frame
@@ -492,13 +605,10 @@ export default function FeedImpression() {
     return { opacity: p < 1 ? interpolate(p, [0.7, 1], [0, 1], Extrapolation.CLAMP) : 0 };
   });
   // The bar rides its own layer ABOVE the clone (chrome over the traveling
-  // photo, no rise — see the layer comments in the render). Same tap gate;
-  // 'box-none' so the wrapper never swallows touches meant for the pages.
+  // photo, no rise — see the layer comments in the render). `box-none` keeps
+  // the wrapper from swallowing touches meant for the pages.
   const barStyle = useAnimatedStyle(() => ({
     opacity: interpolate(progress.value, [0.35, 0.8], [0, 1], Extrapolation.CLAMP),
-  }));
-  const barPointerProps = useAnimatedProps(() => ({
-    pointerEvents: (progress.value < 1 ? 'none' : 'box-none') as 'none' | 'box-none',
   }));
 
   const onPagerScroll = useCallback(
@@ -510,11 +620,11 @@ export default function FeedImpression() {
     [screenW, maxPage, landCard],
   );
 
-  const reportCollapse = useCallback((page: number, c: boolean) => {
-    setCollapsed((prev) => (prev[page] === c ? prev : { ...prev, [page]: c }));
+  const reportCollapse = useCallback((wineId: string, c: boolean) => {
+    setCollapsed((prev) => (prev[wineId] === c ? prev : { ...prev, [wineId]: c }));
   }, []);
-  const reportTitle = useCallback((page: number, t: string) => {
-    setTitles((prev) => (prev[page] === t ? prev : { ...prev, [page]: t }));
+  const reportTitle = useCallback((wineId: string, t: string) => {
+    setTitles((prev) => (prev[wineId] === t ? prev : { ...prev, [wineId]: t }));
   }, []);
   // Each mounted page registers its "scroll to About" imperative here; the
   // collapsed-bar title tap drives the ACTIVE page's (the wine-name tap in the
@@ -549,7 +659,8 @@ export default function FeedImpression() {
   // Read-side clamp: `active` seeds from the raw route param before wines are
   // known, so index the per-page maps through the clamped value.
   const page = clampedActive;
-  const barSolid = !!collapsed[page];
+  const pageWineId = wines[page]?.id ?? '';
+  const barSolid = !!collapsed[pageWineId];
   // Only photo-bearing impressions go fullscreen (a blind/photoless page has
   // nothing to show); wineIndex maps a gallery page back to its pager slot.
   const galleryPages: GalleryPage[] = wines
@@ -624,7 +735,7 @@ export default function FeedImpression() {
         </Reanimated.View>
       ) : null}
 
-      <Reanimated.View style={[{ flex: 1 }, contentStyle]} animatedProps={contentPointerProps}>
+      <Reanimated.View pointerEvents={presentationInteractive ? 'auto' : 'none'} style={[{ flex: 1 }, contentStyle]}>
         {total === 1 ? (
           <DetailPage
             wine={wines[0]}
@@ -634,8 +745,8 @@ export default function FeedImpression() {
             createdAt={createdAt}
             place={place}
             onPlacePress={momentCode ? enterMoment : undefined}
-            onCollapse={(c) => reportCollapse(0, c)}
-            onTitle={(t) => reportTitle(0, t)}
+            onCollapse={(c) => reportCollapse(wines[0].id, c)}
+            onTitle={(t) => reportTitle(wines[0].id, t)}
             onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
             insetTop={insets.top}
             bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -645,6 +756,10 @@ export default function FeedImpression() {
             isActive
             dotTop={dotTop}
             onClosed={closeDetail}
+            closeCommitted={presentationCloseCommitted}
+            onDismissStart={blockPresentationInteractions}
+            onDismissCommit={commitPresentationClose}
+            onDismissCancel={restorePresentationInteractions}
             onOpenGallery={() => setGalleryAt(0)}
             deferBody={!!source}
           />
@@ -688,8 +803,8 @@ export default function FeedImpression() {
                     createdAt={createdAt}
                     place={place}
                     onPlacePress={momentCode ? enterMoment : undefined}
-                    onCollapse={(c) => reportCollapse(i, c)}
-                    onTitle={(t) => reportTitle(i, t)}
+                    onCollapse={(c) => reportCollapse(w.id, c)}
+                    onTitle={(t) => reportTitle(w.id, t)}
                     onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
                     insetTop={insets.top}
                     bottomPad={insets.bottom + FOOT_CLEARANCE_IR}
@@ -699,6 +814,10 @@ export default function FeedImpression() {
                     isActive={i === page}
                     dotTop={dotTop}
                     onClosed={closeDetail}
+                    closeCommitted={presentationCloseCommitted}
+                    onDismissStart={blockPresentationInteractions}
+                    onDismissCommit={commitPresentationClose}
+                    onDismissCancel={restorePresentationInteractions}
                     onOpenGallery={() => setGalleryAt(i)}
                     deferBody={!!source && i === entryIndex}
                   />
@@ -747,10 +866,13 @@ export default function FeedImpression() {
           tracks the active one. Fades with the presentation but does NOT rise
           with the body (it's chrome, not content). The collapsed title taps
           through to About (onTitlePress). */}
-      <Reanimated.View style={[StyleSheet.absoluteFill, barStyle]} animatedProps={barPointerProps}>
+      <Reanimated.View
+        pointerEvents={presentationInteractive ? 'box-none' : 'none'}
+        style={[StyleSheet.absoluteFill, barStyle]}
+      >
         <FloatBar
           solid={barSolid}
-          title={barSolid ? titles[page] ?? '' : ''}
+          title={barSolid ? titles[pageWineId] ?? '' : ''}
           onBack={requestClose}
           onTitlePress={scrollActiveToAbout}
           insetTop={insets.top}
@@ -786,7 +908,31 @@ export default function FeedImpression() {
         {detail.isSession === false ? <MenuItem icon="plus" label="Had It Too" disabled /> : null}
         <MenuItem icon="share" label="Share" disabled />
         {isOwner ? <MenuSeparator /> : null}
-        {isOwner ? <MenuItem icon="edit" label="Edit" disabled accessibilityLabel="Edit Impression" /> : null}
+        {isOwner ? (
+          <MenuItem
+            icon="edit"
+            label="Edit"
+            accessibilityLabel="Edit Impression"
+            onPress={() => {
+              setMenuAnchor(null);
+              router.push({
+                pathname: '/feed/edit/[id]',
+                params: detail.isSession && activeWine
+                  ? { id: String(feedItemId), wine: activeWine.id }
+                  : { id: String(feedItemId) },
+              });
+            }}
+          />
+        ) : null}
+        {isOwner ? (
+          <MenuItem
+            icon="trash"
+            label={detail.isSession ? 'Delete Rating' : 'Delete'}
+            tone="danger"
+            accessibilityLabel={detail.isSession ? 'Delete Rating' : 'Delete Check-In'}
+            onPress={confirmDelete}
+          />
+        ) : null}
       </AnchoredMenu>
 
       {/* fullscreen gallery — a Modal, so its place in this tree is chrome-
@@ -1062,6 +1208,10 @@ function DetailPage({
   isActive,
   dotTop,
   onClosed,
+  closeCommitted,
+  onDismissStart,
+  onDismissCommit,
+  onDismissCancel,
   onOpenGallery,
   onRegisterScrollToAbout,
   deferBody,
@@ -1097,6 +1247,14 @@ function DetailPage({
   dotTop: SharedValue<number>;
   // Pop the route (called after the dismiss animation lands at 0).
   onClosed: () => void;
+  // Shared with the parent close path so a system-cancelled gesture cannot
+  // override an already committed programmatic dismissal.
+  closeCommitted: SharedValue<boolean>;
+  // React-owned hit-test gate. Animated pointerEvents would demote this hot
+  // view from Reanimated's iOS synchronous-props path.
+  onDismissStart: () => void;
+  onDismissCommit: () => void;
+  onDismissCancel: () => void;
   // Hero tap → the fullscreen impression gallery (parent-owned; the gallery
   // spans ALL the moment's photo impressions, not just this page's).
   onOpenGallery: () => void;
@@ -1188,10 +1346,29 @@ function DetailPage({
     onRegisterScrollToAbout(scrollToAbout);
     return () => onRegisterScrollToAbout(null);
   }, [onRegisterScrollToAbout, scrollToAbout]);
+  // A swiped-away page resets to the top (Simon, 2026-07-18): swiping back to
+  // a mid-scrolled impression reads as stale state. Reset on the
+  // active→inactive transition so the page already rests at the top when it
+  // swipes back in. The three scroll-derived values (collapse flag, at-top
+  // dismiss arm, the shared scrollY the pull-down gesture gates on) reset
+  // explicitly — a programmatic scrollTo isn't guaranteed to emit onScroll,
+  // and a partial reset would leave the pull-down dismiss dead on the
+  // returned page until the first manual scroll.
+  const wasActive = useRef(isActive);
+  useEffect(() => {
+    if (wasActive.current && !isActive) {
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+      scrollY.value = 0;
+      onCollapse(false);
+      setAtTop(true);
+    }
+    wasActive.current = isActive;
+  }, [isActive, onCollapse, scrollRef, scrollY]);
   // Armed = the touch went down while the page sat at the top. Without it, a
   // drag that starts mid-list and scrolls to 0 would jump-start a dismiss with
   // the accumulated translation.
   const dismissArmed = useSharedValue(false);
+  const dismissInteractionsBlocked = useSharedValue(false);
   // One tick per gesture, fired the moment the drag CROSSES the commit
   // threshold ("release now and it closes") — Simon: the release-time haptic
   // came too late. Re-crossing back out re-arms silently; a fast flick that
@@ -1210,9 +1387,14 @@ function DetailPage({
     .onBegin(() => {
       dismissArmed.value = scrollY.value <= 1;
       dismissBuzzed.value = false;
+      dismissInteractionsBlocked.value = false;
     })
     .onUpdate((e) => {
       if (!dismissArmed.value || scrollY.value > 1) return;
+      if (!dismissInteractionsBlocked.value) {
+        dismissInteractionsBlocked.value = true;
+        runOnJS(onDismissStart)();
+      }
       dismissing.value = true; // settle bg follows progress from here (bgStyle)
       progress.value = 1 - Math.min(1, Math.max(0, e.translationY) / DISMISS_DRAG);
       const inCommitZone = progress.value < 0.6;
@@ -1223,8 +1405,22 @@ function DetailPage({
         dismissBuzzed.value = false;
       }
     })
-    .onEnd((e) => {
-      if (!dismissArmed.value || progress.value >= 1) return;
+    .onEnd((e, success) => {
+      // RNGH dispatches BOTH onEnd(success=false) and onFinalize(false) when
+      // an ACTIVE gesture is cancelled/stolen. Leave that path entirely to
+      // onFinalize so the two callbacks cannot start opposing springs.
+      if (!success) return;
+      if (!dismissArmed.value || progress.value >= 1) {
+        // A pull can activate, block React-owned hit-testing, then travel back
+        // above its origin before release. `progress` is already 1, so there
+        // is no spring-back callback to re-arm the screen; restore explicitly.
+        if (dismissInteractionsBlocked.value) {
+          dismissInteractionsBlocked.value = false;
+          dismissing.value = false;
+          runOnJS(onDismissCancel)();
+        }
+        return;
+      }
       const close = progress.value < 0.6 || (e.velocityY > 900 && progress.value < 0.98);
       // Release continues at finger speed: the spring inherits the gesture
       // velocity converted into progress units (see the CLOSE-legs comment at
@@ -1237,15 +1433,35 @@ function DetailPage({
       const towardTarget = -e.velocityY / DISMISS_DRAG;
       const velocity = close ? Math.min(0, towardTarget) : Math.max(0, towardTarget);
       if (close) {
+        closeCommitted.value = true;
+        runOnJS(onDismissCommit)();
         if (!dismissBuzzed.value) runOnJS(closeHaptic)(); // flick-commit, never crossed
         progress.value = withSpring(0, { ...springs.release, velocity }, (finished) => {
           if (finished) runOnJS(onClosed)();
         });
       } else {
         progress.value = withSpring(1, { ...springs.release, velocity }, (finished) => {
-          if (finished) dismissing.value = false; // veil restored (see bgStyle)
+          if (finished) {
+            dismissing.value = false; // veil restored (see bgStyle)
+            dismissInteractionsBlocked.value = false;
+            runOnJS(onDismissCancel)();
+          }
         });
       }
+    })
+    .onFinalize((_e, success) => {
+      // RNGH calls this immediately after onEnd(success=false) when iOS
+      // cancels/steals an ACTIVE touch. onEnd deliberately leaves that path
+      // untouched; return the page to rest, then re-arm hit-testing.
+      // Successful releases already chose their close/cancel path above.
+      if (success || closeCommitted.value || !dismissInteractionsBlocked.value) return;
+      progress.value = withSpring(1, springs.release, (finished) => {
+        if (finished) {
+          dismissing.value = false;
+          dismissInteractionsBlocked.value = false;
+          runOnJS(onDismissCancel)();
+        }
+      });
     });
 
   // The clone↔hero opacity handoff: while the parent's clone travels

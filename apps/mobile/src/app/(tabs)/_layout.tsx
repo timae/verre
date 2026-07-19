@@ -74,6 +74,7 @@ export default function TabsLayout() {
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
     pathname.includes('/feed/check-in') || // both check-in create stages (sticky Rate It / Check In bars)
+    pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.endsWith('/add') ||
     pathname.endsWith('/settings/details') ||
     pathname.endsWith('/settings/reveal');

@@ -17,6 +17,8 @@ Tables and their roles:
 
 Phase 4 dropped the legacy `checkins / checkin_likes / checkin_tags` tables. The `/api/checkins` URL surface is preserved for client compatibility — both `POST /api/checkins` and `PATCH/DELETE /api/checkins/:id` write to the new model (`feed_items` + `ratings` + `wines` + `rating_images`). The `:id` path segment is now a `feed_items.id` of `kind='standalone'`; phase 2's migration mint of `feed_items.id = source.checkins.id` plus the `feed_items_id_seq` bump means cached client URLs still resolve.
 
+Since 2026-07-17 the PATCH also accepts `kind='session'` feed items (the mobile feed's owner-only ⋯ → Edit): a rating-only body `{wineId, score?, flavors?, aromas?, notes?}` resolved against the caller's `(user_id, wine_id, session_id)` rating. It honors the rate-route invariants (score validation, `gateAndFillFlavors` keyed to the wine's server style, aroma present-replaces), mirrors into the live Redis rating key + `touchWithMeta` while the session is alive (PG-only once expired), runs `engagementDeletionCascade('empty-only')` when the edit empties the rating (deleting the Redis copy only when the cascade confirms), and deliberately skips lifetime counters + HoF — an edit is not new activity. Wine identity, venue, and standalone-only fields 400/ignore on this branch.
+
 ## Engagement trigger (the rule for session feed_items)
 
 A session feed_item materialises on first engagement by a logged-in user. Engagement = any of: a score > 0, OR a non-empty flavour chip set, OR a non-empty note. The rate POST (`app/api/session/[code]/rate/route.ts`) runs the rating upsert first, then a `hasEngagement` guard, then an idempotent `INSERT INTO feed_items ... ON CONFLICT (user_id, session_id) DO NOTHING`.

@@ -1,0 +1,39 @@
+name: Aroma unit pins
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: aroma-units-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Pure-unit pins for the aroma layer's production behaviour (PR #81
+      # review: the regression coverage must exist in a clean checkout, not
+      # only in a gitignored workspace). No DB/Redis/network — pure functions:
+      #  - aroma-aggregate-units: the roll-up aggregate, consensus selector,
+      #    contributor index, and every compare-view derivation (Overview,
+      #    fingerprint, pyramid geometry/wrap, taste summary incl. gates+ties).
+      #  - aroma-pickers-units: the picker math (hex lattice, map territories,
+      #    label wrap) + per-theme badge-contrast checks.
+      # The dev-gallery viz-lab pins (aroma-viz-units / aroma-viz2-units) stay
+      # local — they pin lab-only geometry with no production consumer.
+      - name: Aroma aggregate + compare-view pins
+        run: npx tsx scripts/tests/aroma-aggregate-units.ts
+
+      - name: Aroma picker-math pins
+        run: npx tsx scripts/tests/aroma-pickers-units.ts

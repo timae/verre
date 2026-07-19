@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { View } from 'react-native';
 import { AROMA_FAMILIES } from '@verre/core';
 import { useAromaColors } from '@/theme/flavourColors';
@@ -17,9 +17,17 @@ import { LEVEL_R, type MapLevel } from './mapLayout';
 // into, so a whole family or group is addable mid-dive (the any-tier
 // ruling). Breadcrumb jumps back up.
 
-const STAGE_H = 340; // cap — a touch taller than the map (device round 4)
+const STAGE_H = 390; // cap — +15% over the sheet-era 340 for the inline placement (Simon 2026-07-17)
 
-export function CanvasPicker({ ops }: { ops: AromaOps }) {
+export function CanvasPicker({ ops, onEnsureVisible }: {
+  ops: AromaOps;
+  /** Called after any tap that changes the refine target (arm OR drill) with
+      the refine row's MEASURED window rect (top, height + breathing) — the
+      inline host scrolls the minimal shift that makes the Add row fully
+      visible (Simon 2026-07-17). The row measures ITSELF: no derived height
+      math between host and picker to drift. */
+  onEnsureVisible?: (topInWindow: number, height: number) => void;
+}) {
   const familyColor = useAromaColors();
   // Drill path of node ids: [] = families, [familyId], [familyId, groupId].
   const [path, setPath] = useState<string[]>([]);
@@ -28,6 +36,20 @@ export function CanvasPicker({ ops }: { ops: AromaOps }) {
   const [enterFrom, setEnterFrom] = useState(0.8);
   const target = pend ?? (path.length ? path[path.length - 1] : null);
   const pendState = usePendingAdd(target, ops);
+  const refineRef = useRef<View | null>(null);
+  // Post-tap, measure the refine row where it ACTUALLY is and ask the host
+  // to bring it fully on screen. Twice: next frame, and again after a beat —
+  // a drill changes the stage height and only the late pass sees the settled
+  // layout (the AromaInput late-re-measure pattern).
+  const ensureRefineVisible = () => {
+    if (!onEnsureVisible) return;
+    const measure = () =>
+      refineRef.current?.measureInWindow((_x, y, _w, h) => {
+        if (h > 0) onEnsureVisible(y, h + 12);
+      });
+    requestAnimationFrame(measure);
+    setTimeout(measure, 200);
+  };
 
   const family = path[0] ? AROMA_FAMILIES.find((f) => f.id === path[0]) : undefined;
   const group = path[1] && family ? family.subfamilies.find((s) => s.id === path[1]) : undefined;
@@ -75,9 +97,11 @@ export function CanvasPicker({ ops }: { ops: AromaOps }) {
       setPath([...path, id]);
       setPend(null);
       setEnterFrom(0.8);
+      ensureRefineVisible();
       return;
     }
     setPend((p) => (p === id ? null : id));
+    ensureRefineVisible();
   };
   const popTo = (depth: number) => {
     setPath(path.slice(0, depth));
@@ -98,10 +122,13 @@ export function CanvasPicker({ ops }: { ops: AromaOps }) {
           resetKey={path.join('/')}
           capFirst={capFirst}
           enterFrom={enterFrom}
+          onSwipeBack={path.length ? () => popTo(path.length - 1) : undefined}
         />
       </View>
       {/* the search refine row — armed by a note tap (or the dived-into
-          node, any-tier); its pending Pronounced draws the cell border. */}
+          node, any-tier); its pending Pronounced draws the cell border.
+          The ref wraps row + hint: the ensure-visible measure target. */}
+      <View ref={refineRef} collapsable={false}>
       <RefineAddRow
         a={target}
         m={pendState.pendM}
@@ -114,6 +141,7 @@ export function CanvasPicker({ ops }: { ops: AromaOps }) {
         }}
       />
       <CapHint show={pendState.capHit} />
+      </View>
     </View>
   );
 }

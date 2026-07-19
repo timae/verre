@@ -85,6 +85,7 @@ export {
   getAromaModifier,
   getAromaLeaf,
   getAromaNode,
+  aromaAncestorChain,
   aromaTierPath,
   aromaAllowedModifiers,
   aromaModifierDisplay,
@@ -99,3 +100,16 @@ export {
   type AromaTierPath,
 } from './aroma/taxonomy'
 export { searchAromas, type AromaSearchResult } from './aroma/search'
+export {
+  aggregateAromaRollup,
+  type AromaRollup,
+  type AromaRollupNode,
+} from './aroma/aromaAggregate'
+export {
+  aromaConsensus,
+  DEFAULT_CONSENSUS_OPTS,
+  type AromaConsensusOpts,
+  type AromaConsensusResult,
+  type ConsensusDisplayNode,
+  type ConsensusRole,
+} from './aroma/aromaConsensus'

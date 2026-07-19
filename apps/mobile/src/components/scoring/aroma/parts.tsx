@@ -195,6 +195,7 @@ export function AromaChip({
   onPress,
   onRemove,
   sub,
+  count,
   tint,
   monoWords,
   tintSolid,
@@ -252,6 +253,13 @@ export function AromaChip({
   // "group"), which also disambiguates the four leaf labels that equal a
   // subfamily label (honey / vanilla / cocoa / char).
   sub?: string;
+  // Leading agreement count INSIDE the pill — the compare roll-up's "Nx Label"
+  // (Simon's ruling: the count lives in the badge, not beside it, and the glyph
+  // is a plain ASCII "x", not "×"). Rendered as a "3x " prefix on the fill
+  // (words colour) and spoken as "N tasters, Label" for VoiceOver. This
+  // canonical-chip reuse is the SETTLED production visual — the §8 compare
+  // surface will pass this same prop, no compare-specific wrapper.
+  count?: number;
 }) {
   const { theme, themeKey } = useTheme();
   const familyColor = useAromaColors();
@@ -307,7 +315,9 @@ export function AromaChip({
       // Read-only chips (AromaReadChips) pass no onPress — announcing them
       // as buttons would give VoiceOver N inert controls per row.
       accessibilityRole={onPress ? 'button' : 'text'}
-      accessibilityLabel={`${label}${pronounced ? ', pronounced' : ''}`}
+      // When a count is shown ("3x Strawberry"), speak it — the visible ASCII
+      // "3x" is a glyph a screen reader shouldn't read literally.
+      accessibilityLabel={`${count != null ? `${count} taster${count === 1 ? '' : 's'}, ` : ''}${label}${pronounced ? ', pronounced' : ''}`}
       onPress={onPress}
       // The "border" is the outer pill's 1.5 padding band in the ring colour
       // with the fill on a nested pill — NOT borderWidth/borderColor: RN
@@ -340,6 +350,7 @@ export function AromaChip({
         surface="badge"
         style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 13.5, color: words, ...(lineH != null ? { lineHeight: lineH } : null) }}
       >
+        {count != null ? `${count}x ` : ''}
         {capFirst(node.label)}
         {m ? (
           <VText
@@ -686,8 +697,21 @@ export function ChipMeasurePass({
 
 // The "+N more" overflow pill — the tail of a capped chip row. `vPad` must
 // match the row's chips so the pill sits at their height (its padding carries
-// the chips' 1.5 border band on top of the shared metric).
-export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress: () => void; vPad?: number }) {
+// the chips' 1.5 border band on top of the shared metric). On normal page
+// backgrounds it uses `surface`; when hosted on a sheet's `surface`, pass
+// `onSurface` to swap to `bg` and preserve the SAME pill contrast/anatomy.
+// Compare's "Aroma Details" tail remains its OWN component.
+export function MoreChipsPill({
+  count,
+  onPress,
+  vPad,
+  onSurface = false,
+}: {
+  count: number;
+  onPress: () => void;
+  vPad?: number;
+  onSurface?: boolean;
+}) {
   const { theme } = useTheme();
   const { padV, lineH } = badgeVMetrics(vPad);
   return (
@@ -700,7 +724,7 @@ export function MoreChipsPill({ count, onPress, vPad }: { count: number; onPress
         paddingVertical: padV + 1.5, // no border — visually matches the chips' padV+1.5
         paddingHorizontal: 12,
         borderRadius: 999,
-        backgroundColor: theme.surface,
+        backgroundColor: onSurface ? theme.bg : theme.surface,
       }}
     >
       <VText

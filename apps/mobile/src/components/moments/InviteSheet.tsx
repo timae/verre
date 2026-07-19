@@ -8,7 +8,7 @@ import { formatCode } from '@verre/core';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends, type Friend } from '@/lib/api/me';
@@ -186,7 +186,11 @@ export function InviteSheet({
         // fills the sheet (flex:1) and the friends list scrolls within it. Header
         // + search stay fixed at the top; the BottomSheetScrollView flexes to the
         // remaining space.
-        <BottomSheetView style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
+        // Plain View wrapper (NOT BottomSheetView) — the browse pane hosts a
+        // BottomSheetScrollView, and BottomSheetView would re-register the
+        // sheet's scrollable as type VIEW and lock the list
+        // (apps/mobile/CLAUDE.md sheet-scroll invariant).
+        <View style={{ flex: 1, width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14 }}>
           {header}
           {/* The shared sheet search field (one look for every in-sheet
               search — the hand-rolled .fr-search pill drifted visually and
@@ -210,7 +214,7 @@ export function InviteSheet({
               </BottomSheetScrollView>
             </View>
           )}
-        </BottomSheetView>
+        </View>
       )}
     </Sheet>
   );

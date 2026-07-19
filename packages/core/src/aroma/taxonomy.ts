@@ -184,6 +184,17 @@ export function getAromaNode(id: string): AromaNode | undefined {
   return NODE_BY_ID.get(id)
 }
 
+// Canonical coarsest→finest ancestor chain for a RESOLVED node. Shared by the
+// aggregate and compare contributor index so upward subsumption cannot drift
+// between counts and identities. A family yields only itself; a leaf yields
+// family + subfamily + leaf.
+export function aromaAncestorChain(node: AromaNode): ReadonlyArray<string> {
+  const chain = [node.family.id]
+  if (node.subfamily) chain.push(node.subfamily.id)
+  if (node.leaf) chain.push(node.leaf.id)
+  return chain
+}
+
 // The effective allowed-modifier set for any node. Leaves: declared-list
 // inheritance (leaf ← subfamily ← family). Subfamilies/families: the UNION
 // of their descendants' effective sets (upward inheritance — see the map

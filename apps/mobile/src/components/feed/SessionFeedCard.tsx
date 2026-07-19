@@ -20,6 +20,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -50,6 +51,8 @@ export function SessionFeedCard({
   createdAt,
   onOpenImpression,
   onToggleLike,
+  onEdit,
+  onDeleteRating,
 }: {
   author: FeedAuthor;
   session: SessionFeedPayload;
@@ -59,6 +62,11 @@ export function SessionFeedCard({
   onOpenImpression: (index: number) => void;
   // Optimistic like toggle — parent owns the cache write + server call.
   onToggleLike: (nextLiked: boolean) => void;
+  // Owner-only ⋯ menu: Edit / Delete Rating target the ACTIVE carousel
+  // slide's rating (the wine id of the impression currently in view). The
+  // parent owns the delete confirm + server call.
+  onEdit?: (wineId: string) => void;
+  onDeleteRating?: (wineId: string) => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -68,8 +76,19 @@ export function SessionFeedCard({
   // member (code resolved from their own sessions; never on the feed wire).
   const { code: momentCode, enter: enterMoment } = useEnterableMoment(session.sessionId);
 
-  const [activeIdx, setActiveIdx] = useState(0);
+  const [rawActiveIdx, setActiveIdx] = useState(0);
   const wines = session.wines;
+  // Clamp against the CURRENT wine count (PR #81 review P2): an optimistic
+  // rating delete shrinks `wines` under a persistent index — deleting the
+  // last slide left wines[activeIdx] undefined (menu/caption/dots broke).
+  // Every reader consumes the DERIVED clamped index (no bad frame between
+  // the shrink and an effect); the stored value is normalized afterwards so
+  // scroll math and later writers start from a real slide.
+  const maxIdx = Math.max(0, wines.length - 1);
+  const activeIdx = Math.min(rawActiveIdx, maxIdx);
+  useEffect(() => {
+    setActiveIdx((cur) => Math.min(cur, maxIdx));
+  }, [maxIdx]);
   // Landing sync (proposal 09 round 3): while the detail is open over this
   // card, it mirrors its active page into us so a pull-down (or any close)
   // lands on the slide being dismissed, not the one it opened from. The ref
@@ -184,15 +203,35 @@ export function SessionFeedCard({
     fireBurst();
   }, [session.liked, onToggleLike, fireBurst]);
 
-  // Double-tap on the photo. A single-tap is declared and left inert so the
-  // double-tap doesn't wait-fail into a dismiss (there is no fullscreen from
-  // the feed — proposal §2). The horizontal carousel pan wins over both taps
-  // naturally (ScrollView owns the pan; taps only fire on a stationary touch).
+  // Double-tap on the photo likes; a SINGLE tap opens the active slide's
+  // detail (Simon 2026-07-17 — the whole post body opens, not just the glass
+  // panel). Exclusive: the single tap waits out the double-tap window. The
+  // horizontal carousel pan wins over both taps naturally (ScrollView owns
+  // the pan; taps only fire on a stationary touch). The once-guard dedupes
+  // the panel's own Pressable, which fires alongside the RNGH tap on panel
+  // touches (two recognizers, one touch).
   const doubleTap = Gesture.Tap()
     .numberOfTaps(2)
     .maxDuration(300)
     .onEnd((_e, ok) => {
       if (ok) runOnJS(like)();
+    });
+  const lastOpenRef = useRef(0);
+  const openImpressionOnce = useCallback(
+    (i: number) => {
+      const t = Date.now();
+      if (t - lastOpenRef.current < 600) return;
+      lastOpenRef.current = t;
+      openImpression(i);
+    },
+    [openImpression],
+  );
+  const openActive = useCallback(() => openImpressionOnce(activeIdx), [openImpressionOnce, activeIdx]);
+  const singleTap = Gesture.Tap()
+    .numberOfTaps(1)
+    .maxDuration(300)
+    .onEnd((_e, ok) => {
+      if (ok) runOnJS(openActive)();
     });
 
   return (
@@ -227,6 +266,14 @@ export function SessionFeedCard({
             {timeAgo(createdAt)}
           </VText>
         </View>
+        {onEdit && wines[activeIdx] ? (
+          <FeedCardMenu
+            onEdit={() => onEdit(wines[activeIdx].id)}
+            onDelete={onDeleteRating ? () => onDeleteRating(wines[activeIdx].id) : undefined}
+            deleteLabel="Delete Rating"
+            deleteAccessibilityLabel="Delete Rating"
+          />
+        ) : null}
       </View>
 
       {anyPhoto ? (
@@ -238,7 +285,7 @@ export function SessionFeedCard({
            tint background so an overscroll pull (or a not-yet-loaded photo)
            reveals the tint, sitting FLAT — no shadow (Simon). */
         <View ref={photoFrameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
-          <GestureDetector gesture={doubleTap}>
+          <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
             <ScrollView
               ref={carouselRef}
               horizontal
@@ -257,7 +304,7 @@ export function SessionFeedCard({
                   height={photoH}
                   axisColor={axisColor}
                   onMeasure={reportAspect}
-                  onPressPanel={() => openImpression(i)}
+                  onPressPanel={() => openImpressionOnce(i)}
                 />
               ))}
             </ScrollView>
@@ -301,7 +348,7 @@ export function SessionFeedCard({
               axisColor={axisColor}
               width={photoW}
               height={nonPhotoSlideH}
-              onOpen={() => openImpression(i)}
+              onOpen={() => openImpressionOnce(i)}
             />
           ))}
         </ScrollView>
@@ -344,6 +391,19 @@ export function SessionFeedCard({
           </VText>
         )}
       </View>
+
+      {/* caption — the ACTIVE slide's taste note, IG-style with the author's
+          name leading in semibold (Simon 2026-07-19 — the session card never
+          rendered notes; parity with the standalone card + the detail's
+          byline). Follows the carousel: swiping to a wine swaps its note. */}
+      {wines[activeIdx]?.notes ? (
+        <View style={{ paddingHorizontal: GUTTER, paddingTop: space['3xs'] }}>
+          <VText variant="small" color="ink" numberOfLines={3}>
+            <VText variant="small" style={styles.bold}>{author.name}</VText>
+            {` ${wines[activeIdx].notes}`}
+          </VText>
+        </View>
+      ) : null}
     </View>
   );
 }

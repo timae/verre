@@ -12,6 +12,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { Avatar } from '@/components/ui/Avatar';
+import { FeedCardMenu } from '@/components/feed/FeedCardMenu';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { FeedGlassPanel } from '@/components/feed/FeedGlassPanel';
@@ -45,12 +46,19 @@ export function StandaloneFeedCard({
   createdAt,
   onOpen,
   onToggleLike,
+  onEdit,
+  onDelete,
 }: {
   author: FeedAuthor;
   checkin: CheckinPayload;
   createdAt: string;
   onOpen: () => void;
   onToggleLike: (nextLiked: boolean) => void;
+  // Owner-only (the list passes them only for the viewer's own posts) —
+  // renders the header's ⋯ menu with Edit + Delete. The parent owns the
+  // delete confirm + server call.
+  onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   const { theme } = useTheme();
   const axisColor = useFlavourColors();
@@ -91,6 +99,9 @@ export function StandaloneFeedCard({
               .join(' · ')}
           </VText>
         </View>
+        {onEdit ? (
+          <FeedCardMenu onEdit={onEdit} onDelete={onDelete} deleteAccessibilityLabel="Delete Check-In" />
+        ) : null}
       </View>
 
       {/* hero — photo (glass panel) OR the themed non-photo hero */}
@@ -137,11 +148,14 @@ export function StandaloneFeedCard({
         </View>
       )}
 
-      {/* caption — the taste note, always visible (Simon: the note reads here) */}
+      {/* caption — the taste note, always visible (Simon: the note reads here),
+          IG-style with the author's name leading in semibold (Simon 2026-07-19
+          — matches the detail's caption byline anatomy). */}
       {checkin.notes ? (
         <View style={{ paddingHorizontal: GUTTER, paddingTop: space['3xs'] }}>
           <VText variant="small" color="ink" numberOfLines={3}>
-            {checkin.notes}
+            <VText variant="small" style={styles.bold}>{author.name}</VText>
+            {` ${checkin.notes}`}
           </VText>
         </View>
       ) : null}
@@ -208,9 +222,26 @@ function PhotoHero({
     .onEnd((_e, ok) => {
       if (ok) runOnJS(onDoubleTap)();
     });
+  // The WHOLE post body opens the detail (Simon 2026-07-17) — not just the
+  // glass panel. Single-tap waits out the double-tap-like window (Exclusive);
+  // the once-guard dedupes the panel's own Pressable, which fires alongside
+  // the RNGH tap on panel touches (two recognizers, one touch).
+  const lastOpenRef = useRef(0);
+  const openOnce = useCallback(() => {
+    const t = Date.now();
+    if (t - lastOpenRef.current < 600) return;
+    lastOpenRef.current = t;
+    open();
+  }, [open]);
+  const singleTap = Gesture.Tap()
+    .numberOfTaps(1)
+    .maxDuration(300)
+    .onEnd((_e, ok) => {
+      if (ok) runOnJS(openOnce)();
+    });
 
   return (
-    <GestureDetector gesture={doubleTap}>
+    <GestureDetector gesture={Gesture.Exclusive(doubleTap, singleTap)}>
       <View ref={frameRef} style={{ width: photoW, height: photoH, backgroundColor: theme.surfaceSunk }}>
         <Image
           source={{ uri }}
@@ -228,7 +259,7 @@ function PhotoHero({
           style={StyleSheet.absoluteFill}
           pointerEvents="none"
         />
-        <FeedGlassPanel wine={wine} index={0} axisColor={axisColor} onPress={open} />
+        <FeedGlassPanel wine={wine} index={0} axisColor={axisColor} onPress={openOnce} />
         <AnimatedView pointerEvents="none" style={[styles.burst, burstStyle]}>
           <Icon name="heart-fill" size={96} color="#fff" />
         </AnimatedView>

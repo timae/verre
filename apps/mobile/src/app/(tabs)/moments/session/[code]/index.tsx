@@ -37,7 +37,7 @@ import {
 } from '@/lib/api/sessions';
 import { buildComparePeople, CompareBody, ComparePickerSheet, CompareToolbar, type CompareSort } from '@/components/moments/CompareBody';
 import { SessionFatalView } from '@/components/moments/SessionFatalView';
-import { SheetSearchField } from '@/components/moments/CompareBody';
+import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { DraggableRows, type RowMoveActions } from '@/components/moments/DraggableRows';
 import { AnchoredMenu, MenuItem, MenuSeparator } from '@/components/ui/AnchoredMenu';
 import { SessionMenu, SessionMenuButton, useBlindForEveryoneToggle } from '@/components/moments/SessionMenu';

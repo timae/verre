@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, TTL, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
+import { WatchError } from 'redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -128,9 +129,27 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Rating is keyed by identity id, never by display name. Two participants
   // sharing a display name (legitimately via collision, or accidentally via
   // a client-side race) cannot overwrite each other's ratings.
+  //
+  // `at` here is the mirror-ordering token, nothing else — no client reads
+  // it (RatingMeta.at is carried but unconsumed). For logged-in raters it is
+  // a PROVISIONAL always-loses 0: the post-commit re-assert below replaces
+  // it with the row's PG-clock token. Stamping app time here would let a
+  // skewed app clock (ahead of PG) out-stamp real PG tokens — the re-assert
+  // AND a later-committing PATCH mirror would both skip behind the phantom-
+  // future value and Redis would never converge (Codex round 4). With 0 the
+  // provisional never blocks any writer's version guard; whichever PG-
+  // stamped mirror lands next owns the key, and every interleaving of
+  // rate/PATCH converges to the last PG committer. (A request-id ownership
+  // tag was considered and rejected: a PATCH mirror running before the
+  // owner's re-assert still skips against the future stamp, then the owner
+  // normalizes to an OLDER token — diverged again.) Anons keep app time:
+  // single writer, never archived, never mirrored.
   await redis.set(
     k.rating(c, identity.id, wineId),
-    JSON.stringify({ score: ratingScore, flavors: storedFlavors, aromas: storedAromas, notes: notes || '', at: Date.now() }),
+    JSON.stringify({
+      score: ratingScore, flavors: storedFlavors, aromas: storedAromas, notes: notes || '',
+      at: identity.kind === 'user' ? 0 : Date.now(),
+    }),
     { EX: TTL },
   )
 
@@ -196,8 +215,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // omitted field keeps the existing row's value (CASE on ratings.aromas)
         // so a client that predates aromas can't wipe them — the Redis
         // omitted-preserves above covers the live copy, this covers the
-        // archive even when the Redis key already TTL'd away.
-        const upsertRows = await prisma.$queryRaw<{ id: number }[]>`
+        // archive even when the Redis key already TTL'd away. RETURNING
+        // `aromas` hands back the value the row actually COMMITTED (which on
+        // the omitted path can be a concurrent PATCH's newer selection, not
+        // the request-side `storedAromas` pre-read) — the engagement check +
+        // re-assert below must use it, or Redis converges to a stale array.
+        // RETURNING `clock_timestamp()` is the mirror-ordering token: it
+        // evaluates AFTER the conflicting row lock is acquired (RETURNING
+        // runs post-write), so lock-queue order = token order = commit order
+        // — matching the PATCH's post-update clock_timestamp(). rated_at's
+        // NOW() (transaction-START time) must NOT be used as the token: a
+        // statement that blocked behind a PATCH commits later yet carries
+        // the EARLIER stamp, and the re-assert would wrongly skip.
+        const upsertRows = await prisma.$queryRaw<{ id: number; aromas: unknown; ts: Date }[]>`
           INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at)
           VALUES (
             ${wineId},
@@ -219,8 +249,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
             notes = EXCLUDED.notes,
             rated_at = EXCLUDED.rated_at
-          RETURNING id`
+          RETURNING id, aromas, clock_timestamp() AS ts`
         const ratingId = upsertRows[0]?.id
+        const pgStampMs = upsertRows[0]?.ts ? new Date(upsertRows[0].ts).getTime() : null
+        const committedAromas: AromaSelection[] = Array.isArray(upsertRows[0]?.aromas)
+          ? upsertRows[0].aromas as AromaSelection[]
+          : storedAromas
 
         // Materialise the session feed_item on first engagement. The engagement
         // trigger from §3 of the rewire: any rating with score > 0, flavour
@@ -241,7 +275,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // NOT NULL enforces this at the schema level.
         const hasEngagement = ratingScore > 0
           || Object.keys(storedFlavors).length > 0
-          || storedAromas.length > 0
+          || committedAromas.length > 0
           || (notes != null && notes.length > 0)
         let cascadeReaped = false
         if (hasEngagement) {
@@ -263,6 +297,57 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           // the Redis cleanup AND the lifetime-counter bump on it.
           cascadeReaped = await engagementDeletionCascade(ratingId)
           if (cascadeReaped) await redis.del(k.rating(c, identity.id, wineId))
+        }
+
+        // Post-commit RE-ASSERT (PR #81 review P2 — one ordering authority).
+        // The pre-archive SET above stamps a provisional always-loses 0 (see
+        // its comment); the feed PATCH mirror stamps PG clock_timestamp().
+        // Without this re-assert, a PATCH that commits between our Redis
+        // write and our PG commit overwrote the key with its (newer-stamped)
+        // payload while OUR upsert became the last PG committer — stores
+        // diverged until the next write. Re-asserting here with the
+        // upsert's own post-lock clock_timestamp() (`ts` in RETURNING — NOT
+        // rated_at's transaction-start NOW(), see the upsert comment) puts
+        // both writers on the SAME PG-clock token: whoever acquired the row
+        // lock last carries the highest stamp and wins the key, so Redis
+        // always converges to the PG winner. The payload uses
+        // `committedAromas` (the row's RETURNING value), not the request-
+        // side pre-read — on the omitted path PG may have preserved a
+        // concurrent PATCH's newer selection. Version-guarded like the
+        // PATCH mirror (skip when the stored payload is same-or-newer; skip
+        // when the key is gone — a concurrent clear/wipe must not be
+        // resurrected). Best-effort: PG is committed, a Redis hiccup must
+        // not fail the rate.
+        if (!cascadeReaped && pgStampMs != null) {
+          try {
+            for (let attempt = 0; attempt < 5; attempt++) {
+              try {
+                await redis.executeIsolated(async (iso) => {
+                  const key = k.rating(c, identity.id, wineId)
+                  await iso.watch([key])
+                  try {
+                    const cur = await iso.get(key)
+                    if (!cur) { await iso.unwatch(); return }
+                    let curAt = 0
+                    try { curAt = Number(JSON.parse(cur)?.at) || 0 } catch { curAt = 0 }
+                    if (curAt >= pgStampMs) { await iso.unwatch(); return }
+                    await iso.multi().set(key, JSON.stringify({
+                      score: ratingScore, flavors: storedFlavors, aromas: committedAromas, notes: notes || '', at: pgStampMs,
+                    }), { EX: TTL }).exec()
+                  } catch (inner) {
+                    await iso.unwatch().catch(() => {})
+                    throw inner
+                  }
+                })
+                break
+              } catch (err) {
+                if (err instanceof WatchError) continue
+                throw err
+              }
+            }
+          } catch (err) {
+            console.warn('rate mirror re-assert failed (PG committed):', err)
+          }
         }
 
         // Lifetime counter updates. Done as a single SQL UPDATE with

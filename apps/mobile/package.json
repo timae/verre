@@ -12,8 +12,12 @@
     "@react-native-community/datetimepicker": "^9.1.0",
     "@react-native-community/netinfo": "12.0.1",
     "@tanstack/react-query": "^5.101.0",
+    "@types/d3-hierarchy": "^3.1.7",
     "@verre/core": "*",
     "better-auth": "1.6.15",
+    "d3-hierarchy": "^3.1.2",
+    "d3-shape": "^3.2.0",
+    "d3-voronoi-treemap": "^1.1.2",
     "expo": "~56.0.11",
     "expo-blur": "~56.0.3",
     "expo-clipboard": "~56.0.4",
@@ -48,6 +52,7 @@
     "react-native-worklets": "0.8.3"
   },
   "devDependencies": {
+    "@types/d3-shape": "^3.1.8",
     "@types/react": "~19.2.2",
     "patch-package": "^8.0.1",
     "typescript": "~6.0.3"
