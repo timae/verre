@@ -194,30 +194,29 @@ export const PREVIEW_CAP = 3
 //
 // The PANEL-level bar is a DEFERRED knob (like primary/peak) — a live gallery
 // toggle rules it, so it is a PARAMETER, not hardcoded (Codex):
-//   'majority'  (default, Codex's recommendation) — pronouncedCount*2 > n
-//   'twoThirds' (stricter)                        — pronouncedCount*3 >= n*2
-// Both floor at >= 2. So under 'majority' 3-of-5 shows pronounced, 3-of-8 does
-// NOT — the popover still reports "3 of 5 supporters marked pronounced" for the
-// nuance, without overstating panel agreement.
+//   'majority'  (default) — pronouncedCount*2 > supporterCount
+//   'twoThirds' (stricter) — pronouncedCount*3 >= supporterCount*2
+// Both floor at >= 2.
 //
-// `n` = the AROMA RESPONDENTS (the consensus result's n = tasters with >= 1
-// resolvable aroma), NOT every selected compare participant. No aroma entry is
-// MISSING EVIDENCE, not a negative pronounced vote — so the respondents
-// denominator is the intentional one (confirmed Codex + Simon 2026-07-14): 3-of-8
-// selected participants can pass if only 5 gave aromas and 3 of those 5 marked
-// pronounced (n=5 here, not 8). Explanatory copy says "aroma respondents", never
-// "panel", to avoid implying all selected participants were counted.
+// The DENOMINATOR is the node's SUPPORTERS, not the aroma respondents
+// (scientific-review fix, 2026-07-19 — supersedes the earlier respondents
+// denominator). Someone who never perceived the aroma has no opinion on how
+// intense it was — counting them against the bar treated missing evidence as
+// a negative vote, the exact mistake the respondents-vs-participants ruling
+// avoids one level up. Prevalence is already the head roles' job; pronounced
+// answers "of those who perceived it, did most find it intense?" — which is
+// also what the popover copy ("3 of 5 supporters") always said.
 export type PronouncedBar = 'majority' | 'twoThirds'
 export function pronouncedForNode(
   contributors: AromaContributorIndex,
   id: string,
-  n: number,
   bar: PronouncedBar = 'majority',
 ): { pronouncedCount: number; supporterCount: number; isPanelPronounced: boolean } {
   const supporters = contributors.agreement.get(id) ?? []
   let pronouncedCount = 0
   for (const c of supporters) if (c.picks.some((p) => p.p === true)) pronouncedCount++
-  const clears = pronouncedCount >= 2 && (bar === 'majority' ? pronouncedCount * 2 > n : pronouncedCount * 3 >= n * 2)
+  const clears = pronouncedCount >= 2
+    && (bar === 'majority' ? pronouncedCount * 2 > supporters.length : pronouncedCount * 3 >= supporters.length * 2)
   return { pronouncedCount, supporterCount: supporters.length, isPanelPronounced: clears }
 }
 
@@ -231,7 +230,7 @@ export function pronouncedNodeIds(
 ): ReadonlySet<string> {
   const ids = new Set<string>()
   const walk = (dn: ConsensusDisplayNode) => {
-    if (dn.counted && pronouncedForNode(contributors, dn.node.id, result.n, bar).isPanelPronounced) ids.add(dn.node.id)
+    if (dn.counted && pronouncedForNode(contributors, dn.node.id, bar).isPanelPronounced) ids.add(dn.node.id)
     dn.children.forEach(walk)
   }
   result.roots.forEach(walk)
@@ -309,7 +308,7 @@ export function popoverContent(
   // multiple branches), then the 2-branch cap — never a silent drop.
   const branches = dn.children.filter((c) => c.role === 'peak').flatMap(peakPaths)
   const supporters = contributors.agreement.get(id) ?? []
-  const pron = pronouncedForNode(contributors, id, result.n, pronBar)
+  const pron = pronouncedForNode(contributors, id, pronBar)
   return {
     id,
     label: dn.node.label,
@@ -485,12 +484,13 @@ export function supportedNodeIds(contrib: AromaContributorIndex, participantId: 
 export type Tier3Mode = 'agreement' | 'participants' | 'all'
 export type Tier3Route = { mode: Tier3Mode; aromaFilter: AromaRef | null }
 
-// The detail sheet's available tabs (slice 3d, Simon 2026-07-15): Agreement
-// exists only when the panel agrees; People sits before All Aromas because the
-// human read is more useful than the exhaustive inventory. Fallback mode
-// therefore opens on People. First entry = the default tab without a route.
-export function tier3Tabs(hasAgreement: boolean): Tier3Mode[] {
-  return hasAgreement ? ['agreement', 'participants', 'all'] : ['participants', 'all']
+// The detail sheet's available tabs. Since the Overview redesign (Simon
+// 2026-07-19) the first tab exists in BOTH modes — labelled "Overview", it
+// renders the aggregate read (bars in agreement mode; fingerprint + mentioned
+// tail in fallback — the Tier-2 rail's fallback parity). People before All
+// Aromas (the human read beats the inventory). First entry = the default tab.
+export function tier3Tabs(_hasAgreement: boolean): Tier3Mode[] {
+  return ['agreement', 'participants', 'all']
 }
 
 // `View contributors` on a popover aroma → open/mutate Tier 3 in Participants
@@ -537,6 +537,120 @@ export type AromaMentionRow = {
 
 export type AromaMentionSort = 'occurrence' | 'family'
 export type AromaMentionFamily = { familyId: string; label: string; totalCount: number; rows: AromaMentionRow[] }
+
+// ── Top-aromas pyramid (the All Aromas header visual, Simon 2026-07-19) ───────
+// The top 10 exact mentions as a FIXED typographic pyramid: apex = the #1
+// aroma, rows of 1/2/3/4 below, rank order left-to-right. Deliberately NOT
+// area-proportional and NOT badges — the shape is decoration, the names are
+// the data ("the aromas speak for themselves").
+export const TOP_AROMAS_SHAPE = [1, 2, 3, 4] as const
+export function topAromaPyramid(rows: ReadonlyArray<AromaMentionRow>): AromaMentionRow[][] {
+  const ranked = sortAromaMentions(rows, 'occurrence').slice(0, 10)
+  const out: AromaMentionRow[][] = []
+  let i = 0
+  for (const size of TOP_AROMAS_SHAPE) {
+    if (i >= ranked.length) break
+    out.push(ranked.slice(i, i + size))
+    i += size
+  }
+  return out
+}
+
+// TRUE-triangle cell geometry for the pyramid (Simon: "an actual pyramid, so
+// a triangle" — supersedes the stepped-tile silhouette). One triangle, apex
+// up, sliced into T horizontal bands; band ti holds tierSizes[ti] cells split
+// by vertical dividers spaced evenly along the band's bottom edge (the classic
+// food-pyramid cut); outer cells keep the sloped triangle edge. Pure: the
+// renderer applies colours/labels/seams to this layout only. `cy` (the label
+// line) sits LOW in EVERY band — 74% depth, where sloped cells are widest —
+// one uniform baseline per stratum, and the apex name gets real room (a
+// mid-band anchor hid it: at 4 tiers the apex mid-width is ~w/8 — the "some
+// labels don't show" catch). `maxW` is the usable width at that line.
+export type PyramidCellGeom = {
+  points: string
+  /** The same polygon rebased to the cell's own bbox origin — the popover's
+      source-matched connector redraws the exact facet at the tap rect. */
+  localPoints: string
+  x: number; y: number; w: number; h: number
+  cx: number; cy: number; maxW: number
+  /** Sloped triangle edges bounding this cell (0 interior, 1 edge, 2 apex) —
+      lines stacked ABOVE the label line lose width at the slope rate. */
+  slopedSides: 0 | 1 | 2
+}
+
+// Greedy word-wrap for a pyramid cell label (est charW, no measure pass —
+// the viz-rounds convention). Tries 1..maxLines; line k of L gets
+// maxW − perLineShrink·(L−1−k) (upper lines are narrower in sloped cells).
+// null = even maxLines can't fit → the cell stays an unlabelled facet.
+export function wrapPyramidLabel(name: string, maxW: number, charW: number, perLineShrink: number, maxLines: number): string[] | null {
+  const words = name.split(/\s+/).filter(Boolean)
+  if (words.length === 0) return null
+  const width = (s: string) => s.length * charW
+  for (let L = 1; L <= maxLines; L++) {
+    const lineW = (k: number) => maxW - perLineShrink * (L - 1 - k)
+    const lines: string[] = []
+    let idx = 0
+    let ok = true
+    for (let k = 0; k < L && idx < words.length; k++) {
+      let line = words[idx]
+      if (width(line) > lineW(k)) { ok = false; break }
+      idx++
+      while (idx < words.length && width(`${line} ${words[idx]}`) <= lineW(k)) { line += ` ${words[idx]}`; idx++ }
+      lines.push(line)
+    }
+    if (ok && idx >= words.length) return lines
+  }
+  return null
+}
+// `apexScale` weights the apex band taller than the rest (default 1.45): at
+// uniform slices the apex label line is ~w/8 wide — too narrow for a typical
+// aroma name at phone widths (the "some labels don't show" catch). The extra
+// depth widens the #1 label's line AND gives the top aroma visual primacy.
+export function pyramidLayout(tierSizes: ReadonlyArray<number>, w: number, h: number, apexScale = 1.45): PyramidCellGeom[][] {
+  const T = tierSizes.length
+  if (T === 0 || w <= 0 || h <= 0) return []
+  const totalWeight = apexScale + (T - 1)
+  const yAt = (ti: number) => (ti === 0 ? 0 : (h * (apexScale + (ti - 1))) / totalWeight)
+  const hw = (y: number) => (w / 2) * (y / h)
+  return tierSizes.map((count, ti) => {
+    const yTop = yAt(ti)
+    const yBot = yAt(ti + 1)
+    const hwTop = hw(yTop)
+    const hwBot = hw(yBot)
+    const botL = w / 2 - hwBot
+    const step = (2 * hwBot) / count
+    const cells: PyramidCellGeom[] = []
+    for (let j = 0; j < count; j++) {
+      const isFirst = j === 0
+      const isLast = j === count - 1
+      const xTopL = isFirst ? w / 2 - hwTop : botL + step * j
+      const xTopR = isLast ? w / 2 + hwTop : botL + step * (j + 1)
+      const xBotL = isFirst ? botL : botL + step * j
+      const xBotR = isLast ? w / 2 + hwBot : botL + step * (j + 1)
+      const corners: Array<[number, number]> = [[xTopL, yTop], [xTopR, yTop], [xBotR, yBot], [xBotL, yBot]]
+      const originX = Math.min(xTopL, xBotL)
+      const points = corners.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(' ')
+      const localPoints = corners.map(([px, py]) => `${(px - originX).toFixed(1)},${(py - yTop).toFixed(1)}`).join(' ')
+      const cy = yTop + (yBot - yTop) * 0.74
+      const hwCy = hw(cy)
+      const cellL = isFirst ? w / 2 - hwCy : xBotL
+      const cellR = isLast ? w / 2 + hwCy : xBotR
+      cells.push({
+        points,
+        localPoints,
+        x: originX,
+        y: yTop,
+        w: Math.max(xTopR, xBotR) - originX,
+        h: yBot - yTop,
+        cx: (cellL + cellR) / 2,
+        cy,
+        maxW: Math.max(0, cellR - cellL - 6),
+        slopedSides: count === 1 ? 2 : isFirst || isLast ? 1 : 0,
+      })
+    }
+    return cells
+  })
+}
 
 const modifierRank = (m: string | null) => (m === null ? '' : m)
 const compareMentionRows = (a: AromaMentionRow, b: AromaMentionRow) =>
@@ -630,10 +744,23 @@ export type AromaTasteSummary = {
   pairs: readonly AromaTastePair[]
   /** Every respondent by mean pair overlap, highest first (stable). */
   group: readonly AromaTasteGroupMember[]
+  /** The pool the person extremes are picked from (the >=2-pick gate when at
+      least two qualify, else everyone), sorted like `group`. The ranking
+      sheet MUST rank THIS for closest/individual — ranking the ungated group
+      put a one-pick respondent above the card's pick (Codex). */
+  eligibleGroup: readonly AromaTasteGroupMember[]
   closestPair: AromaTastePair
   farthestPair: AromaTastePair
   closestToGroup: AromaTasteGroupMember
   mostIndividual: AromaTasteGroupMember
+  /** How many pairs/people SHARE each extreme's score (>=1; 1 = unique).
+      Ties are counted in the same pool the extreme was picked from (the
+      >=2-pick gate for the person extremes). The cards must disclose a tie
+      rather than crown one of several equals (Simon, 2026-07-19). */
+  closestPairTies: number
+  farthestPairTies: number
+  closestToGroupTies: number
+  mostIndividualTies: number
 }
 
 const putTasteSignal = (signals: Map<string, number>, key: string, weight: number) => {
@@ -699,21 +826,34 @@ export function aromaTasteSummary(people: ReadonlyArray<AromaContributor>): Arom
     person,
     score: pairCounts[i] > 0 ? Math.round(totals[i] / pairCounts[i]) : 0,
   }))
-  const closestToGroup = group.reduce((best, current) => (current.score > best.score ? current : best))
-  const mostIndividual = group.reduce((best, current) => (current.score < best.score ? current : best))
+  // Extremes gate (scientific review, 2026-07-19): mean overlap is mechanically
+  // low for a one-pick respondent, so ungated "Most Individual" tends to crown
+  // the least ENGAGED taster, not the most distinctive one. The named extremes
+  // draw from respondents with >= 2 picks when at least two qualify; with fewer
+  // the gate would only rename the same degeneracy, so it falls back to all.
+  const eligible = group.filter((_, i) => people[i].picks.length >= 2)
+  const pool = eligible.length >= 2 ? eligible : group
+  const closestToGroup = pool.reduce((best, current) => (current.score > best.score ? current : best))
+  const mostIndividual = pool.reduce((best, current) => (current.score < best.score ? current : best))
   // Stable sorts: ties keep i<j / roster encounter order, so the sorted heads
   // agree with the reduce-picked extremes above.
   allPairs.sort((x, y) => y.score - x.score)
   const sortedGroup = [...group].sort((x, y) => y.score - x.score)
+  const eligibleGroup = pool === group ? sortedGroup : [...pool].sort((x, y) => y.score - x.score)
 
   return {
     respondents: people.length,
     pairs: allPairs,
     group: sortedGroup,
+    eligibleGroup,
     closestPair: closestPair!,
     farthestPair: farthestPair!,
     closestToGroup,
     mostIndividual,
+    closestPairTies: allPairs.filter((pair) => pair.score === closestPair!.score).length,
+    farthestPairTies: allPairs.filter((pair) => pair.score === farthestPair!.score).length,
+    closestToGroupTies: pool.filter((member) => member.score === closestToGroup.score).length,
+    mostIndividualTies: pool.filter((member) => member.score === mostIndividual.score).length,
   }
 }
 
@@ -855,6 +995,173 @@ export function buildCompareAromaModel(raters: ReadonlyArray<AromaContributorInp
   )
   const bun = hasAgreement ? consensusBunNotes(result) : []
   return { result, contrib, hasAgreement, strip, allAromas, pronouncedIds, bun }
+}
+
+// ── Agreement Overview (the redesigned aggregate page, 2026-07-19) ────────────
+// Replaces the consensus-TREE rendering of the Agreement tab (scientific-review
+// redesign): the tree exposed the selector's five-role internals with sub-
+// threshold encodings and no magnitude channel. The Overview renders the
+// ANSWER: a family fingerprint strip + one proportion BAR per agreed head (a
+// chart, not a chip list — Simon's "less listy" ruling, 2026-07-19; the earlier
+// consensus SENTENCE was cut as redundant with the bars), and the subsumption
+// chains demoted to a tap-expanded facet-style funnel (rows expand
+// independently). Statistically honest because the heads are an ANTICHAIN —
+// consensus pass 4a guarantees no two heads share a root-leaf path (an ancestor
+// of a primary is context, a secondary never sits above/below a primary), so
+// per-head count/n rows never display nested populations side by side. Supporter
+// sets still overlap ACROSS branches (multi-select) — rows must never be
+// stacked/summed, hence the multi-select disclosure caption in the renderer.
+
+// At or below this n, rows encode as k-of-n UNIT DOTS (the icon-array — the
+// discrete slots ARE the uncertainty display at small n; a continuous bar at
+// n=4 fakes a stable measurement). Above it: aligned bars + whole-% labels
+// (at that n the % is solid and "65 of 100" is noise — Simon's ruling).
+export const OVERVIEW_DOT_MAX = 10
+
+// Significance floor for a BAR row: at least ⅓ of the aroma respondents (the
+// same "notable" bar core uses for peaks), never fewer than 2. The first cut's
+// absolute-only floor (max(2, ⌈n/10⌉)) still let 2-of-14 (14%) heads earn bars
+// — Simon's insignificance call, 2026-07-19. Presentation-side only — core
+// knobs stay frozen; folded heads' bases surface in Also-mentioned, and
+// primaries (>½) pass by construction.
+export const overviewHeadFloor = (n: number): number => Math.max(2, Math.ceil(n / 3))
+
+// The row's quantity label: natural frequency while the denominator is the
+// load-bearing evidence, whole percent once the sample carries it.
+export function overviewCountLabel(count: number, n: number): string {
+  if (n <= 0) return ''
+  return n <= OVERVIEW_DOT_MAX ? `${count} of ${n}` : `${Math.round((100 * count) / n)}%`
+}
+
+// One contributing-aroma segment of a head's bar (Simon's round-3 ruling,
+// 2026-07-19: the bar IS the breakdown — divided, labelled, tappable; the
+// funnel expansion + its second strip scale are gone). Segments PARTITION the
+// head's supporters: each supporter is attributed to their most-specific
+// supporting pick (tie → taxonomy order), so Σ segment counts === head count
+// — the bar's sub-lengths stay honest on the one shared scale. A segment's
+// tap popover resolves the TRUE contributor set via its base ref (literal
+// picks — may exceed the attributed cell count when someone made several
+// supporting picks; the popover states its own count).
+export type HeadBarSegment = {
+  id: string
+  label: string
+  count: number
+  ref: Extract<AromaRef, { kind: 'base' }>
+}
+
+export type OverviewHeadRow = {
+  id: string
+  label: string
+  familyId: string
+  tier: 'family' | 'subfamily' | 'leaf'
+  count: number
+  role: 'primary' | 'secondary'
+  pronounced: boolean
+  /** The bar's contributing-aroma partition (count desc, taxonomy tie-break). */
+  segments: HeadBarSegment[]
+}
+
+export function headBarSegments(contrib: AromaContributorIndex, headId: string): HeadBarSegment[] {
+  const supporters = contrib.agreement.get(headId) ?? []
+  const groups = new Map<string, number>()
+  for (const person of supporters) {
+    let best: { a: string; tier: number; rank: number } | null = null
+    for (const pick of person.picks) {
+      const node = getAromaNode(pick.a)
+      if (!node || !aromaAncestorChain(node).includes(headId)) continue
+      const tier = TIER_RANK[node.tier]
+      const rank = taxRank(pick.a)
+      if (!best || tier > best.tier || (tier === best.tier && rank < best.rank)) best = { a: pick.a, tier, rank }
+    }
+    if (best) groups.set(best.a, (groups.get(best.a) ?? 0) + 1)
+  }
+  return [...groups.entries()]
+    .map(([id, count]): HeadBarSegment => ({ id, label: getAromaNode(id)?.label ?? id, count, ref: { kind: 'base', a: id } }))
+    .sort((a, b) => b.count - a.count || taxRank(a.id) - taxRank(b.id))
+}
+
+export type AlsoMentionedChip = { id: string; label: string; familyId: string; count: number }
+
+export type AgreementOverview = {
+  n: number
+  rows: OverviewHeadRow[]
+  /** Heads suppressed by the large-n floor (their bases fold into alsoMentioned). */
+  foldedHeads: number
+  /** Base aromas whose picks stand behind NO displayed row — the long tail,
+      count desc then taxonomy. Replaces the agreement-vs-nothing cliff. */
+  alsoMentioned: AlsoMentionedChip[]
+}
+
+// Aggregate/consensus labels arrive lowercase (the Bun painter uppercases the
+// same way) — display lines re-case at the edge.
+export const capFirstLabel = (s: string) => (s.length > 0 ? s[0].toUpperCase() + s.slice(1) : s)
+
+// ── Family fingerprint (the Overview's header strip) ──────────────────────────
+// PEOPLE-weighted (scientific review round 2, 2026-07-19 — supersedes the
+// mention-weighted first cut): each segment ∝ DISTINCT tasters who perceived
+// that family (the branch-maximal subsumed count — one unit per (person,
+// family) pair, so the stack is a true partition). This makes the strip the
+// SAME measure as the bars below, which guarantees via subsumption that any
+// family prominent in the strip has a bar row — the mention-weighted strip
+// could rank a chatty few above an agreed many ("Fire swallowed"), and a
+// mention basis also rewards taxonomy fineness + prolific pickers (CATA
+// practice counts assessors, not citations). MENTIONS keep exactly two jobs:
+// the tie-break (equal people → the more richly explored family first) and
+// the popover's secondary detail line. Still a numberless gestalt garnish.
+export type FamilyShare = { familyId: string; label: string; count: number; mentions: number; share: number }
+export function familyFingerprint(contrib: AromaContributorIndex, rows: ReadonlyArray<AromaMentionRow>): FamilyShare[] {
+  const mentionTotals = new Map<string, number>()
+  for (const row of rows) mentionTotals.set(row.familyId, (mentionTotals.get(row.familyId) ?? 0) + row.count)
+  const entries: Array<Omit<FamilyShare, 'share'>> = []
+  let total = 0
+  for (const [familyId, mentions] of mentionTotals) {
+    const count = (contrib.agreement.get(familyId) ?? []).length
+    if (count === 0) continue
+    total += count
+    entries.push({
+      familyId,
+      label: AROMA_FAMILIES.find((f) => f.id === familyId)?.label ?? familyId,
+      count,
+      mentions,
+    })
+  }
+  if (total === 0) return []
+  return entries
+    .map((entry): FamilyShare => ({ ...entry, share: entry.count / total }))
+    .sort((a, b) => b.count - a.count || b.mentions - a.mentions || taxRank(a.familyId) - taxRank(b.familyId))
+}
+
+// Works in BOTH modes (fallback parity, Simon 2026-07-19 — same as the Tier-2
+// rail): in fallback the strip is the union and every base sits below the
+// significance floor by construction (no node ever reached count 2), so the
+// page degrades to fingerprint + the mentioned tail with no special casing.
+export function buildAgreementOverview(model: CompareAromaModel): AgreementOverview {
+  const { result, contrib, strip, pronouncedIds } = model
+  const floor = overviewHeadFloor(result.n)
+  const kept = strip.filter((c) => c.count >= floor)
+  const rows = kept.map((c): OverviewHeadRow => ({
+    id: c.id,
+    label: c.label,
+    familyId: c.familyId,
+    tier: c.tier,
+    count: c.count,
+    role: c.role,
+    pronounced: pronouncedIds.has(c.id),
+    segments: headBarSegments(contrib, c.id),
+  }))
+  // A base is "covered" when a displayed row sits on its upward chain (self
+  // included): its picks stand behind that row's count or funnel. Everything
+  // else — scatter, below-floor tails, coarse parent picks beside a deeper
+  // head — is honestly a mention outside the agreement read.
+  const rowIds = new Set(rows.map((r) => r.id))
+  const alsoMentioned = contrib.byBase
+    .filter((b) => {
+      const node = getAromaNode(b.baseId)
+      return node != null && !aromaAncestorChain(node).some((id) => rowIds.has(id))
+    })
+    .map((b): AlsoMentionedChip => ({ id: b.baseId, label: b.label, familyId: b.familyId, count: b.count }))
+    .sort((a, b) => b.count - a.count || taxRank(a.id) - taxRank(b.id))
+  return { n: result.n, rows, foldedHeads: strip.length - kept.length, alsoMentioned }
 }
 
 // ── Detail-pill colours (pure; pinned per-theme in the harness) ────────────────

@@ -820,7 +820,7 @@ function CmpAccItem({ item }: { item: CmpItem }) {
             <View style={{ marginTop: 4, paddingTop: 12, paddingBottom: 12 }}>
               <AromaCompareStrip
                 model={aromaModel}
-                onOpenDetails={(focusId) => setAromaSheet(focusId ? { open: true, focusId, route: { mode: 'agreement', aromaFilter: null } } : { open: true })}
+                onOpenDetails={(focusId) => setAromaSheet(focusId ? { open: true, focusId } : { open: true })}
                 onViewContributors={(aromaId) => setAromaSheet({ open: true, route: viewContributorsRoute(aromaId) })}
               />
             </View>

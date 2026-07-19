@@ -179,8 +179,10 @@ function UnionPopoverBody({ content, onViewContributors }: { content: UnionPopov
 export type AromaCompareStripProps = {
   model: CompareAromaModel
   /**
-   * Open the Tier 3 detail sheet. `focusId` is the node the popover's "+N more"
-   * was viewing (the sheet scrolls/focuses there); "Aroma Details" passes none.
+   * Open the Tier 3 detail sheet. `focusId` is the node the popover's "+N more
+   * branches" was viewing — the sheet opens on All Aromas with that node's
+   * supporting picks highlighted (its complete uncapped branch detail);
+   * "Aroma Details" passes none and lands on the default tab.
    */
   onOpenDetails: (focusId?: string) => void
   /**

@@ -80,14 +80,20 @@ export function AromaBadgePopover({
   m,
   count,
   pronounced,
+  connector,
   children,
 }: {
   rect: AromaPopoverRect
   onClose: () => void
-  a: string
-  m: string | null
+  a?: string
+  m?: string | null
   count?: number
   pronounced?: boolean
+  /** Source-matched trigger clone (Simon 2026-07-19): a non-badge trigger
+      (Overview bar segment, fingerprint segment, pyramid facet) passes its
+      OWN primitive here and it rides the tap rect instead of the canonical
+      badge — the connector matches what was actually tapped. */
+  connector?: ReactNode
   children: ReactNode
 }) {
   const { theme } = useTheme()
@@ -164,7 +170,7 @@ export function AromaBadgePopover({
               transform: [{ scale: 1.06 }],
             }}
           >
-            <AromaChip a={a} m={m} count={count} pronounced={pronounced} focused vPad={0} />
+            {connector ?? (a != null ? <AromaChip a={a} m={m ?? null} count={count} pronounced={pronounced} focused vPad={0} /> : null)}
           </View>
         </Animated.View>
       </View>
