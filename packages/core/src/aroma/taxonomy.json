@@ -346,9 +346,15 @@
         "cooked": "jammy"
        },
        "search_aliases": [
-        "green apple",
         "red apple"
        ]
+      },
+      {
+       "id": "green_apple",
+       "label": "green apple",
+       "modifier_display": {
+        "cooked": "jammy"
+       }
       },
       {
        "id": "pear",
