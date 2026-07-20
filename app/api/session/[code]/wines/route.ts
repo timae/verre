@@ -116,5 +116,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // true here (wineToWire computes it from the just-written provenance).
   // Pass identities so `addedByDisplayName` resolves to the live name;
   // userNameLookup is empty (the just-added wine's adder is in the map).
-  return NextResponse.json(wineToWire(result, identity.id, identities))
+  // showProvenance honours the "Show who brought each impression" setting so
+  // this echo can't leak attribution the polling GET (buildWinesView) strips.
+  return NextResponse.json(wineToWire(result, identity.id, identities, new Map(), meta.showProvenance !== false))
 }

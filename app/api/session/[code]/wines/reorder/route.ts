@@ -49,7 +49,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup(out, identities)
   return NextResponse.json(
-    out.map(w => wineToWire(w, identity.id, identities, userNameLookup)),
+    out.map(w => wineToWire(w, identity.id, identities, userNameLookup, meta.showProvenance !== false)),
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

@@ -114,16 +114,27 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
 // correlation across wines from the same adder, same rationale as the
 // `addedByIdentityId` strip). `/u/<id>` URLs are already public, so a
 // numeric userId carries no new privacy surface.
+// `showProvenance` (default true) is the "Show who brought each impression"
+// session setting. When false the host opted OUT of attribution, so the
+// resolved name + userId are forced to null HERE — at the single sanctioned
+// wire transform — so EVERY caller (buildWinesView reads AND the four wine
+// mutation routes that echo a wire wine back) inherits the strip structurally,
+// exactly like redactWine nulls identity in-place. `isMine` is NOT affected:
+// it's the caller's own trust flag, never rendered as attribution. Doing this
+// here (not post-hoc in one reader) was a review fix — a strip that lived only
+// in buildWinesView leaked provenance through the add/edit/reorder/reveal
+// responses to the host/cohost/provider caller.
 export function wineToWire(
   w: WineMeta,
   callerId: string,
   identities: Record<string, string> = {},
   userNameLookup: Map<string, string> = new Map(),
+  showProvenance = true,
 ): WireWine {
   const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
   let resolvedName: string | null = null
   let userId: number | null = null
-  if (provenance) {
+  if (provenance && showProvenance) {
     if (identities[provenance]) resolvedName = identities[provenance]
     else if (provenance.startsWith('u:') && userNameLookup.has(provenance)) {
       resolvedName = userNameLookup.get(provenance)!
@@ -136,6 +147,8 @@ export function wineToWire(
   }
   return {
     ...rest,
+    // isMine keys on the raw provenance, independent of showProvenance — the
+    // caller's own edit affordance must survive attribution being hidden.
     isMine: !!provenance && provenance === callerId,
     addedByDisplayName: resolvedName,
     addedByUserId: userId,
@@ -186,6 +199,15 @@ export type SessionMeta = {
   link?: string
   hideLineup?: boolean
   hideLineupMinutesBefore?: number
+  // Whether the "Brought by" attribution (who added each impression) is shown
+  // to viewers. DEFAULT ON: absent or true → shown; false → the host opted out
+  // and the read path (buildWinesView) nulls addedByDisplayName +
+  // addedByUserId off the wire so NO surface — impression detail, web callout,
+  // feed cards — can render it. PRO-gated at the settings write, but reading it
+  // never gates on pro (a moment set private stays private for everyone).
+  // Independent of blind: blind hides the impression's IDENTITY, this hides its
+  // PROVENANCE. On existing moments the field is absent → attribution unchanged.
+  showProvenance?: boolean
   // Host-chosen cover photo (S3 URL). Deliberately NOT blind-redacted — it
   // brands the moment, not a wine. S3 bytes reclaimed in every deletion path.
   coverPhotoUrl?: string
@@ -506,6 +528,77 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
     select: { id: true },
   })
   return row.id
+}
+
+// Mirror a "Brought by" REASSIGNMENT to Postgres. UPSERTS the wine row (from the
+// current Redis `wine`) with provenance FORCED on BOTH the create and update
+// paths — unlike `pgUpsertWine`, which freezes provenance on update.
+//
+// Why an upsert (not a provenance-only updateMany): if the PG row doesn't exist
+// yet (anon session pre-archival), a provenance-only update would no-op, and a
+// CONCURRENT rating/bookmark could then CREATE the row from a Redis snapshot
+// captured before the reassign — permanently archiving the OLD owner even though
+// every op "succeeded" (Codex P2). By upserting here, a PG row with the NEW owner
+// always exists after the reassign; any later `pgUpsertWine` from a stale-snapshot
+// archival write hits its UPDATE path, which FREEZES provenance, so it keeps the
+// new owner. And because THIS forces provenance on its own update path, it also
+// wins if a stale archival create beat it to the row. Net: reassign's owner is
+// the durable last-writer regardless of interleaving with archival writes.
+//
+// Runs under the ban lock in the caller; the caller compensates (restores prior
+// Redis provenance) if this throws. Best-effort within the Redis→PG contract —
+// see docs/dev/proposals/reassign-brought-by.md.
+// True iff a live (non-soft-deleted) Postgres session row exists for this code.
+// The reassign handler gates on this BEFORE any write: v1 reassignment is
+// limited to already-archived sessions (Simon, 2026-07-20). A pure Redis-only
+// anon moment (root CLAUDE.md: anon sessions stay Redis-only) has no PG row, so
+// a reassign there is rejected — NOT force-archived (that would break the anon
+// lifecycle contract) and NOT allowed as a Redis-only ownership change (that
+// would reintroduce the first-archival provenance race when a logged-in user
+// later archives). See docs/dev/proposals/reassign-brought-by.md.
+export async function pgSessionExists(sessionCode: string): Promise<boolean> {
+  const row = await prisma.session.findFirst({
+    where: { code: sessionCode, deletedAt: null },
+    select: { id: true },
+  })
+  return !!row
+}
+
+export async function pgReassignWineProvenance(sessionCode: string, wine: WineMeta): Promise<void> {
+  const session = await prisma.session.findFirst({
+    where: { code: sessionCode, deletedAt: null },
+    select: { id: true },
+  })
+  // The caller gated on pgSessionExists before mutating Redis, but session
+  // deletion / account cleanup do NOT take the ban lock — so the row CAN vanish
+  // (TOCTOU) between that gate and here, AFTER Redis was already changed. That's
+  // a mirror FAILURE, not a no-op: returning silently would leave Redis=new /
+  // PG=gone and the route would 200. THROW so the caller's Redis compensation
+  // runs and the request 500s (Codex catch). (A genuinely absent row for a
+  // never-archived session can't reach here — the caller's 409 gate stops it.)
+  if (!session) throw new Error('reassign mirror: session row disappeared')
+  const cols = {
+    name: wine.name,
+    producer: wine.producer || null,
+    vintage: wine.vintage || null,
+    grape: wine.grape || null,
+    style: wine.type || null,
+    imageUrl: wine.imageUrl || null,
+    description: wine.description || null,
+    region: wine.region || null,
+    country: wine.country || null,
+    vinification: wine.vinification || null,
+    purchaseUrl: wine.purchaseUrl || null,
+    addedByIdentityId: wine.addedByIdentityId ?? null,
+    addedByDisplayName: wine.addedByDisplayName ?? null,
+  }
+  await prisma.wine.upsert({
+    where: { id: wine.id },
+    create: { id: wine.id, sessionId: session.id, ...cols },  // category defaults to 'wine' (schema default), matching pgUpsertWine
+    // FORCE provenance on update (the whole point) — a stale archival create
+    // that beat us to the row is corrected here.
+    update: { addedByIdentityId: cols.addedByIdentityId, addedByDisplayName: cols.addedByDisplayName },
+  })
 }
 
 export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
