@@ -47,7 +47,7 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Verre uses your camera to take photos for your moments and wines.</string>
+	<string>Verre uses your camera to take photos for your moments and impressions.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Verre uses your photo library to add cover photos to your moments.</string>
 	<key>NSUserActivityTypes</key>
