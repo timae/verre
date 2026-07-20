@@ -21,7 +21,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { RatingSection } from '@/components/scoring/RatingSection';
-import { BadgePill } from '@/components/moments/RoleChip';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
@@ -1063,7 +1062,11 @@ function AboutBlock({
                   <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>You</VText>
                 </>
               ) : null}
-              {broughtByAnon ? <BadgePill label="Unregistered" bg="transparent" color={theme.inkFaint} border={theme.rule} /> : null}
+              {/* No "Unregistered" pill on this read-only callout (Simon
+                  2026-07-20) — an anon adder still reads as anon via the glyph
+                  avatar + regular-weight inkSoft name. The pill stays in the
+                  edit-form bringer picker, where distinguishing registrants
+                  matters for reassignment. */}
             </View>
           </View>
         </View>
