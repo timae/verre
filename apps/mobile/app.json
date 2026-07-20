@@ -2,14 +2,15 @@
   "expo": {
     "name": "Verre",
     "slug": "verre",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "io.verre.app",
     "userInterfaceStyle": "automatic",
     "ios": {
       "bundleIdentifier": "io.verre.app",
-      "icon": "./assets/expo.icon",
+      "icon": "./assets/images/icon.png",
+      "buildNumber": "1",
       "supportsTablet": false,
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -18,7 +19,7 @@
     "android": {
       "package": "io.verre.app",
       "adaptiveIcon": {
-        "backgroundColor": "#1a1815",
+        "backgroundColor": "#122142",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"

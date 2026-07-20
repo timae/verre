@@ -4,7 +4,13 @@ node_modules/
 !.env.example
 .claude/
 .local/
-ios/
+# Anchored to the repo ROOT only — this ignores the STALE root-level /ios
+# prebuild artifact (see apps/mobile/CLAUDE.md), NOT the authoritative
+# apps/mobile/ios/ project, whose generated files (Pods, build, DerivedData)
+# are covered by apps/mobile/ios/.gitignore. Unanchored `ios/` matched
+# apps/mobile/ios/ too, which blocked NEW tracked native files like the
+# regenerated app-icon PNG from being committed.
+/ios/
 .next/
 .DS_Store
 tsconfig.tsbuildinfo
