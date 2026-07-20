@@ -68,7 +68,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // `addedByDisplayName` value.
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup([result], identities)
-  return NextResponse.json(wineToWire(result, identity.id, identities, userNameLookup))
+  return NextResponse.json(wineToWire(result, identity.id, identities, userNameLookup, meta.showProvenance !== false))
 }
 
 export async function DELETE(req: NextRequest, { params }: Ctx) {

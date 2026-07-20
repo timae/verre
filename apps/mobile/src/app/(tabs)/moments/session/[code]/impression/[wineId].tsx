@@ -21,7 +21,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { RatingSection } from '@/components/scoring/RatingSection';
+import { BadgePill } from '@/components/moments/RoleChip';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -449,9 +451,32 @@ export default function ImpressionDetail() {
   const barTitle = blind ? `Impression ${index + 1} · Hidden` : wine.name + (wine.vintage ? ` - ${wine.vintage}` : '');
   const footVariant: 'first' | 'mid' | 'last' = index <= 0 ? 'first' : index >= total - 1 ? 'last' : 'mid';
 
+  // Brought-by (provider) resolution — mirrors the web WineInfoPane callout.
+  // `addedByDisplayName` is server-resolved (live identities → kicked-user
+  // name → snapshot). `addedByUserId` is the adder's public userId for
+  // LOGGED-IN adders ONLY — null for anonymous adders AND pre-feature wines
+  // (wineToWire). So an adder is anonymous iff there's a name but no userId
+  // (a pre-feature wine has no name and renders no callout at all); this
+  // mirrors PeopleSheet's `a:`-prefix anon test. Anon adders get the
+  // user-glyph avatar + regular-weight name + "Unregistered" tag, same as
+  // the People list; they never carry a profile avatar.
+  const broughtByAnon = wine.addedByDisplayName != null && wine.addedByUserId == null;
+  const adderId = wine.addedByUserId != null ? `u:${wine.addedByUserId}` : null;
+  // Avatar only for a logged-in adder whose profile the server exposed
+  // (meta.participants is block/tier gated in buildMetaView).
+  const adderImageUrl = adderId ? meta?.participants.find((p) => p.id === adderId)?.imageUrl ?? null : null;
+
   const body = (
     <View style={{ paddingHorizontal: GUTTER, paddingTop: 18, paddingBottom: FOOT_CLEARANCE }}>
-      {!blind ? <AboutBlock wine={wine} /> : null}
+      {!blind ? (
+        <AboutBlock
+          wine={wine}
+          broughtBy={wine.addedByDisplayName}
+          broughtBySelf={!!wine.isMine}
+          broughtByAnon={broughtByAnon}
+          broughtByImageUrl={adderImageUrl}
+        />
+      ) : null}
       {/* THE shared rating block (score · note · structure · aromas) —
           one component with the standalone check-in rate stage. Structure is
           shown on blind wines too: `type` (the STYLE) is NOT masked by
@@ -967,10 +992,18 @@ function NameBlock({
 // ClampText (line-clamped more/less) is now the shared components/ui/ClampText
 // (extracted for the feed impression detail; was a pending catalog extraction).
 
-// .ir-about — Origin · Variety · Process rows + clamped description +
-// "Where to buy". Renders only the rows the wine actually carries; the
-// whole block drops away when there's no metadata at all.
-function AboutBlock({ wine }: { wine: WireWine }) {
+// .ir-about — Brought-by callout + Origin · Variety · Process rows + clamped
+// description + "Where to buy". Renders only the rows the wine actually carries;
+// the whole block drops away when there's no metadata AND no provenance at all.
+function AboutBlock({
+  wine, broughtBy, broughtBySelf, broughtByAnon, broughtByImageUrl,
+}: {
+  wine: WireWine;
+  broughtBy: string | null;
+  broughtBySelf: boolean;
+  broughtByAnon: boolean;
+  broughtByImageUrl: string | null;
+}) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // wine.country is an ISO 3166-1 alpha-2 code ("IT"); show the full English
@@ -982,7 +1015,7 @@ function AboutBlock({ wine }: { wine: WireWine }) {
   if (origin) rows.push(['Origin', <VText key="v" style={{ fontFamily: 'InstrumentSans_500Medium', ...phone.text('small') }}>{origin}</VText>]);
   if (wine.grape) rows.push(['Variety', <ClampText key="v" text={wine.grape} lines={2} medium />]);
   if (wine.vinification) rows.push(['Process', <ClampText key="v" text={wine.vinification} lines={2} medium />]);
-  if (rows.length === 0 && !wine.description && !wine.purchaseUrl) return null;
+  if (!broughtBy && rows.length === 0 && !wine.description && !wine.purchaseUrl) return null;
   // Separator rule: a section's bottom edge draws the line between
   // sections; a row divider must never sit directly on that edge. So the
   // last row drops its divider when nothing (description / buy link)
@@ -991,6 +1024,50 @@ function AboutBlock({ wine }: { wine: WireWine }) {
   const rowsHaveTrailer = !!wine.description || !!wine.purchaseUrl;
   return (
     <View style={{ marginTop: 2, marginBottom: 4, paddingBottom: 18, borderBottomWidth: 1, borderBottomColor: theme.rule }}>
+      {broughtBy ? (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 12,
+            paddingVertical: 10,
+            marginBottom: rows.length > 0 || wine.description || wine.purchaseUrl ? 6 : 0,
+          }}
+        >
+          {/* Anon adder → user glyph (never initials); a logged-in adder gets
+              their profile avatar only when the server exposed it
+              (meta.participants is block/tier gated in buildMetaView),
+              otherwise the initials fallback — indistinguishable from the
+              no-avatar/denied cases, so no block or tier state leaks. */}
+          <Avatar name={broughtBy} imageUrl={broughtByImageUrl} anon={broughtByAnon} size={38} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <VText variant="label" color="inkFaint" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 2 }}>
+              Brought By
+            </VText>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' }}>
+              {/* Person-byline parity (PeopleSheet PersonRow, feed caption
+                  author): registered adder = 600 semibold ink; anon = 400
+                  regular inkSoft. */}
+              <VText
+                numberOfLines={1}
+                color={broughtByAnon ? 'inkSoft' : 'ink'}
+                style={{ fontFamily: broughtByAnon ? 'InstrumentSans_400Regular' : 'InstrumentSans_600SemiBold', ...phone.text('small'), flexShrink: 1 }}
+              >
+                {broughtBy}
+              </VText>
+              {/* "· You" self-marker — PeopleSheet PersonRow parity: a name-color
+                  "·" then the word in inkSoft, both semibold, as flex siblings. */}
+              {broughtBySelf ? (
+                <>
+                  <VText color={broughtByAnon ? 'inkSoft' : 'ink'} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>·</VText>
+                  <VText color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>You</VText>
+                </>
+              ) : null}
+              {broughtByAnon ? <BadgePill label="Unregistered" bg="transparent" color={theme.inkFaint} border={theme.rule} /> : null}
+            </View>
+          </View>
+        </View>
+      ) : null}
       {rows.map(([label, value], i) => {
         const lastRow = !rowsHaveTrailer && i === rows.length - 1;
         return (

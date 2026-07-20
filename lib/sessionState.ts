@@ -203,6 +203,17 @@ export async function buildWinesView(
   // itself → null.
   const userNameLookup = await buildKickedUserNameLookup(wines, identities)
 
+  // Provenance strip (Moment Setup → "Show Who Brought Each Impression").
+  // When the host turned attribution OFF, wineToWire nulls the adder name +
+  // userId structurally (5th arg) so it can never render "Brought by". Passed
+  // through here AND in the four wine-mutation routes so every wire surface
+  // inherits it — the strip lives in the one sanctioned transform, not post-hoc
+  // in this reader alone (a review fix; the reader-only version leaked through
+  // the add/edit/reorder/reveal echo responses). Default ON: absent/true leaves
+  // provenance intact. Composes with blind (redaction already nulls a masked
+  // wine's fields; this bites only on wines the caller can otherwise see).
+  const showProvenance = meta.showProvenance !== false
+
   // Enter the redaction branch when:
   //   - session is blind AND the caller isn't host (the default rule), OR
   //   - session is blind AND meta.blindForEveryone is on (then redact even
@@ -221,11 +232,11 @@ export async function buildWinesView(
         index: i,
         blindForEveryone: !!meta.blindForEveryone,
       })
-      return redacted ?? wineToWire(w, identity.id, identities, userNameLookup)
+      return redacted ?? wineToWire(w, identity.id, identities, userNameLookup, showProvenance)
     })
   }
 
-  return wines.map(w => wineToWire(w, identity.id, identities, userNameLookup))
+  return wines.map(w => wineToWire(w, identity.id, identities, userNameLookup, showProvenance))
 }
 
 // Ratings for this session, id-keyed:

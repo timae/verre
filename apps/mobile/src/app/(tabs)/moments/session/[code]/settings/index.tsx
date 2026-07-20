@@ -18,7 +18,7 @@ import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 
 // 02f·1 Settings hub — a pushed full-screen page (not a sheet). Read-card +
 // nav rows. People/Share open the existing bottom SHEETS (hosted here via the
-// in-screen BottomSheetModalProvider); Moment details / Reveal & blind push
+// in-screen BottomSheetModalProvider); Moment details / Moment Setup push
 // their own screens; Delete soft-deletes. Host sees the full hub; guests get
 // read-card + People + Share + (disabled) Leave.
 export default function SettingsHub() {
@@ -134,7 +134,7 @@ export default function SettingsHub() {
                     />
                     <SetNav
                       icon="eyeoff"
-                      label="Reveal & Blind"
+                      label="Moment Setup"
                       onPress={() => router.push(sessionHref(sessionTab, 'settings/reveal', { code }))}
                     />
                   </SetGroup>

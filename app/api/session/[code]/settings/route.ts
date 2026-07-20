@@ -94,6 +94,25 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   // anything until blind is true.
   if (body.blindForEveryone !== undefined)        meta.blindForEveryone             = !!body.blindForEveryone
 
+  // "Show who brought each impression" (Moment Setup). PRO-gated, symmetric
+  // like blind: a change in EITHER direction requires pro. DEFAULT ON, so the
+  // effective current value treats an absent flag as true. A non-pro caller
+  // (host OR free cohost) can't flip it in either direction — they're locked at
+  // whatever the host set, which may be OFF (a pro host hid it, a free cohost
+  // now views it), so this is not a "can't hide it" gate but a "can't change
+  // it" gate. A pure gate before any write, so a 403 orphans nothing.
+  if (body.showProvenance !== undefined) {
+    const newShow = !!body.showProvenance
+    const curShow = meta.showProvenance !== false
+    if (newShow !== curShow && !isPro) {
+      // Direction-neutral: the gate blocks ANY change by a non-pro (hiding OR
+      // re-showing an already-hidden moment), so a "hiding requires pro"
+      // message misreads on the unhide attempt.
+      return NextResponse.json({ error: 'changing impression attribution requires a pro account' }, { status: 403 })
+    }
+    meta.showProvenance = newShow
+  }
+
   if (body.lifespan !== undefined) {
     // Same allow-list as create — without it a pro caller could persist a
     // junk string that lifespanTTL silently maps to 48h while meta records

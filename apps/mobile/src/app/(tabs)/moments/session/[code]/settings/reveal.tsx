@@ -17,11 +17,12 @@ import { useSettingsSession } from '@/lib/useSettingsSession';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
-// 02f·3 Reveal & blind — pushed full-screen toggles page. Hide line-up +
-// timing chips, Blind tasting [PRO], Blind for all. Saves the minimal diff vs
-// meta, then returns to the Settings hub. Sticky Discard/Save bar (create.tsx
-// .vfoot pattern).
-export default function RevealBlind() {
+// 02f·3 Moment Setup — pushed full-screen toggles page (renamed from
+// "Reveal & Blind"; it now holds format/mechanics settings, not just blind:
+// Hide line-up + timing chips, Blind tasting [PRO], Blind for all, and Show
+// who brought each impression [PRO]). Saves the minimal diff vs meta, then
+// returns to the Settings hub. Sticky Discard/Save bar (create.tsx .vfoot).
+export default function MomentSetup() {
   const { code: raw } = useLocalSearchParams<{ code: string }>();
   const code = String(raw ?? '');
   const router = useRouter();
@@ -43,7 +44,7 @@ export default function RevealBlind() {
       onDiscard={() => router.back()}
     />
   ) : (
-    <SettingsScreenFallback title="Reveal & Blind" isError={isError} retrying={isFetching} onRetry={refetch} />
+    <SettingsScreenFallback title="Moment Setup" isError={isError} retrying={isFetching} onRetry={refetch} />
   );
 }
 
@@ -62,6 +63,9 @@ function RevealForm({
   const [hideMinutes, setHideMinutes] = useState(meta.hideLineupMinutesBefore ?? 0);
   const [blind, setBlind] = useState(!!meta.blind);
   const [blindForEveryone, setBlindForEveryone] = useState(!!meta.blindForEveryone);
+  // "Show who brought each impression" — default ON, so an absent flag reads
+  // as true (meta.showProvenance !== false). The toggle drives the shown state.
+  const [showProvenance, setShowProvenance] = useState(meta.showProvenance !== false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,6 +80,8 @@ function RevealForm({
     if (hideLineup && hideMinutes !== (meta.hideLineupMinutesBefore ?? 0)) body.hideLineupMinutesBefore = hideMinutes;
     if (blind !== !!meta.blind) body.blind = blind;
     if (blindForEveryone !== !!meta.blindForEveryone) body.blindForEveryone = blindForEveryone;
+    // Diff against the effective current value (absent → ON), matching the seed.
+    if (showProvenance !== (meta.showProvenance !== false)) body.showProvenance = showProvenance;
     if (Object.keys(body).length === 0) { onDiscard(); return; }
     try {
       await updateMomentSettings(code, body);
@@ -90,7 +96,7 @@ function RevealForm({
   return (
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
-        <VBar title="Reveal & Blind" />
+        <VBar title="Moment Setup" />
       </View>
       <ScrollView
         style={{ flex: 1 }}
@@ -144,6 +150,22 @@ function RevealForm({
           onChange={setBlindForEveryone}
           disabled={!blind}
           reason={!blind ? 'Turn on blind tasting first' : undefined}
+        />
+        {/* Show who brought each impression — DEFAULT ON. PRO is needed to
+            CHANGE it (symmetric gate, mirrors the server). A non-pro caller
+            (host OR free cohost) sees it locked at whatever the host set — which
+            can be OFF (a pro host hid it, a free cohost now views it). So the
+            locked reason must be STATE-AWARE: "…to hide it" only reads right
+            when it's currently shown; when it's already hidden, a "hide" prompt
+            is nonsense. Neutral "Only PRO hosts can change this" covers both. */}
+        <ToggleRow
+          title="Show Who Brought Each Impression"
+          proBadge
+          subtitle="Off keeps who added each impression private"
+          value={showProvenance}
+          onChange={setShowProvenance}
+          disabled={!pro}
+          reason={!pro ? (showProvenance ? 'Upgrade to PRO to hide it' : 'Only PRO hosts can change this') : undefined}
         />
         <VText variant="caption" color="inkSoft" style={{ marginTop: 18 }}>
           Some options need a start time, or a PRO plan. They unlock automatically once they apply.

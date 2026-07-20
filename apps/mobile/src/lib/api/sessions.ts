@@ -83,6 +83,9 @@ export type SessionMetaView = {
   hostIdentityId?: string;
   blind?: boolean;
   blindForEveryone?: boolean;
+  // "Show who brought each impression". Default ON: absent or true → shown;
+  // false → the host turned it off (server nulls addedBy* off the wire).
+  showProvenance?: boolean;
   lifespan?: string;
   coHostIds?: string[];
   providerIds?: string[];
@@ -469,6 +472,7 @@ export type MomentSettingsBody = {
   hideLineupMinutesBefore?: number;
   blind?: boolean; // pro-gated server-side
   blindForEveryone?: boolean;
+  showProvenance?: boolean; // "Show who brought each impression" — pro-gated server-side
   coverPhoto?: string | null; // data URL = replace; null = remove
 };
 

@@ -61,7 +61,7 @@ export default function TabsLayout() {
   // The design ruling "in-flow footer actions replace the nav while
   // rating/creating": 02e (Previous / Save & next), 02a (Create), 02b·add
   // (Add to line-up), and the 02f settings sub-screens (Moment details /
-  // Reveal & blind, Discard / Save) carry their own action bars — hide the
+  // Moment Setup, Discard / Save) carry their own action bars — hide the
   // pill there. The settings HUB keeps the bar (it's a nav list, no footer).
   const hidden =
     overlayHidesBar ||

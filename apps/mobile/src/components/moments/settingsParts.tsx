@@ -10,7 +10,7 @@ import { GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
-// details + Reveal & blind). Pixel-spec from the design's inline CSS
+// details + Moment Setup). Pixel-spec from the design's inline CSS
 // (.set-readcard / .setgroup / .setnav / .trow / .set-photo-btn).
 
 export type SettingsRole = 'host' | 'cohost' | 'provider' | 'taster';
@@ -114,7 +114,7 @@ export function GlassButton({ label, icon, right, onPress }: { label: string; ic
 }
 
 // Sticky Discard | Save bar pinned to the bottom of a settings sub-SCREEN
-// (Moment details / Reveal & blind). SOLID theme.bg fill + a 1px top rule —
+// (Moment details / Moment Setup). SOLID theme.bg fill + a 1px top rule —
 // deliberately NOT the create.tsx transparent→bg GRADIENT: the Discard button
 // is an outline (.btn-secondary, transparent fill), so over a gradient the
 // scrolling form content reads straight THROUGH it. An opaque bar blocks the
@@ -181,7 +181,7 @@ export function ToggleRow({
 }
 
 // Shared loading/error body for the 02f settings screens (hub + Moment details
-// + Reveal & blind) when `useSettingsSession` has no `meta` yet. All three had
+// + Moment Setup) when `useSettingsSession` has no `meta` yet. All three had
 // the identical VBar + spinner-or-"Couldn't load" block; this collapses them to
 // one line and upgrades the error case to a retryable <ErrorState>. The fatal
 // auth/existence kinds bounce to the line-up inside the hook, so the only error

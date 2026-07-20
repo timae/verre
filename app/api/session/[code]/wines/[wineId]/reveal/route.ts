@@ -53,7 +53,7 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup([revealedWine], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(revealedWine, identity.id, identities, userNameLookup) },
+    { ok: true, wine: wineToWire(revealedWine, identity.id, identities, userNameLookup, meta.showProvenance !== false) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }
@@ -98,7 +98,7 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup([hiddenWine], identities)
   return NextResponse.json(
-    { ok: true, wine: wineToWire(hiddenWine, identity.id, identities, userNameLookup) },
+    { ok: true, wine: wineToWire(hiddenWine, identity.id, identities, userNameLookup, meta.showProvenance !== false) },
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

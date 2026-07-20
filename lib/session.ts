@@ -114,16 +114,27 @@ export type WireWine = Omit<WineMeta, 'addedByIdentityId' | 'addedByDisplayName'
 // correlation across wines from the same adder, same rationale as the
 // `addedByIdentityId` strip). `/u/<id>` URLs are already public, so a
 // numeric userId carries no new privacy surface.
+// `showProvenance` (default true) is the "Show who brought each impression"
+// session setting. When false the host opted OUT of attribution, so the
+// resolved name + userId are forced to null HERE — at the single sanctioned
+// wire transform — so EVERY caller (buildWinesView reads AND the four wine
+// mutation routes that echo a wire wine back) inherits the strip structurally,
+// exactly like redactWine nulls identity in-place. `isMine` is NOT affected:
+// it's the caller's own trust flag, never rendered as attribution. Doing this
+// here (not post-hoc in one reader) was a review fix — a strip that lived only
+// in buildWinesView leaked provenance through the add/edit/reorder/reveal
+// responses to the host/cohost/provider caller.
 export function wineToWire(
   w: WineMeta,
   callerId: string,
   identities: Record<string, string> = {},
   userNameLookup: Map<string, string> = new Map(),
+  showProvenance = true,
 ): WireWine {
   const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
   let resolvedName: string | null = null
   let userId: number | null = null
-  if (provenance) {
+  if (provenance && showProvenance) {
     if (identities[provenance]) resolvedName = identities[provenance]
     else if (provenance.startsWith('u:') && userNameLookup.has(provenance)) {
       resolvedName = userNameLookup.get(provenance)!
@@ -136,6 +147,8 @@ export function wineToWire(
   }
   return {
     ...rest,
+    // isMine keys on the raw provenance, independent of showProvenance — the
+    // caller's own edit affordance must survive attribution being hidden.
     isMine: !!provenance && provenance === callerId,
     addedByDisplayName: resolvedName,
     addedByUserId: userId,
@@ -186,6 +199,15 @@ export type SessionMeta = {
   link?: string
   hideLineup?: boolean
   hideLineupMinutesBefore?: number
+  // Whether the "Brought by" attribution (who added each impression) is shown
+  // to viewers. DEFAULT ON: absent or true → shown; false → the host opted out
+  // and the read path (buildWinesView) nulls addedByDisplayName +
+  // addedByUserId off the wire so NO surface — impression detail, web callout,
+  // feed cards — can render it. PRO-gated at the settings write, but reading it
+  // never gates on pro (a moment set private stays private for everyone).
+  // Independent of blind: blind hides the impression's IDENTITY, this hides its
+  // PROVENANCE. On existing moments the field is absent → attribution unchanged.
+  showProvenance?: boolean
   // Host-chosen cover photo (S3 URL). Deliberately NOT blind-redacted — it
   // brands the moment, not a wine. S3 bytes reclaimed in every deletion path.
   coverPhotoUrl?: string
