@@ -530,6 +530,77 @@ export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<
   return row.id
 }
 
+// Mirror a "Brought by" REASSIGNMENT to Postgres. UPSERTS the wine row (from the
+// current Redis `wine`) with provenance FORCED on BOTH the create and update
+// paths — unlike `pgUpsertWine`, which freezes provenance on update.
+//
+// Why an upsert (not a provenance-only updateMany): if the PG row doesn't exist
+// yet (anon session pre-archival), a provenance-only update would no-op, and a
+// CONCURRENT rating/bookmark could then CREATE the row from a Redis snapshot
+// captured before the reassign — permanently archiving the OLD owner even though
+// every op "succeeded" (Codex P2). By upserting here, a PG row with the NEW owner
+// always exists after the reassign; any later `pgUpsertWine` from a stale-snapshot
+// archival write hits its UPDATE path, which FREEZES provenance, so it keeps the
+// new owner. And because THIS forces provenance on its own update path, it also
+// wins if a stale archival create beat it to the row. Net: reassign's owner is
+// the durable last-writer regardless of interleaving with archival writes.
+//
+// Runs under the ban lock in the caller; the caller compensates (restores prior
+// Redis provenance) if this throws. Best-effort within the Redis→PG contract —
+// see docs/dev/proposals/reassign-brought-by.md.
+// True iff a live (non-soft-deleted) Postgres session row exists for this code.
+// The reassign handler gates on this BEFORE any write: v1 reassignment is
+// limited to already-archived sessions (Simon, 2026-07-20). A pure Redis-only
+// anon moment (root CLAUDE.md: anon sessions stay Redis-only) has no PG row, so
+// a reassign there is rejected — NOT force-archived (that would break the anon
+// lifecycle contract) and NOT allowed as a Redis-only ownership change (that
+// would reintroduce the first-archival provenance race when a logged-in user
+// later archives). See docs/dev/proposals/reassign-brought-by.md.
+export async function pgSessionExists(sessionCode: string): Promise<boolean> {
+  const row = await prisma.session.findFirst({
+    where: { code: sessionCode, deletedAt: null },
+    select: { id: true },
+  })
+  return !!row
+}
+
+export async function pgReassignWineProvenance(sessionCode: string, wine: WineMeta): Promise<void> {
+  const session = await prisma.session.findFirst({
+    where: { code: sessionCode, deletedAt: null },
+    select: { id: true },
+  })
+  // The caller gated on pgSessionExists before mutating Redis, but session
+  // deletion / account cleanup do NOT take the ban lock — so the row CAN vanish
+  // (TOCTOU) between that gate and here, AFTER Redis was already changed. That's
+  // a mirror FAILURE, not a no-op: returning silently would leave Redis=new /
+  // PG=gone and the route would 200. THROW so the caller's Redis compensation
+  // runs and the request 500s (Codex catch). (A genuinely absent row for a
+  // never-archived session can't reach here — the caller's 409 gate stops it.)
+  if (!session) throw new Error('reassign mirror: session row disappeared')
+  const cols = {
+    name: wine.name,
+    producer: wine.producer || null,
+    vintage: wine.vintage || null,
+    grape: wine.grape || null,
+    style: wine.type || null,
+    imageUrl: wine.imageUrl || null,
+    description: wine.description || null,
+    region: wine.region || null,
+    country: wine.country || null,
+    vinification: wine.vinification || null,
+    purchaseUrl: wine.purchaseUrl || null,
+    addedByIdentityId: wine.addedByIdentityId ?? null,
+    addedByDisplayName: wine.addedByDisplayName ?? null,
+  }
+  await prisma.wine.upsert({
+    where: { id: wine.id },
+    create: { id: wine.id, sessionId: session.id, ...cols },  // category defaults to 'wine' (schema default), matching pgUpsertWine
+    // FORCE provenance on update (the whole point) — a stale archival create
+    // that beat us to the row is corrected here.
+    update: { addedByIdentityId: cols.addedByIdentityId, addedByDisplayName: cols.addedByDisplayName },
+  })
+}
+
 export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
   // Skip soft-deleted sessions (code = NULL after the §8 scrub naturally
   // misses, but the explicit filter documents intent and survives any

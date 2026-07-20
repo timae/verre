@@ -73,6 +73,17 @@ export default function EditImpression() {
       initialWine={wine}
       initialPosition={(wines?.findIndex((w) => w.id === wineId) ?? -1) + 1 || undefined}
       wineIds={wines?.map((w) => w.id)}
+      // "Brought By" reassign is host/cohost-tier (providers editing their own
+      // impression get no picker — same gate the server enforces), AND only when
+      // attribution is shown: when showProvenance is off the server strips the
+      // current owner even from the host, so the control can't display who
+      // you'd reassign FROM — hide it (the server also refuses the reassign).
+      participants={meta?.participants}
+      canReassign={isHostViewer && meta?.showProvenance !== false}
+      // Role sets for the picker's role tags + the can't-edit warning.
+      hostId={meta?.hostIdentityId ?? (meta?.hostUserId != null ? `u:${meta.hostUserId}` : null)}
+      coHostIds={meta?.coHostIds}
+      providerIds={meta?.providerIds}
     />
   );
 }

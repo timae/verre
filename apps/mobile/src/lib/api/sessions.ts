@@ -396,6 +396,28 @@ export async function updateWine(code: string, wineId: string, body: UpdateWineB
   return res.json();
 }
 
+// Reassign "Brought by" (host/cohost only) — an OWNERSHIP-ONLY request, sent
+// SEPARATELY from field/image edits (the server rejects a mix). The reassign is
+// idempotent, so on a transient failure we RETRY ONCE: the retry either
+// completes the change or repairs a Redis/PG split from the first attempt.
+// One retry, then surface an honest failure — never background-retry.
+export async function reassignBroughtBy(code: string, wineId: string, identityId: string): Promise<WireWine> {
+  const send = () => apiFetch(
+    `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ broughtByIdentityId: identityId }),
+    },
+  );
+  let res = await send();
+  // Retry once on a server-side failure (5xx) — a 4xx (bad target, not host,
+  // provenance hidden) is deterministic and won't change on retry, so don't.
+  if (!res.ok && res.status >= 500) res = await send();
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
 export async function deleteWine(code: string, wineId: string): Promise<void> {
   const res = await apiFetch(
     `/api/session/${encodeURIComponent(code)}/wines/${encodeURIComponent(wineId)}`,
