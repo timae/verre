@@ -8,6 +8,7 @@ import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
 import { gateAromas } from '@/lib/aromas'
+import { linkWineToProduct } from '@/lib/wineProductLink'
 // From textSafe, NOT lib/session — importing session here would connect
 // Redis at module load just to use two pure sanitizers (codex finding).
 import { cleanCountry, cleanUrl } from '@/lib/textSafe'
@@ -260,7 +261,7 @@ export async function POST(req: NextRequest) {
   // bubbling as a generic 500. Caught by the awaiting code below.
   const USER_MISSING = Symbol('user-missing')
 
-  let txResult: { feedItem: Awaited<ReturnType<typeof prisma.feedItem.create>>; rating: Awaited<ReturnType<typeof prisma.rating.create>> }
+  let txResult: { feedItem: Awaited<ReturnType<typeof prisma.feedItem.create>>; rating: Awaited<ReturnType<typeof prisma.rating.create>>; productId: string | null }
   try {
     txResult = await prisma.$transaction(async (tx) => {
     // Pull the user's display name INSIDE the txn so a concurrent account-
@@ -281,10 +282,27 @@ export async function POST(req: NextRequest) {
     //    the wine's imageUrl null so a cascade-delete of the rating later
     //    doesn't leave a dangling S3 pointer on a surviving (bookmarked)
     //    wine row.
+    // Link to the canonical product BEFORE the wine insert, inside the txn —
+    // a product-upsert failure rolls the wine back with it. imageUrl is null
+    // here by design (standalone POSTs don't curate the catalog bottle shot),
+    // so the product accretes its image from session wines instead.
+    const productId = await linkWineToProduct(tx, {
+      name: wineName,
+      producer: scrubProducer,
+      vintage: scrubVintage,
+      grape: scrubGrape,
+      style: wineStyle,
+      region: scrubWineRegion,
+      country: cleanWineCountry,
+      vinification: scrubVinification,
+      description: scrubDescription,
+      imageUrl: null,
+    })
     await tx.wine.create({
       data: {
         id: wineId,
         sessionId: null,
+        productId,
         name: wineName,
         producer: scrubProducer,
         vintage: scrubVintage,
@@ -342,7 +360,7 @@ export async function POST(req: NextRequest) {
         data: { ratingId: r.id, imageUrl, sortOrder: 0 },
       })
     }
-    return { feedItem: fi, rating: r }
+    return { feedItem: fi, rating: r, productId }
     })
   } catch (err) {
     // Reclaim the orphan S3 upload that landed before the txn opened
@@ -357,7 +375,7 @@ export async function POST(req: NextRequest) {
     }
     throw err
   }
-  const { feedItem, rating } = txResult
+  const { feedItem, rating, productId } = txResult
 
   // Save tags as feed_item_tags — only mutual follows (verify server-side).
   // Block-pair members are excluded from the write: tagging a user the
@@ -407,6 +425,7 @@ export async function POST(req: NextRequest) {
     country: scrubCountry,
     lat: lat ?? null,
     lng: lng ?? null,
+    productId,
     wineRegion: scrubWineRegion,
     wineCountry: cleanWineCountry,
     vinification: scrubVinification,

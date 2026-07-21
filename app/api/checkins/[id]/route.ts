@@ -11,6 +11,7 @@ import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
 import { WatchError } from 'redis'
 import { redis, k, TTL, existsKey, touchWithMeta } from '@/lib/redis'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
+import { linkWineToProduct } from '@/lib/wineProductLink'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
 import { getWines } from '@/lib/session'
@@ -232,7 +233,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   try {
     txResult = await prisma.$transaction(async (tx) => {
     // Wine-side fields (name, producer, vintage, grape, style).
-    const updatedWine = await tx.wine.update({
+    const updatedWine0 = await tx.wine.update({
       where: { id: wine.id },
       data: {
         name:     wineName !== undefined ? (scrub(wineName) || wine.name) : wine.name,
@@ -255,6 +256,26 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         // time (null for standalone POSTs).
       },
     })
+
+    // Re-link to the canonical product: this PATCH can rewrite
+    // name/producer/vintage, which changes the match key, so the wine must
+    // re-point at the product for its new identity (re-link-on-edit). No-op
+    // when the key is unchanged. Inside the txn so a link failure rolls back.
+    const productId = await linkWineToProduct(tx, {
+      name: updatedWine0.name,
+      producer: updatedWine0.producer,
+      vintage: updatedWine0.vintage,
+      grape: updatedWine0.grape,
+      style: updatedWine0.style,
+      region: updatedWine0.region,
+      country: updatedWine0.country,
+      vinification: updatedWine0.vinification,
+      description: updatedWine0.description,
+      imageUrl: updatedWine0.imageUrl,
+    })
+    const updatedWine = productId === updatedWine0.productId
+      ? updatedWine0
+      : await tx.wine.update({ where: { id: wine.id }, data: { productId } })
 
     // Rating-side fields (score, flavors, notes).
     const updatedRating = await tx.rating.update({
@@ -362,6 +383,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     vintage: updatedWine.vintage,
     grape: updatedWine.grape,
     type: updatedWine.style,
+    productId: updatedWine.productId,
     wineRegion: updatedWine.region,
     wineCountry: updatedWine.country,
     vinification: updatedWine.vinification,

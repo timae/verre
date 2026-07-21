@@ -104,7 +104,7 @@ export async function loadSessionFeedWines(
         select: {
           id: true, name: true, producer: true, vintage: true,
           grape: true, style: true, imageUrl: true, revealedAt: true,
-          addedByIdentityId: true,
+          addedByIdentityId: true, productId: true,
           // Catalog metadata for the feed's full impression detail page.
           // Blanked on a redacted wine (below) so blind identity can't leak.
           region: true, country: true, vinification: true,
@@ -156,6 +156,9 @@ export async function loadSessionFeedWines(
     const wireWine: SessionFeedWine = redacted
       ? {
           id: w.id,
+          // No product link on a redacted wine — the productId resolves to the
+          // real bottle, so it leaks identity. Blank it with the rest.
+          productId: null,
           name: '',     // UI renders "Wine N" via index — see SessionFeedCard
           producer: null,
           vintage: null,
@@ -185,6 +188,7 @@ export async function loadSessionFeedWines(
         }
       : {
           id: w.id,
+          productId: w.productId,
           name: w.name,
           producer: w.producer,
           vintage: w.vintage,

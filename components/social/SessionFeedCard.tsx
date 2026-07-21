@@ -188,7 +188,17 @@ function WineRow({ wine, index }: { wine: SessionFeedWine; index: number }) {
       <div style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', gap:4 }}>
         <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8 }}>
           <div style={{ minWidth:0, flex:1 }}>
-            <WineIdentity wine={{ name: wine.name, vintage: wine.vintage, producer: wine.producer, grape: wine.grape }} size="card" />
+            {/* Tap the identity to open the canonical product page. Only
+                linked when the wine resolved to a product (productId set +
+                not blind-redacted — a redacted wine arrives with productId
+                null, so it stays plain text). */}
+            {wine.productId ? (
+              <Link href={`/wine/${wine.productId}`} style={{ textDecoration:'none', color:'inherit' }}>
+                <WineIdentity wine={{ name: wine.name, vintage: wine.vintage, producer: wine.producer, grape: wine.grape }} size="card" />
+              </Link>
+            ) : (
+              <WineIdentity wine={{ name: wine.name, vintage: wine.vintage, producer: wine.producer, grape: wine.grape }} size="card" />
+            )}
           </div>
           {wine.score ? <div style={{ flexShrink:0 }}><StarRating value={wine.score} size="detail" /></div> : null}
         </div>
