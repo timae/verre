@@ -303,6 +303,8 @@ export async function GET(req: NextRequest) {
             vinification: wine.vinification,
             description: wine.description,
             purchaseUrl: wine.purchaseUrl,
+            // Canonical product link (standalone is never blind → no fork).
+            productId: wine.productId,
             flavors: f.rating.flavors,
             // Wire format is plain {a, m, p?} objects (JSON column — no
             // Decimal trap). Never redacted: a standalone is never blind.

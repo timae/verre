@@ -349,8 +349,19 @@ model Wine {
   // (logged-in users fall through to users.name first; anon adders rely on this
   // snapshot since there's no users row).
   addedByDisplayName String?        @map("added_by_display_name") @db.VarChar(64)
+  // Nullable FK to the canonical product this wine row is an instance of.
+  // Populated by a deterministic find-or-create on a normalized
+  // (producer, name, vintage) match key at the Postgres-write boundary
+  // (lib/wineProductLink.ts, called from pgUpsertWine + the checkins txn).
+  // DELIBERATELY absent from WireWine/WineMeta/Redis so it never enters
+  // redactWine — a blind wine's productId must not leak pre-reveal.
+  // onDelete: SetNull — a product is derived reference data; deleting one
+  // must never delete wine rows/ratings, and a stray delete should leave
+  // the wine re-linkable rather than blocking (Restrict) or cascading.
+  productId          String?        @map("product_id") @db.VarChar(21)
   bookmarks          Bookmark[]
   ratings            Rating[]
+  product            WineProduct?   @relation(fields: [productId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   session            Session?       @relation(fields: [sessionId], references: [id], onUpdate: NoAction)
   // Composite FK to category_styles guarantees (category, style) is a valid
   // pair. Style is nullable; the FK only enforces when both columns are
@@ -359,6 +370,7 @@ model Wine {
   categoryStyle      CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([sessionId, addedByIdentityId])
+  @@index([productId])
   // pg_trgm GIN indexes for the future Tastes-tab search/filter on wine name
   // + producer. Adding now is cheap and avoids a post-import rebuild on a
   // larger table later. `raw("gin_trgm_ops")` makes ILIKE queries
@@ -549,10 +561,56 @@ model CategoryStyle {
   sortOrder Int     @default(0) @map("sort_order")
   active    Boolean @default(true)
   wines     Wine[]
+  products  WineProduct[]
 
   @@id([category, style])
   @@index([category, sortOrder])
   @@map("category_styles")
+}
+
+// Canonical wine product — one row per real-world bottle, the aggregation
+// anchor for the public product page (GET /api/wines/[productId]) and the
+// reuse target for wine-entry lookup. REFERENCE DATA: references no
+// users.id, so it is exempt from the cascade-vs-tombstone rule and must
+// never be touched by account deletion (like category_styles / countries).
+// Many Wine rows (per-session instances) point at one WineProduct.
+model WineProduct {
+  id           String   @id @db.VarChar(21)
+  // Normalized (producer, name, vintage) dedup anchor. UNIQUE — this is the
+  // find-or-create hook (lib/wineProductKey.ts). The migration's SQL key
+  // expression MUST produce byte-identical output to the TS normalize().
+  matchKey     String   @unique @map("match_key") @db.VarChar(600)
+  // Canonical editorial metadata, mirrored from wines. Accretes via
+  // fill-nulls: an auto-link fills only currently-NULL columns, never
+  // overwrites. name/producer/vintage are consistent across the group by
+  // construction (they define matchKey).
+  name         String   @db.VarChar(255)
+  producer     String?  @db.VarChar(255)
+  vintage      String?  @db.Char(4)
+  grape        String?  @db.VarChar(255)
+  category     String   @default("wine") @db.VarChar(32)
+  style        String?  @db.VarChar(64)
+  region       String?  @db.VarChar(255)
+  country      String?  @db.VarChar(2)
+  vinification String?  @db.VarChar(1000)
+  description  String?  @db.VarChar(1000)
+  // NOTE: no stored image — the product page DERIVES its bottle shot at read
+  // time from a live constituent wine (lib/productAggregate.ts), so a
+  // reclaimed/replaced source image can never leave a broken product image.
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @default(now()) @map("updated_at") @db.Timestamptz(6)
+  wines        Wine[]
+  // Composite FK mirrors Wine's — guarantees (category, style) is a valid
+  // pair. Safe by construction: metadata is copied from wines that already
+  // satisfy this FK.
+  categoryStyle CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+
+  // pg_trgm GIN on name + producer for the future entry-time fuzzy
+  // autocomplete (suggestion-only — never auto-merges). Mirrors the wines
+  // indexes; raw("gin_trgm_ops") makes ILIKE index-eligible.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@index([producer(ops: raw("gin_trgm_ops"))], type: Gin)
+  @@map("wine_products")
 }
 
 // Per-tasting photo album. Multiple photos per rating (live session AND

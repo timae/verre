@@ -22,6 +22,10 @@ export type FeedAuthor = {
 // blanked identity + metadata (name === '', producer/region/etc null).
 export type SessionFeedWine = {
   id: string;
+  // Canonical wine_products id — the wine-name → product-page link target.
+  // Null when unlinked OR blind-redacted (rides the redaction fork, so a
+  // `_blind` wine never carries it). Mirrors lib/feedTypes.ts.
+  productId: string | null;
   name: string;
   producer: string | null;
   vintage: string | null;
@@ -52,6 +56,9 @@ export type CheckinPayload = {
   vintage: string | null;
   grape: string | null;
   type: string | null;
+  // Canonical wine_products id (standalone is never blind). Mirrors the web
+  // /api/feed + /api/checkins payloads.
+  productId: string | null;
   score: number | null;
   notes: string | null;
   imageUrl: string | null;
@@ -312,6 +319,7 @@ export function findFeedItem(pages: FeedPage[] | undefined, id: number): FeedIte
 export function checkinToWine(c: CheckinPayload): SessionFeedWine {
   return {
     id: String(c.id),
+    productId: c.productId ?? null,
     name: c.wineName,
     producer: c.producer,
     vintage: c.vintage,

@@ -1670,6 +1670,7 @@ function DetailPage({
 function AboutBlock({ wine }: { wine: SessionFeedWine }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  const router = useRouter();
   const country = wine.country ? countryName(wine.country) || wine.country : '';
   const origin = [wine.region, country].filter(Boolean).join(' · ');
   // Values render via ClampText (grape/vinification can be long) — same as 02e:
@@ -1724,6 +1725,23 @@ function AboutBlock({ wine }: { wine: SessionFeedWine }) {
           <Icon name="link" size={15} color={theme.accent} />
           <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
             Where to buy
+          </VText>
+        </Pressable>
+      ) : null}
+      {/* Canonical product page — the same bottle across every taster/session.
+          Only when the wine linked to a product (productId set; a blind-
+          redacted wine arrives with productId null, and AboutBlock is only
+          rendered for non-blind impressions anyway). */}
+      {wine.productId ? (
+        <Pressable
+          onPress={() => router.push(`/feed/wine/${wine.productId}`)}
+          accessibilityRole="button"
+          accessibilityLabel={`View the ${wine.name} wine page`}
+          style={{ marginTop: 12, flexDirection: 'row', alignItems: 'center', gap: 6 }}
+        >
+          <Icon name="glass" size={15} color={theme.accent} />
+          <VText color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small') }}>
+            View wine page
           </VText>
         </Pressable>
       ) : null}

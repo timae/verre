@@ -9,6 +9,11 @@
 export type SessionFeedWine = {
   // Postgres `wines.id` (string nanoid). Stable across renders.
   id: string
+  // Canonical wine_products id — the target of the wine-name → product-page
+  // link. Null when the wine isn't linked (no linkable name) OR when the wine
+  // is blind-redacted (below): the productId reveals identity, so it rides the
+  // same redaction fork as name/producer.
+  productId: string | null
   // Identity fields, blanked out when blind & not yet revealed.
   name: string
   producer: string | null

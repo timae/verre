@@ -5,6 +5,7 @@ import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { uploadImage } from '@/lib/s3'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
+import { linkWineToProduct } from '@/lib/wineProductLink'
 import type { Identity } from '@/lib/identity'
 import { userIdentityId } from '@/lib/identity'
 
@@ -564,6 +565,24 @@ export async function pgSessionExists(sessionCode: string): Promise<boolean> {
   return !!row
 }
 
+// Map a Redis WineMeta onto the fields linkWineToProduct needs. `type` is the
+// WireWine/Redis name for the wine's style column; category isn't carried on
+// WineMeta (session wines are always 'wine' — the schema default), so it's
+// omitted and defaults to 'wine' in the linker.
+function wineProductFields(wine: WineMeta) {
+  return {
+    name: wine.name,
+    producer: wine.producer || null,
+    vintage: wine.vintage || null,
+    grape: wine.grape || null,
+    style: wine.type || null,
+    region: wine.region || null,
+    country: wine.country || null,
+    vinification: wine.vinification || null,
+    description: wine.description || null,
+  }
+}
+
 export async function pgReassignWineProvenance(sessionCode: string, wine: WineMeta): Promise<void> {
   const session = await prisma.session.findFirst({
     where: { code: sessionCode, deletedAt: null },
@@ -592,9 +611,12 @@ export async function pgReassignWineProvenance(sessionCode: string, wine: WineMe
     addedByIdentityId: wine.addedByIdentityId ?? null,
     addedByDisplayName: wine.addedByDisplayName ?? null,
   }
+  // Link on the create branch only. The update branch is provenance-only (it
+  // never touches identity fields), so the product mapping can't change there.
+  const productId = await linkWineToProduct(prisma, wineProductFields(wine))
   await prisma.wine.upsert({
     where: { id: wine.id },
-    create: { id: wine.id, sessionId: session.id, ...cols },  // category defaults to 'wine' (schema default), matching pgUpsertWine
+    create: { id: wine.id, sessionId: session.id, productId, ...cols },  // category defaults to 'wine' (schema default), matching pgUpsertWine
     // FORCE provenance on update (the whole point) — a stale archival create
     // that beat us to the row is corrected here.
     update: { addedByIdentityId: cols.addedByIdentityId, addedByDisplayName: cols.addedByDisplayName },
@@ -610,11 +632,18 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
     select: { id: true },
   })
   if (!session) return
+  // Canonical-product link. Computed off the wine's identity fields and set on
+  // BOTH branches: create obviously, and update because pgUpsertWine's update
+  // path DOES refresh name/producer/vintage — a rename must re-point the wine
+  // at the product for its new identity (re-link-on-edit). Stays a
+  // Postgres-only column, never in WireWine, so redactWine can't leak it.
+  const productId = await linkWineToProduct(prisma, wineProductFields(wine))
   await prisma.wine.upsert({
     where: { id: wine.id },
     create: {
       id: wine.id,
       sessionId: session.id,
+      productId,
       name: wine.name,
       producer: wine.producer || null,
       vintage: wine.vintage || null,
@@ -630,6 +659,7 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       addedByDisplayName: wine.addedByDisplayName ?? null,
     },
     update: {
+      productId,
       name: wine.name,
       producer: wine.producer || null,
       vintage: wine.vintage || null,

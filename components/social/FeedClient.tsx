@@ -9,6 +9,7 @@ import type { SessionFeedPayload } from '@/lib/feedTypes'
 type CheckinPayload = {
   id: number; wineName: string; producer?: string|null; vintage?: string|null
   grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+  productId?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
   flavors?: Record<string,number>; likeCount: number; liked?: boolean; createdAt?: string
   aromas?: { a: string; m: string | null; p?: boolean }[]
