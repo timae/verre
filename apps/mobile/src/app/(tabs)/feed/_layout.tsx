@@ -50,6 +50,9 @@ export default function FeedStack() {
           need it or the details push would re-inherit the sheet. */}
       <Stack.Screen name="edit/[id]" options={{ presentation: 'fullScreenModal' }} />
       <Stack.Screen name="edit/details" options={{ presentation: 'fullScreenModal' }} />
+      {/* Canonical wine product page — pushed from the impression detail's
+          About block. Ordinary card presentation (VBar back chevron). */}
+      <Stack.Screen name="wine/[productId]" />
     </Stack>
   );
 }
