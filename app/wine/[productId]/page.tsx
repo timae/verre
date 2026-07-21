@@ -23,12 +23,13 @@ export default async function WineProductPage({ params }: { params: Promise<{ pr
     select: {
       id: true, name: true, producer: true, vintage: true, grape: true,
       category: true, style: true, region: true, country: true,
-      vinification: true, description: true, imageUrl: true,
+      vinification: true, description: true,
     },
   })
   if (!product) notFound()
 
-  const community = await getProductAggregate(product.id)
+  // imageUrl is DERIVED from live constituent wines (not a pinned column).
+  const { imageUrl, community } = await getProductAggregate(product.id)
   const country = countryName(product.country)
   const origin = [product.region, country].filter(Boolean).join(', ')
   const topAromas = community.aromas
@@ -49,8 +50,8 @@ export default async function WineProductPage({ params }: { params: Promise<{ pr
           flex: '0 0 96px', height: 128, borderRadius: 12, background: 'var(--bg3)', overflow: 'hidden',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          {product.imageUrl
-            ? <img src={product.imageUrl} alt={product.name} style={{ width: '100%', maxHeight: 128, objectFit: 'contain' }} />
+          {imageUrl
+            ? <img src={imageUrl} alt={product.name} style={{ width: '100%', maxHeight: 128, objectFit: 'contain' }} />
             : <span style={{ fontSize: 40, opacity: 0.25 }}>🍷</span>}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -85,7 +86,7 @@ export default async function WineProductPage({ params }: { params: Promise<{ pr
       {/* Community flavour wheel */}
       <section style={{ marginTop: 24 }}>
         <h2 style={{ fontSize: 13, fontWeight: 700, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 8 }}>Community flavour profile</h2>
-        <ProductFlavorWheel flavors={community.flavors} label={product.name} />
+        <ProductFlavorWheel flavors={community.flavors} type={product.style} label={product.name} />
       </section>
 
       {/* Top community aromas */}

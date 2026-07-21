@@ -9,14 +9,13 @@ import { ClampText } from '@/components/ui/ClampText';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { StarScore } from '@/components/scoring/StarScore';
 import { StructureWheel } from '@/components/scoring/StructureWheel';
-import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { buildWheelAxes, hasRatedAxes } from '@/lib/flavourAxes';
 import { getWineProduct } from '@/lib/api/wines';
 import { FOOT_CLEARANCE, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, useTheme } from '@/theme';
-import { countryName, formatScore } from '@verre/core';
+import { countryName, formatScore, getAromaNode } from '@verre/core';
 
 // Canonical wine product page (proposal: wine product pages). One page per
 // real-world bottle, aggregating community ratings across every session/user.
@@ -59,7 +58,14 @@ export default function WineProductScreen() {
   const country = product.country ? countryName(product.country) || product.country : '';
   const origin = [product.region, country].filter(Boolean).join(' · ');
   const producerLine = [product.producer, wineTypeLabel(product.type)].filter(Boolean).join(' · ');
-  const aromaSelections = c.aromas.map((a) => ({ a: a.node, m: null }));
+  // Preserve frequency: the API returns nodes ordered by taster count desc.
+  // Keep that order + show the count, rather than AromaReadChips' family
+  // display-ordering (which drops counts and reorders) — the section is
+  // literally "Most-noted", so frequency is the point.
+  const topAromas = c.aromas
+    .map((a) => ({ ...a, label: getAromaNode(a.node)?.label }))
+    .filter((a): a is { node: string; count: number; label: string } => !!a.label)
+    .slice(0, 12);
   const showWheel = hasRatedAxes(c.flavors as Record<string, number>, product.type);
   const axes = buildWheelAxes(c.flavors as Record<string, number>, product.type, axisColor);
 
@@ -123,13 +129,20 @@ export default function WineProductScreen() {
           </View>
         ) : null}
 
-        {/* Most-noted aromas */}
-        {aromaSelections.length > 0 ? (
+        {/* Most-noted aromas — ordered by taster count (frequency IS the point) */}
+        {topAromas.length > 0 ? (
           <View style={{ marginTop: space.lg, paddingTop: space.lg, borderTopWidth: 1, borderTopColor: theme.rule }}>
             <VText variant="label" color="inkSoft" style={{ fontFamily: 'InstrumentSans_600SemiBold', textTransform: 'uppercase', marginBottom: 6 }}>
               Most-noted aromas
             </VText>
-            <AromaReadChips aromas={aromaSelections} />
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+              {topAromas.map((a) => (
+                <View key={a.node} style={{ flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: theme.surface, borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 5 }}>
+                  <VText variant="small">{a.label}</VText>
+                  <VText variant="caption" color="inkFaint">{a.count}</VText>
+                </View>
+              ))}
+            </View>
           </View>
         ) : null}
 

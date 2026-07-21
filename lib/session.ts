@@ -580,7 +580,6 @@ function wineProductFields(wine: WineMeta) {
     country: wine.country || null,
     vinification: wine.vinification || null,
     description: wine.description || null,
-    imageUrl: wine.imageUrl || null,
   }
 }
 

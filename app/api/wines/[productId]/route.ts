@@ -21,12 +21,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ pro
     select: {
       id: true, name: true, producer: true, vintage: true, grape: true,
       category: true, style: true, region: true, country: true,
-      vinification: true, description: true, imageUrl: true,
+      vinification: true, description: true,
     },
   })
   if (!product) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
-  const community = await getProductAggregate(product.id)
+  // imageUrl is DERIVED from live constituent wines (not a pinned column), so a
+  // reclaimed/replaced source image can't leave a broken product image.
+  const { imageUrl, community } = await getProductAggregate(product.id)
 
   return NextResponse.json({
     id: product.id,
@@ -43,7 +45,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ pro
     region: product.region,
     vinification: product.vinification,
     description: product.description,
-    imageUrl: product.imageUrl,
+    imageUrl,
     community,
   }, {
     headers: { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' },

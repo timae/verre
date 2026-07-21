@@ -283,9 +283,8 @@ export async function POST(req: NextRequest) {
     //    doesn't leave a dangling S3 pointer on a surviving (bookmarked)
     //    wine row.
     // Link to the canonical product BEFORE the wine insert, inside the txn —
-    // a product-upsert failure rolls the wine back with it. imageUrl is null
-    // here by design (standalone POSTs don't curate the catalog bottle shot),
-    // so the product accretes its image from session wines instead.
+    // a product-upsert failure rolls the wine back with it. (The product's
+    // bottle shot is derived at read time, so no image is passed here.)
     const productId = await linkWineToProduct(tx, {
       name: wineName,
       producer: scrubProducer,
@@ -296,7 +295,6 @@ export async function POST(req: NextRequest) {
       country: cleanWineCountry,
       vinification: scrubVinification,
       description: scrubDescription,
-      imageUrl: null,
     })
     await tx.wine.create({
       data: {

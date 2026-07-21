@@ -8,8 +8,10 @@ import { resolveAxesColoured } from '@/lib/flavours'
 // Community flavour wheel for the wine product page — the score-weighted
 // structure aggregate from getProductAggregate. Mirrors ProfilePanelRatings:
 // the wheel draws over the FULL structure axis set (dense frame, null → 0), so
-// a never-tasted axis reads as an empty spoke rather than a gap.
-export function ProductFlavorWheel({ flavors, label }: { flavors: Record<string, number | null>; label: string }) {
+// a never-tasted axis reads as an empty spoke rather than a gap. Axes resolve
+// by the product's own STYLE (`type`), so a sparkling wine gets its Bubbles
+// spoke instead of the red default (the aggregate now returns bubbles too).
+export function ProductFlavorWheel({ flavors, type, label }: { flavors: Record<string, number | null>; type: string | null; label: string }) {
   const wheelRef = useRef<HTMLDivElement>(null)
   const hasData = Object.values(flavors).some(v => v != null)
   if (!hasData) {
@@ -19,7 +21,7 @@ export function ProductFlavorWheel({ flavors, label }: { flavors: Record<string,
       </p>
     )
   }
-  const axes = resolveAxesColoured('wine', 'red')
+  const axes = resolveAxesColoured('wine', type || 'red')
   const dense = axes.reduce((o, f) => ({ ...o, [f.k]: flavors[f.k] == null ? 0 : (flavors[f.k] as number) }), {} as Record<string, number>)
   return (
     <div ref={wheelRef} onClick={() => openWheelLightbox(wheelRef, label)}

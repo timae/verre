@@ -20,6 +20,7 @@ interface Props {
   checkin: {
     id: number; wineName: string; producer?: string|null; vintage?: string|null
     grape?: string|null; type?: string|null; score?: number|null; notes?: string|null; imageUrl?: string|null
+    productId?: string|null
     venueName?: string|null; city?: string|null; country?: string|null
     flavors?: Record<string,number>|null; likeCount?: number
     aromas?: {a:string;m:string|null;p?:boolean}[]|null
@@ -116,7 +117,16 @@ export function CheckinCard({ checkin, author, liked=false, showAuthor=true, onD
             {/* Wine name + score */}
             <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:8, marginBottom:4 }}>
               <div style={{ minWidth:0 }}>
-                <WineIdentity wine={wineForId} size="hero" />
+                {/* Tap the identity to open the canonical product page — the
+                    standalone check-in is a direct catalog write path, so it
+                    links like a session wine row when a product resolved. */}
+                {checkin.productId ? (
+                  <Link href={`/wine/${checkin.productId}`} style={{ textDecoration:'none', color:'inherit' }}>
+                    <WineIdentity wine={wineForId} size="hero" />
+                  </Link>
+                ) : (
+                  <WineIdentity wine={wineForId} size="hero" />
+                )}
               </div>
               {checkin.score ? (
                 <div style={{ flexShrink:0 }}>

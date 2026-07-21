@@ -25,6 +25,9 @@ import { wineMatchKey, hasLinkableName } from './wineProductKey'
 // one wine with a style from another into an invalid pair.
 type Db = PrismaClient | Prisma.TransactionClient
 
+// No imageUrl: the product's bottle shot is DERIVED at read time from a live
+// constituent wine (lib/productAggregate.ts), never stored — so a
+// reclaimed/replaced source image can't strand a broken product image.
 export type LinkableWineFields = {
   name: string
   producer?: string | null
@@ -36,7 +39,6 @@ export type LinkableWineFields = {
   country?: string | null
   vinification?: string | null
   description?: string | null
-  imageUrl?: string | null
 }
 
 export async function linkWineToProduct(db: Db, w: LinkableWineFields): Promise<string | null> {
@@ -44,11 +46,11 @@ export async function linkWineToProduct(db: Db, w: LinkableWineFields): Promise<
   const matchKey = wineMatchKey(w.producer, w.name, w.vintage)
   const rows = await db.$queryRaw<{ id: string }[]>(Prisma.sql`
     INSERT INTO "wine_products"
-      (id, match_key, name, producer, vintage, grape, category, style, region, country, vinification, description, image_url, created_at, updated_at)
+      (id, match_key, name, producer, vintage, grape, category, style, region, country, vinification, description, created_at, updated_at)
     VALUES (
       ${nanoid()}, ${matchKey}, ${w.name}, ${w.producer ?? null}, ${w.vintage ?? null}, ${w.grape ?? null},
       ${w.category ?? 'wine'}, ${w.style ?? null}, ${w.region ?? null}, ${w.country ?? null},
-      ${w.vinification ?? null}, ${w.description ?? null}, ${w.imageUrl ?? null}, now(), now()
+      ${w.vinification ?? null}, ${w.description ?? null}, now(), now()
     )
     ON CONFLICT (match_key) DO UPDATE SET
       grape        = COALESCE("wine_products".grape, EXCLUDED.grape),
@@ -56,7 +58,6 @@ export async function linkWineToProduct(db: Db, w: LinkableWineFields): Promise<
       country      = COALESCE("wine_products".country, EXCLUDED.country),
       vinification = COALESCE("wine_products".vinification, EXCLUDED.vinification),
       description  = COALESCE("wine_products".description, EXCLUDED.description),
-      image_url    = COALESCE("wine_products".image_url, EXCLUDED.image_url),
       updated_at   = now()
     RETURNING id
   `)

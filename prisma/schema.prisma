@@ -594,7 +594,9 @@ model WineProduct {
   country      String?  @db.VarChar(2)
   vinification String?  @db.VarChar(1000)
   description  String?  @db.VarChar(1000)
-  imageUrl     String?  @map("image_url")
+  // NOTE: no stored image — the product page DERIVES its bottle shot at read
+  // time from a live constituent wine (lib/productAggregate.ts), so a
+  // reclaimed/replaced source image can never leave a broken product image.
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @default(now()) @map("updated_at") @db.Timestamptz(6)
   wines        Wine[]

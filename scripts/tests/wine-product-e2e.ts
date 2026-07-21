@@ -3,8 +3,11 @@
 // the migration's backfill SQL. Run:
 //   DATABASE_URL=... npx tsx scripts/tests/wine-product-e2e.ts
 import { prisma } from '../../lib/prisma'
+import { redis, k } from '../../lib/redis'
 import { linkWineToProduct } from '../../lib/wineProductLink'
 import { getProductAggregate } from '../../lib/productAggregate'
+
+const LIVE_CODE = 'E2ELIVE1', EXP_CODE = 'E2EEXP01'
 
 let fails = 0
 function eq(actual: unknown, expected: unknown, msg: string) {
@@ -23,8 +26,10 @@ async function cleanup() {
   await prisma.wineProduct.deleteMany({ where: { name: { startsWith: TAG } } })
   // Sessions are soft-delete-only (prevent_session_hard_delete trigger) — scrub
   // via UPDATE, not DELETE, so re-runs stay idempotent without tripping it.
-  await prisma.$executeRawUnsafe(`UPDATE sessions SET deleted_at = NOW(), name = NULL WHERE name LIKE '${TAG}%'`)
+  // Null `code` too (mirrors the real scrub) so re-runs can reuse the fixed codes.
+  await prisma.$executeRawUnsafe(`UPDATE sessions SET deleted_at = NOW(), name = NULL, code = NULL WHERE name LIKE '${TAG}%'`)
   await prisma.user.deleteMany({ where: { email: { startsWith: TAG } } })
+  await Promise.all([redis.del(k.meta(LIVE_CODE)), redis.del(k.wines(LIVE_CODE)), redis.del(k.meta(EXP_CODE)), redis.del(k.wines(EXP_CODE))])
 }
 
 async function main() {
@@ -66,7 +71,7 @@ async function main() {
   const w4 = await mkWine(sOpen.id, null);    await mkRating(w4, sOpen.id, null, 3.0)     // anon (user null)
   const w3 = await mkWine(sBlind.id, null);   await mkRating(w3, sBlind.id, u3.id, 2.0)   // BLIND unrevealed → excluded
 
-  const agg1 = await getProductAggregate(P)
+  const agg1 = (await getProductAggregate(P)).community
   eq(agg1.ratingCount, 3, 'blind-unrevealed rating excluded → 3 scored (w1,w2,w4)')
   eq(agg1.avgScore, 4.0, 'avg over included scored rows = (4+5+3)/3 = 4.0')
   eq(agg1.tastingCount, 3, 'tastingCount = 3 (blind excluded)')
@@ -75,7 +80,7 @@ async function main() {
 
   // Reveal the blind wine → now its rating counts.
   await prisma.wine.update({ where: { id: w3 }, data: { revealedAt: new Date() } })
-  const agg2 = await getProductAggregate(P)
+  const agg2 = (await getProductAggregate(P)).community
   eq(agg2.ratingCount, 4, 'after reveal → blind rating now included (4 scored)')
   eq(agg2.avgScore, 3.5, 'avg after reveal = (4+5+3+2)/4 = 3.5')
   eq(agg2.tasterCount, 3, 'distinct tasters now u1,u2,u3')
@@ -105,11 +110,40 @@ async function main() {
   eq(byId[b1] === byId[b2] && byId[b1] != null, true, 'backfill: "Café Z"/"Cafe Z" 2015 accent variants → same product')
   eq(byId[b3] !== byId[b1], true, 'backfill: different vintage (2016) → different product')
 
+  // ── D. Expiry auto-reveal — feed parity (P1) ──
+  console.log('\nD — expired blind session auto-reveals into the aggregate')
+  const PE = (await linkWineToProduct(prisma, { name: `${TAG}Expiry`, producer: 'Exp', vintage: '2019', style: 'red' }))!
+  const sLive = await prisma.session.create({ data: { name: `${TAG}live`, blind: true, code: LIVE_CODE } })
+  const sExp = await prisma.session.create({ data: { name: `${TAG}exp`, blind: true, code: EXP_CODE } })
+  // Live blind session: Redis keys present → still blind → excluded.
+  await Promise.all([redis.set(k.meta(LIVE_CODE), '{}'), redis.set(k.wines(LIVE_CODE), '[]')])
+  // Expired blind session: no Redis keys → treated as revealed → included.
+  const wLive = wid(); await prisma.wine.create({ data: { id: wLive, name: `${TAG}Expiry`, producer: 'Exp', vintage: '2019', style: 'red', category: 'wine', sessionId: sLive.id, productId: PE } })
+  await mkRating(wLive, sLive.id, u1.id, 4.0)
+  const wExp = wid(); await prisma.wine.create({ data: { id: wExp, name: `${TAG}Expiry`, producer: 'Exp', vintage: '2019', style: 'red', category: 'wine', sessionId: sExp.id, productId: PE } })
+  await mkRating(wExp, sExp.id, u2.id, 2.0)
+  const aggE = (await getProductAggregate(PE)).community
+  eq(aggE.ratingCount, 1, 'live blind (Redis present) excluded; expired blind (no Redis) included → 1')
+  eq(aggE.avgScore, 2.0, 'only the expired-session rating (score 2) counts')
+
+  // ── E. Sparkling bubbles axis (P2) + derived image (P2/image) ──
+  console.log('\nE — sparkling bubbles axis + read-time-derived image')
+  const PS = (await linkWineToProduct(prisma, { name: `${TAG}Fizz`, producer: 'Bulle', vintage: '2020', style: 'spark' }))!
+  const wFizz = wid()
+  await prisma.wine.create({ data: { id: wFizz, name: `${TAG}Fizz`, producer: 'Bulle', vintage: '2020', style: 'spark', category: 'wine', sessionId: sOpen.id, productId: PS, imageUrl: 'https://example.com/fizz.jpg' } })
+  await prisma.rating.create({ data: { wineId: wFizz, sessionId: sOpen.id, userId: u1.id, origin: 'session', raterName: 'r', score: 4.0, ratedAt: new Date(), flavors: { bubbles: 4, acid: 3 } } })
+  const aggS = await getProductAggregate(PS)
+  eq(aggS.community.flavors.bubbles, 4, 'sparkling: bubbles axis aggregated (not dropped by the red-only key set)')
+  eq(aggS.imageUrl, 'https://example.com/fizz.jpg', 'image derived from the constituent wine')
+  await prisma.wine.update({ where: { id: wFizz }, data: { imageUrl: null } })
+  eq((await getProductAggregate(PS)).imageUrl, null, 'source image cleared → product image heals to null (never pinned)')
+
   await cleanup()
   await prisma.$disconnect()
+  await redis.quit()
   console.log('')
   if (fails) { console.log(`${fails} assertion(s) failed`); process.exit(1) }
   console.log('all wine-product e2e checks passed')
 }
 
-main().catch(e => { console.error(e); process.exit(1) })
+main().then(() => process.exit(fails ? 1 : 0)).catch(e => { console.error(e); process.exit(1) })

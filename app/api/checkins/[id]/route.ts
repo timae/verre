@@ -271,7 +271,6 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       country: updatedWine0.country,
       vinification: updatedWine0.vinification,
       description: updatedWine0.description,
-      imageUrl: updatedWine0.imageUrl,
     })
     const updatedWine = productId === updatedWine0.productId
       ? updatedWine0

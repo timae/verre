@@ -51,7 +51,6 @@ CREATE TABLE "wine_products" (
     "country" VARCHAR(2),
     "vinification" VARCHAR(1000),
     "description" VARCHAR(1000),
-    "image_url" TEXT,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -111,17 +110,16 @@ enrich AS (
         (array_agg(region       ORDER BY created_at) FILTER (WHERE region       IS NOT NULL))[1] AS region,
         (array_agg(country      ORDER BY created_at) FILTER (WHERE country      IS NOT NULL))[1] AS country,
         (array_agg(vinification ORDER BY created_at) FILTER (WHERE vinification IS NOT NULL))[1] AS vinification,
-        (array_agg(description  ORDER BY created_at) FILTER (WHERE description  IS NOT NULL))[1] AS description,
-        (array_agg(image_url    ORDER BY created_at) FILTER (WHERE image_url    IS NOT NULL))[1] AS image_url
+        (array_agg(description  ORDER BY created_at) FILTER (WHERE description  IS NOT NULL))[1] AS description
     FROM keyed
     GROUP BY mk
 )
 INSERT INTO "wine_products"
-    (id, match_key, name, producer, vintage, grape, category, style, region, country, vinification, description, image_url, created_at, updated_at)
+    (id, match_key, name, producer, vintage, grape, category, style, region, country, vinification, description, created_at, updated_at)
 SELECT
     left(replace(gen_random_uuid()::text, '-', ''), 21),
     r.mk, r.name, r.producer, r.vintage,
-    e.grape, r.category, r.style, e.region, e.country, e.vinification, e.description, e.image_url,
+    e.grape, r.category, r.style, e.region, e.country, e.vinification, e.description,
     now(), now()
 FROM rep r JOIN enrich e USING (mk)
 ON CONFLICT (match_key) DO NOTHING;
