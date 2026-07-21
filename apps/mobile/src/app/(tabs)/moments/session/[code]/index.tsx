@@ -4,8 +4,8 @@ import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, Image, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
-import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedScrollHandler, useAnimatedStyle, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
+import { ActivityIndicator, Alert, Animated, Easing, Image, Keyboard, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, runOnJS, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedScrollHandler, useAnimatedStyle, useDerivedValue, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 
 const MorphPath = Reanimated.createAnimatedComponent(Path);
@@ -125,6 +125,131 @@ const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + cont
 const swapIn = (tab: SessionTab) => (tab === 'compare' ? SlideInRight : SlideInLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
 const swapOut = (tab: SessionTab) => (tab === 'compare' ? SlideOutRight : SlideOutLeft).duration(motion.dur3).reduceMotion(ReduceMotion.System);
 
+// ── Line-up ⇄ Compare tab transition (paired-slot model, cover-hero layout) ──
+// The cover-hero layout replaced Reanimated layout entering/exiting on a
+// DUPLICATED, remounting sticky-toolbar node (which produced the status-bar /
+// mid-list ghost toolbars — the search-bar glitch) with a single shared
+// PROGRESS value that drives two absolutely-positioned, independently-translated
+// slots. Semantic progress: 0 = Line-up settled, 1 = Compare settled.
+//
+//   lineupX  = -p · width          compareX = (1 - p) · width
+//
+// Both directions fall out of these two formulas with NO direction variable:
+// L→C runs p 0→1 (Line-up 0→-w, Compare w→0); C→L runs p 1→0 (Compare 0→w,
+// Line-up -w→0). At every settled endpoint the ACTIVE surface is structurally at
+// x=0 with a zero transform — no rebase, and measureInWindow/menu anchoring stay
+// correct. The whole transition lives between a mount+measure and an
+// unmount-the-offscreen-slot; a reversal reuses the still-mounted source.
+//
+// Invariants (see .local/compare-toolbar-glitch-decision.md):
+//  - shared progress is TEMPORARY transition state; only the active slot is
+//    mounted at rest, both during a transition, offscreen one dropped on settle.
+//  - callbacks (timing + onLayout) are epoch-guarded: a stale/reversed
+//    transition must never tear down or overwrite the current one.
+//  - keyboard is dismissed + both toolbars close their local menus before a move.
+//  - a viewport-width change mid-flight cancels and settles to the destination.
+type TabTransition = {
+  /** The settled/active tab (also the destination while transitioning). */
+  tab: SessionTab;
+  /** Non-null while a swap is armed OR running (both panes mounted). */
+  active: { from: SessionTab; to: SessionTab } | null;
+  /** 0 = Line-up, 1 = Compare. Driven by withTiming during a transition. */
+  progress: SharedValue<number>;
+  /** Monotonic transition generation — guards stale callbacks + measurements. */
+  epoch: number;
+  /** True once the user has actually switched (gates the first-mount no-anim). */
+  everSwapped: boolean;
+  select: (t: SessionTab) => void;
+  /** The child calls this when a slot's anchor is measured for `epoch`; when the
+   *  measured slot is the pending DESTINATION, the FIRST such call starts
+   *  withTiming (mount+measure before motion — the destination never animates
+   *  from unmeasured geometry). */
+  certifyReady: (slot: SessionTab, epoch: number) => void;
+};
+function useTabTransition(windowW: number, paired: boolean): TabTransition {
+  const [tab, setTab] = useState<SessionTab>('lineup');
+  // `active` is set while a swap is armed (measuring) or running. `running`
+  // flips true once withTiming has actually started for the current epoch.
+  const [active, setActive] = useState<{ from: SessionTab; to: SessionTab } | null>(null);
+  const [epoch, setEpoch] = useState(0);
+  const everSwapped = useRef(false);
+  const progress = useSharedValue(0);
+  const epochRef = useRef(0);
+  const runningEpochRef = useRef(-1); // the epoch withTiming has been kicked for
+  const pendingRef = useRef<{ to: SessionTab; epoch: number } | null>(null);
+  const settle = useCallback((to: SessionTab) => {
+    // Structural settle: land progress on the semantic endpoint, mount only the
+    // active slot again (active=null). The offscreen slot unmounts with `active`.
+    progress.value = to === 'compare' ? 1 : 0;
+    pendingRef.current = null;
+    setActive(null);
+  }, [progress]);
+  const settleIfCurrent = useCallback((cbEpoch: number, cbTo: SessionTab) => {
+    if (cbEpoch !== epochRef.current) return; // a newer transition superseded us
+    settle(cbTo);
+  }, [settle]);
+  const startTiming = useCallback((to: SessionTab, forEpoch: number) => {
+    runningEpochRef.current = forEpoch;
+    const target = to === 'compare' ? 1 : 0;
+    progress.value = withTiming(
+      target,
+      { duration: motion.dur3, reduceMotion: ReduceMotion.System },
+      (finished) => {
+        'worklet';
+        if (!finished) return; // cancelled by a reversal — that reversal owns the next settle
+        runOnJS(settleIfCurrent)(forEpoch, to);
+      },
+    );
+  }, [progress, settleIfCurrent]);
+  const select = useCallback((to: SessionTab) => {
+    if (to === tab && !active) return;
+    everSwapped.current = true;
+    Keyboard.dismiss(); // a focused search field must not survive the move
+    const from = active ? active.to : tab; // reversal: the current destination becomes the new source
+    const nextEpoch = epochRef.current + 1;
+    const wasRunning = runningEpochRef.current === epochRef.current && !!active;
+    epochRef.current = nextEpoch;
+    setEpoch(nextEpoch);
+    // Menus are suppressed at RENDER time by `active !== null` (set below) — no
+    // signal needed; the menu is force-unmounted in the same arm commit.
+    setTab(to);
+    if (from === to) { settle(to); return; } // reversal back to where we already sit → snap settled
+    // Plain (no-cover) layout: it owns the swap with its own native-sticky +
+    // layout animations and never certifies. Settle the machine immediately so
+    // `active` doesn't stick non-null forever (the paired-slot geometry is unused
+    // there anyway). `paired` is read from props via the callback deps — no
+    // render-written ref (codex R4.P2).
+    if (!paired) { settle(to); return; }
+    // Reversal WHILE running: the destination is already mounted + measured, so
+    // start immediately from the current progress (no re-arming, no measure wait).
+    if (wasRunning) {
+      pendingRef.current = null;
+      startTiming(to, nextEpoch);
+      setActive({ from, to });
+      return;
+    }
+    // Cold/first arm: mount both, DEFER withTiming until certifyReady confirms the
+    // destination measured for this epoch (mount → close menus → measure → move).
+    pendingRef.current = { to, epoch: nextEpoch };
+    setActive({ from, to });
+  }, [tab, active, paired, settle, startTiming]);
+  const certifyReady = useCallback((slot: SessionTab, readyEpoch: number) => {
+    const p = pendingRef.current;
+    if (!p || p.epoch !== readyEpoch || p.to !== slot) return; // not the pending destination
+    pendingRef.current = null;
+    startTiming(p.to, p.epoch);
+  }, [startTiming]);
+  // A viewport-width change invalidates every ±width offset in flight → settle
+  // immediately to the destination (no partial re-interpolation).
+  const lastW = useRef(windowW);
+  useEffect(() => {
+    if (windowW === lastW.current) return;
+    lastW.current = windowW;
+    if (active) settle(active.to);
+  }, [windowW, active, settle]);
+  return { tab, active, progress, epoch, everSwapped: everSwapped.current, select, certifyReady };
+}
+
 // 02b line-up to the vero-screens pixel spec: .sess-meta line, .ovc about
 // block, .vtabs, .lurow anatomy, .lock-card with countdown cells, .tempty.
 // Milestone 3: rows open the impression detail (02e); unrated rows carry the
@@ -137,7 +262,7 @@ export default function SessionLineup() {
   const code = String(raw ?? '');
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
-  const { height: windowH } = useWindowDimensions();
+  const { height: windowH, width: windowW } = useWindowDimensions();
   const router = useRouter();
   const sessionTab = useSessionTab();
   const online = useIsOnline();
@@ -147,6 +272,17 @@ export default function SessionLineup() {
   const { meta, wines, ratings, state, fatal, removedKind, visited, retryVisit, myIdentityId, stateKey } =
     useSessionPoll(code);
 
+  // 02b·10: a moment WITH a cover photo gets the full-bleed collapsing hero
+  // (the photo runs under the status bar, no VBar). Computed HERE (before the
+  // transition hook) so it can be passed in synchronously — the paired-slot
+  // two-phase machine is used only by the cover-hero renderer; the plain layout
+  // drives its own swap and must settle immediately (a post-effect `paired`
+  // would mis-treat a first-frame cover tap as plain). Mirrors the spinner gate
+  // below (data-availability, not `visited`) so a warm-cache re-entry shows the
+  // hero immediately rather than flashing the plain layout.
+  const hasCover = !!meta?.coverPhotoUrl;
+  const heroShown = hasCover && !fatal && !(wines === null && (!visited || state.isPending));
+
   const [inviteOpen, setInviteOpen] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [sessMenuTop, setSessMenuTop] = useState<number | null>(null); // ⋯ menu anchor
@@ -154,15 +290,15 @@ export default function SessionLineup() {
   // Line-up | Compare is an IN-SCREEN tab swap (Simon's ruling): everything
   // above the tab strip — bar or cover hero — stays put; only the content
   // below swaps. Switching to Compare exits reveal mode (its Done footer and
-  // per-row pills are line-up furniture).
-  const [tab, setTab] = useState<SessionTab>('lineup');
-  // Flips true on the first user switch — the swap slide-in must not run on
-  // the screen's initial mount (see swapIn).
-  const tabSwapped = useRef(false);
-  const selectTab = (t: SessionTab) => {
-    tabSwapped.current = true;
-    setTab(t);
-  };
+  // per-row pills are line-up furniture). The cover-hero layout drives the
+  // swap through the paired-slot transition (see useTabTransition); the plain
+  // (no-cover) layout keeps its own native-sticky swap and only reads `tab`.
+  const transition = useTabTransition(windowW, heroShown);
+  const tab = transition.tab;
+  const selectTab = transition.select;
+  // During a transition BOTH tabs are on screen, so the Compare furniture (its
+  // toolbar) must exist even while `tab` is momentarily line-up on a reversal.
+  const compareMounted = tab === 'compare' || transition.active !== null;
 
   // 02d people-selector — ONE hidden set drives every compare view (picker
   // sheet rows/presets, person rows, cards). The sticky slot under the bar
@@ -197,7 +333,10 @@ export default function SessionLineup() {
   }, [cmpPeople, cmpHiddenRaw]);
   // The toolbar is useful even on a one-rater roster (sort + search) — it
   // hides only the People button there, so it renders whenever Compare shows.
-  const cmpRail = tab === 'compare' ? (
+  // Provisioned whenever Compare is mounted (which, on the cover-hero layout,
+  // includes an in-flight transition where `tab` may momentarily be line-up —
+  // the paired-slot machine owns when the slot leaves the tree, not `tab`).
+  const cmpRail = compareMounted ? (
     <CompareToolbar
       people={cmpPeople}
       hidden={cmpHidden}
@@ -206,6 +345,7 @@ export default function SessionLineup() {
       onSort={setCmpSort}
       query={cmpQuery}
       onQuery={setCmpQuery}
+      menusSuppressed={transition.active !== null}
     />
   ) : null;
 
@@ -318,15 +458,8 @@ export default function SessionLineup() {
   // own). Covers both !online (device) and isError-with-stale-data (server).
   const showReconnecting = !online || (state.isError && (wines !== null || meta !== null));
 
-  // 02b·10: a moment WITH a cover photo gets the full-bleed collapsing hero
-  // (the photo runs under the status bar, no VBar). Without a cover the screen
-  // keeps its plain VBar layout untouched. The hero shows on the normal AND
-  // lock states once we're past loading and not in a fatal state.
-  const hasCover = !!meta?.coverPhotoUrl;
-  // Mirrors the spinner gate below (data-availability, not `visited`) — on a
-  // warm-cache re-entry of the screen the hero must show immediately, not
-  // flash the plain layout for the background re-visit's round-trip.
-  const heroShown = hasCover && !fatal && !(wines === null && (!visited || state.isPending));
+  // heroShown + hasCover are computed above (before the transition hook, so
+  // `paired` flows into it synchronously).
   // Only the .hero-topfix collapse (bar bg + title past 150px) needs to live
   // in React state — and it flips at most once per scroll direction, so the
   // child reports it as a boolean that we set ONLY on change (a raw scrollY in
@@ -434,6 +567,7 @@ export default function SessionLineup() {
     sort: luSort,
     onSort: setLuSort,
     deniedTick,
+    menusSuppressed: transition.active !== null,
   };
 
   // Plain-layout scroll plumbing for drag-to-reorder: the rows need a live
@@ -590,13 +724,13 @@ export default function SessionLineup() {
           myIdentityId={myIdentityId}
           canAdd={canAdd}
           windowH={windowH}
+          windowW={windowW}
           ovc={ovc}
           reveal={reveal}
-          tab={tab}
+          transition={transition}
           onSelectTab={selectTab}
           compare={<CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />}
           compareRail={cmpRail}
-          swapAnimated={tabSwapped.current}
           onCollapsedChange={setHeroCollapsed}
           onPressWine={openImpression}
           onAdd={openAdd}
@@ -615,7 +749,7 @@ export default function SessionLineup() {
             // The toolbar is child 0 + stickyHeaderIndices so it pins under
             // the fixed tabs on scroll (the plain layout's native-sticky path
             // — same behaviour the reveal strip has on the line-up).
-            <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
+            <Reanimated.View key="pane-compare" style={{ flex: 1 }} entering={transition.everSwapped ? swapIn('compare') : undefined} exiting={swapOut('compare')}>
               <ScrollView
                 style={{ flex: 1 }}
                 stickyHeaderIndices={cmpRail ? [0] : undefined}
@@ -628,7 +762,7 @@ export default function SessionLineup() {
               </ScrollView>
             </Reanimated.View>
           ) : (
-          <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={tabSwapped.current ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
+          <Reanimated.View key="pane-lineup" style={{ flex: 1 }} entering={transition.everSwapped ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
           {/* The eye-menu toolbar sits right above the rows (the old strip's
               spot, below the ovc) and pins under the fixed tabs on scroll —
               now via ScrollView stickyHeaderIndices (the list left FlatList
@@ -735,20 +869,25 @@ export default function SessionLineup() {
 //    Opaque-bar rationale: docs/design/decisions/0003-collapsed-bars-opaque.md
 //    (Read those before building a NEW hero screen, e.g. the feed cards.)
 //
-// Sticky tabs + strip use the community "Dynamic Overlay" pattern (verified by
-// review + web best-practice over contentInset/native-sticky, which can't pin
-// BELOW an absolute bar and diverge on Android/New-Arch):
-//   - INLINE order (design .hero-sticky + tBlindHost): photo → TABS → about →
-//     STRIP → rows, all in one ScrollView at their at-rest positions (no
-//     contentInset/offset tricks). Tabs and strip sit at DIFFERENT positions
-//     (tabs under the photo, strip below the about) — two independent sticky
-//     elements, not one block. The inline copies are also the flow spacers.
-//   - TWO absolute copies (Reanimated.View) track scrollY and CLAMP: tabs at the
-//     bar bottom (PIN_Y); the strip STACKS under the pinned tabs (PIN_Y +
-//     tabsH). Each is invisible/non-interactive until its inline copy reaches
-//     its pin line (tabsStuck / stripStuck), then it's the pinned copy. Each
-//     overlay is one rigid element ⇒ tabs and strip each can't tear internally.
-//     UI-thread (reanimated) ⇒ smooth, iOS==Android.
+// Sticky tabs + toolbar use the "Dynamic Overlay" pattern (an absolute copy
+// tracks scrollY on the UI thread — over contentInset/native-sticky, which
+// can't pin BELOW an absolute bar and diverge on Android/New-Arch):
+//   - INLINE flow (design .hero-sticky + tBlindHost): photo → TABS → pane region.
+//     The pane region holds both panes (Line-up: ovc → toolbar spacer →
+//     rows/footer; Compare: toolbar spacer → CompareBody) at their at-rest
+//     positions. Tabs sit above; each toolbar has its OWN anchor (Line-up below
+//     ovc, Compare directly below tabs). Inline toolbar presence is an INERT
+//     SPACER only — the interactive toolbar lives in the overlay.
+//   - TABS overlay: one absolute copy, invisible/non-interactive until its inline
+//     copy reaches the pin line (tabsStuck), then the pinned copy.
+//   - TOOLBAR overlays: ONE live copy of each toolbar, ALWAYS visible, riding
+//     Y = max(anchorTop − scrollY, floor) (floor = PIN_Y + tabsH). No opacity
+//     gate — the inline copy is a spacer, so nothing else shows the toolbar.
+//   - Line-up ⇄ Compare is a PAIRED-SLOT horizontal swap: both panes AND both
+//     toolbar overlays translate by the shared progress (lineupX = -p·w,
+//     compareX = (1-p)·w), preserving the synchronized push seam without a
+//     duplicated/remounting sticky node (the old approach's search-bar glitch —
+//     see useTabTransition + .local/compare-toolbar-glitch-decision.md).
 //   - collapse is driven by a MEASURED threshold (the photo title's bottom vs
 //     the bar bottom), like the impression hero — not a magic scroll constant,
 //     so a proportional-height hero collapses at the right point with one title.
@@ -758,7 +897,7 @@ export default function SessionLineup() {
 // contentInsetAdjustmentBehavior never→automatic. Reanimated.ScrollView wraps a
 // real ScrollView (still a UIScrollView), so the dead-end still applies.
 function CoverHeroLineup({
-  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, ovc, reveal, tab, onSelectTab, compare, compareRail, swapAnimated, onCollapsedChange, onPressWine, onAdd,
+  meta, coverUrl, lock, wines, indexById, luNarrowed, toolbar, reorder, ratings, myIdentityId, canAdd, windowH, windowW, ovc, reveal, transition, onSelectTab, compare, compareRail, onCollapsedChange, onPressWine, onAdd,
 }: {
   meta: NonNullable<MetaView>;
   coverUrl: string;
@@ -774,16 +913,17 @@ function CoverHeroLineup({
   myIdentityId: string;
   canAdd: boolean;
   windowH: number;
+  windowW: number;
   ovc: React.ReactNode;
   reveal: RevealProps;
-  tab: SessionTab;
+  /** Paired-slot tab transition (see useTabTransition) — drives the horizontal
+   *  swap of both the toolbar slots and the panes off one shared progress. */
+  transition: TabTransition;
   onSelectTab: (t: SessionTab) => void;
-  /** The Compare tab's content — swaps in below the (sticky) tabs. */
+  /** The Compare tab's content — the Compare pane. */
   compare: React.ReactNode;
-  /** The compare toolbar (People + sort + search) — rides the strip overlay slot so it pins under the pinned tabs like the reveal strip. */
+  /** The compare toolbar (People + sort + search). Rides the Compare toolbar slot. */
   compareRail: React.ReactNode;
-  /** True once the user has actually switched tabs — gates the swap slide-in (see swapIn). */
-  swapAnimated: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   onPressWine: (wineId: string) => void;
   onAdd: () => void;
@@ -800,9 +940,20 @@ function CoverHeroLineup({
   const BAR_CONTROL = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, BAR_CONTROL);
   const rows = useMemo(() => wines ?? [], [wines]);
-  const onCompare = tab === 'compare';
-  // Strip (like the rows + add affordances) is line-up furniture only.
-  const showToolbar = !lock && !onCompare;
+  const tab = transition.tab;
+  const active = transition.active;
+  // Which slots/panes are on screen: the active one always; both mid-transition.
+  const showLineup = !active ? tab === 'lineup' : true;
+  const showCompare = !active ? tab === 'compare' : true;
+  // Interaction + a11y gate: ONLY the SETTLED tab's pane/toolbar is touchable and
+  // in the a11y tree. While a swap is in flight NEITHER is interactive — a moving
+  // (and, under the synchronous-props fast path, shadow-tree-misaligned) control
+  // must not receive taps or expose itself to VoiceOver (codex P1).
+  const settledLineup = !active && tab === 'lineup';
+  const settledCompare = !active && tab === 'compare';
+  // A toolbar exists on the line-up whenever line-up content is present + unlocked.
+  const showLineupToolbar = !lock && showLineup;
+  const showCompareToolbar = !lock && showCompare && !!compareRail;
 
   // UI-thread scroll position for the overlay translates.
   const aref = useAnimatedRef<Reanimated.ScrollView>();
@@ -812,59 +963,150 @@ function CoverHeroLineup({
   const heroContentH = useRef(0);
   const heroViewportH = useRef(0);
   const rowById = useMemo(() => new Map(rows.map((w) => [w.id, w] as const)), [rows]);
-  // Content-Y of the inline tabs and (separately) the reveal strip — they sit at
-  // DIFFERENT positions (tabs right under the photo; strip below the about
-  // block), so they're two independent sticky elements that STACK under the bar
-  // when scrolled (tabs pin first, strip pins under the pinned tabs). Each is
-  // measured via onLayout on a DIRECT child of the scroll content (layout.y is
-  // content-space — no coordinate bug). Mirrored to JS for the stuck gates.
+  const progress = transition.progress;
+  // ── Horizontal paired-slot offsets (semantic progress, see useTabTransition).
+  // lineupX = -p·w, compareX = (1-p)·w — both settled endpoints land the active
+  // surface at x=0 with a zero transform. Transform-only worklets (fast-path).
+  const lineupX = useDerivedValue(() => -progress.value * windowW);
+  const compareX = useDerivedValue(() => (1 - progress.value) * windowW);
+
+  // Content-Y of the inline tabs — unchanged single sticky element (tabs are NOT
+  // swapped; they sit above both panes). Measured on a direct scroll child.
   const tabsTop = useSharedValue(0);
   const [tabsTopJS, setTabsTopJS] = useState(0);
-  const tabsH = useSharedValue(0);
-  const [tabsHJS, setTabsHJS] = useState(0);
-  const stripTop = useSharedValue(0);
-  const [stripTopJS, setStripTopJS] = useState(0);
+  const tabsH = useSharedValue(0); // shared-value only — the toolbar floor reads it on the UI thread
+  // Content-Y of each toolbar's INERT inline spacer. The two toolbars sit at
+  // DIFFERENT rest positions (Line-up below ovc; Compare directly below tabs),
+  // so each has its own vertical anchor. Both clamp to the same pinned floor.
+  // ⚠️ Anchors are paneRegionTop + spacerLocalY (the spacer is nested inside a
+  // horizontally-translated pane, so its raw layout.y is pane-relative — see
+  // measurement below). Epoch-tagged so a stale/reversed measurement can't
+  // overwrite the live one.
+  // Each anchor carries its measurement EPOCH (a shared value read by the
+  // worklet), so the toolbar shows only when its geometry belongs to the CURRENT
+  // generation — a coherent-but-stale anchor from a prior mount is treated as
+  // unmeasured (opacity 0) until re-certified for this epoch (codex P1). The
+  // parent Y and each spacer's local Y are cached so the anchor recomputes when
+  // EITHER changes, not just on a spacer relayout (codex P2).
+  const lineupStripTop = useSharedValue(0);
+  const compareStripTop = useSharedValue(0);
+  // Validity is keyed on a per-slot MOUNT GENERATION, NOT the transition epoch: a
+  // slot's anchor is valid while the slot stays mounted, and a transition (epoch
+  // bump) must NOT invalidate the continuously-mounted source (codex R2-1). Each
+  // anchor stamps the mount-gen it was measured under; the opacity worklet shows
+  // the toolbar only when its stamp equals the slot's CURRENT mount-gen. A
+  // remounted destination gets a new gen → its old anchor is stale until
+  // re-measured; the source's gen is unchanged → it stays visible.
+  // The anchor's stamp is a SharedValue (written only from onLayout callbacks —
+  // never during render). The slot's CURRENT gen is a plain render value captured
+  // in the worklet closure (NOT mirrored into a SharedValue during render, which
+  // reanimated warns against + is unsafe for an abandoned render — codex R3.1).
+  const lineupStripGen = useSharedValue(-1);
+  const compareStripGen = useSharedValue(-1);
+  // parentY starts UNMEASURED (-1, not 0 — a real region top is never 0 under the
+  // hero photo, and 0 is a valid-looking value that would defeat the guard).
+  const paneRegionTopRef = useRef(-1);
+  const lineupSpacerYRef = useRef(-1);
+  const compareSpacerYRef = useRef(-1);
+  // Per-slot: the mount-gen its anchor was last measured under (JS mirror driving
+  // the readiness gate).
+  const lineupMeasGenRef = useRef(-1);
+  const compareMeasGenRef = useRef(-1);
+  // ── Per-slot MOUNT GENERATION, resolved DURING RENDER (before any layout
+  // callback or visibility evaluation — codex R2-1) but IDEMPOTENTLY (this app
+  // runs the React Compiler + react 19, so render may run more than once; a
+  // self-incrementing `ref += 1` during render would double-count). The gen is
+  // derived as committedGen + (this render is a fresh mount ? 1 : 0); the
+  // committed base is advanced only in a post-commit effect. Same value for
+  // repeated renders of the same inputs.
+  const committedMountRef = useRef<{ lineup: boolean; compare: boolean }>({ lineup: false, compare: false });
+  const committedGenRef = useRef<{ lineup: number; compare: number }>({ lineup: 0, compare: 0 });
+  const lineupNewMount = showLineup && !committedMountRef.current.lineup;
+  const compareNewMount = showCompare && !committedMountRef.current.compare;
+  const lineupGen = committedGenRef.current.lineup + (lineupNewMount ? 1 : 0);
+  const compareGen = committedGenRef.current.compare + (compareNewMount ? 1 : 0);
+  // No destructive render-time cache reset (it could clobber a measurement that
+  // landed between two renders of the same mount). Instead the cache is
+  // self-invalidating BY GEN: a cached spacerY / anchor stamped under an OLD gen
+  // is ignored (readiness + the opacity worklet both require gen match), so a
+  // fresh mount's anchor is invalid until it re-measures under the new gen.
+  // The render-captured gens (lineupGen/compareGen) are passed EXPLICITLY into
+  // the layout callbacks + readiness — never read back from a render-written
+  // "latest" ref (codex R4.P2: an interrupted render could leave such a ref
+  // holding an uncommitted value that a committed-tree callback then observes).
+  const renderEpoch = transition.epoch;
+  // Advance the committed base once the mount is committed (post-paint). Safe to
+  // run repeatedly: it only moves the base forward to match the current gen.
+  useEffect(() => {
+    committedMountRef.current = { lineup: showLineup, compare: showCompare };
+    committedGenRef.current = { lineup: lineupGen, compare: compareGen };
+  }, [showLineup, showCompare, lineupGen, compareGen]);
+  // Measured heights of each toolbar slot — the inert inline spacer mirrors this
+  // so the flow reserves the toolbar's space at its anchor.
+  const [lineupToolbarH, setLineupToolbarH] = useState(0);
+  const [compareToolbarH, setCompareToolbarH] = useState(0);
+  // Bumped whenever an anchor is (re)measured — lets the readiness effect re-run
+  // certification once a late input (toolbar height, parent Y) lands.
+  const [measTick, setMeasTick] = useState(0);
+  // A slot's readiness against an EXPLICIT gen: parent measured, its own anchor
+  // measured for that gen, and its toolbar height known. (Menus are already closed
+  // — the render-time suppression removed them in the arm commit.)
+  const slotReady = useCallback((slot: SessionTab, gen: number) => {
+    if (paneRegionTopRef.current < 0) return false;
+    if (slot === 'lineup') return lineupMeasGenRef.current === gen && lineupToolbarH > 0;
+    return compareMeasGenRef.current === gen && compareToolbarH > 0;
+  }, [lineupToolbarH, compareToolbarH]);
+  // Stamp an anchor from cached parent-Y + spacer-local-Y under the EXPLICIT gen
+  // (passed by the caller from its render capture), then certify if the slot is
+  // now fully ready. `certify` is false on the re-stamp path (reused cached
+  // geometry must not start motion — only a genuine fresh onLayout does).
+  const writeAnchor = useCallback((slot: SessionTab, spacerY: number, certify: boolean, gen: number, epoch: number) => {
+    if (slot === 'lineup') { lineupSpacerYRef.current = spacerY; } else { compareSpacerYRef.current = spacerY; }
+    if (spacerY < 0 || paneRegionTopRef.current < 0) return;
+    const top = paneRegionTopRef.current + spacerY;
+    if (slot === 'lineup') { lineupStripTop.value = top; lineupStripGen.value = gen; lineupMeasGenRef.current = gen; }
+    else { compareStripTop.value = top; compareStripGen.value = gen; compareMeasGenRef.current = gen; }
+    if (certify) {
+      if (slotReady(slot, gen)) transition.certifyReady(slot, epoch);
+      else setMeasTick((n) => n + 1); // not ready yet (toolbar height pending) → re-check via effect
+    }
+  }, [lineupStripTop, compareStripTop, lineupStripGen, compareStripGen, slotReady, transition]);
+  // Re-attempt certification once a late readiness input lands (toolbar height or
+  // a re-measure). Uses the render-captured gens/epoch. The hook ignores calls for
+  // a non-pending-destination slot, so trying both is safe.
+  useEffect(() => {
+    if (slotReady('lineup', lineupGen)) transition.certifyReady('lineup', renderEpoch);
+    if (slotReady('compare', compareGen)) transition.certifyReady('compare', renderEpoch);
+  }, [measTick, lineupGen, compareGen, renderEpoch, slotReady, transition]);
+  // (Mount-continuity is resolved DURING RENDER above — no post-commit effect,
+  // so a continuously-mounted source is never briefly hidden by a stale gen, and
+  // a fresh destination onLayout can't be clobbered by a later effect. The
+  // reversal-while-running source keeps its unchanged gen + anchor stamp, so its
+  // opacity stays valid with no re-stamp.)
   // Content-Y of the photo title's bottom — drives the measured collapse.
   const [titleBottom, setTitleBottom] = useState(heroH); // sane default pre-measure
-  // Each overlay becomes the visible/interactive pinned copy once its inline
-  // copy reaches its pin line; below that the inline copy owns taps.
+  // The tabs overlay still opacity-swaps with its inline copy at the pin line.
   const [tabsStuck, setTabsStuck] = useState(false);
-  const [stripStuck, setStripStuck] = useState(false);
   const collapsedRef = useRef(false);
   const [pulled, setPulled] = useState(false);
   const pulledRef = useRef(false);
-  // Last known scroll offset — the stuck gates below normally recompute per
-  // scroll event, but an IN-SCREEN tab switch swaps the strip-slot content
-  // (reveal strip ⇄ people rail) with NO scroll event, so an effect re-runs
-  // them from here (else the pinned copies strand: rail invisible when
-  // switching on pinned tabs, or the other tab's strip pinned early).
   const lastYRef = useRef(0);
+  // Pane heights feed the transition-only minHeight reserve (max(source,dest))
+  // so a taller source sliding out doesn't shrink the region mid-swap. At rest
+  // the active pane is in flow, so no reserve is needed (a shorter dest just
+  // lets the ScrollView clamp its offset after settle — verify on device).
+  const [lineupPaneH, setLineupPaneH] = useState(0);
+  const [comparePaneH, setComparePaneH] = useState(0);
 
   // Pin 1px UNDER the bar's bottom so the opaque bg tucks beneath the bar — a
   // flush pin can leave a sub-pixel hairline after rounding. (The bar paints on
   // top, zIndex 8 > 7, so the overlap is invisible.)
   const PIN_Y = BAR_H - 1;
 
-  // Strip measurement resets on a tab switch (the slot's new content re-fires
-  // onLayout with its own y); until then the strip gate reads "not stuck".
-  useEffect(() => {
-    stripTop.value = 0;
-    setStripTopJS(0);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
-  // ⚠️ Plausibility floors in the stuck gates: a REAL tabs/strip rest
-  // position is always far below its pin line (the hero photo alone puts it
-  // hundreds of points down), so a measurement AT or ABOVE the floor is
-  // garbage from a transient first-frame geometry — and once, on re-entry,
-  // such a value stranded the pinned strip overlay over the STATUS BAR at
-  // scroll 0 (device screenshot 2026-07-03; self-healed on remount).
-  // Requiring top > floor makes that state unreachable while changing
-  // nothing for legitimate measurements.
   useEffect(() => {
     const y = lastYRef.current;
     setTabsStuck(tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y);
-    setStripStuck(stripTopJS > PIN_Y + tabsHJS && y >= stripTopJS - (PIN_Y + tabsHJS));
-  }, [tab, tabsTopJS, tabsHJS, stripTopJS, PIN_Y]);
+  }, [tabsTopJS, PIN_Y]);
 
   const onScrollJS = (y: number) => {
     lastYRef.current = y;
@@ -875,13 +1117,8 @@ function CoverHeroLineup({
       collapsedRef.current = next;
       onCollapsedChange(next);
     }
-    // Each stuck flag flips at the same inequality its overlay clamps on, so the
-    // opacity swap happens exactly where inline + overlay coincide (no jump).
     const ts = tabsTopJS > PIN_Y && y >= tabsTopJS - PIN_Y;
     setTabsStuck((prev) => (prev === ts ? prev : ts));
-    const stripFloor = PIN_Y + tabsHJS; // strip pins UNDER the pinned tabs
-    const ss = stripTopJS > stripFloor && y >= stripTopJS - stripFloor;
-    setStripStuck((prev) => (prev === ss ? prev : ss));
     const p = y < -1;
     if (p !== pulledRef.current) {
       pulledRef.current = p;
@@ -893,11 +1130,38 @@ function CoverHeroLineup({
   const tabsOverlayStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: clamp(tabsTop.value - scrollY.value, PIN_Y, tabsTop.value || PIN_Y) }],
   }));
-  // Strip overlay: clamp UNDER the pinned tabs (PIN_Y + tabsH).
-  const stripOverlayStyle = useAnimatedStyle(() => {
-    const floor = PIN_Y + tabsH.value;
-    return { transform: [{ translateY: clamp(stripTop.value - scrollY.value, floor, stripTop.value || floor) }] };
-  });
+  // Each toolbar slot is VISIBLE through both pinned + unpinned states (the
+  // inline copy is an inert spacer — nothing else shows the toolbar). Vertical:
+  // Y = max(anchorTop − scrollY, floor). Horizontal: the slot's paired-slot X.
+  // Both are transform-only (+ a coherent opacity gate on the SAME thread) ⇒
+  // fast-path clean; menu anchors stay correct because the settled slot lands at
+  // X=0 with a zero transform. ⚠️ opacity stays 0 until the anchor is MEASURED
+  // (> 0) — before that, translateY would collapse to the floor and the toolbar
+  // would flash pinned-at-the-top for a frame (the class of the original glitch).
+  const stripFloorSV = useDerivedValue(() => PIN_Y + tabsH.value);
+  const lineupStripStyle = useAnimatedStyle(() => ({
+    // Visible only when the anchor is measured (>0) AND stamped with this slot's
+    // CURRENT mount-gen (captured as a plain render value in the deps — NOT a
+    // render-written SharedValue). A stale anchor from a prior mount stays hidden
+    // until re-measured; a transition does NOT change the source's gen, so a
+    // continuously-mounted toolbar is never hidden mid-swap (codex R2-1/R3.1).
+    opacity: lineupStripTop.value > 0 && lineupStripGen.value === lineupGen ? 1 : 0,
+    transform: [
+      { translateX: lineupX.value },
+      { translateY: Math.max(lineupStripTop.value - scrollY.value, stripFloorSV.value) },
+    ],
+  }), [lineupGen]);
+  const compareStripStyle = useAnimatedStyle(() => ({
+    opacity: compareStripTop.value > 0 && compareStripGen.value === compareGen ? 1 : 0,
+    transform: [
+      { translateX: compareX.value },
+      { translateY: Math.max(compareStripTop.value - scrollY.value, stripFloorSV.value) },
+    ],
+  }), [compareGen]);
+  // Pane wrappers: horizontal paired-slot X only (vertical position is the flow
+  // layout inside the reserved region).
+  const lineupPaneStyle = useAnimatedStyle(() => ({ transform: [{ translateX: lineupX.value }] }));
+  const comparePaneStyle = useAnimatedStyle(() => ({ transform: [{ translateX: compareX.value }] }));
 
   // Top corners rounded on BOTH copies: inline, the tabs panel overlaps the
   // photo's underlap strip (the photo shows in the corner notches); the pinned
@@ -909,23 +1173,19 @@ function CoverHeroLineup({
       <SessionTabs active={tab} onSelect={onSelectTab} />
     </View>
   );
-  // The sticky "strip" slot is shared: line-up = the reveal strip, Compare =
-  // the compare toolbar (both pin under the pinned tabs via the same overlay).
-  // The toolbar owns its horizontal padding. Keyed animated wrappers: same
-  // element type in the same ternary slot would reconcile without remounting,
-  // and the swap slide-in only runs on a mount. Rendered twice (inline +
-  // overlay) — both copies slide in sync; the search value is screen state, so
-  // both TextInput copies stay in step (focus lives in whichever was tapped).
-  const Strip = onCompare ? (
-    compareRail ? (
-      <Reanimated.View key="strip-rail" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')} style={{ backgroundColor: theme.bg }}>
-        {compareRail}
-      </Reanimated.View>
-    ) : null
-  ) : showToolbar ? (
-    <Reanimated.View key="strip-reveal-toolbar" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
+  // The toolbars render ONCE each, in their overlay slot (no inline interactive
+  // copy — the inline flow carries an inert measured spacer of the same height).
+  // Each slot follows its own vertical anchor + the paired-slot horizontal X, so
+  // it is the single source of the toolbar's TextInput / menu tree. `onLayout`
+  // here measures the SLOT height, which the inline spacer mirrors so the flow
+  // reserves the same space (menus/keyboard already dismissed before a move).
+  const LineupToolbarSlot = showLineupToolbar ? (
+    <View style={{ backgroundColor: theme.bg, paddingHorizontal: GUTTER }}>
       <LineupToolbar toolbar={toolbar} />
-    </Reanimated.View>
+    </View>
+  ) : null;
+  const CompareToolbarSlot = showCompareToolbar ? (
+    <View style={{ backgroundColor: theme.bg }}>{compareRail}</View>
   ) : null;
 
   return (
@@ -1011,104 +1271,137 @@ function CoverHeroLineup({
               tabsTop.value = y;
               setTabsTopJS(y);
               tabsH.value = height;
-              setTabsHJS(height);
             }}
           >
             {Tabs}
           </View>
         ) : null}
-        {/* about block (or lock card) — scrolls beneath the tabs. On the
-            Compare tab everything below the tabs is the compare body (the mock
-            02d screens carry no about block). */}
         {lock ? (
           // No tabs on a locked moment — the lock panel is what sits directly
-          // under the photo, so IT carries the rounded overlap.
+          // under the photo, so IT carries the rounded overlap. No swap.
           <View style={{ paddingHorizontal: GUTTER, marginTop: -radius.xl, borderTopLeftRadius: radius.xl, borderTopRightRadius: radius.xl, backgroundColor: theme.bg }}>
             <LockCard revealAt={lock} />
             {ovc}
           </View>
-        ) : onCompare ? null : (
-          <Reanimated.View entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')} style={{ paddingHorizontal: GUTTER }}>{ovc}</Reanimated.View>
-        )}
-        {/* INLINE toolbar/rail strip — right ABOVE the rows (below the about
-            block; Simon: the controls sit close to the content they act on):
-            line-up = the eye-menu toolbar, compare = the people/sort/search
-            rail. At-rest position + flow spacer; direct scroll child →
-            layout.y is content-Y. Pins under the pinned tabs via the overlay. */}
-        {Strip ? (
+        ) : (
+          // ── Paired-slot PANE REGION. Holds both panes (Line-up: ovc → toolbar
+          // spacer → rows/footer; Compare: toolbar spacer → CompareBody), each
+          // translated horizontally by the shared progress (transform doesn't
+          // affect layout). The ACTIVE pane (tab) stays IN FLOW so the region
+          // always has its height (no first-frame 0-height flash); the other pane
+          // is an absolute overlay. During a transition a minHeight reserves
+          // max(source,dest) so a taller source sliding out doesn't shrink the
+          // region. Toolbars live in the overlay slots; panes carry only an INERT
+          // spacer at the toolbar's anchor to reserve space + report the anchor.
           <View
-            accessibilityElementsHidden={stripStuck}
-            importantForAccessibility={stripStuck ? 'no-hide-descendants' : 'auto'}
+            style={{ minHeight: active ? Math.max(lineupPaneH, comparePaneH) : undefined }}
             onLayout={(e) => {
               const y = e.nativeEvent.layout.y;
-              stripTop.value = y;
-              setStripTopJS(y);
+              if (y === paneRegionTopRef.current) return;
+              paneRegionTopRef.current = y;
+              // Parent Y moved (e.g. ovc grew) → recompute anchors from each
+              // slot's cached spacer-local Y so a stale anchor can't linger (P2).
+              // Reuse a cache ONLY if it was measured under the slot's CURRENT
+              // mount-gen (this render's captured lineupGen/compareGen; else it's
+              // a prior mount's Y — let the fresh onLayout stamp it). certify=true:
+              // parentY may unblock a pending dest.
+              if (lineupSpacerYRef.current >= 0 && lineupMeasGenRef.current === lineupGen) writeAnchor('lineup', lineupSpacerYRef.current, true, lineupGen, renderEpoch);
+              if (compareSpacerYRef.current >= 0 && compareMeasGenRef.current === compareGen) writeAnchor('compare', compareSpacerYRef.current, true, compareGen, renderEpoch);
             }}
           >
-            {Strip}
-          </View>
-        ) : null}
-        {/* rows + footer (line-up) / compare body — keyed so the swap remounts
-            (same-type reconcile would skip the slide-in) */}
-        {lock ? null : onCompare ? (
-          <Reanimated.View key="pane-compare" entering={swapAnimated ? swapIn('compare') : undefined} exiting={swapOut('compare')}>{compare}</Reanimated.View>
-        ) : (
-          <Reanimated.View key="pane-lineup" entering={swapAnimated ? swapIn('lineup') : undefined} exiting={swapOut('lineup')}>
-            {rows.length === 0 ? (
-              <View style={{ paddingHorizontal: GUTTER }}>
-                {luNarrowed ? (
-                  <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
-                ) : (
-                  <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
-                )}
-              </View>
-            ) : (
-              <View style={{ paddingHorizontal: GUTTER }}>
-                <DraggableRows
-                  ids={rows.map((w) => w.id)}
-                  enabled={reorder.enabled}
-                  denied={reorder.denied}
-                  deniedNote={reorder.deniedNote}
-                  onDenied={reorder.onDenied}
-                  scrollRef={aref}
-                  scrollY={scrollY}
-                  maxScrollY={heroMaxScroll}
-                  onCommit={reorder.onCommit}
-                  renderRow={(id, i, move) => {
-                    const item = rowById.get(id);
-                    if (!item) return null;
-                    return (
-                      <>
-                        {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
-                        <LuRow
-                          wine={item}
-                          index={indexById.get(id) ?? 0}
-                          myIdentityId={myIdentityId}
-                          ratings={ratings}
-                          onPress={() => onPressWine(id)}
-                          reveal={reveal}
-                          move={move}
-                        />
-                      </>
-                    );
-                  }}
+            {showLineup ? (
+              <Reanimated.View
+                style={[tab === 'lineup' ? { position: 'relative' } : { position: 'absolute', left: 0, right: 0, top: 0 }, lineupPaneStyle]}
+                pointerEvents={settledLineup ? 'auto' : 'none'}
+                accessibilityElementsHidden={!settledLineup}
+                importantForAccessibility={settledLineup ? 'auto' : 'no-hide-descendants'}
+                onLayout={(e) => setLineupPaneH(e.nativeEvent.layout.height)}
+              >
+                <View style={{ paddingHorizontal: GUTTER }}>{ovc}</View>
+                {/* inert toolbar spacer — reserves the LineupToolbar's height at
+                    its anchor; writeAnchor stamps (paneRegionTop + local y) under
+                    this render's captured gen + epoch, and certifies once measured.
+                    A late/reversed relayout is handled by the gen stamp itself
+                    (a stale-gen stamp is ignored by readiness + the worklet). */}
+                <View
+                  onLayout={(e) => writeAnchor('lineup', e.nativeEvent.layout.y, true, lineupGen, renderEpoch)}
+                  style={{ height: lineupToolbarH }}
                 />
-              </View>
-            )}
-            {rows.length > 0 && canAdd && !luNarrowed ? (
-              <View style={{ paddingHorizontal: GUTTER }}>
-                <AddImpressionRow onPress={onAdd} />
-              </View>
+                {rows.length === 0 ? (
+                  <View style={{ paddingHorizontal: GUTTER }}>
+                    {luNarrowed ? (
+                      <VText variant="small" color="inkSoft" style={{ paddingTop: 16 }}>No impressions match.</VText>
+                    ) : (
+                      <EmptyLineup canAdd={canAdd} onAdd={onAdd} />
+                    )}
+                  </View>
+                ) : (
+                  <View style={{ paddingHorizontal: GUTTER }}>
+                    <DraggableRows
+                      ids={rows.map((w) => w.id)}
+                      enabled={reorder.enabled && settledLineup}
+                      denied={reorder.denied}
+                      deniedNote={reorder.deniedNote}
+                      onDenied={reorder.onDenied}
+                      scrollRef={aref}
+                      scrollY={scrollY}
+                      maxScrollY={heroMaxScroll}
+                      onCommit={reorder.onCommit}
+                      renderRow={(id, i, move) => {
+                        const item = rowById.get(id);
+                        if (!item) return null;
+                        return (
+                          <>
+                            {i > 0 ? <View style={{ height: 1, backgroundColor: theme.ruleSoft }} /> : null}
+                            <LuRow
+                              wine={item}
+                              index={indexById.get(id) ?? 0}
+                              myIdentityId={myIdentityId}
+                              ratings={ratings}
+                              onPress={() => onPressWine(id)}
+                              reveal={reveal}
+                              move={move}
+                            />
+                          </>
+                        );
+                      }}
+                    />
+                  </View>
+                )}
+                {rows.length > 0 && canAdd && !luNarrowed ? (
+                  <View style={{ paddingHorizontal: GUTTER }}>
+                    <AddImpressionRow onPress={onAdd} />
+                  </View>
+                ) : null}
+              </Reanimated.View>
             ) : null}
-          </Reanimated.View>
+            {showCompare ? (
+              <Reanimated.View
+                style={[tab === 'compare' ? { position: 'relative' } : { position: 'absolute', left: 0, right: 0, top: 0 }, comparePaneStyle]}
+                pointerEvents={settledCompare ? 'auto' : 'none'}
+                accessibilityElementsHidden={!settledCompare}
+                importantForAccessibility={settledCompare ? 'auto' : 'no-hide-descendants'}
+                onLayout={(e) => setComparePaneH(e.nativeEvent.layout.height)}
+              >
+                {/* inert toolbar spacer — reserves the CompareToolbar's height at
+                    its anchor (directly below the tabs; no ovc). Stamped under this
+                    render's captured gen + epoch; stale-gen stamps are ignored. */}
+                <View
+                  onLayout={(e) => writeAnchor('compare', e.nativeEvent.layout.y, true, compareGen, renderEpoch)}
+                  style={{ height: compareToolbarH }}
+                />
+                {compare}
+              </Reanimated.View>
+            ) : null}
+          </View>
         )}
       </Reanimated.ScrollView>
-      {/* OVERLAYS — pinned copies of tabs (at the bar) + strip (stacked under the
-          tabs), each shown only past its threshold. Both zIndex 7, UNDER the
-          floating HeroTopBar (8); they pin at non-overlapping y (tabs at PIN_Y,
-          strip at PIN_Y + tabsH) so the equal zIndex is harmless. No title in
-          either. pointerEvents+opacity gate so the inline copies own taps at
-          rest, the overlays when pinned. */}
+      {/* OVERLAYS. Tabs: the pinned copy at the bar (opacity-swaps with its inline
+          copy at the pin line — unchanged). Toolbars: the SINGLE live copy of
+          each toolbar, always visible, riding its own vertical anchor
+          (max(anchorTop − scrollY, floor)) + the paired-slot horizontal X. The
+          inline flow carries only inert spacers. zIndex 7, UNDER HeroTopBar (8);
+          the toolbar slot pins under the tabs (floor = PIN_Y + tabsH). */}
       {!lock ? (
         <Reanimated.View
           pointerEvents={tabsStuck ? 'auto' : 'none'}
@@ -1122,14 +1415,28 @@ function CoverHeroLineup({
           {Tabs}
         </Reanimated.View>
       ) : null}
-      {Strip ? (
+      {LineupToolbarSlot ? (
         <Reanimated.View
-          pointerEvents={stripStuck ? 'auto' : 'none'}
-          accessibilityElementsHidden={!stripStuck}
-          importantForAccessibility={stripStuck ? 'auto' : 'no-hide-descendants'}
-          style={[stripOverlayStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7, opacity: stripStuck ? 1 : 0 }]}
+          // Only the SETTLED toolbar takes touches/a11y; a moving or offscreen
+          // copy is inert (keyboard/menus already dismissed at transition start).
+          pointerEvents={settledLineup ? 'auto' : 'none'}
+          accessibilityElementsHidden={!settledLineup}
+          importantForAccessibility={settledLineup ? 'auto' : 'no-hide-descendants'}
+          onLayout={(e) => setLineupToolbarH(e.nativeEvent.layout.height)}
+          style={[lineupStripStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7 }]}
         >
-          {Strip}
+          {LineupToolbarSlot}
+        </Reanimated.View>
+      ) : null}
+      {CompareToolbarSlot ? (
+        <Reanimated.View
+          pointerEvents={settledCompare ? 'auto' : 'none'}
+          accessibilityElementsHidden={!settledCompare}
+          importantForAccessibility={settledCompare ? 'auto' : 'no-hide-descendants'}
+          onLayout={(e) => setCompareToolbarH(e.nativeEvent.layout.height)}
+          style={[compareStripStyle, { position: 'absolute', left: 0, right: 0, zIndex: 7 }]}
+        >
+          {CompareToolbarSlot}
         </Reanimated.View>
       ) : null}
     </>
@@ -1270,9 +1577,12 @@ type LuToolbarProps = {
   onSort: (s: LuSort) => void;
   /** Bumps on every denied reorder-hold → note + accent flash. */
   deniedTick: number;
+  /** RENDER-TIME suppression: true while a tab transition is armed/running, so
+   *  both local menus are force-unmounted before motion starts (codex R2-2). */
+  menusSuppressed?: boolean;
 };
 function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
-  const { reveal, query, onQuery, sort, onSort, deniedTick } = toolbar;
+  const { reveal, query, onQuery, sort, onSort, deniedTick, menusSuppressed } = toolbar;
   const { theme } = useTheme();
   // Denied-reorder feedback: a short explainer line + an accent flash on the
   // control that blocks the drag (sort chip / search pill), ~2.6s.
@@ -1289,10 +1599,16 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
   const { width: screenW } = useWindowDimensions();
   const btnRef = useRef<View>(null);
   const sortBtnRef = useRef<View>(null);
-  const [anchor, setAnchor] = useState<{ top: number; bottom: number } | null>(null);
-  const [sortAnchor, setSortAnchor] = useState<{ top: number; bottom: number } | null>(null);
+  const [anchorRaw, setAnchor] = useState<{ top: number; bottom: number } | null>(null);
+  const [sortAnchorRaw, setSortAnchor] = useState<{ top: number; bottom: number } | null>(null);
   const [menuRight, setMenuRight] = useState(16);
   const [sortMenuRight, setSortMenuRight] = useState(16);
+  // Suppression wins at RENDER time — neither menu can survive into a transition.
+  const anchor = menusSuppressed ? null : anchorRaw;
+  const sortAnchor = menusSuppressed ? null : sortAnchorRaw;
+  // Also clear the raw state when suppression begins, so a reverse-and-settle-back
+  // can't reopen a menu at its pre-transition coordinates (codex R3.2).
+  useEffect(() => { if (menusSuppressed) { setAnchor(null); setSortAnchor(null); } }, [menusSuppressed]);
   const sorted = sort !== 'lineup';
   const searching = query.trim() !== '';
   const sortLabel = LU_SORTS.find((o) => o.key === sort)?.label ?? 'Line-up order';

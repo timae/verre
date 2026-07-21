@@ -234,7 +234,7 @@ function searchHay(it: CmpItem): string {
 // same sticky slot the rail used. ────────────────────────────────────────────
 
 export function CompareToolbar({
-  people, hidden, onPick, sort, onSort, query, onQuery,
+  people, hidden, onPick, sort, onSort, query, onQuery, menusSuppressed,
 }: {
   people: ComparePerson[];
   hidden: Set<string>;
@@ -243,13 +243,24 @@ export function CompareToolbar({
   onSort: (s: CompareSort) => void;
   query: string;
   onQuery: (q: string) => void;
+  /** RENDER-TIME suppression: true while a tab transition is armed/running. The
+   *  menu is force-unmounted (not merely scheduled-closed via effect) so it is
+   *  provably gone in the arm commit — before motion starts (codex R2-2). */
+  menusSuppressed?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const { width: screenW } = useWindowDimensions();
   const sortBtn = useRef<View>(null);
-  const [sortAnchor, setSortAnchor] = useState<MenuAnchor | null>(null);
+  const [sortAnchorRaw, setSortAnchor] = useState<MenuAnchor | null>(null);
   const [sortRight, setSortRight] = useState(16);
+  // Suppression wins at RENDER time — the menu can't survive into a transition.
+  const sortAnchor = menusSuppressed ? null : sortAnchorRaw;
+  // Also CLEAR the raw state when suppression begins, so a reverse-and-settle-back
+  // can't reopen the menu at its pre-transition coordinates (codex R3.2). The
+  // render-time null already gives the same-frame visual guarantee; this only
+  // cleans up the latent raw value.
+  useEffect(() => { if (menusSuppressed) setSortAnchor(null); }, [menusSuppressed]);
   const filtered = hidden.size > 0;
   const visibleCount = people.length - hidden.size;
   const sorted = sort !== 'lineup';
