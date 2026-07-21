@@ -594,7 +594,10 @@ export function NotesField({
           maxHeight: surface.height(225),
           fontFamily: 'InstrumentSans_400Regular',
           fontSize: phone.text('body').fontSize,
-          lineHeight: phone.text('body').lineHeight,
+          // 1.2× (matches TextField's grow-mode line spacing) rather than the
+          // looser body paragraph line-height, so Description and Process read
+          // with the same line spacing (Simon, 2026-07-21).
+          lineHeight: Math.round(phone.text('body').fontSize * 1.2),
           color: theme.ink,
           backgroundColor: theme.surface,
           borderWidth: focused ? 2 : 1,

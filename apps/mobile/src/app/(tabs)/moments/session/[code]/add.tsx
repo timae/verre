@@ -454,7 +454,7 @@ export function ImpressionForm({
           </View>
           {/* Process → Purchase link skips the multiline Description (return =
               newline there, not a chain link). */}
-          <TextField ref={processRef} label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => purchaseRef.current?.focus()} />
+          <TextField ref={processRef} label="Process" placeholder="Vinification, roast, ferment…" value={process} onChangeText={setProcess} growLines={3} />
           <NotesField label="Description" placeholder="Anything to remember about it…" value={description} onChange={setDescription} />
           <TextField
             ref={purchaseRef}
