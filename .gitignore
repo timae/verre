@@ -17,3 +17,6 @@ tsconfig.tsbuildinfo
 
 # Expo dev-server state (root — apps/mobile has its own ignore)
 .expo/
+
+# Local wine dataset (external source dataset — never committed)
+data/
