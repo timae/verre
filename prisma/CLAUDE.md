@@ -64,9 +64,9 @@ So a maintenance file MUST be idempotent and safe to re-run any number of times 
 
 Columns that exist in the schema but are not yet wired to UI:
 
-- `users.role = 'vendor'` — paid tier hook (the `pro` boolean is wired)
+- `users.role` — **dead column.** Defaults to `'taster'` and is read by nothing. Don't wire it, don't branch on it, don't extend its value set: account-level staff powers live in `staff_roles` (see below). Not dropped yet — the drop is a destructive migration deliberately left out of the catalog build. (Note the unrelated `SessionMember.role`, which carries the *session* axis `host|co_host|provider|taster` and is heavily used.)
 - `wines.category` — extensible drink type beyond wine (beer, spirit, kombucha)
 
 ## What doesn't exist (don't invent it)
 
-- **No admin / moderator / staff tier.** The `users.role` enum currently has `user` + `vendor` only (and `vendor` is itself unwired). If a feature requires admin-only routes, surface that to the user and threat-model it before adding a column or a privileged tier. Don't ship `if (user.role === 'admin')` against a value that doesn't exist.
+- **Staff tier lives in `staff_roles`, never on `users`.** Ruled 2026-07-24 for the wine catalog (`docs/dev/proposals/wine-catalog.md` § Open decisions — RESOLVED). Grants are rows: `userId` + `role` (`admin` | `curator`), `grantedBy`, `grantedAt`; `admin` implies `curator`. **Never ship `if (user.role === 'admin')`** — `users.role` is dead (above), and a privilege bit on `users` would sit on the hottest table in the app, reachable by every existing `prisma.user.update` and by Better Auth's own writes into that table. Resolve staff powers from a **fresh DB read** on every check — never cached into a JWT or session, same reasoning as the 🔒 never-cache-`auth()` invariant in `lib/CLAUDE.md`: a cache TTL is a window where a revoked privilege still resolves. A new privileged tier beyond `admin`/`curator` still gets surfaced + threat-modeled first.
