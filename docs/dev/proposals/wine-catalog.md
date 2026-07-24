@@ -1,10 +1,10 @@
 # Proposal: Wine product catalog (redesign)
 
-**Status:** design / not yet implemented. Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
+**Status:** design, revision 3 — absorbs the Codex review (2026-07-23, CHANGES_REQUESTED), the follow-up review (2026-07-24), and the PR #85 comment thread as amended (the source-id/region-id refinements are withdrawn; linksTo flatten-on-write is superseded by chains-with-transitive-resolution). Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
 
 ## Context
 
-PR #82 shipped public wine product pages backed by a flat `wine_products` table with **auto-dedup-on-write**: a normalized `producer + name + vintage` string key drove a `find-or-create + fill-nulls` on every wine write. Review (Simon, 2026-07-22) rejected the *model* — not the pages — because auto-dedup silently and irreversibly collapses distinct entries, assumes every entry is shared reference data, and bakes vintage into identity. Retrofitting it after public pages exist and get linked means re-keying every product, re-pointing every rating, and unwinding wrongly-merged data.
+PR #82 shipped public wine product pages backed by a flat `wine_products` table with **auto-dedup-on-write**: a normalized `producer + name + vintage` string key drove a `find-or-create + fill-nulls` on every wine write. Review (Simon, 2026-07-22) rejected the *model* — not the pages — because auto-dedup silently and irreversibly collapses distinct entries, assumes every entry is shared reference data, and bakes vintage into identity.
 
 **The invariant everything hangs on:**
 
@@ -12,87 +12,205 @@ PR #82 shipped public wine product pages backed by a flat `wine_products` table 
 
 This doc specifies the **Foundation-first v1**: the correct identity + lifecycle spine, `shared`-scope only, with the schema deliberately leaving room for the deferred ownership/organization axis so it lands additively (no re-key).
 
-## Decisions (locked)
+## Catalog write ownership
 
-- **v1 scope:** Foundation-first. Build producer/product/vintage + lifecycle + suggest-then-confirm merge. Everything is `shared`. Defer `owned` scope, orgs, ownership sets, view/edit grants, producer verification, co-owner consent.
-- **Merge trigger:** suggest-then-confirm (fuzzy match → review queue → human confirm), reversible.
-- **PR #82:** draft; the real catalog lands in a new branch/PR.
-- **Seed:** a curator-supplied source dataset (`data/wines/wines_master.jsonl`, 15,658 rows — gitignored, stays local).
+Catalog reference data arrives through the app-owned, authenticated import contract (§ Catalog maintenance); it is curated before it reaches the app. Consequences:
+
+- The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
+- Imported entries arrive already curated. The app-side **review queue exists for user-added entries only** (confirm / merge / reject); merges and `linksTo` exist only here, where tasting data lives.
+- Prod persists **no source identifiers of any kind** (see the provenance rule).
 
 ## 🔒 Data-provenance rule (hard)
 
-The seed is a **curator-supplied external dataset**. **Never store the source URL or any source-provenance field in the DB**, and never expose source provenance on any surface.
-
-**Ruling (Simon):** the catalog's identity is **our own IDs** (nanoid PKs, like the rest of the schema) — **prod persists NO source ids at all**. The source-provided ids (winery/wine/vintage) are used **only transiently at ingest time** (in-memory) to group rows into producer/product/vintage; they are not written to the prod catalog. **Testing exception:** during dev it's fine to keep the source ids in a scratch column for convenient idempotent re-ingest — but that column must not exist in the prod schema. See the `wine-catalog-source-provenance` memory.
-
-## The dataset already gives us the spine
-
-Each record is a **vintage** carrying stable source ids that encode the exact hierarchy — so the seed dedups **exactly, with no string matching**:
-
-```
-winery (4,659)  →  wine (11,732)  →  vintage (15,658)
- producer            product            vintage
-```
-
-Fields we map: `winery_id/winery_name` → producer; `wine_id/name` → product; `vintage_id/vintage_year` → vintage; `region_id/region_name/country_code` → region/country; `wine_type` → style; `style_grapes` → grape(s); `flavors` → descriptor hints (not our structure axes — informational only). **Dessert + Fortified are deferred (Simon): skip those rows at ingest** (~737, 4.7%) rather than mis-file them; re-add when the style set grows. 20% of products already span >1 vintage, so vintage-out-of-identity matters immediately; 32 rows are non-vintage (`vintage_year` null).
+**Never store any source-provenance field in the DB** — no source URLs, slugs, source ids, or source region ids — and never expose source provenance on any surface. The catalog's identity is **our own IDs** (nanoid PKs, like the rest of the schema): prod holds Verre IDs + clean catalog facts only. Refreshes arrive through the import contract as upserts keyed on **our** catalog IDs; the app never needs any other key.
 
 ## v1 data model
 
-Four catalog tables (names indicative), plus a link column on the existing `wines`:
+Four catalog tables plus two link columns on the existing `wines`. All PKs are 21-char nanoids (`VarChar(21)`, matching `wines.id`). Enumerated columns are `varchar` + `CHECK` (house convention — no PG enums).
 
-**`producers`** — first-class maker.
-- `id` (our nanoid), `name`, `region`/`country` (normalized ref, see below), `status` (lifecycle, below), `linksTo` (self-FK for merge), provenance (`addedBy`, `createdAt`). *(No source id in prod; dev loader may add a scratch source-id column, absent from the prod schema.)*
+**`producers`** — first-class maker. Producer means the **label/brand identity users see and search for**, not necessarily the legal producing house (a future label-brand → legal-house relationship is additive). Generic product names ("Réserve", "Brut") are **producer-scoped** — they collide constantly across producers and never merge across them.
+- `id`, `name` (display, accents preserved), `nameFolded` (generated — see naming), `country`, `region` + `regionFolded` (transitional, see region/grape), `website`, `status`, `linksTo` (nullable self-FK), `curatorLocked`, `addedBy` (nullable FK → users, `SetNull`), `curatedBy` (same), timestamps.
 
 **`wine_products`** — the product (groups vintages). The primary mergeable entity.
-- `id` (our nanoid), `name`, `category` (`wine` today; extensible), `style` (nullable; red/white/rosé/spark/nonalc — dessert/fortified deferred), plus:
-- `scope` — enum `shared` | `owned`, **default `shared`; only `shared` used in v1.** Reserved now so `owned` is additive.
-- `status` — `provisional` | `confirmed` | `linked` | `archived` | `rejected`.
-- `linksTo` — nullable self-FK; when `status = linked`, points at the survivor. Reads resolve through it.
-- provenance (`addedBy`, `curatedBy`, timestamps). *(No source id in prod; dev-only scratch column.)*
+- `id`, `name` + `nameFolded`, `category` (`wine` today; extensible), `style` (nullable; composite FK `(category, style)` → `category_styles`, like `wines`; values red/white/rosé/`spark`; `nonalc` is **transitional** — supported for v1 compatibility but not locked as permanent style identity, since ABV/alcohol attributes are the intended direction; dessert/fortified deferred), `abv` (nullable `Decimal` — every API response must coerce via `Number()` per the wire-format trap), `grapes` (`text[]` of display strings) + `grapesFolded` (generated `text[]`, element-wise through the same fold helper), `region` + `regionFolded` (optional override of producer region; see region/grape), `scope`, `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
+- **`scope`** (`shared` | `owned`) is reserved for the deferred ownership axis. **Every write boundary sets `scope` explicitly** — creation paths reject a missing scope rather than relying on the column default, so a future `owned` entry can never leak to public because a caller omitted the field.
 
-**`product_producers`** — **many-to-many** product ↔ producer, with optional `role` (lead | collaborator). A collab is one product with 2+ links (set at creation; NOT a merge). v1 seed = one link per product, but the relation is M:N from day one.
+**`product_producers`** — many-to-many product ↔ producer with `role` (`lead` | `collaborator`). **Every product has exactly one `lead`** (plus 0..n collaborators). The *at-most-one* half is a partial unique index on `(product_id) WHERE role = 'lead'`; the *at-least-one* half is enforced in the product-creation transaction (product + its lead link commit together) and by the link-edit path (a lead row can be re-pointed but never deleted without a replacement in the same transaction). The single-producer case is simply lead-with-no-collaborators. A collaboration is one product with 2+ links, set at creation — NOT a merge.
 
-**`wine_vintages`** — the **rating grain**.
-- `id` (our nanoid), `productId` (FK), `year` (nullable → the non-vintage / year-less instance), optional per-vintage overrides (abv, etc.), `status` + `linksTo` (within-product vintage de-dup is a lighter merge). *(No source id in prod; dev-only scratch column.)*
+**`wine_vintages`** — the rating grain.
+- `id`, `productId` (FK), `year` (nullable), `abv` (nullable per-vintage override), `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
+- **`year = null` means the non-vintage instance exclusively — never "year unknown".** An unknown-year rating links at product level instead (see below), so NV rows stay clean.
+- **Uniqueness: one row per year and one NV row per product** — `UNIQUE NULLS NOT DISTINCT (product_id, year)`, or equivalently two partial unique indexes (non-null years; the null NV row). A plain compound unique would allow multiple null-year rows. Raw-SQL migration (Prisma can't express either form).
+- Additionally `UNIQUE (id, product_id)` — redundant with the PK, but it enables the composite-FK integrity check on `wines` below.
 
-**`wines.vintageId`** (replaces #82's `productId`) — the existing per-session/per-checkin `wines` instance links to a **catalog vintage**. Set by the add-flow from an explicit user choice or a freshly-minted `provisional` vintage — **never** by a string match. `ratings` continue to hang off `wines` unchanged; aggregation rolls `ratings → wines → vintage → product`.
+**`wines.productId` + `wines.vintageId`** — the existing per-session/per-checkin `wines` instance links to the catalog at **two grains**, because `year = null` is NV-only:
 
-**Region/grape (v1 = normalized strings, Simon):** store as cleaned, **accent-folded** strings (so `Rhône`/`Rhone` don't fragment) — cheap, gives exact display + basic dedup. A first-class **region tree** (country→region→subregion→appellation, enabling region pages + roll-ups) is **reserved for later** and lands additively, not as a re-key.
+| State | `productId` | `vintageId` |
+|---|---|---|
+| Known vintage (or NV row chosen) | set | set |
+| Known product, unknown year | set | null |
+| Legacy / unmatched | null | null |
 
-### Lifecycle + merge (the reversibility guarantee)
+- `vintageId` set with `productId` null is invalid — enforced by `CHECK (vintage_id IS NULL OR product_id IS NOT NULL)` (the composite FK below is MATCH SIMPLE, so it alone would not catch this: it skips checking whenever any column is null). A chosen vintage **must belong to the stored product** — enforced structurally by a composite FK `(vintageId, productId)` → `wine_vintages (id, product_id)` (checked exactly when both are set), alongside the plain FK on `productId`.
+- Set by the add-flow from an **explicit user choice** or a freshly-minted provisional — never by a string match (sole exception: the legacy backfill, § below).
+- **Catalog deletion is never implicit.** All catalog-referencing FKs (`wines.productId`, `wines.vintageId`, `wine_vintages.productId`) are declared `NoAction`/`Restrict` — ordinary lifecycle never deletes rows, and an `ON DELETE SET NULL` on the composite FK would wrongly null *both* columns when only the vintage disappears. The exceptional hard-purge operation (§ Lifecycle) performs the exact transitions itself, in one transaction:
+  - **Vintage purge:** re-point or clear inbound vintage `linksTo` (tombstones pointing at the purged row), `UPDATE wines SET vintage_id = NULL` for the purged vintage — `productId` is retained (the wine stays linked at product grain) — then delete the vintage row.
+  - **Product purge:** purge its vintages first (`wine_vintages.productId` is `Restrict`, which forces this ordering), delete its `product_producers` rows, re-point or clear inbound product `linksTo`, then `UPDATE wines SET product_id = NULL`, then delete the product row.
+  - **Producer purge:** only valid once no `product_producers` row references it — its products are re-pointed to another producer (respecting exactly-one-lead) or purged first — plus inbound producer `linksTo` re-pointed or cleared; then delete the producer row.
+  - **General rule:** purge resolves *every* inbound reference — same-grain `linksTo`, child rows, join rows, `wines` links — inside the one transaction. The `Restrict` FKs are the backstop: a purge that forgets a reference class fails and rolls back rather than half-applying.
+- Both link columns stay **mutable** on the wine instance and vintage/product identity is never denormalized onto `ratings` — this keeps a future user-correction **re-link** feature (moving one mis-recorded instance to the right vintage) possible without schema change. Not a v1 feature; just not foreclosed.
+- `ratings` hang off `wines` unchanged; aggregation rolls `ratings → wines → vintage → product`, resolving `linksTo` transitively.
 
-- New user entry → `provisional`. Seed entries → `confirmed` (curator-authoritative). `rejected` = admin-only junk verdict, pulled from the public catalog. `archived` = discontinued but **fully findable** (search, direct link, page, ratings, history all intact) — only dropped from "add" suggestions.
-- **Merge = a one-way `linksTo` pointer**, never a destructive collapse. Ratings **never move** — they stay on their original `wines`/vintage and **resolve through the pointer at read time**, so the survivor shows every merged entry's ratings and **unmerge is a single update**. A survivor absorbs many merges (many rows `linksTo` it); the back-direction is a query.
-- "flagged/reported" is a **separate orthogonal signal**, not a status (an entry can be `confirmed` *and* flagged).
-- **Authority (v1):** only admins/curators edit a `confirmed` entry or confirm a merge. (Producer-scoped authority + verification is deferred — see below.)
+**Account deletion:** `addedBy`/`curatedBy` null out via `SetNull`; community catalog rows are **never** cascaded by a user deletion. `lib/accountDelete.ts` needs no catalog-row handling beyond what `SetNull` gives, but its tests should pin that.
 
-### Add-a-wine flow (answers "wine not in our dataset")
+### Display vs folded names
 
-1. On add, **search first** (fuzzy `pg_trgm` over products+producers) → "Did you mean … ?".
-2. **Pick a suggestion** → `wines.vintageId` points at that existing vintage. **No new catalog row.**
-3. **"Not listed"** → mint a new **`provisional`** product+vintage (distinct), link the instance to it. Immediately usable/ratable; the fuzzy match later surfaces it in the **curator review queue** as a possible duplicate to merge (reversibly) into a `confirmed` entry.
+`name` preserves the accented display form; `nameFolded` is the **matching key** (`f_unaccent(lower(name))`) used by every fuzzy query. One value cannot serve both jobs. The folded value is produced by **one mandatory database-side normalization path** — a generated column (or trigger) over `f_unaccent(lower())` — so no write path can make display and fold drift. `pg_trgm` GIN indexes go on `nameFolded` (raw-SQL migration).
 
-Nobody is blocked from adding; nothing auto-collapses.
+### Field grain
 
-## Ingestion plan (seed)
+- **Producer**: brand name, country, base region, website.
+- **Product**: name, category, style, base ABV, grapes, optional region override.
+- **Vintage**: year, per-vintage ABV override.
+- **Product↔producer**: M:N with role.
 
-One-shot script (not a schema migration), run against the catalog once the tables exist. It reads the source ids **only in-memory** to group rows (winery→product→vintage) and mints **our own nanoid PKs**; all seed rows land `confirmed`. **Strips the source-URL + source-slug fields; persists no source ids in prod.**
-- **Prod:** idempotency comes from running it once against a fresh catalog (our IDs are freshly assigned). A controlled re-seed truncates + reloads rather than upserting on a foreign key.
-- **Testing:** the dev loader may keep the source ids in a scratch column for convenient re-runs; that column is dev-only and absent from the prod schema.
+### Region + grape: transitional strings, reserved entities
+
+v1 stores region and grape with the same display/fold split as names: `region` (`varchar`, accented display) + `regionFolded` (generated via `f_unaccent(lower())`) on `producers` and `wine_products`; `grapes` (`text[]`, display) + `grapesFolded` (generated `text[]`, each element folded through an immutable SQL helper wrapping the same `f_unaccent(lower())` path). All folded values are database-generated — no write path can make display and fold drift. Both fields are **explicitly transitional**: the final design is first-class **Verre-owned entities** — a region tree (country → region → subregion → appellation) and a **grape-variety tree** (descendants, synonyms/aliases) — landing additively as new tables + join tables **without changing any producer/product/vintage ID**. No source-side structured region/grape identifiers are persisted to build from (provenance rule); the trees are built later against Verre identity.
+
+### Curator-locked fields
+
+Fill-null enrichment cannot distinguish "unknown" from "a curator deliberately cleared an incorrect value." Each catalog row carries `curatorLocked` (a list of field names, e.g. `text[]`): a locked field's null is authoritative — the import path never fills it and read-time group coalescing never fills it. Set/cleared by curators only.
+
+## Lifecycle
+
+`status`: `provisional` | `confirmed` | `linked` | `archived` | `rejected` (varchar + CHECK).
+
+Structurally enforced on every catalog table: `CHECK ((status = 'linked') = (links_to IS NOT NULL))` and `CHECK (links_to <> id)` — a tombstone always has a pointer, a pointer always means `linked`, and no row links to itself. Merge and unmerge update status, pointer, and the audit record **atomically in one transaction**, so a partial write can never produce an unreadable tombstone.
+
+| Status | Search / add-suggestions | Pages / links | Notes |
+|---|---|---|---|
+| `confirmed` | yes / yes | yes | normal entry; seed + curator-confirmed |
+| `provisional` | yes, ranked below confirmed / yes | yes | every user-minted entry starts here |
+| `linked` | resolves to survivor | resolves to survivor | merge tombstone; transitive |
+| `archived` | findable / **excluded** | fully intact | discontinued; ratings/history keep working |
+| `rejected` | hidden / hidden | row + FKs retained | curator junk verdict; **not blocked by existing `wines` references** — links keep resolving, the entry just leaves the public catalog |
+| *(hard purge)* | — | — | **not a status**: an exceptional, audited staff moderation deletion (abuse/obscenity) with explicit reference handling — exact column transitions + ordering in § v1 data model. Never part of merge, never reachable via import. |
+
+- A merge **survivor cannot be `rejected`** while tombstones still point at it — unmerge/resolve the linked group first.
+- "Flagged/reported" is a separate orthogonal signal, not a status (an entry can be `confirmed` *and* flagged).
+- **One ID for life.** An entry keeps exactly one nanoid forever — through confirmation, merge, unmerge, archive. Nothing ever re-mints. This is the invariant that keeps every `wines` link safe across all future maintenance.
+- **Authority (v1):** confirm / merge / unmerge / reject / edit-confirmed / purge are staff powers. The account-level role axis that carries them is an **open decision** (§ Open decisions) — distinct from session roles (host/cohost/provider). Machine maintenance never impersonates a human role (§ Catalog maintenance).
+
+### Merge = pointer + lifecycle only
+
+- Merge sets the loser's `status = linked` and `linksTo = <target>`. **Nothing else.** No facts, producer links, or child rows are copied into the survivor — copying would contaminate it after an unmerge.
+- **Chains are kept, not flattened.** With A→B then B→C, flattening A to A→C would break single-update unmerge (clearing B→C could not restore A→B). Reads resolve the chain transitively with a **visited set and a depth cap**, so corrupt data fails safely instead of looping.
+- **Concurrency-safe cycle prevention:** writes reject self-links and cycles by resolving the full target path and writing the pointer **in one transaction** under deterministic row locks (or an entity-type-scoped advisory lock) — an unlocked preflight lets concurrent A→B and B→A both pass.
+- **Empty losers are tombstones too.** A loser with zero ratings still becomes a weightless `linked` row — never a delete — so every merge is uniformly reversible. If ancient tombstones ever accumulate enough to matter, sweeping them is a separate later maintenance op (mirroring the session soft-delete cleanup), never part of merge.
+- **Read-time group fact-coalescing:** where the survivor is missing a fact, reads may resolve across the linked group — the survivor's own non-null value always wins; a curator-locked null stays null; compatible linked values may fill the read; conflicting linked values stay unresolved (null). Ratings and aggregate membership resolve through the same effective-entity chain without moving rows.
+- **Ratings never move.** They stay on their original `wines`/vintage and resolve through the pointer at read time — so the survivor shows every merged entry's ratings and **unmerge is a single pointer update**.
+
+### Unmerge: restoration + audit
+
+Clearing `linksTo` is one row update, but it must also choose the restored lifecycle state: the merge record captures the loser's **prior status**, and unmerge restores exactly that (a pre-merge `provisional` does not come back `confirmed`). Every merge and unmerge writes an app-side **`catalog_audit`** row — `entityType` (producer|product|vintage), `entityId` (the loser), `targetId` (the merge target; null for non-merge actions), `action`, `priorStatus`, `actor`, `createdAt`, optional `reason` — **in the same transaction** as the status/pointer update, so repeated merge/unmerge cycles are always reconstructible. The same table records confirm, reject, archive, lock-field, and purge actions. (App-only bookkeeping, not part of the import contract.)
+
+### Product × vintage merges compose
+
+If product A is merged into B, **A's vintages remain children of A** — nothing re-parents. Aggregates resolve the *effective* product transitively without moving ratings or vintages. If both branches contain the same year, the product page shows **one logical year** grouping the distinct underlying vintage rows — a render-time grouping, never a destructive consolidation. Collapsing two same-year vintage rows for real is a separate, explicit **vintage merge** (`linksTo` at vintage grain, same semantics), which a curator may do after the product merge — the two operations compose but neither implies the other.
+
+**Vintage-merge eligibility (uniform rule):** two vintage rows may merge iff their years match (or both are the NV row) **and** they resolve to the same *effective* product — same stored `productId`, or stored products linked into one effective product. Cross-effective-product vintage merges are forbidden, mirroring the producer rule one level up.
+
+### Merge-suggestion policy
+
+The fuzzy signal is deliberately conservative — **false splits are acceptable; false merges are the expensive failure**:
+
+- Uncertain pairs stay distinct. No confidence → no suggestion.
+- **Cross-producer product merges are forbidden.** Product suggestions require the **complete effective producer set — roles included — to match** (each linked producer resolved through its `linksTo` first). A collaboration `{A, B}` and a collaboration `{A, C}` share a producer but are NOT mergeable; neither is `{A}` with `{A, B}`. Duplicate producers are resolved first; products under genuinely different producer sets remain distinct.
+- **Attribute veto:** conflicting `style` or `abv` (where both values exist) kills a suggestion.
+- Strong identifiers (e.g. a shared EAN, § below) may **raise** confidence — they never make matching destructive.
+
+### Vintage curation is lightweight
+
+The review queue's merge unit is the **producer/product** grain. Vintages don't need the heavyweight duplicate queue: under an explicitly chosen product, a missing vintage is accepted directly when the year is plausible (≈1900..current year + 1) or null for the NV instance. The `(product_id, year)` uniqueness constraint is what prevents duplicates at this grain; vintage dedup (rare) is a lighter merge with the same `linksTo` semantics, gated by the vintage-merge eligibility rule above (matching year/NV + same *effective* product).
+
+## Add-a-wine flow
+
+Search-first, three-level, and **one fuzzy implementation**: add-time search, review-queue suggestions, and post-import rescans all run the **same `pg_trgm` query over `nameFolded`** (there is no second matcher to drift — the old TS/SQL-parity CI-gate debt is struck). Explicit branches so an absent vintage or product can never mint a duplicate at the wrong grain:
+
+1. **Existing producer → existing product → existing vintage** — pick it; `wines.productId + vintageId` set. No new catalog row.
+2. **Existing product, missing vintage** — user supplies a plausible year (or NV) → mint the vintage row directly under that product (lightweight rule above). Unknown year → link at **product level** (`vintageId` null); the year can be supplied later.
+3. **Existing producer, missing product** — mint a `provisional` product (+ vintage or product-level link) under that producer.
+4. **Nothing matches** — mint a `provisional` producer + product (+ optional vintage), all distinct.
+5. **Collaboration** — a product may take 2+ producer links at creation (`product_producers`), lead + collaborators.
+
+Provisional entries are immediately usable and ratable. User-minted provisionals enter the app-side **review queue**, where the same fuzzy query surfaces likely duplicates for a curator to confirm, merge (reversibly), or reject. Nobody is blocked from adding; nothing auto-collapses.
+
+### Identity-changing wine edits
+
+Wine-instance fields (`name`, `producer`, `vintage`) are **historical snapshots** — they do not derive from live catalog facts. But an edit that changes the instance's *identity* (producer, name, year) must not silently retain a now-incompatible link: the edit path **clears `productId`/`vintageId` unless the editor explicitly re-links** through the same add-flow search. Cosmetic edits (photo, description, typo-level name fix confirmed against the same catalog entry) keep the link.
+
+## Redis-first link design
+
+Active session wines live in Redis (`s:{CODE}:wines`, 48h+ TTL) and archive to Postgres incrementally. The catalog link must survive that whole path:
+
+- **Storage:** `productId`/`vintageId` are optional fields on the Redis wine JSON, set by the add-flow at wine-create. All list writes go through `mutateWines` (KEEPTTL preserved as always).
+- **Mirroring:** every path that writes a `wines` row from Redis state — rate/visit archival, wine edits, brought-by reassignment, session archive — carries both fields verbatim. Wine-edit paths must round-trip fields they don't touch; the identity-changing-edit rule above is applied in the edit handler before the mirror.
+- **Anonymous sessions:** anon sessions stay Redis-only, so links live and die with the session like every other wine field. If a logged-in participant's action archives a wine, the link archives with it — anon-added wines keep their links through archival.
+- 🔒 **Blind redaction:** catalog IDs are label identity. `wineToWire`'s blind redaction strips `productId` and `vintageId` from every redacted payload, exactly like name/producer — a catalog ID in a blind payload is a lookup oracle for the label. (Whether an unrevealed blind wine's *provisional catalog row* is publicly searchable is a separate open decision, § below.)
+
+## Legacy backfill (migration-only exception)
+
+Existing `wines` rows predate the catalog. A one-time backfill links them — the **sole exception** to "links are never set by strings", and it is exact-match-only, never fuzzy:
+
+- Auto-link only a **unique exact** producer + product match (folded-name equality, not similarity).
+- Set `vintageId` only when the row's year resolves to a **unique valid vintage** under that product; unknown/garbage years link at product level only.
+- Ambiguous rows are never fuzzy-linked; they stay `(null, null)`.
+- The unmatched remainder is not stranded forever: it feeds the same **provisional review path** (surfaced as link-suggestions for curators/users), rather than remaining permanently outside the catalog.
+
+## Catalog maintenance (import/refresh contract)
+
+Ongoing catalog writes have **one owner — the app**: an internal authenticated import path. Nothing else holds prod DB credentials. The one-time initial seed against a completely fresh catalog is the sole direct exception (fenced below).
+
+- **Identity:** machine writes authenticate as a dedicated, **rotatable service principal** with narrow catalog-write scope — never a human user or admin role.
+- **Batches:** stable-ID keyed (our nanoids), resumable, idempotent. Each batch carries a manifest (hash + counts) and a **monotonic sequence number**; stale replays are rejected. An import concludes with an **explicit finalize**.
+- **Explicit ACK:** each batch's application is confirmed by an explicit acknowledgement; the caller may treat only ACK'd batches as applied, and a failed/unacknowledged batch is re-submittable idempotently. Without this, a mid-batch failure could be recorded as applied caller-side while prod never applied it — and diff-based retry would never re-send it.
+- **Fact rules — enforced server-side at apply time**, not delegated to the caller's read-before-write (otherwise a curator edit landing between the caller's read and write is silently reverted):
+  - `status` and `linksTo` are **never** touched by import (they live only in the INSERT arm of the upsert).
+  - Existing non-null facts are never overwritten automatically — per-field `COALESCE(existing, incoming)` semantics in the write itself.
+  - Null facts may be enriched **unless curator-locked** — the `curatorLocked` exclusion applied server-side.
+- **Abort fence:** a batch whose change volume is unexpectedly large (relative to catalog size / declared counts) trips an abort instead of applying.
+- **Import never deletes.** Absence from a batch is never deletion, and the import path has no delete operation at all — removing a catalog row is exclusively the audited staff **hard purge** (§ Lifecycle), which the import identity is not authorized to perform. An upstream retraction arrives as an explicit retraction record that only **flags** the entry for staff review (toward `archived`/`rejected`/purge, decided by a human).
+- **Post-finalize rescan:** finalize triggers an async rerun of the same `pg_trgm` suggestion query over open provisionals × newly confirmed entries — catching the race where a user minted provisional X before the equivalent confirmed Y existed.
+
+### Seed + the truncate fence
+
+The initial seed runs once against a fresh catalog and mints our nanoids; all seed rows land `confirmed`. **Truncate + reload is valid only while the catalog is fresh — before any `wines.productId`/`vintageId` exists. After the first user link it is forbidden, permanently**, and enforced: the seed script refuses to run if `SELECT 1 FROM wines WHERE product_id IS NOT NULL OR vintage_id IS NOT NULL LIMIT 1` returns a row. All later refreshes are ID-keyed upserts through the import path above — update in place, insert new, never delete-and-recreate — so identities and every user link survive every refresh.
+
+## EAN (reserved, Phase 2)
+
+Barcodes are **product-grain**: a future `product_eans` table (`ean` → `productId`, unique on ean) — part of the import interface when it lands. In matching, a shared EAN is a confidence-raising signal only (§ merge-suggestion policy), never an auto-merge key.
+
+## Open decisions (need Simon + Tim rulings — blocking for the parts they gate)
+
+1. **Account-level user roles.** The staff powers above need a general account-role axis (e.g. `admin`, `curator`) distinct from session/tasting roles. The app has none today, and `prisma/CLAUDE.md` explicitly requires surfacing + threat-modeling before adding a privileged tier. The ruling must also reconcile the existing inconsistency: `users.role` defaults to `'taster'` in the schema while `prisma/CLAUDE.md` documents the value set as `user` + `vendor`. Needs: role storage, bootstrap (who mints the first admin), authorization pattern, auditing, and account-deletion behavior. Gates: review queue, merge/reject/purge endpoints.
+2. **Import endpoint sign-off.** The maintenance contract above is the proposed shape; the endpoint contract (auth mechanism for the service principal, batch/manifest wire format, ACK semantics) needs explicit sign-off before it is built. Gates: import path (not the schema).
+3. **Blind-session provisional discoverability.** A provisional minted from an unrevealed blind tasting is publicly searchable the moment it's created — which can expose the label to a participant before reveal. Options: (a) suppress public discoverability (search + suggestions) until reveal or session expiry — a `suppressedUntilReveal` marker cleared by the reveal path; or (b) accept and document the exposure. Stripping catalog IDs from blind payloads (§ Redis) is locked either way; this decision is only about catalog-side discoverability. Gates: add-flow enablement inside blind sessions.
 
 ## Deferred (Phase 2+), but schema-ready now
 
-`owned` scope; the **organization** entity + membership roles; **ownership sets** `(ownerType: user|org, ownerId)`; per-entry **view/edit grants** (public|granted); **producer verification/claiming** + producer-scoped edit authority (authoritative on factual fields, zero control over community ratings/aggregates, cannot hide/delete a rated `shared` entry); **co-owner consent** (joint-account: reversible-alone / destructive-needs-all); scope promotion `owned → shared` (one-way trapdoor that permanently surrenders delete/hide). The `scope` column + the merge/lifecycle machinery are shaped so these are additive tables + columns, not a re-key.
+`owned` scope; the **organization** entity + membership roles; **ownership sets** `(ownerType: user|org, ownerId)`; per-entry **view/edit grants** (public|granted); **producer verification/claiming** + producer-scoped edit authority (authoritative on factual fields, zero control over community ratings/aggregates, cannot hide/delete a rated `shared` entry); **co-owner consent** (joint-account: reversible-alone / destructive-needs-all); scope promotion `owned → shared` (one-way trapdoor that permanently surrenders delete/hide); label-brand → legal-house producer relationships; region + grape entities/trees; `product_eans`. The `scope` column + merge/lifecycle machinery are shaped so these land as additive tables + columns, not a re-key.
 
-## Carry-forward / debts
+## Carry-forward
 
-- **Reusable from #82:** the web product page, the aggregate query (re-pointed at vintage→product roll-up + `linksTo` resolution + expiry parity), the mobile screen, the review-fix regression tests.
-- **CI gate:** if the fuzzy match survives as a merge-suggestion signal, its TS/SQL parity needs an **actual CI gate** (the #82 comments referenced one that doesn't exist).
-- **Ratings re-point migration:** existing session/standalone ratings currently point only at `wines`. v1 backfill links `wines → wine_vintages` where a confident exact match to a seed vintage exists; the rest stay unlinked (no product page) until a user/curator links them — **never** auto-string-matched.
+- **Reusable from #82:** the web product page, the aggregate query (re-pointed at vintage→product roll-up + transitive `linksTo` resolution + expiry parity), the mobile screen, the review-fix regression tests.
+- **Struck:** the #82 "TS/SQL fuzzy-parity CI gate" debt — there is exactly one matcher (`pg_trgm` over `nameFolded`), no TS twin.
 
-## Open decisions
+## Resolved decisions (ledger)
 
-- ~~Persist the source ids at all~~ — **RESOLVED (Simon):** our own IDs only in prod; no source ids persisted. Source ids are ingest-time-only (in-memory) grouping keys; a dev scratch column is fine but absent from prod.
-- ~~Region/grape normalization depth for v1~~ — **RESOLVED (Simon):** normalized accent-folded strings for v1; region tree reserved for later.
-- ~~Style set (Dessert/Fortified)~~ — **RESOLVED (Simon):** deferred; skip those rows at ingest.
-- Vintage-level vs. product-level as the merge unit for the review queue (proposed: product primary, vintage as a lighter within-product case).
+- Source ids / region ids in prod — **no** (2026-07-23; withdraws the earlier keep-opaque-ids refinement).
+- `linksTo` chains — **keep + resolve transitively** (supersedes the earlier flatten-on-write comment).
+- Merge unit — product primary; vintage additions lightweight, vintage merges a lighter case of the same machinery (matching year/NV + same effective product).
+- `year = null` — NV exclusively; unknown-year links at product grain (hence `wines.productId`).
+- Region/grape v1 — transitional strings; Verre-owned trees later, additively.
+- Dessert/Fortified styles — deferred; `nonalc` transitional.
