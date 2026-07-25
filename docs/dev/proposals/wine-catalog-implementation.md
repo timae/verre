@@ -41,7 +41,7 @@ Everything structural, nothing user-facing.
 
 A role table alone is not a role system. Required alongside it:
 
-- **Bootstrap + recovery.** The first admins are seeded by a one-off script keyed on user id, with `grantedBy` null so the audit trail is honest that the system minted them rather than pretending a human did. A documented recovery path exists for the locked-out case.
+- **Bootstrap + recovery.** The first admin is created by a **direct-DB `INSERT`** with `grantedBy` null, so the audit trail is honest that the system minted it rather than pretending a human did. Deliberately not a script (it would duplicate `lib/staffRole.ts`'s grant semantics, and user ids differ per environment so nothing is committable) and deliberately not an endpoint — an in-app admin-recovery route would *be* the privilege-escalation hole, and requiring DB access is what makes the database's unconditional last-admin refusal tenable. Runbook, including the guarded curator→admin promotion: `prisma/CLAUDE.md`.
 - **Append-only grant/revoke audit.** Deleting a `staff_roles` row otherwise destroys the history of who held what. Grants and revocations both append.
 - **Revocation is immediate — resolve from a fresh DB read.** Roles are never cached into a JWT or session. This mirrors the existing 🔒 never-cache-`auth()` invariant in `lib/CLAUDE.md`: any cache TTL is a window in which a revoked privilege still resolves, which is the security hole itself.
 - **Last-admin protection.** The revoke path refuses to remove the final admin grant.
@@ -96,6 +96,40 @@ Before anything migrates, the full set goes to Simon for review — not just the
 - **Confidence is app-side, not part of the import interface.** A shared EAN raises match confidence at suggestion time (RFC § merge-suggestion policy); the interface carries the barcode as a fact and does not carry a confidence score.
 
 ## Phase 2 — Add-flow + fuzzy search
+
+### 🔒 The trigram query form is load-bearing — get it right or the index does nothing
+
+Measured on PG16 with 60k producers against the phase-1 GIN indexes:
+
+| Predicate | Plan | Time |
+|---|---|---|
+| `$1 <% name_folded` | Bitmap Index Scan | 1.2 ms |
+| `name_folded %> $1` | Bitmap Index Scan | 1.2 ms |
+| `$1 %> name_folded` | Seq Scan | 140 ms |
+| `name_folded <% $1` | Seq Scan | 140 ms |
+| `word_similarity($1, name_folded) >= 0.3` | Seq Scan | never indexable |
+
+Three distinct traps, all of which return *correct* rows and merely lose the index — so nothing fails visibly:
+
+- **`word_similarity(...) >= 0.3` cannot use a trgm index in any operand order.** A function call is not an indexable operator. That form is what `prisma/migrations/20260705120000_moments_search_unaccent` documents, and it is correct *there* (moments search is always narrowed to one caller's few sessions first) — which makes it the likeliest thing to be copied into a table-wide catalog scan, where it degrades to scanning the entire catalog.
+- **Operator and operand order must match.** `<%` takes the query on the left, `%>` takes the column on the left. Not commutative; the mismatched pairings seq-scan. "Column first" is *not* the rule — that is only true for `%>`.
+- **The operators read a GUC that defaults to `0.6`,** not the 0.3 tuned against real data, so without setting it the search is silently stricter than intended and misses real typos.
+
+Canonical form:
+
+```sql
+BEGIN;
+SET LOCAL pg_trgm.word_similarity_threshold = 0.3;
+SELECT id, name FROM producers WHERE $1 <% name_folded
+ORDER BY word_similarity($1, name_folded) DESC LIMIT 20;
+COMMIT;
+```
+
+🔒 **`SET LOCAL`, never a bare `SET`.** Verified: `SET LOCAL` reverts at COMMIT; a bare `SET` persists on the connection and leaks the threshold into every later query that reuses it from the pool. Avoiding that leak is precisely why the moments-search migration inlined `word_similarity()` rather than using the operator — `SET LOCAL` is what buys the index back without reintroducing the hazard. `word_similarity()` in `ORDER BY` is fine and wanted: the operator filters via the index, the function scores the survivors.
+
+Also recorded in the phase-1 migration § 3 and `prisma/CLAUDE.md`.
+
+### The flow
 
 The five explicit branches of RFC § Add-a-wine flow. One `pg_trgm` matcher over `nameFolded`, shared by add-time search, review-queue suggestions, and post-import rescans — there is no second matcher to drift. `scope` set explicitly at every write boundary (creation rejects a missing scope rather than relying on the column default). `productId`/`vintageId` mirrored through Redis per RFC § Redis-first link design, with all list writes going through `mutateWines` (KEEPTTL preserved). Blind redaction strips both IDs in `wineToWire`.
 
@@ -212,5 +246,5 @@ The exact-match-only backfill of RFC § Legacy backfill — the sole exception t
 
 ## Open inputs
 
-- **Tim's user id**, needed before the phase-1 bootstrap seed runs (not before it is written).
+- **Tim's user id** — needed only when the bootstrap grant is actually run, which is a direct-DB `INSERT` per the runbook in `prisma/CLAUDE.md` (there is no seed script and no committed id; prod and local ids differ). Nothing in phase 1 is blocked on it, since no admin surface exists until phase 3. **Tier: `admin`** (Simon, 2026-07-25 — reaffirming the original ruling after the permission map narrowed `admin` to hard-purge and role-granting; both Simon and Tim hold it).
 - **Lead at-least-one enforcement: write-path helper vs `INITIALLY DEFERRED` trigger** — decided at the phase-1 model/raw-SQL review, because it changes the migration. Requirements for each are tabulated in § Exactly one lead; the deciding question is whether the invariant must be claimable as *database*-enforced.

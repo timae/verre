@@ -11,6 +11,10 @@ datasource db {
   // f_unaccent() IMMUTABLE wrapper + any functional trgm index live in raw
   // migration SQL (Prisma's datamodel can't express a function or an
   // expression index; migrate diff ignores both, so no schema drift).
+  // ⚠️ "migrate diff ignores it" holds only for what Prisma cannot MODEL. It
+  // does NOT hold for generated COLUMNS or named indexes on them — those are
+  // visible to the diff and must be declared (see the wine-catalog folded
+  // columns, which carry @default(dbgenerated(...)) for exactly this reason).
   extensions = [pg_trgm, unaccent]
 }
 
@@ -80,6 +84,17 @@ model User {
   userSessions              UserSession[]
   authAccounts              AuthAccount[]
   authSessions              AuthSession[]
+  staffRoles                StaffRole[]            @relation("StaffRoleHolder")
+  staffRolesGranted         StaffRole[]            @relation("StaffRoleGranter")
+  // Catalog attribution. All SetNull — community catalog rows are never
+  // cascaded by a user deletion (lib/accountDelete.ts needs no catalog
+  // handling beyond what SetNull gives; its tests should pin that).
+  producersAdded            Producer[]             @relation("ProducerAdder")
+  producersCurated          Producer[]             @relation("ProducerCurator")
+  productsAdded             WineProduct[]          @relation("ProductAdder")
+  productsCurated           WineProduct[]          @relation("ProductCurator")
+  vintagesAdded             WineVintage[]          @relation("VintageAdder")
+  vintagesCurated           WineVintage[]          @relation("VintageCurator")
 
   // pg_trgm GIN index for fast substring search in /api/users/search.
   // The `raw("gin_trgm_ops")` operator class is what makes ILIKE queries
@@ -329,6 +344,19 @@ model Wine {
   category           String         @default("wine") @db.VarChar(32)
   style              String?        @db.VarChar(64)
   imageUrl           String?        @map("image_url")
+  // Catalog links — the wine instance points at the shared catalog at TWO
+  // grains, because wine_vintages.year = null means the NV instance and never
+  // "year unknown": an unknown-year wine links at product grain with
+  // vintageId null. Valid states: (set, set) | (set, null) | (null, null).
+  // (null, set) is rejected by a CHECK in the migration — the composite FK
+  // below is MATCH SIMPLE, so it skips whenever either column is null and
+  // would NOT catch it. Both stay mutable so a future user-correction re-link
+  // needs no schema change; catalog identity is never denormalised onto
+  // ratings. Set only from an explicit user choice or a freshly-minted
+  // provisional, never from a string match (sole exception: the phase-5
+  // legacy backfill). See docs/dev/proposals/wine-catalog.md § v1 data model.
+  productId          String?        @map("product_id") @db.VarChar(21)
+  vintageId          String?        @map("vintage_id") @db.VarChar(21)
   purchaseUrl        String?        @map("purchase_url") @db.VarChar(1000)
   description        String?        @db.VarChar(1000)
   region             String?        @db.VarChar(255)
@@ -357,8 +385,27 @@ model Wine {
   // non-null (Postgres default MATCH SIMPLE). Pre-flight confirmed every
   // existing row has a canonical pair; no backfill needed.
   categoryStyle      CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  // NoAction on both catalog FKs: ordinary lifecycle NEVER deletes catalog
+  // rows (merge is a pointer, not a delete). The exceptional staff hard-purge
+  // performs the exact column transitions itself in one transaction, and these
+  // Restrict-equivalent FKs are the backstop — a purge that forgets a
+  // reference class fails and rolls back rather than half-applying. An
+  // ON DELETE SET NULL on the composite FK would be actively wrong: it would
+  // null BOTH columns when only the vintage disappears, silently unlinking the
+  // wine from a product that still exists.
+  product            WineProduct?   @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  // Composite FK guarantees a chosen vintage BELONGS to the stored product.
+  // Targets wine_vintages (id, product_id) — hence the redundant UNIQUE on
+  // that pair. Enforced exactly when both columns are set (MATCH SIMPLE).
+  // Named catalogVintage, not `vintage` — the scalar `vintage` above is the
+  // historical year snapshot on the instance and is a different thing.
+  catalogVintage     WineVintage?   @relation(fields: [vintageId, productId], references: [id, productId], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([sessionId, addedByIdentityId])
+  // Roll-up path for the product/vintage aggregate pages (phase 5) and the
+  // purge-time reference sweep: both walk wines by catalog link.
+  @@index([productId])
+  @@index([vintageId])
   // pg_trgm GIN indexes for the future Tastes-tab search/filter on wine name
   // + producer. Adding now is cheap and avoids a post-import rebuild on a
   // larger table later. `raw("gin_trgm_ops")` makes ILIKE queries
@@ -549,6 +596,7 @@ model CategoryStyle {
   sortOrder Int     @default(0) @map("sort_order")
   active    Boolean @default(true)
   wines     Wine[]
+  products  WineProduct[]
 
   @@id([category, style])
   @@index([category, sortOrder])
@@ -644,5 +692,462 @@ model FeedItemTag {
   @@id([feedItemId, userId])
   @@index([userId])
   @@map("feed_item_tags")
+}
+
+// ── Staff roles ───────────────────────────────────────────────
+// Account-level staff privilege. Deliberately a SEPARATE TABLE, never a column
+// on `users`: a privilege bit there would sit on the hottest table in the app,
+// reachable by every existing prisma.user.update AND by Better Auth's own
+// writes into users — whereas this table has no existing write path at all.
+// Same safe-by-construction reasoning as the lib/identityStore.ts credential
+// chokepoint. (users.role is a DEAD column — @default("taster"), read by
+// nothing; the heavily-used SessionMember.role is the unrelated SESSION axis.)
+//
+// 🔒 Resolve from a FRESH DB READ on every check — never cached into a JWT or
+// session. Mirrors the never-cache-auth() invariant in lib/CLAUDE.md: any TTL
+// is a window in which a revoked privilege still resolves, which is the hole
+// itself. Resolver: lib/staffRole.ts.
+//
+// `admin` IMPLIES `curator` — the resolver answers a curator-level check
+// affirmatively for an admin grant, so each person holds exactly one row.
+// Values ('admin' | 'curator') are CHECK-constrained in the migration.
+//
+// 🔒 ROLE CHANGES ARE TRANSITIONS, NOT ACCUMULATED GRANTS — see the PK note
+// below. Three rules, all enforced in lib/staffRole.ts:
+//   • PROMOTION (curator → admin) replaces the row, writing revoke-curator +
+//     grant-admin atomically so the audit trail shows both halves.
+//   • 🔒 A DOWNGRADE IS NEVER IMPLICIT. Granting `curator` to an existing admin
+//     is REJECTED, not silently applied — otherwise a routine-looking grant
+//     would quietly strip admin. Lowering privilege requires the explicit
+//     demote operation.
+//   • REVOKING ADMIN REMOVES ALL STAFF ACCESS (Simon, 2026-07-25) — the person
+//     becomes an ordinary user, NOT an automatic curator. Auto-demotion would
+//     leave someone holding privileges the revoker may not have meant to leave
+//     them; re-granting curator afterwards is a separate deliberate act.
+model StaffRole {
+  // 🔒 user_id is the PK — ONE LIVE ROLE ROW PER USER, not (user_id, role).
+  // A composite key permitted a user to hold BOTH 'admin' and 'curator' at once
+  // (reproduced on PG16), and because `admin` implies `curator` the fallout was
+  // silent: revoking admin left the curator row behind so privilege never
+  // actually dropped, and revoking curator from a dual holder was a no-op that
+  // still reported success.
+  userId    Int      @id @map("user_id")
+  role      String   @db.VarChar(16)
+  // Who granted it. SetNull (not Cascade) so revoking the granter's account
+  // never silently drops live privilege; null also means "system-minted",
+  // which is exactly what the direct-DB bootstrap INSERT writes (runbook in
+  // prisma/CLAUDE.md) — the audit trail stays honest that no human granted the
+  // first admins.
+  grantedBy Int?     @map("granted_by")
+  grantedAt DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+  // Cascade: deleting an account removes its live grant. History survives
+  // independently in staff_role_audit, which holds ID SNAPSHOTS, not FKs.
+  user      User     @relation("StaffRoleHolder", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  granter   User?    @relation("StaffRoleGranter", fields: [grantedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+
+  @@index([role])
+  @@map("staff_roles")
+}
+
+// Append-only history of privilege changes. Rows are NEVER updated or deleted
+// — including when the staff_roles grant they describe is cascaded away by
+// account deletion.
+//
+// 🔒 Subject and actor are IMMUTABLE ID SNAPSHOTS, not FKs. "Survives account
+// deletion, never updated" and "plain FK to users" are incompatible: Cascade
+// deletes the history, SetNull mutates a row that is supposed to be
+// append-only. This is the cascade-vs-tombstone rule from root CLAUDE.md
+// resolved toward NEITHER — the row is a durable record ABOUT an account, not
+// a row BELONGING to one.
+//
+// 🔒 No display-name snapshot (ruled 2026-07-24). Privilege auditing must
+// answer WHICH ACCOUNT held power, and the id answers that completely.
+// Retaining a name forever would carve an exception out of account deletion,
+// which elsewhere rewrites names to '[deleted]' precisely so a deleted user's
+// name stops surfacing. Readers resolve current names by join; a deleted user
+// shows as an unresolvable id, which is the correct outcome. The
+// wines.addedByDisplayName precedent does NOT transfer — that snapshot is
+// load-bearing because anonymous adders have no user row to join to, whereas
+// every staff grant is by definition a registered account.
+//
+// Separate from catalog_audit on purpose: that records actions on CATALOG
+// ENTITIES, this records changes to PRIVILEGE. Conflating them would put a
+// role revocation in the same stream as a vintage merge.
+model StaffRoleAudit {
+  id        Int      @id @default(autoincrement())
+  // ID snapshots — no relation fields, by design (see above).
+  subjectId Int      @map("subject_id")
+  role      String   @db.VarChar(16)
+  // 'grant' | 'revoke' (CHECK in the migration).
+  action    String   @db.VarChar(16)
+  // Null = no authenticated human actor. Three cases, all legitimate:
+  // the direct-DB bootstrap INSERT (system-minted, matching
+  // staff_roles.grantedBy; runbook in prisma/CLAUDE.md), and
+  // 🔒 ACCOUNT DELETION — the cascade fires inside the DB with no trustworthy
+  // way to obtain the authenticated actor, so the deletion audit is written as
+  // actorId = NULL with reason = 'account deletion'. That pairing is the
+  // documented contract: a NULL actor with that reason means "privilege ended
+  // because the account went away", never "an admin did this".
+  actorId   Int?     @map("actor_id")
+  reason    String?  @db.VarChar(255)
+  // 🔒 SERVER-ASSIGNED, and a trigger OVERWRITES any supplied value with now().
+  // Blocking UPDATE/DELETE alone still permits BACKDATED FAKE INSERTS — a
+  // reviewer forged a row dated 1999 against the pre-fix schema. An audit log
+  // whose timestamps a writer can choose does not establish when anything
+  // happened, so the database takes the clock away from the caller.
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([subjectId, id])
+  @@map("staff_role_audit")
+}
+
+// ── Wine catalog ──────────────────────────────────────────────
+// The producer / product / vintage identity spine. Spec of record:
+// docs/dev/proposals/wine-catalog.md; build plan:
+// docs/dev/proposals/wine-catalog-implementation.md.
+//
+// 🔒 THE INVARIANT EVERYTHING HANGS ON: an entry is created DISTINCT.
+// Combining entries is a separate, deliberate, REVERSIBLE action — a merge.
+// The fuzzy match is only a SUGGESTION surfacing likely duplicates for
+// confirmation; it is NEVER an automatic find-or-create hook. (This is what
+// the rejected PR #82 model got wrong.)
+//
+// 🔒 DATA-PROVENANCE RULE (hard): never store ANY source-provenance field —
+// no source URLs, slugs, source ids, or source region ids — and never expose
+// source provenance on any surface. Identity is our own nanoids; refreshes
+// arrive as upserts keyed on OUR ids.
+//
+// 🔒 The shapes of producers / wine_products / wine_vintages /
+// product_producers / product_eans (plus the wines link columns above) are a
+// VERSIONED INTERFACE. Any change to them is a contract change: surfaced
+// explicitly and shipped with a version bump, never made silently.
+//
+// One ID for life: an entry keeps exactly one nanoid forever — through
+// confirmation, merge, unmerge, archive. Nothing ever re-mints. That is what
+// keeps every wines link safe across all future maintenance.
+//
+// Shared columns on all three entity tables:
+//   status       'provisional' | 'confirmed' | 'linked' | 'archived' |
+//                'rejected' (varchar + CHECK; house convention, no PG enums)
+//   linksTo      merge tombstone pointer, nullable self-FK. Paired with
+//                status by CHECK ((status='linked') = (links_to IS NOT NULL))
+//                and CHECK (links_to <> id). Chains are KEPT, not flattened —
+//                reads resolve transitively with a visited set + depth cap.
+//   curatorLocked  text[] of field names whose NULL (or {}) is AUTHORITATIVE.
+//                The import fill-null path and read-time group coalescing both
+//                skip a locked field. Fill-null cannot otherwise distinguish
+//                "unknown" from "a curator deliberately cleared a wrong value".
+//   addedBy / curatedBy   SetNull — community catalog rows are NEVER cascaded
+//                by a user deletion.
+//   *Folded      GENERATED columns (raw SQL — Prisma can't express them),
+//                f_unaccent(lower(...)). ONE mandatory database-side
+//                normalization path, so no write path can make display and
+//                fold drift. pg_trgm GIN indexes go on the folded columns.
+
+// First-class maker. "Producer" means the LABEL/BRAND IDENTITY users see and
+// search for, not necessarily the legal producing house (a future label-brand
+// → legal-house relationship lands additively). Generic product names
+// ("Réserve", "Brut") are PRODUCER-SCOPED — they collide constantly across
+// producers and must never merge across them.
+model Producer {
+  id            String    @id @db.VarChar(21)
+  // Display form, accents preserved. nameFolded (generated, raw SQL) is the
+  // matching key — one value cannot serve both jobs.
+  name          String    @db.VarChar(255)
+  country       String?   @db.VarChar(2)
+  // Transitional string (see wine_products.region). Blank normalizes to NULL
+  // at the boundary: it feeds regionFolded and joins the fold, so a blank
+  // would collide with every other blank.
+  region        String?   @db.VarChar(255)
+  website       String?   @db.VarChar(512)
+  // 🔒 READ-ONLY. Both are Postgres GENERATED ALWAYS AS (...) STORED columns —
+  // f_unaccent(lower(...)) — declared as plain nullable fields here ONLY
+  // because Prisma has no generated-column syntax and the schema-vs-migrations
+  // CI gate would otherwise report them as drift. NEVER write them: Postgres
+  // rejects any INSERT/UPDATE that supplies a value, so a write is a runtime
+  // error, not silent drift. The generation expression lives in the migration
+  // and is the SINGLE normalization path — that is what makes display/fold
+  // drift structurally impossible.
+  nameFolded    String?   @default(dbgenerated("f_unaccent(lower((name)::text))")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("f_unaccent(lower((region)::text))")) @map("region_folded")
+  status        String    @default("provisional") @db.VarChar(16)
+  linksTo       String?   @map("links_to") @db.VarChar(21)
+  curatorLocked String[]  @default([]) @map("curator_locked")
+  addedBy       Int?      @map("added_by")
+  curatedBy     Int?      @map("curated_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  // NoAction, like every catalog-referencing FK: purge resolves inbound
+  // pointers explicitly in its own transaction (re-point or clear), and the
+  // FK is the backstop against a purge that forgets one.
+  target        Producer? @relation("ProducerMerge", fields: [linksTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tombstones    Producer[] @relation("ProducerMerge")
+  adder         User?     @relation("ProducerAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  curator       User?     @relation("ProducerCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  products      ProductProducer[]
+
+  @@index([status])
+  @@index([linksTo])
+  // The pg_trgm GIN index serving the ONE matcher (add-time search,
+  // review-queue suggestions, post-import rescans all run the same
+  // word_similarity query over nameFolded). raw("gin_trgm_ops") is what makes
+  // it eligible; the default opclass would only support tsvector lookups.
+  @@index([nameFolded(ops: raw("gin_trgm_ops"))], type: Gin, map: "producers_name_folded_trgm_idx")
+  @@map("producers")
+}
+
+// The product — groups vintages. The PRIMARY MERGEABLE ENTITY.
+model WineProduct {
+  id            String    @id @db.VarChar(21)
+  name          String    @db.VarChar(255)
+  category      String    @default("wine") @db.VarChar(32)
+  // Composite FK (category, style) → category_styles, like wines. Nullable;
+  // the FK enforces only when both are non-null (MATCH SIMPLE). Values
+  // red/white/rosé/spark; 'nonalc' is TRANSITIONAL — supported for v1
+  // compatibility but not locked as permanent style identity, since
+  // ABV/alcohol attributes are the intended direction. dessert/fortified
+  // deferred.
+  style         String?   @db.VarChar(64)
+  // ⚠️ Prisma Decimal serializes to a JSON STRING ("13.50"), not a number.
+  // EVERY API response surfacing this must coerce via Number() — the
+  // wire-format trap in root CLAUDE.md.
+  abv           Decimal?  @db.Decimal(4, 2)
+  // 🔒 NON-NULL, default {} — and {} means "no grapes recorded", so {} IS
+  // ENRICHABLE. Prisma cannot model an optional scalar list ("Optional lists
+  // are not supported"), so {} is the SOLE representation of unrecorded and
+  // there is no known-empty state in v1. Consequence: arrays need their own
+  // missingness rule — the scalar COALESCE(existing, incoming) fill would
+  // freeze every grape-less row FOREVER (for a non-null column `existing` is
+  // never null, so COALESCE always returns it, silently). Arrays fill on
+  // cardinality(existing) = 0; scalars keep the strict IS NULL rule. A
+  // DELIBERATE empty becomes authoritative only via curatorLocked — that lock
+  // is the only mechanism available for arrays. If known-empty ever becomes
+  // load-bearing, the additive fix is a `grapesKnown` flag alongside.
+  grapes        String[]  @default([])
+  // Optional override of the producer's region. Transitional string, like
+  // producers.region: the final design is first-class Verre-owned entities —
+  // a region tree (country → region → subregion → appellation) and a
+  // grape-variety tree (descendants, synonyms) — landing ADDITIVELY as new
+  // tables without changing any producer/product/vintage ID. No source-side
+  // structured identifiers are persisted to build from (provenance rule); the
+  // trees are built later against Verre identity.
+  region        String?   @db.VarChar(255)
+  // 🔒 READ-ONLY generated columns — see the Producer note above. grapesFolded
+  // folds element-wise through f_unaccent_arr, which is STRICT + COALESCEs
+  // array_agg so {} folds to {} rather than NULL (array_agg over zero rows
+  // returns NULL) — empty must stay distinguishable from unknown.
+  nameFolded    String?   @default(dbgenerated("f_unaccent(lower((name)::text))")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("f_unaccent(lower((region)::text))")) @map("region_folded")
+  grapesFolded  String[]  @default(dbgenerated("f_unaccent_arr(grapes)")) @map("grapes_folded")
+  // 'shared' | 'owned'. Reserved for the DEFERRED ownership axis.
+  // 🔒 NO DEFAULT, deliberately. Every write boundary sets this EXPLICITLY, so
+  // an omitted scope FAILS LOUDLY (NOT NULL violation) instead of silently
+  // landing 'shared' — i.e. PUBLIC. A default here would mean a future `owned`
+  // entry leaks to the public catalog because a caller forgot a field, which is
+  // the one failure mode this column exists to prevent. The table is new, so
+  // there is no populated-row argument for keeping a default.
+  scope         String    @db.VarChar(16)
+  status        String    @default("provisional") @db.VarChar(16)
+  linksTo       String?   @map("links_to") @db.VarChar(21)
+  curatorLocked String[]  @default([]) @map("curator_locked")
+  addedBy       Int?      @map("added_by")
+  curatedBy     Int?      @map("curated_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  target        WineProduct?  @relation("ProductMerge", fields: [linksTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tombstones    WineProduct[] @relation("ProductMerge")
+  adder         User?     @relation("ProductAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  curator       User?     @relation("ProductCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  categoryStyle CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  producers     ProductProducer[]
+  vintages      WineVintage[]
+  eans          ProductEan[]
+  wines         Wine[]
+
+  @@index([status])
+  @@index([linksTo])
+  @@index([nameFolded(ops: raw("gin_trgm_ops"))], type: Gin, map: "wine_products_name_folded_trgm_idx")
+  @@map("wine_products")
+}
+
+// Product ↔ producer, many-to-many, with role.
+//
+// 🔒 EVERY PRODUCT HAS EXACTLY ONE `lead` (plus 0..n collaborators). That takes
+// THREE separate pieces, and the third is the one that gets skipped because
+// the partial unique index LOOKS like it covers the whole thing:
+//
+//   1. AT MOST ONE — partial unique on (product_id) WHERE role = 'lead'. The
+//      composite PK does NOT substitute (verified: it blocks duplicate PAIRS
+//      while happily allowing two different producers both marked lead).
+//   2. AT LEAST ONE AT CREATION — a deferred constraint trigger on
+//      wine_products checks at COMMIT that a lead link exists.
+//   3. AT LEAST ONE OVER TIME — deleting the sole lead OR DEMOTING it
+//      lead → collaborator leaves zero leads. The demotion path is the easy
+//      one to miss: nothing is deleted, so a delete-focused guard never fires.
+//
+// Pieces 2 and 3 are NOT declaratively expressible ("at least one child row
+// exists" is not a CHECK — no CHECK can see other rows), so they are
+// INITIALLY DEFERRED constraint triggers (chosen over a write-path helper at
+// the phase-1 review gate, 2026-07-24: only the trigger route lets the
+// invariant be claimed as DATABASE-enforced, unbypassable including by a
+// future path nobody remembered). Deferral is mandatory — an IMMEDIATE
+// trigger fires on the delete/demote and blocks the legitimate swap before
+// the replacement lands.
+//
+// ⚠️ TWO ORDERING TRAPS, both verified against PG16:
+//   • The prohibition is on separate TRANSACTIONS, not statement order. With
+//     the immediate partial unique, promoting the new lead FIRST fails — the
+//     old lead still exists. So within one transaction: remove or demote the
+//     old lead FIRST, then insert or promote.
+//   • REPLACEMENT IS NOT ALWAYS AN INSERT. If the incoming lead is already a
+//     collaborator on that product — the common promotion case — inserting a
+//     second (product_id, producer_id) row fails the composite PK. It must be
+//     an UPDATE … SET role = 'lead'. A replace path that only ever inserts is
+//     broken for exactly the case most likely to occur.
+//
+// The single-producer case is simply lead-with-no-collaborators. A
+// collaboration is ONE product with 2+ links, set at creation — NOT a merge.
+//
+// ⚠️ CLIENT-LEVEL CONSEQUENCE, stated bluntly because phase-2 authors will
+// otherwise meet it as a confusing runtime error: a bare
+// `prisma.wineProduct.create()` can NEVER succeed — the creation trigger raises
+// `has no lead producer` at COMMIT. A product and its lead link must commit in
+// ONE $transaction. That is the invariant working, not a bug.
+model ProductProducer {
+  productId  String      @map("product_id") @db.VarChar(21)
+  producerId String      @map("producer_id") @db.VarChar(21)
+  // 'lead' | 'collaborator' (CHECK in the migration).
+  role       String      @db.VarChar(16)
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  // Cascade from the product: a purge deletes the product's join rows as part
+  // of its own transaction, and the deferred lead trigger carves out the case
+  // where the parent product is gone (otherwise the invariant would block its
+  // own cleanup path). Producer side is NoAction — a producer purge is only
+  // valid once no join row references it.
+  product    WineProduct @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  producer   Producer    @relation(fields: [producerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([productId, producerId])
+  @@index([producerId])
+  @@map("product_producers")
+}
+
+// The rating grain.
+model WineVintage {
+  id            String    @id @db.VarChar(21)
+  productId     String    @map("product_id") @db.VarChar(21)
+  // 🔒 year = null means THE NON-VINTAGE INSTANCE EXCLUSIVELY — never "year
+  // unknown". An unknown-year rating links at PRODUCT level instead
+  // (wines.vintageId null), so NV rows stay clean.
+  year          Int?
+  // Per-vintage override of the product ABV. Same Decimal wire-format trap.
+  abv           Decimal?  @db.Decimal(4, 2)
+  status        String    @default("provisional") @db.VarChar(16)
+  linksTo       String?   @map("links_to") @db.VarChar(21)
+  curatorLocked String[]  @default([]) @map("curator_locked")
+  addedBy       Int?      @map("added_by")
+  curatedBy     Int?      @map("curated_by")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+  // NoAction (not Cascade): a product purge must purge its vintages FIRST and
+  // explicitly. This FK forces that ordering rather than silently taking the
+  // children with it.
+  product       WineProduct  @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  target        WineVintage? @relation("VintageMerge", fields: [linksTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  tombstones    WineVintage[] @relation("VintageMerge")
+  adder         User?     @relation("VintageAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  curator       User?     @relation("VintageCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  wines         Wine[]
+
+  // Redundant with the PK, but it is what makes the composite FK from
+  // wines (vintage_id, product_id) legal — that FK is the structural
+  // guarantee that a chosen vintage belongs to the stored product.
+  @@unique([id, productId])
+  // ⚠️ THE DECLARATION HERE IS WEAKER THAN THE CONSTRAINT THAT SHIPS. The real
+  // rule — one row per year AND ONE NV ROW PER PRODUCT — is
+  // UNIQUE NULLS NOT DISTINCT (product_id, year), which is written in the
+  // migration's raw half. Prisma has no syntax for NULLS NOT DISTINCT, so this
+  // @@unique exists to keep the schema-vs-migrations CI gate honest about the
+  // constraint's EXISTENCE, and the migration supplies its actual strength.
+  // Taken literally, this line would permit MULTIPLE null-year rows (Postgres
+  // treats NULLs as distinct by default) — i.e. unlimited duplicate NV rows on
+  // one product. The database does not permit that. Read the migration, not
+  // this line, for the semantics.
+  @@unique([productId, year], map: "wine_vintages_product_year_key")
+  // No separate @@index([productId, year]) — the unique above already creates a
+  // btree on exactly those columns in that order, so a plain index would be
+  // pure write-amplification on a table the docs expect to be large. (Verified:
+  // both appeared in pg_indexes with identical column lists.)
+  @@index([status])
+  @@index([linksTo])
+  @@map("wine_vintages")
+}
+
+// Barcodes, PRODUCT-GRAIN. Part of the import interface.
+//
+// 🔒 An EAN already assigned to ANOTHER product is a conflict/review event —
+// NEVER an automatic reassignment. This is the RFC's "false merges are the
+// expensive failure" principle applied to strong identifiers: a shared EAN
+// RAISES match confidence at suggestion time, it never silently moves a
+// barcode between products.
+//
+// Confidence itself is app-side and NOT part of the import interface — the
+// interface carries the barcode as a fact, not a score.
+model ProductEan {
+  // 🔒 STRING, not a numeric type — a numeric corrupts 0-prefixed EAN-13s by
+  // dropping the leading zero. Canonicalized + check-digit validated on write.
+  ean       String      @id @db.VarChar(14)
+  productId String      @map("product_id") @db.VarChar(21)
+  // 🔒 WRITE-ONCE: set on insert, never updated. This is the "when did this
+  // barcode first reach us" fact; a fill-null rule would leave it correct only
+  // by accident.
+  firstSeen DateTime    @default(now()) @map("first_seen") @db.Timestamptz(6)
+  // 🔒 MONOTONIC, and EXPLICITLY EXEMPT from the fill-null rule. Under
+  // fill-null-only a non-null lastSeen would never advance, freezing at first
+  // sight — so it is updated explicitly, and only ever FORWARD
+  // (GREATEST(existing, incoming)).
+  lastSeen  DateTime    @default(now()) @map("last_seen") @db.Timestamptz(6)
+  product   WineProduct @relation(fields: [productId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([productId])
+  @@map("product_eans")
+}
+
+// App-only bookkeeping of catalog lifecycle actions — merge, unmerge, confirm,
+// reject, archive, lock-field, purge. NOT part of the import interface.
+//
+// 🔒 Written IN THE SAME TRANSACTION as the status/pointer update it records,
+// so a partial write can never produce an unreadable tombstone and repeated
+// merge/unmerge cycles are always reconstructible.
+//
+// priorStatus is what makes unmerge correct: clearing linksTo is one row
+// update, but it must also choose the RESTORED lifecycle state — a pre-merge
+// `provisional` must not come back `confirmed`.
+//
+// Actor is an ID SNAPSHOT with no FK, for the same append-only reason as
+// staff_role_audit. entityId/targetId are likewise snapshots, not FKs: a
+// hard-purged entity must not take its own purge record with it.
+model CatalogAudit {
+  id          Int      @id @default(autoincrement())
+  // 'producer' | 'product' | 'vintage' (CHECK in the migration).
+  entityType  String   @map("entity_type") @db.VarChar(16)
+  // The subject — for a merge, the LOSER.
+  entityId    String   @map("entity_id") @db.VarChar(21)
+  // The merge target. Null for every non-merge action.
+  targetId    String?  @map("target_id") @db.VarChar(21)
+  // 'merge' | 'unmerge' | 'confirm' | 'reject' | 'archive' | 'lock_field' |
+  // 'unlock_field' | 'purge' | 'edit' (CHECK in the migration).
+  action      String   @db.VarChar(24)
+  priorStatus String?  @map("prior_status") @db.VarChar(16)
+  actorId     Int?     @map("actor_id")
+  reason      String?  @db.VarChar(255)
+  // 🔒 Server-assigned; a trigger overwrites any supplied value with now(),
+  // and UPDATE/DELETE are blocked — same append-only regime as
+  // staff_role_audit, for the same reason.
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([entityType, entityId, id])
+  @@index([createdAt(sort: Desc)])
+  @@map("catalog_audit")
 }
 

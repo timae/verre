@@ -39,6 +39,92 @@ For destructive changes:
 
 This rule applies regardless of how much "easier" it would be to just drop and recreate. Lost user data doesn't come back from a `git revert`.
 
+## Generated columns + constraints Prisma can't express (wine catalog)
+
+`20260725090000_wine_catalog_schema` is in two halves: Prisma-generated DDL, then raw SQL for what the datamodel can't express. The two halves are **coupled**, and the coupling is what keeps them honest — `migrate diff` ignores what it cannot *model* (functions, CHECKs, triggers, partial uniques, `NULLS NOT DISTINCT`) but **not** what it can *see*.
+
+**Five columns are `GENERATED ALWAYS AS (…) STORED`**: `producers.name_folded`/`region_folded`, `wine_products.name_folded`/`region_folded`/`grapes_folded`. They are the single normalization path for fuzzy matching, so display and fold cannot drift.
+
+- **Never write them.** The generated client exposes them as optional inputs, but Postgres rejects any value with `428C9` ("cannot insert a non-DEFAULT value" / "can only be updated to DEFAULT"). A loud runtime error, not silent drift.
+- Their `@default(dbgenerated("…"))` strings in `schema.prisma` must match the migration expression **character-for-character**. The check-schema gate does catch a mismatch (verified: corrupting one produced `[*] Altered column grapes_folded (default changed from …)`).
+- ⚠️ **Widening a folded source column fails the deploy.** `ALTER COLUMN "name" SET DATA TYPE VARCHAR(300)` — the kind of additive change the destructive-changes rule above says flows through automatically — raises `cannot alter type of a column used by a generated column`. To widen `producers.name`, `wine_products.name`, or either `region`: drop the generated column, alter the type, re-add the generated column, in one hand-written migration.
+
+**`wine_vintages_product_year_key` is `UNIQUE NULLS NOT DISTINCT (product_id, year)`** — one row per year *and* only one NV (null-year) row per product. The `@@unique([productId, year], map: …)` in `schema.prisma` is **deliberately weaker than what ships** (Prisma has no `NULLS NOT DISTINCT` syntax); it attests the constraint exists and the migration supplies its strength. 🔒 **Never change that line's column list.** Prisma would emit `DROP INDEX` + `CREATE UNIQUE INDEX`, and the recreated index would lose `NULLS NOT DISTINCT` — silently permitting unlimited duplicate NV rows. On prod (where `@@unique` materialises as a table CONSTRAINT) the emitted `DROP INDEX` hard-fails instead, converting a silent regression into a failed deploy — but don't rely on that. Removing just the `map:` is only a `RenameIndex` and is safe.
+
+**🔒 The trigram search predicate decides whether the GIN indexes are used at all.** Measured on PG16 / 60k producers: `$1 <% name_folded` and `name_folded %> $1` both index (1.2 ms); `$1 %> name_folded`, `name_folded <% $1`, and `word_similarity($1, name_folded) >= 0.3` all seq-scan (140 ms; the function form is never indexable in any order). The operator and operand order must match — `<%` takes the query on the left, `%>` the column — so "column first" is not the rule. These operators also read a GUC defaulting to `0.6`, not the tuned 0.3, so set it with **`SET LOCAL pg_trgm.word_similarity_threshold = 0.3` inside a transaction** — never a bare `SET`, which persists on a pooled connection and leaks into later queries (that leak is why `20260705120000_moments_search_unaccent` inlined `word_similarity()` instead). `word_similarity()` in `ORDER BY` is correct: the operator filters via the index, the function scores. Full table + canonical query: the phase-1 migration § 3 and `docs/dev/proposals/wine-catalog-implementation.md` § Phase 2.
+
+**Audit tables are append-only in the database, not by convention.** `staff_role_audit` and `catalog_audit` carry triggers rejecting `UPDATE`/`DELETE` and overwriting any supplied `created_at` with the server clock (blocking mutation alone still permits backdated inserts). Rows are written only as part of the transaction that changes what they describe. **Restricting the runtime DB role to `SELECT`/`INSERT` on these two tables is the stronger control and is an operator-level change, not a migration** — the triggers stop the application role, not a superuser.
+
+**The last admin cannot be removed by any path.** A `BEFORE DELETE OR UPDATE OF role` trigger on `staff_roles` refuses any change leaving zero admins — covering **deletion and demotion**, since demoting the sole admin deletes nothing and a delete-only guard never fires. A separate `BEFORE DELETE ON users` trigger appends the cascade's revoke audit row (`actor_id` NULL, reason `'account deletion'`) so an account deletion still leaves history; it hangs off `users`, not `staff_roles`, because on `staff_roles` it fired for *every* role-row deletion and stamped deliberate revokes as account deletions too. All trigger bodies are schema-qualified (`public.…`) with a pinned `search_path`, so a same-named TEMP table cannot shadow the tables they read. Both the trigger and `lib/staffRole.ts` take the **same** advisory lock — `hashtext('verre:staff_roles:admin')`; if those two keys ever diverge, each path serializes only against itself and the delete-vs-revoke race reopens (it produced zero admins in 8/10 trials before the fix). Consequence: **a sole admin cannot delete their own account** until they grant admin to someone else.
+
+**Bootstrap + recovery is a direct-DB INSERT — deliberately not a script and not an endpoint.** Granting a role requires `staff.grantRole` (admin-only), which is a chicken-and-egg for the first admin and for the locked-out case. An in-app "recover admin access" route would *be* the privilege-escalation hole, so recovery requires DB access — already the highest trust level in the system. That is also what makes the database's unconditional last-admin refusal tenable: there is always an escape hatch, so the guard never needs an in-app override.
+
+Ids are environment-specific (prod ≠ local), so nothing is committed. Run per environment, substituting the real id for `<id>`.
+
+🔒 **These two recipes are EXECUTED BY `scripts/tests/catalog-schema-integration.mjs`** (§ 18), which extracts them from this file by the `-- @recipe:` markers below and runs them against a real database. That is deliberate: three successive prose versions of the promotion guard shipped subtly broken while every suite stayed green, because documented SQL had no gate. Edit these blocks and the test runs your edit — so keep the markers intact, keep `<id>` as the only placeholder, and expect CI to fail if a recipe stops being correct.
+
+```sql
+-- @recipe:bootstrap
+-- 🔒 ONE TRANSACTION. The audit row is NOT optional: a grant without it leaves
+-- no record of who created the first admin, which is the one fact this table
+-- exists to answer. Wrapping both makes a half-applied bootstrap impossible.
+BEGIN;
+  INSERT INTO staff_roles (user_id, role) VALUES (<id>, 'admin');
+  -- actor_id NULL + reason 'bootstrap' is the documented pairing for
+  -- system-minted privilege (no human granted it). created_at is server-forced.
+  INSERT INTO staff_role_audit (subject_id, role, action, actor_id, reason)
+  VALUES (<id>, 'admin', 'grant', NULL, 'bootstrap');
+COMMIT;
+-- @endrecipe
+
+-- @recipe:promote
+-- Promoting an existing curator to admin. ONE statement, inside a DO block.
+--
+-- 🔒 THE VERIFICATION MUST USE THIS STATEMENT'S OWN AFFECTED-ROW COUNT. Two
+-- earlier versions of this recipe were both silently wrong, so the shape below
+-- is deliberate:
+--   1. Checking "is the user now an admin" passes for someone who was ALREADY
+--      an admin — a mistyped id pointing at an existing admin committed with no
+--      audit rows written at all.
+--   2. Counting matching audit rows in the TABLE passes on a re-run, because it
+--      sees the rows the FIRST successful promotion left behind. Reproduced:
+--      promote a curator, run the recipe again against the now-admin user, and
+--      it commits happily on the two historical rows.
+-- `ROW_COUNT` is scoped to the statement just executed, so it cannot be fooled
+-- by history or by prior state. Everything is in one DO block because ROW_COUNT
+-- is only readable inside PL/pgSQL, immediately after the statement.
+--
+-- Also resets granted_by/granted_at: the row is REPLACED (user_id is the PK), so
+-- keeping the curator grant's provenance would misattribute the admin grant.
+DO $$
+DECLARE
+  promoted int;
+BEGIN
+  UPDATE staff_roles
+     SET role = 'admin', granted_by = NULL, granted_at = now()
+   WHERE user_id = <id> AND role = 'curator';
+  GET DIAGNOSTICS promoted = ROW_COUNT;
+  IF promoted <> 1 THEN
+    RAISE EXCEPTION
+      'no curator grant for user <id> (updated % rows) — wrong id, or already an admin?',
+      promoted;
+  END IF;
+  -- Both halves, or the audit implies the person held admin AND curator at once.
+  INSERT INTO staff_role_audit (subject_id, role, action, actor_id, reason)
+  VALUES (<id>, 'curator', 'revoke', NULL, 'superseded by admin'),
+         (<id>, 'admin',   'grant',  NULL, 'bootstrap promotion');
+END $$;
+-- @endrecipe
+
+-- Inspect current grants (ids only — resolve names in the app; don't dump PII
+-- into operator logs).
+SELECT user_id, role, granted_by FROM staff_roles ORDER BY role, user_id;
+```
+
+Everything after the bootstrap goes through the in-app path (`lib/staffRole.ts` `grantStaffRoleAs` / `revokeStaffRoleAs` / `demoteToCuratorAs`), which audits both halves of a transition and enforces authorization inside the write transaction.
+
+**A `WineProduct` can never be created in a single statement.** Deferred constraint triggers enforce "every product has exactly one lead producer" at COMMIT, including at creation — so a bare `prisma.wineProduct.create()` always raises `has no lead producer`. Product + its `product_producers` lead row must commit in one `$transaction`. That is the invariant working, not a bug. Swap ordering traps (demote-then-promote; promotion is an UPDATE, not an INSERT) are documented in the migration's § 6.
+
 ## Schema check (build-time)
 
 `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations directory disagree. Don't bypass — either generate the migration via `prisma migrate dev` or roll back the schema change.
