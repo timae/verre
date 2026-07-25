@@ -220,5 +220,6 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [iOS touch gestures](docs/dev/ios-touch-gestures.md) — pull-to-swap design history (architectures tried + discarded)
 - [Deployment](docs/dev/deployment.md) — Deploio env vars, deploy story
 - [Wine metadata](docs/dev/wine-metadata.md) — description/region/country/vinification/purchase_url specs, `cleanUrl` http(s)-only rule
+- [Wine catalog](docs/dev/proposals/wine-catalog.md) — producer/product/vintage identity spine. **Phase 1 (domain schema) SHIPPED** (`4bc14c5`); phases 2–5 pending, see the [implementation plan](docs/dev/proposals/wine-catalog-implementation.md). 🔒 An entry is created DISTINCT — combining is a deliberate, reversible merge, never an automatic find-or-create. Catalog table shapes are a VERSIONED INTERFACE (§ Catalog write ownership). Account-level staff powers live in `staff_roles`, never `users.role` (see `prisma/CLAUDE.md`); resolver + permission map in `lib/staffRole.ts`. Schema invariants Prisma can't express, the trigram query rule, and the bootstrap runbook: `prisma/CLAUDE.md`.
 
 Planning docs for unshipped work live in [`docs/dev/proposals/`](docs/dev/proposals/) — not indexed here until they ship.

@@ -1,6 +1,8 @@
 # Wine catalog — implementation plan
 
-**Status:** signed off 2026-07-24. Companion to `wine-catalog.md` (the RFC, spec-of-record for the *model*); this doc is the *build* — phase order, the rulings that unblocked it, and the amendments the plan must carry. Branch: `feature/wine-catalog-schema`.
+**Status:** **Phase 1 SHIPPED** on `main` as `4bc14c5` (PR #86, 2026-07-25); phases 2–5 pending. Companion to `wine-catalog.md` (the RFC, spec-of-record for the *model*); this doc is the *build* — phase order, the rulings that unblocked it, and the amendments the plan must carry.
+
+**Starting phase 2?** Read § Phase 2 first — the trigram query form is the thing most likely to be got wrong, and it fails SILENTLY by being slow rather than wrong. Then `prisma/CLAUDE.md` for the schema invariants Prisma cannot express. Phase 1's branch has been merged and deleted; work from `main` on a new `feature/…` branch.
 
 The RFC's three open decisions are resolved (see its § Open decisions — RESOLVED). This plan absorbs those rulings plus a review pass whose amendments are recorded inline, each at the phase that must honour it.
 
@@ -161,7 +163,7 @@ This is a **second migration phase**, not pure application code: service princip
 
 ⚠️ **`at least one` cannot be a declarative constraint.** "At least one child row exists" isn't expressible in Postgres — no `CHECK` can see other rows, and the partial unique index only bounds the upper side. So piece 3 lives in the write path or in a deferred trigger, and the index's existence must not be mistaken for coverage.
 
-**Which of the two is an open decision, to be settled at the phase-1 model/raw-SQL review** — it changes the migration, so it can't be deferred past that gate. Requirements either way:
+**RESOLVED at the phase-1 review: the `INITIALLY DEFERRED` trigger shipped** (Simon, 2026-07-24) — only that route lets the invariant be claimed as *database*-enforced, and it covers the phase-4 import path for free. The comparison is kept because the requirements in the right-hand column are what the shipped triggers must keep satisfying, and the ordering traps below still bind every caller:
 
 | | Write-path enforcement | Deferred-trigger enforcement |
 |---|---|---|
@@ -246,5 +248,4 @@ The exact-match-only backfill of RFC § Legacy backfill — the sole exception t
 
 ## Open inputs
 
-- **Tim's user id** — needed only when the bootstrap grant is actually run, which is a direct-DB `INSERT` per the runbook in `prisma/CLAUDE.md` (there is no seed script and no committed id; prod and local ids differ). Nothing in phase 1 is blocked on it, since no admin surface exists until phase 3. **Tier: `admin`** (Simon, 2026-07-25 — reaffirming the original ruling after the permission map narrowed `admin` to hard-purge and role-granting; both Simon and Tim hold it).
-- **Lead at-least-one enforcement: write-path helper vs `INITIALLY DEFERRED` trigger** — decided at the phase-1 model/raw-SQL review, because it changes the migration. Requirements for each are tabulated in § Exactly one lead; the deciding question is whether the invariant must be claimable as *database*-enforced.
+- **Tim's user id** — needed only when the bootstrap grant is actually run, which is a direct-DB `INSERT` per the runbook in `prisma/CLAUDE.md` (there is no seed script and no committed id; prod and local ids differ). Nothing in phase 1 is blocked on it, since no admin surface exists until phase 3. **Tier: `admin`** — Simon and Tim are both DESIGNATED admins (Simon, 2026-07-25, reaffirming the original ruling after the permission map narrowed `admin` to hard-purge and role-granting). Whether the grant has actually been made in a given environment is operational state, not a repository fact — check `staff_roles` in that environment rather than trusting this file.

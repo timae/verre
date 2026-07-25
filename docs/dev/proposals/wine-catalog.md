@@ -1,6 +1,6 @@
 # Proposal: Wine product catalog (redesign)
 
-**Status:** design, revision 3 — absorbs the Codex review (2026-07-23, CHANGES_REQUESTED), the follow-up review (2026-07-24), and the PR #85 comment thread as amended (the source-id/region-id refinements are withdrawn; linksTo flatten-on-write is superseded by chains-with-transitive-resolution). Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
+**Status:** **Phase 1 (domain schema) SHIPPED** on `main` as `4bc14c5` (PR #86, 2026-07-25) — the four catalog tables, `product_eans`, the `wines` link columns, `staff_roles`/`staff_role_audit`, and `catalog_audit` all exist; nothing user-facing reads them yet. Phases 2–5 pending — see `wine-catalog-implementation.md`. This file remains the **rationale-of-record for the model**; where it and the shipped schema differ, the migration wins (as-built deltas are noted in the plan). Design history: revision 3 — absorbs the Codex review (2026-07-23, CHANGES_REQUESTED), the follow-up review (2026-07-24), and the PR #85 comment thread as amended (the source-id/region-id refinements are withdrawn; linksTo flatten-on-write is superseded by chains-with-transitive-resolution). Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
 
 ## Context
 
@@ -16,7 +16,7 @@ This doc specifies the **Foundation-first v1**: the correct identity + lifecycle
 
 Catalog reference data arrives through the app-owned, authenticated import contract (§ Catalog maintenance); it is curated before it reaches the app. Consequences:
 
-- The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
+- The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`, `product_eans`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
 - Imported entries arrive already curated. The app-side **review queue exists for user-added entries only** (confirm / merge / reject); merges and `linksTo` exist only here, where tasting data lives.
 - Prod persists **no source identifiers of any kind** (see the provenance rule).
 
@@ -109,7 +109,7 @@ Structurally enforced on every catalog table: `CHECK ((status = 'linked') = (lin
 - A merge **survivor cannot be `rejected`** while tombstones still point at it — unmerge/resolve the linked group first.
 - "Flagged/reported" is a separate orthogonal signal, not a status (an entry can be `confirmed` *and* flagged).
 - **One ID for life.** An entry keeps exactly one nanoid forever — through confirmation, merge, unmerge, archive. Nothing ever re-mints. This is the invariant that keeps every `wines` link safe across all future maintenance.
-- **Authority (v1):** confirm / merge / unmerge / reject / edit-confirmed / purge are staff powers. The account-level role axis that carries them is an **open decision** (§ Open decisions) — distinct from session roles (host/cohost/provider). Machine maintenance never impersonates a human role (§ Catalog maintenance).
+- **Authority (v1):** confirm / merge / unmerge / reject / edit-confirmed / purge are staff powers. The account-level role axis that carries them is **`staff_roles`** (`admin` | `curator`, shipped in phase 1; resolver + permission map in `lib/staffRole.ts`) — distinct from session roles (host/cohost/provider). Note the permission map reserves `admin` for hard-purge and role-granting; the rest are curator-level. Machine maintenance never impersonates a human role (§ Catalog maintenance).
 
 ### Merge = pointer + lifecycle only
 
@@ -166,7 +166,7 @@ Active session wines live in Redis (`s:{CODE}:wines`, 48h+ TTL) and archive to P
 - **Storage:** `productId`/`vintageId` are optional fields on the Redis wine JSON, set by the add-flow at wine-create. All list writes go through `mutateWines` (KEEPTTL preserved as always).
 - **Mirroring:** every path that writes a `wines` row from Redis state — rate/visit archival, wine edits, brought-by reassignment, session archive — carries both fields verbatim. Wine-edit paths must round-trip fields they don't touch; the identity-changing-edit rule above is applied in the edit handler before the mirror.
 - **Anonymous sessions:** anon sessions stay Redis-only, so links live and die with the session like every other wine field. If a logged-in participant's action archives a wine, the link archives with it — anon-added wines keep their links through archival.
-- 🔒 **Blind redaction:** catalog IDs are label identity. `wineToWire`'s blind redaction strips `productId` and `vintageId` from every redacted payload, exactly like name/producer — a catalog ID in a blind payload is a lookup oracle for the label. (Whether an unrevealed blind wine's *provisional catalog row* is publicly searchable is a separate open decision, § below.)
+- 🔒 **Blind redaction:** catalog IDs are label identity. `wineToWire`'s blind redaction strips `productId` and `vintageId` from every redacted payload, exactly like name/producer — a catalog ID in a blind payload is a lookup oracle for the label. (Whether an unrevealed blind wine's *provisional catalog row* is publicly searchable was a separate decision — **RESOLVED: the catalog stays open**, § Open decisions — RESOLVED ruling 3. 🔒 That ruling is contingent on catalog records being visually indistinguishable by state to end users; a surface exposing `status`, `createdAt`, or adder identity in public catalog search reopens it.)
 
 ## Legacy backfill (migration-only exception)
 
