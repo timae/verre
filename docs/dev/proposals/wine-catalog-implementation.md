@@ -279,6 +279,18 @@ The consumer did nothing wrong — it read in sequence order and advanced — wh
 
 The exact-match-only backfill of RFC § Legacy backfill — the sole exception to "links are never set by strings", never fuzzy, with the unmatched remainder feeding the provisional review path. Plus the reusable UI from `feature/wine-product-pages` (local and on origin): the web product page, the aggregate query re-pointed at vintage→product roll-up with transitive `linksTo` resolution, and the mobile screen.
 
+## 🔒 RULED: the per-event fields move OFF `wines` (own phase, plan first)
+
+**Decision (Simon, 2026-07-25).** The intended end state is that a rating carries the EVENT (who, which session, their photo, score, notes) and links directly to the catalog — the per-event columns currently on `wines` (`session_id`, `added_by_identity_id`, `added_by_display_name`, `image_url`, `revealed_at`) do not stay there. This REVERSES the RFC's two-grain split, which kept a `wines` row per bottle-per-tasting.
+
+**Sequencing ruled: merge phase 2 as-is, then do the model change as its own phase, PLANNED FIRST.** Nothing in phase 2 makes the change harder — the `wines.productId`/`vintageId` link columns and the add-flow survive it; the per-event fields simply relocate. Halting phase 2 would discard finished, reviewed work for no gain.
+
+⚠️ **Two things that phase must settle, surfaced when the decision was taken:**
+1. **What "unmatched" means.** Today a taster can type "that orange thing from Georgia" and get a valid `wines` row with NO catalog entry. If ratings link only to `wine_products`, either every vague entry mints a catalog row (filling the catalog with junk for curators to merge/reject) or the link stays nullable. Decide explicitly — do not inherit it.
+2. **It collides with the phase-2/3 release boundary.** Catalog creation is gated off precisely because no review queue exists. If ratings REQUIRE catalog rows, the gate would block rating — so this likely forces phase 3 to ship BEFORE the model change, not after.
+
+**Scope measured at decision time:** only two FKs point at `wines` (`ratings.wine_id`, `bookmarks.wine_id`), but **58 files** reference it. The schema move is small; the code surface is not. Cheapest while the catalog is empty and every `wines.product_id` is NULL — which is true today.
+
 ## Queued next (2026-07-25)
 
 Three items sequenced after phase 2, in dependency order. None is started; recorded here so the ordering and the blocking relationship are explicit.
