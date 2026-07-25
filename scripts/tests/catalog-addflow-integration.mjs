@@ -348,6 +348,51 @@ async function main() {
   eq(arrFold[0].f, ['gruner veltliner(r)', 'cuvee no 5'],
     'f_unaccent_arr also folds last (element-wise, fully lowercase)')
 
+  // 🔒 THE FOLD IS THE DATABASE'S JOB — a JS-side fold is NOT equivalent, and
+  // the difference is invisible to trigram search.
+  //
+  // Verified here: the obvious JS
+  // approach (NFD normalize + strip combining marks + lowercase) does NOT
+  // perform the LIGATURE/EXPANSION folds `unaccent` does. Measured, all five
+  // disagree:
+  //
+  //     input          JS fold        SQL lower(f_unaccent(...))
+  //     'Straß'        straß          strass
+  //     'Œnologie'     œnologie       oenologie
+  //     'Ølgod'        ølgod          olgod
+  //     'Cuvée № 5'    cuvee № 5      cuvee no 5
+  //     'Toro Loco®'   toro loco®     toro loco(r)
+  //
+  // So an application-side fold compared against `name_folded` silently fails
+  // to match — the same never-fails-visibly shape as the fold-ORDER defect,
+  // and equally hidden from trigram tests (pg_trgm lowercases internally and
+  // matches on shared trigrams either way). This asserts the EXPANSIONS the JS
+  // path lacks, so a future helper that folds in TypeScript and compares
+  // against the column breaks a test rather than a lookup.
+  //
+  // ⚠️ THE TWO DEFECT CLASSES ARE DISJOINT, and the sample above spans both.
+  // The three EXPANSION cases (`ß`, `œ`, `ø`) do NOT distinguish fold order —
+  // verified: `f_unaccent(lower(x))` and `lower(f_unaccent(x))` agree on all
+  // three, because Postgres lowercases the uppercase forms to characters whose
+  // expansions are already lowercase. `№` and `®` are the ORDER-sensitive
+  // cases (covered in § 1). Both classes need coverage, and neither sample
+  // substitutes for the other.
+  const expansions = await prisma.$queryRawUnsafe(
+    `SELECT v, lower(f_unaccent(v)) AS folded
+       FROM (VALUES ('Straß'), ('Œnologie'), ('Ølgod')) t(v)`)
+  eq(expansions.map(r => r.folded), ['strass', 'oenologie', 'olgod'],
+    'the SQL fold expands ligatures (ß→ss, œ→oe, ø→o) — a JS NFD-strip does not')
+
+  // And end-to-end through the real exact-match path: a producer stored with a
+  // ligature must be findable by its spelled-out form, since that is what a
+  // curator or an import would actually type.
+  await prisma.$executeRawUnsafe(`
+    INSERT INTO producers (id, name, status, curator_locked, created_at, updated_at)
+    VALUES ('p2lig00000000000001', 'P2TEST Weingut Straß', 'provisional', '{}', now(), now())`)
+  const ligHits = await findProducerByExactName('P2TEST Weingut Strass')
+  ok(ligHits.some(r => r.id === 'p2lig00000000000001'),
+    'a ligature-spelled producer is found by its expanded spelling (ß matches ss)')
+
   // 🔒 THE TWO FOLD PATHS MUST AGREE — round-tripped through the REAL query.
   //
   // The assertions above check only the STORED side. That was not enough: the
