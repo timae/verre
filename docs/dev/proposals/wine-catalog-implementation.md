@@ -8,15 +8,24 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 
 ## Phase order at a glance
 
-| Phase | Name | Ships |
-|---|---|---|
-| 1 | Domain-schema migration | `staff_roles` + `staff_role_audit`, the four catalog tables, `product_eans`, `wines` link columns, `catalog_audit`, raw SQL |
-| 2 | Add-flow + fuzzy search | The five add branches, one `pg_trgm` matcher (GiST KNN), Redis link mirroring |
-| 3 | Review queue + merge machinery | Curator surfaces, merge/unmerge, suggestion policy |
-| 4 | Integration-schema migration | Import + pull contract, and the tables they need |
-| 5 | Backfill + product pages | Legacy exact-match backfill, reusable UI from `feature/wine-product-pages` |
+| Phase | Name | Status | Ships |
+|---|---|---|---|
+| 1 | Domain-schema migration | ✅ **SHIPPED** `4bc14c5` | `staff_roles` + `staff_role_audit`, the four catalog tables, `product_eans`, `wines` link columns, `catalog_audit`, raw SQL |
+| 2 | Add-flow + fuzzy search | ✅ **SHIPPED** `79a49a2`, gated OFF | The five add branches, one `pg_trgm` matcher (GiST KNN), Redis link mirroring |
+| — | **Model change** | 📋 **PLANNED** — [`wine-catalog-model-change.md`](wine-catalog-model-change.md) | Occurrences replace per-event `wines`; ratings→occurrence→catalog; bookmarks→catalog; Postgres-authoritative promotion |
+| 3 | Review queue + merge machinery | Pending | Curator surfaces, merge/unmerge, suggestion policy, **change proposals** |
+| 4 | Integration-schema migration | Pending | Import + pull contract, and the tables they need |
+| 5 | Backfill + product pages | Pending | Legacy exact-match backfill, reusable UI from `feature/wine-product-pages` |
 
-**Release boundary — phases 2 and 3 go public together.** Phase 2 is implemented and tested independently, but public catalog creation stays disabled until phase 3's reject/merge/audit path works. The distinction that decides this: an *unreviewed provisional* is a valid steady state, whereas *publicly searchable user-authored content with no moderation path* is an unreviewable one — if phase 3 slips there is no supported way to handle abuse, junk, duplicate accumulation, or mistaken entries, and "phase 3 is next" is sequencing intent, not an operational guarantee. Early matcher tuning comes from dogfooding or shadow telemetry, not public creation: search activity produces candidates, but curator decisions produce the same/distinct labels that are actually useful. If early external testing is wanted, expose it to a limited cohort behind a kill switch.
+**Execution order** (from the model-change proposal § 7, which is the spec-of-record):
+
+```
+attributions page → first catalog fill → model change → review queue (phase 3)
+```
+
+The attributions surface is a **licence obligation** and hard-gates the fill. The fill gates the model change, because once anonymous users can only *pick* existing entries an empty catalog leaves them unable to add anything.
+
+⚠️ **The phases-2-and-3 release boundary was REVERSED** (Simon, 2026-07-25). It previously read: *public catalog creation stays disabled until phase 3's reject/merge/audit path works, because publicly-searchable user-authored content with no moderation path is not a valid steady state.* That reasoning was sound at the time and is superseded by scale, not by argument — with a handful of testers the accumulation risk is negligible, and blocking the model change behind a full curator UI costs more than it protects. **What must still hold:** entries minted before the queue exists stay `provisional` and are **recorded as awaiting review from day one**, so nothing is silently treated as reviewed. If usage grows before phase 3 lands, re-close the fence rather than letting the backlog accumulate unbounded.
 
 ## Conventions that apply to every phase
 
@@ -99,7 +108,7 @@ Before anything migrates, the full set goes to Simon for review — not just the
 
 ## Phase 2 — Add-flow + fuzzy search
 
-**Status: built, not yet public.** The five add branches, the one matcher, the Redis + Postgres link mirroring, and the blind-redaction strip are implemented; `CATALOG_PUBLIC_ENABLED` (`lib/catalogGate.ts`) keeps creation closed to everyone but staff until phase 3, per the release boundary above. Code: `lib/catalogSearch.ts` (search), `lib/catalogWrite.ts` (the mutation chokepoint), `lib/catalogGate.ts` (the fence), `app/api/catalog/{search,entries}`. Tests: `scripts/tests/catalog-addflow-integration.mjs`, wired into `check-schema.yml`.
+**Status: built, not yet public.** The five add branches, the one matcher, the Redis + Postgres link mirroring, and the blind-redaction strip are implemented; `CATALOG_PUBLIC_ENABLED` (`lib/catalogGate.ts`) keeps creation closed to everyone but staff **until the attributions surface, the first fill, the model change, and its release conditions are all satisfied** — the fence now opens WITH the model-change phase, before phase 3 (see the execution order above). Code: `lib/catalogSearch.ts` (search), `lib/catalogWrite.ts` (the mutation chokepoint), `lib/catalogGate.ts` (the fence), `app/api/catalog/{search,entries}`. Tests: `scripts/tests/catalog-addflow-integration.mjs`, wired into `check-schema.yml`.
 
 ### ⚠️ SUPERSEDED: the GIN `<%` form below was replaced by a GiST KNN order
 
@@ -168,7 +177,7 @@ Also worth revisiting at that point: whether `producerId` should be **required**
 
 The five explicit branches of RFC § Add-a-wine flow. One `pg_trgm` matcher over `nameFolded`, shared by add-time search, review-queue suggestions, and post-import rescans — there is no second matcher to drift. `scope` set explicitly at every write boundary (creation rejects a missing scope rather than relying on the column default). `productId`/`vintageId` mirrored through Redis per RFC § Redis-first link design, with all list writes going through `mutateWines` (KEEPTTL preserved). Blind redaction strips both IDs in `wineToWire`.
 
-Provisional entries minted here are publicly searchable (RFC ruling 3) — subject to the uniform-record-presentation constraint recorded there. Public creation stays disabled until phase 3 (see the release boundary above).
+Provisional entries minted here are publicly searchable (RFC ruling 3) — subject to the uniform-record-presentation constraint recorded there. Public creation stays disabled until the **model-change phase** opens the fence (see the execution order above) — no longer until phase 3.
 
 ## Phase 3 — Review queue + merge machinery
 
@@ -285,7 +294,7 @@ Both were identified during the phase-2 review and deliberately deferred. Neithe
 
 | Test | Must happen BEFORE | Why then |
 |---|---|---|
-| **Interleaved concurrent-PATCH** | phase 3 opens the fence | Two users editing one wine concurrently is only reachable once people can actually link wines. The rule is implemented and unit-tested (`applyIdentityEditRule` + the `linkIsDeliberate` splice), but never driven through two real overlapping requests. ⚠️ The interleaving must be forced at a real synchronisation point — a `sleep`-based race that happens not to collide passes for the wrong reason. |
+| **Interleaved concurrent-PATCH** | `CATALOG_PUBLIC_ENABLED` opens — i.e. with the model-change phase, not phase 3 | Two users editing one wine concurrently is only reachable once people can actually link wines. The rule is implemented and unit-tested (`applyIdentityEditRule` + the `linkIsDeliberate` splice), but never driven through two real overlapping requests. ⚠️ The interleaving must be forced at a real synchronisation point — a `sleep`-based race that happens not to collide passes for the wrong reason. |
 | **1M-row load test** (p50/p95/p99, errors, DB CPU/IO, pool queue time) | the FIRST CATALOG FILL | Every scale step so far has changed a conclusion: 60k was fine, 300k exposed the linear-candidate problem, 500k exposed the equality plan. The fill is the first time real volume exists, so measuring after it is measuring an outage. ⚠️ Run against **staging, not a dev sandbox** — absolute numbers do not transfer across CPU, disk, and a managed Postgres with its own `max_connections`. Budget for a fix, not just a measurement. |
 
 Related, and cheap to fold into the load test when it runs: `DATABASE_CONNECTION_LIMIT` / `DATABASE_POOL_TIMEOUT` / `DATABASE_STATEMENT_TIMEOUT_MS` are opt-in and currently unset (`docs/dev/deployment.md`), so the load test is also where their values get chosen rather than guessed.
@@ -296,11 +305,22 @@ Related, and cheap to fold into the load test when it runs: `DATABASE_CONNECTION
 
 **Sequencing ruled: merge phase 2 as-is, then do the model change as its own phase, PLANNED FIRST.** Nothing in phase 2 makes the change harder — the `wines.productId`/`vintageId` link columns and the add-flow survive it; the per-event fields simply relocate. Halting phase 2 would discard finished, reviewed work for no gain.
 
-⚠️ **Two things that phase must settle, surfaced when the decision was taken:**
-1. **What "unmatched" means.** Today a taster can type "that orange thing from Georgia" and get a valid `wines` row with NO catalog entry. If ratings link only to `wine_products`, either every vague entry mints a catalog row (filling the catalog with junk for curators to merge/reject) or the link stays nullable. Decide explicitly — do not inherit it.
-2. **It collides with the phase-2/3 release boundary.** Catalog creation is gated off precisely because no review queue exists. If ratings REQUIRE catalog rows, the gate would block rating — so this likely forces phase 3 to ship BEFORE the model change, not after.
+**Scope measured at decision time:** only two FKs point at `wines` (`ratings.wine_id`, `bookmarks.wine_id`), but dozens of files reference it (43 touch the table directly; 148 mention "wine" in some form). The schema move is small; the code surface is not. Cheapest while the catalog is empty and every `wines.product_id` is NULL — which is true today.
 
-**Scope measured at decision time:** only two FKs point at `wines` (`ratings.wine_id`, `bookmarks.wine_id`), but **58 files** reference it. The schema move is small; the code surface is not. Cheapest while the catalog is empty and every `wines.product_id` is NULL — which is true today.
+### ✅ PLANNED — see [`wine-catalog-model-change.md`](wine-catalog-model-change.md)
+
+**The plan is written and review-approved** (three Codex rounds; seventeen findings, all verified against the code and resolved). It is the spec-of-record for this phase. Not started — no code, no schema.
+
+Both questions this section raised are answered there:
+
+1. **"Unmatched" is resolved by removing the case.** Minting a catalog entry requires producer + name + type, and every wine on a table gets an entry — because the *only* way to add one is to pick an existing entry or mint a new one. Anonymous users may pick but never mint (server-enforced), so the vague-entry path closes rather than being tolerated.
+2. **The fence collision is resolved by ruling the fence comes down first.** `CATALOG_PUBLIC_ENABLED` opens **before** phase 3's review queue exists (Simon, reversing the earlier phase-2/3 boundary) — the volume is negligible at current scale, and waiting for a full curator UI to collect a few dozen wines is cost for no benefit. Entries minted in that window are still `provisional` and still queued; the queue must *record* them from day one even though nobody can act on them yet.
+
+**The model in one line:** the catalog is identity; a new **occurrence** row is one encounter with one bottle (session *or* standalone check-in); a rating references its occurrence and derives catalog identity through it; bookmarks point at product + optional vintage.
+
+⚠️ **Two consequences that reach beyond this phase**, both detailed in the proposal:
+- **Persistence changes shape.** A session is Redis-only until a registered user joins, then promotes one-way to Postgres-authoritative under an advisory lock. Root `CLAUDE.md`'s "anonymous sessions stay Redis-only" stays true; the promoted case is new.
+- **The native app takes a hard cutover.** Bookmark endpoints change identity, so the version gate must cover the changed endpoints before deploy — a release condition, not owed work.
 
 ## Queued next (2026-07-25)
 
