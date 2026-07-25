@@ -1095,7 +1095,10 @@ model WineVintage {
 // interface carries the barcode as a fact, not a score.
 model ProductEan {
   // 🔒 STRING, not a numeric type — a numeric corrupts 0-prefixed EAN-13s by
-  // dropping the leading zero. Canonicalized + check-digit validated on write.
+  // dropping the leading zero. Canonicalized on write; the GTIN check digit is
+  // enforced by a DATABASE CHECK (`product_eans_check_digit`, calling
+  // `gtin_check_digit_ok`) alongside the exact-length rule — length alone does
+  // NOT catch a plausible-length code with a wrong final digit.
   ean       String      @id @db.VarChar(14)
   productId String      @map("product_id") @db.VarChar(21)
   // 🔒 WRITE-ONCE: set on insert, never updated. This is the "when did this

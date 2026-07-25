@@ -338,6 +338,37 @@ async function main() {
     'product_eans_format_check')
   await accepts('a 12-digit UPC-A',
     `INSERT INTO product_eans (ean,product_id) VALUES ('123456789012','test_wOther')`)
+  // 🔒 CHECK DIGIT — the gate length cannot provide. These pairs are real GTINs
+  // and the same codes with a corrupted final digit; before the check-digit
+  // constraint existed BOTH members of every pair inserted successfully, so a
+  // wrong barcode could become a permanent identity key. Three places in the
+  // codebase claimed this validation existed while nothing implemented it.
+  await accepts('a real EAN-8', `INSERT INTO product_eans (ean,product_id) VALUES ('96385074','test_wOther')`)
+  await rejects('an EAN-8 with a corrupted check digit',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('96385075','test_wOther')`,
+    'product_eans_check_digit')
+  await rejects('a UPC-A with a corrupted check digit',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('012345678906','test_wOther')`,
+    'product_eans_check_digit')
+  await rejects('an EAN-13 with a corrupted check digit',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('4006381333932','test_wOther')`,
+    'product_eans_check_digit')
+  // ⚠️ EVERY length needs BOTH halves of the pair. A reject-only case at some
+  // length would stay green under an algorithm regression that rejects EVERY code
+  // of that length — the corrupted twin still fails, just for the wrong reason.
+  // Length 14 was reject-only until this accept was added.
+  await accepts('a real GTIN-14',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('10614141000415','test_wOther')`)
+  await rejects('a GTIN-14 with a corrupted check digit',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('10614141000416','test_wOther')`,
+    'product_eans_check_digit')
+  // A 0-prefixed EAN-13 with a VALID check digit must still store intact — the
+  // check-digit rule must not have broken leading-zero preservation.
+  await accepts('a valid 0-prefixed EAN-13',
+    `INSERT INTO product_eans (ean,product_id) VALUES ('0761234567898','test_wOther')`)
+  const [lz] = await raw(`SELECT ean FROM product_eans WHERE ean = '0761234567898'`)
+  ok(lz?.ean === '0761234567898', `the leading zero survived (${lz?.ean ?? 'row missing'})`)
+
   await rejects('last_seen rewound before first_seen',
     `UPDATE product_eans SET last_seen=first_seen - interval '1 day' WHERE ean='0012345678905'`,
     'product_eans_seen_order_check')

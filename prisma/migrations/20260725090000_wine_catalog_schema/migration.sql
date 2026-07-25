@@ -650,10 +650,48 @@ ALTER TABLE "catalog_audit"
   ADD CONSTRAINT "catalog_audit_merge_prior_status_check"
     CHECK ("action" <> 'merge' OR "prior_status" IS NOT NULL);
 
+-- ── EAN check digit ───────────────────────────────────────────────────────
+--
+-- 🔒 LENGTH ALONE IS NOT A VALID-BARCODE TEST, and relying on it was a real gap:
+-- three places in this codebase asserted "check-digit validated on write" while
+-- NOTHING implemented it. Verified against PG16 before this function existed —
+-- 4006381333931 (a real EAN-13) and 4006381333932 (same code, corrupted final
+-- digit) were BOTH accepted, as were valid/corrupted pairs at lengths 8 and 12.
+-- So a code of plausible length with a wrong check digit became a permanent
+-- identity key, and EANs are exactly the kind of strong identifier that must not
+-- be wrong (RFC § EAN: a shared EAN raises match confidence).
+--
+-- Enforced in the DATABASE rather than at a route, for the same reason every
+-- other invariant in this migration is: an app-layer validator only covers the
+-- paths that call it, and phase 4's import writes these rows from outside the
+-- add-flow.
+--
+-- The GTIN algorithm is uniform across EAN-8 / UPC-A / EAN-13 / GTIN-14: weight
+-- the digits right-to-left from the one before the check digit, alternating 3
+-- and 1, sum, and the check digit is whatever brings the total to a multiple of
+-- 10. Implemented right-to-left so it is length-independent — no per-format
+-- branching to get wrong.
+CREATE OR REPLACE FUNCTION gtin_check_digit_ok(code text) RETURNS boolean AS $$
+DECLARE
+  total int := 0;
+  weight int := 3;
+  i int;
+BEGIN
+  IF code IS NULL OR code !~ '^[0-9]+$' THEN
+    RETURN false;
+  END IF;
+  -- Walk right-to-left from the digit immediately left of the check digit.
+  FOR i IN REVERSE length(code) - 1 .. 1 LOOP
+    total := total + (substr(code, i, 1))::int * weight;
+    weight := 4 - weight;   -- alternates 3, 1, 3, 1, …
+  END LOOP;
+  RETURN (10 - (total % 10)) % 10 = (substr(code, length(code), 1))::int;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE SET search_path = pg_catalog, public;
+
 -- EANs are canonicalized to digits before storage. 🔒 Stored as a STRING, never
 -- numeric — a numeric type drops the leading zero and corrupts every 0-prefixed
--- EAN-13. Check-digit validation is applied at the write boundary; this
--- constraint is the shape fence.
+-- EAN-13.
 ALTER TABLE "product_eans"
   -- 🔒 EXACT lengths, not a range. `{8,14}` also accepted 9-, 10- and 11-digit
   -- values (verified: a 9-digit insert succeeded), which are not valid GTINs at
@@ -661,6 +699,20 @@ ALTER TABLE "product_eans"
   -- A range here would let malformed barcodes become permanent identity keys.
   ADD CONSTRAINT "product_eans_format_check"
     CHECK ("ean" ~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'),
+  -- 🔒 The check digit, ALONGSIDE the length rule — neither substitutes for the
+  -- other. Length rejects 9/10/11-digit values that are not GTINs at all; this
+  -- rejects a plausible-length code whose final digit does not verify.
+  --
+  -- ⚠️ Deliberately scoped to VALID GTIN LENGTHS so the two constraints report
+  -- independently. Postgres evaluates CHECKs in an unspecified order, so an
+  -- unscoped check-digit rule reported "bad check digit" for a 9-digit input —
+  -- true but misleading, since the actual defect is the length. Scoping it means
+  -- a wrong-length code always names the length constraint and a wrong-final-
+  -- digit code always names this one, which matters when the error text is what
+  -- a phase-4 import surfaces to whoever has to fix the data.
+  ADD CONSTRAINT "product_eans_check_digit"
+    CHECK ("ean" !~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'
+           OR gtin_check_digit_ok("ean")),
   -- last_seen is monotonic (advanced with GREATEST, never rewound) and is
   -- explicitly exempt from the fill-null rule — under fill-null-only a
   -- non-null last_seen would never advance, freezing at first sight.

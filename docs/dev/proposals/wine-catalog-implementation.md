@@ -89,7 +89,7 @@ Before anything migrates, the full set goes to Simon for review — not just the
 ### EAN semantics
 
 - **Stored as a string**, preserving leading zeros — a numeric type corrupts `0`-prefixed EAN-13s.
-- **Canonicalized and validated** on write (defined format, check digit).
+- **Canonicalized and validated** on write. 🔒 Both gates ship as database CHECKs, not route validation: `product_eans_format_check` (exact GTIN lengths 8/12/13/14) **and** `product_eans_check_digit` (the GTIN check digit, via the `gtin_check_digit_ok` function). Neither substitutes for the other — length rejects 9/10/11-digit values that are not GTINs at all, while the check digit rejects a plausible-length code whose final digit does not verify. An earlier draft asserted check-digit validation "at the write boundary" while nothing implemented it; verified at the time that a real EAN-13 and the same code with a corrupted final digit were both accepted.
 - 🔒 **An EAN already assigned to another product is a conflict/review event — never an automatic reassignment.** This is the RFC's "false merges are the expensive failure" principle applied to strong identifiers: a shared EAN raises confidence, it never silently moves a barcode between products.
 - **`firstSeen` is write-once**, set on insert and never updated — it is the "when did this barcode first reach us" fact, and a fill-null rule would leave it correct only by accident.
 - **`lastSeen` is monotonic and explicitly exempt from fill-null.** Under the fill-null-only rule a non-null `lastSeen` would never advance, freezing at first sight — so it is updated explicitly, and only ever forward.
