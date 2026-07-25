@@ -1,6 +1,6 @@
 # Proposal: Wine product catalog (redesign)
 
-**Status:** **Phase 1 (domain schema) SHIPPED** on `main` as `4bc14c5` (PR #86, 2026-07-25) — the four catalog tables, `product_eans`, the `wines` link columns, `staff_roles`/`staff_role_audit`, and `catalog_audit` all exist; nothing user-facing reads them yet. Phases 2–5 pending — see `wine-catalog-implementation.md`. This file remains the **rationale-of-record for the model**; where it and the shipped schema differ, the migration wins (as-built deltas are noted in the plan). Design history: revision 3 — absorbs the Codex review (2026-07-23, CHANGES_REQUESTED), the follow-up review (2026-07-24), and the PR #85 comment thread as amended (the source-id/region-id refinements are withdrawn; linksTo flatten-on-write is superseded by chains-with-transitive-resolution). Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
+**Status:** **Phase 1 (domain schema) SHIPPED** on `main` as `4bc14c5` (PR #86, 2026-07-25) — the four catalog tables, `product_eans`, the `wines` link columns, `staff_roles`/`staff_role_audit`, and `catalog_audit` all exist. **Phase 2 (add-flow + fuzzy search) is BUILT and gated OFF**: the five add branches, the one `pg_trgm` matcher, and the Redis/Postgres link mirroring are implemented, but `CATALOG_PUBLIC_ENABLED` keeps creation staff-only until phase 3's review queue ships (the release boundary in the implementation plan). Phases 3–5 pending — see `wine-catalog-implementation.md`. This file remains the **rationale-of-record for the model**; where it and the shipped schema differ, the migration wins (as-built deltas are noted in the plan). Design history: revision 3 — absorbs the Codex review (2026-07-23, CHANGES_REQUESTED), the follow-up review (2026-07-24), and the PR #85 comment thread as amended (the source-id/region-id refinements are withdrawn; linksTo flatten-on-write is superseded by chains-with-transitive-resolution). Supersedes the flat `wine_products` model in PR #82 (converted to draft — kept only as the reference for its reusable UI: the web product page, the aggregate query, and the mobile screen).
 
 ## Context
 
@@ -18,11 +18,20 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
 - The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`, `product_eans`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
 - Imported entries arrive already curated. The app-side **review queue exists for user-added entries only** (confirm / merge / reject); merges and `linksTo` exist only here, where tasting data lives.
-- Prod persists **no source identifiers of any kind** (see the provenance rule).
+- Prod persists **no source identifiers of any kind** on catalog rows (see the provenance rule — which is about PER-RECORD provenance and does not override licence attribution, handled at corpus level).
 
 ## 🔒 Data-provenance rule (hard)
 
-**Never store any source-provenance field in the DB** — no source URLs, slugs, source ids, or source region ids — and never expose source provenance on any surface. The catalog's identity is **our own IDs** (nanoid PKs, like the rest of the schema): prod holds Verre IDs + clean catalog facts only. Refreshes arrive through the import contract as upserts keyed on **our** catalog IDs; the app never needs any other key.
+**Never store any source-provenance field in the DB** — no source URLs, slugs, source ids, or source region ids — and never expose source provenance **per record**. The catalog's identity is **our own IDs** (nanoid PKs, like the rest of the schema): prod holds Verre IDs + clean catalog facts only. Refreshes arrive through the import contract as upserts keyed on **our** catalog IDs; the app never needs any other key.
+
+⚠️ **Scope correction (2026-07-25): this rule is about PER-RECORD provenance, and it does not override a licence.** An earlier phrasing said "never expose source provenance on any surface", which read as forbidding attribution outright — and some licences we rely on **legally require naming the source**. Those obligations are met at the **corpus level**, on the attributions/legal surface (implementation plan § Queued next item 1, which blocks the first catalog fill), never by attaching a source field to a row. The two are not in conflict once the distinction is explicit:
+
+| | Allowed | Forbidden |
+|---|---|---|
+| **Per record** | our IDs + clean facts | any source id, URL, slug, or "came from X" column |
+| **Corpus level** | naming sources + licence text on the attributions surface | — |
+
+The reason the per-record rule stands independently of licensing: a source id on a row is a join key back into someone else's identity space, which re-couples our catalog to theirs and outlives whatever agreement allowed it. Attribution costs us nothing and is often required; per-record provenance buys nothing and is a lasting entanglement.
 
 ## v1 data model
 
@@ -72,7 +81,7 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 
 ### Display vs folded names
 
-`name` preserves the accented display form; `nameFolded` is the **matching key** (`f_unaccent(lower(name))`) used by every fuzzy query. One value cannot serve both jobs. The folded value is produced by **one mandatory database-side normalization path** — a generated column (or trigger) over `f_unaccent(lower())` — so no write path can make display and fold drift. `pg_trgm` GIN indexes go on `nameFolded` (raw-SQL migration).
+`name` preserves the accented display form; `nameFolded` is the **matching key** (`lower(f_unaccent(name))`) used by every fuzzy query. One value cannot serve both jobs. The folded value is produced by **one mandatory database-side normalization path** — a generated column (or trigger) — so no write path can make display and fold drift. ⚠️ **The fold lowercases LAST.** `f_unaccent(lower(…))` was the phase-1 form and it is wrong: some unaccent expansions produce capitals, so lowercasing first leaves uppercase in the "folded" value (`'Cuvée № 5'` → `cuvee No 5`) and two spellings of one name compare unequal. Corrected in `20260725140000_catalog_fold_order`; details in `prisma/CLAUDE.md`. Two indexes go on `nameFolded` (raw-SQL migration): a **GiST** trigram index for the KNN ordering that search uses, and a **covering B-tree** for folded equality. GIN was dropped — it is the wrong structure for `=` and nothing issues a containment query.
 
 ### Field grain
 
@@ -83,7 +92,7 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 
 ### Region + grape: transitional strings, reserved entities
 
-v1 stores region and grape with the same display/fold split as names: `region` (`varchar`, accented display) + `regionFolded` (generated via `f_unaccent(lower())`) on `producers` and `wine_products`; `grapes` (`text[]`, display) + `grapesFolded` (generated `text[]`, each element folded through an immutable SQL helper wrapping the same `f_unaccent(lower())` path). All folded values are database-generated — no write path can make display and fold drift. Both fields are **explicitly transitional**: the final design is first-class **Verre-owned entities** — a region tree (country → region → subregion → appellation) and a **grape-variety tree** (descendants, synonyms/aliases) — landing additively as new tables + join tables **without changing any producer/product/vintage ID**. No source-side structured region/grape identifiers are persisted to build from (provenance rule); the trees are built later against Verre identity.
+v1 stores region and grape with the same display/fold split as names: `region` (`varchar`, accented display) + `regionFolded` (generated, lowercase-last) on `producers` and `wine_products`; `grapes` (`text[]`, display) + `grapesFolded` (generated `text[]`, each element folded through an immutable SQL helper wrapping the same lowercase-last path). All folded values are database-generated — no write path can make display and fold drift. Both fields are **explicitly transitional**: the final design is first-class **Verre-owned entities** — a region tree (country → region → subregion → appellation) and a **grape-variety tree** (descendants, synonyms/aliases) — landing additively as new tables + join tables **without changing any producer/product/vintage ID**. No source-side structured region/grape identifiers are persisted to build from (provenance rule); the trees are built later against Verre identity.
 
 ### Curator-locked fields
 

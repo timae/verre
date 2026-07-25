@@ -85,7 +85,41 @@ jobs:
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 
+      # Phase 2 (add-flow + fuzzy search). Also tsx, and for the same reason:
+      # it drives the REAL lib/catalogSearch.ts and lib/catalogWrite.ts rather
+      # than reconstructed SQL.
+      #
+      # § 1 asserts the QUERY PLAN, which is the only way to catch the phase's
+      # highest-risk regression: every wrong spelling of the trigram predicate
+      # returns the CORRECT ROWS and merely loses the index, so it is invisible
+      # to a results-based test. Verified by mutation testing — the three wrong
+      # forms each fail this suite, and each one passed an earlier version that
+      # explained a hand-written copy of the query instead of the shared
+      # predicate builder.
+      - name: Catalog add-flow and search
+        run: npx tsx scripts/tests/catalog-addflow-integration.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+
     services:
+      # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
+      # writers (pgUpsertWine / pgReassignWineProvenance) and addWineToSession.
+      # Importing that module connects to Redis eagerly, so the suite needs one.
+      # An earlier version of the suite worked around its absence by reading the
+      # writers' SOURCE for the expected field names — which review showed was
+      # too weak: it checks names, not values, so writing `vintageId` from
+      # `wine.productId` (a composite-FK violation at runtime) passed green. A
+      # service block is cheaper than a weaker assertion.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       postgres:
         image: postgres:16-alpine
         env:

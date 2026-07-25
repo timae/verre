@@ -6,6 +6,8 @@ import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
+import { resolveCatalogLink, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -78,9 +80,43 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // route where snapshot freezing means we never re-resolve.
   // addWineToSession may upload to S3 — a side effect, so it runs OUTSIDE
   // the WATCH/MULTI transform below (which must stay pure across retries).
+  // 🔒 The catalog link is validated SERVER-SIDE against real rows before it is
+  // stored — a raw body value is just a string the client sent. resolveCatalogLink
+  // rejects an unknown id, a vintage that belongs to a DIFFERENT product, a
+  // tombstone or rejected entry, and vintageId-without-productId. Without this
+  // the first two would surface as a 500 from the composite FK / CHECK at
+  // archival time instead of a 400 here, and a tombstone link would be accepted
+  // outright (no constraint forbids it).
+  //
+  // Charged only when a link is actually supplied, so ordinary wine-adding is
+  // unaffected. The cap exists because this reaches the catalog from OUTSIDE
+  // the CATALOG_PUBLIC_ENABLED fence — any wine-adder, including the anonymous
+  // host of their own session, can probe ids here — and unlike /api/catalog/*
+  // it was previously uncapped. Same key on POST and PATCH (the shared-counter
+  // pattern in app/api/CLAUDE.md) so add + edit can't stack N+N.
+  //
+  // 🔒 The key comes from catalogLinkRateKey, which buckets ANONYMOUS callers by
+  // IP rather than identity — an `a:<uuid>` is re-minted on every join and the
+  // join endpoint resets its own limiter on success, so a per-identity key was
+  // rotatable by exactly the caller class it was meant to bound.
+  if (body.productId !== undefined || body.vintageId !== undefined) {
+    const rl = await checkRate(catalogLinkRateKey(identity.id, getClientIp(req)), 120, 3600)
+    if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  }
+
+  let link: { productId: string | null; vintageId: string | null }
+  try {
+    link = await resolveCatalogLink(body.productId, body.vintageId)
+  } catch (err) {
+    if (err instanceof CatalogValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
+
   const identities = await redis.hGetAll(k.identities(c))
   const adderDisplayName = identities[identity.id] || identity.displayName
-  const result = await addWineToSession(c, body, undefined, identity.id, adderDisplayName)
+  const result = await addWineToSession(c, { ...body, ...link }, undefined, identity.id, adderDisplayName)
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   // Optional one-shot insert position (1-indexed). Out-of-range silently

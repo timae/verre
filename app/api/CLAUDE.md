@@ -33,6 +33,7 @@ export async function POST(req: NextRequest) {
 - **Negative result from `viewerCanSeeAuthor` → 404**, never 403. Same leak prevention for per-resource visibility checks (e.g. liking a check-in by a `public-mutual` profile that doesn't follow you back). See `app/api/feed-items/[id]/like/route.ts` for the canonical pattern.
 - **Owner-scoped id resources → 404 on wrong-owner/missing.** `DELETE /api/me/devices/[id]` scopes the revoke with `WHERE id = $id AND user_id = $me`; an id belonging to another user matches zero rows → 404, indistinguishable from "no such id". 403 is reserved for the wrong-password case. The owner-scope carries the security, NOT id unguessability: web rows are uuids (enumeration infeasible) but native rows are `ba:<int>` (trivially enumerable) — both are safe only because a wrong-owner probe and a missing id are the same 404. (Per-device session revocation lives under `/api/me/devices` — web gate is `user_sessions.revokedAt`, native rows revoke through `lib/identityStore.ts`; see `app/api/auth/CLAUDE.md` + `lib/CLAUDE.md`.)
 - **403 reserved for permission-denied with identity AND visibility both resolved** ("only host can…", "pro required"). Never use 403 to indicate "you can't see this resource exists."
+- **Unreleased surfaces → 404, never 403.** `/api/catalog/*` returns 404 whenever `canUseCatalog` (`lib/catalogGate.ts`) is false — while the release fence is closed the endpoints must be indistinguishable from ones that don't exist. A 403 would both advertise the unreleased feature and distinguish staff from everyone else. Same rule applies to any future gated-by-release endpoint.
 
 ## Cache-Control on viewer-dependent responses
 
@@ -74,6 +75,14 @@ Both `POST /api/session/[code]/rate` and `POST /api/checkins` create `feed_items
 - **Standalone POST**: the act of POSTing IS the engagement signal; the feed_item is always created (the user explicitly chose to post). One feed_item per check-in (1:1 with the rating via `feed_items.ratingId`).
 
 Full mechanics: see `docs/dev/social-feed.md` §Engagement trigger.
+
+## Wine catalog (`/api/catalog/*`)
+
+- **`GET /api/catalog/search`** — fuzzy producer/product suggestions. **`POST /api/catalog/entries`** — mints catalog rows for the five add branches (RFC § Add-a-wine flow). Both gate on `canUseCatalog` and 404 when it's false (above).
+- **The link is separate from the catalog endpoints.** `productId`/`vintageId` are accepted by the session wine POST/PATCH and the check-in POST/PATCH, and every one of those routes must validate through `resolveCatalogLink` (`lib/CLAUDE.md`) — never store a raw body value. Those four paths are reachable *outside* the release fence by any wine-adder, including an anonymous host of their own session, which is why every catalog denial is generic (`denyCatalogRef`).
+- **Rate limiting on the link paths.** The two **session-wine** routes share `rl:catalog-link` (120/h), charged only when a link is present; they had no limiter at all before. The two **check-in** routes are already bounded by the shared `rl:checkin` 100/h and carry no separate catalog charge. 🔒 Anonymous callers on the session routes are keyed by **IP, not identity** (`catalogLinkRateKey`): an `a:<uuid>` is re-minted on every join and the join endpoint resets its own limiter on success, so a per-identity key was rotatable by exactly the caller class it was meant to bound.
+- **An identity-changing wine edit clears the link.** Changing a wine instance's name, producer, or vintage must not silently keep a now-incompatible catalog link; `applyIdentityEditRule` decides this, and it runs *before* the write so the wholesale Redis replacement carries the right value. Cosmetic edits keep the link.
+- 🔒 **Catalog IDs are label identity** — `redactWine` nulls both on blind payloads. It spreads `...rest` from `WineMeta`, so a new identifying field leaks by default unless explicitly nulled there.
 
 ## API surface
 
