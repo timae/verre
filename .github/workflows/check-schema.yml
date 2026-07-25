@@ -41,6 +41,50 @@ jobs:
             --shadow-database-url "postgres://prisma:prisma@localhost:5432/shadow" \
             --exit-code
 
+      # The diff above cannot see CHECK bodies, deferred constraint triggers,
+      # partial uniqueness, NULLS NOT DISTINCT, audit immutability, or
+      # concurrency behaviour — Prisma ignores objects it can't model. So a
+      # regression that narrows the wine-catalog lead trigger, drops a NOT NULL,
+      # or removes the last-admin guard would pass the drift check silently.
+      # These suites apply the real migration chain and assert the invariants.
+      #
+      # A DEDICATED, DISPOSABLE database — deliberately NOT Prisma's `shadow`
+      # DB, which Prisma treats as its own scratch space (it drops and recreates
+      # objects there while computing diffs, so sharing it would let the two
+      # stomp on each other).
+      # Required: the suites import @prisma/client, and this repo's postinstall
+      # only runs patch-package — it does NOT generate the client.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      - name: Create the integration-test database
+        run: psql "postgres://prisma:prisma@localhost:5432/postgres" -c 'CREATE DATABASE catalog_test'
+        env:
+          PGPASSWORD: prisma
+
+      - name: Apply the full migration chain
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
+      # Needs `psql` on PATH: § 18 executes the prisma/CLAUDE.md bootstrap recipes
+      # VERBATIM (they are documented as psql scripts with BEGIN;/COMMIT;, which
+      # Prisma's executeRaw cannot accept). ubuntu-latest ships psql, and the
+      # "Create the integration-test database" step above already relies on it.
+      - name: Catalog schema invariants
+        run: node scripts/tests/catalog-schema-integration.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
+      # Run via tsx: this suite imports lib/staffRole.ts so it exercises the
+      # REAL revokeStaffRoleAs and its advisory lock. A raw `DELETE FROM
+      # staff_roles` would test only the DB trigger and would report the
+      # cross-path race as covered while never touching the app path.
+      - name: Last-admin concurrency
+        run: npx tsx scripts/tests/staff-role-concurrency.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
     services:
       postgres:
         image: postgres:16-alpine
