@@ -2,7 +2,7 @@
 
 **Status:** **Phase 1 SHIPPED** on `main` as `4bc14c5` (PR #86, 2026-07-25); phases 2–5 pending. Companion to `wine-catalog.md` (the RFC, spec-of-record for the *model*); this doc is the *build* — phase order, the rulings that unblocked it, and the amendments the plan must carry.
 
-**Starting phase 2?** Read § Phase 2 first — the trigram query form is the thing most likely to be got wrong, and it fails SILENTLY by being slow rather than wrong. Then `prisma/CLAUDE.md` for the schema invariants Prisma cannot express. Phase 1's branch has been merged and deleted; work from `main` on a new `feature/…` branch.
+**Starting phase 2?** Read § Phase 2 first — the trigram query form is the thing most likely to be got wrong, and it fails SILENTLY by being slow rather than wrong. Note the GIN `<%` form documented there was **superseded by a GiST KNN order** on scale grounds; the superseded section is kept because its traps still apply to any similarity query. Then `prisma/CLAUDE.md` for the schema invariants Prisma cannot express. Phase 1's branch has been merged and deleted; work from `main` on a new `feature/…` branch.
 
 The RFC's three open decisions are resolved (see its § Open decisions — RESOLVED). This plan absorbs those rulings plus a review pass whose amendments are recorded inline, each at the phase that must honour it.
 
@@ -11,7 +11,7 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 | Phase | Name | Ships |
 |---|---|---|
 | 1 | Domain-schema migration | `staff_roles` + `staff_role_audit`, the four catalog tables, `product_eans`, `wines` link columns, `catalog_audit`, raw SQL |
-| 2 | Add-flow + fuzzy search | The five add branches, one `pg_trgm` matcher, Redis link mirroring |
+| 2 | Add-flow + fuzzy search | The five add branches, one `pg_trgm` matcher (GiST KNN), Redis link mirroring |
 | 3 | Review queue + merge machinery | Curator surfaces, merge/unmerge, suggestion policy |
 | 4 | Integration-schema migration | Import + pull contract, and the tables they need |
 | 5 | Backfill + product pages | Legacy exact-match backfill, reusable UI from `feature/wine-product-pages` |
@@ -99,6 +99,20 @@ Before anything migrates, the full set goes to Simon for review — not just the
 
 ## Phase 2 — Add-flow + fuzzy search
 
+**Status: built, not yet public.** The five add branches, the one matcher, the Redis + Postgres link mirroring, and the blind-redaction strip are implemented; `CATALOG_PUBLIC_ENABLED` (`lib/catalogGate.ts`) keeps creation closed to everyone but staff until phase 3, per the release boundary above. Code: `lib/catalogSearch.ts` (search), `lib/catalogWrite.ts` (the mutation chokepoint), `lib/catalogGate.ts` (the fence), `app/api/catalog/{search,entries}`. Tests: `scripts/tests/catalog-addflow-integration.mjs`, wired into `check-schema.yml`.
+
+### ⚠️ SUPERSEDED: the GIN `<%` form below was replaced by a GiST KNN order
+
+**What ships now:** `col <->> lower(f_unaccent($1))` ordered with a `LIMIT`, against `producers_name_folded_gist_idx` / `wine_products_name_folded_gist_idx` (`20260725160000_catalog_gist_knn`). The 0.3 threshold is a **post-filter** on the returned rows, so there is no GUC and no interactive transaction.
+
+**Why**, measured on PG16 at 300k rows: `<%` at 0.3 is not *selective* — candidates scale 1:1 with the catalog (a "selective" multi-word name still admitted 8.5% of the catalog), the heap recheck dominated, and latency grew linearly (34 ms at 60k → 352 ms at 300k). Under load it failed rather than slowed: 50 concurrent searches → 15 hard pool timeouts, 100 → 66. GiST KNN returns the nearest N straight from the index, so cost is bounded by the LIMIT: broad "chateau" went 22 ms → 0.26 ms, and realistic queries measure 0.9–41 ms at 300k.
+
+⚠️ **Operator and operand ORDER must match** — `column <->> query` and its commutator `query <<-> column` both plan an Index Scan (~4.9 ms); the mismatched pairings `column <<-> query` / `query <->> column` seq-scan the whole table (~116 ms over 60,001 rows) while returning correct rows. `<<->` is the declared commutator of `<->>` (pg_operator), so it is NOT a forbidden operator — it is usable only with the query on the left. Same operand-order trap as the GIN `<%`/`%>` pair. `<->>` is exactly `1 - word_similarity`, so ranking and typo tolerance are unchanged.
+
+**The GIN indexes are REPLACED by covering B-trees**, not kept: a trigram index is the wrong structure for `=`, and measured on the REAL query the planner chose GiST (0.544 ms / 130 buffers) over a bare B-tree — only `(name_folded, id) INCLUDE (status)` wins on its own, as an Index Only Scan with zero heap fetches (0.125 ms / 4 buffers). Nothing issues a `%`/containment query, so GIN had no live consumer.
+
+**The section below is retained as the rationale-of-record for the GIN form** — its three traps still apply to any `%`/`<%` query anyone adds later, and the two measurement traps at the end apply to *any* trigram benchmarking.
+
 ### 🔒 The trigram query form is load-bearing — get it right or the index does nothing
 
 Measured on PG16 with 60k producers against the phase-1 GIN indexes:
@@ -130,6 +144,25 @@ COMMIT;
 🔒 **`SET LOCAL`, never a bare `SET`.** Verified: `SET LOCAL` reverts at COMMIT; a bare `SET` persists on the connection and leaks the threshold into every later query that reuses it from the pool. Avoiding that leak is precisely why the moments-search migration inlined `word_similarity()` rather than using the operator — `SET LOCAL` is what buys the index back without reintroducing the hazard. `word_similarity()` in `ORDER BY` is fine and wanted: the operator filters via the index, the function scores the survivors.
 
 Also recorded in the phase-1 migration § 3 and `prisma/CLAUDE.md`.
+
+#### Two traps found while measuring this, both of which make a plan LOOK wrong when it is right
+
+Recorded because both cost real time during the phase-2 build and will otherwise cost it again for whoever next re-runs these plans:
+
+- ⚠️ **`LIMIT n` with no `ORDER BY` makes the CORRECT form seq-scan.** The planner may stop after *n* rows, which prices a seq scan below the index. Measured: `WHERE $1 <% col LIMIT 20` planned a Seq Scan, while the same predicate *with* the real `ORDER BY word_similarity(...) DESC` planned a Bitmap Index Scan. Always measure the whole query, ORDER BY included. Relatedly, a non-selective query (10 %+ of the table matching) legitimately seq-scans on cost — plan shape is only meaningful for a selective one, so seed fixtures with *diverse* names rather than a repeated template.
+- ⚠️ **On a freshly-loaded table the index loses even for the right form, until a VACUUM.** A GIN index buffers new entries in a *pending list* that only a vacuum merges into the index proper; straight after a bulk insert that list is large enough to price the index scan out. This reproduced as a test that failed on a fresh database and passed on a reused one. `ANALYZE` does **not** fix it — it refreshes statistics, not the pending list; `VACUUM ANALYZE` does. Production is unaffected (autovacuum runs continuously); it is a fixture artifact, but an expensive one to diagnose from scratch.
+
+#### Deferred, with a measurement to make first: GiST for the unscoped top-20
+
+The add-flow chooses a producer first, so the scoped product search is the hot path and it is cheap (an index probe on `product_producers_producer_id_idx`). The **unscoped, broad-name** search is the expensive shape — a common name matches thousands of rows, the GIN index returns them all, and the `LIMIT 20` discards nearly everything after sorting. Postgres documents GiST as supporting **distance-ordered** (`<->`) nearest-neighbour scans, which can beat GIN-filter-then-sort precisely when only a few nearest matches are wanted.
+
+Not changed now, deliberately: it is an index-strategy swap whose win depends on the real catalog's name distribution, and the current numbers (~1,600 blocks / 83 ms for the worst case at 60k×60k) are not a problem yet. **Benchmark GiST `<->` ordering against real data before the catalog grows past a few hundred thousand rows**, and only then decide. The measurement, not the documentation, settles it.
+
+Also worth revisiting at that point: whether `producerId` should be **required** for public add-time product search. The documented flow picks a producer first, and global product names are inherently ambiguous, so requiring it would remove the expensive shape entirely rather than optimising it.
+
+#### The predicate has ONE definition, shared with its test
+
+`trgmPredicateSql()` in `lib/catalogSearch.ts` is the single spelling of the indexed predicate: the runtime queries embed it, and § 1 of `scripts/tests/catalog-addflow-integration.mjs` `EXPLAIN`s it. 🔒 **That sharing is what makes the test real.** An earlier version explained a hand-written string that merely *looked* like the query, and mutation testing showed it stayed fully green through both the `word_similarity(...) >= x` swap and the operand-order swap — the two regressions the assertion exists to catch. If the predicate is ever inlined back into the query strings, the plan assertion silently stops testing anything.
 
 ### The flow
 
@@ -245,6 +278,46 @@ The consumer did nothing wrong — it read in sequence order and advanced — wh
 ## Phase 5 — Legacy backfill + product pages
 
 The exact-match-only backfill of RFC § Legacy backfill — the sole exception to "links are never set by strings", never fuzzy, with the unmatched remainder feeding the provisional review path. Plus the reusable UI from `feature/wine-product-pages` (local and on origin): the web product page, the aggregate query re-pointed at vintage→product roll-up with transitive `linksTo` resolution, and the mobile screen.
+
+## Owed tests — and WHEN each must happen
+
+Both were identified during the phase-2 review and deliberately deferred. Neither blocks the phase-2 merge (creation is gated off, so no user reaches these paths); both block later milestones, so the timing is recorded rather than left to memory.
+
+| Test | Must happen BEFORE | Why then |
+|---|---|---|
+| **Interleaved concurrent-PATCH** | phase 3 opens the fence | Two users editing one wine concurrently is only reachable once people can actually link wines. The rule is implemented and unit-tested (`applyIdentityEditRule` + the `linkIsDeliberate` splice), but never driven through two real overlapping requests. ⚠️ The interleaving must be forced at a real synchronisation point — a `sleep`-based race that happens not to collide passes for the wrong reason. |
+| **1M-row load test** (p50/p95/p99, errors, DB CPU/IO, pool queue time) | the FIRST CATALOG FILL | Every scale step so far has changed a conclusion: 60k was fine, 300k exposed the linear-candidate problem, 500k exposed the equality plan. The fill is the first time real volume exists, so measuring after it is measuring an outage. ⚠️ Run against **staging, not a dev sandbox** — absolute numbers do not transfer across CPU, disk, and a managed Postgres with its own `max_connections`. Budget for a fix, not just a measurement. |
+
+Related, and cheap to fold into the load test when it runs: `DATABASE_CONNECTION_LIMIT` / `DATABASE_POOL_TIMEOUT` / `DATABASE_STATEMENT_TIMEOUT_MS` are opt-in and currently unset (`docs/dev/deployment.md`), so the load test is also where their values get chosen rather than guessed.
+
+## 🔒 RULED: the per-event fields move OFF `wines` (own phase, plan first)
+
+**Decision (Simon, 2026-07-25).** The intended end state is that a rating carries the EVENT (who, which session, their photo, score, notes) and links directly to the catalog — the per-event columns currently on `wines` (`session_id`, `added_by_identity_id`, `added_by_display_name`, `image_url`, `revealed_at`) do not stay there. This REVERSES the RFC's two-grain split, which kept a `wines` row per bottle-per-tasting.
+
+**Sequencing ruled: merge phase 2 as-is, then do the model change as its own phase, PLANNED FIRST.** Nothing in phase 2 makes the change harder — the `wines.productId`/`vintageId` link columns and the add-flow survive it; the per-event fields simply relocate. Halting phase 2 would discard finished, reviewed work for no gain.
+
+⚠️ **Two things that phase must settle, surfaced when the decision was taken:**
+1. **What "unmatched" means.** Today a taster can type "that orange thing from Georgia" and get a valid `wines` row with NO catalog entry. If ratings link only to `wine_products`, either every vague entry mints a catalog row (filling the catalog with junk for curators to merge/reject) or the link stays nullable. Decide explicitly — do not inherit it.
+2. **It collides with the phase-2/3 release boundary.** Catalog creation is gated off precisely because no review queue exists. If ratings REQUIRE catalog rows, the gate would block rating — so this likely forces phase 3 to ship BEFORE the model change, not after.
+
+**Scope measured at decision time:** only two FKs point at `wines` (`ratings.wine_id`, `bookmarks.wine_id`), but **58 files** reference it. The schema move is small; the code surface is not. Cheapest while the catalog is empty and every `wines.product_id` is NULL — which is true today.
+
+## Queued next (2026-07-25)
+
+Three items sequenced after phase 2, in dependency order. None is started; recorded here so the ordering and the blocking relationship are explicit.
+
+0. 🔒 **`VACUUM ANALYZE` the catalog tables is an EXPLICIT STEP of the first fill, not an afterthought — and `ANALYZE` alone is NOT enough.** Re-validated against the shipped GiST + covering-B-tree design (the original rationale here was about a GIN pending list, and GIN is gone):
+   - **The reason is the VISIBILITY MAP, not statistics.** An *index-only* scan can only skip a heap fetch for pages the visibility map marks all-visible, and only `VACUUM` builds that map. ⚠️ **The PLAN SHAPES below are the durable finding; the timings are fixture-specific** (one 60k table, one machine) and an independent run reproduced the same three plans with different absolute numbers. Do not quote the milliseconds as a target. Measured on a freshly bulk-loaded 60k table, the exact-name equality query planned: **no vacuum** → a Bitmap scan examining all 60,000 `producers_status_idx` entries; **`ANALYZE` alone** → a GiST index scan, still avoiding the covering index; **`VACUUM ANALYZE`** → the intended **Index Only Scan with 0 heap fetches**. The gap is large enough to matter on the query the phase-5 legacy backfill depends on, and it is the plan regression — not a particular latency — that this step exists to prevent.
+   - **GiST KNN search is unaffected** — measured 0.4 ms unvacuumed, so ordinary catalog search does not need this. The equality path does.
+   - So the fill runbook ends with `VACUUM ANALYZE producers; VACUUM ANALYZE wine_products; VACUUM ANALYZE product_producers;` before the catalog is considered live. ⚠️ `gin_clean_pending_list()` no longer applies to anything — there are no GIN indexes on the catalog tables. Autovacuum reaches this state eventually; "eventually" is not a launch state.
+
+1. **Legal attributions surface — 🔒 BLOCKS THE FIRST CATALOG FILL, and it is a LICENCE OBLIGATION, not a courtesy.** A config-driven attributions/legal page, live in **both** the web app and the native app, rendering entries supplied as **deploy configuration** rather than hardcoded. Some licences the catalog relies on **legally require naming the source**, so shipping catalog data without this surface is a licence breach — which is what makes it a hard release gate on the initial seed rather than a phase-4 nicety.
+   - 🔒 **Attribution is CORPUS-level, never per-record.** Naming sources on this surface satisfies the licence; attaching a source id/URL/slug to a catalog row does not, and is separately forbidden (RFC § Data-provenance rule, as scope-corrected). Config shape follows from that: a list of `{ source, licence, url }` entries describing the CORPUS, with no join back to individual rows.
+   - Because the entries are deploy configuration, adding or changing a source is an ops change, not a release — which is the point, since licence terms can change independently of the app.
+2. **Service principal for the catalog-maintenance tooling.** A rotatable credential with narrow `catalog.pull` / `catalog.import` scopes. 🔒 **Explicitly NOT a staff role** — `staff_roles` covers humans, and machine maintenance must never impersonate one (RFC § Catalog maintenance: "never a human user or admin role"). On CSRF, see § Phase 4 § Auth, which is the decision of record: `lib/csrf.ts` already returns true for a genuinely-missing `Origin`, so **no exemption is required** — what the threat model has to settle is whether a bearer-only route should call `isSameOrigin` at all, given it is a no-op for the intended caller and would reject a legitimate proxy that injects an `Origin`. 🔒 `isSameOrigin` must not be tightened globally as a rider (native auth is cookie-based and may legitimately omit `Origin`).
+3. **The import/pull endpoint.** Contract is § Phase 4 above. Two structural pieces worth restating, because both are easy to get wrong in a way that looks fine:
+   - **Pull must be driven by the unified change journal, not per-table keyset cursors.** A `(updatedAt, id)` keyset cannot express `product_producers` changes (composite key, no `updatedAt`, and a deleted join row leaves nothing to return) nor `product_eans` re-points (which change *which product* holds a barcode). See § The pull leg.
+   - **An import batch must reject a new product arriving without its lead-producer link in the same batch**, since independent per-batch transactions would otherwise leave a lead-less product visible between batches. The deferred trigger enforces this at COMMIT, so the batch boundary is what has to line up.
 
 ## Open inputs
 

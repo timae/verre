@@ -15,6 +15,7 @@ import { validateScore, decimalToNumber } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
+import { resolveCatalogLink, CatalogValidationError } from '@/lib/catalogWrite'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
 // 15.5 / webpack 5.98 bundling bug (see lib/accountDelete.ts for the same
@@ -93,7 +94,7 @@ export async function POST(req: NextRequest) {
   // makes). vinification/description/purchaseUrl land on the minted wine row,
   // giving a standalone check-in the same About-block metadata as a session
   // wine (the feed read path already surfaces them from the wine columns).
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl } = body
+  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl, productId, vintageId } = body
   // Scrub control chars first so a payload of pure NULL bytes doesn't
   // pass the non-empty check below.
   const wineName = scrub(rawWineName)
@@ -256,6 +257,23 @@ export async function POST(req: NextRequest) {
   // default for standalone check-ins, where the user supplied the venue.
   const hasLocation = !!(scrubVenue || scrubCity || scrubCountry || lat != null || lng != null)
 
+  // Catalog link (phase 2). Validated server-side BEFORE the transaction —
+  // resolveCatalogLink does its own reads, and running them inside the txn
+  // would hold it open across lookups that cannot affect its outcome. A bad
+  // id is a 400 here rather than a 500 from the composite FK inside the txn.
+  //
+  // Standalone check-ins mint their own `wines` row (sessionId=NULL), so the
+  // link lands directly on it — there is no Redis leg on this path.
+  let catalogLink: { productId: string | null; vintageId: string | null }
+  try {
+    catalogLink = await resolveCatalogLink(productId, vintageId)
+  } catch (err) {
+    if (err instanceof CatalogValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
+
   // Sentinel error used by the txn to surface "user disappeared" without
   // bubbling as a generic 500. Caught by the awaiting code below.
   const USER_MISSING = Symbol('user-missing')
@@ -297,6 +315,8 @@ export async function POST(req: NextRequest) {
         vinification: scrubVinification,
         description: scrubDescription,
         purchaseUrl: cleanPurchaseUrl,
+        productId: catalogLink.productId,
+        vintageId: catalogLink.vintageId,
       },
     })
     // 2. Mint the rating. origin='standalone', sessionId=NULL (per the

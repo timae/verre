@@ -8,6 +8,8 @@ import { deleteImage } from '@/lib/s3'
 import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
+import { resolveCatalogLink, applyIdentityEditRule, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
 import type { Identity } from '@/lib/identity'
 import type { SessionMeta, WineMeta } from '@/lib/session'
 
@@ -57,11 +59,54 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     return reassignBroughtBy({ c, wineId, body, meta, identity, isHost })
   }
 
+  // ── Catalog link on edit ─────────────────────────────────────────────────
+  //
+  // Two rules compose here, in this order:
+  //   1. If the caller sent productId/vintageId, validate them server-side (an
+  //      explicit re-link, or an explicit clear).
+  //   2. Otherwise apply the identity-changing-edit rule: an edit that changes
+  //      the instance's name, producer, or vintage CLEARS the link rather than
+  //      silently keeping a now-incompatible one. Cosmetic edits keep it.
+  //
+  // 🔒 Deciding this HERE, before addWineToSession, is what makes it apply to
+  // the wholesale Redis replacement below — the PATCH replaces the wine object
+  // entirely, so the link that survives is exactly the one computed now.
+  const sentLink = body.productId !== undefined || body.vintageId !== undefined
+  // Shares the POST route's counter key EXACTLY (app/api/CLAUDE.md's
+  // shared-counter pattern) so add + edit can't stack N+N against the catalog.
+  // Charged only when a link is supplied — ordinary wine edits are unaffected.
+  if (sentLink) {
+    const rl = await checkRate(catalogLinkRateKey(identity.id, getClientIp(req)), 120, 3600)
+    if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
+  }
+  let link: { productId: string | null; vintageId: string | null }
+  let linkIsDeliberate = false
+  try {
+    // The stored link is passed so a PARTIAL link edit works: sending only
+    // `{ vintageId: null }` ("drop to product grain") keeps the product rather
+    // than destroying it, because an omitted field means KEEP.
+    const explicit = sentLink
+      ? await resolveCatalogLink(body.productId, body.vintageId, wines[idx])
+      : null
+    link = applyIdentityEditRule(wines[idx], body, explicit)
+    // Did this request make a DELIBERATE decision about the link, or did the
+    // rule merely resolve to "leave it alone"? Only the former may overwrite
+    // what is live at write time — see the splice in the transform below.
+    linkIsDeliberate = sentLink
+      || link.productId !== (wines[idx].productId ?? null)
+      || link.vintageId !== (wines[idx].vintageId ?? null)
+  } catch (err) {
+    if (err instanceof CatalogValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
+
   // addWineToSession may do an S3 upload — a side effect that must run
   // OUTSIDE the WATCH/MULTI transform (the transform can run multiple
   // times on retry and must stay pure). Build the result here against the
   // wine we read, then atomically splice it in by id below.
-  const result = await addWineToSession(c, body, wines[idx])
+  const result = await addWineToSession(c, { ...body, ...link }, wines[idx])
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
   const out = await mutateWines(c, (current) => {
@@ -78,6 +123,20 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       ...result,
       addedByIdentityId: current[i].addedByIdentityId,
       addedByDisplayName: current[i].addedByDisplayName,
+      // 🔒 SAME RULE FOR THE CATALOG LINK, for the same reason. `link` was
+      // computed from a PRE-TRANSFORM snapshot, so on a COSMETIC edit (where
+      // the rule resolved to "keep what's stored") splicing it wholesale would
+      // write back the link as it looked BEFORE a concurrent re-link — silently
+      // reverting that re-link, exactly as the provenance case above did.
+      //
+      // Only a DELIBERATE link decision may overwrite the live value: an
+      // explicit re-link/clear from this request, or the identity-changing-edit
+      // rule firing. `linkIsDeliberate` captures that distinction outside the
+      // transform (it depends only on the request, not on current state), so
+      // the transform stays pure and re-runs correctly under WATCH retry.
+      ...(linkIsDeliberate
+        ? { productId: link.productId, vintageId: link.vintageId }
+        : { productId: current[i].productId ?? null, vintageId: current[i].vintageId ?? null }),
     }
     return next
   })

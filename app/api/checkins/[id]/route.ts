@@ -15,6 +15,7 @@ import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
 import { getWines } from '@/lib/session'
 import { scrub, cleanCountry, cleanUrl } from '@/lib/textSafe'
+import { resolveCatalogLink, applyIdentityEditRule, CatalogValidationError } from '@/lib/catalogWrite'
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
@@ -114,7 +115,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { wineName, producer, vintage, grape, type, score, flavors, aromas, notes,
     imageData, venueName, city, country, lat, lng, taggedUserIds,
-    wineRegion, wineCountry, vinification, description, purchaseUrl } = body
+    wineRegion, wineCountry, vinification, description, purchaseUrl,
+    productId, vintageId } = body
   // Mirror the per-field length caps from POST so over-sized PATCH input
   // returns 400 instead of letting Prisma raise P2000 (→ 500).
   const lenCheck: Array<[string, unknown, number]> = [
@@ -222,6 +224,45 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     }
   }
 
+  // Catalog link on edit — same two composed rules as the session wine PATCH
+  // (explicit re-link wins; otherwise an identity-changing edit CLEARS the
+  // link rather than keeping an incompatible one). Resolved before the txn:
+  // the lookups can't affect its outcome and shouldn't hold it open.
+  //
+  // `wine` here is the full row (`wine: true` in the include above), so its
+  // stored link is what the rule compares against.
+  let catalogLink: { productId: string | null; vintageId: string | null }
+  // Whether this request DECIDED the link (explicit re-link/clear, or the
+  // identity-changing-edit rule firing) versus merely resolving to "unchanged".
+  // Only a deliberate decision may overwrite what is live at write time.
+  let catalogLinkIsDeliberate = false
+  try {
+    // Stored link passed so a partial link edit keeps the untouched grain —
+    // see the session wine PATCH for the same rule.
+    const explicit = (productId !== undefined || vintageId !== undefined)
+      ? await resolveCatalogLink(productId, vintageId, wine)
+      : null
+    catalogLink = applyIdentityEditRule(
+      {
+        name: wine.name,
+        producer: wine.producer ?? '',
+        vintage: wine.vintage ?? '',
+        productId: wine.productId,
+        vintageId: wine.vintageId,
+      },
+      { name: wineName, producer, vintage },
+      explicit,
+    )
+    catalogLinkIsDeliberate = explicit !== null
+      || catalogLink.productId !== (wine.productId ?? null)
+      || catalogLink.vintageId !== (wine.vintageId ?? null)
+  } catch (err) {
+    if (err instanceof CatalogValidationError) {
+      return NextResponse.json({ error: err.message }, { status: 400 })
+    }
+    throw err
+  }
+
   // S3 reclaim: capture URLs to reclaim AFTER the txn commits.
   const urlsToReclaim: string[] = []
   if (nextImageUrl !== undefined && currentImage && currentImage.imageUrl !== nextImageUrl) {
@@ -253,6 +294,22 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
         // photo. Tasting photos live on rating_images. Don't touch wine
         // imageUrl from this surface — it stays whatever it was at create
         // time (null for standalone POSTs).
+        //
+        // 🔒 The catalog link is written ONLY when this request made a
+        // DELIBERATE decision about it — an explicit re-link/clear, or the
+        // identity-changing-edit rule firing. Writing it unconditionally looked
+        // safe (with no explicit link and no identity change, `catalogLink`
+        // resolves to the wine's CURRENT values, so the write is a no-op) but
+        // those values come from a snapshot read BEFORE the transaction: a
+        // concurrent re-link landing in between would be silently reverted by
+        // this "no-op". Skipping the write entirely lets the concurrent value
+        // stand, which is the correct outcome for an edit that never mentioned
+        // the link. The condition must NOT be `productId !== undefined` — that
+        // would skip the identity-changing CLEAR, which is the whole point of
+        // the rule.
+        ...(catalogLinkIsDeliberate
+          ? { productId: catalogLink.productId, vintageId: catalogLink.vintageId }
+          : {}),
       },
     })
 

@@ -64,6 +64,20 @@ export function redactWine(wine: WineMeta, opts: RedactWineOpts): WireWine | nul
     country: '',
     vinification: '',
     purchaseUrl: '',
+    // 🔒 CATALOG IDS ARE LABEL IDENTITY — stripping them is not optional.
+    // A productId in a blind payload is a lookup oracle: the catalog is
+    // deliberately public (RFC ruling 3), so one GET against it turns the
+    // id straight back into the producer, name, and vintage that every
+    // other field here is blanking. It identifies the wine as precisely as
+    // `name` does, and must be treated exactly like it.
+    //
+    // ⚠️ These two lines are load-bearing BECAUSE of the `...rest` spread
+    // above: WineMeta fields flow through by default, so a redaction that
+    // simply forgot them would leak silently — the payload would still
+    // look correctly masked in every visible field. Any future identifying
+    // field added to WineMeta needs the same treatment.
+    productId: null,
+    vintageId: null,
     isMine: false,
     addedByDisplayName: null,
     addedByUserId: null,

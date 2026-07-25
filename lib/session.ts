@@ -74,6 +74,29 @@ export type WineMeta = {
   // snapshot. Unlike addedByIdentityId, this is safe to surface on the
   // wire — display names are already public via the identities map.
   addedByDisplayName?: string
+  // ── Wine-catalog link (phase 2) ──────────────────────────────────────
+  //
+  // Optional link from this per-session wine INSTANCE to the shared
+  // catalog, at two grains because year = null means the NV row
+  // exclusively. Valid states: (set, set) | (set, null) | (absent,
+  // absent) — vintageId without productId is invalid and is rejected at
+  // every write boundary AND by a DB CHECK on the mirrored columns.
+  //
+  // Set from an EXPLICIT user choice or a freshly-minted provisional,
+  // never from a string match (RFC § v1 data model; the sole exception is
+  // the phase-5 legacy backfill, which is exact-match-only).
+  //
+  // 🔒 BLIND REDACTION MUST STRIP BOTH. A catalog id in a blind payload is
+  // a lookup oracle for the label — it identifies the wine as precisely as
+  // the name does. `redactWine` spreads `...rest` from this type, so a new
+  // identifying field added here is exposed BY DEFAULT unless it is
+  // explicitly overwritten there. See lib/wineRedaction.ts.
+  //
+  // Mirrored to Postgres by pgUpsertWine on archival; every wine-edit path
+  // must round-trip them (the PATCH route replaces the Redis object
+  // wholesale, so omitting them silently drops the link).
+  productId?: string | null
+  vintageId?: string | null
 }
 
 // Wire shape produced by `wineToWire` — same as `WineMeta` minus
@@ -474,6 +497,20 @@ export async function addWineToSession(
     // from before this field landed have `addedByDisplayName=undefined`;
     // the wire-time resolver handles that by falling through to null.
     addedByDisplayName: existing?.addedByDisplayName ?? addedByDisplayName,
+    // Catalog link. The caller (route) has already validated these through
+    // `resolveCatalogLink` and applied the identity-changing-edit rule, so
+    // whatever arrives in `body` here is authoritative for this write.
+    //
+    // ⚠️ THE ROUND-TRIP IS THE TRAP. The PATCH route replaces the Redis
+    // wine object WHOLESALE with this return value, so a field that is not
+    // named here is DROPPED — silently, on every edit. `body.productId
+    // === undefined` therefore means "the caller didn't mention it, keep
+    // what's stored", which is why this is an explicit undefined check and
+    // not `body.productId ?? existing?.productId` (that spelling would
+    // also swallow a deliberate null, making the link impossible to
+    // clear).
+    productId: body.productId === undefined ? (existing?.productId ?? null) : body.productId,
+    vintageId: body.vintageId === undefined ? (existing?.vintageId ?? null) : body.vintageId,
   }
 }
 
@@ -591,6 +628,22 @@ export async function pgReassignWineProvenance(sessionCode: string, wine: WineMe
     purchaseUrl: wine.purchaseUrl || null,
     addedByIdentityId: wine.addedByIdentityId ?? null,
     addedByDisplayName: wine.addedByDisplayName ?? null,
+    // 🔒 The catalog link rides the CREATE arm. This function's whole reason
+    // for being an upsert (see the note above) is that the wines row may not
+    // exist yet — and a row minted here without the link would look exactly
+    // like a legacy unlinked row, which phase 5's exact-match backfill would
+    // then re-derive from STRINGS. That would reintroduce string-derived
+    // linking on a wine whose link came from an explicit user choice. The RFC
+    // names this path directly: "every path that writes a `wines` row from
+    // Redis state — rate/visit archival, wine edits, BROUGHT-BY REASSIGNMENT,
+    // session archive — carries both fields verbatim."
+    //
+    // ⚠️ Deliberately NOT added to the `update` arm below: that arm exists to
+    // force provenance and nothing else, and widening it would let a reassign
+    // built from a stale Redis snapshot overwrite a link the edit path had
+    // already corrected.
+    productId: wine.productId || null,
+    vintageId: wine.vintageId || null,
   }
   await prisma.wine.upsert({
     where: { id: wine.id },
@@ -628,6 +681,12 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       purchaseUrl: wine.purchaseUrl || null,
       addedByIdentityId: wine.addedByIdentityId ?? null,
       addedByDisplayName: wine.addedByDisplayName ?? null,
+      // Catalog link mirrored from Redis. `|| null` rather than `?? null`
+      // is deliberate here for the same reason it is on the fields above:
+      // the empty string must collapse to NULL, or the wines link-state
+      // CHECK sees a set-but-meaningless product_id.
+      productId: wine.productId || null,
+      vintageId: wine.vintageId || null,
     },
     update: {
       name: wine.name,
@@ -641,6 +700,15 @@ export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
       country: wine.country || null,
       vinification: wine.vinification || null,
       purchaseUrl: wine.purchaseUrl || null,
+      // 🔒 IN THE UPDATE ARM TOO, unlike provenance. Provenance is frozen
+      // on create because the original adder is the authoritative anchor;
+      // the catalog link is the opposite — it stays MUTABLE on the wine
+      // instance by design (RFC § v1 data model), so that a later
+      // re-link, or the identity-changing-edit rule CLEARING the link,
+      // actually reaches Postgres. Omitting it here would archive the
+      // first-seen link forever and silently ignore every correction.
+      productId: wine.productId || null,
+      vintageId: wine.vintageId || null,
       // Don't overwrite provenance on edit — the original adder is the
       // authoritative anchor. If the row was created pre-feature with
       // addedByIdentityId=NULL we leave it NULL (no way to back-attribute).

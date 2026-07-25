@@ -840,9 +840,11 @@ model StaffRoleAudit {
 //   addedBy / curatedBy   SetNull — community catalog rows are NEVER cascaded
 //                by a user deletion.
 //   *Folded      GENERATED columns (raw SQL — Prisma can't express them),
-//                f_unaccent(lower(...)). ONE mandatory database-side
+//                lower(f_unaccent(...)) — lowercase LAST, see the note on
+//                nameFolded below. ONE mandatory database-side
 //                normalization path, so no write path can make display and
-//                fold drift. pg_trgm GIN indexes go on the folded columns.
+//                fold drift. A pg_trgm GiST index (KNN ordering) and a
+//                covering B-tree (equality) go on the folded columns.
 
 // First-class maker. "Producer" means the LABEL/BRAND IDENTITY users see and
 // search for, not necessarily the legal producing house (a future label-brand
@@ -861,15 +863,16 @@ model Producer {
   region        String?   @db.VarChar(255)
   website       String?   @db.VarChar(512)
   // 🔒 READ-ONLY. Both are Postgres GENERATED ALWAYS AS (...) STORED columns —
-  // f_unaccent(lower(...)) — declared as plain nullable fields here ONLY
+  // lower(f_unaccent(...)), lowercase LAST because some unaccent expansions
+  // produce capitals — declared as plain nullable fields here ONLY
   // because Prisma has no generated-column syntax and the schema-vs-migrations
   // CI gate would otherwise report them as drift. NEVER write them: Postgres
   // rejects any INSERT/UPDATE that supplies a value, so a write is a runtime
   // error, not silent drift. The generation expression lives in the migration
   // and is the SINGLE normalization path — that is what makes display/fold
   // drift structurally impossible.
-  nameFolded    String?   @default(dbgenerated("f_unaccent(lower((name)::text))")) @map("name_folded")
-  regionFolded  String?   @default(dbgenerated("f_unaccent(lower((region)::text))")) @map("region_folded")
+  nameFolded    String?   @default(dbgenerated("lower(f_unaccent((name)::text))")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("lower(f_unaccent((region)::text))")) @map("region_folded")
   status        String    @default("provisional") @db.VarChar(16)
   linksTo       String?   @map("links_to") @db.VarChar(21)
   curatorLocked String[]  @default([]) @map("curator_locked")
@@ -888,11 +891,23 @@ model Producer {
 
   @@index([status])
   @@index([linksTo])
-  // The pg_trgm GIN index serving the ONE matcher (add-time search,
-  // review-queue suggestions, post-import rescans all run the same
-  // word_similarity query over nameFolded). raw("gin_trgm_ops") is what makes
-  // it eligible; the default opclass would only support tsvector lookups.
-  @@index([nameFolded(ops: raw("gin_trgm_ops"))], type: Gin, map: "producers_name_folded_trgm_idx")
+  // COVERING B-tree for folded EQUALITY (findProducerByExactName / phase-5
+  // backfill). Includes the columns the query returns so it plans as an INDEX
+  // ONLY SCAN — measured 0.125 ms / 4 buffers, versus 0.544 ms / 130 buffers
+  // when the planner fell back to GiST because a bare B-tree still needed a
+  // heap fetch. ⚠️ Prisma has no `INCLUDE` syntax, so `status` is declared as a
+  // third KEY column here while the migration makes it an INCLUDE payload —
+  // the drift gate compares the column LIST, so this keeps it honest about the
+  // index's existence and columns; the migration supplies the real shape.
+  @@index([nameFolded, id, status], map: "producers_name_folded_idx")
+  // 🔒 GiST KNN index — what add-time search actually orders by. `<->>` is
+  // `1 - word_similarity`, so ranking is identical to the old GIN `<%` form,
+  // but cost is bounded by the LIMIT instead of by the match count (measured
+  // 22 ms → 0.26 ms on a broad query). Equality is served by the covering
+  // B-tree above, NOT by a trigram index — GIN was dropped in
+  // 20260725160000_catalog_gist_knn because it was 10x slower than a B-tree
+  // for `=` at 3x the size, and nothing issues a containment query.
+  @@index([nameFolded(ops: raw("gist_trgm_ops"))], type: Gist, map: "producers_name_folded_gist_idx")
   @@map("producers")
 }
 
@@ -936,8 +951,8 @@ model WineProduct {
   // folds element-wise through f_unaccent_arr, which is STRICT + COALESCEs
   // array_agg so {} folds to {} rather than NULL (array_agg over zero rows
   // returns NULL) — empty must stay distinguishable from unknown.
-  nameFolded    String?   @default(dbgenerated("f_unaccent(lower((name)::text))")) @map("name_folded")
-  regionFolded  String?   @default(dbgenerated("f_unaccent(lower((region)::text))")) @map("region_folded")
+  nameFolded    String?   @default(dbgenerated("lower(f_unaccent((name)::text))")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("lower(f_unaccent((region)::text))")) @map("region_folded")
   grapesFolded  String[]  @default(dbgenerated("f_unaccent_arr(grapes)")) @map("grapes_folded")
   // 'shared' | 'owned'. Reserved for the DEFERRED ownership axis.
   // 🔒 NO DEFAULT, deliberately. Every write boundary sets this EXPLICITLY, so
@@ -966,7 +981,10 @@ model WineProduct {
 
   @@index([status])
   @@index([linksTo])
-  @@index([nameFolded(ops: raw("gin_trgm_ops"))], type: Gin, map: "wine_products_name_folded_trgm_idx")
+  // Covering B-tree for folded equality — see the producers note above.
+  @@index([nameFolded, id, status], map: "wine_products_name_folded_idx")
+  // GiST KNN — see the producers note above.
+  @@index([nameFolded(ops: raw("gist_trgm_ops"))], type: Gist, map: "wine_products_name_folded_gist_idx")
   @@map("wine_products")
 }
 
