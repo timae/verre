@@ -279,6 +279,17 @@ The consumer did nothing wrong — it read in sequence order and advanced — wh
 
 The exact-match-only backfill of RFC § Legacy backfill — the sole exception to "links are never set by strings", never fuzzy, with the unmatched remainder feeding the provisional review path. Plus the reusable UI from `feature/wine-product-pages` (local and on origin): the web product page, the aggregate query re-pointed at vintage→product roll-up with transitive `linksTo` resolution, and the mobile screen.
 
+## Owed tests — and WHEN each must happen
+
+Both were identified during the phase-2 review and deliberately deferred. Neither blocks the phase-2 merge (creation is gated off, so no user reaches these paths); both block later milestones, so the timing is recorded rather than left to memory.
+
+| Test | Must happen BEFORE | Why then |
+|---|---|---|
+| **Interleaved concurrent-PATCH** | phase 3 opens the fence | Two users editing one wine concurrently is only reachable once people can actually link wines. The rule is implemented and unit-tested (`applyIdentityEditRule` + the `linkIsDeliberate` splice), but never driven through two real overlapping requests. ⚠️ The interleaving must be forced at a real synchronisation point — a `sleep`-based race that happens not to collide passes for the wrong reason. |
+| **1M-row load test** (p50/p95/p99, errors, DB CPU/IO, pool queue time) | the FIRST CATALOG FILL | Every scale step so far has changed a conclusion: 60k was fine, 300k exposed the linear-candidate problem, 500k exposed the equality plan. The fill is the first time real volume exists, so measuring after it is measuring an outage. ⚠️ Run against **staging, not a dev sandbox** — absolute numbers do not transfer across CPU, disk, and a managed Postgres with its own `max_connections`. Budget for a fix, not just a measurement. |
+
+Related, and cheap to fold into the load test when it runs: `DATABASE_CONNECTION_LIMIT` / `DATABASE_POOL_TIMEOUT` / `DATABASE_STATEMENT_TIMEOUT_MS` are opt-in and currently unset (`docs/dev/deployment.md`), so the load test is also where their values get chosen rather than guessed.
+
 ## 🔒 RULED: the per-event fields move OFF `wines` (own phase, plan first)
 
 **Decision (Simon, 2026-07-25).** The intended end state is that a rating carries the EVENT (who, which session, their photo, score, notes) and links directly to the catalog — the per-event columns currently on `wines` (`session_id`, `added_by_identity_id`, `added_by_display_name`, `image_url`, `revealed_at`) do not stay there. This REVERSES the RFC's two-grain split, which kept a `wines` row per bottle-per-tasting.
