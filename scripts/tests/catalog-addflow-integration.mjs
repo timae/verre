@@ -147,9 +147,13 @@ const createProducer = (input, addedBy, tx) =>
 const createProduct = (input, addedBy, collaboratorIds = [], tx) =>
   tx ? _createProduct(input, addedBy, collaboratorIds, tx)
      : prisma.$transaction(t => _createProduct(input, addedBy, collaboratorIds, t))
-const createVintage = (productId, year, addedBy, abv = null, tx) =>
-  tx ? _createVintage(productId, year, addedBy, abv, tx)
-     : prisma.$transaction(t => _createVintage(productId, year, addedBy, abv, t))
+// ⚠️ FORWARDS `opts` — an earlier version dropped it, so every vintage-grape
+// assertion ran against raw SQL instead of the real helper and removing the
+// helper's write left the suite green. The wrapper must not narrow the thing
+// under test.
+const createVintage = (productId, year, addedBy, abv = null, tx, opts) =>
+  tx ? _createVintage(productId, year, addedBy, abv, tx, opts)
+     : prisma.$transaction(t => _createVintage(productId, year, addedBy, abv, t, opts))
 
 const TEST_USER = 970001
 
@@ -538,6 +542,73 @@ async function main() {
     `trgmOrderWith folds with catalog_fold_v1 (got: ${orderSql})`)
   ok(!/lower\s*\(\s*f_unaccent/.test(orderSql),
     'trgmOrderWith no longer uses the superseded lower(f_unaccent(...)) form')
+
+  // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 1d — per-vintage grape override, through the REAL helper')
+  // 🔒 THE PATH THAT MATTERS: drive `createVintage` and read back through the
+  // PRISMA CLIENT, not raw SQL. An earlier version asserted only over raw SQL
+  // and therefore (a) could not see that Prisma collapses NULL and `{}` to `[]`
+  // — which is what killed the original nullable-array design — and (b) stayed
+  // green when the helper's write was removed entirely.
+  const vgProd = await createProducer({ name: 'P2TEST VG Producer' }, TEST_USER)
+  const vgWine = await createProduct(
+    { name: 'P2TEST VG Wine', category: 'wine', scope: 'shared',
+      grapes: ['Syrah', 'Grenache', 'Cinsault'], producerId: vgProd.id }, TEST_USER)
+  const mkV = (year, opts) => createVintage(vgWine.id, year, TEST_USER, null, undefined, opts)
+  const vInherit  = await mkV(2018)                                          // omitted
+  const vInherit2 = await mkV(2019, {})                                      // opts w/o field
+  const vNone     = await mkV(2020, { grapes: [] })                          // genuinely none
+  const vOverride = await mkV(2021, { grapes: ['Syrah', ' Grenache '] })     // override + trim
+  const vEcho     = await mkV(2022, { grapes: ['Syrah', 'Grenache', 'Cinsault'] }) // == product
+
+  const vRows = await prisma.wineVintage.findMany({
+    where: { productId: vgWine.id },
+    select: { id: true, year: true, grapes: true, grapesOverride: true,
+              product: { select: { grapes: true } } },
+  })
+  const vById = Object.fromEntries(vRows.map(r => [r.id, r]))
+  const effective = r => r.grapesOverride ? r.grapes : r.product.grapes
+
+  ok(vById[vInherit.id].grapesOverride === false
+     && effective(vById[vInherit.id]).join(',') === 'Syrah,Grenache,Cinsault',
+    'omitting grapes INHERITS the product, read through Prisma')
+  ok(vById[vInherit2.id].grapesOverride === false,
+    'an opts object WITHOUT the field also inherits (absence, not falsiness)')
+  // 🔒 THE ASSERTION THE NULLABLE DESIGN COULD NOT MAKE: these two rows store
+  // the SAME `[]` through Prisma and are told apart only by the flag.
+  ok(JSON.stringify(vById[vInherit.id].grapes) === '[]'
+     && JSON.stringify(vById[vNone.id].grapes) === '[]'
+     && vById[vNone.id].grapesOverride === true
+     && effective(vById[vNone.id]).length === 0,
+    'inherit and "genuinely none" both read as [] but are DISTINGUISHED by the flag')
+  ok(effective(vById[vOverride.id]).join(',') === 'Syrah,Grenache',
+    'a real override replaces the product grapes (and normalizes whitespace)')
+  // 🔒 PRESENCE DETERMINES INTENT — an override equal to the product's CURRENT
+  // grapes is still an override. An earlier version normalized it back to
+  // inherit as a belt against a client posting unconditionally, and that was
+  // wrong twice: `[]` is truthy in JS so an explicit "genuinely none" over an
+  // empty product was silently downgraded (measured), and even when it worked,
+  // discarding an explicit write because it matches TODAY's product value lets a
+  // later product edit silently rewrite that vintage.
+  ok(vById[vEcho.id].grapesOverride === true
+     && vById[vEcho.id].grapes.join(',') === 'Syrah,Grenache,Cinsault',
+    'an override equal to the product is STILL an override (presence, not equality)')
+  // The case the removed belt actively broke: explicit `[]` over an EMPTY product.
+  const emptyProd = await createProduct(
+    { name: 'P2TEST VG Empty', category: 'wine', scope: 'shared', grapes: [], producerId: vgProd.id }, TEST_USER)
+  const vNoneOverEmpty = await createVintage(emptyProd.id, 2018, TEST_USER, null, undefined, { grapes: [] })
+  const rNoneOverEmpty = await prisma.wineVintage.findUnique({
+    where: { id: vNoneOverEmpty.id }, select: { grapes: true, grapesOverride: true } })
+  ok(rNoneOverEmpty.grapesOverride === true,
+    'explicit [] over an EMPTY product stays authoritative (the belt silently downgraded this)')
+  // Malformed input REJECTS rather than becoming an authoritative empty — at
+  // this grain, normalization-to-empty manufactures a claim nobody made.
+  await rejects('a non-string vintage grape element',
+    () => createVintage(vgWine.id, 2030, TEST_USER, null, undefined, { grapes: [123] }),
+    'must be a string')
+  await rejects('a blank vintage grape element',
+    () => createVintage(vgWine.id, 2031, TEST_USER, null, undefined, { grapes: ['  '] }),
+    'must not be blank')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 1b — PRODUCT search plans (scoped, unscoped, and broad)')
@@ -1501,6 +1572,43 @@ async function main() {
     { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine' } }, TEST_USER)
   ok(!!b4.producerId && !!b4.productId && b4.vintageId === null,
     'branch 4 mints producer + product and links at PRODUCT grain when year is absent')
+  // 🔒 vintageGrapes THROUGH THE REAL DISPATCHER. § 1d drives `createVintage`
+  // directly, which cannot see whether `mintEntries` actually FORWARDS the
+  // field — removing both forwarding arguments left all 200 tests green.
+  const vgDisp = await mintEntries(
+    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', grapes: ['Merlot'] },
+      year: 2019, vintageGrapes: ['Syrah', 'Grenache'] }, TEST_USER)
+  const vgRow = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow.grapesOverride === true && vgRow.grapes.join(',') === 'Syrah,Grenache',
+    'mintEntries FORWARDS vintageGrapes to the vintage (branch 3/4 wiring)')
+  // Paired: the same call WITHOUT the field must inherit, so the assertion above
+  // cannot pass by the override being set unconditionally.
+  const vgDisp2 = await mintEntries(
+    { producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2020 }, TEST_USER)
+  const vgRow2 = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp2.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow2.grapesOverride === false && vgRow2.grapes.length === 0,
+    'omitting vintageGrapes through the dispatcher leaves the vintage inheriting')
+  // 🔒 Branch 2 (existing product) forwards too — a separate call site.
+  const vgDisp3 = await mintEntries(
+    { producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2021,
+      vintageGrapes: ['Cinsault'] }, TEST_USER)
+  const vgRow3 = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp3.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow3.grapesOverride === true && vgRow3.grapes.join(',') === 'Cinsault',
+    'branch 2 (vintage under an EXISTING product) forwards vintageGrapes too')
+  // Rejections: an override with nowhere to go, and a malformed authoritative list.
+  await rejects('vintageGrapes without year',
+    () => mintEntries({ producer: { name: 'P2TEST VGD X' }, product: { name: 'P2TEST VGD X Wine' },
+                        vintageGrapes: ['Syrah'] }, TEST_USER), 'vintageGrapes requires year')
+  await rejects('a malformed vintageGrapes element',
+    () => mintEntries({ producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2022,
+                        vintageGrapes: [123] }, TEST_USER), 'must be a string')
+  await rejects('a blank vintageGrapes element',
+    () => mintEntries({ producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2023,
+                        vintageGrapes: ['   '] }, TEST_USER), 'must not be blank')
+
   // Branch 3 — existing producer, new product.
   const b3 = await mintEntries(
     { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine' }, year: 2020 }, TEST_USER)

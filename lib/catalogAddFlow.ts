@@ -33,6 +33,47 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
   }
   const year = hasYear ? validateYear((rawYear as number | null) ?? null) : undefined
 
+  // 🔒 `vintageGrapes` is read by PRESENCE, exactly like `year` above, and for
+  // the same reason: absent and empty mean different things.
+  //   absent  → INHERIT the product's grapes (the untouched-form path)
+  //   []      → this vintage genuinely has none listed
+  //   [...]   → this vintage's own composition
+  //
+  // 🔒 PRESENCE IS THE SIGNAL: sending the field at all sets the override. The
+  // intended client sends it only when a human actually edited the value, so
+  // `grapes_override` means "someone deliberately disagreed with the inherited
+  // value" rather than "the form was submitted".
+  //
+  // ⚠️ There is deliberately NO equality belt. An earlier version normalized an
+  // override equal to the product's grapes back to inherit; it was removed
+  // because `[]` is truthy in JS (so an explicit "genuinely none" over an empty
+  // product was silently downgraded — measured) and because discarding an
+  // explicit write that matches TODAY's product value lets a later product edit
+  // silently rewrite that vintage. A client that posts unconditionally is a
+  // client to fix or version, not a reason to reinterpret an explicit write.
+  //
+  // ⚠️ NOTE the intended UI (product grapes shown with a "change" affordance)
+  // IS NOT BUILT. No catalog UI exists yet; this describes the contract clients
+  // must honour, not current behaviour.
+  //
+  // ⚠️ Distinct from `body.grapes`, which describes the PRODUCT (what the wine
+  // is) and is unchanged. A taster adding a new wine is describing the wine; a
+  // taster adding a vintage to an existing wine is describing that year's bottle.
+  const hasVintageGrapes = 'vintageGrapes' in body
+  if (hasVintageGrapes && !Array.isArray(body.vintageGrapes)) {
+    throw new CatalogValidationError('vintageGrapes must be an array')
+  }
+  // 🔒 REJECT, never silently drop. Without `year` no vintage row is minted at
+  // all (the unknown-year case links at product grain), so a supplied override
+  // had nowhere to go — measured: the request succeeded with `vintageId: null`
+  // and zero vintage rows, discarding what the user typed. Element validation
+  // happens in `normalizeVintageGrapes`, which REJECTS rather than coercing,
+  // because at this grain an empty array is an assertion.
+  if (hasVintageGrapes && !hasYear) {
+    throw new CatalogValidationError('vintageGrapes requires year (a vintage-grain override needs a vintage)')
+  }
+  const vintageGrapes = hasVintageGrapes ? (body.vintageGrapes as string[]) : undefined
+
   // 🔒 REJECT MALFORMED IDs BEFORE BRANCH SELECTION, not by skipping them.
   //
   // The branches key on "is this a non-empty string", so a PRESENT-but-
@@ -111,7 +152,10 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
         select: { id: true },
       })
       if (existing) return existing
-      return createVintage(product.id, year ?? null, userId, null, tx)
+      // BRANCH 2 — adding a vintage under an EXISTING product. The product's
+      // grapes already exist, so anything the user typed here is about THIS
+      // YEAR'S bottle: it lands on the vintage as an override.
+      return createVintage(product.id, year ?? null, userId, null, tx, { grapes: vintageGrapes })
     }).catch(async err => {
       // Lost the race: the other writer committed our exact (product, year)
       // between the read and the insert. Their row IS the right answer, so
@@ -227,7 +271,16 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
 
     // `year` absent → product-grain link, no vintage row (the unknown-year
     // case). Present (including null, the NV row) → mint it.
-    const vintage = hasYear ? await createVintage(product.id, year ?? null, userId, null, tx) : null
+    // BRANCHES 3/4 — a BRAND-NEW product (and possibly producer). Nothing
+    // existed to inherit from, so `body.grapes` went onto the PRODUCT above
+    // (what the wine is). `vintageGrapes` is still honoured if the client sent
+    // it — a user who explicitly said "this year differs" is not overridden by
+    // the branch they happened to take — but it normally will not be present,
+    // so the ordinary new-wine path leaves the flag false by ABSENCE, not by
+    // any equality check (there is none; see the header).
+    const vintage = hasYear
+      ? await createVintage(product.id, year ?? null, userId, null, tx, { grapes: vintageGrapes })
+      : null
     return { producerId, productId: product.id, vintageId: vintage?.id ?? null }
   })
 }

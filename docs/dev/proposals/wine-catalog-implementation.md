@@ -72,13 +72,13 @@ These were run before writing the migration, not assumed. All hold:
 
 ### Arrays are non-null; `{}` is the missing value
 
-🔒 **`grapes` is a non-null `text[]`, and `{}` means "no grapes recorded" — there is no known-empty state in v1.** Verified against the toolchain: Prisma cannot model an optional scalar list (`String[]?` → *"Optional lists are not supported. Use either `Type[]` or `Type?`"*), and the repo is on Prisma 6.x. Postgres itself holds `NULL` vs `{}` fine, so this is a representation limit rather than a database one — but backing a nullable array through raw SQL would mean reads bypassing the Prisma client, which is real drift for a distinction nothing in v1 consumes (matching vetoes on conflicting `style`/`abv`, never on grape absence). If known-empty ever becomes load-bearing, the additive fix is a `grapesKnown` flag alongside the non-null array.
+🔒 **`grapes` is a non-null `text[]`, and `{}` means "no grapes recorded" — there is no known-empty state at PRODUCT grain in v1.** ⚠️ **This is the PRODUCT rule.** `wine_vintages` gained a known-empty state in `20260726090000` via an explicit `grapes_override` boolean — the flag exists precisely because a nullable array could not express it: **Prisma returns `[]` for both `NULL` and `{}`** on a scalar list (measured against the generated client), so the tri-state was invisible to every application read path. The two grains now have deliberately different missingness semantics; see § Fact rules. Verified against the toolchain: Prisma cannot model an optional scalar list (`String[]?` → *"Optional lists are not supported. Use either `Type[]` or `Type?`"*), and the repo is on Prisma 6.x. Postgres itself holds `NULL` vs `{}` fine, so this is a representation limit rather than a database one — but backing a nullable array through raw SQL would mean reads bypassing the Prisma client, which is real drift for a distinction nothing in v1 consumes (matching vetoes on conflicting `style`/`abv`, never on grape absence). ✅ **It did become load-bearing at vintage grain, and the additive fix shipped as predicted** — `grapes_override` alongside the non-null array (`20260726090000`), not a nullable column. The same route stays available for `wine_products` if a product-level known-empty is ever needed; nothing in v1 consumes one.
 
 **Arrays therefore need their own missingness rule, and it is not the scalar one:**
 
 - **Scalar facts keep the strict `IS NULL` rule** below — unchanged.
-- **`{}` counts as missing and IS enrichable** by a non-empty incoming value. A rule treating `{}` as a user-asserted "known none" would block legitimate enrichment on every grape-less row in the catalog, so no such rule exists here.
-- **A deliberately-empty array is protected by `curatorLocked`**, exactly as a deliberate scalar NULL is. That lock is the only thing that makes an empty array authoritative; absent a lock, empty means unrecorded.
+- **`{}` counts as missing and IS enrichable** by a non-empty incoming value — **at PRODUCT grain**. A rule treating a product's `{}` as a user-asserted "known none" would block legitimate enrichment on every grape-less row in the catalog. ⚠️ **`wine_vintages` is the exception and inverts this**: `grapes_override = true` makes its array authoritative INCLUDING `{}`, and import must never fill it — a vintage's known-empty state is exactly what the flag exists to carry. Omitting grapes on an incoming `override = true` is a **reject**, never a normalization to `{}`. See § Fact rules.
+- **A deliberately-empty array is protected by `curatorLocked`**, exactly as a deliberate scalar NULL is. **On `wine_products` that lock is the only thing** that makes an empty array authoritative; absent a lock, empty means unrecorded. ⚠️ **`wine_vintages` has a second route**: `grapes_override = true` makes its array authoritative *including* `{}` — that is the flag's entire purpose, and it needs no curator lock (see § Fact rules).
 
 ⚠️ **`''` reaches the fold as a value — the empty-vs-null guard must sit upstream of it, not only in it.** The array-fold `COALESCE` above protects the *array* case; scalar identity fields (`name`, `producer`, `region`) arrive already coerced and it never fires for them. Verified in the existing write path: `lib/session.ts:353` `clean()` is `scrub(v) ?? ''`, which turns null into empty string on the way into Redis, while `lib/session.ts:582`/`619`/`634` mirror to Postgres as `wine.producer || null`, turning it back. Same value, two representations, decided by different operators in different files — `??` only catches null/undefined, so `''` survives it, where `||` collapses it.
 
@@ -175,7 +175,7 @@ Also worth revisiting at that point: whether `producerId` should be **required**
 
 ### The flow
 
-The five explicit branches of RFC § Add-a-wine flow. One `pg_trgm` matcher over `nameFolded`, shared by add-time search, review-queue suggestions, and post-import rescans — there is no second matcher to drift. `scope` set explicitly at every write boundary (creation rejects a missing scope rather than relying on the column default). `productId`/`vintageId` mirrored through Redis per RFC § Redis-first link design, with all list writes going through `mutateWines` (KEEPTTL preserved). Blind redaction strips both IDs in `wineToWire`.
+The five explicit branches of RFC § Add-a-wine flow. One `pg_trgm` matcher module over `nameFolded`, shared by add-time search, review-queue suggestions, and post-import rescans — there is no second matcher to drift. ⚠️ **REFINED (2026-07-26): one module and one set of normalization/scoring semantics, but TWO query SHAPES** — the interactive callers are KNN top-N; phase 4's bulk duplicate detection needs everything above a threshold, which top-N cannot express at any *n*. `scope` set explicitly at every write boundary (creation rejects a missing scope rather than relying on the column default). `productId`/`vintageId` mirrored through Redis per RFC § Redis-first link design, with all list writes going through `mutateWines` (KEEPTTL preserved). Blind redaction strips both IDs in `wineToWire`.
 
 Provisional entries minted here are publicly searchable (RFC ruling 3) — subject to the uniform-record-presentation constraint recorded there. Public creation stays disabled until the **model-change phase** opens the fence (see the execution order above) — no longer until phase 3.
 
@@ -228,8 +228,21 @@ Two ordering traps, both verified:
 **Fact rules, enumerated and enforced server-side at apply time** (never delegated to the caller's read-before-write, which a curator edit landing mid-flight would silently revert):
 
 - **Scalar facts: per-field `COALESCE(existing, incoming)`** — existing non-null values are never overwritten.
-- **Array facts (`grapes`) are the exception: an empty array is missing, so `{}` IS overwritten** by a non-empty incoming value (`CASE WHEN cardinality(existing) = 0 THEN incoming ELSE existing END`). See § Arrays are non-null — `{}` is the only representation of unrecorded, so the scalar rule would freeze every grape-less row permanently. **Wire normalization:** a missing or null incoming `grapes` normalizes to `{}` at the boundary, so the apply step never sees null for a non-null column.
-- Curator-locked fields are skipped *even for the fill* — including a locked `{}`, which is the only way an empty array becomes authoritative.
+- **Array facts (`grapes`) are the exception: an empty array is missing, so `{}` IS overwritten** by a non-empty incoming value (`CASE WHEN cardinality(existing) = 0 THEN incoming ELSE existing END`). ⚠️ **PRODUCT GRAIN ONLY.**
+- 🔒 **Vintage grapes follow the OPPOSITE rule, and conflating them would destroy data.** `wine_vintages` carries `grapes` + `grapes_override` (`20260726090000`). When `grapes_override` is **true**, the array is an ASSERTION — including `{}`, which means "this vintage genuinely has none listed" — and import must **never** fill it, exactly as it never fills a curator-locked field. When the flag is **false** the row is inheriting and its array is empty by CHECK, so there is nothing to fill either. Net: **import never writes vintage grapes as an enrichment**.
+
+  🔒 **The transition matrix is the contract** — "an explicit override update" was undefined and unimplementable:
+
+  | Existing | Incoming | Result |
+  |---|---|---|
+  | `override=false` | `override=true` + grapes | Set both — unless curator-locked |
+  | `override=true` | anything | **Never** overwritten automatically |
+  | any | `override=false` | No enrichment; array must be empty |
+  | any | `override=true`, grapes **omitted** | **Reject** — omission must not become "genuinely none" |
+  | any | `override=false`, grapes non-empty | **Reject** — the CHECK forbids it |
+
+  The first row is what lets a vintage discovered after its row exists acquire its real composition; the fourth is what stops an omitted field silently minting a false known-empty assertion. The product's enrichable-`{}` rule above does not carry down a grain. See § Arrays are non-null — `{}` is the only representation of unrecorded, so the scalar rule would freeze every grape-less row permanently. **Wire normalization — `wine_products` ONLY:** a missing or null incoming product `grapes` normalizes to `{}` at the boundary, so the apply step never sees null for a non-null column. ⚠️ **This does NOT extend to `wine_vintages`.** There, a missing `grapes` alongside `grapes_override = true` is a **reject** (matrix row 4) — normalizing it to `{}` would manufacture a "genuinely none" assertion the caller never made. Same wire field, opposite handling, because the two grains give `{}` different meanings.
+- Curator-locked fields are skipped *even for the fill* — including a locked `{}`, which **on `wine_products`** is the only way an empty array becomes authoritative. ⚠️ **On `wine_vintages`, `grapes_override = true` is a second route** and needs no lock: the flag makes the array authoritative *including* `{}`. Import never enriches an overriding vintage at all (§ Fact rules matrix).
 - **On insert the server assigns `status = 'confirmed'` and `linksTo = null` itself.** Neither field is accepted from the caller on insert, and neither is ever updated by import afterwards. (Seed rows land `confirmed` per RFC § Seed; lifecycle transitions are staff actions.)
 - Purged IDs are never re-insertable.
 - Finalize **enqueues** the post-import rescan — the finalize ACK means "batches applied", never "rescan done".
@@ -335,9 +348,33 @@ Three items sequenced after phase 2, in dependency order. None is started; recor
    - 🔒 **Attribution is CORPUS-level, never per-record.** Naming sources on this surface satisfies the licence; attaching a source id/URL/slug to a catalog row does not, and is separately forbidden (RFC § Data-provenance rule, as scope-corrected). Config shape follows from that: a list of `{ source, licence, url }` entries describing the CORPUS, with no join back to individual rows.
    - Because the entries are deploy configuration, adding or changing a source is an ops change, not a release — which is the point, since licence terms can change independently of the app.
 2. **Service principal for the catalog-maintenance tooling.** A rotatable credential with narrow `catalog.pull` / `catalog.import` scopes. 🔒 **Explicitly NOT a staff role** — `staff_roles` covers humans, and machine maintenance must never impersonate one (RFC § Catalog maintenance: "never a human user or admin role"). On CSRF, see § Phase 4 § Auth, which is the decision of record: `lib/csrf.ts` already returns true for a genuinely-missing `Origin`, so **no exemption is required** — what the threat model has to settle is whether a bearer-only route should call `isSameOrigin` at all, given it is a no-op for the intended caller and would reject a legitimate proxy that injects an `Origin`. 🔒 `isSameOrigin` must not be tightened globally as a rider (native auth is cookie-based and may legitimately omit `Origin`).
-3. **The import/pull endpoint.** Contract is § Phase 4 above. Two structural pieces worth restating, because both are easy to get wrong in a way that looks fine:
+3. **The import/pull endpoint.** Contract is § Phase 4 above.
+   - 🔒 **Size the import path for BATCH COUNT, not row count** (data side, 2026-07-26). Measured shape of the first fill: ~54k producers, ~265k products, ~265k product-producer links, **~2.15M vintages** — about **2,700 batches** at the 1,000-row ceiling. Two consequences: (a) the SEARCHABLE tables stay near 320k rows, comfortably inside what has been load-tested, so search risk is low; (b) the vintage table **dominates import cost while never being searched**, so batching, resume and ACK overhead is driven by a table that carries no query load. Optimising the import for search-table size would be optimising the wrong thing.
+   - ✅ **RULED (2026-07-26): the post-import rescan is a SECOND query shape in the same module.** It re-runs the suggestion query, which is **KNN top-N** — it ranks and always returns *n* candidates. Bulk duplicate detection wants the opposite: *everything above a threshold*. Shared fold, shared scoring, shared module — separate interactive top-N and bulk threshold queries. Recorded so the rescan is not built on the assumption that the add-time matcher transfers unchanged. Two structural pieces worth restating, because both are easy to get wrong in a way that looks fine:
    - **Pull must be driven by the unified change journal, not per-table keyset cursors.** A `(updatedAt, id)` keyset cannot express `product_producers` changes (composite key, no `updatedAt`, and a deleted join row leaves nothing to return) nor `product_eans` re-points (which change *which product* holds a barcode). See § The pull leg.
    - **An import batch must reject a new product arriving without its lead-producer link in the same batch**, since independent per-batch transactions would otherwise leave a lead-less product visible between batches. The deferred trigger enforces this at COMMIT, so the batch boundary is what has to line up.
+
+## 🔒 OPEN: the add flow has no way to say "non-vintage"
+
+**Raised by the data side, 2026-07-26; not yet built.**
+
+The write path is correct and locked: `year = null` means the NV row **exclusively**, never "year unknown", and an unknown year links at product grain instead. The API honours all three states — `year` absent / `null` / a number.
+
+⚠️ **But the UI cannot produce `year: null`.** The vintage input is a plain 4-character text field, so a user holding a non-vintage Champagne has no control that says so. That is exactly how `NV` ended up as free text in `wines.vintage` (prod: `Blanc de Blancs | Charles Heidsieck | NV`), and why the legacy backfill needs a literal-token case at all.
+
+Consequences while this stands:
+- **Blank keeps meaning two different things** — "unknown" and "non-vintage" — which the model deliberately separates.
+- **The NV row is reachable by API only**, so no user-driven path can create or select it.
+
+The fix is an explicit NV control beside the year field (a toggle or a "non-vintage" option), sending `year: null` rather than an empty string. Small, but it is a *product* decision about the add form, not a schema one — recorded here rather than assumed.
+
+⚠️ **Acceptance scope — every surface with a vintage input, not just one form.** No catalog UI exists yet; today's forms write the free-text `wines.vintage` string, which is why `NV` is stored as text at all:
+- **Web session add/edit** — `components/wine/AddWineModal.tsx`
+- **Web standalone check-in** — `components/social/CheckinModal.tsx`
+- **Mobile** check-in create/edit and session add — these **strip non-digits**, so `NV` cannot survive the input at all
+- **Label scanning** — `components/wine/AddWineModal.tsx` currently converts an extracted `NV` to blank, actively destroying the fact the scanner read
+
+🔒 **Related correction:** an earlier note in this workstream described the vintage form as "showing the product's grapes with a change affordance". **That UI does not exist** — it is the intended shape for the vintage-grape override (§ per-vintage grapes), not a description of anything shipped. The API contract is built and tested; every client surface above is unbuilt. Nothing calls `/api/catalog/entries` yet.
 
 ## Open inputs
 

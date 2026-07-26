@@ -1061,6 +1061,35 @@ model WineVintage {
   year          Int?
   // Per-vintage override of the product ABV. Same Decimal wire-format trap.
   abv           Decimal?  @db.Decimal(4, 2)
+  // Per-vintage override of the product's grapes — blend proportions shift year
+  // to year, and a producer may drop a variety outright in a difficult vintage.
+  //
+  // 🔒 THE FLAG IS LOAD-BEARING; `grapes` alone cannot carry the meaning:
+  //   override=false, grapes={}   → INHERIT wine_products.grapes
+  //   override=true,  grapes={}   → this vintage genuinely has none listed
+  //   override=true,  grapes=[…]  → this vintage's own composition
+  // A CHECK forbids the fourth (false + non-empty) combination, so a hidden
+  // override cannot sit unread behind a false flag.
+  //
+  // ⚠️ A NULLABLE ARRAY CANNOT EXPRESS THIS, and the first draft tried. It used
+  // NULL=inherit and `{}`=none; Postgres held them apart but **Prisma returns
+  // `[]` for BOTH**, so the two states were indistinguishable to every
+  // application read path. Measured against the generated client, not assumed.
+  // Same toolchain limitation as the non-null rule on wine_products.grapes:
+  // Prisma cannot model an optional scalar list.
+  //
+  // Effective value: CASE WHEN grapesOverride THEN vintage.grapes ELSE
+  // product.grapes END — never COALESCE, which would silently turn "genuinely
+  // none" back into inheritance, since `{}` is not NULL.
+  //
+  // 🔒 NOT the product's missingness rule: at PRODUCT grain `{}` means "not
+  // recorded" and IS enrichable by import; here `{}` under a true flag is an
+  // assertion import must not fill.
+  grapes         String[] @default([])
+  grapesOverride Boolean  @default(false) @map("grapes_override")
+  // 🔒 NO `grapesFolded` here, unlike wine_products: a folded column exists to
+  // be MATCHED, and discovery/search only ever touches producer and product —
+  // a vintage is SELECTED from the product view, never searched.
   status        String    @default("provisional") @db.VarChar(16)
   linksTo       String?   @map("links_to") @db.VarChar(21)
   curatorLocked String[]  @default([]) @map("curator_locked")

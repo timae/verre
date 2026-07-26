@@ -360,6 +360,52 @@ async function main() {
   ok(fns.scalar_v1 === 1 && fns.arr_v1 === 1, 'both versioned fold functions exist')
   ok(fns.old_arr === 0, 'the unversioned f_unaccent_arr was dropped')
 
+  console.log('\n1c. Per-vintage grape override — SCHEMA layer (20260726090000)')
+  // 🔒 This suite is Postgres-only, so it covers the CONSTRAINT layer: the flag
+  // encodes the three states and the CHECK forbids the fourth. The REAL-helper
+  // path (createVintage + a read back through Prisma) lives in the add-flow
+  // suite § 1d, because that is where the client and lib imports exist.
+  //
+  // ⚠️ The flag exists because Prisma returns `[]` for BOTH NULL and `{}` on a
+  // scalar list — measured — so a nullable array could not express "inherit"
+  // vs "genuinely none" to any application read path.
+  await makeProduct('test_wGr', 'test_pA')
+  await prisma.$executeRawUnsafe(
+    `UPDATE wine_products SET grapes = ARRAY['Syrah','Grenache','Cinsault'] WHERE id='test_wGr'`)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO wine_vintages (id,product_id,year,status) VALUES ('test_vInh','test_wGr',2018,'confirmed')`)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO wine_vintages (id,product_id,year,status,grapes,grapes_override) VALUES ('test_vOvr','test_wGr',2019,'confirmed',ARRAY['Syrah','Grenache'],true)`)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO wine_vintages (id,product_id,year,status,grapes,grapes_override) VALUES ('test_vNone','test_wGr',2020,'confirmed','{}',true)`)
+  // 🔒 CASE, never COALESCE — `{}` is not NULL, so COALESCE would silently turn
+  // "genuinely none" back into inheritance.
+  const eff = await raw(`
+    SELECT v.id, v.grapes_override AS ovr,
+           CASE WHEN v.grapes_override THEN v.grapes ELSE p.grapes END AS effective
+      FROM wine_vintages v JOIN wine_products p ON p.id = v.product_id
+     WHERE v.product_id = 'test_wGr' ORDER BY v.id`)
+  const byId = Object.fromEntries(eff.map(r => [r.id, r]))
+  ok(byId.test_vInh.ovr === false && byId.test_vInh.effective.join(',') === 'Syrah,Grenache,Cinsault',
+    'override=false INHERITS the product (the default, and the common row)')
+  ok(byId.test_vOvr.effective.join(',') === 'Syrah,Grenache',
+    'override=true with values REPLACES the product grapes for that vintage')
+  ok(byId.test_vNone.ovr === true && byId.test_vNone.effective.length === 0,
+    `override=true with '{}' means genuinely none and does NOT inherit`)
+  await rejects('grapes present while the flag says inherit (the incoherent 4th state)',
+    `INSERT INTO wine_vintages (id,product_id,year,status,grapes,grapes_override)
+     VALUES ('test_vBad','test_wGr',2021,'confirmed',ARRAY['Syrah'],false)`,
+    'wine_vintages_grapes_override_check')
+  await accepts('the same row WITH the flag set (the paired accept)',
+    `INSERT INTO wine_vintages (id,product_id,year,status,grapes,grapes_override)
+     VALUES ('test_vBad','test_wGr',2021,'confirmed',ARRAY['Syrah'],true)`)
+  // 🔒 NO folded counterpart — discovery/search only ever touches producer and
+  // product; a vintage is SELECTED from the product view, never searched.
+  const [vcols] = await raw(`
+    SELECT count(*)::int n FROM information_schema.columns
+     WHERE table_name='wine_vintages' AND column_name='grapes_folded'`)
+  ok(vcols.n === 0, 'wine_vintages has NO grapes_folded (vintages are never searched)')
+
   console.log('\n2. Array folds: {} stays {}, never NULL')
   await makeProduct('test_wA', 'test_pA')
   const [g] = await raw(`SELECT grapes_folded, cardinality(grapes_folded) c FROM wine_products WHERE id='test_wA'`)

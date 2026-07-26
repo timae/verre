@@ -2,6 +2,13 @@ import { prisma } from '@/lib/prisma'
 
 // ── catalogSearch: THE fuzzy matcher. There is exactly one. ────────────────
 //
+// ⚠️ REFINED 2026-07-26: ONE MODULE and one set of normalization/scoring
+// semantics, but TWO QUERY SHAPES. The interactive callers below are KNN
+// top-N — they rank and always return n candidates. Phase 4's post-import bulk
+// duplicate detection needs "everything above a threshold", which top-N cannot
+// express at any n. Sharing the fold + scoring here is what prevents drift;
+// forcing one shape onto both would truncate bulk detection.
+//
 // 🔒 ONE MATCHER, THREE CALLERS. Add-time search (phase 2), review-queue
 // suggestions (phase 3), and post-import rescans (phase 4) ALL run the queries
 // in this file. That is a deliberate design constraint from the RFC
