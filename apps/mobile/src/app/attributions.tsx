@@ -1,12 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
 import * as WebBrowser from 'expo-web-browser';
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, View } from 'react-native';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
+import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import { fetchAttributions, type AttributionEntry } from '@/lib/api/legal';
 import { GUTTER } from '@/lib/layout';
-import { radius, space, useTheme } from '@/theme';
+import { motion, radius, space, useTheme } from '@/theme';
 
 // Corpus-level attributions for the wine catalog.
 //
@@ -23,6 +26,27 @@ import { radius, space, useTheme } from '@/theme';
 
 function Entry({ entry }: { entry: AttributionEntry }) {
   const { theme } = useTheme();
+  const [open, setOpen] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
+  const progress = useSharedValue(0);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    progress.value = withTiming(next ? 1 : 0, {
+      duration: motion.dur3,
+      easing: Easing.bezier(...motion.ease),
+    });
+  };
+
+  const bodyStyle = useAnimatedStyle(() => ({
+    height: contentHeight * progress.value,
+    opacity: progress.value,
+  }));
+  const chevronStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${progress.value * 180}deg` }],
+  }));
+
   return (
     <View
       style={{
@@ -32,13 +56,49 @@ function Entry({ entry }: { entry: AttributionEntry }) {
         marginBottom: space.md,
       }}
     >
-      <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-        {entry.source}
-      </VText>
-      <VText variant="caption" color="inkSoft" style={{ marginTop: 2 }}>
-        {entry.licence.spdx}
-        {entry.dataPeriod ? ` · Data period: ${entry.dataPeriod}` : ''}
-      </VText>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`${entry.source}, ${entry.licence.spdx}`}
+        accessibilityHint={open ? 'Collapses the licence details' : 'Expands the licence details'}
+        onPress={toggle}
+        style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}
+      >
+        <View style={{ flex: 1 }}>
+          <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
+            {entry.source}
+          </VText>
+          <VText variant="caption" color="inkSoft" style={{ marginTop: 2 }}>
+            {entry.licence.spdx}
+            {entry.dataPeriod ? ` · Data period: ${entry.dataPeriod}` : ''}
+          </VText>
+        </View>
+        <Animated.View style={chevronStyle}>
+          <Icon name="chevron-down" size={18} color={theme.inkSoft} />
+        </Animated.View>
+      </Pressable>
+
+      {/* 🔒 COLLAPSED, NOT UNMOUNTED. The children below are always rendered and
+          measured; only the wrapper's HEIGHT animates. A required attribution
+          statement that does not exist in the view until someone taps is a
+          materially weaker compliance position than one that is merely folded —
+          so never swap this for `{open && <Body/>}`. The inner view is
+          absolutely positioned so it reports its NATURAL height even while the
+          clipped wrapper sits at 0 (the same measurement trick as
+          components/moments/momentForm.tsx Disclosure). */}
+      <Animated.View
+        style={[{ overflow: 'hidden' }, bodyStyle]}
+        pointerEvents={open ? 'auto' : 'none'}
+        accessibilityElementsHidden={!open}
+        importantForAccessibility={open ? 'auto' : 'no-hide-descendants'}
+      >
+        <View
+          // paddingTop (not marginTop) so the lead spacing is INCLUDED in the
+          // measured height — a margin would be excluded and the body would
+          // open a few pixels short.
+          style={{ position: 'absolute', left: 0, right: 0, top: 0, paddingTop: space.xs }}
+          onLayout={(e) => setContentHeight(e.nativeEvent.layout.height)}
+        >
 
       {/* Rule 3 — an unverified entry says so, visibly. */}
       {!entry.verified && (
@@ -111,6 +171,8 @@ function Entry({ entry }: { entry: AttributionEntry }) {
           </VText>
         </View>
       )}
+        </View>
+      </Animated.View>
     </View>
   );
 }
@@ -153,8 +215,17 @@ export default function Attributions() {
     >
       <VBar title="Attributions" />
 
+      {/* Gratitude, kept DELIBERATELY SEPARATE from the obligation text below.
+          Thanking a source is ours to offer; it must never read as if the
+          source requires it — CC0 waives attribution outright, and blurring the
+          two would misstate a licence on a screen whose whole job is to state
+          licences accurately. */}
+      <VText variant="small" style={{ marginBottom: space.sm, lineHeight: 21 }}>
+        These projects made their data public so others could build on it. Verre started
+        with a real catalog because of them. Thank you.
+      </VText>
       <VText variant="small" color="inkSoft" style={{ marginBottom: space.md, lineHeight: 20 }}>
-        Verre&rsquo;s wine catalog is built from the sources below. Each is used under the
+        Verre&rsquo;s wine catalog is built from these sources. Each is used under the
         licence shown, and these acknowledgements are required by those licences.
       </VText>
 

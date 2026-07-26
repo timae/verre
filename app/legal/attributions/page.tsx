@@ -29,23 +29,52 @@ export default function AttributionsPage() {
   const entries = getAttributions()
   return (
     <main style={{ maxWidth: 760, margin: '0 auto', padding: '48px 20px 96px' }}>
+      {/* Marker state can't be expressed inline — [open] is a parent-state
+          selector. Also strips the UA's default triangle (::marker / the
+          WebKit pseudo-element) so ours is the only one. */}
+      <style>{`
+        .attr-summary { list-style: none; }
+        .attr-summary::-webkit-details-marker { display: none; }
+        .attr-marker { transition: transform 120ms ease; display: inline-block; }
+        details[open] .attr-marker { transform: rotate(90deg); }
+      `}</style>
       <h1 style={{ fontSize: 28, color: 'var(--fg)', marginBottom: 8 }}>Attributions</h1>
+
+      {/* Gratitude, kept DELIBERATELY SEPARATE from the obligation text below.
+          Thanking a source is ours to offer; it must never read as if the
+          source requires it — CC0 waives attribution outright, and blurring the
+          two would misstate a licence on a page whose whole job is to state
+          licences accurately. */}
+      <p style={{ color: 'var(--fg-warm)', lineHeight: 1.7, marginBottom: 16 }}>
+        These projects made their data public so others could build on it. Verre started
+        with a real catalog because of them. Thank you.
+      </p>
       <p style={{ color: 'var(--fg-dim)', lineHeight: 1.6, marginBottom: 40 }}>
-        Verre&rsquo;s wine catalog is built from the sources below. Each is used under the
+        Verre&rsquo;s wine catalog is built from these sources. Each is used under the
         licence shown, and these acknowledgements are required by those licences.
       </p>
 
+      {/* 🔒 COLLAPSED, NOT UNMOUNTED. <details> keeps its contents in the DOM
+          (and in the page source) while closed — a required attribution
+          statement that does not exist until someone clicks is a materially
+          weaker compliance position than one that is merely folded. Never swap
+          this for a JS toggle that conditionally renders the body. It also
+          gives keyboard + screen-reader disclosure semantics for free. */}
       {entries.map((e) => (
-        <section
+        <details
           key={e.source}
           style={{ background: 'var(--bg2)', borderRadius: 12, padding: 20, marginBottom: 20 }}
         >
-          <h2 style={{ fontSize: 18, color: 'var(--fg)', marginBottom: 4 }}>{e.source}</h2>
+          <summary className="attr-summary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 10 }}>
+            <span className="attr-marker" aria-hidden="true" style={{ color: 'var(--fg-dim)', fontSize: 11, lineHeight: 1.6 }}>▶</span>
+            <h2 style={{ fontSize: 18, color: 'var(--fg)', flex: 1, display: 'inline' }}>{e.source}</h2>
+            <span style={{ color: 'var(--fg-dim)', fontSize: 14 }}>
+              {e.licence.spdx}
+              {e.dataPeriod ? ` · ${e.dataPeriod}` : ''}
+            </span>
+          </summary>
 
-          <p style={{ color: 'var(--fg-dim)', fontSize: 14, marginBottom: 12 }}>
-            {e.licence.spdx}
-            {e.dataPeriod ? ` · Data period: ${e.dataPeriod}` : ''}
-          </p>
+          <div style={{ marginTop: 12 }} />
 
           {/* Rule 3 — an unverified entry says so, visibly. */}
           {!e.verified && (
@@ -115,7 +144,7 @@ export default function AttributionsPage() {
               {e.licence.text}
             </pre>
           )}
-        </section>
+        </details>
       ))}
     </main>
   )

@@ -148,6 +148,23 @@ check(
   'Two copies of legal text can disagree; the stale one must never masquerade as current.',
 )
 
+// ── 3b. Collapsed entries stay MOUNTED ─────────────────────────────────────
+console.log('\n§3b collapsing an entry must not unmount its content')
+check(
+  'the native entry body is height-animated, not conditionally rendered',
+  /style=\{\[\{ overflow: 'hidden' \}, bodyStyle\]\}/.test(screen) && !/\{open && </.test(screen),
+  'A required attribution statement that does not exist in the view until someone taps is a materially weaker compliance position than one merely folded. Keep the children mounted and animate the wrapper height.',
+)
+const webPage = readFileSync(join(root, 'app/legal/attributions/page.tsx'), 'utf8')
+// ⚠️ Count the ELEMENT, not the string: `details[open]` also appears in the
+// page's <style> block, so a presence test passed with the real <details>
+// swapped for a <section>. Require the opening tag AND its closing tag.
+check(
+  'the web entry uses <details> (contents stay in the DOM when closed)',
+  /<details\b/.test(webPage) && /<\/details>/.test(webPage) && !/useState|'use client'/.test(webPage),
+  'A JS toggle that conditionally renders the body would omit required licence text from the delivered HTML while closed. <details> keeps it in the document.',
+)
+
 // ── 4. The legal routes sit OUTSIDE the auth guard ─────────────────────────
 console.log('\n§4 the legal screens are reachable signed-out')
 const rootLayout = readFileSync(join(root, 'apps/mobile/src/app/_layout.tsx'), 'utf8')
