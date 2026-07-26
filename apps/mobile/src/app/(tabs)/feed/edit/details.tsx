@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { countryName } from '@verre/core';
+import { countryName, filterVintageInput, normalizeVintageText } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -86,7 +86,9 @@ export default function EditCheckinDetails() {
     if (!name.trim()) { setError('Give it a name.'); return; }
     setCheckinEditMeta({
       ...meta,
-      name, vintage, producer, type, grape,
+      // Canonicalize here (the store feeds the PATCH directly) so a half-typed
+      // NV-token prefix never reaches the Char(4) column.
+      name, vintage: normalizeVintageText(vintage), producer, type, grape,
       wineRegion: region, wineCountry: country,
       vinification: process, description, purchaseUrl,
       venue, city,
@@ -144,14 +146,18 @@ export default function EditCheckinDetails() {
             <TextField label="Name" placeholder="What did you have?" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
           </View>
           <View style={{ width: 76 }}>
+            {/* Year OR "NV" — the digit strip here was DESTRUCTIVE, not just
+                restrictive: on an existing NV check-in, the first text change
+                blanked the vintage (the strip removed every character), and
+                saving then PATCHed the empty value. */}
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year"
+              placeholder="Year / NV"
               value={vintage}
-              onChangeText={(t) => setVintage(t.replace(/\D/g, '').slice(0, 4))}
-              keyboardType="number-pad"
-              maxLength={4}
+              onChangeText={(t) => setVintage(filterVintageInput(t))}
+              autoCapitalize="characters"
+              autoCorrect={false}
             />
           </View>
         </View>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { fillFlavourZeros, resolveAxes, type AromaSelection } from '@verre/core';
+import { fillFlavourZeros, normalizeVintageText, resolveAxes, type AromaSelection } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
@@ -86,12 +86,16 @@ export default function CheckinRate() {
     if (!draft) return;
     setError(null);
     setSaving(true);
+    // Canonicalize rather than trim — stage 1's typing filter lets an NV-token
+    // PREFIX through, so a half-typed value must not be sent. (The server
+    // canonicalizes too; this keeps the official client's payload identical.)
+    const cleanVintage = normalizeVintageText(draft.vintage);
     try {
       await createCheckin({
         wineName: draft.name.trim(),
         ...(draft.type ? { type: draft.type } : {}),
         ...(draft.producer.trim() ? { producer: draft.producer.trim() } : {}),
-        ...(draft.vintage.trim() ? { vintage: draft.vintage.trim() } : {}),
+        ...(cleanVintage ? { vintage: cleanVintage } : {}),
         ...(draft.grape.trim() ? { grape: draft.grape.trim() } : {}),
         ...(draft.wineRegion.trim() ? { wineRegion: draft.wineRegion.trim() } : {}),
         ...(draft.wineCountry ? { wineCountry: draft.wineCountry } : {}),

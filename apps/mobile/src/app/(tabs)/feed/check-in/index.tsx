@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { countryName } from '@verre/core';
+import { countryName, filterVintageInput } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -145,14 +145,16 @@ export default function CheckinDetails() {
             <TextField label="Name" placeholder="What did you have?" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
           </View>
           <View style={{ width: 76 }}>
+            {/* Year OR "NV" — see the add-impression screen's note: a
+                number-pad keyboard made NV untypeable. */}
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year"
+              placeholder="Year / NV"
               value={vintage}
-              onChangeText={(t) => setVintage(t.replace(/\D/g, '').slice(0, 4))}
-              keyboardType="number-pad"
-              maxLength={4}
+              onChangeText={(t) => setVintage(filterVintageInput(t))}
+              autoCapitalize="characters"
+              autoCorrect={false}
             />
           </View>
         </View>

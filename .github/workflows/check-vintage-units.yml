@@ -1,0 +1,56 @@
+name: Vintage text pins
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: vintage-units-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Pure-unit pins for the free-text vintage field shared by every wine
+      # input on web + native (@verre/core vintageText.ts). No DB/Redis/network.
+      #
+      # These guard a DATA-LOSS class, not a cosmetic one: the per-keystroke
+      # digit strip these replaced made "NV" untypeable on the mobile clients,
+      # and on an existing non-vintage check-in the first text change blanked
+      # the vintage, which saving then persisted. The pins fail against the
+      # bare \D strip, against substring
+      # token matching ("NV Selection" is a wine name), and against collapsing
+      # the typing filter into the boundary normalizer (which makes NV
+      # unreachable again), and against laundering a signed year (-2019 → 2019).
+      # Every mutation listed here was verified to fail the suite.
+      - name: Vintage free-text pins
+        run: npx tsx scripts/tests/vintage-text-units.ts
+
+      # The suite above pins the HELPER's behaviour; it cannot see whether the
+      # surfaces call it. Reintroducing `replace(/\D/g,'')` in one mobile
+      # component would leave every pin green while restoring the original bug.
+      # This gate pins the WIRING: no digit-strip / number-pad on a vintage
+      # field, and every client submit + server persistence boundary routes
+      # through the shared normalizer, and each required call site is asserted
+      # as an ASSIGNMENT (a helper whose result is discarded is caught). Every
+      # mutation in this class was verified to fail the gate.
+      # Behavioural pins for the two extracted PRODUCTION helpers: the session
+      # add-vs-edit payload builder and the scanner's untrusted-JSON coercion.
+      # Both were previously "covered" by a gate that only checked a helper
+      # existed, or by a test of a COPY of the logic — review proved both hollow.
+      - name: Impression payload + scanner coercion pins
+        run: npx tsx scripts/tests/impression-payload-units.ts
+
+      - name: Vintage surface wiring
+        run: node scripts/check-vintage-wiring.mjs
