@@ -75,9 +75,9 @@ The "logged in from <country>" labels resolve IPs to countries **in-process** fr
 
 The schema declares two contrib extensions (`prisma/schema.prisma` datasource `extensions = [pg_trgm, unaccent]`); each migration that first needs one issues `CREATE EXTENSION IF NOT EXISTS …`. Both ship in the standard `postgresql-contrib` package and are enabled on Nine's managed Postgres — `pg_trgm` has been live in prod since the privacy-tiers migration (it backs `/api/users/search`), and `unaccent` was added for accent-insensitive moments search (`GET /api/me/sessions?q`, moments-server-filtering.md Part B). Availability was verified on a matching Postgres 17 image (`unaccent` is contrib, installs + folds cleanly) before shipping. If a future managed-Postgres change ever restricted contrib extensions, the deploy would fail loud at `migrate deploy` (the migration gates the release) rather than silently — the failure is the signal to escalate to Nine.
 
-### 🔒 PRE-DEPLOY CHECK — the two catalog migrations require EMPTY catalog tables
+### 🔒 PRE-DEPLOY CHECK — the three catalog migrations require EMPTY catalog tables
 
-**Run this against the target database BEFORE merging anything that carries `20260725140000_catalog_fold_order` or `20260725160000_catalog_gist_knn`:**
+**Run this against the target database BEFORE merging anything that carries `20260725140000_catalog_fold_order`, `20260725160000_catalog_gist_knn`, or `20260725220000_catalog_fold_whitespace`:**
 
 ```sql
 -- Schema-qualified deliberately: an altered `search_path` would otherwise
@@ -90,7 +90,7 @@ SELECT (SELECT count(*) FROM public.producers)     AS producers,
 
 Why this is a human step even though the migrations enforce it themselves: the migrations abort *at deploy time*, which on Deplo.io means **a failed release plus a `P3009`-blocked pipeline** needing the manual recovery below. Checking first turns that into a decision made before anything is at stake. The enforced preflight inside each migration is the backstop against someone skipping this — not a replacement for it.
 
-**These two migrations are NOT generally applicable to a populated catalog.** Both drop/recreate objects under `ACCESS EXCLUSIVE`, and the total work is larger than a glance suggests: the fold migration rewrites **five generated columns** and recreates two indexes; the GiST one performs **six index operations in one transaction** — creating two GiST and two covering B-tree indexes while dropping two GIN. ⚠️ The only figure measured is **~6 s for a single GiST build at 500k rows**; it is NOT the total, and the B-tree builds and column rewrites are unmeasured. Treat the whole window as unknown on a populated table — which is the point: it would have to be measured before such a deploy, not estimated from here. They are safe *only* because the catalog is empty while `CATALOG_PUBLIC_ENABLED` is unset and no import has run. If a populated catalog ever needs equivalent changes, that is a **separately planned maintenance migration** — measured rewrite window, `CREATE INDEX CONCURRENTLY` (which cannot run inside a transaction), a verified backup/restore, and a rollback procedure — not a re-run of these files.
+**These three migrations are NOT generally applicable to a populated catalog.** All three drop/recreate objects under `ACCESS EXCLUSIVE`, and the total work is larger than a glance suggests: each fold migration rewrites **five generated columns** and recreates its indexes (the whitespace one recreates all four, and also swaps four CHECK constraints and drops the superseded `f_unaccent_arr`); the GiST one performs **six index operations in one transaction** — creating two GiST and two covering B-tree indexes while dropping two GIN. ⚠️ The only figure measured is **~6 s for a single GiST build at 500k rows**; it is NOT the total, and the B-tree builds and column rewrites are unmeasured. Treat the whole window as unknown on a populated table — which is the point: it would have to be measured before such a deploy, not estimated from here. They are safe *only* because the catalog is empty while `CATALOG_PUBLIC_ENABLED` is unset and no import has run. If a populated catalog ever needs equivalent changes, that is a **separately planned maintenance migration** — measured rewrite window, `CREATE INDEX CONCURRENTLY` (which cannot run inside a transaction), a verified backup/restore, and a rollback procedure — not a re-run of these files.
 
 ⚠️ **Also confirm nothing is holding a lock on those two tables**, or the 5s `lock_timeout` fires and you land in the recovery path below. 🔒 **`pg_locks` is CLUSTER-WIDE while `pg_class`/`pg_namespace` are PER-DATABASE**, so joining them without `l.database` matches FOREIGN OIDs against LOCAL names. Verified against a `TEMPLATE`-cloned database where `public.producers` had an IDENTICAL OID: the unscoped query returned sessions from BOTH databases, indistinguishably. Every query below therefore joins `pg_database` on `l.database`, filters `nspname = 'public'`, and exposes `l.granted`. This has to join `pg_locks` — a plain `pg_stat_activity` age filter answers a different question ("what is old?") and cannot tell you what touches the catalog: verified with one transaction on `producers` and one on `users`, the age filter returned both while the query below correctly returned only the `producers` one.
 
@@ -113,7 +113,7 @@ SELECT a.pid, c.relname, l.mode, l.granted, a.state, a.xact_start,
 
 ### A blocked migration leaves the deploy pipeline stuck (P3009) — recovery
 
-🔒 **Applies to any migration that takes an explicit lock** — currently `20260725140000_catalog_fold_order` and `20260725160000_catalog_gist_knn`, both of which `LOCK TABLE` the catalog tables behind a 5s `lock_timeout`. The timeout protects the *database* (a stale reader can no longer hang the deploy indefinitely); it does **not** protect the *pipeline*. Verified end-to-end against PG16:
+🔒 **Applies to any migration that takes an explicit lock** — currently `20260725140000_catalog_fold_order`, `20260725160000_catalog_gist_knn`, and `20260725220000_catalog_fold_whitespace`, all of which `LOCK TABLE` the catalog tables behind a 5s `lock_timeout`. The timeout protects the *database* (a stale reader can no longer hang the deploy indefinitely); it does **not** protect the *pipeline*. Verified end-to-end against PG16:
 
 1. The blocked deploy fails with a generic **`current transaction is aborted`**, not the lock-timeout message — so that output does not name the real cause. Find the blocker with:
    ```sql
@@ -158,7 +158,7 @@ SELECT a.pid, c.relname, l.mode, l.granted, a.state, a.xact_start,
    npx prisma migrate resolve --rolled-back <migration_name>
    npx prisma migrate deploy
    ```
-   Verified: the schema is undamaged (both migrations are wrapped in `BEGIN`/`COMMIT`, so nothing partially applied) and the redeploy applies cleanly.
+   Verified: the schema is undamaged (all three migrations are wrapped in `BEGIN`/`COMMIT`, so nothing partially applied) and the redeploy applies cleanly.
 
 ⚠️ **`--rolled-back`, never `--applied`.** `--rolled-back` is truthful here *because* the migrations are transactional — nothing landed. `--applied` would mark the work done without doing it, leaving the schema permanently out of step with migration history.
 

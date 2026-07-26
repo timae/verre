@@ -52,6 +52,7 @@ import {
   CatalogValidationError,
 } from '../../lib/catalogWrite.ts'
 import { redactWine } from '../../lib/wineRedaction.ts'
+import { scrub } from '../../lib/textSafe.ts'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -146,9 +147,13 @@ const createProducer = (input, addedBy, tx) =>
 const createProduct = (input, addedBy, collaboratorIds = [], tx) =>
   tx ? _createProduct(input, addedBy, collaboratorIds, tx)
      : prisma.$transaction(t => _createProduct(input, addedBy, collaboratorIds, t))
-const createVintage = (productId, year, addedBy, abv = null, tx) =>
-  tx ? _createVintage(productId, year, addedBy, abv, tx)
-     : prisma.$transaction(t => _createVintage(productId, year, addedBy, abv, t))
+// ⚠️ FORWARDS `opts` — an earlier version dropped it, so every vintage-grape
+// assertion ran against raw SQL instead of the real helper and removing the
+// helper's write left the suite green. The wrapper must not narrow the thing
+// under test.
+const createVintage = (productId, year, addedBy, abv = null, tx, opts) =>
+  tx ? _createVintage(productId, year, addedBy, abv, tx, opts)
+     : prisma.$transaction(t => _createVintage(productId, year, addedBy, abv, t, opts))
 
 const TEST_USER = 970001
 
@@ -344,9 +349,15 @@ async function main() {
     `the folded value is fully lowercase (got "${folds[2].name_folded}" — ® → "(r)", not "(R)")`)
   // The array helper has the same ordering and needed the same fix.
   const arrFold = await prisma.$queryRawUnsafe(
-    `SELECT f_unaccent_arr(ARRAY['Grüner Veltliner®','Cuvée № 5']) AS f`)
+    `SELECT catalog_fold_arr_v1(ARRAY['Grüner Veltliner®','Cuvée № 5']) AS f`)
   eq(arrFold[0].f, ['gruner veltliner(r)', 'cuvee no 5'],
-    'f_unaccent_arr also folds last (element-wise, fully lowercase)')
+    'catalog_fold_arr_v1 also folds last (element-wise, fully lowercase)')
+  // 🔒 The unversioned predecessor must be GONE, not merely unused — leaving it
+  // callable would let a future column or query silently bind to a mutable name
+  // (20260725220000 § 6).
+  const oldArr = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int n FROM pg_proc WHERE proname = 'f_unaccent_arr'`)
+  eq(oldArr[0].n, 0, 'the unversioned f_unaccent_arr was dropped')
 
   // 🔒 THE FOLD IS THE DATABASE'S JOB — a JS-side fold is NOT equivalent, and
   // the difference is invisible to trigram search.
@@ -378,7 +389,7 @@ async function main() {
   // cases (covered in § 1). Both classes need coverage, and neither sample
   // substitutes for the other.
   const expansions = await prisma.$queryRawUnsafe(
-    `SELECT v, lower(f_unaccent(v)) AS folded
+    `SELECT v, catalog_fold_v1(v) AS folded
        FROM (VALUES ('Straß'), ('Œnologie'), ('Ølgod')) t(v)`)
   eq(expansions.map(r => r.folded), ['strass', 'oenologie', 'olgod'],
     'the SQL fold expands ligatures (ß→ss, œ→oe, ø→o) — a JS NFD-strip does not')
@@ -420,6 +431,184 @@ async function main() {
   const bothSpellings = await findProducerByExactName('P2TEST Cuvee No 5')
   ok(bothSpellings.length === 2,
     `both spellings of one name resolve to the same fold key (got ${bothSpellings.length}, wanted 2)`)
+
+  // 🔒 WHITESPACE ROUND-TRIP THROUGH THE REAL FUNCTION (20260725220000).
+  // Seeded by DIRECT SQL, deliberately: the app path (`requiredName` → `scrub`)
+  // trims, so seeding through it could never produce a padded stored row — and
+  // a test that cannot produce the bad state cannot detect the regression. The
+  // import path is exactly this direct-SQL shape.
+  //
+  // ⚠️ `findProducerByExactName` .trim()s its ARGUMENT, so a padded *query*
+  // proves nothing about the column. What must hold is the reverse: a padded
+  // STORED value found by a CLEAN query. That only works if the fold
+  // canonicalizes on the write side.
+  // 🔒 `p2seed900001`, NOT `p2ws1`, and NO `ON CONFLICT` — both were review
+  // findings. reset() deletes producers matching `name LIKE 'P2TEST%'` OR
+  // `id LIKE 'p2seed%'`; this row's NAME begins with whitespace, so only the ID
+  // predicate can reach it. With the old id the row survived teardown, and
+  // `ON CONFLICT DO NOTHING` then made every later run silently reuse it —
+  // a fixture that passes from pre-existing state, which is the exact failure
+  // this suite's own rule forbids. A bare INSERT now fails loudly if reset broke.
+  //
+  // ⚠️ The LAST SIX CHARACTERS must all be DIGITS: § 1c's merge-fraction
+  // fixture does `(right(id, 6))::int` over every `id LIKE 'p2seed%'` row, so
+  // any non-numeric tail aborts that section with a 22P02. Both `p2seed_ws1`
+  // (→ `ed_ws1`) and `p2seedws0001` (→ `ws0001`) failed this before landing on
+  // `p2seed900001`; the 9-prefixed range keeps it clear of the seeded ids.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,status) VALUES ('p2seed900001', E'  P2TEST\\u00a0Padded   Domaine \\t ', 'provisional')`)
+  const [wsRow] = await prisma.$queryRawUnsafe(
+    `SELECT name, name_folded FROM producers WHERE id='p2seed900001'`)
+  ok(wsRow.name === '  P2TEST\u00a0Padded   Domaine \t ',
+    'the padded DISPLAY value is stored verbatim (the fixture really is padded)')
+  const padded = await findProducerByExactName('P2TEST Padded Domaine')
+  ok(padded.some(r => r.id === 'p2seed900001'),
+    'findProducerByExactName finds a WHITESPACE-PADDED stored row by its clean name')
+  // 🔒 THE QUERY-OPERAND DISCRIMINATOR, and it has to be built deliberately.
+  // A CLEAN query string cannot detect a reverted operand: both folds map it to
+  // the same key, so `lower(f_unaccent($1))` and `catalog_fold_v1($1)` agree and
+  // the mutation survives. Verified — reverting the operand left the suite at
+  // 0 failures until this case existed.
+  //
+  // ⚠️ It must also be INTERNAL whitespace: `findProducerByExactName` .trim()s
+  // its argument, so edge whitespace never reaches the SQL operand at all.
+  // Doubled spaces, NBSP and tabs do, and only the versioned fold collapses them.
+  const NBSP = String.fromCodePoint(0x00a0)
+  for (const [label, q] of [
+    ['doubled internal spaces', 'P2TEST Padded  Domaine'],
+    ['an NBSP separator', `P2TEST Padded${NBSP}Domaine`],
+    ['a tab separator', 'P2TEST Padded\tDomaine'],
+  ]) {
+    const hits = await findProducerByExactName(q)
+    ok(hits.some(r => r.id === 'p2seed900001'),
+      `findProducerByExactName matches through ${label} (pins the QUERY operand, not just the column)`)
+  }
+  // 🔒 APP/DB PARITY over the COMPLETE scrub character set — the second review
+  // finding, then widened after a third: an earlier version SAMPLED 9 of the 44
+  // deleted codepoints, so a mutation dropping an unsampled one (U+2069, a C0
+  // control, DEL) stayed green while the comment claimed full parity.
+  //
+  // 🔒 The set is DERIVED from the real `scrub()` at runtime, never transcribed —
+  // a hardcoded list silently stops matching the moment SCRUB_RE changes, which
+  // is the exact drift this whole migration exists to prevent. Deriving it means
+  // adding a character to SCRUB_RE automatically extends this test.
+  //
+  // ⚠️ U+0000 is excluded: PostgreSQL `text` cannot hold a NUL byte at all, so it
+  // is rejected before any fold runs and there is nothing to compare.
+  const SCRUB_DELETED = []
+  for (let cp = 1; cp <= 0xffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue          // unpaired surrogates
+    if (scrub(`a${String.fromCodePoint(cp)}b`) === 'ab') SCRUB_DELETED.push(cp)
+  }
+  ok(SCRUB_DELETED.length === 44,
+    `derived the full scrub-deleted set from SCRUB_RE (got ${SCRUB_DELETED.length}, expected 44 — if this changed, SCRUB_RE changed and the migration's delete class must change WITH it)`)
+
+  let parityOk = 0
+  const parityBad = []
+  for (const cp of SCRUB_DELETED) {
+    const rawName = `Ch\u00e2teau${String.fromCodePoint(cp)}Margaux`
+    const [r] = await prisma.$queryRawUnsafe(
+      `SELECT catalog_fold_v1($1) a, catalog_fold_v1($2) b`, rawName, scrub(rawName) ?? '')
+    // Both sides must agree AND both must have DELETED the character (no space):
+    // agreement alone would also hold if the fold mapped it to a space and scrub
+    // happened to as well, which is not the contract.
+    if (r.a === r.b && r.a === 'chateaumargaux') parityOk++
+    else parityBad.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}(${JSON.stringify(r.a)}/${JSON.stringify(r.b)})`)
+  }
+  ok(parityBad.length === 0,
+    `all ${SCRUB_DELETED.length} scrub-deleted codepoints: DB fold == fold(scrub(raw)), both delete${
+      parityBad.length ? ` — MISMATCHED: ${parityBad.slice(0, 6).join(' ')}` : ''}`)
+
+  // Paired negative: ZWNJ/ZWJ are REQUIRED for Persian/Arabic/Hindi ligatures.
+  // Both `scrub` and the fold must PRESERVE them — deleting would corrupt names.
+  for (const [label, cp] of [['ZWNJ U+200C', 0x200c], ['ZWJ U+200D', 0x200d]]) {
+    const rawName = `Ch\u00e2teau${String.fromCodePoint(cp)}Margaux`
+    const [r] = await prisma.$queryRawUnsafe(
+      `SELECT catalog_fold_v1($1) a, catalog_fold_v1($2) b`, rawName, scrub(rawName) ?? '')
+    ok(r.a === r.b && r.a.includes(String.fromCodePoint(cp)),
+      `${label} is PRESERVED by both (not deleted, not folded to a space)`)
+  }
+
+  const notPadded = await findProducerByExactName('P2TEST Padded Chateau')
+  ok(notPadded.length === 0,
+    'a genuinely different name still does NOT match (paired negative)')
+
+  // 🔒 STRUCTURAL PIN on the trigram operand. The round-trips above run through
+  // the DB, so they cannot see `trgmOrderSql` drifting back to a superseded
+  // expression — a KNN order against the wrong fold still returns plausible
+  // rows. Assert the generated SQL names the current version.
+  const orderSql = trgmOrderWith(`'x'`, 'name_folded')
+  ok(orderSql.includes('catalog_fold_v1'),
+    `trgmOrderWith folds with catalog_fold_v1 (got: ${orderSql})`)
+  ok(!/lower\s*\(\s*f_unaccent/.test(orderSql),
+    'trgmOrderWith no longer uses the superseded lower(f_unaccent(...)) form')
+
+  // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 1d — per-vintage grape override, through the REAL helper')
+  // 🔒 THE PATH THAT MATTERS: drive `createVintage` and read back through the
+  // PRISMA CLIENT, not raw SQL. An earlier version asserted only over raw SQL
+  // and therefore (a) could not see that Prisma collapses NULL and `{}` to `[]`
+  // — which is what killed the original nullable-array design — and (b) stayed
+  // green when the helper's write was removed entirely.
+  const vgProd = await createProducer({ name: 'P2TEST VG Producer' }, TEST_USER)
+  const vgWine = await createProduct(
+    { name: 'P2TEST VG Wine', category: 'wine', scope: 'shared',
+      grapes: ['Syrah', 'Grenache', 'Cinsault'], producerId: vgProd.id }, TEST_USER)
+  const mkV = (year, opts) => createVintage(vgWine.id, year, TEST_USER, null, undefined, opts)
+  const vInherit  = await mkV(2018)                                          // omitted
+  const vInherit2 = await mkV(2019, {})                                      // opts w/o field
+  const vNone     = await mkV(2020, { grapes: [] })                          // genuinely none
+  const vOverride = await mkV(2021, { grapes: ['Syrah', ' Grenache '] })     // override + trim
+  const vEcho     = await mkV(2022, { grapes: ['Syrah', 'Grenache', 'Cinsault'] }) // == product
+
+  const vRows = await prisma.wineVintage.findMany({
+    where: { productId: vgWine.id },
+    select: { id: true, year: true, grapes: true, grapesOverride: true,
+              product: { select: { grapes: true } } },
+  })
+  const vById = Object.fromEntries(vRows.map(r => [r.id, r]))
+  const effective = r => r.grapesOverride ? r.grapes : r.product.grapes
+
+  ok(vById[vInherit.id].grapesOverride === false
+     && effective(vById[vInherit.id]).join(',') === 'Syrah,Grenache,Cinsault',
+    'omitting grapes INHERITS the product, read through Prisma')
+  ok(vById[vInherit2.id].grapesOverride === false,
+    'an opts object WITHOUT the field also inherits (absence, not falsiness)')
+  // 🔒 THE ASSERTION THE NULLABLE DESIGN COULD NOT MAKE: these two rows store
+  // the SAME `[]` through Prisma and are told apart only by the flag.
+  ok(JSON.stringify(vById[vInherit.id].grapes) === '[]'
+     && JSON.stringify(vById[vNone.id].grapes) === '[]'
+     && vById[vNone.id].grapesOverride === true
+     && effective(vById[vNone.id]).length === 0,
+    'inherit and "genuinely none" both read as [] but are DISTINGUISHED by the flag')
+  ok(effective(vById[vOverride.id]).join(',') === 'Syrah,Grenache',
+    'a real override replaces the product grapes (and normalizes whitespace)')
+  // 🔒 PRESENCE DETERMINES INTENT — an override equal to the product's CURRENT
+  // grapes is still an override. An earlier version normalized it back to
+  // inherit as a belt against a client posting unconditionally, and that was
+  // wrong twice: `[]` is truthy in JS so an explicit "genuinely none" over an
+  // empty product was silently downgraded (measured), and even when it worked,
+  // discarding an explicit write because it matches TODAY's product value lets a
+  // later product edit silently rewrite that vintage.
+  ok(vById[vEcho.id].grapesOverride === true
+     && vById[vEcho.id].grapes.join(',') === 'Syrah,Grenache,Cinsault',
+    'an override equal to the product is STILL an override (presence, not equality)')
+  // The case the removed belt actively broke: explicit `[]` over an EMPTY product.
+  const emptyProd = await createProduct(
+    { name: 'P2TEST VG Empty', category: 'wine', scope: 'shared', grapes: [], producerId: vgProd.id }, TEST_USER)
+  const vNoneOverEmpty = await createVintage(emptyProd.id, 2018, TEST_USER, null, undefined, { grapes: [] })
+  const rNoneOverEmpty = await prisma.wineVintage.findUnique({
+    where: { id: vNoneOverEmpty.id }, select: { grapes: true, grapesOverride: true } })
+  ok(rNoneOverEmpty.grapesOverride === true,
+    'explicit [] over an EMPTY product stays authoritative (the belt silently downgraded this)')
+  // Malformed input REJECTS rather than becoming an authoritative empty — at
+  // this grain, normalization-to-empty manufactures a claim nobody made.
+  await rejects('a non-string vintage grape element',
+    () => createVintage(vgWine.id, 2030, TEST_USER, null, undefined, { grapes: [123] }),
+    'must be a string')
+  await rejects('a blank vintage grape element',
+    () => createVintage(vgWine.id, 2031, TEST_USER, null, undefined, { grapes: ['  '] }),
+    'must not be blank')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 1b — PRODUCT search plans (scoped, unscoped, and broad)')
@@ -1383,6 +1572,43 @@ async function main() {
     { producer: { name: 'P2TEST B4 Maker' }, product: { name: 'P2TEST B4 Wine' } }, TEST_USER)
   ok(!!b4.producerId && !!b4.productId && b4.vintageId === null,
     'branch 4 mints producer + product and links at PRODUCT grain when year is absent')
+  // 🔒 vintageGrapes THROUGH THE REAL DISPATCHER. § 1d drives `createVintage`
+  // directly, which cannot see whether `mintEntries` actually FORWARDS the
+  // field — removing both forwarding arguments left all 200 tests green.
+  const vgDisp = await mintEntries(
+    { producer: { name: 'P2TEST VGD Maker' }, product: { name: 'P2TEST VGD Wine', grapes: ['Merlot'] },
+      year: 2019, vintageGrapes: ['Syrah', 'Grenache'] }, TEST_USER)
+  const vgRow = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow.grapesOverride === true && vgRow.grapes.join(',') === 'Syrah,Grenache',
+    'mintEntries FORWARDS vintageGrapes to the vintage (branch 3/4 wiring)')
+  // Paired: the same call WITHOUT the field must inherit, so the assertion above
+  // cannot pass by the override being set unconditionally.
+  const vgDisp2 = await mintEntries(
+    { producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2020 }, TEST_USER)
+  const vgRow2 = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp2.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow2.grapesOverride === false && vgRow2.grapes.length === 0,
+    'omitting vintageGrapes through the dispatcher leaves the vintage inheriting')
+  // 🔒 Branch 2 (existing product) forwards too — a separate call site.
+  const vgDisp3 = await mintEntries(
+    { producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2021,
+      vintageGrapes: ['Cinsault'] }, TEST_USER)
+  const vgRow3 = await prisma.wineVintage.findUnique({
+    where: { id: vgDisp3.vintageId }, select: { grapes: true, grapesOverride: true } })
+  ok(vgRow3.grapesOverride === true && vgRow3.grapes.join(',') === 'Cinsault',
+    'branch 2 (vintage under an EXISTING product) forwards vintageGrapes too')
+  // Rejections: an override with nowhere to go, and a malformed authoritative list.
+  await rejects('vintageGrapes without year',
+    () => mintEntries({ producer: { name: 'P2TEST VGD X' }, product: { name: 'P2TEST VGD X Wine' },
+                        vintageGrapes: ['Syrah'] }, TEST_USER), 'vintageGrapes requires year')
+  await rejects('a malformed vintageGrapes element',
+    () => mintEntries({ producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2022,
+                        vintageGrapes: [123] }, TEST_USER), 'must be a string')
+  await rejects('a blank vintageGrapes element',
+    () => mintEntries({ producerId: vgDisp.producerId, productId: vgDisp.productId, year: 2023,
+                        vintageGrapes: ['   '] }, TEST_USER), 'must not be blank')
+
   // Branch 3 — existing producer, new product.
   const b3 = await mintEntries(
     { producerId: dispatchProducer.id, product: { name: 'P2TEST B3 Wine' }, year: 2020 }, TEST_USER)
@@ -1528,7 +1754,7 @@ async function main() {
   // only sanctioned matcher, so its plan is load-bearing at 500k+ rows.
   const eqPlan = await planFor(
     `SELECT id, status FROM producers
-      WHERE name_folded = lower(f_unaccent('P2TEST Cuvée № 5'))
+      WHERE name_folded = catalog_fold_v1('P2TEST Cuvée № 5')
         AND status IN ('provisional','confirmed') ORDER BY id`)
   ok(eqPlan.includes('"Node Type":"Index Only Scan"')
      && eqPlan.includes('producers_name_folded_idx'),

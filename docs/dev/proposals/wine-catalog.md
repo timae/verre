@@ -17,6 +17,18 @@ This doc specifies the **Foundation-first v1**: the correct identity + lifecycle
 Catalog reference data arrives through the app-owned, authenticated import contract (§ Catalog maintenance); it is curated before it reaches the app. Consequences:
 
 - The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`, `product_eans`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
+
+  ⚠️ **Nothing has shipped against this contract yet** — the first import has not run, so no consumer holds an earlier shape. The payload resulting from the migrations below is therefore declared **contract v1**; the table is *migration history explaining how v1 was reached*, not a series of version bumps. (The GiST/GIN index swap is not a wire-contract change at all — it is listed for completeness of the schema story.) The first real bump will be the first change made **after** an import has run.
+
+  **How v1 was reached:**
+  | Migration | Change |
+  |---|---|
+  | `20260725140000` | fold order corrected (`lower(f_unaccent(x))`) |
+  | `20260725160000` | GiST KNN + covering B-tree replace GIN |
+  | `20260725220000` | fold becomes `catalog_fold_v1`; whitespace canonicalized; `f_unaccent_arr` dropped |
+  | `20260726090000` | `wine_vintages.grapes` + `grapes_override` added |
+
+  ⚠️ The import contract must carry vintage-level grapes as **two fields**, not one: sending `grapes: []` alone is ambiguous between "inherit" and "none listed". Absent `grapes_override` (or `false`) means inherit and the array MUST be empty — a CHECK enforces it.
 - Imported entries arrive already curated. The app-side **review queue exists for user-added entries only** (confirm / merge / reject); merges and `linksTo` exist only here, where tasting data lives.
 - Prod persists **no source identifiers of any kind** on catalog rows (see the provenance rule — which is about PER-RECORD provenance and does not override licence attribution, handled at corpus level).
 
@@ -42,7 +54,7 @@ Four catalog tables plus two link columns on the existing `wines`. All PKs are 2
 
 **`wine_products`** — the product (groups vintages). The primary mergeable entity.
 - `id`, `name` + `nameFolded`, `category` (`wine` today; extensible), `style` (nullable; composite FK `(category, style)` → `category_styles`, like `wines`; values red/white/rosé/`spark`; `nonalc` is **transitional** — supported for v1 compatibility but not locked as permanent style identity, since ABV/alcohol attributes are the intended direction; dessert/fortified deferred), `abv` (nullable `Decimal` — every API response must coerce via `Number()` per the wire-format trap), `grapes` (**non-null** `text[]`, default `{}`) + `grapesFolded` (generated `text[]`, element-wise through the same fold helper), `region` + `regionFolded` (optional override of producer region; see region/grape), `scope`, `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
-- **`grapes` is non-null and `{}` means "no grapes recorded".** Prisma cannot model an optional scalar list, so `{}` is the sole representation of unrecorded and is therefore **enrichable**; there is no known-empty state in v1, and a deliberate empty becomes authoritative only via `curatorLocked`. See the implementation plan § Arrays are non-null.
+- **`grapes` is non-null and `{}` means "no grapes recorded".** Prisma cannot model an optional scalar list, so `{}` is the sole representation of unrecorded and is therefore **enrichable**; there is no known-empty state **on this table**, and a deliberate empty becomes authoritative only via `curatorLocked`. (`wine_vintages` DOES have one, via `grapes_override` — see the vintage grain.) See the implementation plan § Arrays are non-null.
 - **`scope`** (`shared` | `owned`) is reserved for the deferred ownership axis. **Every write boundary sets `scope` explicitly** — creation paths reject a missing scope rather than relying on the column default, so a future `owned` entry can never leak to public because a caller omitted the field.
 
 **`product_producers`** — many-to-many product ↔ producer with `role` (`lead` | `collaborator`). **Every product has exactly one `lead`** (plus 0..n collaborators). **Exactly-one-lead takes three separate pieces, not two** — see the implementation plan § Exactly one lead for the enforcement detail and the ordering traps:
@@ -53,7 +65,7 @@ Four catalog tables plus two link columns on the existing `wines`. All PKs are 2
 
 The single-producer case is simply lead-with-no-collaborators. A collaboration is one product with 2+ links, set at creation — NOT a merge.
 
-**`wine_vintages`** — the rating grain.
+**`wine_vintages`** — the rating grain. Carries `grapes` + `grapes_override` as well as `abv`: blend proportions shift year to year and a producer may drop a variety outright in a difficult vintage, so a product-only composition cannot record what is actually in the bottle. 🔒 **The flag is required, not stylistic** — Prisma returns `[]` for BOTH `NULL` and `{}` on a scalar list (measured), so a nullable array cannot distinguish "inherit the product's" from "genuinely none listed" in any application read path. Effective value is `CASE WHEN grapes_override THEN vintage.grapes ELSE product.grapes END`, never `COALESCE`. Added by `20260726090000_vintage_grapes_override` — ⚠️ **a versioned-contract change**, see § Data contract.
 - `id`, `productId` (FK), `year` (nullable), `abv` (nullable per-vintage override), `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
 - **`year = null` means the non-vintage instance exclusively — never "year unknown".** An unknown-year rating links at product level instead (see below), so NV rows stay clean.
 - **Uniqueness: one row per year and one NV row per product** — `UNIQUE NULLS NOT DISTINCT (product_id, year)`, or equivalently two partial unique indexes (non-null years; the null NV row). A plain compound unique would allow multiple null-year rows. Raw-SQL migration (Prisma can't express either form).
@@ -81,13 +93,13 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 
 ### Display vs folded names
 
-`name` preserves the accented display form; `nameFolded` is the **matching key** (`lower(f_unaccent(name))`) used by every fuzzy query. One value cannot serve both jobs. The folded value is produced by **one mandatory database-side normalization path** — a generated column (or trigger) — so no write path can make display and fold drift. ⚠️ **The fold lowercases LAST.** `f_unaccent(lower(…))` was the phase-1 form and it is wrong: some unaccent expansions produce capitals, so lowercasing first leaves uppercase in the "folded" value (`'Cuvée № 5'` → `cuvee No 5`) and two spellings of one name compare unequal. Corrected in `20260725140000_catalog_fold_order`; details in `prisma/CLAUDE.md`. Two indexes go on `nameFolded` (raw-SQL migration): a **GiST** trigram index for the KNN ordering that search uses, and a **covering B-tree** for folded equality. GIN was dropped — it is the wrong structure for `=` and nothing issues a containment query.
+`name` preserves the display form verbatim — accents, and whatever spacing the user typed; `nameFolded` is the **matching key** (`catalog_fold_v1(name)`, as shipped) used by every fuzzy query. One value cannot serve both jobs. The folded value is produced by **one mandatory database-side normalization path** — a generated column — so no write path can make display and fold drift. ⚠️ **Whitespace canonicalization belongs in that path too** (`20260725220000_catalog_fold_whitespace`): app-side trimming is real but is TypeScript-only, and the import path bypasses it. See `prisma/CLAUDE.md` for the function's ordering and the versioning rule. ⚠️ **The fold lowercases LAST.** `f_unaccent(lower(…))` was the phase-1 form and it is wrong: some unaccent expansions produce capitals, so lowercasing first leaves uppercase in the "folded" value (`'Cuvée № 5'` → `cuvee No 5`) and two spellings of one name compare unequal. Corrected in `20260725140000_catalog_fold_order`; details in `prisma/CLAUDE.md`. Two indexes go on `nameFolded` (raw-SQL migration): a **GiST** trigram index for the KNN ordering that search uses, and a **covering B-tree** for folded equality. GIN was dropped — it is the wrong structure for `=` and nothing issues a containment query.
 
 ### Field grain
 
 - **Producer**: brand name, country, base region, website.
 - **Product**: name, category, style, base ABV, grapes, optional region override.
-- **Vintage**: year, per-vintage ABV override.
+- **Vintage**: year, per-vintage ABV override, per-vintage **grape override** (`grapes` + `grapesOverride`).
 - **Product↔producer**: M:N with role.
 
 ### Region + grape: transitional strings, reserved entities
@@ -98,7 +110,7 @@ v1 stores region and grape with the same display/fold split as names: `region` (
 
 Fill-null enrichment cannot distinguish "unknown" from "a curator deliberately cleared an incorrect value." Each catalog row carries `curatorLocked` (a list of field names, e.g. `text[]`): a locked field's null is authoritative — the import path never fills it and read-time group coalescing never fills it. Set/cleared by curators only.
 
-**This covers array fields too, and there it is the only mechanism available.** A scalar has NULL to mean unrecorded, so an unlocked non-null scalar is already safe from enrichment. `grapes` is non-null (see § v1 data model), so `{}` means unrecorded and is enrichable by default — **a locked `{}` is the only way "this product genuinely has no grapes listed" becomes authoritative.**
+**This covers array fields too, and on `wine_products` it is the only mechanism available.** A scalar has NULL to mean unrecorded, so an unlocked non-null scalar is already safe from enrichment. `wine_products.grapes` is non-null (see § v1 data model), so `{}` means unrecorded and is enrichable by default — **a locked `{}` is the only way "this product genuinely has no grapes listed" becomes authoritative.** ⚠️ **`wine_vintages` is the exception**: its `grapes_override` boolean carries the known-empty state directly, so a vintage asserting "genuinely none" needs no curator lock. The flag exists because a nullable array could not express it — Prisma returns `[]` for both `NULL` and `{}` on a scalar list.
 
 ## Lifecycle
 
@@ -154,7 +166,7 @@ The review queue's merge unit is the **producer/product** grain. Vintages don't 
 
 ## Add-a-wine flow
 
-Search-first, three-level, and **one fuzzy implementation**: add-time search, review-queue suggestions, and post-import rescans all run the **same `pg_trgm` query over `nameFolded`** (there is no second matcher to drift — the old TS/SQL-parity CI-gate debt is struck). Explicit branches so an absent vintage or product can never mint a duplicate at the wrong grain:
+Search-first, three-level, and **one fuzzy MODULE**: add-time search, review-queue suggestions, and post-import rescans share one `pg_trgm` implementation over `nameFolded` — one fold, one scoring function, no second matcher to drift (the old TS/SQL-parity CI-gate debt is struck). 🔒 **Two query SHAPES within it** (ruled 2026-07-26): the interactive callers are **KNN top-N** (rank, return *n*); post-import bulk duplicate detection needs **everything above a threshold**, which top-N cannot express at any *n*. Explicit branches so an absent vintage or product can never mint a duplicate at the wrong grain:
 
 1. **Existing producer → existing product → existing vintage** — pick it; `wines.productId + vintageId` set. No new catalog row.
 2. **Existing product, missing vintage** — user supplies a plausible year (or NV) → mint the vintage row directly under that product (lightweight rule above). Unknown year → link at **product level** (`vintageId` null); the year can be supplied later.
@@ -182,8 +194,14 @@ Active session wines live in Redis (`s:{CODE}:wines`, 48h+ TTL) and archive to P
 Existing `wines` rows predate the catalog. A one-time backfill links them — the **sole exception** to "links are never set by strings", and it is exact-match-only, never fuzzy:
 
 - Auto-link only a **unique exact** producer + product match (folded-name equality, not similarity).
-- Set `vintageId` only when the row's year resolves to a **unique valid vintage** under that product; unknown/garbage years link at product level only.
-- Ambiguous rows are never fuzzy-linked; they stay `(null, null)`.
+- 🔒 **The vintage string resolves in THREE cases, not two** (data side, 2026-07-26). The two-case rule filed the literal token `NV` as garbage and dropped a real non-vintage fact to product grain — and prod already holds one: `Blanc de Blancs | Charles Heidsieck | NV`.
+  1. **Parseable plausible year** → that vintage row.
+  2. **Literal NV token** (`NV`, `N.V.`, `non-vintage`, case-insensitive) → the **NV row** (`year = null`), which is a positive fact, not an absence.
+  3. **Anything else** — garbage, unreadable, **or blank** → product level, no vintage row.
+  ⚠️ **Blank stays in case 3 deliberately.** It is genuinely ambiguous between "unknown year" and "NV", so the safe default is to under-claim and let a human promote it later. **Never infer NV from the style** — a sparkling wine is not thereby non-vintage.
+- Ambiguous rows are never fuzzy-linked; they stay `(null, null)`. ⚠️ **This is about PRODUCER/PRODUCT identity, not the vintage string.** An unparseable vintage after an EXACT product match does not strand the row — it stays **product-linked** (`productId` set, `vintageId` null), which is case 3 above.
+- 🔒 **Token handling:** scrub + trim, then a **case-insensitive exact allowlist** (`NV`, `N.V.`, `non-vintage`). Not a substring or prefix test — `"NV Selection"` is a wine name, not a non-vintage marker.
+- 🔒 **The backfill NEVER MINTS a missing year or NV row.** It links to vintages that already exist under the matched product; if the year (or the NV row) is absent, the row links at product grain. Minting from a legacy string would be creating catalog identity from a string match, which is the one thing this exception does not license.
 - The unmatched remainder is not stranded forever: it feeds the same **provisional review path** (surfaced as link-suggestions for curators/users), rather than remaining permanently outside the catalog.
 
 ## Catalog maintenance (import/refresh contract)
@@ -195,7 +213,7 @@ Ongoing catalog writes have **one owner — the app**: an internal authenticated
 - **Explicit ACK:** each batch's application is confirmed by an explicit acknowledgement; the caller may treat only ACK'd batches as applied, and a failed/unacknowledged batch is re-submittable idempotently. Without this, a mid-batch failure could be recorded as applied caller-side while prod never applied it — and diff-based retry would never re-send it.
 - **Fact rules — enforced server-side at apply time**, not delegated to the caller's read-before-write (otherwise a curator edit landing between the caller's read and write is silently reverted):
   - **`status` and `linksTo` are never accepted from the caller and never updated by import.** On insert the **server itself** assigns `status = 'confirmed'` and `linksTo = null`; on update neither field is touched. ("Lives only in the INSERT arm" described where the value is written, which read as though the caller supplied it — the point is that the value is server-assigned.) Lifecycle transitions are staff actions only.
-  - Existing non-null facts are never overwritten automatically — per-field `COALESCE(existing, incoming)` semantics in the write itself. **Array facts are the exception**: `grapes` is non-null, so an empty array is the only representation of *unrecorded* and IS enrichable by a non-empty incoming value (a locked `{}` still wins). See the implementation plan § Arrays are non-null.
+  - Existing non-null facts are never overwritten automatically — per-field `COALESCE(existing, incoming)` semantics in the write itself. **Product array facts are the exception**: `wine_products.grapes` is non-null, so an empty array is the only representation of *unrecorded* and IS enrichable by a non-empty incoming value (a locked `{}` still wins). ⚠️ **Vintage grapes invert this** — under `grapes_override = true` the array is an assertion, including `{}`, and is never enriched. See the implementation plan § Arrays are non-null.
   - Null facts may be enriched **unless curator-locked** — the `curatorLocked` exclusion applied server-side.
 - **Abort fence:** a batch whose change volume is unexpectedly large (relative to catalog size / declared counts) trips an abort instead of applying.
 - **Import never deletes.** Absence from a batch is never deletion, and the import path has no delete operation at all — removing a catalog row is exclusively the audited staff **hard purge** (§ Lifecycle), which the import identity is not authorized to perform. An upstream retraction arrives as an explicit retraction record that only **flags** the entry for staff review (toward `archived`/`rejected`/purge, decided by a human).

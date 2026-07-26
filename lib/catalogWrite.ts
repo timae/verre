@@ -164,6 +164,28 @@ function optionalCountry(raw: unknown): string | null {
 // null — which matters because the phase-4 fill is
 // `CASE WHEN cardinality(existing) = 0 …` and `cardinality(NULL)` is NULL, not
 // 0, making a NULL row permanently unenrichable.
+// 🔒 STRICT variant for the VINTAGE grain, where normalization-to-empty CHANGES
+// MEANING. At product grain `{}` means "not recorded" and a permissive
+// normalizer that drops junk is fine. At vintage grain `{}` under a set flag is
+// an ASSERTION ("this vintage genuinely has none"), so silently coercing a
+// malformed list into it would manufacture a claim the caller never made —
+// measured before this existed: `vintageGrapes: [123]` stored as an
+// authoritative empty. Reject instead; the caller gets a 400 and can retry.
+function normalizeVintageGrapes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) throw new CatalogValidationError('vintage grapes must be an array')
+  const out: string[] = []
+  for (const g of raw) {
+    if (typeof g !== 'string') throw new CatalogValidationError('each vintage grape must be a string')
+    const s = optionalFact(g, 64)
+    if (!s) throw new CatalogValidationError('vintage grape entries must not be blank')
+    if (!out.includes(s)) out.push(s)
+  }
+  // ⚠️ Truncating an AUTHORITATIVE list would silently publish a shorter
+  // composition than the caller asserted. Reject.
+  if (out.length > 24) throw new CatalogValidationError('at most 24 vintage grapes')
+  return out
+}
+
 function normalizeGrapes(raw: unknown): string[] {
   if (!Array.isArray(raw)) return []
   const out: string[] = []
@@ -319,13 +341,41 @@ export async function createVintage(
   addedBy: number | null,
   abv: number | null,
   tx: Prisma.TransactionClient,
+  // 🔒 Per-vintage GRAPE override. `grapes: undefined` (or omitting `opts`
+  // entirely) means INHERIT the product's — the default and the overwhelmingly
+  // common case. Supplying an array, INCLUDING an empty one, sets the override
+  // flag: `[]` is the deliberate "this vintage genuinely has none listed".
+  //
+  // ⚠️ The flag exists because a nullable array cannot express this: Prisma
+  // returns `[]` for both NULL and `{}` on a scalar list, so the distinction
+  // would be invisible to every application read path. See the schema comment.
+  //
+  // A trailing options object rather than more positionals — six is already
+  // past the point where call sites are readable, and the next vintage field
+  // should go in here too rather than extending the signature again.
+  opts?: { grapes?: string[] },
 ): Promise<{ id: string }> {
   if (!productId) throw new CatalogValidationError('productId is required')
+  // 🔒 PRESENCE DETERMINES INTENT. An earlier version normalized an override
+  // equal to the product's grapes back to inherit, as a belt against a client
+  // posting the field unconditionally. That was WRONG twice over:
+  //   • `[]` is truthy in JS, so an explicit "genuinely none" over a product
+  //     whose grapes are ALSO `{}` was silently downgraded to inheritance —
+  //     measured: {grapes:[], grapesOverride:false}. The exact assertion the
+  //     flag exists to carry, discarded.
+  //   • Even when correct, discarding an explicit override because it happens
+  //     to equal TODAY's product value means a later product edit silently
+  //     rewrites that vintage's composition.
+  // A client that posts unconditionally is a client bug to fix or version, not
+  // a reason to reinterpret an explicit write.
+  const grapes = opts?.grapes === undefined ? null : normalizeVintageGrapes(opts.grapes)
   const data = {
     id: nanoid(21),
     productId,
     year: validateYear(year),
     abv: normalizeAbv(abv),
+    grapes: grapes ?? [],
+    grapesOverride: grapes !== null,
     status: PROVISIONAL,
     addedBy,
   }
