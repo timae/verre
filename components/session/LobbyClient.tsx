@@ -296,6 +296,12 @@ function FeatureShowcase() {
         Free to taste. <Link href="/register" style={{color:'var(--accent)'}}>Create an account</Link> to keep your history.
         Pro features unlock blind tastings and more.
       </p>
+      {/* 🔒 The signed-out entry point to the catalog attributions — a LICENCE
+          OBLIGATION surface, so it must be reachable without knowing the URL
+          and without an account. The signed-in counterpart lives in /me. */}
+      <p style={{textAlign:'center',marginTop:8,fontSize:10,color:'var(--fg-faint)',letterSpacing:'0.06em'}}>
+        <Link href="/legal/attributions" style={{color:'var(--fg-dim)'}}>Attributions</Link>
+      </p>
     </div>
   )
 }

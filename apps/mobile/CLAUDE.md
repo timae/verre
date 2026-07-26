@@ -588,6 +588,67 @@ without reversing the presentation.
   answers, export-compliance confirmation, and TestFlight beta review details.
   `ITSAppUsesNonExemptEncryption=false` is already set in `app.json`.
 
+## About / Attributions (You tab)
+
+`app/about.tsx` is a hub (app version + legal rows; Terms/Privacy land here when
+they exist) and `app/attributions.tsx` renders the wine-catalog source
+attributions. Both draw their own `VBar`.
+
+🔒 **THEY LIVE AT THE APP ROOT, OUTSIDE `<Stack.Protected>`** (`app/_layout.tsx`),
+NOT under `(tabs)/you` — the same placement as `update-required`, for the same
+reason: the attributions are a licence obligation and must render for a
+signed-out user on first launch, before any account exists. Under `(tabs)` they
+were session-gated and unreachable exactly when someone evaluating the app wants
+to read them. Entry points: the `(auth)` landing screen when signed out, and
+You → About when signed in. ⚠️ They are outside the tab bar, so they use plain
+bottom padding — **no `TAB_BAR_CLEARANCE`** (the pill does not render there).
+
+🔒 **This is a LICENCE-OBLIGATION surface, not a credits screen.** Four rendering
+rules are load-bearing and must survive any redesign or refactor:
+
+1. **BOTH links render, each labelled** — `licence.url` ("<SPDX> licence") and
+   `sourceUrl` ("Source"). 🔒 They are SEPARATE fields because CC BY requires
+   "provide a link to **the license**" and OGL-BC requires a link to the licence;
+   a single `url` left LWIN linking a dataset page instead of its licence. The
+   licence link is the compliance-relevant one. Opens via `expo-web-browser`.
+2. **`licence.text` renders VERBATIM** — no trim, no re-wrap, no normalisation.
+   MIT requires its full notice reproduced. ⚠️ The OGL-BC statement contains an
+   **EN DASH (U+2013)**, not a hyphen — BC's own page title uses a hyphen while
+   the required statement uses an en dash, so a punctuation "cleanup" would
+   alter a legally required string.
+3. **`verified: false` renders its caveat VISIBLY.** The flag exists so a
+   best-guess paraphrase cannot silently become the record; hiding it reproduces
+   that failure one layer down.
+4. **The bundled-fallback staleness notice must show.** See below.
+
+**Why there are two copies of the entries.** The server holds them as deploy
+config (`lib/attributions.ts`) so adding a source is an ops change, not a
+release. A native binary cannot read server env, so the app fetches
+`GET /api/legal/attributions` (public, unauthenticated — a legal surface must
+render for a signed-out user on first launch) and falls back to a bundled
+snapshot in `src/lib/api/legal.ts` when offline. `fetchAttributions` NEVER throws
+and never returns an empty list; it reports `origin: 'live' | 'bundled'` and the
+screen renders a staleness notice for `'bundled'`. 🔒 **Do not "simplify" that
+notice away** — two copies of legal text can disagree, and the stale one must
+never masquerade as current.
+
+⚠️ **The query sets `networkMode: 'always'` + `refetchOnReconnect: 'always'`, and
+both are load-bearing.** TanStack defaults to `networkMode: 'online'` and
+`lib/query.tsx` wires NetInfo into `onlineManager`, so by default the query is
+PAUSED offline and the fetcher never runs to return its fallback — the screen
+spins forever in exactly the case the fallback serves. `'always'` then disables
+the default reconnect refetch, hence the second option; it must be the literal
+`'always'` and not `true`, because a bundled result is fresh for an hour and
+`true` would honour `staleTime` and skip the refetch the notice promises.
+
+⚠️ **Changing either copy means changing both.** `scripts/check-attributions-parity.mjs`
+(workflow `check-attributions-parity`) compares every legally-meaningful field
+BYTE-FOR-BYTE, asserts no unverified entry ships, and fails if the en dash is
+normalised. `scripts/tests/attributions-offline-units.ts` in the same workflow
+drives the REAL fetcher against six failure modes and pins the two query options
++ the outside-the-guard placement. Every mutation named above was verified to
+fail one of them.
+
 ## Dev workflow
 
 - Backend URL: Simulator uses `http://localhost:3000`; a physical device needs

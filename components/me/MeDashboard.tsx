@@ -254,6 +254,14 @@ export function MeDashboard({ user }: { user: User }) {
               ))}
             </div>
           )}
+
+          {/* 🔒 The signed-in entry point to the catalog attributions — a
+              LICENCE OBLIGATION surface. Deliberately OUTSIDE the
+              show('quick_links') gate: that row is a user preference and can be
+              hidden, and a legal surface must not be hideable. */}
+          <p style={{fontSize:10,color:'var(--fg-faint)',letterSpacing:'0.06em',marginTop:4}}>
+            <Link href="/legal/attributions" style={{color:'var(--fg-dim)'}}>Attributions</Link>
+          </p>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
@@ -89,6 +89,21 @@ export default function Launch() {
             <Button title="Get Started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />
             <Button title="Sign In" bar block variant="ghostlight" onPress={() => router.push('/sign-in')} />
           </View>
+          {/* 🔒 The signed-out entry point to the legal surfaces. The catalog
+              attributions are a LICENCE OBLIGATION and must be readable before
+              an account exists — this is the only pre-auth screen that can
+              carry the link. Deliberately quiet (no button weight) so the two
+              CTAs keep the hero's emphasis. ⚠️ This is an addition to a
+              pixel-spec'd brand-custom screen; placement/treatment is open to
+              Simon's call. */}
+          <Pressable
+            accessibilityRole="link"
+            onPress={() => router.push('/about')}
+            hitSlop={10}
+            style={({ pressed }) => ({ alignItems: 'center', marginTop: 18, opacity: pressed ? 0.5 : 1 })}
+          >
+            <VText variant="caption" style={{ color: 'rgba(255,255,255,0.72)' }}>About &amp; attributions</VText>
+          </Pressable>
         </View>
       </ScrollView>
     </View>

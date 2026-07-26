@@ -62,6 +62,13 @@ function RootNavigator() {
         </Stack.Protected>
         {/* Outside both guards: must be reachable in any auth state (proposal 04). */}
         <Stack.Screen name="update-required" options={{ gestureEnabled: false }} />
+        {/* 🔒 Legal surfaces sit outside BOTH guards for the same reason: the
+            attributions are a LICENCE OBLIGATION and must render for a
+            signed-out user, on first launch, before any account exists. Inside
+            (tabs) they would be session-gated and unreachable exactly when
+            someone evaluating the app wants to read them. */}
+        <Stack.Screen name="about" />
+        <Stack.Screen name="attributions" />
       </Stack>
     </NavThemeProvider>
   );
