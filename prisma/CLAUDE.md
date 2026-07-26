@@ -18,6 +18,37 @@ npx prisma migrate dev --name <description>
 
 `prisma db push` is **no longer the canonical workflow** — it bypasses migration history. Only use it during early local exploration where you don't yet care about reproducibility, and never against production.
 
+## 🔒 Editing a migration after it has been applied
+
+**Reported by the catalog-maintenance side (2026-07-26), reproduced and extended here.** Prisma records a sha256 `checksum` per applied migration in `_prisma_migrations`. Editing an already-applied `migration.sql` — even adding a comment — diverges the file from that record.
+
+**What each command actually detects** (measured, not assumed):
+
+| Command | Detects an edited applied migration? |
+|---|---|
+| `prisma migrate status` | **No** — reports "Database schema is up to date!" |
+| `prisma migrate deploy` | **No** — reports "No pending migrations to apply." |
+| `prisma migrate dev` | **Yes** — *"was modified after it was applied"*, and demands a reset |
+| `scripts/check-migration-checksums.mjs` | **Yes** |
+
+⚠️ **`deploy` is the one that runs in production**, and it is blind. So on any shared database there is no first-party command that answers *"do the applied migrations still say what they said?"*
+
+**Three lifecycle states, and the rule differs by state:**
+
+1. **Local, never shared** — editing is fine **provided you reset and reapply** (`prisma migrate reset`). `migrate dev` enforces this itself.
+2. **Applied to shared / staging / production** — 🔒 **never edit in place.** The edit is invisible to `status` and `deploy`, so the repo silently stops describing what every such environment actually ran.
+3. **Already edited after sharing** — restore the original bytes; put the correction in a **new migration** or in the docs. Do not reconcile the checksum.
+
+This is why the stale comment in `20260725090000_wine_catalog_schema` (about "no known-empty state in v1") was deliberately left uncorrected — state 2.
+
+**Verifier:**
+
+```bash
+DATABASE_URL=… node scripts/check-migration-checksums.mjs
+```
+
+Uses Node's `crypto` (⚠️ not `sha256sum`, which is absent on macOS), joins by `migration_name` rather than output order, and takes `DATABASE_URL` explicitly (⚠️ `psql` does **not** read `.env` the way Prisma does). Exits non-zero on a mismatch or a recorded migration whose file is gone. Pending local migrations and rolled-back/unfinished rows are reported separately and are **not** failures. Verified against all four cases: clean → pass; comment added to an applied migration → fail; pending local migration → reported pending; rolled-back row → classified, not failed.
+
 ## Destructive schema changes — never automate
 
 Routine, additive schema changes (new columns with defaults, new tables, new indexes, widening varchars, additive foreign keys) flow through the normal migration pipeline and apply automatically on deploy.

@@ -185,6 +185,89 @@ Curator-gated, per the phase-1 permission map. Merge is pointer + lifecycle only
 
 ## Phase 4 — Integration-schema migration
 
+### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
+
+**Raised by the catalog-maintenance side, 2026-07-26, and accepted.** `catalog_fold_v1` is a Postgres function name inside our schema — **it appears nowhere in the contract**, so nothing on a consumer's side can detect a bump. The versioned name makes divergence *diagnosable after the fact*; it does not prevent it.
+
+⚠️ **The failure MAY be invisible, and exact-match agreement is ALWAYS at risk.** For the whitespace defects actually observed here, `pg_trgm` tokenises whitespace away so trigram search kept working and nothing looked broken. ⚠️ That is not general: a transliteration or token-boundary change WOULD alter trigram results too. The reliable statement is the narrower one — **every fold change threatens exact-match agreement (dedupe, the exact-match-only legacy backfill), and some fold changes will not show up in search at all.**
+
+Three commitments:
+
+1. **Announce a fold change BEFORE deploy, never after** — a hard release condition, not a courtesy.
+2. 🔒 **Carry the fold identity in the import/pull handshake**, with a mismatch as a **HARD FAILURE**, not a warning. This is the one that **detects** divergence mechanically; the other two are discipline, and discipline is what failed twice in this workstream already. ⚠️ It does not *prevent* a bad deploy — it stops an exchange after the fact, which is why the announce-first condition stays. Design it into the contract below rather than retrofitting it.
+
+   🔒 **ONE COMPOSITE IDENTITY, derived — never a literal, never a bare name.** Closed design:
+
+   ```sql
+   WITH defs AS (
+     SELECT string_agg(md5(pg_get_functiondef(sig::regprocedure)), '|' ORDER BY ord) AS d
+     FROM unnest(ARRAY['public.catalog_fold_v1(text)',
+                       'public.catalog_fold_arr_v1(text[])',
+                       'public.f_unaccent(text)']) WITH ORDINALITY AS t(sig, ord)
+   ), dict AS (                                        -- 🔒 THE EXACT DEPENDENCY, not a template scan
+     SELECT 'public.unaccent:' || coalesce(d.dictinitoption,'') || ':'
+            || tn.nspname || '.' || t.tmplname AS k
+     FROM pg_ts_dict d
+     JOIN pg_ts_template t ON t.oid = d.dicttemplate
+     JOIN pg_namespace tn ON tn.oid = t.tmplnamespace
+     WHERE d.oid = 'public.unaccent'::regdictionary
+   ), ext AS (SELECT extversion AS v FROM pg_extension WHERE extname = 'unaccent'),
+      probes AS (
+     SELECT string_agg(public.catalog_fold_v1(s), '|' ORDER BY ord) AS p   -- 🔒 SCHEMA-QUALIFIED
+     FROM unnest(ARRAY['Château Margaux','Grüner Veltliner®','Cuvée № 5','Straß','Œnologie','Ølgod',
+                       E'a  b', E'a\tb', E'a\u00a0b', E'a\u200bb', E'a\u200cb', '  x  ']
+                ) WITH ORDINALITY AS t(s, ord)
+   )
+   SELECT 'fold1:' || md5(defs.d || '~' || ext.v || '~' || dict.k || '~' || probes.p)
+   FROM defs, ext, dict, probes;
+   -- ours, 2026-07-26: fold1:aff3f19f44ae1df7010843bf278b05cb
+   ```
+
+   Six design points, each closing a measured hole:
+
+   - **Composite, not the wrapper alone.** ⚠️ **Measured: replacing `f_unaccent` left `md5(prosrc)` of `catalog_fold_v1` BYTE-IDENTICAL** (`b2c78d…` before and after). A wrapper hash cannot see its own dependency, so identical hashes could have produced different folds. ✅ **Then confirmed in the wild, which is stronger than the demo**: on first exchange the two sides disagreed (`aff3f19f…` vs `187f0d75…`) and decomposition isolated it to `f_unaccent` alone — theirs was one padded line, ours newline-plus-two-space-indent. Identical behaviour, different text, **`catalog_fold_v1` byte-identical throughout**. A single-function identity would have reported agreement. Realigned byte-for-byte; both sides now derive `aff3f19f44ae1df7010843bf278b05cb`.
+   - **`regprocedure`, never `proname`.** ⚠️ **Measured: with a `decoy.catalog_fold_v1` present, a `proname` filter returns 2 rows.**
+   - 🔒 **The PROBE CALL is schema-qualified too.** ⚠️ **Measured: with `search_path = decoy, public`, an unqualified `catalog_fold_v1(s)` resolved to the decoy and returned `'evil'`, changing the identity** (`a8870ae2…` vs the correct `a07363…`). Resolving the *definitions* unambiguously is not enough if the *probe invocation* is still search-path dependent — a hole the first version of check 3 could not see, because it never hijacked the path.
+   - **`pg_get_functiondef`, not `prosrc`** — covers signature, return type, volatility, `STRICT`, `PARALLEL SAFE`. A body-only hash misses an attribute change that alters behaviour.
+   - 🔒 **The dictionary lookup names the EXACT dependency** — `d.oid = 'public.unaccent'::regdictionary`, never a scan for dictionaries using the unaccent *template*. ⚠️ **Measured: an unused `decoy.unaccent` dictionary elsewhere in the database changed the identity while the fold was untouched** — a spurious hard-fail on a handshake whose whole point is that a mismatch blocks. The `regdictionary` cast also hard-errors if the dictionary is missing, which is the correct outcome. The template's qualified name and `dictinitoption` are serialized into the value.
+   - 🔒 **Dictionary CONFIGURATION, not just extension version.** ⚠️ **Measured: pointing the `unaccent` dictionary at a different rules file changed the fold while all three function definitions AND `extversion` stayed byte-identical.** `pg_ts_dict.dictinitoption` is what moves (`rules = 'unaccent'` → `rules = 'verre_alt'`), so it is part of the identity.
+
+   ⚠️ **THE PROBES ARE A FINITE SAMPLE, NOT A PROOF — and this was measured, not assumed.** In the dictionary-swap test above the rule added was for `Å`, which **none of the 12 probes contains**: a probes-only identity returned the ORIGINAL baseline `eef4d274…` and **missed the change entirely**. The dictionary component is what caught it. So:
+   - **Source + dictionary hashes** are the load-bearing components — they cover *any* change to code or dictionary configuration.
+   - **The probe vector is a cheap belt** against a behaviour change that somehow leaves both unchanged. It proves the sampled inputs agree; it does **not** prove the folds are equivalent.
+   - An unprobed character whose behaviour changes without touching a definition, `extversion`, or `dictinitoption` would still slip through. Accepted: that requires an in-place edit of the rules file itself. **If that risk matters later, fingerprint the rules artifact** (e.g. a checksum of the file) rather than widening the probe list, which cannot close a gap of this shape.
+
+   🔒 **Exactly ONE value on the wire. A mismatch — or any component missing — is a HARD FAILURE**, never a warning or a degraded mode.
+
+   ⚠️ **"Cannot compute one at all" is the SAME failure as "computes a different one"** — recorded from how this actually failed in practice. `::regprocedure` **errors** when the function is absent, which is what the maintenance side hit before they had created `catalog_fold_arr_v1`. So the handshake must treat *missing or unparseable* identically to *mismatched*: **never absent-so-skip**, or a side that never created a component negotiates its way past the check. The strict cast is the desired behaviour, not an inconvenience.
+
+   🔒 **The array helper is CONTRACT SURFACE even where it backs no column.** The maintenance side initially argued `catalog_fold_arr_v1` should stay off the wire as prod-internal, then reversed: scoping the identity to "functions both sides happen to have" makes it **negotiable per deployment**, which defeats a single opaque comparison. It is on the wire regardless of who calls it; their side has created it byte-identical, currently backing no column.
+
+   🔒 **The handshake SUPPLEMENTS the `_v2`-plus-column-rewrite rule; it does not replace it.** The handshake detects divergence between two systems; the rewrite is what makes a deliberate change correct on ours. Both are required.
+
+   **Adversarial checks, measured against a clean PG 17 migration** (baseline `fold1:aff3f19f44ae1df7010843bf278b05cb`):
+
+   | # | Mutation | Result |
+   |---|---|---|
+   | 1 | `f_unaccent` body changed | **DIFFERS** |
+   | 2 | `catalog_fold_arr_v1` changed | **DIFFERS** |
+   | 3 | `decoy.catalog_fold_v1` + `search_path = decoy, public` | **SAME** — qualification holds |
+   | 3c | …same, but with the probe UNqualified | **DIFFERS** `a8870ae2…` — the hole, reproduced |
+   | 4 | Cosmetic reformat, identical output | **DIFFERS** — intended |
+   | 5 | Dictionary `RULES` swapped; defs + `extversion` byte-identical | **DIFFERS** — caught by the dict component |
+   | 5b | …same, with the dict component removed (probes only) | **SAME as baseline** — probes missed it |
+   | 6 | Unused `decoy.unaccent` dictionary added | **SAME** — no false positive |
+   | 7 | `public.unaccent` dropped | **hard ERROR** — missing component fails loudly |
+
+   **Opaque, not structured/semver** — agreed both sides, and for a stronger reason than avoiding interpretation: **a fold has no compatible-change class.** Any change altering output for any input breaks stored values on both sides; any change that doesn't isn't a semantic version. There is nothing for structure to express.
+
+   ⚠️ **Two senses of "change", kept distinct.** A cosmetic edit is **not a semantic version change** (output identical, no column rewrite owed) but it **does** break the **byte-identity contract** and so fails the handshake — by design. Byte-identity is already the rule on both sides (the maintenance-side migration reads *"VERBATIM from the app's migration — do not tidy it"*). Cost of that failure: a loud block and an hour diffing two bodies. Cost of the failure it replaces: silent catalog divergence.
+
+   **Blast radius of a `_v2`, measured against `information_schema` rather than estimated** — **five generated columns, all on `producers` and `wine_products`**: `producers.name_folded`, `producers.region_folded`, `wine_products.name_folded`, `wine_products.region_folded`, `wine_products.grapes_folded`.
+
+✅ **`wine_vintages` is NOT exposed** — it has no folded column at all, deliberately (search never touches vintages; see `20260726090000`). So a bump rewrites the **~320k searchable rows**, not the ~2.15M vintage rows. ⚠️ An earlier claim in this workstream said a bump would drag `wine_vintages` too — **wrong by ~7×**, caught by the data side. The conclusion is unchanged (before the fill is far cheaper than after) but the cliff is smaller than stated, which matters if the number is used to force a decision.
+
+
 This is a **second migration phase**, not pure application code: service principals, import sessions/batches, ACK state, the purge ledger, and durable rescan work all require structural tables.
 
 **Auth.** Catalog import/pull routes are **strictly bearer-only — no cookie fallback, no `resolveUser` call.** Once a bearer credential authenticates, CSRF is structurally irrelevant because the credential is not ambient. Note `lib/csrf.ts` already returns true for a genuinely-missing `Origin` (server-to-server callers pass today), so no exemption is needed — and 🔒 **do not tighten `isSameOrigin` globally here**: native auth is cookie-based and may legitimately omit `Origin`. Broader CSRF tightening is a separate cross-cutting review, not a rider on this phase.
