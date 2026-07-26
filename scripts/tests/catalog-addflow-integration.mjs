@@ -1326,20 +1326,49 @@ async function main() {
     'clearing the vintage to empty IS an identity change and clears the link')
 
   // 🔒 THE COMPARISON MUST MATCH THE WRITE'S OWN NORMALIZATION. The write path
-  // scrubs control/zero-width characters and truncates `vintage` to 4 chars, so
-  // comparing the RAW body value reported a change where the STORED value would
-  // not actually move — silently dropping a correct link on an edit that
-  // changes nothing. Both cases below were verified to clear the link before
-  // the fix.
+  // scrubs control/zero-width characters and canonicalizes `vintage` through
+  // the shared normalizer, so comparing the RAW body value reported a change
+  // where the STORED value would not actually move — silently dropping a
+  // correct link on an edit that changes nothing.
+  //
+  // ⚠️ UPDATED: the vintage rule is no longer "truncate to 4 chars". It is
+  // EXACTLY four digits or the NV token, else empty — a partial or overlong
+  // value is dropped rather than sliced, because slicing invents a year the
+  // user never typed. So '2019-2020' normalizes to EMPTY (not to '2019'), the
+  // stored value really does move, and the link MUST clear. The earlier
+  // expectation here encoded the truncating write and became wrong when the
+  // contract tightened.
   eq(applyIdentityEditRule(linked, { vintage: '2019-2020' }, null),
+    { productId: null, vintageId: null },
+    'an overlong vintage normalizes to EMPTY, so the stored value moves and the link clears')
+  // The canonicalization case that must NOT clear: 'N.V.' and 'NV' store the
+  // same value, so an edit between them changes nothing.
+  eq(applyIdentityEditRule({ ...linked, vintage: 'N.V.' }, { vintage: 'NV' }, null),
     { productId: prod.id, vintageId: vintage.id },
-    'a vintage the write TRUNCATES back to the stored value is not an identity change')
+    'canonicalizing N.V. to NV stores the same value and keeps the link')
+  // 🔒 `name` is REQUIRED, so the write does `scrub(name) || existing` (the
+  // check-in PATCH) or rejects outright (the session path). An invalid or blank
+  // name is therefore IGNORED and the stored name retained — nothing moves, so
+  // the link must survive. `vintage` is optional and stores its empty value, so
+  // it is deliberately NOT symmetric with this.
+  eq(applyIdentityEditRule(linked, { name: '' }, null),
+    { productId: prod.id, vintageId: vintage.id },
+    'a blank name is ignored by the write (falls back), so the link survives')
+  eq(applyIdentityEditRule(linked, { name: 123 }, null),
+    { productId: prod.id, vintageId: vintage.id },
+    'a non-string name is ignored by the write, so the link survives')
+  // But a NON-STRING VINTAGE does clear: scrub() rejects it, so the write
+  // stores empty. A String(v)-coercing comparator kept the link here while the
+  // write blanked the vintage — blank vintage, retained vintage-grain link.
+  eq(applyIdentityEditRule(linked, { vintage: 2019 }, null),
+    { productId: null, vintageId: null },
+    'a numeric vintage is rejected by scrub, so the write stores empty and the link clears')
   // ​ is a zero-width space: invisible in the name, removed by scrub(), so
   // the stored value is byte-identical to what's already there.
   eq(applyIdentityEditRule(linked, { name: `Grand​ Vin` }, null),
     { productId: prod.id, vintageId: vintage.id },
     'a zero-width character the write SCRUBS out is not an identity change')
-  // Paired negative: a vintage change that genuinely survives truncation DOES
+  // Paired negative: a vintage change that genuinely survives canonicalization DOES
   // clear — proving the rule still bites where it should.
   eq(applyIdentityEditRule(linked, { vintage: '2021' }, null),
     { productId: null, vintageId: null },

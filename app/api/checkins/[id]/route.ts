@@ -7,7 +7,7 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors, fillFlavourZeros } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
-import { validateScore, decimalToNumber, normalizeCode } from '@verre/core'
+import { validateScore, decimalToNumber, normalizeCode, normalizeVintageText } from '@verre/core'
 import { WatchError } from 'redis'
 import { redis, k, TTL, existsKey, touchWithMeta } from '@/lib/redis'
 import { engagementDeletionCascade } from '@/lib/engagementCascade'
@@ -278,7 +278,8 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       data: {
         name:     wineName !== undefined ? (scrub(wineName) || wine.name) : wine.name,
         producer: producer !== undefined ? scrub(producer)                 : wine.producer,
-        vintage:  vintage  !== undefined ? (scrub(vintage)?.slice(0,4) || null) : wine.vintage,
+        // Canonicalize, don't truncate — see lib/session.ts.
+        vintage:  vintage  !== undefined ? (normalizeVintageText(scrub(vintage) ?? '') || null) : wine.vintage,
         grape:    grape    !== undefined ? scrub(grape)                    : wine.grape,
         // Validate `type` against the seeded category_styles. Unknown
         // values coerce to NULL — see POST handler for the rationale.

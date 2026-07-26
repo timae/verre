@@ -354,7 +354,8 @@ export type AddWineBody = {
   name: string;
   type: WineTypeCode;
   producer?: string;
-  vintage?: string; // server truncates to 4 chars
+  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
+  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
   grape?: string; // design "Variety"
   region?: string;
   country?: string; // ISO 3166-1 alpha-2; invalid codes drop server-side

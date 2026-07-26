@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
+import { normalizeVintageText } from '@verre/core'
 import { FlavorChips } from '@/components/rate/FlavorChips'
 import { IntensityHelp } from '@/components/rate/IntensityHelp'
 import { LocationPicker } from './LocationPicker'
@@ -138,7 +139,7 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
     const res = await fetch(url, {
       method, headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        wineName, producer, vintage, grape, type,
+        wineName, producer, vintage: normalizeVintageText(vintage), grape, type,
         // Normalise flavours (structure-wheel §5 zero rule): any axis rated →
         // every axis of this style stored (untouched = explicit 0); all-None →
         // {}. Also the edit-path transform (§6g) — only registry keys survive, so

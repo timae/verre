@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid'
 import { WatchError } from 'redis'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
+import { normalizeVintageText } from '@verre/core'
 import { uploadImage } from '@/lib/s3'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
 import type { Identity } from '@/lib/identity'
@@ -474,7 +475,14 @@ export async function addWineToSession(
     id,
     name,
     producer: clean(body.producer),
-    vintage: clean(body.vintage).slice(0, 4),
+    // 🔒 Canonicalize, don't truncate. A direct client can send 'N.V.',
+    // 'non-vintage', a partial year or 'NV Selection'; `.slice(0,4)` would have
+    // stored 'N.V.', '2' or 'NV S' verbatim. The server is the authority — the
+    // clients normalize for UX, not for correctness.
+    // 🔒 `applyIdentityEditRule` (lib/catalogWrite.ts) MIRRORS this rule so its
+    // "compare what will actually be stored" comparison stays honest. Change
+    // one, change the other.
+    vintage: normalizeVintageText(clean(body.vintage)),
     grape: clean(body.grape),
     type,
     image,

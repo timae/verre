@@ -5,7 +5,7 @@ import { Alert, Image, Pressable, ScrollView, TextInput, View } from 'react-nati
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { countryName } from '@verre/core';
+import { countryName, filterVintageInput } from '@verre/core';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { RoleChip } from '@/components/moments/RoleChip';
@@ -17,6 +17,7 @@ import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
+import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
@@ -231,18 +232,15 @@ export function ImpressionForm({
     if (!name.trim()) { setError('Give the impression a name.'); return; }
     if (!type) { setError('Pick a type.'); return; }
     setSaving(true);
-    const base = {
-      name: name.trim(),
-      type,
-      ...(producer.trim() ? { producer: producer.trim() } : {}),
-      ...(vintage.trim() ? { vintage: vintage.trim() } : {}),
-      ...(grape.trim() ? { grape: grape.trim() } : {}),
-      ...(region.trim() ? { region: region.trim() } : {}),
-      ...(country ? { country } : {}),
-      ...(process.trim() ? { vinification: process.trim() } : {}),
-      ...(description.trim() ? { description: description.trim() } : {}),
-      ...(purchaseUrl.trim() ? { purchaseUrl: purchaseUrl.trim() } : {}),
-    };
+    // 🔒 ADD and EDIT need DIFFERENT payload shapes and the split is TESTED, not
+    // spelled inline — see lib/impressionPayload.ts for the why (an EDIT must
+    // send a cleared field explicitly, or the server reads the omission as
+    // "unchanged" while still storing the empty value). Do not re-derive this
+    // here; the wiring gate asserts this call.
+    const base = buildImpressionPayload(
+      { name, type, producer, vintage, grape, region, country, vinification: process, description, purchaseUrl },
+      mode,
+    );
     try {
       if (mode === 'edit') {
         if (!wineId) throw new Error('missing wine id');
@@ -367,15 +365,24 @@ export function ImpressionForm({
             <TextField label="Name" placeholder="e.g. Oslavje" value={name} onChangeText={setName} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => vintageRef.current?.focus()} />
           </View>
           <View style={{ width: 76 }}>
-            {/* number-pad has no return key — chained as a focus TARGET only. */}
+            {/* Accepts a year OR "NV" (non-vintage), so the keyboard must reach
+                letters — a number-pad made NV literally untypeable, and the
+                per-keystroke \D strip made it unreachable even by paste.
+                `filterVintageInput` allows an NV-token prefix through while
+                typing; `normalizeVintageText` canonicalizes on submit.
+                Dropping number-pad also gives this field a return key, so it
+                can finally continue the focus chain instead of dead-ending. */}
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year"
+              placeholder="Year / NV"
               value={vintage}
-              onChangeText={(t) => setVintage(t.replace(/\D/g, '').slice(0, 4))}
-              keyboardType="number-pad"
-              maxLength={4}
+              onChangeText={(t) => setVintage(filterVintageInput(t))}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              returnKeyType="next"
+              submitBehavior="submit"
+              onSubmitEditing={() => producerRef.current?.focus()}
             />
           </View>
         </View>

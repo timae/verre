@@ -142,7 +142,8 @@ export async function setFeedItemLike(
 export type CreateCheckinBody = {
   wineName: string;
   producer?: string;
-  vintage?: string; // server truncates to 4 chars
+  vintage?: string; // a 4-digit year OR the "NV" token; the server canonicalizes
+  //                    (exactly-4-digits-or-NV, else empty) — it does NOT truncate
   grape?: string; // design "Variety"
   type?: string; // WineTypeCode; unknown values coerce to null server-side
   // WINE-origin metadata, landed on the minted wine row (the About block).

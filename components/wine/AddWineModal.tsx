@@ -7,6 +7,7 @@ import { Modal } from '@/components/ui/Modal'
 import { CountrySelect } from '@/components/ui/CountrySelect'
 import { UnsavedChangesConfirm } from '@/components/ui/UnsavedChangesConfirm'
 import { useDirtyGuard } from '@/lib/dirtyGuard'
+import { normalizeVintageText, scanText, scanVintage } from '@verre/core'
 
 const TYPES = [
   { k: 'red', l: 'Red', ico: '🍷' },
@@ -79,10 +80,15 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     if (!key) { setScanStatus(`no ${cfg.label} key saved — add one below`); return }
     setScanning(true); setScanStatus('scanning label…')
     try {
-      const prompt = 'This is a wine bottle label. Extract: wine name, producer/winery, vintage year (4 digits), grape variety/blend, wine type (red/white/sparkling/rosé). Return JSON: {name,producer,vintage,grape,type} where type is one of: red,white,spark,rose,nonalc. Only return the JSON object.'
+      const prompt = 'This is a wine bottle label. Extract: wine name, producer/winery, vintage (the 4-digit year, or "NV" if the label says non-vintage / NV / N.V.), grape variety/blend, wine type (red/white/sparkling/rosé). Return JSON: {name,producer,vintage,grape,type} where type is one of: red,white,spark,rose,nonalc. Only return the JSON object.'
       const b64 = photo.startsWith('data:') ? photo.split(',')[1] : null
       const imageUrl = photo.startsWith('http') ? photo : null
-      let result: {name?:string;producer?:string;vintage?:string;grape?:string;type?:string} = {}
+      // 🔒 UNTRUSTED: this is model-generated JSON, not a typed API. Asserting
+      // string-valued fields here was a lie the compiler couldn't catch — a
+      // conventional `"vintage": 2019` reached normalizeVintageText(2019) and
+      // threw on .trim(), failing the whole scan. Values stay `unknown` and are
+      // narrowed at each use.
+      let result: Record<string, unknown> = {}
 
       if (provider === 'openai') {
         const imgContent = b64
@@ -110,11 +116,22 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
         result = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || '{}')
       }
 
-      if (result.name) setName(result.name)
-      if (result.producer) setProducer(result.producer)
-      if (result.vintage) setVintage(result.vintage.replace(/\D/g,'').slice(0,4))
-      if (result.grape) setGrape(result.grape)
-      if (result.type && TYPES.find(t=>t.k===result.type)) setType(result.type)
+      // Coercion lives in @verre/core (`scanText` / `scanVintage`) so the tests
+      // exercise the SHIPPED behaviour — a local copy tested by a copy stayed
+      // green while production broke. Text fields are strings only; vintage
+      // additionally accepts an integer, since a model answering "the 4-digit
+      // year" with a JSON number is a legitimate reading of the label.
+      const gotName = scanText(result.name); if (gotName) setName(gotName)
+      const gotProducer = scanText(result.producer); if (gotProducer) setProducer(gotProducer)
+      // A 4-digit year OR the literal NV survives; anything else is dropped.
+      // Stripping non-digits unconditionally turned a scanned non-vintage
+      // bottling into a blank field, destroying what the label actually said —
+      // "NV" is a valid Char(4) value.
+      const gotVintage = scanVintage(result.vintage)
+      if (gotVintage) setVintage(normalizeVintageText(gotVintage))
+      const gotGrape = scanText(result.grape); if (gotGrape) setGrape(gotGrape)
+      const gotType = scanText(result.type)
+      if (gotType && TYPES.find(t => t.k === gotType)) setType(gotType)
       setScanStatus('fields prefilled ✓')
     } catch {
       setScanStatus('scan failed — check your key')
@@ -135,7 +152,10 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     }
     setSaving(true); setError('')
     const body: Record<string, unknown> = {
-      name, producer, vintage, grape, type,
+      // Canonicalize on the way out so the official client sends the same form
+      // the server stores (the server normalizes too — this is for UX parity,
+      // not correctness).
+      name, producer, vintage: normalizeVintageText(vintage), grape, type,
       description, region, country, vinification, purchaseUrl,
     }
     if (photoDataUrl) body.image = photoDataUrl

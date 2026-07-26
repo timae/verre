@@ -11,7 +11,7 @@ import { gateAromas } from '@/lib/aromas'
 // From textSafe, NOT lib/session — importing session here would connect
 // Redis at module load just to use two pure sanitizers (codex finding).
 import { cleanCountry, cleanUrl } from '@/lib/textSafe'
-import { validateScore, decimalToNumber } from '@verre/core'
+import { validateScore, decimalToNumber, normalizeVintageText } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
 import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
@@ -214,7 +214,9 @@ export async function POST(req: NextRequest) {
   //     New rows just get the next sequence value (no special handling).
   //   - ratings.id: autoincrement.
   const wineId = nanoid()
-  const scrubVintage = scrub(vintage)?.slice(0, 4) || null
+  // Canonicalize rather than truncate — see lib/session.ts. A direct client
+  // could otherwise persist 'N.V.', a partial year, or 'NV S'.
+  const scrubVintage = normalizeVintageText(scrub(vintage) ?? '') || null
   const scrubProducer = scrub(producer) || null
   const scrubGrape = scrub(grape) || null
   // Validate `type` against the seeded category_styles values. The

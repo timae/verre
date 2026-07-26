@@ -52,6 +52,13 @@ export {
   toggleFlavourLevel,
 } from './scoringInput'
 export { formatScore } from './formatScore'
+export {
+  NV_DISPLAY,
+  isNonVintageToken,
+  normalizeVintageText,
+  filterVintageInput,
+} from './vintageText'
+export { scanText, scanVintage } from './vintageScan'
 export { decimalToNumber } from './decimal'
 export {
   validateDisplayName,

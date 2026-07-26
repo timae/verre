@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid'
 import { prisma } from '@/lib/prisma'
 import type { Prisma } from '@prisma/client'
 import { scrub, cleanUrl, cleanCountry } from '@/lib/textSafe'
+import { normalizeVintageText } from '@verre/core'
 
 // ── catalogWrite: THE catalog mutation chokepoint ──────────────────────────
 //
@@ -204,6 +205,40 @@ function normalizeGrapes(raw: unknown): string[] {
 // 🔒 `null` is the NON-VINTAGE row EXCLUSIVELY — never "year unknown". An
 // unknown year links at PRODUCT grain instead (wines.vintageId null), which is
 // what keeps NV rows clean. Callers must not pass null to mean "don't know".
+//
+// 🔒 THIS IS THE ONLY PLACE A VINTAGE YEAR IS RANGE-CHECKED. Do not "align" the
+// input field to it, and do not relax it to match the input field.
+//
+// Two layers, deliberately asymmetric (settled during catalog review,
+// 2026-07-26):
+//
+//   • The free-text ENCOUNTER string (`@verre/core` `normalizeVintageText`)
+//     applies a STRUCTURAL grammar only — any four-digit value, or an NV token.
+//     No plausibility range whatsoever.
+//   • THIS function, at CATALOG PROMOTION, accepts only 1900..current+1, because
+//     a promoted value becomes permanent shared identity that every later taster
+//     inherits.
+//
+// Values outside the catalog range stay ENCOUNTER TEXT and default to
+// product-grain handling at backfill; they are never auto-promoted to a vintage
+// row.
+//
+// ⚠️ DO NOT ADD PLAUSIBILITY BOUNDS BACK TO THE SHARED WRITE NORMALIZER. That
+// was tried and reverted: the normalizer runs on every edit RESEND, so a range
+// there BLANKED a stored out-of-range value the moment the user touched any
+// other field on the form — and the identity comparator then read ''-vs-'' as
+// unchanged and KEPT the catalog link, leaving a blank vintage still linked at
+// vintage grain. A write-boundary validator cannot retroactively invalidate
+// stored data without an initial-value-aware edit path on every surface.
+// The out-of-range round-trip pins in scripts/tests/vintage-text-units.ts fail
+// if that range is reintroduced.
+//
+// The backfill's promotion rule (the handoff contract):
+//   recognized NV token → the NV row (year = null)
+//   1900..current+1     → that dated vintage row
+//   anything else (pre-1900, implausible future, legacy junk) → PRESERVE the
+//                         encounter string, default to PRODUCT-grain linkage +
+//                         manual disposition; never auto-mint a vintage
 export function validateYear(year: number | null): number | null {
   if (year === null) return null
   if (!Number.isInteger(year)) throw new CatalogValidationError('year must be an integer')
@@ -547,15 +582,20 @@ export function applyIdentityEditRule(
   // 🔒 COMPARE WHAT WILL ACTUALLY BE STORED, not the raw body value.
   //
   // The write paths normalize before storing — `scrub()` strips control and
-  // zero-width characters, and `vintage` is truncated to 4 chars — so comparing
-  // the RAW incoming value against the STORED one reports a change where the
-  // stored value would not actually move. Verified consequences of getting this
-  // wrong: `vintage: '2019-2020'` against a stored `'2019'` cleared the link
-  // (the write slices it back to `'2019'`), and a name carrying a zero-width
-  // character cleared it (scrub removes the character, leaving the stored value
-  // byte-identical). Both directions fail SAFE — over-clearing, never
-  // stale-keeping — but they silently drop correct links on edits that change
-  // nothing, which is the failure this rule exists to avoid.
+  // zero-width characters, and `vintage` goes through the shared canonicalizer
+  // — so comparing the RAW incoming value against the STORED one reports a
+  // change where the stored value would not actually move. Verified example: a
+  // name carrying a zero-width character cleared the link, because scrub()
+  // removes the character and leaves the stored value byte-identical.
+  //
+  // ⚠️ The vintage rule is NOT truncation. It is exactly-four-digits-or-NV,
+  // else empty, so an overlong '2019-2020' becomes EMPTY rather than '2019' —
+  // that genuinely moves the stored value and MUST clear the link. An earlier
+  // version of this comment (and an integration expectation) described the
+  // truncating write and became wrong when the contract tightened.
+  //
+  // Over-clearing fails SAFE but silently drops correct links on edits that
+  // change nothing, which is the failure this rule exists to avoid.
   //
   // On top of the write's own normalization: trim, case-fold, and collapse
   // internal whitespace. Those three are typographic, not identity — "Grand
@@ -565,15 +605,42 @@ export function applyIdentityEditRule(
   // unlike the catalog's own matching path there is no generated column here to
   // keep a second fold honest — so this stays a conservative string compare.
   const norm = (v: unknown, field: 'name' | 'producer' | 'vintage') => {
-    // Mirrors lib/session.ts `clean()` (scrub → '') and its `.slice(0, 4)` on
-    // vintage. If those write-path rules change, this must change with them.
-    let s = scrub(typeof v === 'string' ? v : v == null ? '' : String(v)) ?? ''
-    if (field === 'vintage') s = s.slice(0, 4)
+    // Mirrors lib/session.ts `clean()` (scrub → '') and its vintage rule. If
+    // those write-path rules change, this must change with them.
+    //
+    // 🔒 NO `String(v)` COERCION — the write path does `scrub(v)`, and `scrub`
+    // returns null for any non-string. Stringifying here made the comparator
+    // strictly more permissive than the write: a PATCH carrying NUMERIC 2019
+    // compared equal to a stored '2019' (so the link was KEPT) while the write
+    // stored '' — a blank vintage still linked to a vintage-grain catalog row.
+    // Same defect class as the omitted-vs-empty edit bug, reached by a different
+    // route. The comparator must model what the write ACTUALLY does, including
+    // its type rejection.
+    let s = scrub(v) ?? ''
+    // 🔒 The SHARED normalizer, not `.slice(0, 4)`. The write path canonicalizes
+    // NV tokens ('N.V.' → 'NV'), so a slice-based compare reported a change on
+    // an edit that only canonicalized — silently CLEARING a correct catalog
+    // link. Measured: stored 'N.V.' + incoming 'NV' → {productId: null,
+    // vintageId: null}. Using the same function the write uses makes
+    // "compare what will actually be stored" true rather than approximate.
+    if (field === 'vintage') s = normalizeVintageText(s)
     return s.trim().toLowerCase().replace(/\s+/g, ' ')
   }
   const changed = (field: 'name' | 'producer' | 'vintage'): boolean => {
     const next = incoming[field]
     if (next === undefined) return false
+    // 🔒 MODEL THE WRITE'S FALLBACK, not just its normalization. `name` is
+    // REQUIRED, so both write paths do `scrub(name) || existing` — an invalid
+    // (non-string) or blank name is IGNORED and the stored name is retained.
+    // Nothing moves, so the link must survive. Without this the comparator
+    // cleared a correct link on an edit the write discarded, which is the same
+    // over-clearing class as the `.slice(0,4)` and `String(v)` defects.
+    //
+    // ⚠️ `vintage` is deliberately NOT symmetric: it is OPTIONAL, so the write
+    // stores the normalized value even when that is empty — a blank or numeric
+    // vintage really does move the stored value, and really must clear the link.
+    // The asymmetry is the write paths', not this function's invention.
+    if (field === 'name' && norm(next, field) === '') return false
     return norm(existing[field], field) !== norm(next, field)
   }
   if (changed('name') || changed('producer') || changed('vintage')) {
