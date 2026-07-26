@@ -794,7 +794,8 @@ Carried from phase 2, both now due:
    this a correctness condition, not a courtesy.
 2. **Min-version floor raised** past the last pre-cutover build.
 3. **Attributions surface live** (§ 7) — licence obligation, gates the catalog fill.
-4. **Promotion protocol tested under concurrency** (§ 8a) — an add racing a promotion must
+4. 🔒 **Any `catalog_fold_*` version change has been ANNOUNCED to the catalog-maintenance side before deploy** — never after. A bump desynchronises exact-match agreement between the two sides, and search MAY not reveal it (it did not for the whitespace defects observed; a transliteration change would). The version appears nowhere in the contract today. See the implementation plan § Phase 4.
+5. **Promotion protocol tested under concurrency** (§ 8a) — an add racing a promotion must
    land in Postgres, never vanish. This is the T1 race; it cannot be verified by
    inspection.
 
