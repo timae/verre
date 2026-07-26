@@ -93,7 +93,7 @@ export const WORD_SIMILARITY_THRESHOLD = 0.3
 // `column` is a fixed identifier chosen by this module, never caller input;
 // the query text is passed separately as a BOUND PARAMETER by the callers.
 export function trgmOrderSql(column: string): string {
-  return `${column} <->> lower(f_unaccent($1))`
+  return `${column} <->> catalog_fold_v1($1)`
 }
 
 // The score (0..1, higher is better) for a row, derived from the same distance
@@ -246,13 +246,19 @@ function stripAddTimeFields<T extends { status?: string }>(rows: T[], scope: Mat
 
 // Normalize the user's query the SAME way the stored column is normalized.
 //
-// 🔒 The stored side is a GENERATED column — lower(f_unaccent(name)) — and it
+// 🔒 The stored side is a GENERATED column — catalog_fold_v1(name) — and it
 // is the single normalization path precisely so display and fold cannot drift
 // (prisma/CLAUDE.md). The QUERY side has no such guarantee: it is a string from
-// a request body. So it is folded by the DATABASE too, via lower(f_unaccent($1))
-// inlined in the query below, rather than by a TypeScript approximation of
-// unaccent that would be a second normalization path — the very thing the
-// generated column exists to prevent. Here we only trim and bound length.
+// a request body. So it is folded by the DATABASE too, via catalog_fold_v1($1)
+// in the queries below, rather than by a TypeScript approximation of unaccent
+// that would be a second normalization path — the very thing the generated
+// column exists to prevent. Here we only trim and bound length.
+//
+// ⚠️ BOTH SIDES CHANGE TOGETHER. There are exactly TWO query-side operands —
+// `trgmOrderSql` and `findProducerByExactName` — and both must name the same
+// function version as the columns. A half-applied change is invisible: trigram
+// search keeps working while exact lookup silently stops matching (that is
+// what 20260725140000 shipped and 20260725220000 pins with a round-trip test).
 function prepareQuery(raw: string): string | null {
   const q = raw.trim()
   if (!q) return null
@@ -548,7 +554,7 @@ export async function findProducerByExactName(name: string): Promise<{ id: strin
   if (!n) return []
   return prisma.$queryRaw<{ id: string; status: string }[]>`
     SELECT id, status FROM producers
-     WHERE name_folded = lower(f_unaccent(${n}))
+     WHERE name_folded = catalog_fold_v1(${n})
        AND status IN ('provisional', 'confirmed')
      ORDER BY id
   `

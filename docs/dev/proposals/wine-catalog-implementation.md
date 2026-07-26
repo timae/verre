@@ -112,7 +112,7 @@ Before anything migrates, the full set goes to Simon for review — not just the
 
 ### ⚠️ SUPERSEDED: the GIN `<%` form below was replaced by a GiST KNN order
 
-**What ships now:** `col <->> lower(f_unaccent($1))` ordered with a `LIMIT`, against `producers_name_folded_gist_idx` / `wine_products_name_folded_gist_idx` (`20260725160000_catalog_gist_knn`). The 0.3 threshold is a **post-filter** on the returned rows, so there is no GUC and no interactive transaction.
+**What ships now:** `col <->> catalog_fold_v1($1)` ordered with a `LIMIT`, against `producers_name_folded_gist_idx` / `wine_products_name_folded_gist_idx` (`20260725160000_catalog_gist_knn`). The 0.3 threshold is a **post-filter** on the returned rows, so there is no GUC and no interactive transaction.
 
 **Why**, measured on PG16 at 300k rows: `<%` at 0.3 is not *selective* — candidates scale 1:1 with the catalog (a "selective" multi-word name still admitted 8.5% of the catalog), the heap recheck dominated, and latency grew linearly (34 ms at 60k → 352 ms at 300k). Under load it failed rather than slowed: 50 concurrent searches → 15 hard pool timeouts, 100 → 66. GiST KNN returns the nearest N straight from the index, so cost is bounded by the LIMIT: broad "chateau" went 22 ms → 0.26 ms, and realistic queries measure 0.9–41 ms at 300k.
 

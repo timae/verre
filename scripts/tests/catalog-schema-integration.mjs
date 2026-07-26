@@ -79,7 +79,10 @@ async function accepts(label, sql) {
   } catch (e) { ok(false, `${label} (was REJECTED: ${e.message.split('\n')[0]})`) }
 }
 
-const raw = sql => prisma.$queryRawUnsafe(sql)
+// Params are passed through to $queryRawUnsafe as bound values ($1, $2, …) —
+// required by the whitespace-fold tests, whose inputs contain literal tabs,
+// newlines and NBSP that must not be re-escaped through string interpolation.
+const raw = (sql, params) => params ? prisma.$queryRawUnsafe(sql, ...params) : prisma.$queryRawUnsafe(sql)
 
 async function reset() {
   await prisma.$executeRawUnsafe(`
@@ -169,6 +172,193 @@ async function main() {
   await prisma.$executeRawUnsafe(`UPDATE producers SET name='Rénamed' WHERE id='test_pA'`)
   const [f2] = await raw(`SELECT name_folded FROM producers WHERE id='test_pA'`)
   ok(f2.name_folded === 'renamed', 'fold tracks display updates (not frozen at insert)')
+
+  console.log('\n1b. Whitespace canonicalization in the fold (20260725220000)')
+  // 🔒 THE POINT: display keeps what the user typed; only the MATCHING key is
+  // canonicalized. Every variant below must fold to the SAME key as the clean
+  // spelling, or an exact-match lookup (findProducerByExactName, dedupe, the
+  // phase-5 backfill) silently misses. ⚠️ Trigram search would keep working
+  // through all of these — pg_trgm tokenises whitespace away — so no
+  // results-based test on SEARCH can see a regression here.
+  const FOLD_VARIANTS = [
+    ['trailing space', 'Château Margaux '],
+    ['leading space', ' Château Margaux'],
+    ['doubled space', 'Château  Margaux'],
+    ['tab', 'Château\tMargaux'],
+    ['newline', 'Château\nMargaux'],
+    ['NBSP U+00A0 inner', 'Château Margaux'],
+    ['NBSP U+00A0 edge', 'Château Margaux '],
+    ['narrow NBSP U+202F', 'Château Margaux'],
+    ['ideographic U+3000', 'Château　Margaux'],
+    ['EM space U+2003', 'Château Margaux'],
+    ['mixed', '  Château \t  Margaux  '],
+  ]
+  for (const [label, v] of FOLD_VARIANTS) {
+    const [r] = await raw(`SELECT catalog_fold_v1($1) f`, [v])
+    ok(r.f === 'chateau margaux', `${label} folds to the canonical key`)
+  }
+  // 🔒 THE COMPLETE ENUMERATED SET, not a sample. The migration's class lists 19
+  // non-ASCII whitespace codepoints; testing four of them would leave a dropped
+  // entry undetectable — and the class is written as a U&'' escape precisely
+  // because a reviewer cannot see one go missing.
+  // ⚠️ U+2028/U+2029 are NOT here: they are DELETED, not mapped to a space —
+  // `SCRUB_RE` deletes them app-side, so the fold must match or the same raw
+  // name gets two different keys (app vs import). Covered by the delete set below.
+  const UNICODE_WS = [
+    0x0085, 0x00a0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
+    0x2006, 0x2007, 0x2008, 0x2009, 0x200a, 0x202f, 0x205f, 0x3000,
+  ]
+  let wsOk = 0
+  for (const cp of UNICODE_WS) {
+    const [r] = await raw(`SELECT catalog_fold_v1($1) f`, [`Château${String.fromCodePoint(cp)}Margaux`])
+    if (r.f === 'chateau margaux') wsOk++
+    else ok(false, `U+${cp.toString(16).toUpperCase().padStart(4, '0')} is NOT folded (got ${JSON.stringify(r.f)})`)
+  }
+  ok(wsOk === UNICODE_WS.length,
+    `all ${UNICODE_WS.length} enumerated Unicode whitespace codepoints fold to a plain space`)
+  // Paired negative for the class itself: a ZERO-WIDTH char is NOT whitespace
+  // and must NOT become a space — folding it would SPLIT a word.
+  // 🔒 The DELETE set — matches `SCRUB_RE` in lib/textSafe.ts. These are removed,
+  // NOT mapped to a space: mapping would split a word, and leaving them would
+  // give an imported name a different key from the same name typed in the app.
+  // ⚠️ The COMPLETE set (44 codepoints), not a sample: an earlier version listed
+  // 9, so a mutation dropping an unlisted one (U+2069, a C0 control, DEL) stayed
+  // green. U+0000 is absent because PostgreSQL `text` cannot hold a NUL byte.
+  // The add-flow suite DERIVES this same set from the real `scrub()` and asserts
+  // app/DB parity; here it is enumerated because this suite is Postgres-only.
+  const UNICODE_DELETE = [
+    ...Array.from({ length: 8 }, (_, i) => 0x0001 + i),   // C0 controls U+0001–0008
+    0x000b, 0x000c,                                      // VT, FF
+    ...Array.from({ length: 18 }, (_, i) => 0x000e + i),  // U+000E–001F
+    0x007f,                                              // DEL
+    0x200b, 0x200e, 0x200f,                              // ZWSP, LRM, RLM
+    ...Array.from({ length: 7 }, (_, i) => 0x2028 + i),   // U+2028–202E (seps + bidi)
+    ...Array.from({ length: 4 }, (_, i) => 0x2066 + i),   // U+2066–2069 (isolates)
+    0xfeff,                                              // BOM
+  ]
+  ok(UNICODE_DELETE.length === 44,
+    `the delete set is the full 44 codepoints (got ${UNICODE_DELETE.length})`)
+  const delBad = []
+  for (const cp of UNICODE_DELETE) {
+    const [r] = await raw(`SELECT catalog_fold_v1($1) f`, [`Châ${String.fromCodePoint(cp)}teau Margaux`])
+    if (r.f !== 'chateau margaux') {
+      delBad.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}=${JSON.stringify(r.f)}`)
+    }
+  }
+  ok(delBad.length === 0,
+    `all 44 scrub-deleted codepoints are DELETED by the fold, not folded to a space${
+      delBad.length ? ` — LEAKED: ${delBad.slice(0, 6).join(' ')}` : ''}`)
+  // 🔒 Paired negative: ZWNJ/ZWJ are REQUIRED for Persian/Arabic/Hindi ligature
+  // rendering. `scrub` deliberately lets them through and so must the fold —
+  // deleting them would corrupt real names.
+  for (const [label, cp] of [['ZWNJ U+200C', 0x200c], ['ZWJ U+200D', 0x200d]]) {
+    const ch = String.fromCodePoint(cp)
+    const [r] = await raw(`SELECT catalog_fold_v1($1) f`, [`Châ${ch}teau Margaux`])
+    ok(r.f === `cha${ch}teau margaux`,
+      `${label} is PRESERVED (got ${JSON.stringify(r.f)})`)
+  }
+  // Paired NEGATIVES — the fold must not OVER-merge. Without these the suite
+  // would stay green under a fold that collapsed everything to one key.
+  const FOLD_DISTINCT = [
+    ['different wines', 'Château Margaux', 'Château Latour'],
+    ['word boundary preserved', 'Chateau Margaux', 'ChateauMargaux'],
+    ['hyphen is not a space', 'Cotes-du-Rhone', 'Cotes du Rhone'],
+    ['digits differ', 'Cuvee 5', 'Cuvee 6'],
+  ]
+  for (const [label, a, b] of FOLD_DISTINCT) {
+    const [r] = await raw(`SELECT catalog_fold_v1($1) = catalog_fold_v1($2) same`, [a, b])
+    ok(r.same === false, `${label} stay DISTINCT`)
+  }
+  // 🔒 ROUND-TRIP: a row must be findable by its own stored name and by every
+  // spelling of it. This is the exact failure 20260725140000 shipped — the
+  // stored and query sides disagreed, so a producer could not be found by its
+  // own name while trigram search kept working.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,status) VALUES ('test_pWS','  Château   Margaux  ','confirmed')`)
+  const [disp] = await raw(`SELECT name, name_folded FROM producers WHERE id='test_pWS'`)
+  ok(disp.name === '  Château   Margaux  ', 'DISPLAY value is stored verbatim, untouched')
+  ok(disp.name_folded === 'chateau margaux', 'the FOLD is canonical')
+  for (const probe of ['  Château   Margaux  ', 'Château Margaux', 'Chateau Margaux', 'Chateau Margaux']) {
+    const hit = await raw(
+      `SELECT 1 FROM producers WHERE id='test_pWS' AND name_folded = catalog_fold_v1($1)`, [probe])
+    ok(hit.length === 1, `round-trip: found by ${JSON.stringify(probe)}`)
+  }
+  const miss = await raw(
+    `SELECT 1 FROM producers WHERE id='test_pWS' AND name_folded = catalog_fold_v1($1)`, ['Château Latour'])
+  ok(miss.length === 0, 'round-trip: a DIFFERENT name does not match (paired negative)')
+  // Blank-name CHECKs route through the fold, not bare btrim. ⚠️ btrim strips
+  // ONLY ASCII spaces, so before this migration a tab-only, newline-only or
+  // NBSP-only name PASSED `btrim(name) <> ''`.
+  await rejects('a tab-only producer name',
+    `INSERT INTO producers (id,name,status) VALUES ('test_pWs1',E'\\t','provisional')`,
+    'producers_name_not_blank_check')
+  await rejects('a newline-only producer name',
+    `INSERT INTO producers (id,name,status) VALUES ('test_pWs2',E'\\n','provisional')`,
+    'producers_name_not_blank_check')
+  await rejects('an NBSP-only producer name',
+    `INSERT INTO producers (id,name,status) VALUES ('test_pWs3',E'\\u00a0','provisional')`,
+    'producers_name_not_blank_check')
+  // ⚠️ NOT an `UPDATE … WHERE id='test_wA'` here — that product does not exist
+  // until § 2, so the UPDATE would match ZERO rows, fire no constraint, and the
+  // assertion would pass vacuously. Caught by this suite's own run. Use an
+  // INSERT of a self-contained row instead, which cannot be a no-op.
+  await rejects('an NBSP-only producer region',
+    `INSERT INTO producers (id,name,region,status) VALUES ('test_pWs5','Real',E'\\u00a0','provisional')`,
+    'producers_region_not_blank_check')
+
+  // 🔒 ALL FIVE GENERATED COLUMNS AND ALL FOUR CONSTRAINTS, not just the
+  // producer half. A mutation touching only the wine_products expressions —
+  // or only the array column — would otherwise stay green.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,region,status)
+     VALUES ('test_pWs6', E'\\u00a0Padded\\tName\\u00a0', E'\\u00a0Bordeaux  Left\\u00a0', 'provisional')`)
+  const [pf] = await raw(`SELECT name_folded, region_folded FROM producers WHERE id='test_pWs6'`)
+  ok(pf.name_folded === 'padded name', 'producers.name_folded canonicalizes whitespace')
+  ok(pf.region_folded === 'bordeaux left', 'producers.region_folded canonicalizes whitespace')
+
+  // In a txn with its lead link: the exactly-one-lead trigger is DEFERRED, so
+  // a bare INSERT would fail at COMMIT rather than here.
+  await prisma.$transaction(async tx => {
+    await tx.$executeRawUnsafe(
+      `INSERT INTO wine_products (id,name,category,region,scope,status,grapes,curator_locked)
+       VALUES ('test_wWs1', E'\\u00a0Padded\\tProduct\\u00a0', 'wine', E'\\u00a0Chianti  Classico\\u00a0',
+               'shared', 'provisional', ARRAY[E'\\u00a0Grüner\\u00a0Veltliner\\u00a0', E'Cabernet  Sauvignon'], '{}')`)
+    await tx.$executeRawUnsafe(
+      `INSERT INTO product_producers (product_id,producer_id,role) VALUES ('test_wWs1','test_pA','lead')`)
+  })
+  const [wf] = await raw(
+    `SELECT name_folded, region_folded, grapes_folded FROM wine_products WHERE id='test_wWs1'`)
+  ok(wf.name_folded === 'padded product', 'wine_products.name_folded canonicalizes whitespace')
+  ok(wf.region_folded === 'chianti classico', 'wine_products.region_folded canonicalizes whitespace')
+  ok(wf.grapes_folded.join('|') === 'gruner veltliner|cabernet sauvignon',
+    `grapes_folded canonicalizes per element (got ${JSON.stringify(wf.grapes_folded)})`)
+
+  // These reject at the CHECK, before the deferred lead trigger is reached, so
+  // a bare INSERT is the right shape here (and the named constraint in each
+  // expectation proves it failed for the intended reason, not the missing lead).
+  await rejects('a tab-only PRODUCT name',
+    `INSERT INTO wine_products (id,name,category,scope,status,grapes,curator_locked)
+     VALUES ('test_wWs2',E'\\t','wine','shared','provisional','{}','{}')`,
+    'wine_products_name_not_blank_check')
+  await rejects('an NBSP-only PRODUCT region',
+    `INSERT INTO wine_products (id,name,category,region,scope,status,grapes,curator_locked)
+     VALUES ('test_wWs3','Real','wine',E'\\u00a0','shared','provisional','{}','{}')`,
+    'wine_products_region_not_blank_check')
+
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,status) VALUES ('test_pWs4',E'\\u00a0Real Name\\u00a0','provisional')`)
+  ok(true, 'a real name padded with NBSP still inserts (the paired accept)')
+
+  // The versioned functions exist under the names the columns depend on, and
+  // the unversioned predecessor is GONE (20260725220000 § 6) — otherwise a
+  // future column could bind to a mutable name.
+  const [fns] = await raw(`
+    SELECT count(*) FILTER (WHERE proname='catalog_fold_v1')::int      AS scalar_v1,
+           count(*) FILTER (WHERE proname='catalog_fold_arr_v1')::int  AS arr_v1,
+           count(*) FILTER (WHERE proname='f_unaccent_arr')::int       AS old_arr
+    FROM pg_proc`)
+  ok(fns.scalar_v1 === 1 && fns.arr_v1 === 1, 'both versioned fold functions exist')
+  ok(fns.old_arr === 0, 'the unversioned f_unaccent_arr was dropped')
 
   console.log('\n2. Array folds: {} stays {}, never NULL')
   await makeProduct('test_wA', 'test_pA')

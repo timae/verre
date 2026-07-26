@@ -52,6 +52,7 @@ import {
   CatalogValidationError,
 } from '../../lib/catalogWrite.ts'
 import { redactWine } from '../../lib/wineRedaction.ts'
+import { scrub } from '../../lib/textSafe.ts'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -344,9 +345,15 @@ async function main() {
     `the folded value is fully lowercase (got "${folds[2].name_folded}" — ® → "(r)", not "(R)")`)
   // The array helper has the same ordering and needed the same fix.
   const arrFold = await prisma.$queryRawUnsafe(
-    `SELECT f_unaccent_arr(ARRAY['Grüner Veltliner®','Cuvée № 5']) AS f`)
+    `SELECT catalog_fold_arr_v1(ARRAY['Grüner Veltliner®','Cuvée № 5']) AS f`)
   eq(arrFold[0].f, ['gruner veltliner(r)', 'cuvee no 5'],
-    'f_unaccent_arr also folds last (element-wise, fully lowercase)')
+    'catalog_fold_arr_v1 also folds last (element-wise, fully lowercase)')
+  // 🔒 The unversioned predecessor must be GONE, not merely unused — leaving it
+  // callable would let a future column or query silently bind to a mutable name
+  // (20260725220000 § 6).
+  const oldArr = await prisma.$queryRawUnsafe(
+    `SELECT count(*)::int n FROM pg_proc WHERE proname = 'f_unaccent_arr'`)
+  eq(oldArr[0].n, 0, 'the unversioned f_unaccent_arr was dropped')
 
   // 🔒 THE FOLD IS THE DATABASE'S JOB — a JS-side fold is NOT equivalent, and
   // the difference is invisible to trigram search.
@@ -378,7 +385,7 @@ async function main() {
   // cases (covered in § 1). Both classes need coverage, and neither sample
   // substitutes for the other.
   const expansions = await prisma.$queryRawUnsafe(
-    `SELECT v, lower(f_unaccent(v)) AS folded
+    `SELECT v, catalog_fold_v1(v) AS folded
        FROM (VALUES ('Straß'), ('Œnologie'), ('Ølgod')) t(v)`)
   eq(expansions.map(r => r.folded), ['strass', 'oenologie', 'olgod'],
     'the SQL fold expands ligatures (ß→ss, œ→oe, ø→o) — a JS NFD-strip does not')
@@ -420,6 +427,117 @@ async function main() {
   const bothSpellings = await findProducerByExactName('P2TEST Cuvee No 5')
   ok(bothSpellings.length === 2,
     `both spellings of one name resolve to the same fold key (got ${bothSpellings.length}, wanted 2)`)
+
+  // 🔒 WHITESPACE ROUND-TRIP THROUGH THE REAL FUNCTION (20260725220000).
+  // Seeded by DIRECT SQL, deliberately: the app path (`requiredName` → `scrub`)
+  // trims, so seeding through it could never produce a padded stored row — and
+  // a test that cannot produce the bad state cannot detect the regression. The
+  // import path is exactly this direct-SQL shape.
+  //
+  // ⚠️ `findProducerByExactName` .trim()s its ARGUMENT, so a padded *query*
+  // proves nothing about the column. What must hold is the reverse: a padded
+  // STORED value found by a CLEAN query. That only works if the fold
+  // canonicalizes on the write side.
+  // 🔒 `p2seed900001`, NOT `p2ws1`, and NO `ON CONFLICT` — both were review
+  // findings. reset() deletes producers matching `name LIKE 'P2TEST%'` OR
+  // `id LIKE 'p2seed%'`; this row's NAME begins with whitespace, so only the ID
+  // predicate can reach it. With the old id the row survived teardown, and
+  // `ON CONFLICT DO NOTHING` then made every later run silently reuse it —
+  // a fixture that passes from pre-existing state, which is the exact failure
+  // this suite's own rule forbids. A bare INSERT now fails loudly if reset broke.
+  //
+  // ⚠️ The LAST SIX CHARACTERS must all be DIGITS: § 1c's merge-fraction
+  // fixture does `(right(id, 6))::int` over every `id LIKE 'p2seed%'` row, so
+  // any non-numeric tail aborts that section with a 22P02. Both `p2seed_ws1`
+  // (→ `ed_ws1`) and `p2seedws0001` (→ `ws0001`) failed this before landing on
+  // `p2seed900001`; the 9-prefixed range keeps it clear of the seeded ids.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,status) VALUES ('p2seed900001', E'  P2TEST\\u00a0Padded   Domaine \\t ', 'provisional')`)
+  const [wsRow] = await prisma.$queryRawUnsafe(
+    `SELECT name, name_folded FROM producers WHERE id='p2seed900001'`)
+  ok(wsRow.name === '  P2TEST\u00a0Padded   Domaine \t ',
+    'the padded DISPLAY value is stored verbatim (the fixture really is padded)')
+  const padded = await findProducerByExactName('P2TEST Padded Domaine')
+  ok(padded.some(r => r.id === 'p2seed900001'),
+    'findProducerByExactName finds a WHITESPACE-PADDED stored row by its clean name')
+  // 🔒 THE QUERY-OPERAND DISCRIMINATOR, and it has to be built deliberately.
+  // A CLEAN query string cannot detect a reverted operand: both folds map it to
+  // the same key, so `lower(f_unaccent($1))` and `catalog_fold_v1($1)` agree and
+  // the mutation survives. Verified — reverting the operand left the suite at
+  // 0 failures until this case existed.
+  //
+  // ⚠️ It must also be INTERNAL whitespace: `findProducerByExactName` .trim()s
+  // its argument, so edge whitespace never reaches the SQL operand at all.
+  // Doubled spaces, NBSP and tabs do, and only the versioned fold collapses them.
+  const NBSP = String.fromCodePoint(0x00a0)
+  for (const [label, q] of [
+    ['doubled internal spaces', 'P2TEST Padded  Domaine'],
+    ['an NBSP separator', `P2TEST Padded${NBSP}Domaine`],
+    ['a tab separator', 'P2TEST Padded\tDomaine'],
+  ]) {
+    const hits = await findProducerByExactName(q)
+    ok(hits.some(r => r.id === 'p2seed900001'),
+      `findProducerByExactName matches through ${label} (pins the QUERY operand, not just the column)`)
+  }
+  // 🔒 APP/DB PARITY over the COMPLETE scrub character set — the second review
+  // finding, then widened after a third: an earlier version SAMPLED 9 of the 44
+  // deleted codepoints, so a mutation dropping an unsampled one (U+2069, a C0
+  // control, DEL) stayed green while the comment claimed full parity.
+  //
+  // 🔒 The set is DERIVED from the real `scrub()` at runtime, never transcribed —
+  // a hardcoded list silently stops matching the moment SCRUB_RE changes, which
+  // is the exact drift this whole migration exists to prevent. Deriving it means
+  // adding a character to SCRUB_RE automatically extends this test.
+  //
+  // ⚠️ U+0000 is excluded: PostgreSQL `text` cannot hold a NUL byte at all, so it
+  // is rejected before any fold runs and there is nothing to compare.
+  const SCRUB_DELETED = []
+  for (let cp = 1; cp <= 0xffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue          // unpaired surrogates
+    if (scrub(`a${String.fromCodePoint(cp)}b`) === 'ab') SCRUB_DELETED.push(cp)
+  }
+  ok(SCRUB_DELETED.length === 44,
+    `derived the full scrub-deleted set from SCRUB_RE (got ${SCRUB_DELETED.length}, expected 44 — if this changed, SCRUB_RE changed and the migration's delete class must change WITH it)`)
+
+  let parityOk = 0
+  const parityBad = []
+  for (const cp of SCRUB_DELETED) {
+    const rawName = `Ch\u00e2teau${String.fromCodePoint(cp)}Margaux`
+    const [r] = await prisma.$queryRawUnsafe(
+      `SELECT catalog_fold_v1($1) a, catalog_fold_v1($2) b`, rawName, scrub(rawName) ?? '')
+    // Both sides must agree AND both must have DELETED the character (no space):
+    // agreement alone would also hold if the fold mapped it to a space and scrub
+    // happened to as well, which is not the contract.
+    if (r.a === r.b && r.a === 'chateaumargaux') parityOk++
+    else parityBad.push(`U+${cp.toString(16).toUpperCase().padStart(4, '0')}(${JSON.stringify(r.a)}/${JSON.stringify(r.b)})`)
+  }
+  ok(parityBad.length === 0,
+    `all ${SCRUB_DELETED.length} scrub-deleted codepoints: DB fold == fold(scrub(raw)), both delete${
+      parityBad.length ? ` — MISMATCHED: ${parityBad.slice(0, 6).join(' ')}` : ''}`)
+
+  // Paired negative: ZWNJ/ZWJ are REQUIRED for Persian/Arabic/Hindi ligatures.
+  // Both `scrub` and the fold must PRESERVE them — deleting would corrupt names.
+  for (const [label, cp] of [['ZWNJ U+200C', 0x200c], ['ZWJ U+200D', 0x200d]]) {
+    const rawName = `Ch\u00e2teau${String.fromCodePoint(cp)}Margaux`
+    const [r] = await prisma.$queryRawUnsafe(
+      `SELECT catalog_fold_v1($1) a, catalog_fold_v1($2) b`, rawName, scrub(rawName) ?? '')
+    ok(r.a === r.b && r.a.includes(String.fromCodePoint(cp)),
+      `${label} is PRESERVED by both (not deleted, not folded to a space)`)
+  }
+
+  const notPadded = await findProducerByExactName('P2TEST Padded Chateau')
+  ok(notPadded.length === 0,
+    'a genuinely different name still does NOT match (paired negative)')
+
+  // 🔒 STRUCTURAL PIN on the trigram operand. The round-trips above run through
+  // the DB, so they cannot see `trgmOrderSql` drifting back to a superseded
+  // expression — a KNN order against the wrong fold still returns plausible
+  // rows. Assert the generated SQL names the current version.
+  const orderSql = trgmOrderWith(`'x'`, 'name_folded')
+  ok(orderSql.includes('catalog_fold_v1'),
+    `trgmOrderWith folds with catalog_fold_v1 (got: ${orderSql})`)
+  ok(!/lower\s*\(\s*f_unaccent/.test(orderSql),
+    'trgmOrderWith no longer uses the superseded lower(f_unaccent(...)) form')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 1b — PRODUCT search plans (scoped, unscoped, and broad)')
@@ -1528,7 +1646,7 @@ async function main() {
   // only sanctioned matcher, so its plan is load-bearing at 500k+ rows.
   const eqPlan = await planFor(
     `SELECT id, status FROM producers
-      WHERE name_folded = lower(f_unaccent('P2TEST Cuvée № 5'))
+      WHERE name_folded = catalog_fold_v1('P2TEST Cuvée № 5')
         AND status IN ('provisional','confirmed') ORDER BY id`)
   ok(eqPlan.includes('"Node Type":"Index Only Scan"')
      && eqPlan.includes('producers_name_folded_idx'),

@@ -840,7 +840,7 @@ model StaffRoleAudit {
 //   addedBy / curatedBy   SetNull — community catalog rows are NEVER cascaded
 //                by a user deletion.
 //   *Folded      GENERATED columns (raw SQL — Prisma can't express them),
-//                lower(f_unaccent(...)) — lowercase LAST, see the note on
+//                catalog_fold_v1(...) — VERSIONED; see the note on
 //                nameFolded below. ONE mandatory database-side
 //                normalization path, so no write path can make display and
 //                fold drift. A pg_trgm GiST index (KNN ordering) and a
@@ -863,16 +863,17 @@ model Producer {
   region        String?   @db.VarChar(255)
   website       String?   @db.VarChar(512)
   // 🔒 READ-ONLY. Both are Postgres GENERATED ALWAYS AS (...) STORED columns —
-  // lower(f_unaccent(...)), lowercase LAST because some unaccent expansions
-  // produce capitals — declared as plain nullable fields here ONLY
+  // catalog_fold_v1(...) — whitespace-canonicalizing, lowercase LAST because
+  // some unaccent expansions produce capitals — declared as plain nullable
+  // fields here ONLY
   // because Prisma has no generated-column syntax and the schema-vs-migrations
   // CI gate would otherwise report them as drift. NEVER write them: Postgres
   // rejects any INSERT/UPDATE that supplies a value, so a write is a runtime
   // error, not silent drift. The generation expression lives in the migration
   // and is the SINGLE normalization path — that is what makes display/fold
   // drift structurally impossible.
-  nameFolded    String?   @default(dbgenerated("lower(f_unaccent((name)::text))")) @map("name_folded")
-  regionFolded  String?   @default(dbgenerated("lower(f_unaccent((region)::text))")) @map("region_folded")
+  nameFolded    String?   @default(dbgenerated("catalog_fold_v1((name)::text)")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("catalog_fold_v1((region)::text)")) @map("region_folded")
   status        String    @default("provisional") @db.VarChar(16)
   linksTo       String?   @map("links_to") @db.VarChar(21)
   curatorLocked String[]  @default([]) @map("curator_locked")
@@ -948,12 +949,12 @@ model WineProduct {
   // trees are built later against Verre identity.
   region        String?   @db.VarChar(255)
   // 🔒 READ-ONLY generated columns — see the Producer note above. grapesFolded
-  // folds element-wise through f_unaccent_arr, which is STRICT + COALESCEs
+  // folds element-wise through catalog_fold_arr_v1, which is STRICT + COALESCEs
   // array_agg so {} folds to {} rather than NULL (array_agg over zero rows
   // returns NULL) — empty must stay distinguishable from unknown.
-  nameFolded    String?   @default(dbgenerated("lower(f_unaccent((name)::text))")) @map("name_folded")
-  regionFolded  String?   @default(dbgenerated("lower(f_unaccent((region)::text))")) @map("region_folded")
-  grapesFolded  String[]  @default(dbgenerated("f_unaccent_arr(grapes)")) @map("grapes_folded")
+  nameFolded    String?   @default(dbgenerated("catalog_fold_v1((name)::text)")) @map("name_folded")
+  regionFolded  String?   @default(dbgenerated("catalog_fold_v1((region)::text)")) @map("region_folded")
+  grapesFolded  String[]  @default(dbgenerated("catalog_fold_arr_v1(grapes)")) @map("grapes_folded")
   // 'shared' | 'owned'. Reserved for the DEFERRED ownership axis.
   // 🔒 NO DEFAULT, deliberately. Every write boundary sets this EXPLICITLY, so
   // an omitted scope FAILS LOUDLY (NOT NULL violation) instead of silently
