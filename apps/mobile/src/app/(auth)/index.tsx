@@ -60,7 +60,30 @@ export default function Launch() {
           behind it (transparent scroll bg). */}
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'space-between', paddingTop: insets.top + 18, paddingBottom: insets.bottom + 26 }}
+        // ── Vertical distribution (Simon, 2026-07-26) ──────────────────────
+        // The bottom group sits low on purpose: the tail padding is
+        // `insets.bottom` MINUS 10, i.e. it deliberately eats 10pt into the
+        // safe-area inset to close the gap to the screen edge (Simon's call,
+        // after several passes at trimming the padding above it).
+        //
+        // ⚠️ `Math.max(0, …)` is load-bearing: on a device with NO bottom inset
+        // (older non-notched phones, where insets.bottom is 0) the subtraction
+        // would go negative and pull content off-screen. The clamp makes the
+        // trim a no-op there and only spends inset that actually exists.
+        //
+        // 10pt is a deliberate encroachment, not a mistake: the home-indicator
+        // inset is generous, and the attributions link is a low-frequency text
+        // target rather than a primary control. If a device check ever shows
+        // the link fouling the indicator, raise this back toward 0 — don't
+        // "fix" it by deleting the clamp.
+        //
+        // Slack is absorbed by the explicit flexible spacer below the wordmark
+        // rather than by `justifyContent: 'space-between'`. Same result with two
+        // children, but the spacer is a named thing to tune.
+        //
+        // flexGrow stays so the content SCROLLS instead of clipping when large
+        // Dynamic Type on a short device overflows.
+        contentContainerStyle={{ flexGrow: 1, paddingTop: insets.top + 18, paddingBottom: Math.max(0, insets.bottom - 10) }}
         // Indicator left ON: in the exact overflow case this fix targets
         // (large Dynamic Type on a short device) it's the only cue that the
         // CTAs are reachable by scrolling (PR #65 review). alwaysBounce off so
@@ -79,9 +102,14 @@ export default function Launch() {
             Everything you taste{'\n'}In one place
           </VText>
         </View>
-        {/* .content — bottom copy + buttons. marginTop:24 guarantees breathing
-            room from the h1 when space-between collapses (short viewport). */}
-        <View style={{ paddingHorizontal: 22, marginTop: 24 }}>
+        {/* The flexible spacer that replaces space-between. It absorbs ALL the
+            slack, so the group below sits as low as its padding floor allows.
+            `minHeight` preserves the old marginTop:24 breathing room from the
+            h1 for the short-viewport case, where there is no slack to absorb
+            and the spacer collapses to nothing. */}
+        <View style={{ flex: 1, minHeight: 24 }} />
+        {/* .content — bottom copy + buttons. */}
+        <View style={{ paddingHorizontal: 22 }}>
           <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.92)', fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
             Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
           </VText>
@@ -100,7 +128,7 @@ export default function Launch() {
             accessibilityRole="link"
             onPress={() => router.push('/about')}
             hitSlop={10}
-            style={({ pressed }) => ({ alignItems: 'center', marginTop: 18, opacity: pressed ? 0.5 : 1 })}
+            style={({ pressed }) => ({ alignItems: 'center', marginTop: 14, paddingVertical: 2, opacity: pressed ? 0.5 : 1 })}
           >
             <VText variant="caption" style={{ color: 'rgba(255,255,255,0.72)' }}>About &amp; attributions</VText>
           </Pressable>
