@@ -881,9 +881,12 @@ model Producer {
   curatedBy     Int?      @map("curated_by")
   createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt     DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
-  // NoAction, like every catalog-referencing FK: purge resolves inbound
-  // pointers explicitly in its own transaction (re-point or clear), and the
-  // FK is the backstop against a purge that forgets one.
+  // NoAction: purge resolves inbound pointers explicitly in its own transaction
+  // (re-point or clear), and the FK is the backstop against a purge that forgets
+  // one. ⚠️ NOT "like every catalog-referencing FK" — eight of the nine forward
+  // FKs into catalog tables are NoAction; `product_producers.product_id` is the
+  // SOLE intentional Cascade (see its own comment), so a product referenced only
+  // by its join rows deletes successfully and cascades them.
   target        Producer? @relation("ProducerMerge", fields: [linksTo], references: [id], onDelete: NoAction, onUpdate: NoAction)
   tombstones    Producer[] @relation("ProducerMerge")
   adder         User?     @relation("ProducerAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)

@@ -159,7 +159,11 @@ const TEST_USER = 970001
 
 // Prisma's $executeRawUnsafe rejects multiple commands in one call (42601), so
 // each statement runs separately. Order matters: children before parents, since
-// every catalog-referencing FK is NoAction/Restrict by design.
+// eight of the nine forward catalog FKs are NoAction/Restrict by design.
+// (`product_producers.product_id` is the sole intentional Cascade, and this
+// teardown RELIES on it: there is no `DELETE FROM product_producers` statement —
+// deleting `wine_products` cascades the join rows away. The producer side is
+// NoAction, which is why producers must still be deleted after products.)
 async function reset() {
   const stmts = [
     `DELETE FROM wines WHERE id LIKE 'p2test_%'`,

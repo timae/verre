@@ -17,10 +17,21 @@ This reverses the RFC's two-grain split, which kept a `wines` row per bottle-per
 It does not reverse anything else in the RFC — catalog identity, merge reversibility, the
 no-find-or-create rule and the blind-redaction rule all stand and are load-bearing here.
 
-**Why now.** The catalog tables are empty, every `wines.product_id` is NULL, and
-production holds ~35 real wines. Every one of those numbers only grows. The measured
-scope is small at the schema level (two FKs point at `wines`) and large at the code level
-(43 files touch the table), so the cost is dominated by code that accretes over time.
+**Why now.** Every `wines.product_id` is NULL, and the volume of legacy rows needing
+hand-disposition is small — both only grow. The measured scope is small at the schema
+level (two FKs point at `wines`) and large at the code level (43 files touch the
+table), so the cost is dominated by code that accretes over time.
+
+⚠️ **CORRECTED (2026-07-26): this argument previously opened with "the catalog
+tables are empty", which the ruled execution order makes FALSE by the time this
+phase runs.** The fill lands BEFORE the model change (§ 7), so the catalog is
+populated here. Nothing else in the timing argument depended on emptiness — the `product_id`-is-NULL and code-accretion points stand on their own —
+but the phrase mattered because it was also being read as a claim about the seed
+being clean. It is not: see § 7's fourth disposition verdict (`link to an existing
+catalog entry`), which exists precisely because the catalog is populated at
+curation time. The related precondition at § 2 ("pick an existing entry" is a dead
+end against an empty catalog) is the reason the order is what it is, and is
+unaffected.
 
 ---
 
@@ -134,6 +145,13 @@ Three required fields is a keystroke of friction, not a barrier.
 ⚠️ **The anon restriction has a precondition.** "Pick an existing entry" is a dead end
 against an empty catalog. The restriction is therefore switched on when the first catalog
 fill has happened — not when this model change ships. See § 7.
+
+🔒 **This precondition is WHY the execution order is fill-first, and it is the reason a
+reorder was rejected.** Running the model change against a genuinely empty catalog would
+buy a clean seed, but switching on pick-existing before the fill leaves anonymous users
+unable to add anything at all. That is a correctness objection, not a cost one. It also
+means the "why now" argument at the top of this doc must NOT be read as a claim that the
+catalog is empty when this phase runs — it isn't (see the correction there).
 
 ---
 

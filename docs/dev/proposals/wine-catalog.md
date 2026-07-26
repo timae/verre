@@ -81,7 +81,7 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 
 - `vintageId` set with `productId` null is invalid — enforced by `CHECK (vintage_id IS NULL OR product_id IS NOT NULL)` (the composite FK below is MATCH SIMPLE, so it alone would not catch this: it skips checking whenever any column is null). A chosen vintage **must belong to the stored product** — enforced structurally by a composite FK `(vintageId, productId)` → `wine_vintages (id, product_id)` (checked exactly when both are set), alongside the plain FK on `productId`.
 - Set by the add-flow from an **explicit user choice** or a freshly-minted provisional — never by a string match (sole exception: the legacy backfill, § below).
-- **Catalog deletion is never implicit.** All catalog-referencing FKs (`wines.productId`, `wines.vintageId`, `wine_vintages.productId`) are declared `NoAction`/`Restrict` — ordinary lifecycle never deletes rows, and an `ON DELETE SET NULL` on the composite FK would wrongly null *both* columns when only the vintage disappears. The exceptional hard-purge operation (§ Lifecycle) performs the exact transitions itself, in one transaction:
+- **Catalog deletion is never implicit — with one declared exception.** Eight of the nine forward FKs into catalog tables (`wines.productId`, `wines.vintageId`, `wine_vintages.productId`, `wine_vintages.linksTo`, `producers.linksTo`, `wine_products.linksTo`, `product_producers.producerId`, `product_eans.productId`) are declared `NoAction`/`Restrict`; **`product_producers.productId` is the sole intentional `Cascade`**, so a product referenced only by its own join rows deletes successfully and cascades them — ordinary lifecycle never deletes rows, and an `ON DELETE SET NULL` on the composite FK would wrongly null *both* columns when only the vintage disappears. The exceptional hard-purge operation (§ Lifecycle) performs the exact transitions itself, in one transaction:
   - **Vintage purge:** re-point or clear inbound vintage `linksTo` (tombstones pointing at the purged row), `UPDATE wines SET vintage_id = NULL` for the purged vintage — `productId` is retained (the wine stays linked at product grain) — then delete the vintage row.
   - **Product purge:** purge its vintages first (`wine_vintages.productId` is `Restrict`, which forces this ordering), delete its `product_producers` rows, re-point or clear inbound product `linksTo`, then `UPDATE wines SET product_id = NULL`, then delete the product row.
   - **Producer purge:** only valid once no `product_producers` row references it — its products are re-pointed to another producer (respecting exactly-one-lead) or purged first — plus inbound producer `linksTo` re-pointed or cleared; then delete the producer row.
@@ -221,7 +221,51 @@ Ongoing catalog writes have **one owner — the app**: an internal authenticated
 
 ### Seed + the truncate fence
 
-The initial seed runs once against a fresh catalog and mints our nanoids; all seed rows land `confirmed`. **Truncate + reload is valid only while the catalog is fresh — before any `wines.productId`/`vintageId` exists. After the first user link it is forbidden, permanently**, and enforced: the seed script refuses to run if `SELECT 1 FROM wines WHERE product_id IS NOT NULL OR vintage_id IS NOT NULL LIMIT 1` returns a row. All later refreshes are ID-keyed upserts through the import path above — update in place, insert new, never delete-and-recreate — so identities and every user link survive every refresh.
+The initial seed runs once against a fresh catalog and mints our nanoids; all seed rows land `confirmed`. **Truncate + reload is valid only while the catalog is fresh — before any `wines.productId`/`vintageId` exists. After the first user link it is forbidden, permanently**, and enforced: the seed script refuses to run if `SELECT 1 FROM wines WHERE product_id IS NOT NULL OR vintage_id IS NOT NULL LIMIT 1` returns a row. **Once the import path is live (phase 4)**, all later refreshes are ID-keyed upserts through it — update in place, insert new, never delete-and-recreate — so identities and every user link survive every refresh. Before then, see the window below.
+
+⚠️ **CORRECTED (2026-07-26): "all later refreshes go through the import path" has a WINDOW where it is false, and the window is a known accepted gap rather than an oversight.** `CATALOG_PUBLIC_ENABLED` opens **with the model-change phase**, so users can link wines — which permanently kills truncate+reload — while the import/pull endpoint is **phase 4**, two phases later. Between those two points a seed defect has **no designed correction channel**: truncate is forbidden (a user has linked), and the import path does not exist yet.
+
+🔒 **RULED (2026-07-26): accept the window explicitly as manual-and-rare.** At the scale this window covers a manual fix is tractable, and pulling phase 4's endpoint forward means pulling a whole subsystem (session OPEN, per-batch transactions, ACK-in-transaction, idempotency on `(sessionId, batchIndex)`) plus delaying the fence. A narrower correction-only upsert path was also rejected: it is a second write path with a scheduled death date, and throwaway code that ships to prod stops being throwaway.
+
+**What a manual fix in that window owes**, sorted by what it does — only one case matters. A manual fix bypasses the app write path, so **no change-journal event fires** (the journal appends in the same transaction as the domain change, and hand-written SQL is outside that transaction by construction — that is what "same transaction" means, not a journal gap):
+
+| manual operation | reaches the pull leg? |
+|---|---|
+| `UPDATE` a fact | ✅ safe — the first pull is a consistent baseline and carries the corrected value regardless |
+| re-point (`linksTo`, an EAN moved between products) | ✅ safe, same reason |
+| **`DELETE`** | 🔴 **permanently invisible — hand over `(entityType, entityId)` out of band** |
+
+🔒 **The delete case does not self-heal at phase 4.** The baseline simply lacks the row, and deletion is never inferred from absence (a missing row and a not-yet-pulled row are indistinguishable *by design* — inferring deletion from absence is how merged entities resurrect). So a deleted entity would be believed to exist, permanently, with nothing to contradict it. Unlike a mint note, which is a stopgap until phase 4 can carry it, for deletes the out-of-band note is the ONLY carrier, forever.
+
+⭐ **The FK posture narrows this, but NOT uniformly — there is one deliberate `Cascade`.** Enumerated from `schema.prisma`, forward sides only:
+
+| Referencing row | → target | `onDelete` |
+|---|---|---|
+| `wines.product_id` | `wine_products` | `NoAction` |
+| `wines.(vintage_id, product_id)` | `wine_vintages` | `NoAction` |
+| `producers.links_to` | `producers` | `NoAction` |
+| `wine_products.links_to` | `wine_products` | `NoAction` |
+| `wine_vintages.product_id` | `wine_products` | `NoAction` |
+| `wine_vintages.links_to` | `wine_vintages` | `NoAction` |
+| `product_producers.producer_id` | `producers` | `NoAction` |
+| `product_eans.product_id` | `wine_products` | `NoAction` |
+| **`product_producers.product_id`** | **`wine_products`** | **`Cascade`** ⚠️ |
+
+The `Cascade` is intentional and documented at the column: a purge deletes the product's join rows inside its own transaction, and the deferred lead-producer trigger carves out the parent-gone case (otherwise the lead invariant would block its own cleanup). The producer side stays `NoAction` — a producer purge is valid only once no join row references it.
+
+**So the guarantee is narrower than "nothing cascades":** deleting a **producer** or a **vintage** fails loudly if anything still points at it, and deleting a **product** fails loudly for every reference *except* its own `product_producers` join rows, which go with it by design. So a manual `DELETE` of a **producer** or **vintage** that is still referenced cannot quietly succeed. ⚠️ A **product** can: if its only remaining references are its own `product_producers` join rows, the delete succeeds and cascades them. That case is the one the ledger below has to catch, because the database will not stop it. Keep both the FK and the note: the FK stops the careless case, the note carries the deliberate one, and neither substitutes for the other.
+
+**The note's procedure — durable location, owner, and consumption step.** An accepted gap with no executable procedure is not a procedure:
+
+| | |
+|---|---|
+| **What** | `(entityType, entityId)` per deleted catalog row — nothing else is required |
+| **Where** | `docs/dev/catalog-manual-deletions.md` — tracked, append-only, already in the repo. Not chat, not a ticket comment, not a gitignored file: the carrier has to outlive the incident and stay greppable years later |
+| **Owner** | whoever performs the manual fix. 🔒 **The entry is committed BEFORE the destructive SQL runs** (`planned`), then advanced to `applied` after — a Git document and a database deletion cannot be atomic, and a deletion whose record was forgotten afterwards is invisible forever. A `planned` entry for a deletion that never happened is harmless; the reverse is not |
+| **Consumed by** | phase 4, as a **precondition on accepting any import session or creating the initial baseline**: each id is seeded idempotently into the persistent purge ledger (which emits the deletion and rejects resurrection of that id), and only then is the entry marked reconciled — kept, never removed, since the log is append-only history. Emitting to a feed alone is insufficient: an import arriving first could recreate the row. See the implementation plan § Phase 4 purge events. |
+| **Why append-only** | absence and not-yet-pulled are indistinguishable by design, so a removed entry is indistinguishable from one that never existed |
+
+⚠️ Until phase 4 exists there is no automated consumer, which is exactly why the durable location matters: the log is the only thing bridging the window.
 
 ## EAN
 
