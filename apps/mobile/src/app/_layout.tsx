@@ -13,7 +13,7 @@ import {
 } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
@@ -24,10 +24,32 @@ import { ThemeProvider, useTheme } from '@/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// ⚠️ THE SPLASH MUST NOT WAIT ON THE NETWORK INDEFINITELY.
+// `authClient.useSession()` fetches /api/auth/native/get-session, and RN fetch
+// has NO default timeout (the same trap apiFetch.ts guards with an
+// AbortController — the auth client does not route through it). With the server
+// unreachable the request hangs on the OS TCP timeout, so gating first paint on
+// `!isPending` alone left the app on a dark screen for 30–60s+.
+//
+// After this deadline we paint regardless. The session query keeps resolving in
+// the background; when it lands, `session` flips and the Stack.Protected guard
+// swaps to the tabs on its own. Painting early is safe because the UNRESOLVED
+// state is treated as SIGNED OUT, which is the same thing an unreachable server
+// means in practice — and a signed-out welcome screen is a far better failure
+// mode than an indefinite black screen.
+const SPLASH_MAX_WAIT_MS = 2500;
+
 function RootNavigator() {
   const { theme } = useTheme();
   const { data: session, isPending } = authClient.useSession();
-  const ready = !isPending;
+  const [waitedTooLong, setWaitedTooLong] = useState(false);
+  const ready = !isPending || waitedTooLong;
+
+  useEffect(() => {
+    if (!isPending) return;
+    const t = setTimeout(() => setWaitedTooLong(true), SPLASH_MAX_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [isPending]);
 
   useEffect(() => {
     if (!ready) return;
