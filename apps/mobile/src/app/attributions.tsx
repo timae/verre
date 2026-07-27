@@ -7,7 +7,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { fetchAttributions, type AttributionEntry } from '@/lib/api/legal';
+import { type AttributionEntry } from '@/lib/api/legal';
+import { attributionsQueryOptions } from '@/lib/api/legalQuery';
+import { WEB_BASE } from '@/lib/config';
 import { GUTTER } from '@/lib/layout';
 import { motion, radius, space, useTheme } from '@/theme';
 
@@ -196,13 +198,12 @@ export default function Attributions() {
   // for an hour and `true` would honour staleTime and skip the refetch. Without
   // this, the screen tells the user "connect to see the latest" and then does
   // not fetch when they do.
-  const { data, isPending } = useQuery({
-    queryKey: ['legal-attributions'],
-    queryFn: fetchAttributions,
-    staleTime: 60 * 60 * 1000,
-    networkMode: 'always',
-    refetchOnReconnect: 'always',
-  });
+  // 🔒 Options come from lib/api/legalQuery.ts and are passed THROUGH, not
+  // restated. That module is the single source of truth shared with the
+  // lifecycle suite — see its header for why each option is load-bearing
+  // (data-dependent staleTime, networkMode, and why refetchOnMount /
+  // refetchOnWindowFocus must NOT be 'always'). Never inline them here.
+  const { data, isPending } = useQuery(attributionsQueryOptions);
 
   return (
     <ScrollView
@@ -246,11 +247,34 @@ export default function Attributions() {
             >
               <VText variant="caption" color="inkSoft" style={{ lineHeight: 17 }}>
                 Showing the version included with this app — these details couldn&rsquo;t be
-                refreshed just now. Connect to the internet to see the latest.
+                refreshed just now. The latest version is published here:
               </VText>
+              {/* 🔒 The link is what makes the offline contract honest (Simon,
+                  2026-07-26). The bundled snapshot is compiled into the binary,
+                  so a legal change made after this release cannot reach it; the
+                  web page is served by the running server and is where the
+                  newest wording appears. ⚠️ The copy deliberately says "the
+                  latest version is published here" rather than an ABSOLUTE
+                  freshness claim — the server process-caches its config and the
+                  API sets max-age, so even the web is the running server's
+                  snapshot rather than an instantaneous mirror. A CI pin
+                  (§3a of the offline suite) fails on such a claim in this file,
+                  including inside a comment, so it stays simple. The
+                  bundled text still renders ABOVE this notice, so the licences
+                  are never absent: the link is the route to the newest wording,
+                  not a replacement for showing any. */}
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Open the current attributions on the web"
+                onPress={() => { void WebBrowser.openBrowserAsync(`${WEB_BASE}/legal/attributions`).catch(() => {}); }}
+                hitSlop={8}
+                style={({ pressed }) => ({ marginTop: 4, opacity: pressed ? 0.5 : 1 })}
+              >
+                <VText variant="caption" color="accent">{`${WEB_BASE}/legal/attributions`}</VText>
+              </Pressable>
             </View>
           )}
-          {data?.entries.map((e) => <Entry key={e.source} entry={e} />)}
+          {data?.entries.map((e) => <Entry key={e.id} entry={e} />)}
         </>
       )}
     </ScrollView>
