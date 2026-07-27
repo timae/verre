@@ -621,9 +621,28 @@ rules are load-bearing and must survive any redesign or refactor:
    that failure one layer down.
 4. **The bundled-fallback staleness notice must show.** See below.
 
+**The freshness contract (Simon, 2026-07-26) — state it, don't overclaim it.**
+⚠️ Never write "immediately" or "always current" about this surface: THREE
+deliberate caches sit between an ops edit and a native screen — the server
+process-caches the parsed file (so even the web needs a restart), the API sends
+`max-age=3600` + `stale-while-revalidate`, and the client holds a LIVE result
+fresh for an hour. The accurate statement:
+
+- **Web** reflects the **running server's** snapshot.
+- **Online native** refreshes **subject to its client and API caches**, so it can
+  briefly show superseded text.
+- **A failed fetch** falls back to the **release-time bundle** compiled into the
+  binary and links to the server-published web page. (Within one session a
+  previously-fetched live value may persist instead — the query cache is
+  in-memory with no persister, so a cold launch offline gets the bundle.)
+
+Only a native release changes the bundled snapshot itself. The bundled text still
+renders ABOVE the notice, so the licences are never absent; the link is the route
+to the newest wording, not a replacement for showing any.
+
 **Why there are two copies of the entries.** The server holds them as deploy
 config (`lib/attributions.ts`) so adding a source is an ops change, not a
-release. A native binary cannot read server env, so the app fetches
+release (with the offline qualifier above). A native binary cannot read server env, so the app fetches
 `GET /api/legal/attributions` (public, unauthenticated — a legal surface must
 render for a signed-out user on first launch) and falls back to a bundled
 snapshot in `src/lib/api/legal.ts` when offline. `fetchAttributions` NEVER throws

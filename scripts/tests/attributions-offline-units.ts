@@ -113,31 +113,34 @@ try {
   check('well-formed response → origin is "live"', false, `THREW: ${(err as Error).message}`)
 }
 
-// ── 2. The query is configured to run offline and refetch on reconnect ─────
-console.log('\n§2 the attributions query survives offline and refreshes on reconnect')
+// ── 2. The screen uses the SHARED production query options ────────────────
+console.log('\n§2 the screen passes through the shared production options')
 
 const screenSrc = readFileSync(join(root, 'apps/mobile/src/app/attributions.tsx'), 'utf8')
-
-// ⚠️ ASSERT AGAINST THE useQuery CALL, NOT THE FILE. Both option names also
-// appear in the explanatory comments above the call, so a file-wide regex
-// passes even when the real option is deleted — the "a mention is not a call
-// site" failure the vintage wiring gate documents. Strip comments, then look
-// only inside the useQuery({...}) argument.
 const screen = screenSrc
   .replace(/\/\*[\s\S]*?\*\//g, '')
   .replace(/^\s*\/\/.*$/gm, '')
-const qStart = screen.indexOf('useQuery({')
-const useQueryArg = qStart === -1 ? '' : screen.slice(qStart, screen.indexOf('});', qStart))
 
+// The OPTIONS themselves are pinned BEHAVIOURALLY by
+// scripts/tests/attributions-query-lifecycle.ts, which imports them and drives a
+// real QueryObserver. What this file pins is the WIRING: that the screen passes
+// the shared object through instead of restating options inline, since an inline
+// copy is how the two drift apart and the lifecycle suite stops describing the
+// app.
 check(
-  "networkMode: 'always' is set",
-  /networkMode:\s*'always'/.test(useQueryArg),
-  "Without it TanStack pauses the query while offline (lib/query.tsx wires NetInfo into onlineManager), so the bundled fallback never renders and the screen spins forever.",
+  'the screen imports the shared options module',
+  /from '@\/lib\/api\/legalQuery'/.test(screen),
+  'Options must come from lib/api/legalQuery.ts, the single source of truth.',
 )
 check(
-  "refetchOnReconnect: 'always' is set",
-  /refetchOnReconnect:\s*'always'/.test(useQueryArg),
-  "networkMode:'always' disables the default reconnect refetch. The literal 'always' is required — `true` honours staleTime, and a bundled result is fresh for an hour, so the screen would tell the user to reconnect and then not refetch when they did.",
+  'useQuery is called with the shared object, not an inline literal',
+  /useQuery\(attributionsQueryOptions\)/.test(screen),
+  'An inline useQuery({...}) here would drift from what the lifecycle suite tests.',
+)
+check(
+  'the screen does not restate refetch/staleTime options',
+  !/staleTime:|refetchOnMount:|refetchOnWindowFocus:|networkMode:/.test(screen),
+  'These belong in lib/api/legalQuery.ts so production and tests share one definition.',
 )
 
 // ── 3. The staleness tell is rendered ──────────────────────────────────────
@@ -147,6 +150,34 @@ check(
   /origin\s*===\s*'bundled'/.test(screen),
   'Two copies of legal text can disagree; the stale one must never masquerade as current.',
 )
+
+// ── 3a. No absolute freshness claims ───────────────────────────────────────
+console.log('\n§3a the freshness contract is not overclaimed')
+
+// ⚠️ THREE deliberate caches sit between an ops edit and a native screen: the
+// server process-caches the parsed config, the API sends max-age=3600 +
+// stale-while-revalidate, and the client holds a LIVE result fresh for an hour
+// (which the lifecycle suite proves). So "always current" / "immediately" is
+// false on every surface, including the WEB — a changed override file needs a
+// process restart. This pin exists because the phrasing crept in three separate
+// times, once in USER-FACING copy.
+for (const [label, file] of [
+  ['the native screen (incl. user-facing copy)', 'apps/mobile/src/app/attributions.tsx'],
+  ['the web page', 'app/legal/attributions/page.tsx'],
+  ['the entries module', 'apps/mobile/src/lib/api/legal.ts'],
+] as const) {
+  const src = readFileSync(join(root, file), 'utf8')
+  check(
+    `${label} makes no "always current" / "immediately" freshness claim`,
+    // ⚠️ Keep every alternative the LABEL promises. An earlier version named
+    // "immediately" in the message but omitted it from the pattern, so
+    // "updates immediately" would have passed while the check appeared to
+    // cover it — a gate whose message overstates its regex is worse than no
+    // gate, because a reader trusts the message.
+    !/always current|always-current|always on the web|immediately/i.test(src),
+    'The web reflects the RUNNING SERVER snapshot; online native refreshes subject to its caches. Say "the latest version is published here", never an absolute.',
+  )
+}
 
 // ── 3b. Collapsed entries stay MOUNTED ─────────────────────────────────────
 console.log('\n§3b collapsing an entry must not unmount its content')
@@ -163,6 +194,50 @@ check(
   'the web entry uses <details> (contents stay in the DOM when closed)',
   /<details\b/.test(webPage) && /<\/details>/.test(webPage) && !/useState|'use client'/.test(webPage),
   'A JS toggle that conditionally renders the body would omit required licence text from the delivered HTML while closed. <details> keeps it in the document.',
+)
+
+// ── 3c. The splash deadline must not resolve UNKNOWN as SIGNED OUT ─────────
+console.log('\n§3c the splash deadline does not decide auth')
+const rootLayoutSrc = readFileSync(join(root, 'apps/mobile/src/app/_layout.tsx'), 'utf8')
+const layout = rootLayoutSrc
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/.*$/gm, '')
+
+// 🔒 BOTH guards must require the session to have RESOLVED. At the deadline
+// `session` is still undefined, so a bare `guard={!session}` selects the AUTH
+// group and redirects away from a protected deep link the user launched into --
+// then flips to the tabs a second later, after a flash of the welcome screen.
+check(
+  'the protected (tabs) guard requires a RESOLVED session',
+  /guard=\{sessionResolved && !!session\}/.test(layout),
+  'A bare `guard={!!session}` cannot distinguish "pending" from "signed out".',
+)
+check(
+  'the (auth) guard ALSO requires a resolved session',
+  /guard=\{sessionResolved && !session\}/.test(layout),
+  'This is the one that throws the deep link away: unknown must not select the auth group.',
+)
+check(
+  'splash hiding and route selection are SEPARATE conditions',
+  /splashCanHide/.test(layout) && /sessionResolved/.test(layout) &&
+    /const splashCanHide = !isPending \|\| waitedTooLong/.test(layout) &&
+    /const sessionResolved = !isPending/.test(layout),
+  'The deadline may hide the splash; only the session landing may pick a route group.',
+)
+check(
+  'a neutral state renders while pending past the deadline',
+  /if \(!sessionResolved\) \{/.test(layout),
+  'With neither group mounted the Stack has nothing to render — without this the user sees an empty navigator.',
+)
+// update-required must stay reachable regardless of session state, including a
+// late 426 that arrives after the deadline.
+check(
+  'update-required sits outside both guards',
+  /name="update-required"/.test(layout) &&
+    !new RegExp('name="update-required"').test(
+      layout.slice(layout.indexOf('<Stack.Protected'), layout.lastIndexOf('</Stack.Protected>')),
+    ),
+  'A late 426 must still reach the blocking update screen.',
 )
 
 // ── 4. The legal routes sit OUTSIDE the auth guard ─────────────────────────
