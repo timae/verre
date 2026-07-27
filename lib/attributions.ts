@@ -22,6 +22,17 @@ import { z } from 'zod'
 // read at runtime satisfies that: point ATTRIBUTIONS_PATH at a mounted config
 // file and the surface changes with no rebuild.
 //
+// ⚠️ NOT "IMMEDIATELY", AND NOT "ALWAYS CURRENT" — there are THREE caches
+// between editing the file and a native screen, all deliberate:
+//   1. this module process-caches the parsed file (first read wins), so even
+//      the WEB needs a process restart to pick up a change;
+//   2. GET /api/legal/attributions sends max-age=3600 + stale-while-revalidate;
+//   3. the native client holds a LIVE result fresh for an hour.
+// So: the web reflects the RUNNING SERVER's snapshot; online native refreshes
+// SUBJECT TO those caches; a failed fetch falls back to the release-time bundle
+// compiled into the app and links to the server-published web page. Only a
+// native release changes that bundle. See docs/dev/deployment.md.
+//
 // It is deliberately NOT env-var-embedded. `licence.text` is a multi-line
 // verbatim legal block (the MIT notice is 1072 bytes with hard newlines);
 // round-tripping that through shell quoting is exactly the kind of fragility
@@ -70,7 +81,16 @@ import { z } from 'zod'
 //    inputs because they were committed together) and would assert something
 //    nobody measured.
 const EntrySchema = z.object({
-  // Display name of the upstream source.
+  // 🔒 IMMUTABLE MACHINE IDENTITY — never rendered, never changed once minted.
+  // The mandatory-set, uniqueness and parity checks all key on THIS, not on
+  // `source`. That separation is what lets an ops override CORRECT a source's
+  // displayed legal name: keying identity on the display name meant a renamed
+  // source read as "a mandatory source is missing" and the whole override was
+  // rejected — so the documented ability to correct a source through deploy
+  // config did not actually exist.
+  id: z.string().min(1).regex(/^[a-z0-9-]+$/, 'id must be lowercase kebab-case'),
+  // Display name of the upstream source. MUTABLE — this is the editable legal
+  // name, and correcting it is a supported ops change.
   source: z.string().min(1),
   // Where the SOURCE lives — the dataset's own home page.
   //
@@ -109,6 +129,54 @@ export type AttributionEntry = z.infer<typeof EntrySchema>
 
 const EntriesSchema = z.array(EntrySchema)
 
+// ── Override validation ────────────────────────────────────────────────────
+//
+// 🔒 AN OVERRIDE IS A COMPLETE REPLACEMENT, NOT A PATCH — and that is exactly
+// why it needs these checks. `getAttributions` swaps the whole list, so a file
+// containing one valid new source would otherwise DELETE X-Wines, LWIN, BC
+// Liquor and Open Brewery DB. Silently dropping a required attribution is the
+// precise breach this surface exists to prevent.
+//
+// The CI parity gate (scripts/check-attributions-parity.mjs) enforces the same
+// invariants on the two IN-REPO copies, but it cannot see a file supplied at
+// runtime. Without this, ATTRIBUTIONS_PATH is a hole straight through every
+// guarantee the gate provides: it would happily accept `verified: false`,
+// blank notes, duplicate sources, and javascript: URLs.
+//
+// The mandatory set is DERIVED from DEFAULT_ENTRIES rather than hardcoded, so
+// adding a fifth bundled source automatically makes it mandatory in overrides
+// too — no second list to forget to update.
+function validateOverride(entries: AttributionEntry[]): string[] {
+  const errors: string[] = []
+  if (entries.length === 0) {
+    return ['resolved to an empty list']
+  }
+  // 🔒 Keyed on the IMMUTABLE `id`, never the mutable `source` display name.
+  // Keying on the display name made a legal-name correction indistinguishable
+  // from a deletion — the override was rejected as "missing a mandatory
+  // source", which broke the documented ability to correct one via ops config.
+  const seen = new Set<string>()
+  for (const e of entries) {
+    if (seen.has(e.id)) errors.push(`duplicate id "${e.id}"`)
+    seen.add(e.id)
+    // 🔒 An unverified entry must never ship. The flag exists so a best-guess
+    // paraphrase cannot quietly become the record.
+    if (e.verified !== true) errors.push(`"${e.source}" has verified:false`)
+    if (!e.notes.trim()) errors.push(`"${e.source}" has empty notes`)
+    // 🔒 http(s) only — these render as tappable links on both surfaces, so a
+    // javascript:/data: URL here would be a scheme-injection vector on a page
+    // every user is invited to open. Same rule as lib/textSafe.ts cleanUrl.
+    if (!/^https?:\/\//i.test(e.sourceUrl)) errors.push(`"${e.source}" sourceUrl is not http(s)`)
+    if (!/^https?:\/\//i.test(e.licence.url)) errors.push(`"${e.source}" licence.url is not http(s)`)
+  }
+  for (const required of DEFAULT_ENTRIES) {
+    if (!seen.has(required.id)) {
+      errors.push(`missing mandatory source id "${required.id}" (an override REPLACES the list; it must carry every bundled source). Note the check is on the immutable id — renaming that source's DISPLAY name is fine, dropping its id is not.`)
+    }
+  }
+  return errors
+}
+
 // ── The bundled entries ────────────────────────────────────────────────────
 //
 // 🔒 DO NOT TRIM THIS LIST BY "WHICH SOURCES ACTUALLY CONTRIBUTED ROWS".
@@ -119,6 +187,7 @@ const EntriesSchema = z.array(EntrySchema)
 // because it "looks unused" is how a breach happens.
 const DEFAULT_ENTRIES: AttributionEntry[] = [
   {
+    id: 'x-wines',
     source: 'X-Wines',
     sourceUrl: 'https://github.com/rogerioxavier/X-Wines',
     licence: {
@@ -135,6 +204,7 @@ const DEFAULT_ENTRIES: AttributionEntry[] = [
     notes: 'CC0 1.0 confirmed firsthand; the dataset ships its own LICENSE file. Attribution is not required — the paper citation is a courtesy, not an obligation. The licence link is the canonical CC0 deed URL (creativecommons.org blocks automated requests from our build environment, so it was not fetch-verified from here).',
   },
   {
+    id: 'lwin',
     source: 'LWIN (Liv-ex)',
     sourceUrl: 'https://www.liv-ex.com/lwin/',
     licence: {
@@ -158,6 +228,7 @@ const DEFAULT_ENTRIES: AttributionEntry[] = [
     notes: 'Statement supplied verbatim and confirmed firsthand. The modification notice is required because our pipeline normalizes, deduplicates and merges the records.',
   },
   {
+    id: 'bc-liquor',
     source: 'BC Liquor Store product data',
     sourceUrl: 'https://catalogue.data.gov.bc.ca/dataset/bc-liquor-store-product-price-list-current-prices',
     licence: {
@@ -182,6 +253,7 @@ const DEFAULT_ENTRIES: AttributionEntry[] = [
     dataPeriod: 'April 2026',
   },
   {
+    id: 'open-brewery-db',
     source: 'Open Brewery DB',
     sourceUrl: 'https://www.openbrewerydb.org/',
     licence: {
@@ -245,9 +317,12 @@ export function getAttributions(): AttributionEntry[] {
   }
   try {
     const parsed = EntriesSchema.parse(JSON.parse(readFileSync(path, 'utf8')))
-    // An override that parses to an empty list is a misconfiguration, not an
-    // instruction to render nothing — treat it like any other bad override.
-    if (parsed.length === 0) throw new Error('ATTRIBUTIONS_PATH resolved to an empty list')
+    // 🔒 ATOMIC: either the whole override is valid and replaces the list, or
+    // none of it is used. Never merge a partially-valid override into the
+    // bundled entries — a half-applied legal surface is worse than a stale one,
+    // because nothing tells you which half you are looking at.
+    const errors = validateOverride(parsed)
+    if (errors.length) throw new Error(`invalid override — ${errors.join('; ')}`)
     cached = parsed
     return cached
   } catch (err) {

@@ -27,6 +27,10 @@ import { apiFetch } from '@/lib/apiFetch';
 // entries and the screen MUST surface it. Do not "simplify" that away.
 
 export type AttributionEntry = {
+  // 🔒 IMMUTABLE MACHINE IDENTITY — never rendered. Parity, uniqueness and
+  // mandatory-presence checks key on this, never on the mutable `source`
+  // display name (which an ops override is allowed to correct).
+  id: string;
   source: string;
   // Where the SOURCE lives. 🔒 NOT the licence link — see licence.url.
   sourceUrl: string;
@@ -56,6 +60,7 @@ export type AttributionsResult = {
 // 🔒 The OGL-BC statement contains U+2013 EN DASH, not a hyphen.
 export const BUNDLED_ATTRIBUTIONS: AttributionEntry[] = [
   {
+    id: "x-wines",
     source: "X-Wines",
     sourceUrl: "https://github.com/rogerioxavier/X-Wines",
     licence: {
@@ -68,6 +73,7 @@ export const BUNDLED_ATTRIBUTIONS: AttributionEntry[] = [
     notes: "CC0 1.0 confirmed firsthand; the dataset ships its own LICENSE file. Attribution is not required — the paper citation is a courtesy, not an obligation. The licence link is the canonical CC0 deed URL (creativecommons.org blocks automated requests from our build environment, so it was not fetch-verified from here).",
   },
   {
+    id: "lwin",
     source: "LWIN (Liv-ex)",
     sourceUrl: "https://www.liv-ex.com/lwin/",
     licence: {
@@ -80,6 +86,7 @@ export const BUNDLED_ATTRIBUTIONS: AttributionEntry[] = [
     notes: "Statement supplied verbatim and confirmed firsthand. The modification notice is required because our pipeline normalizes, deduplicates and merges the records.",
   },
   {
+    id: "bc-liquor",
     source: "BC Liquor Store product data",
     sourceUrl: "https://catalogue.data.gov.bc.ca/dataset/bc-liquor-store-product-price-list-current-prices",
     licence: {
@@ -93,6 +100,7 @@ export const BUNDLED_ATTRIBUTIONS: AttributionEntry[] = [
     dataPeriod: "April 2026",
   },
   {
+    id: "open-brewery-db",
     source: "Open Brewery DB",
     sourceUrl: "https://www.openbrewerydb.org/",
     licence: {
@@ -134,6 +142,7 @@ function isEntry(v: unknown): v is AttributionEntry {
   const e = v as Record<string, unknown>;
   const lic = e.licence as Record<string, unknown> | undefined;
   return (
+    typeof e.id === 'string' && e.id.length > 0 &&
     typeof e.source === 'string' && e.source.length > 0 &&
     typeof e.sourceUrl === 'string' && e.sourceUrl.length > 0 &&
     // 🔒 `licence.url` is validated because it is the link the licence

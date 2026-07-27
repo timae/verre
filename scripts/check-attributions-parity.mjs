@@ -100,11 +100,13 @@ if (serverEntries.length !== mobileEntries.length) {
 
 // 🔒 Every field below carries legal meaning. `notes` is included because it is
 // what an unverified entry RENDERS as its visible caveat.
-const FIELDS = ['source', 'sourceUrl', 'attribution', 'verified', 'notes', 'dataPeriod']
+const FIELDS = ['id', 'source', 'sourceUrl', 'attribution', 'verified', 'notes', 'dataPeriod']
 
 for (const s of serverEntries) {
-  const m = mobileEntries.find((e) => e.source === s.source)
-  if (!m) { errors.push(`"${s.source}" is in ${SERVER} but missing from ${MOBILE}`); continue }
+  // 🔒 Matched on the IMMUTABLE id, never the mutable display name — a legal-name
+  // correction must not read as "this source disappeared".
+  const m = mobileEntries.find((e) => e.id === s.id)
+  if (!m) { errors.push(`id "${s.id}" is in ${SERVER} but missing from ${MOBILE}`); continue }
   for (const f of FIELDS) {
     if (s[f] !== m[f]) {
       errors.push(`"${s.source}" field \`${f}\` differs:\n    server: ${JSON.stringify(s[f])}\n    mobile: ${JSON.stringify(m[f])}`)
@@ -127,8 +129,8 @@ for (const s of serverEntries) {
 }
 
 for (const m of mobileEntries) {
-  if (!serverEntries.find((e) => e.source === m.source)) {
-    errors.push(`"${m.source}" is in ${MOBILE} but missing from ${SERVER}`)
+  if (!serverEntries.find((e) => e.id === m.id)) {
+    errors.push(`id "${m.id}" is in ${MOBILE} but missing from ${SERVER}`)
   }
 }
 
@@ -146,6 +148,9 @@ for (const s of serverEntries) {
   // CC BY / OGL-BC compliance is actually satisfied.
   if (!s.sourceUrl || !/^https?:\/\//.test(s.sourceUrl)) {
     errors.push(`"${s.source}" has a missing or non-http \`sourceUrl\`.`)
+  }
+  if (!s.id || !/^[a-z0-9-]+$/.test(s.id)) {
+    errors.push(`"${s.source}" has a missing or non-kebab-case \`id\` — it is the immutable identity key.`)
   }
   if (!s.licence.url || !/^https?:\/\//.test(s.licence.url)) {
     errors.push(`"${s.source}" has a missing or non-http \`licence.url\` — this is the link the licence REQUIRES; it cannot be blank.`)

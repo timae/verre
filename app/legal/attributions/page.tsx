@@ -62,7 +62,7 @@ export default function AttributionsPage() {
           gives keyboard + screen-reader disclosure semantics for free. */}
       {entries.map((e) => (
         <details
-          key={e.source}
+          key={e.id}
           style={{ background: 'var(--bg2)', borderRadius: 12, padding: 20, marginBottom: 20 }}
         >
           <summary className="attr-summary" style={{ cursor: 'pointer', display: 'flex', alignItems: 'baseline', gap: 10 }}>
