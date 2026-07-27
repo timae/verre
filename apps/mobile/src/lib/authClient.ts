@@ -29,6 +29,26 @@ export const authClient = createAuthClient({
   ],
   fetchOptions: {
     headers: versionHeaders,
+    // ⚠️ RN fetch has NO DEFAULT TIMEOUT. apiFetch.ts guards every Verre API
+    // call with an AbortController for exactly this reason, but the Better Auth
+    // client does not route through it — so without this, a request against an
+    // unreachable server hangs on the OS TCP timeout (30–60s+). That is what
+    // held the boot splash dark, since the root layout gates first paint on the
+    // get-session heartbeat.
+    //
+    // Longer than apiFetch's 12s default would be pointless here: this is the
+    // launch path, and the root layout paints regardless after 2.5s. This
+    // deadline exists so the request itself ends rather than lingering.
+    customFetchImpl: (input, init) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12_000);
+      const upstream = init?.signal;
+      if (upstream) {
+        if (upstream.aborted) controller.abort();
+        else upstream.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+      return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+    },
     async onError(ctx) {
       if (ctx.response?.status !== 426) return;
       // BA traffic (the get-session heartbeat) is the main 426 producer — and

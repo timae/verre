@@ -36,7 +36,7 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
 **Never store any source-provenance field in the DB** — no source URLs, slugs, source ids, or source region ids — and never expose source provenance **per record**. The catalog's identity is **our own IDs** (nanoid PKs, like the rest of the schema): prod holds Verre IDs + clean catalog facts only. Refreshes arrive through the import contract as upserts keyed on **our** catalog IDs; the app never needs any other key.
 
-⚠️ **Scope correction (2026-07-25): this rule is about PER-RECORD provenance, and it does not override a licence.** An earlier phrasing said "never expose source provenance on any surface", which read as forbidding attribution outright — and some licences we rely on **legally require naming the source**. Those obligations are met at the **corpus level**, on the attributions/legal surface (implementation plan § Queued next item 1, which blocks the first catalog fill), never by attaching a source field to a row. The two are not in conflict once the distinction is explicit:
+⚠️ **Scope correction (2026-07-25): this rule is about PER-RECORD provenance, and it does not override a licence.** An earlier phrasing said "never expose source provenance on any surface", which read as forbidding attribution outright — and some licences we rely on **legally require naming the source**. Those obligations are met at the **corpus level**, on the attributions/legal surface (✅ SHIPPED, PR #93 — `lib/attributions.ts`, `/legal/attributions`, and the native You → About screens), never by attaching a source field to a row. The two are not in conflict once the distinction is explicit:
 
 | | Allowed | Forbidden |
 |---|---|---|

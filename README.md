@@ -26,6 +26,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Optional profile pictures (round-mask cropper, EXIF/GPS stripped before upload)
 - Profile visibility tiers (public / Verre users / followers / mutual follows) with optional friends-of-friends extension
 - Mute (quietly hide someone's content from your feed) and Block (full break — bidirectional invisibility outside shared sessions, render-only inside)
+- Attributions page (`/legal/attributions` on web, You → About in the app) naming the sources and licences behind the wine catalog — a licence obligation, readable without an account
 
 Optional label scan:
 - Bottle photos always work without AI
@@ -305,3 +306,4 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/hof | Hall of Fame leaderboard |
+| GET | /api/legal/attributions | Corpus-level sources + licences for the wine catalog. Unauthenticated by design — the native app fetches it, and a legal surface must render before an account exists. Returns `{entries, servedAt}`; entries are `{id, source, sourceUrl, licence:{spdx,url,text}, attribution, verified, notes, dataPeriod?}` |

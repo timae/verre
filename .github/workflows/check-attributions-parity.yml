@@ -1,0 +1,109 @@
+name: Legal attributions parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: attributions-parity-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The legal attribution entries exist TWICE by design: the server config
+      # (lib/attributions.ts) and the native app's offline fallback snapshot
+      # (apps/mobile/src/lib/api/legal.ts). The native app cannot read server
+      # env, so it fetches the entries and falls back to the snapshot when
+      # offline — which is what keeps a LEGAL surface from rendering blank, and
+      # also how the two copies can silently drift.
+      #
+      # 🔒 Drift here is a LICENCE problem, not a style problem: an offline user
+      # would be shown superseded legal terms with no tell. The gate compares
+      # every legally-meaningful field BYTE-FOR-BYTE — including the verbatim
+      # MIT notice and the OGL-BC en dash (U+2013), which BC's own page renders
+      # as an ASCII hyphen in its title, so a normalisation is a live risk.
+      #
+      # It also asserts that no `verified: false` entry ships (the flag exists
+      # so a best-guess paraphrase cannot become the record) and fails loudly if
+      # it parses zero entries rather than passing while checking nothing.
+      #
+      # Verified to FAIL against three real mutations: en dash normalised to a
+      # hyphen, the MIT trailing newline trimmed (the `scrub()` failure mode —
+      # scrub's .trim() drops exactly that byte), and an entry flipped to
+      # verified:false.
+      - run: npm ci
+
+      - name: Attributions parity + verification gate
+        run: node scripts/check-attributions-parity.mjs
+
+      # Pins the offline story, which is the whole reason a bundled fallback
+      # exists. Drives the REAL fetchAttributions against six failure modes
+      # (offline throw, non-ok, malformed body, empty list, bad entry shape,
+      # json() throwing) and asserts each resolves to the snapshot rather than
+      # throwing or rendering blank.
+      #
+      # It also pins the two useQuery options, because they ARE the behaviour:
+      # TanStack defaults to networkMode:'online' and lib/query.tsx wires NetInfo
+      # into onlineManager, so without networkMode:'always' the query is PAUSED
+      # offline and the fallback never renders — a spinner forever, in exactly
+      # the case the fallback serves. And networkMode:'always' disables the
+      # default reconnect refetch, so refetchOnReconnect:'always' is required
+      # alongside it. ⚠️ Those assertions are scoped to the useQuery({...})
+      # ARGUMENT, not the file: both names also appear in the comments above the
+      # call, and a file-wide match passed while the real option was deleted.
+      # Both deletions were verified to fail this suite.
+      #
+      # Finally it asserts the legal routes sit OUTSIDE <Stack.Protected>, since
+      # the attributions must render before an account exists.
+      - name: Attributions offline + reconnect pins
+        run: npx tsx scripts/tests/attributions-offline-units.ts
+
+      # ATTRIBUTIONS_PATH replaces the entry list WHOLESALE, which makes it a
+      # hole straight through every invariant the parity gate enforces — the
+      # gate can only see the two in-repo copies, never a file supplied at
+      # runtime. Without validation, a file containing one valid new source
+      # silently DELETES X-Wines, LWIN, BC Liquor and Open Brewery DB, and the
+      # loader would accept verified:false, blank notes, duplicate sources and
+      # javascript:/data:/file: URLs that render as tappable links.
+      #
+      # Drives the REAL getAttributions() against real temp files. Every
+      # rejection case starts from a clone of the bundled list and mutates ONE
+      # field, so a rejection can only be caused by that field.
+      # ⚠️ Comparison is DEEP-EQUALITY against the bundled list, not a source-name
+      # match: the first version compared names, which are identical whether the
+      # override was rejected or wrongly accepted — disabling the validator
+      # produced ZERO failures. It now produces 12.
+      - name: Attributions runtime-override pins
+        run: npx tsx scripts/tests/attributions-override-units.ts
+
+      # Drives a REAL QueryObserver (mount + focus + reconnect) against the
+      # IMPORTED production options in apps/mobile/src/lib/api/legalQuery.ts —
+      # deliberately not a copy, so restoring a flat staleTime in production
+      # alone fails this suite. `fetchQuery` alone was not enough: refetchOnMount
+      # and refetchOnWindowFocus are OBSERVER options it never consults, which
+      # is how a defect hid where 'always' short-circuited the staleness check
+      # (queryObserver.js shouldFetchOn) and re-fetched fresh legal text on every
+      # mount and foreground.
+      #
+      # Verified to fail on production-only mutations: flat 1h staleTime (3
+      # failures) and refetchOnMount/Focus set to 'always' (4 failures).
+      - name: Attributions query lifecycle pins
+        run: npx tsx scripts/tests/attributions-query-lifecycle.ts
+
+      # The 426 buffer. expo-router QUEUES a replace rather than throwing and can
+      # silently discard it when no navigation ref exists — and the previous
+      # implementation cleared `pending` BEFORE navigating, so a dropped replace
+      # lost the 426 permanently with nothing thrown to catch. Readiness is now
+      # explicit state; these pins drive the real module through its injected
+      # replace seam (no router, no renderer).
+      - name: Update-gate readiness pins
+        run: npx tsx scripts/tests/update-gate-units.ts
