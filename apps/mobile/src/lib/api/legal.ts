@@ -83,7 +83,7 @@ export const BUNDLED_ATTRIBUTIONS: AttributionEntry[] = [
     },
     attribution: "Contains LWIN data © Liv-ex Ltd, used under CC BY 4.0. Modified: records have been normalized, deduplicated and merged with other sources.",
     verified: true,
-    notes: "Statement supplied verbatim and confirmed firsthand. The modification notice is required because our pipeline normalizes, deduplicates and merges the records.",
+    notes: "Statement supplied verbatim and confirmed firsthand. The modification notice is required because the records are normalized, deduplicated and merged with other sources before use.",
   },
   {
     id: "bc-liquor",

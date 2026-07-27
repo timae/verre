@@ -157,6 +157,23 @@ for (const s of serverEntries) {
   }
 }
 
+// 🔒 These entries are PUBLIC, USER-FACING legal copy in a public repo. They
+// must not describe internal tooling or the catalog-maintenance arrangement —
+// a licence notice states what was done to the data, not what does it. (The
+// LWIN note originally said "our pipeline normalizes…"; the CC BY modification
+// notice is about the DATA PROCESSING, so the passive form is both compliant
+// and correct.)
+const FORBIDDEN_WORDS = /\bpipeline\b|\btwo-repo\b/i
+for (const [file, entries] of [[SERVER, serverEntries], [MOBILE, mobileEntries]]) {
+  for (const e of entries) {
+    for (const field of ['notes', 'attribution', 'source']) {
+      if (typeof e[field] === 'string' && FORBIDDEN_WORDS.test(e[field])) {
+        errors.push(`${file}: "${e.source}" field \`${field}\` describes internal tooling — this is public user-facing legal copy. State what was done to the DATA, not what does it.`)
+      }
+    }
+  }
+}
+
 // 🔒 The OGL-BC statement's dash is an EN DASH (U+2013), verified at source.
 // BC's own page title uses an ASCII hyphen, so both forms appear in one
 // document and a normalisation would alter a legally required string.
