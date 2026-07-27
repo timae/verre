@@ -170,6 +170,30 @@ Everything after the bootstrap goes through the in-app path (`lib/staffRole.ts` 
 
 **A `WineProduct` can never be created in a single statement.** Deferred constraint triggers enforce "every product has exactly one lead producer" at COMMIT, including at creation — so a bare `prisma.wineProduct.create()` always raises `has no lead producer`. Product + its `product_producers` lead row must commit in one `$transaction`. That is the invariant working, not a bug. Swap ordering traps (demote-then-promote; promotion is an UPDATE, not an INSERT) are documented in the migration's § 6.
 
+## 🔒 `product_producers.product_id` is ON DELETE CASCADE — deliberately
+
+**Ruled 2026-07-26 (Simon): we KEEP it.** Recorded because the data side's mirror
+of this schema uses `RESTRICT` on both `product_producers` FKs, and a shared-contract
+reading would otherwise treat ours as the accident. It is the opposite: theirs is
+Prisma's default for a required relation (never a decision); ours is a decision with
+a comment in `20260725090000_wine_catalog_schema/migration.sql` explaining it.
+
+**Why it must stay CASCADE:** the staff hard-purge deletes a product and its join
+rows in one transaction. The exactly-one-lead constraint trigger is `DEFERRABLE
+INITIALLY DEFERRED` (fires at COMMIT) and its carve-out in
+`catalog_product_requires_lead` returns quietly when the parent product is already
+gone. That whole design assumes the join rows disappear WITH the product. Switching
+to `RESTRICT` would force the purge to sequence deletes by hand — which is precisely
+what the cascade exists to avoid.
+
+**Not a hole to accept:** a `product_producers` row cannot outlive its product, so
+removing it alongside is cleanup, not loss. (The producer survives; what goes is the
+fact that *this* producer made *this* product — worthless once the product is purged.)
+
+⚠️ For the record, our catalog FK shape is **9 forward FKs, 8 `NoAction`, 1 `Cascade`**
+— the single `Cascade` is this one. An earlier claim that "every catalog-referencing
+FK is NoAction" was false and is corrected in `e2b9247`.
+
 ## Schema check (build-time)
 
 `.github/workflows/check-schema.yml` runs `prisma migrate diff` and fails the build if `schema.prisma` and the migrations directory disagree. Don't bypass — either generate the migration via `prisma migrate dev` or roll back the schema change.

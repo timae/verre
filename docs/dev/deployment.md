@@ -51,10 +51,18 @@ Rate-limit keys are derived from the client IP (`lib/rateLimit.ts` `getClientIp`
 - `CATALOG_PUBLIC_ENABLED` (optional — **leave unset until the model-change phase ships**) — the wine-catalog release fence (`lib/catalogGate.ts`). Only the literal string `'true'` opens catalog search + entry creation to ordinary users; anything else (including unset) returns **404** — not 403, so an unreleased surface isn't advertised. **Staff (`staff_roles` curator or admin) bypass the switch always**, so the add-flow can be dogfooded and the matcher tuned while it is closed to everyone else.
 
   🔒 **Preconditions before setting this to `'true'`** (`docs/dev/proposals/wine-catalog-model-change.md` § 7):
-  1. **Attributions surface live** in web + native — a licence obligation, not a courtesy.
+  1. ✅ **DONE (PR #93, 2026-07-27) — attributions surface live** in web + native. A licence obligation, not a courtesy. ⚠️ Still a standing precondition, not a one-time tick: if a source is ever ADDED to the corpus, its entry must ship (and reach clients) before that data does.
   2. **First catalog fill done**, ending with `VACUUM ANALYZE` on the catalog tables.
   3. **Model change shipped**, including its release conditions (version gate covering the changed endpoints, min-version floor raised).
   4. **Interleaved concurrent-PATCH test** run — it gates this flag opening, not phase 3.
+
+  🔒 **OPENING THIS FLAG IS THE IRREVERSIBLE STEP — decide it BEFORE the fill, not as a checkbox after** (data side, 2026-07-26; recorded because it existed only in conversation and is the key input to this decision).
+
+  **A conflated producer is PERMANENT once users attach data, and the window closes on user activity — not at a phase boundary.** The measured failure is *several real producers collapsed into one row*, which is the OPPOSITE direction from a duplicate. `linksTo` merges a false split (two rows that should be one); a conflation is one row that should be several, and **a merge given one row has nothing to merge**. Repair would need a SPLIT: mint the missing producer, divide products and provenance, decide what happens to facts accumulated on the conflated row, reassign user-linked data, and be auditable and reversible. **No such machinery exists on either side, and none is planned in phase 3.**
+
+  Two consequences worth holding onto:
+  - ⚠️ **Conflations never surface in the review queue.** There is one row and nothing looks wrong with it. So phase-3 queue sizing should NOT assume they arrive as duplicates — imported-producer *merges* are a separate, real, steady workload; conflations are invisible.
+  - The practical lever is *when* users can start attaching data, which is exactly what this flag controls. Once attached, the cheap fix is gone.
 
   ⚠️ **The earlier "not before phase 3" rule is SUPERSEDED** (2026-07-25). It read: phase 3 adds the review queue, and *publicly searchable user-authored content with no moderation path* is not a valid steady state. That reasoning is sound but was outweighed by scale — at a handful of testers the accumulation risk is negligible. **What must still hold:** entries minted before the queue exists stay `provisional` and are recorded as awaiting review, so nothing is silently treated as reviewed. If usage grows before phase 3 lands, unset this again rather than letting the backlog grow unbounded.
 

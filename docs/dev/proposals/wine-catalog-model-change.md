@@ -441,11 +441,14 @@ resolving. Worth doing regardless of the app situation below.
 ## 7. Sequencing
 
 ```
-attributions page → first catalog fill → model change → review queue
+attributions page ✅ → first catalog fill → model change → review queue
+     (SHIPPED PR #93)      ← NEXT
 ```
 
-- **Attributions page** — a config-driven page in web and native naming the catalog's data
-  sources. Some licences legally require this, so shipping data without it is a breach.
+- **Attributions page** — ✅ **SHIPPED (PR #93, 2026-07-27).** A config-driven page in web and
+  native naming the catalog's data sources. Some licences legally require this, so shipping
+  data without it is a breach. ⚠️ Standing rule, not a one-time tick: a source ADDED to the
+  corpus later must have its entry shipped before its data does.
   Hard gate on the fill. Corpus-level, never per-record.
 - **First catalog fill** — loading real wine data into the empty tables. Ends with
   `VACUUM ANALYZE` on the catalog tables as an explicit runbook step, not an afterthought.
