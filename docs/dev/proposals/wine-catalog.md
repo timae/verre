@@ -231,6 +231,26 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   🔒 **No mechanism catches this.** A gate checks the system, not the sentence describing it. It is caught by a reader, which is what happened. The only defences are structural — lead with what was measured rather than what is memorable, and state the counter-case in the same breath rather than a paragraph later.
 
+  ### 🔒 The conclusion both sides reached, and the reason it is worth writing down
+
+  ⚠️ **This is not a discipline problem, and treating it as one will not help.** The evidence, from a single day: the maintenance side built a green check that verified less than it claimed **hours after both sides had jointly catalogued four instances of exactly that** — then swept and found three more in the gates they had been treating as the trustworthy ones. Meanwhile the "is my mutation actually in effect" failure hit three times, on both sides, including once in the verification of a fix for it.
+
+  Their formulation, which is the sharper one: **a discipline problem gets better when you concentrate, and this got worse while we were concentrating on it specifically.** So the response is not "be more careful" — it is the things on this page that survive inattention: staged failures behind every claim, non-vacuity floors on both sides of every comparison, properties derived rather than copied, and assertion that a mutation took effect before its result is read. *The class does not stop applying to the code you write while thinking about the class.*
+
+  🔒 **"THE CHANGE I MADE IS IN EFFECT" IS THE ONE ASSUMPTION A MUTATION TEST CANNOT AFFORD — AND STRUCTURALLY INVITES.** Three instances in a single session, across both sides: our `git checkout` silently reverted the `search_path` pin, so "the pin holds" was measured against a gate with no pin; the maintenance side's classification check and, separately, their migration checker, where the first truncation attempt did not truncate anything and the unchanged full count was read as a pass. Their formulation: *it is not carelessness — it is that a mutation test asks you to believe in an edit you cannot see the effect of, and the pass looks identical either way.* **The cheap defence is to assert the mutation took effect BEFORE measuring** — count the constraints, count the files, grep for the edit. Applied here when testing the truncated-migrations case: the directory count was verified at 34-of-39 before the checker was run at all.
+
+  ✅ **Empty-collection sweep of our own gates**, prompted by the maintenance side finding three of theirs could pass having compared nothing (constraint gate on an empty pin, reachability audit on an empty probe list, migration checker on a truncated directory — none reachable by ordinary use, which is why none had been noticed). Verified here, each fails closed:
+
+  | Shape | Result |
+  |---|---|
+  | Contract gate, no catalog tables | exit 1 — "no CHECK constraints found" |
+  | Contract gate, tables present but every CHECK dropped | exit 1 — same |
+  | Contract gate, snapshot emptied | exit 1 — 22 `ADDED` |
+  | Contract gate, snapshot truncated to 3 of 22 | exit 1 — 19 `ADDED` |
+  | `check-migration-checksums`, 5 of 39 migration files removed | exit 1 — 5 × `FILE MISSING` |
+
+  ⚠️ The migration checker survives their third shape for a **structural** reason rather than a careful one: it joins on the **database's** recorded migrations, so a missing file is a positive `FILE MISSING` finding. A checker that reads the directory as its source of truth — theirs — sees a smaller set and compares it happily. Same job, opposite failure mode, decided by which side of the comparison is authoritative.
+
   🔒 **EVERY CLAIM THIS GATE MAKES HAS A STAGED FAILURE BEHIND IT.** Adopted from the maintenance side (2026-08-11) after they found their own gate compared constraint *names* and never predicates — it claimed to catch in-place edits and did not, because a drop test had been staged and read as proof of the general claim. Staging the missing cases then found a second bug *in their fix*.
 
   ⚠️ **The same method immediately found a bug here**, in a behaviour that had only been reasoned about: `foldDependent` was carried from the prior snapshot entry and **dropped whenever the constraint changed**, so editing a fold-backed CHECK silently removed its marker and the next change to it would no longer print the fold-divergence warning — the gate quietly shedding a safety property while staying green. Fixed by **deriving** the marker from the recorded dependencies instead of carrying it, which also gives a newly-added fold-backed constraint the marker for free. **A property that is copied forward can desync from what it describes; a property that is derived cannot.**
