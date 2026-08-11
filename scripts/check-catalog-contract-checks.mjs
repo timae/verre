@@ -239,6 +239,30 @@ async function main() {
   const prisma = new PrismaClient()
   let live, deps, genCols, colTypes
   try {
+    // 🔒 PIN THE SEARCH_PATH BEFORE READING ANYTHING. Two distinct hazards, and
+    // the second was only found by staging the first.
+    //
+    // 1. ⚠️ `pg_get_constraintdef` schema-qualifies a referenced object ONLY
+    //    when it is not on the search_path, so the SAME constraint prints
+    //    differently depending on the connection's vantage point. Measured
+    //    here: under `search_path = pg_catalog`, five constraints render as
+    //    `public.catalog_fold_v1(...)` rather than `catalog_fold_v1(...)` —
+    //    all five function-backed ones, a different md5 each, with nothing in
+    //    the database changed. Reported by the catalog-maintenance side, who
+    //    hit it comparing a replayed scratch schema against live (2026-08-11).
+    //
+    // 2. ⚠️ Every query here filters on `conrelid::regclass::text = ANY(…)`
+    //    with BARE table names, and `regclass::text` qualifies for exactly the
+    //    same reason — under a foreign search_path it yields `public.producers`
+    //    and matches NOTHING. Measured: the gate then reported "no CHECK
+    //    constraints found" and exited 1. That is a fail-CLOSED outcome (the
+    //    non-vacuity guard catching it), so it was never a silent pass — but it
+    //    fails for a reason that has nothing to do with drift.
+    //
+    // `public` alone, not the `"$user", public` default: that default carries a
+    // per-role component, so the same command could render differently for two
+    // users of the same database.
+    await prisma.$executeRawUnsafe('SET search_path = public')
     live = await prisma.$queryRawUnsafe(QUERY, TABLES)
     deps = await prisma.$queryRawUnsafe(DEPS_QUERY, TABLES)
     genCols = genColRows(await prisma.$queryRawUnsafe(GENCOL_QUERY, TABLES))

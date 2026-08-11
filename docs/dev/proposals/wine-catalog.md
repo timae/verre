@@ -61,7 +61,24 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   The snapshot therefore records all five generated columns with their expression **and** their fold body hashes, resolved via `pg_depend` through `pg_attrdef`. ⚠️ Four are incidentally covered by the fold-backed CHECKs, but **`grapes_folded` uses `catalog_fold_arr_v1`, which no CHECK references** — it was entirely uncovered, and relying on the incidental overlap would have left it that way. An absent `generatedColumns` block fails the gate, same as an absent dependency record.
 
-  The catalog-maintenance side independently designed the same mechanism — committed `pg_get_constraintdef` snapshot, CI diff, explicit accepted-divergence list requiring a stated reason — before seeing this one, and is building the equivalent on their side. Verified green against this branch at `1422219`: their pinned prod predicates unchanged, nothing here moves the contract.
+  The catalog-maintenance side independently designed the same mechanism — committed `pg_get_constraintdef` snapshot, CI diff, explicit accepted-divergence list requiring a stated reason — before seeing this one, and built the equivalent on their side.
+
+  ### ✅ Cross-verified at `06a3eb9` (2026-08-11)
+
+  🔒 **The two artifacts are built by DIFFERENT ROUTES, which is what makes the agreement evidence rather than an echo.** Theirs is derived by replaying our migration files in order; ours is generated from a migrated database. Four comparisons, zero disagreements:
+
+  | # | Compared | Result |
+  |---|---|---|
+  | 1 | Constraint set | 22 vs 22, none one-sided |
+  | 2 | Scope classification | 22/22, constraint by constraint |
+  | 3 | Fold function bodies | both hashes equal — ⚠️ partial, see below |
+  | 4 | Column types on constrained columns | 10 comparable, 10 identical |
+
+  **Row 2 is the one that carries weight.** Their 9/6 split of the constraints they don't carry matching our 16/6 aggregate could be coincidence; agreeing on *every individual constraint* is what shows the rejection-surface test is **reproducible by a second party**, which is the claim the test actually makes. An aggregate match would not have shown that.
+
+  ⚠️ **Row 3 is corroboration, NOT a substitute for the fold handshake** — their framing, and correct. It compares 2 of the 3 functions (not `f_unaccent`) and none of the extension-version or dictionary components. Those omitted parts are precisely the ones that caught real divergence in the adversarial testing: `f_unaccent` replaced while `catalog_fold_v1` stayed byte-identical, and a dictionary `RULES` swap invisible to every function definition. Matching hashes here do not license skipping the handshake.
+
+  **Declared asymmetries, all deliberate on both sides:** our 5 generated columns to their 4 (they omit the product-level region fold — theirs is a sparse override where ours is absolute); the 9 in-scope + 6 structural constraints they don't carry, each with a recorded reason; and `category`/`style` as two independent CHECKs there versus a composite FK here — which our MATCH SIMPLE finding makes the **safer mechanism on their side**, not merely a different one.
 
   ### Declared divergence — `abv_range` (2026-08-11)
 
@@ -115,6 +132,11 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   🔒 **The honest correction: "live" here means a freshly-migrated scratch database in CI, NOT production.** Every gate in the first column runs against `catalog_test`, rebuilt from the migration chain on every run. So the contract gate catches a narrowing *present in the migrations*; it would **not** see an `ALTER` applied out-of-band to prod, because the database it reads was never that database. The previous phrasing of the row above ("narrowing applied to the live database → contract gate exit 1") is true of the mechanism and misleading about the wiring.
 
   ⚠️ **We have no automated detection of production drift at all.** `scripts/check-migration-checksums.mjs` is the one tool that answers "do the applied migrations still say what they said?", and it is wired into **no** workflow — it is a documented runbook step (see `prisma/CLAUDE.md` § Editing a migration after it has been applied, which already records that `migrate status` and `migrate deploy` are both blind to this). The maintenance side's re-ingest test — replaying every migration into a scratch schema and diffing against live — is the thing we lack an equivalent of; theirs reads *both* sides, ours reads one each.
+
+  🔒 **Two implementation notes for whoever builds the replay**, handed over by the maintenance side (each cost them a cycle) and both checked here:
+
+  1. ⚠️ **`pg_get_constraintdef` output depends on the reader's `search_path`** — it schema-qualifies a referenced object only when that object is not on the path, so the same constraint reads differently from a scratch schema than from live. **Confirmed on our schema: under `search_path = pg_catalog`, five constraints render `public.catalog_fold_v1(...)` instead of `catalog_fold_v1(...)`** — all five function-backed ones, different md5 each, nothing in the database changed. Their normalisation strips only those two exact prefixes, so a genuine third-schema reference still surfaces. ✅ **Our gate now pins `SET search_path = public` before reading anything** (mutation-tested: with the pin, green under a hostile path; without it, a spurious failure). Note the *second* hazard staging this exposed — every query filters on `conrelid::regclass::text` with bare table names, and `regclass::text` qualifies for the same reason, so a foreign path matched nothing at all. That failed CLOSED via the non-vacuity guard, but for a reason unrelated to drift.
+  2. ⚠️ **A diff of two empty sets passes** — their re-ingest test had frozen its scratch schema at the first migration once before and validated a schema that no longer existed, so theirs now asserts a minimum column and constraint count. ✅ Ours is covered structurally in both directions rather than by a count: an empty live result exits 1 with "no CHECK constraints found", and a snapshot that is empty *or merely truncated* surfaces every missing entry as `ADDED` (verified: a 3-of-22 snapshot reports 19).
 
   📋 **Not closed here.** Pointing the contract gate at prod is not a CI change (credentials, read-only role, scheduling) and needs a decision about whether a scheduled drift check is wanted at all. Recorded so the coverage claim stays honest: today, an out-of-band `ALTER` on prod is caught by nothing automatic. That matters most for the fold and the folded columns, where the failure is silent by construction.
 
