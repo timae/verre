@@ -155,8 +155,49 @@ const GENCOL_QUERY = `
   ORDER BY 1, 2, 4
 `
 
+// 🔒 A CONSTRAINT'S REACH DEPENDS ON ITS COLUMNS' TYPES, not only its predicate.
+//
+// ⚠️ MEASURED (2026-08-11): narrowing `wine_products.abv` from `numeric(4,2)` to
+// `numeric(3,2)` drops the type ceiling from 99.99 to 9.99, which turns
+// `abv <= 25` into an UNREACHABLE clause — no value that fits the column can
+// violate it. The predicate text is byte-identical, so the snapshot compared
+// equal and the gate reported green.
+//
+// This is the third instance of one pattern in this workstream: the recorded
+// artifact names something whose MEANING lives elsewhere (predicate → function
+// body, generated column → fold body, constraint → column type). Recording the
+// type closes the last one.
+//
+// 🔒 "Can this fire?" is a different question from "does this pass?" — an
+// unreachable constraint never fails, so no test suite goes red and nothing
+// draws attention to it. The catalog-maintenance side shipped a `<= 100` ABV
+// fence that could never fire for exactly this reason, and so would we have.
+//
+// Resolved via `conkey`, so it covers varchar narrowing too (a
+// `varchar(255)` → `varchar(10)` silently shrinks the accepted set).
+const COLTYPE_QUERY = `
+  SELECT c.conrelid::regclass::text            AS "table",
+         c.conname                             AS "name",
+         a.attname                             AS "column",
+         format_type(a.atttypid, a.atttypmod)  AS "type"
+  FROM pg_constraint c
+  JOIN unnest(c.conkey) AS k(attnum) ON true
+  JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+  WHERE c.conrelid::regclass::text = ANY($1::text[])
+    AND c.contype = 'c'
+  ORDER BY 1, 2, 3
+`
+
 function key(c) {
   return `${c.table}.${c.name}`
+}
+
+// Column types a constraint depends on, as stable comparable strings.
+function colTypesFor(rows, k) {
+  return rows
+    .filter(r => key(r) === k)
+    .map(r => `${r.column}:${r.type}`)
+    .sort()
 }
 
 // One comparable line per generated column: expression + every function it
@@ -196,11 +237,12 @@ function isFoldDependent(depStrings) {
 
 async function main() {
   const prisma = new PrismaClient()
-  let live, deps, genCols
+  let live, deps, genCols, colTypes
   try {
     live = await prisma.$queryRawUnsafe(QUERY, TABLES)
     deps = await prisma.$queryRawUnsafe(DEPS_QUERY, TABLES)
     genCols = genColRows(await prisma.$queryRawUnsafe(GENCOL_QUERY, TABLES))
+    colTypes = await prisma.$queryRawUnsafe(COLTYPE_QUERY, TABLES)
   } finally {
     await prisma.$disconnect()
   }
@@ -240,9 +282,14 @@ async function main() {
       // treating absent as `[]` reported all five function-backed constraints
       // as contract events on the very first run, which would have taught the
       // next reader to ignore the warning.)
+      const t = colTypesFor(colTypes, k)
       const depsMoved = p?.predicateDeps !== undefined &&
                         JSON.stringify(p.predicateDeps) !== JSON.stringify(d)
-      const moved = p && (p.definition !== c.definition || depsMoved)
+      // A type narrowing can silently shrink a bound's reach, so it re-opens
+      // the rejection-surface question exactly like a predicate edit does.
+      const typesMoved = p?.columnTypes !== undefined &&
+                         JSON.stringify(p.columnTypes) !== JSON.stringify(t)
+      const moved = p && (p.definition !== c.definition || depsMoved || typesMoved)
       if (moved) reclassify.push(k)
       return {
         table: c.table,
@@ -250,6 +297,7 @@ async function main() {
         scope: !p || moved ? 'UNCLASSIFIED' : p.scope,
         ...(isFoldDependent(d) ? { foldDependent: true } : {}),
         definition: c.definition,
+        ...(t.length ? { columnTypes: t } : {}),
         ...(d.length ? { predicateDeps: d } : {}),
       }
     })
@@ -299,6 +347,21 @@ async function main() {
     // The predicate text is unchanged — but a function it calls may not be.
     // This is the branch that catches a swapped `gtin_check_digit_ok` body,
     // which reprints byte-identically above.
+    // Column types first: a narrowing can make an unchanged predicate stop
+    // being able to fire, which no amount of predicate comparison reveals.
+    const liveTypes = colTypesFor(colTypes, k)
+    const snapTypes = s.columnTypes ?? (liveTypes.length ? null : [])
+    if (snapTypes === null) {
+      problems.push({ kind: 'COLTYPES-UNRECORDED', k, scope: s.scope, live: liveTypes.join(', ') })
+      continue
+    }
+    if (JSON.stringify(liveTypes) !== JSON.stringify(snapTypes)) {
+      problems.push({
+        kind: 'COLUMN-TYPE-CHANGED', k, scope: s.scope,
+        was: snapTypes.join(', '), live: liveTypes.join(', '),
+      })
+      continue
+    }
     const liveDeps = depsFor(deps, k)
     // 🔒 ABSENT IS A FAILURE HERE, not a pass. On the --write side an absent
     // field means "predates tracking" and is backfilled; on the CHECK side the
@@ -391,6 +454,14 @@ async function main() {
     console.error('  ⚠️ A PREDICATE FUNCTION changed while the constraint text stayed identical.')
     console.error('     The accepted payload set moved even though the CHECK reads the same.')
     console.error('     This is the failure mode `pg_get_constraintdef` alone cannot see.\n')
+  }
+  if (problems.some(p => p.kind === 'COLUMN-TYPE-CHANGED')) {
+    console.error('  ⚠️ A CONSTRAINED COLUMN\'S TYPE changed while its predicate stayed identical.')
+    console.error('     A narrowing can make a bound UNREACHABLE — no value that fits the')
+    console.error('     column can violate it, so the constraint silently stops firing while')
+    console.error('     every test stays green. Ask "can this fire?", not "does this pass?":')
+    console.error('     insert a value just past the bound and confirm the CONSTRAINT NAME')
+    console.error('     appears in the error, not a type overflow.\n')
   }
   if (problems.some(p => p.kind === 'GENCOL-FN-CHANGED')) {
     console.error('  🔒 A FOLD BODY changed under a GENERATED COLUMN while its expression')

@@ -67,7 +67,25 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   🔒 **The maintenance side does NOT adopt `abv_range 0..25`, and this is accepted.** Their table is multi-category by design and holds spirits; 0..25 would make 1,466 rows unstorable. They keep a wide local fence and treat our 0..25 as an **export-boundary rule** — nothing violating it may be sent — enforced as a pinned count of exactly how many held rows our predicate would refuse, with the gate failing if that number moves. Same shape as the year resolution: wide fence locally, our rule at the boundary. **A promise turned into a mechanism**, which is the only form a cross-side commitment can take.
 
-  ⚠️ **One detail does not transfer, and it matters if the number is ever reconciled.** They describe their local fence as `0..100`. On *our* column that bound would be **unreachable decoration**: `abv` is `DECIMAL(4,2)`, so the type caps magnitude at 99.99 and a `<= 100` CHECK could never fire. Verified on PG 16 — inserting `135` raises `numeric field overflow` from the type and never reaches the CHECK, while `40` (a pomace brandy) is refused by the CHECK itself. So our 25 is the bound that actually bites and their 100 is doing real work only because their column is wider. The two numbers are not comparable as written; the comparable statement is "each side's fence is the widest value its column can hold, and 0..25 is the boundary rule."
+  ⚠️ **One detail did not transfer, and it turned out to be a defect on their side too.** They described their local fence as `0..100`. On *our* column that bound would be **unreachable decoration**: `abv` is `DECIMAL(4,2)`, so the type caps magnitude at 99.99 and a `<= 100` CHECK could never fire. Verified on PG 16 — inserting `135` raises `numeric field overflow` from the type and never reaches the CHECK, while `40` (a pomace brandy) is refused by the CHECK itself.
+
+  ✅ **Their `abv` is `numeric(4,2)` as well** — which is exactly why their schema comparison reported no divergence — so their `<= 100` could never fire either. They dropped it and now carry `abv >= 0` with the type documented as the upper fence. The comparable statement, agreed both sides: **each side's fence is the widest value its column can hold, and `0..25` is the export-boundary rule.** Framing it as 25-vs-100 would have implied a deliberate strictness difference where one of the numbers was decoration.
+
+  ### 🔒 "Can this fire?" is a different question from "does this pass?"
+
+  **The generalisable lesson, and the reason that clause hid on both sides at once: an unreachable constraint never fails, so nothing ever draws attention to it.** Every test suite it appears in stays green. A staged-failure discipline catches a constraint that *stops working*; it does not catch one that *never worked*, because staging a failure for an unreachable bound produces an error from the type instead — which still looks like a rejection unless you read which object raised it.
+
+  So a bound is verified only when a violating value is shown to be refused **by the named constraint**, not merely refused. Audited across the five contract tables (PG 16, real insert path, asserting on the constraint name in the error):
+
+  | Bound | Reachable? |
+  |---|---|
+  | `abv <= 25` (both tables) | ✅ fires by name — `25.01` fits the type |
+  | `abv >= 0` | ✅ `-0.01` fits the type |
+  | `year >= 1800` / `<= 2200` | ✅ both fire — `year` is `integer` |
+  | EAN check-digit | ✅ fires by name; the format clause does not mask it |
+  | a hypothetical `abv <= 100` | ❌ **would be decoration** — the type rejects `100` first |
+
+  No unreachable constraint ships on our side. Worth re-running this audit whenever a bounded numeric column is added or its type narrowed — a `DECIMAL` precision change can silently turn a working bound into decoration without touching the predicate, and the contract-shape gate would not notice: the predicate text is unchanged.
 
   ### 🔒 Found while verifying that divergence: `category` is not actually constrained
 

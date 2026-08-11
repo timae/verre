@@ -55,7 +55,11 @@
       "table": "producers",
       "name": "producers_linked_pointer_check",
       "scope": "structural",
-      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))"
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "producers",
@@ -63,6 +67,9 @@
       "scope": "contract",
       "foldDependent": true,
       "definition": "CHECK ((catalog_fold_v1((name)::text) <> ''::text))",
+      "columnTypes": [
+        "name:character varying(255)"
+      ],
       "predicateDeps": [
         "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
       ]
@@ -71,7 +78,11 @@
       "table": "producers",
       "name": "producers_no_self_link_check",
       "scope": "structural",
-      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))"
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
     },
     {
       "table": "producers",
@@ -79,6 +90,9 @@
       "scope": "contract",
       "foldDependent": true,
       "definition": "CHECK (((region IS NULL) OR (catalog_fold_v1((region)::text) <> ''::text)))",
+      "columnTypes": [
+        "region:character varying(255)"
+      ],
       "predicateDeps": [
         "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
       ]
@@ -87,13 +101,19 @@
       "table": "producers",
       "name": "producers_status_check",
       "scope": "contract",
-      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))"
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "product_eans",
       "name": "product_eans_check_digit",
       "scope": "contract",
       "definition": "CHECK ((((ean)::text !~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'::text) OR gtin_check_digit_ok((ean)::text)))",
+      "columnTypes": [
+        "ean:character varying(14)"
+      ],
       "predicateDeps": [
         "gtin_check_digit_ok(text)=6a321303e4ac914e857ff59f42078d6a"
       ]
@@ -102,31 +122,48 @@
       "table": "product_eans",
       "name": "product_eans_format_check",
       "scope": "contract",
-      "definition": "CHECK (((ean)::text ~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'::text))"
+      "definition": "CHECK (((ean)::text ~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'::text))",
+      "columnTypes": [
+        "ean:character varying(14)"
+      ]
     },
     {
       "table": "product_eans",
       "name": "product_eans_seen_order_check",
       "scope": "contract",
-      "definition": "CHECK ((last_seen >= first_seen))"
+      "definition": "CHECK ((last_seen >= first_seen))",
+      "columnTypes": [
+        "first_seen:timestamp(6) with time zone",
+        "last_seen:timestamp(6) with time zone"
+      ]
     },
     {
       "table": "product_producers",
       "name": "product_producers_role_check",
       "scope": "contract",
-      "definition": "CHECK (((role)::text = ANY ((ARRAY['lead'::character varying, 'collaborator'::character varying])::text[])))"
+      "definition": "CHECK (((role)::text = ANY ((ARRAY['lead'::character varying, 'collaborator'::character varying])::text[])))",
+      "columnTypes": [
+        "role:character varying(16)"
+      ]
     },
     {
       "table": "wine_products",
       "name": "wine_products_abv_range_check",
       "scope": "contract",
-      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))"
+      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))",
+      "columnTypes": [
+        "abv:numeric(4,2)"
+      ]
     },
     {
       "table": "wine_products",
       "name": "wine_products_linked_pointer_check",
       "scope": "structural",
-      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))"
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "wine_products",
@@ -134,6 +171,9 @@
       "scope": "contract",
       "foldDependent": true,
       "definition": "CHECK ((catalog_fold_v1((name)::text) <> ''::text))",
+      "columnTypes": [
+        "name:character varying(255)"
+      ],
       "predicateDeps": [
         "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
       ]
@@ -142,7 +182,11 @@
       "table": "wine_products",
       "name": "wine_products_no_self_link_check",
       "scope": "structural",
-      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))"
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
     },
     {
       "table": "wine_products",
@@ -150,6 +194,9 @@
       "scope": "contract",
       "foldDependent": true,
       "definition": "CHECK (((region IS NULL) OR (catalog_fold_v1((region)::text) <> ''::text)))",
+      "columnTypes": [
+        "region:character varying(255)"
+      ],
       "predicateDeps": [
         "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
       ]
@@ -158,49 +205,76 @@
       "table": "wine_products",
       "name": "wine_products_scope_check",
       "scope": "contract",
-      "definition": "CHECK (((scope)::text = ANY ((ARRAY['shared'::character varying, 'owned'::character varying])::text[])))"
+      "definition": "CHECK (((scope)::text = ANY ((ARRAY['shared'::character varying, 'owned'::character varying])::text[])))",
+      "columnTypes": [
+        "scope:character varying(16)"
+      ]
     },
     {
       "table": "wine_products",
       "name": "wine_products_status_check",
       "scope": "contract",
-      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))"
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_abv_range_check",
       "scope": "contract",
-      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))"
+      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))",
+      "columnTypes": [
+        "abv:numeric(4,2)"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_grapes_override_check",
       "scope": "contract",
-      "definition": "CHECK ((grapes_override OR (cardinality(grapes) = 0)))"
+      "definition": "CHECK ((grapes_override OR (cardinality(grapes) = 0)))",
+      "columnTypes": [
+        "grapes:text[]",
+        "grapes_override:boolean"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_linked_pointer_check",
       "scope": "structural",
-      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))"
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_no_self_link_check",
       "scope": "structural",
-      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))"
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_status_check",
       "scope": "contract",
-      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))"
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
     },
     {
       "table": "wine_vintages",
       "name": "wine_vintages_year_range_check",
       "scope": "contract",
-      "definition": "CHECK (((year IS NULL) OR ((year >= 1800) AND (year <= 2200))))"
+      "definition": "CHECK (((year IS NULL) OR ((year >= 1800) AND (year <= 2200))))",
+      "columnTypes": [
+        "year:integer"
+      ]
     }
   ],
   "generatedColumns": [
