@@ -41,6 +41,8 @@ npx prisma migrate dev --name <description>
 
 This is why the stale comment in `20260725090000_wine_catalog_schema` (about "no known-empty state in v1") was deliberately left uncorrected — state 2.
 
+⚠️ **It detects an EDITED MIGRATION FILE, not an altered database.** It compares migration files against their recorded checksums, so a schema changed out-of-band on prod — files and checksums untouched — passes it. Do not treat it as drift detection; the missing tool is a **replay** (re-apply every migration into a scratch schema and diff constraint definitions against live). Recorded because the interim "just wire the checksum verifier up" was proposed and checked: worth doing for the failure it does cover, not a substitute.
+
 ⚠️ **This is the ONLY tool that answers the question, and it is wired into NO workflow** — a documented runbook step, not a gate. Consequence, recorded 2026-08-11: **an out-of-band `ALTER` on production is caught by nothing automatic.** Every "live" gate we have (contract-shape, the three catalog integration suites) runs against a scratch database rebuilt from the migration chain in CI, so it verifies what the *migrations* produce, never what prod actually holds. `prisma migrate diff` and the ten `check-*.mjs` gates read files only. Nothing spans both sides. See the RFC § Which gate reads what.
 
 **Verifier:**

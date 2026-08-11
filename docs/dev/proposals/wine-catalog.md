@@ -118,6 +118,24 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   📋 **Not closed here.** Pointing the contract gate at prod is not a CI change (credentials, read-only role, scheduling) and needs a decision about whether a scheduled drift check is wanted at all. Recorded so the coverage claim stays honest: today, an out-of-band `ALTER` on prod is caught by nothing automatic. That matters most for the fold and the folded columns, where the failure is silent by construction.
 
+  ### 🔒 A pin is not a replay — the two-step neither gate survives
+
+  **Demonstrated by the maintenance side and reproduced here verbatim (2026-08-11).** The case is not a malicious edit; it is *what a careful person actually does*: apply an out-of-band `ALTER`, then update the pin to match, then re-scope it because the tool insisted. Staged against `wine_vintages_year_range_check`, moving the floor `1800 → 1500`:
+
+  | Step | Contract gate |
+  |---|---|
+  | 1. `ALTER` only | ✅ exit 1 — caught |
+  | 2. + regenerate the pin | ✅ exit 1 — `UNCLASSIFIED` reset still fires |
+  | 3. + re-scope it | ❌ **exit 0 — green** |
+
+  At step 3 the database holds `year >= 1500`, the migrations say `year >= 1800`, and **`migrate diff` is also green** (exit 0 — it never reads the database). Two gates, both satisfied, schema diverged from its own migration history.
+
+  > **A pin says "the database matches what a human last approved." A replay says "the database matches what the migrations say."** They diverge at exactly this two-step, which is why neither is redundant — and we have no replay.
+
+  ⚠️ **Our reachability audit does not save us here, and would have reported success.** Probing the moved bound: `1799` was refused by the **FK** (`wine_vintages_product_id_fkey`) and reported *that*, masking the year bound entirely; `1499` was refused by the year CHECK by name. An audit run on this database would have recorded "year bound fires by name" — true, and about the wrong bound. Same wrong-reason masking as the maintenance side's missing-`NOT NULL` false start. ✅ They noted their own audit caught the two-step **by luck** — a probe happened to fall between the old and new bound — and recorded it as luck so nobody counts it as the backstop. Ours would not have been lucky.
+
+  ⚠️ **The cheapest interim is NOT the checksum verifier.** Suggested (reasonably) by the maintenance side, but checked: `scripts/check-migration-checksums.mjs` compares **migration files against their recorded checksums**. It detects an *edited migration*, not a database altered out-of-band — at step 3 above every file and checksum is untouched, so it would pass. Wiring it up is still worth doing for the failure it *does* cover, but it is not a substitute for a replay. The thing we lack is the maintenance side's re-ingest test: replay every migration into a scratch schema and diff **constraint definitions** against live, with an explicit non-vacuity assertion (they found their own re-ingest compared columns and generated-ness but *not* constraints — blind precisely where they actually drift, since all seven of their recent out-of-band operations were constraint or function changes).
+
   ✅ **Our drift gate does NOT share the maintenance side's fourth finding.** Theirs compares `character_maximum_length`, which is NULL for `numeric`, so `numeric(4,2)` and `numeric(3,2)` compared equal — in a gate that exists because of a varchar width divergence. Ours is `prisma migrate diff`, a different mechanism: verified it reports `Altered column abv (type changed)` and exits 2. We use `character_maximum_length` nowhere.
 
   ### 🔒 Found while verifying that divergence: `category` is not actually constrained
@@ -138,6 +156,8 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   🔒 **EVERY CLAIM THIS GATE MAKES HAS A STAGED FAILURE BEHIND IT.** Adopted from the maintenance side (2026-08-11) after they found their own gate compared constraint *names* and never predicates — it claimed to catch in-place edits and did not, because a drop test had been staged and read as proof of the general claim. Staging the missing cases then found a second bug *in their fix*.
 
   ⚠️ **The same method immediately found a bug here**, in a behaviour that had only been reasoned about: `foldDependent` was carried from the prior snapshot entry and **dropped whenever the constraint changed**, so editing a fold-backed CHECK silently removed its marker and the next change to it would no longer print the fold-divergence warning — the gate quietly shedding a safety property while staying green. Fixed by **deriving** the marker from the recorded dependencies instead of carrying it, which also gives a newly-added fold-backed constraint the marker for free. **A property that is copied forward can desync from what it describes; a property that is derived cannot.**
+
+  ✅ **Non-vacuity is checked in both directions** — prompted by the maintenance side finding their re-ingest test could diff two empty sets and pass, having frozen its scratch schema once before. Verified here: an empty live result exits 1 with "no CHECK constraints found" (a database without migrations applied is not a pass), and an emptied snapshot reports 22 `ADDED` / 5 `GENCOL-ADDED` rather than matching nothing against nothing. Neither side of the comparison can go empty quietly.
 
   Staged failures currently behind the gate: predicate changed; predicate function body swapped; fold body swapped; array-fold body swapped; generated column dropped; generated-column block absent; dependency record absent; structural constraint edited into a rejecting one; contract constraint changed; new unclassified constraint; unmigrated database. Each is verified to exit non-zero, and the baseline plus every restore is verified to exit zero — a gate that never passes is as useless as one that never fails.
 
