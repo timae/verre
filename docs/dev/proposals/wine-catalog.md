@@ -183,7 +183,11 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   This is the **same trap already documented twice** in this codebase — the `vintageId`/`productId` pair carries an explicit `CHECK (vintage_id IS NULL OR product_id IS NOT NULL)` precisely because the composite FK is MATCH SIMPLE, and `20260725090000` § warns about it in prose. It was simply never applied to `category`.
 
-  It corroborates the maintenance side's own finding from the ABV measurement — 30 rows carrying a `wine` category while being pomace brandies at 35–50% ABV — from the opposite direction: **they have wrongly-categorised rows, and we would not reject them on `category` even though `spirit` is not a category we define.** A style-based export filter does not keep grappa out of a wine catalogue, and neither does our category column today. The category clause is load-bearing, not tidy.
+  ⚠️ **Which rows this actually protects against — corrected 2026-08-11, because the first version of this note got it wrong.** The maintenance side's 30 pomace brandies are `category='wine'`, `style='dessert'`, ABV 35–50. **The category FK does NOT reject them** — `wine` is a valid category. They were already refused twice over, before this migration: by `wine_products_abv_range_check` (35–50 exceeds the 0..25 fence, independent of style) and by the composite `(category, style)` FK (we define no `wine/dessert` pair, and with both columns non-null MATCH SIMPLE fires normally). Verified on PG 16.
+
+  What the category FK closes is the **other** case: a category we do not define, with a NULL style — **21,671 rows on their side**. That is the one nothing caught. Caught here by their reading of our own summary, which claimed the 30 and then correctly said no category constraint can see them; the later sentence was right.
+
+  The durable statement: a style-based export filter does not keep grappa out of a wine catalogue, and neither did our category column. Three constraints now cover three different mis-categorisations, and none subsumes the others.
 
   ✅ **FIXED** — `20260811215655_catalog_category_constraint` (Simon's call, 2026-08-11). A new **`categories`** table is the FK target for `wines.category` and `wine_products.category`, seeded from the categories present in `category_styles`.
 
@@ -202,6 +206,14 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   | `DELETE` a category in use | — | **blocked** (`NO ACTION`) |
 
   ✅ **Extensibility confirmed, not asserted:** inserting `('spirit','Spirits')` into `categories` plus `('spirit','grappa',…)` into `category_styles` makes `spirit/grappa` insertable immediately, with no migration.
+
+  ### 📋 OPEN — sequencing: dessert / fortified need our vocabulary to grow FIRST
+
+  🔒 **Raised by the maintenance side, 2026-08-11.** Our style vocabulary is exactly `wine × {red, white, rose, spark, nonalc}`. Theirs holds **6,455 rows we cannot store**: **2,409 `dessert`** and **4,046 `fortified`**. Their contract doc has these ingested, flagged, and excluded from export *"until the app style set grows — flip the export filter to release them, no re-ingest."*
+
+  ⚠️ **That release is one line on their side, and it would land against a composite FK on ours.** So it is a **sequenced pair, not a unilateral flip**: our vocabulary grows first (two INSERTs — `category_styles` rows for `wine/dessert` and `wine/fortified`), then their filter releases. Reversed, a deliberate release becomes a batch of FK violations, and an import batch is all-or-nothing.
+
+  Note this is not blocked on anything structural — the extensibility demonstration above is exactly the reassuring half. It needs a **product decision** (do we want dessert and fortified wines as first-class styles?) and then a coordinated ordering, not a migration. The RFC already flags `nonalc` as transitional and dessert/fortified as deferred, so the decision has a home; what is new is that 6,455 real rows are waiting on it.
 
   The two FKs are complementary: the composite `(category, style)` one rejects a wrong style *for* a category; the new single-column one rejects the category outright. Note the app-side write path (`lib/catalogWrite.ts`, `input.category?.trim() || 'wine'`) still accepts an arbitrary string — it is now the database that refuses it, which is the point.
 
