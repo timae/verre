@@ -432,7 +432,20 @@ async function main() {
   }
 
   if (problems.length === 0) {
-    console.log(`ok  ${live.length} catalog CHECK constraints + ${genCols.length} generated columns match the committed contract snapshot`)
+    // ⚠️ THE CAVEAT LIVES IN THE SUCCESS MESSAGE, not only in this header.
+    // Adopted from the maintenance side (2026-08-11): a caveat only a
+    // maintainer reads protects nobody reading output, and "everything
+    // matches" reads far stronger than what this gate actually verifies.
+    //
+    // 🔒 What it means: the database matches WHAT A HUMAN LAST APPROVED (this
+    // snapshot). NOT that the database matches what the MIGRATIONS say — an
+    // out-of-band ALTER plus a matching snapshot regenerate passes here and
+    // leaves prod diverged from its own migration history. That gap needs a
+    // REPLAY (re-apply migrations into a scratch schema, diff against live),
+    // which we do not have. See the RFC § A pin is not a replay.
+    console.log(`ok  ${live.length} catalog CHECK constraints + ${genCols.length} generated columns match the committed snapshot`)
+    console.log('    (= matches what was last approved, NOT that the DB matches the migrations —')
+    console.log('     an out-of-band ALTER + a matching regenerate passes this gate)')
     return
   }
 
