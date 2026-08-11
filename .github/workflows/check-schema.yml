@@ -67,6 +67,21 @@ jobs:
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 
+      # The shapes of the five catalog tables are a VERSIONED IMPORT CONTRACT,
+      # and CHECK PREDICATES ARE PART OF THAT SHAPE (RFC § Catalog write
+      # ownership). `20260725220000` changed four of them from `btrim(x) <> ''`
+      # to `catalog_fold_v1(x) <> ''` — strictly stronger, so rows that were
+      # insertable stopped being insertable — with no surface and no version
+      # bump, because neither side had tooling that would notice.
+      #
+      # 🔒 Runs BEFORE the row-writing suites: it reads schema only, so a
+      # contract drift should fail fast rather than after several minutes of
+      # integration tests.
+      - name: Catalog contract CHECK constraints
+        run: node scripts/check-catalog-contract-checks.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
       # Needs `psql` on PATH: § 18 executes the prisma/CLAUDE.md bootstrap recipes
       # VERBATIM (they are documented as psql scripts with BEGIN;/COMMIT;, which
       # Prisma's executeRaw cannot accept). ubuntu-latest ships psql, and the

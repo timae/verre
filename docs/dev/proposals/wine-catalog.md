@@ -18,6 +18,57 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
 - The shapes of **`producers`, `wine_products`, `wine_vintages`, `product_producers`, `product_eans`** (plus the `wines.productId`/`wines.vintageId` link columns) are **part of the versioned import contract**. Any change to these shapes is a contract change: surfaced explicitly and shipped with a contract version bump — never made silently.
 
+  ### 🔒 What "shape" means — the rejection-surface test
+
+  ⚠️ **This was undefined until 2026-08-11, and the ambiguity is the root cause of the one silent contract change this workstream has shipped.** "Shape" read as columns-and-types, so `20260725220000` § 3 swapped four CHECK predicates from `btrim(x) <> ''` to `catalog_fold_v1(x) <> ''` — strictly stronger — with no surface and no bump. Neither side had tooling that would have noticed. The definition below is the fix; the CI gate under § Enforcement is what makes it stick.
+
+  **Shape is: columns, types, nullability, defaults, keys, uniqueness, foreign keys — and CHECK constraints, by the test below.** Not every CHECK: a blanket rule adds churn without signal.
+
+  > **A constraint is CONTRACT surface iff a payload valid under the old predicate can be REJECTED under the new one.**
+
+  Classification of the 22 CHECKs on the five tables (derived from `pg_get_constraintdef`, not transcribed — see the committed snapshot):
+
+  | Scope | Constraints | Why |
+  |---|---|---|
+  | **contract** (16) | `name_not_blank` ×2, `region_not_blank` ×2, `abv_range` ×2, `year_range`, `grapes_override`, `status` ×3, `scope`, `role`, EAN format, EAN check-digit, `seen_order` | Reject a conforming payload |
+  | **structural** (6) | `linked_pointer` ×3, `no_self_link` ×3 | Internal lifecycle; no conforming payload violates them |
+
+  The catalog-maintenance side applied this same test to the 15 constraints they don't yet carry and split them 9/6 along exactly this line — independent agreement that the boundary is drawable in practice, not only in principle.
+
+  🔒 **A stricter predicate is an AVAILABILITY change, not a matching change.** This is the part that makes CHECKs matter more than the original framing suggested. A fold change alters which rows *match*; a CHECK change alters which rows are *insertable* — and because an import batch is one all-or-nothing transaction, a single name nobody edited can roll back the entire batch.
+
+  ⚠️ **"Strictly weaker" is a documented low-risk class, not an exemption.** A weakened predicate rejects nothing new, so it is not an availability risk on the import path — but it means the app now accepts rows the maintenance side may still be filtering out, which is divergence pointing the other way. Every predicate change is announced; only the risk note differs.
+
+  🔒 **The four fold-dependent CHECKs are why § Fold identity is load-bearing, not a separate concern.** Before `20260725220000` these predicates were facts about Postgres builtins that either side could reason about alone. They are now facts about `catalog_fold_v1`, so their *meaning* — not merely what they match — is a function of the fold being byte-identical on both sides.
+
+  **The six-row canary.** Measured by the catalog-maintenance side against the ~70k producer rows staged for the first fill: **0** fold to `''`; **0** fold to a form with no alphanumeric; **6** fold to a form with no ASCII `a–z0–9` — two Greek, three Russian, one Ukrainian, all legitimate. So the entire blast radius of a fold change against the two `name_not_blank` CHECKs is those six rows, and only for a change adding transliteration or an ASCII-only step. They are a **fixed canary set**: any proposed `catalog_fold_v1` change is evaluated against them before it ships. (Verified independently here on PG 16: non-Latin names fold non-empty and carry Unicode alnum but no ASCII alnum, so today they pass. ⚠️ Note a punctuation-only name like `&-.` also folds non-empty and therefore *passes* `name_not_blank` — the CHECK rejects blank, not meaningless.)
+
+  ### Enforcement
+
+  🔒 **The mechanism is a gate, not a comment.** Three separate rules in this workstream — never edit a `_v1` body, change both sides of a fold together, never change a contract shape silently — were all correct, all documented, and none enforced; two were violated anyway.
+
+  `prisma/catalog-contract-checks.json` is a committed snapshot of every CHECK on the five tables, generated from a migrated database (`node scripts/check-catalog-contract-checks.mjs --write`). `scripts/check-catalog-contract-checks.mjs` diffs it against `pg_get_constraintdef` in CI (`check-schema.yml`) and fails the build on any added, removed, altered, or unclassified constraint — escalating the message when the constraint is `contract`-scoped or fold-dependent.
+
+  It compares Postgres' **canonical reprint**, so a cosmetic reformat of migration SQL does not fire — the inverse of the fold handshake, which compares raw source text because there byte-identity *is* the contract. It diffs `structural` constraints too: the rejection-surface test decides whether a change is a *contract event*, not whether the gate *watches*. Scoping the gate to contract-only would make the snapshot negotiable per change.
+
+  🔒 **Scope is re-earned on every change; it is not a permanent label.** The rejection-surface test asks about a **transition**, so `--write` resets any constraint whose predicate moved back to `UNCLASSIFIED` and the gate fails until a human re-applies the test. Without this, a `structural` constraint edited into a rejecting one would inherit `structural` and pass CI — the classification laundering itself through a regenerate. A changed `contract`-scoped constraint additionally prints a **contract-version event** at regenerate time, when a human is present to act on it.
+
+  🔒 **The snapshot records predicate FUNCTION dependencies, not just predicate text.** `pg_get_constraintdef` records the *call*, not the callee — so replacing a helper's body changes the accepted payload set while the constraint reprints character-for-character. ⚠️ **Measured (2026-08-11): swapping `gtin_check_digit_ok` to return a constant made `product_eans` accept check-digit-invalid barcodes — permanent identity keys — while the gate reported "22 constraints match".** Every function a contract CHECK depends on is now resolved via `pg_depend` (never by parsing predicate text, which fails open) and hashed with `pg_get_functiondef`. An absent dependency record **fails** the gate rather than passing: absent means unverified, not none.
+
+  Two constraints' predicates are function-backed: the four `name_not_blank`/`region_not_blank` CHECKs (via `catalog_fold_v1`) and `product_eans_check_digit` (via `gtin_check_digit_ok`). The fold has the cross-system identity handshake; the GTIN helper had **no** equivalent, and now both are covered locally. A useful side effect: a `catalog_fold_v1` body swap is caught by this gate too, independently of whether the handshake has run.
+
+  🔒 **The same blind spot exists on GENERATED COLUMNS, and it is worse there.** Raised by the catalog-maintenance side (2026-08-11) and reproduced here: `generation_expression` records `catalog_fold_v1((name)::text)` — the *call*. Replace the fold body and the expression stays byte-identical while every subsequently-written row is keyed differently. ⚠️ **Measured: after a body swap, `Château X` stored `name_folded = 'CHÂTEAU X'` instead of `chateau x`** — `producers.name_folded` is the producer matching key for the entire catalog, silently re-keyed on next write. Worse than the CHECK case because Postgres does **not** recompute STORED generated values, so old and new rows disagree with nothing raising an error.
+
+  The snapshot therefore records all five generated columns with their expression **and** their fold body hashes, resolved via `pg_depend` through `pg_attrdef`. ⚠️ Four are incidentally covered by the fold-backed CHECKs, but **`grapes_folded` uses `catalog_fold_arr_v1`, which no CHECK references** — it was entirely uncovered, and relying on the incidental overlap would have left it that way. An absent `generatedColumns` block fails the gate, same as an absent dependency record.
+
+  The catalog-maintenance side independently designed the same mechanism — committed `pg_get_constraintdef` snapshot, CI diff, explicit accepted-divergence list requiring a stated reason — before seeing this one, and is building the equivalent on their side.
+
+  🔒 **EVERY CLAIM THIS GATE MAKES HAS A STAGED FAILURE BEHIND IT.** Adopted from the maintenance side (2026-08-11) after they found their own gate compared constraint *names* and never predicates — it claimed to catch in-place edits and did not, because a drop test had been staged and read as proof of the general claim. Staging the missing cases then found a second bug *in their fix*.
+
+  ⚠️ **The same method immediately found a bug here**, in a behaviour that had only been reasoned about: `foldDependent` was carried from the prior snapshot entry and **dropped whenever the constraint changed**, so editing a fold-backed CHECK silently removed its marker and the next change to it would no longer print the fold-divergence warning — the gate quietly shedding a safety property while staying green. Fixed by **deriving** the marker from the recorded dependencies instead of carrying it, which also gives a newly-added fold-backed constraint the marker for free. **A property that is copied forward can desync from what it describes; a property that is derived cannot.**
+
+  Staged failures currently behind the gate: predicate changed; predicate function body swapped; fold body swapped; array-fold body swapped; generated column dropped; generated-column block absent; dependency record absent; structural constraint edited into a rejecting one; contract constraint changed; new unclassified constraint; unmigrated database. Each is verified to exit non-zero, and the baseline plus every restore is verified to exit zero — a gate that never passes is as useless as one that never fails.
+
   ⚠️ **Nothing has shipped against this contract yet** — the first import has not run, so no consumer holds an earlier shape. The payload resulting from the migrations below is therefore declared **contract v1**; the table is *migration history explaining how v1 was reached*, not a series of version bumps. (The GiST/GIN index swap is not a wire-contract change at all — it is listed for completeness of the schema story.) The first real bump will be the first change made **after** an import has run.
 
   **How v1 was reached:**
@@ -26,7 +77,10 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   | `20260725140000` | fold order corrected (`lower(f_unaccent(x))`) |
   | `20260725160000` | GiST KNN + covering B-tree replace GIN |
   | `20260725220000` | fold becomes `catalog_fold_v1`; whitespace canonicalized; `f_unaccent_arr` dropped |
+  | `20260725220000` § 3 | 4 blank-name CHECKs: `btrim` → `catalog_fold_v1` |
   | `20260726090000` | `wine_vintages.grapes` + `grapes_override` added |
+
+  ⚠️ **The § 3 row was added retroactively (2026-08-11).** It is the same migration as the row above it, listed separately because it is a *distinct* contract change that went unrecorded: the fold row describes matching, the § 3 row describes **rejection**. Both landed before the first import, so both are still v1 rather than bumps — but the omission is exactly the class of silence the rejection-surface test now closes.
 
   ⚠️ The import contract must carry vintage-level grapes as **two fields**, not one: sending `grapes: []` alone is ambiguous between "inherit" and "none listed". Absent `grapes_override` (or `false`) means inherit and the array MUST be empty — a CHECK enforces it.
 - Imported entries arrive already curated. The app-side **review queue exists for user-added entries only** (confirm / merge / reject); merges and `linksTo` exist only here, where tasting data lives.
@@ -68,6 +122,21 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 **`wine_vintages`** — the rating grain. Carries `grapes` + `grapes_override` as well as `abv`: blend proportions shift year to year and a producer may drop a variety outright in a difficult vintage, so a product-only composition cannot record what is actually in the bottle. 🔒 **The flag is required, not stylistic** — Prisma returns `[]` for BOTH `NULL` and `{}` on a scalar list (measured), so a nullable array cannot distinguish "inherit the product's" from "genuinely none listed" in any application read path. Effective value is `CASE WHEN grapes_override THEN vintage.grapes ELSE product.grapes END`, never `COALESCE`. Added by `20260726090000_vintage_grapes_override` — ⚠️ **a versioned-contract change**, see § Data contract.
 - `id`, `productId` (FK), `year` (nullable), `abv` (nullable per-vintage override), `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
 - **`year = null` means the non-vintage instance exclusively — never "year unknown".** An unknown-year rating links at product level instead (see below), so NV rows stay clean.
+- 🔒 **Year is validated at three layers, deliberately asymmetric — and the import path only ever meets one of them.**
+
+  | Layer | Rule | Where |
+  |---|---|---|
+  | Encounter text | structural grammar only; no range | `@verre/core` `normalizeVintageText` |
+  | Route boundary | `1900..current+1` | `validateYear`, `lib/catalogWrite.ts` |
+  | DB constraint | `1800..2200` | `wine_vintages_year_range_check` |
+
+  The DB bound is a **garbage fence** — deliberately wide, catching a typo'd `20255`. The plausibility rule is a **route-boundary rule**, tighter and clock-relative, because "plausible" moves with the calendar and a CHECK cannot. 🔒 **And the import path has no route boundary** — imports do not call `validateYear`, so imported vintages are governed by `1800..2200` alone.
+
+  ⚠️ **That last clause is the one that matters, and its absence is what made this exchange necessary.** The layering was documented at `lib/catalogWrite.ts:200-203` and at the constraint itself — both places the catalog-maintenance side has no reason to read. Documented in the code is not documented in the contract.
+
+  Consequence, surfaced by the maintenance side (2026-08-11): their own extraction fence was `1900..current+1` evaluated against the wall clock, narrower than ours in both directions. One direction is safe — they can only send a subset of what we accept. The other is not: a legitimate 1850 fortified, or a 2028 entry, is something the app can hold and they could not store. They are **widening to `1800..2200` to match the DB fence** and keeping the tighter rule at extraction time, frozen to the source rather than the clock. Done while the table is still empty.
+
+  ⚠️ **Do not "align" the three layers.** A range in the shared write normalizer was tried and reverted — it runs on every edit resend, so it blanked stored out-of-range values the moment a user touched any other field. The out-of-range round-trip pins in `scripts/tests/vintage-text-units.ts` fail if it is reintroduced.
 - **Uniqueness: one row per year and one NV row per product** — `UNIQUE NULLS NOT DISTINCT (product_id, year)`, or equivalently two partial unique indexes (non-null years; the null NV row). A plain compound unique would allow multiple null-year rows. Raw-SQL migration (Prisma can't express either form).
 - Additionally `UNIQUE (id, product_id)` — redundant with the PK, but it enables the composite-FK integrity check on `wines` below.
 

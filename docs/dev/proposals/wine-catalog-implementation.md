@@ -12,6 +12,8 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 |---|---|---|---|
 | 1 | Domain-schema migration | ✅ **SHIPPED** `4bc14c5` | `staff_roles` + `staff_role_audit`, the four catalog tables, `product_eans`, `wines` link columns, `catalog_audit`, raw SQL |
 | 2 | Add-flow + fuzzy search | ✅ **SHIPPED** `79a49a2`, gated OFF | The five add branches, one `pg_trgm` matcher (GiST KNN), Redis link mirroring |
+| — | **Contract shape gate** | ✅ **SHIPPED** | Committed CHECK snapshot + CI diff (see RFC § Enforcement) |
+| — | **Fold identity handshake** | ⏭️ **PULLED FORWARD** out of phase 4 — see § below | Standalone compare job, both sides, hard-fail |
 | — | **Model change** | 📋 **PLANNED** — [`wine-catalog-model-change.md`](wine-catalog-model-change.md) | Occurrences replace per-event `wines`; ratings→occurrence→catalog; bookmarks→catalog; Postgres-authoritative promotion |
 | 3 | Review queue + merge machinery | Pending | Curator surfaces, merge/unmerge, suggestion policy, **change proposals** |
 | 4 | Integration-schema migration | Pending | Import + pull contract, and the tables they need |
@@ -20,10 +22,16 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 **Execution order** (from the model-change proposal § 7, which is the spec-of-record):
 
 ```
-attributions page → first catalog fill → model change → review queue (phase 3)
+attributions page → fold identity handshake → first catalog fill → model change → review queue (phase 3)
 ```
 
 The attributions surface is a **licence obligation** and hard-gates the fill. The fill gates the model change, because once anonymous users can only *pick* existing entries an empty catalog leaves them unable to add anything.
+
+⚠️ **The handshake moved ahead of the fill (2026-08-11), out of phase 4.** It was scheduled with the import transport that would carry it, on the reading that the fold dependency was still prospective. It is not: `20260725220000` took it on 2026-07-25. **Four CHECK predicates and five generated columns already depend on a fold that nothing verifies**, and on the maintenance side roughly **70,000 staged rows** whose insertability now depends on it. Verifying that after the fill inverts the cost. It is read-only, needs no schema change, and the expensive part — realigning `f_unaccent` byte-for-byte until both sides derive `fold1:aff3f19f44ae1df7010843bf278b05cb` — is already done.
+
+**What "pulled forward" means concretely**, since there is no import session to hang it on yet: a **standalone job on both sides that computes the identity, compares, and fails loudly.** That is enough to start; it moves under the import session in phase 4 when one exists. The identity query, its six design points, and the seven adversarial checks are unchanged — see phase 4 § A FOLD VERSION BUMP IS A COORDINATED DEPLOY, which remains the spec.
+
+🔒 **Announce-before-deploy stays a hard release condition regardless.** Detection after the fact is not prevention, and the six-row canary in the RFC is exactly the shape of thing that clears a detector but not an announcement: a transliteration change would empty six legitimate non-Latin producer names, and the handshake would report the mismatch only once an exchange was already attempted.
 
 ⚠️ **The phases-2-and-3 release boundary was REVERSED** (Simon, 2026-07-25). It previously read: *public catalog creation stays disabled until phase 3's reject/merge/audit path works, because publicly-searchable user-authored content with no moderation path is not a valid steady state.* That reasoning was sound at the time and is superseded by scale, not by argument — with a handful of testers the accumulation risk is negligible, and blocking the model change behind a full curator UI costs more than it protects. **What must still hold:** entries minted before the queue exists stay `provisional` and are **recorded as awaiting review from day one**, so nothing is silently treated as reviewed. If usage grows before phase 3 lands, re-close the fence rather than letting the backlog accumulate unbounded.
 
@@ -32,7 +40,7 @@ The attributions surface is a **licence obligation** and hard-gates the fill. Th
 - **Timestamps are `@db.Timestamptz(6)`.** The schema has 35 `Timestamptz(6)` columns and zero `(3)`; consistency wins. Never order by timestamp precision — order by id or sequence.
 - **PKs are 21-char nanoids** (`VarChar(21)`), matching `wines.id`. Enumerated columns are `varchar` + `CHECK` (house convention, no PG enums).
 - **One ID for life** (RFC § Lifecycle). Nothing ever re-mints.
-- Catalog table shapes are a versioned interface — see the RFC § Catalog write ownership. Shape changes are surfaced explicitly, never made silently.
+- Catalog table shapes are a versioned interface — see the RFC § Catalog write ownership. Shape changes are surfaced explicitly, never made silently. 🔒 **"Shape" includes CHECK predicates**, by the rejection-surface test defined there; `scripts/check-catalog-contract-checks.mjs` enforces it in CI against a committed snapshot.
 
 ## Phase 1 — Domain-schema migration
 
@@ -186,6 +194,8 @@ Curator-gated, per the phase-1 permission map. Merge is pointer + lifecycle only
 ## Phase 4 — Integration-schema migration
 
 ### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
+
+⏭️ **The handshake in commitment 2 below was PULLED FORWARD out of this phase (2026-08-11)** — it now runs as a standalone both-sides compare job ahead of the first fill, because the fold dependency it protects was already taken by `20260725220000`. See § Phase order. This section remains the **spec**: the identity query, the six design points, and the adversarial checks are unchanged, and the handshake moves back under the import session when this phase builds one.
 
 **Raised by the catalog-maintenance side, 2026-07-26, and accepted.** `catalog_fold_v1` is a Postgres function name inside our schema — **it appears nowhere in the contract**, so nothing on a consumer's side can detect a bump. The versioned name makes divergence *diagnosable after the fact*; it does not prevent it.
 
