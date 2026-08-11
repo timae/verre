@@ -385,6 +385,12 @@ model Wine {
   // non-null (Postgres default MATCH SIMPLE). Pre-flight confirmed every
   // existing row has a canonical pair; no backfill needed.
   categoryStyle      CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  // 🔒 The composite FK above is MATCH SIMPLE, so it checks NOTHING when
+  // `style` is null — and style is nullable. This single-column FK is what
+  // actually constrains `category` (measured: `category='spirit', style=NULL`
+  // inserted cleanly before it existed). The two are complementary: the
+  // composite rejects a wrong style FOR a category, this rejects the category.
+  categoryRef        Category       @relation(fields: [category], references: [category], onDelete: NoAction, onUpdate: NoAction)
   // NoAction on both catalog FKs: ordinary lifecycle NEVER deletes catalog
   // rows (merge is a pointer, not a delete). The exceptional staff hard-purge
   // performs the exact column transitions itself in one transaction, and these
@@ -589,6 +595,30 @@ model Follow {
 // Lookup table that constrains (wines.category, wines.style) to a known set.
 // Soft-deletable (`active=false`) because dropping a style row would break
 // FKs from existing wines. UI dropdowns filter on active=true.
+// Declared drink-category vocabulary, and the FK target for `wines.category` /
+// `wine_products.category`.
+//
+// 🔒 It exists because the composite `(category, style)` FK to CategoryStyle is
+// MATCH SIMPLE and `style` is nullable, so that FK skips its check entirely
+// whenever a style is absent — leaving `category` accepting any string at all
+// (measured: `category='spirit', style=NULL` inserted cleanly on both tables).
+// CategoryStyle cannot be the target itself: its PK is the PAIR, so there is no
+// row to reference for a category alone.
+//
+// Extending to beer/spirits: INSERT here, then the styles into CategoryStyle.
+// That is an INSERT rather than a migration, which is what made this shape
+// preferable to pinning `category` to a literal set.
+model Category {
+  category  String        @id @db.VarChar(32)
+  label     String        @db.VarChar(64)
+  sortOrder Int           @default(0) @map("sort_order")
+  active    Boolean       @default(true)
+  wines     Wine[]
+  products  WineProduct[]
+
+  @@map("categories")
+}
+
 model CategoryStyle {
   category  String  @db.VarChar(32)
   style     String  @db.VarChar(64)
@@ -978,6 +1008,9 @@ model WineProduct {
   adder         User?     @relation("ProductAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   curator       User?     @relation("ProductCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   categoryStyle CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  // See the matching field on Wine: the composite FK is MATCH SIMPLE and does
+  // not fire when `style` is null, so this is what constrains `category`.
+  categoryRef   Category       @relation(fields: [category], references: [category], onDelete: NoAction, onUpdate: NoAction)
   producers     ProductProducer[]
   vintages      WineVintage[]
   eans          ProductEan[]

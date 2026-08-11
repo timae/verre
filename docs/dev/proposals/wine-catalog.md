@@ -185,7 +185,25 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   It corroborates the maintenance side's own finding from the ABV measurement — 30 rows carrying a `wine` category while being pomace brandies at 35–50% ABV — from the opposite direction: **they have wrongly-categorised rows, and we would not reject them on `category` even though `spirit` is not a category we define.** A style-based export filter does not keep grappa out of a wine catalogue, and neither does our category column today. The category clause is load-bearing, not tidy.
 
-  📋 **Not fixed here** (this branch is the contract-shape gate). The fix is a CHECK pinning `category` to the defined set, or a NOT NULL on `style`; both are schema changes needing their own migration and a decision on the extensible-category direction (`wines.category` is documented as intended to extend to beer/spirits later, so pinning to `'wine'` alone would foreclose that). Sequencing: it belongs with the model change, before the fence opens.
+  ✅ **FIXED** — `20260811215655_catalog_category_constraint` (Simon's call, 2026-08-11). A new **`categories`** table is the FK target for `wines.category` and `wine_products.category`, seeded from the categories present in `category_styles`.
+
+  ⚠️ **A `CHECK (category IN (SELECT …))` was the obvious fix and is NOT LEGAL** — Postgres forbids a subquery in a CHECK. The first sketch was written that way and would not have deployed. The two working shapes are a trigger or a referenced table; the table wins because it keeps "add beer/spirits later" an **INSERT rather than a migration** — the property that made this a blocker in the first place — and because a declarative FK cannot be defeated by a `DISABLE TRIGGER`. `category_styles` cannot be the target itself: its PK is the *pair*, so there is no row to reference for a category alone.
+
+  🔒 **`NOT NULL` on `style` was the alternative and was deliberately rejected**: it would forbid "known product, unknown style", a legitimate state the add-flow relies on. The fix constrains only the column that was genuinely unguarded.
+
+  Verified on PG 16 after applying — all five cases, both tables:
+
+  | Insert | Before | After |
+  |---|---|---|
+  | `category='spirit'`, no style | accepted | **rejected** (`*_category_fkey`) |
+  | `category='wine'`, no style | accepted | accepted — no regression |
+  | `category='wine'`, `style='red'` | accepted | accepted |
+  | `category='wine'`, `style='grappa'` | rejected | rejected (composite FK, unchanged) |
+  | `DELETE` a category in use | — | **blocked** (`NO ACTION`) |
+
+  ✅ **Extensibility confirmed, not asserted:** inserting `('spirit','Spirits')` into `categories` plus `('spirit','grappa',…)` into `category_styles` makes `spirit/grappa` insertable immediately, with no migration.
+
+  The two FKs are complementary: the composite `(category, style)` one rejects a wrong style *for* a category; the new single-column one rejects the category outright. Note the app-side write path (`lib/catalogWrite.ts`, `input.category?.trim() || 'wine'`) still accepts an arbitrary string — it is now the database that refuses it, which is the point.
 
   🔒 **EVERY CLAIM THIS GATE MAKES HAS A STAGED FAILURE BEHIND IT.** Adopted from the maintenance side (2026-08-11) after they found their own gate compared constraint *names* and never predicates — it claimed to catch in-place edits and did not, because a drop test had been staged and read as proof of the general claim. Staging the missing cases then found a second bug *in their fix*.
 
