@@ -221,6 +221,17 @@ It fails **closed** (a loud resolution error, never a wrong fold), so this is av
 
 🔒 **But it CHANGES THE FOLD IDENTITY HASH** — `proconfig` is part of `pg_get_functiondef`, so `catalog_fold_v1` moves `47f391f0…` → `14a1792d…`. That is exactly the "a cosmetic edit is not a semantic version change but DOES break the byte-identity contract, by design" case recorded in § 2 below. So it is a **coordinated deploy**: both sides pin identically, in the same window, and re-derive the composite identity together. Announce-before-deploy applies. Not something either side lands alone — which is why it is recorded here as open rather than fixed in the contract-shape branch.
 
+#### 🔒 READING OLDER `aff3f19f…` CITATIONS — history, not drift
+
+⚠️ **Every occurrence of `fold1:aff3f19f44ae1df7010843bf278b05cb` elsewhere in this document is ACCURATE HISTORY and must NOT be rewritten** — flagged by the maintenance side after their own re-baseline, because the next reader hits one of those lines with no context and reasonably reads it as drift.
+
+**This is an IDENTITY change, not a FOLD change.** Output was byte-identical across all 12 probes before and after the pin, so every number derived under `aff3f19f…` — the `f_unaccent` realignment, the seven adversarial checks, the maintenance side's false-merge study — remains valid. Rewriting those citations to the new value would quietly claim they were derived under a fold that did not yet exist. Annotate, never retrofit.
+
+| Identity | Valid for | Meaning |
+|---|---|---|
+| `fold1:aff3f19f44ae1df7010843bf278b05cb` | 2026-07-26 → the pin window | pre-pin; all adversarial testing below was done against it |
+| `fold1:48ee6fc91dbd9146a23585dd65b65fc4` | the pin window onward | post-pin; same fold, `proconfig` added |
+
 #### 🔒 WINDOW PARAMETERS — agreed and independently derived, 2026-08-11
 
 **Exactly TWO statements. Do not add a third.**
@@ -241,6 +252,19 @@ ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, 
 ⚠️ **DO NOT PIN `f_unaccent` — the third pin fixes nothing and moves the shared fingerprint.** This was the entire cause of a composite disagreement between the two sides (ours `48ee6fc9…` vs theirs `04dc8409…`) that took a decomposition to resolve: every component matched, the scope differed. Verified here on PG 16 under `search_path = pg_catalog` with only the two pins applied — the INSERT into `producers` succeeds and stores `chateau x`, `catalog_fold_arr_v1` returns `cabernet sauvignon,gruner`, and `public.f_unaccent('Château')` called directly returns `Chateau`. **`proconfig` applies for the DURATION OF THE CALL, so a nested unqualified `f_unaccent` inherits the pinned caller's path**; a directly-qualified call never needed one. 🔒 **On a fingerprinted artifact, gratuitous hardening is not free** — the maintenance side's formulation, and the durable rule here.
 
 ✅ **Both sides derived `48ee6fc9…` independently BEFORE either applied anything**, which is a better position than confirming during the window. The disagreement that produced it is the handshake working as designed: two derivations, compared before publication, decomposed rather than averaged.
+
+✅ **The maintenance side's half is APPLIED** (2026-08-11). Live identity `fold1:48ee6fc9…`, matching the pre-derived value. Post-deploy verification on their corpus: **70,514 producer rows, zero where the stored fold differs from a freshly computed one**, `Château Margaux → chateau margaux`. Nothing stored moved, as predicted — output was byte-identical throughout. **Our half is not applied.**
+
+##### 🔒 RUNBOOK — a re-baseline is NOT one line
+
+⚠️ **Handed over by the maintenance side after theirs touched four places, two of which fail loudly.** Ours has a **wider** surface than theirs because our gate records function hashes in *two* structures, not one. Verified by applying the pin to a scratch database: the gate reports **9 problems** — 4 `PREDICATE-FN-CHANGED` (the fold-backed CHECKs) **plus 5 `GENCOL-FN-CHANGED`** (every folded generated column). Their gate would surface only the first class.
+
+Everything below belongs in **one commit** with the migration. The gate stays red until it is:
+
+1. **The migration** — exactly the two `ALTER FUNCTION` statements in § Window parameters. ⚠️ Note the qualified-`ALTER`-escapes-a-replay hazard in the RFC § implementation notes; we have no replay today, but this migration is the exact shape that would escape one.
+2. **`prisma/catalog-contract-checks.json`** — regenerate with `--write`. 🔒 **In the SAME commit**, or CI is red on a change that is deliberate. This is the one the maintenance side flagged as surprising, and it is the one that bites hardest here: 9 entries move, not 4.
+3. ⚠️ **Re-scope the 4 changed CHECKs.** `--write` resets a changed constraint to `UNCLASSIFIED` by design, so the gate stays red even after regenerating until each is re-marked `contract`. That is correct behaviour (scope is a property of the transition), but on *this* change the rejection-surface answer is unchanged — the predicate text and accepted payload set are identical; only `proconfig` moved. Re-mark them `contract`, do not treat it as a new classification question.
+4. **Nothing else.** Older `aff3f19f…` citations are history — see the section above. Do not sweep them.
 
 ### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
 
