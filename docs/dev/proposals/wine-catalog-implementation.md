@@ -205,7 +205,7 @@ SELECT public.catalog_fold_v1('Château Margaux');
   → ERROR: function f_unaccent(text) does not exist
 ```
 
-Two levels deep: `catalog_fold_arr_v1` calls `catalog_fold_v1` unqualified as well. ⚠️ Note `gtin_check_digit_ok` **does** carry `SET search_path = pg_catalog, public` — so this is an inconsistency inside `20260725090000`/`20260725220000`, not a house convention.
+Two levels deep: `catalog_fold_arr_v1` calls `catalog_fold_v1` unqualified as well. ⚠️ Note `gtin_check_digit_ok` **does** carry `SET search_path = pg_catalog, public` — so on our side this is a genuine **inconsistency** inside `20260725090000`/`20260725220000`, not a missing convention: the same migration set pins one function and not the others. (The maintenance side corrected an over-generalisation here — zero of their thirteen functions pin, which is a *uniform absence* rather than an inconsistency. The distinction matters because a uniform absence is a sweep; an inconsistency is a defect with a precedent sitting next to it.)
 
 🔒 **It is worse than a probe-robustness issue on OUR side, because the fold backs five GENERATED COLUMNS.** Any write that computes one resolves `f_unaccent` at insert time, so under a foreign path **an ordinary INSERT fails**:
 
@@ -220,6 +220,27 @@ It fails **closed** (a loud resolution error, never a wrong fold), so this is av
 **The fix and why it is NOT applied here:** `ALTER FUNCTION catalog_fold_v1(text) SET search_path = pg_catalog, public` (and the same for `catalog_fold_arr_v1`) resolves both the probe and the INSERT — verified. ✅ **Output is byte-identical for all 12 documented probes**, so no `_v2` and no column rewrite is owed on semantic grounds.
 
 🔒 **But it CHANGES THE FOLD IDENTITY HASH** — `proconfig` is part of `pg_get_functiondef`, so `catalog_fold_v1` moves `47f391f0…` → `14a1792d…`. That is exactly the "a cosmetic edit is not a semantic version change but DOES break the byte-identity contract, by design" case recorded in § 2 below. So it is a **coordinated deploy**: both sides pin identically, in the same window, and re-derive the composite identity together. Announce-before-deploy applies. Not something either side lands alone — which is why it is recorded here as open rather than fixed in the contract-shape branch.
+
+#### 🔒 WINDOW PARAMETERS — agreed and independently derived, 2026-08-11
+
+**Exactly TWO statements. Do not add a third.**
+
+```sql
+ALTER FUNCTION public.catalog_fold_v1(text)      SET search_path = pg_catalog, public;
+ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
+```
+
+| Value after the window | |
+|---|---|
+| Composite identity | `fold1:48ee6fc91dbd9146a23585dd65b65fc4` |
+| `catalog_fold_v1` | `14a1792d752a2e72d194e32c17ad3d0b` |
+| `catalog_fold_arr_v1` | `83bb9c6e13a7328be00a339d4f19462c` |
+| `f_unaccent` (unchanged) | `fa39967c99a9788fb3d28c18da2c4995` |
+| probes | `b6777f07c8fef9d1d8c67dd35cea7593` |
+
+⚠️ **DO NOT PIN `f_unaccent` — the third pin fixes nothing and moves the shared fingerprint.** This was the entire cause of a composite disagreement between the two sides (ours `48ee6fc9…` vs theirs `04dc8409…`) that took a decomposition to resolve: every component matched, the scope differed. Verified here on PG 16 under `search_path = pg_catalog` with only the two pins applied — the INSERT into `producers` succeeds and stores `chateau x`, `catalog_fold_arr_v1` returns `cabernet sauvignon,gruner`, and `public.f_unaccent('Château')` called directly returns `Chateau`. **`proconfig` applies for the DURATION OF THE CALL, so a nested unqualified `f_unaccent` inherits the pinned caller's path**; a directly-qualified call never needed one. 🔒 **On a fingerprinted artifact, gratuitous hardening is not free** — the maintenance side's formulation, and the durable rule here.
+
+✅ **Both sides derived `48ee6fc9…` independently BEFORE either applied anything**, which is a better position than confirming during the window. The disagreement that produced it is the handshake working as designed: two derivations, compared before publication, decomposed rather than averaged.
 
 ### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
 
