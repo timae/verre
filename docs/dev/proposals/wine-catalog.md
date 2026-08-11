@@ -61,7 +61,28 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   The snapshot therefore records all five generated columns with their expression **and** their fold body hashes, resolved via `pg_depend` through `pg_attrdef`. ⚠️ Four are incidentally covered by the fold-backed CHECKs, but **`grapes_folded` uses `catalog_fold_arr_v1`, which no CHECK references** — it was entirely uncovered, and relying on the incidental overlap would have left it that way. An absent `generatedColumns` block fails the gate, same as an absent dependency record.
 
-  The catalog-maintenance side independently designed the same mechanism — committed `pg_get_constraintdef` snapshot, CI diff, explicit accepted-divergence list requiring a stated reason — before seeing this one, and is building the equivalent on their side.
+  The catalog-maintenance side independently designed the same mechanism — committed `pg_get_constraintdef` snapshot, CI diff, explicit accepted-divergence list requiring a stated reason — before seeing this one, and is building the equivalent on their side. Verified green against this branch at `1422219`: their pinned prod predicates unchanged, nothing here moves the contract.
+
+  ### Declared divergence — `abv_range` (2026-08-11)
+
+  🔒 **The maintenance side does NOT adopt `abv_range 0..25`, and this is accepted.** Their table is multi-category by design and holds spirits; 0..25 would make 1,466 rows unstorable. They keep a wide local fence and treat our 0..25 as an **export-boundary rule** — nothing violating it may be sent — enforced as a pinned count of exactly how many held rows our predicate would refuse, with the gate failing if that number moves. Same shape as the year resolution: wide fence locally, our rule at the boundary. **A promise turned into a mechanism**, which is the only form a cross-side commitment can take.
+
+  ⚠️ **One detail does not transfer, and it matters if the number is ever reconciled.** They describe their local fence as `0..100`. On *our* column that bound would be **unreachable decoration**: `abv` is `DECIMAL(4,2)`, so the type caps magnitude at 99.99 and a `<= 100` CHECK could never fire. Verified on PG 16 — inserting `135` raises `numeric field overflow` from the type and never reaches the CHECK, while `40` (a pomace brandy) is refused by the CHECK itself. So our 25 is the bound that actually bites and their 100 is doing real work only because their column is wider. The two numbers are not comparable as written; the comparable statement is "each side's fence is the widest value its column can hold, and 0..25 is the boundary rule."
+
+  ### 🔒 Found while verifying that divergence: `category` is not actually constrained
+
+  ⚠️ **`wine_products.category` accepts ANY value whenever `style` is NULL.** The only thing constraining it is the composite FK `(category, style)` → `category_styles`, which is **MATCH SIMPLE** — it skips the check entirely when any column is null, and `style` is nullable by design. Measured on PG 16:
+
+  | Insert | Result |
+  |---|---|
+  | `category='spirit', style='grappa'` | rejected (FK fires) |
+  | `category='spirit', style=NULL` | **accepted** |
+
+  This is the **same trap already documented twice** in this codebase — the `vintageId`/`productId` pair carries an explicit `CHECK (vintage_id IS NULL OR product_id IS NOT NULL)` precisely because the composite FK is MATCH SIMPLE, and `20260725090000` § warns about it in prose. It was simply never applied to `category`.
+
+  It corroborates the maintenance side's own finding from the ABV measurement — 30 rows carrying a `wine` category while being pomace brandies at 35–50% ABV — from the opposite direction: **they have wrongly-categorised rows, and we would not reject them on `category` even though `spirit` is not a category we define.** A style-based export filter does not keep grappa out of a wine catalogue, and neither does our category column today. The category clause is load-bearing, not tidy.
+
+  📋 **Not fixed here** (this branch is the contract-shape gate). The fix is a CHECK pinning `category` to the defined set, or a NOT NULL on `style`; both are schema changes needing their own migration and a decision on the extensible-category direction (`wines.category` is documented as intended to extend to beer/spirits later, so pinning to `'wine'` alone would foreclose that). Sequencing: it belongs with the model change, before the fence opens.
 
   🔒 **EVERY CLAIM THIS GATE MAKES HAS A STAGED FAILURE BEHIND IT.** Adopted from the maintenance side (2026-08-11) after they found their own gate compared constraint *names* and never predicates — it claimed to catch in-place edits and did not, because a drop test had been staged and read as proof of the general claim. Staging the missing cases then found a second bug *in their fix*.
 

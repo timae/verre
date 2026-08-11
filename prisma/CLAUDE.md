@@ -176,6 +176,8 @@ SELECT user_id, role, granted_by FROM staff_roles ORDER BY role, user_id;
 
 Everything after the bootstrap goes through the in-app path (`lib/staffRole.ts` `grantStaffRoleAs` / `revokeStaffRoleAs` / `demoteToCuratorAs`), which audits both halves of a transition and enforces authorization inside the write transaction.
 
+⚠️ **`wine_products.category` is NOT constrained when `style` is NULL** (found 2026-08-11, not yet fixed). The composite FK `(category, style)` → `category_styles` is **MATCH SIMPLE**, so it skips the check whenever either column is null — and `style` is nullable. Measured: `category='spirit', style='grappa'` is rejected; `category='spirit', style=NULL` is **accepted**. Same trap the `vintageId`/`productId` pair already guards against with an explicit CHECK (see the RFC § and `20260725090000` §), just never applied here. The fix is a CHECK pinning `category` to the defined set or a NOT NULL on `style` — both need their own migration and a decision on the extensible-category direction, so it is sequenced with the model change. Don't assume `category = 'wine'` in query or import code until then.
+
 **A `WineProduct` can never be created in a single statement.** Deferred constraint triggers enforce "every product has exactly one lead producer" at COMMIT, including at creation — so a bare `prisma.wineProduct.create()` always raises `has no lead producer`. Product + its `product_producers` lead row must commit in one `$transaction`. That is the invariant working, not a bug. Swap ordering traps (demote-then-promote; promotion is an UPDATE, not an INSERT) are documented in the migration's § 6.
 
 ## 🔒 `product_producers.product_id` is ON DELETE CASCADE — deliberately
