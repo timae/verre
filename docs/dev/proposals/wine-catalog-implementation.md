@@ -193,6 +193,34 @@ Curator-gated, per the phase-1 permission map. Merge is pointer + lifecycle only
 
 ## Phase 4 — Integration-schema migration
 
+### 🔒 OPEN DEFECT: the fold functions have no `search_path` pin (found 2026-08-11)
+
+**Reported by the catalog-maintenance side while staging the `search_path` handover note, and reproduced here. Not fixed — the fix is a coordinated change, see below.**
+
+⚠️ **Qualifying the probe CALL is not enough when the CALLEE'S BODY is unqualified.** The handshake query below schema-qualifies both the definitions and the probe invocation, each for a measured reason. But `catalog_fold_v1`'s own body calls `f_unaccent(...)` unqualified and carries no `proconfig` pin, so *executing* it still depends on the caller's `search_path`. Measured on PG 16:
+
+```
+SET search_path = pg_catalog;
+SELECT public.catalog_fold_v1('Château Margaux');
+  → ERROR: function f_unaccent(text) does not exist
+```
+
+Two levels deep: `catalog_fold_arr_v1` calls `catalog_fold_v1` unqualified as well. ⚠️ Note `gtin_check_digit_ok` **does** carry `SET search_path = pg_catalog, public` — so this is an inconsistency inside `20260725090000`/`20260725220000`, not a house convention.
+
+🔒 **It is worse than a probe-robustness issue on OUR side, because the fold backs five GENERATED COLUMNS.** Any write that computes one resolves `f_unaccent` at insert time, so under a foreign path **an ordinary INSERT fails**:
+
+```
+SET search_path = pg_catalog;
+INSERT INTO public.producers (id,name,status) VALUES (…);
+  → ERROR: function f_unaccent(text) does not exist
+```
+
+It fails **closed** (a loud resolution error, never a wrong fold), so this is availability, not correctness — no stored value can be wrong because of it. The maintenance side rated it robustness-only for the probe; on the write path it is an availability defect. Their exposure is real too: four of their test scripts set `PGOPTIONS` to a scratch path, and four of the nine constraints they have yet to adopt are fold-backed.
+
+**The fix and why it is NOT applied here:** `ALTER FUNCTION catalog_fold_v1(text) SET search_path = pg_catalog, public` (and the same for `catalog_fold_arr_v1`) resolves both the probe and the INSERT — verified. ✅ **Output is byte-identical for all 12 documented probes**, so no `_v2` and no column rewrite is owed on semantic grounds.
+
+🔒 **But it CHANGES THE FOLD IDENTITY HASH** — `proconfig` is part of `pg_get_functiondef`, so `catalog_fold_v1` moves `47f391f0…` → `14a1792d…`. That is exactly the "a cosmetic edit is not a semantic version change but DOES break the byte-identity contract, by design" case recorded in § 2 below. So it is a **coordinated deploy**: both sides pin identically, in the same window, and re-derive the composite identity together. Announce-before-deploy applies. Not something either side lands alone — which is why it is recorded here as open rather than fixed in the contract-shape branch.
+
 ### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
 
 ⏭️ **The handshake in commitment 2 below was PULLED FORWARD out of this phase (2026-08-11)** — it now runs as a standalone both-sides compare job ahead of the first fill, because the fold dependency it protects was already taken by `20260725220000`. See § Phase order. This section remains the **spec**: the identity query, the six design points, and the adversarial checks are unchanged, and the handshake moves back under the import session when this phase builds one.
