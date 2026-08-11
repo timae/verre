@@ -71,7 +71,7 @@
         "name:character varying(255)"
       ],
       "predicateDeps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
@@ -94,7 +94,7 @@
         "region:character varying(255)"
       ],
       "predicateDeps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
@@ -175,7 +175,7 @@
         "name:character varying(255)"
       ],
       "predicateDeps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
@@ -198,7 +198,7 @@
         "region:character varying(255)"
       ],
       "predicateDeps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
@@ -282,35 +282,35 @@
       "column": "producers.name_folded",
       "expression": "catalog_fold_v1((name)::text)",
       "deps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
       "column": "producers.region_folded",
       "expression": "catalog_fold_v1((region)::text)",
       "deps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
       "column": "wine_products.grapes_folded",
       "expression": "catalog_fold_arr_v1(grapes)",
       "deps": [
-        "catalog_fold_arr_v1(text[])=8a5ee4329ca947b05def9d1bf6270aab"
+        "catalog_fold_arr_v1(text[])=83bb9c6e13a7328be00a339d4f19462c"
       ]
     },
     {
       "column": "wine_products.name_folded",
       "expression": "catalog_fold_v1((name)::text)",
       "deps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     },
     {
       "column": "wine_products.region_folded",
       "expression": "catalog_fold_v1((region)::text)",
       "deps": [
-        "catalog_fold_v1(text)=47f391f0bd06a3dd119c05e0a8de1f53"
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     }
   ]
