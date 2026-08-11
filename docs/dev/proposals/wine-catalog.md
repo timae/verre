@@ -85,7 +85,22 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   | EAN check-digit | ✅ fires by name; the format clause does not mask it |
   | a hypothetical `abv <= 100` | ❌ **would be decoration** — the type rejects `100` first |
 
-  No unreachable constraint ships on our side. Worth re-running this audit whenever a bounded numeric column is added or its type narrowed — a `DECIMAL` precision change can silently turn a working bound into decoration without touching the predicate, and the contract-shape gate would not notice: the predicate text is unchanged.
+  No unreachable constraint ships on our side.
+
+  ⚠️ **Assert on the CONSTRAINT NAME, never on "was it rejected".** The maintenance side ran the same audit and hit two false starts, both the script refusing to lie: a missing `NOT NULL` column made six probes report a not-null violation instead of the constraint under test, and one column was `snake_case` beside `camelCase` neighbours. Both would have passed a laxer "did it error?" check while testing nothing. This is the identical lesson `rejects()` in `scripts/tests/catalog-schema-integration.mjs` already encodes — its `expect` argument is mandatory because an earlier version treated any exception as success and reported 65/65 while three real regressions were live.
+
+  🔒 **Reachability and type pinning cover DIFFERENT failures; neither subsumes the other.** Calibration owed to the maintenance side (2026-08-11), who checked it against their own schema rather than accepting the generalisation: their `abv` constraint has only a *lower* bound, so narrowing the type made nothing unreachable and their reachability audit correctly stayed green — the type pin is what catches it there. Conversely, an audit catches a bound that was decoration *from the day it shipped*, which no pin can see because nothing ever changed. Run both; do not let one retire the other.
+
+  ⚠️ **Equally, the type pin and `prisma migrate diff` are complementary, not redundant** — verified here rather than assumed:
+
+  | Narrowing applied to | `migrate diff` | contract gate |
+  |---|---|---|
+  | `schema.prisma` (declared) | ✅ exit 2 | blind |
+  | live database only | blind (exit 0) | ✅ exit 1 |
+
+  `migrate diff` compares migrations against the datamodel, so it never reads the live database; the contract gate reads only the live database. A narrowing that reaches production without passing through `schema.prisma` is exactly the case the second column exists for.
+
+  ✅ **Our drift gate does NOT share the maintenance side's fourth finding.** Theirs compares `character_maximum_length`, which is NULL for `numeric`, so `numeric(4,2)` and `numeric(3,2)` compared equal — in a gate that exists because of a varchar width divergence. Ours is `prisma migrate diff`, a different mechanism: verified it reports `Altered column abv (type changed)` and exits 2. We use `character_maximum_length` nowhere.
 
   ### 🔒 Found while verifying that divergence: `category` is not actually constrained
 
