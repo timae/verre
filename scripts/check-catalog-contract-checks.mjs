@@ -58,6 +58,37 @@ const SNAPSHOT = join(root, 'prisma', 'catalog-contract-checks.json')
 // integration suite.
 const TABLES = ['producers', 'wine_products', 'wine_vintages', 'product_producers', 'product_eans']
 
+// 🔒 A HAND-MAINTAINED LIST IS A SILENT-MISS SURFACE. This one names what to
+// watch, so a NEW catalog table is not merely unwatched — it is unwatched while
+// the gate prints a confident `ok`.
+//
+// ⚠️ MEASURED (2026-08-11): adding a sixth table with a rejection-shaped CHECK
+// (`product_awards`, `CHECK (score BETWEEN 0 AND 100)`) left the gate reporting
+// "ok 22 catalog CHECK constraints" and exiting 0. Nothing anywhere said a new
+// contract-shaped table had appeared.
+//
+// Raised by the catalog-maintenance side finding the identical shape in their
+// reachability audit — a hand-written probe list meant a constraint added
+// tomorrow would never be probed while the audit printed "ALL n PROBES
+// REFUSED". Their rule, and it is the better one: **assert a relationship the
+// DATABASE maintains, not a number a HUMAN maintains.**
+//
+// ⚠️ Pure FK-reachability was tried and REJECTED as the definition: it finds
+// `product_awards` correctly but also drags in `wines`, which is deliberately
+// out of scope (its rules live in the integration suite). So the curated list
+// stays — it encodes a judgement the database cannot make — and the check below
+// makes an ADDITION to that surface loud instead of silent. The list is still
+// authored; it is no longer trusted.
+const KNOWN_NON_CATALOG = ['wines']
+const CANDIDATE_QUERY = `
+  SELECT DISTINCT c.conrelid::regclass::text AS "table"
+  FROM pg_constraint c
+  WHERE c.contype = 'f'
+    AND c.confrelid::regclass::text = ANY($1::text[])
+    AND NOT (c.conrelid::regclass::text = ANY($2::text[]))
+  ORDER BY 1
+`
+
 const write = process.argv.includes('--write')
 
 // 🔒 Read the constraints THE SAME WAY the snapshot was generated:
@@ -237,7 +268,7 @@ function isFoldDependent(depStrings) {
 
 async function main() {
   const prisma = new PrismaClient()
-  let live, deps, genCols, colTypes
+  let live, deps, genCols, colTypes, candidates
   try {
     // 🔒 PIN THE SEARCH_PATH BEFORE READING ANYTHING. Two distinct hazards, and
     // the second was only found by staging the first.
@@ -267,6 +298,8 @@ async function main() {
     deps = await prisma.$queryRawUnsafe(DEPS_QUERY, TABLES)
     genCols = genColRows(await prisma.$queryRawUnsafe(GENCOL_QUERY, TABLES))
     colTypes = await prisma.$queryRawUnsafe(COLTYPE_QUERY, TABLES)
+    candidates = await prisma.$queryRawUnsafe(
+      CANDIDATE_QUERY, [...TABLES, 'categories'], [...TABLES, ...KNOWN_NON_CATALOG])
   } finally {
     await prisma.$disconnect()
   }
@@ -420,6 +453,14 @@ async function main() {
     }
   }
 
+  // 🔒 Did a table join the catalog spine without joining the watch list?
+  // Asked of the database rather than trusted to TABLES — see the note there.
+  // A new table is reported, never silently skipped; resolving it is a
+  // judgement (watch it, or add it to KNOWN_NON_CATALOG with a reason).
+  for (const c of candidates) {
+    problems.push({ kind: 'UNWATCHED-CATALOG-TABLE', k: c.table })
+  }
+
   // Generated columns: expression AND the fold bodies behind it.
   // 🔒 Absent is a FAILURE, not a pass — same reasoning as predicateDeps. A
   // snapshot with no generatedColumns block has five unverified folded columns,
@@ -484,6 +525,16 @@ async function main() {
     if (p.was) console.error(`     was:  ${p.was}`)
     if (p.live) console.error(`     now:  ${p.live}`)
     console.error('')
+  }
+
+  if (problems.some(p => p.kind === 'UNWATCHED-CATALOG-TABLE')) {
+    console.error('  🔒 A TABLE REFERENCES THE CATALOG SPINE BUT IS NOT WATCHED.')
+    console.error('     Its constraints are contract surface by the same argument as the')
+    console.error('     five in TABLES, and nothing is diffing them. Either add it to')
+    console.error('     TABLES and regenerate, or to KNOWN_NON_CATALOG with a stated reason.')
+    console.error('     ⚠️ Do NOT resolve this by deleting the check: a hand-maintained list')
+    console.error('     that is never questioned is how a new table stays unwatched while')
+    console.error('     the gate prints ok.\n')
   }
 
   const fnHit = problems.some(p => p.kind === 'PREDICATE-FN-CHANGED')
