@@ -623,20 +623,26 @@ model Category {
 //
 // The catalog-maintenance side holds 6,455 rows we cannot store — 2,409
 // `dessert` and 4,046 `fortified` — ingested and excluded from export *until
-// this vocabulary grows*. They pin our style set and their gate fires the day
-// `dessert` or `fortified` appears here, reporting the release as unblocked and
-// requiring it to be re-decided rather than inherited.
+// this vocabulary grows*. They pin our style set, so adding `dessert` or
+// `fortified` here unblocks a release on their side that must then be
+// re-decided rather than inherited.
 //
 // ⚠️ So the ordering is OURS-THEN-THEIRS and must not be reversed: this table
 // grows first, then they flip the export filter. Reversed, a deliberate release
 // becomes a batch of FK violations against the composite (category, style) FK —
 // and an import batch is all-or-nothing, so one row fails the whole batch.
 //
-// ⚠️ Note this table is watched on THEIR side and NOT on ours: no gate here
-// covers its contents (the contract snapshot watches constraints, not seed
-// rows), and there is no app write path — it changes only by migration. A
-// migration adding a style will therefore pass every check in this repo
-// silently and fire theirs. Announce it.
+// 🔒 ANNOUNCING A CHANGE HERE IS THE PRIMARY MECHANISM. NOT a courtesy on top of
+// automation. Nothing in THIS repo watches this table's contents (the contract
+// snapshot covers constraints, not seed rows) and there is no app write path —
+// it changes only by migration. And their gate's automatic half re-derives from
+// a clone of this repo, so it only fires if someone has one to hand; without it
+// their check cannot say anything about our vocabulary at all. (They found and
+// corrected that themselves — an earlier version printed a ✅ that compared two
+// of their own constants and read as a statement about us.)
+//
+// So: a migration adding a style passes every check here silently, and may or
+// may not be caught over there. Announce it.
 //
 // See docs/dev/proposals/wine-catalog.md § OPEN — sequencing.
 model CategoryStyle {
