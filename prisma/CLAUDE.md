@@ -41,6 +41,8 @@ npx prisma migrate dev --name <description>
 
 This is why the stale comment in `20260725090000_wine_catalog_schema` (about "no known-empty state in v1") was deliberately left uncorrected — state 2.
 
+⚠️ **This is the ONLY tool that answers the question, and it is wired into NO workflow** — a documented runbook step, not a gate. Consequence, recorded 2026-08-11: **an out-of-band `ALTER` on production is caught by nothing automatic.** Every "live" gate we have (contract-shape, the three catalog integration suites) runs against a scratch database rebuilt from the migration chain in CI, so it verifies what the *migrations* produce, never what prod actually holds. `prisma migrate diff` and the ten `check-*.mjs` gates read files only. Nothing spans both sides. See the RFC § Which gate reads what.
+
 **Verifier:**
 
 ```bash

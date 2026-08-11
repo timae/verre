@@ -96,9 +96,27 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   | Narrowing applied to | `migrate diff` | contract gate |
   |---|---|---|
   | `schema.prisma` (declared) | ✅ exit 2 | blind |
-  | live database only | blind (exit 0) | ✅ exit 1 |
+  | a migration only | ✅ exit 2 | ✅ exit 1 |
+  | the database it reads | blind (exit 0) | ✅ exit 1 |
+  | prod, out-of-band | blind | blind — see below |
 
   `migrate diff` compares migrations against the datamodel, so it never reads the live database; the contract gate reads only the live database. A narrowing that reaches production without passing through `schema.prisma` is exactly the case the second column exists for.
+
+  ### ⚠️ Which gate reads what — and the gap the question exposed
+
+  Prompted by the maintenance side writing the same table for their side (2026-08-11). Neither of us could previously say *which* gate would have caught a given change; "the gates are green" was the only available answer.
+
+  | Reads | Gates |
+  |---|---|
+  | **Live database** | contract-shape gate, `catalog-schema-integration`, `catalog-addflow-integration`, `staff-role-concurrency` |
+  | **Files only** | `prisma migrate diff`, and the ten `check-*.mjs` file gates |
+  | **Both** | *(none)* |
+
+  🔒 **The honest correction: "live" here means a freshly-migrated scratch database in CI, NOT production.** Every gate in the first column runs against `catalog_test`, rebuilt from the migration chain on every run. So the contract gate catches a narrowing *present in the migrations*; it would **not** see an `ALTER` applied out-of-band to prod, because the database it reads was never that database. The previous phrasing of the row above ("narrowing applied to the live database → contract gate exit 1") is true of the mechanism and misleading about the wiring.
+
+  ⚠️ **We have no automated detection of production drift at all.** `scripts/check-migration-checksums.mjs` is the one tool that answers "do the applied migrations still say what they said?", and it is wired into **no** workflow — it is a documented runbook step (see `prisma/CLAUDE.md` § Editing a migration after it has been applied, which already records that `migrate status` and `migrate deploy` are both blind to this). The maintenance side's re-ingest test — replaying every migration into a scratch schema and diffing against live — is the thing we lack an equivalent of; theirs reads *both* sides, ours reads one each.
+
+  📋 **Not closed here.** Pointing the contract gate at prod is not a CI change (credentials, read-only role, scheduling) and needs a decision about whether a scheduled drift check is wanted at all. Recorded so the coverage claim stays honest: today, an out-of-band `ALTER` on prod is caught by nothing automatic. That matters most for the fold and the folded columns, where the failure is silent by construction.
 
   ✅ **Our drift gate does NOT share the maintenance side's fourth finding.** Theirs compares `character_maximum_length`, which is NULL for `numeric`, so `numeric(4,2)` and `numeric(3,2)` compared equal — in a gate that exists because of a varchar width divergence. Ours is `prisma migrate diff`, a different mechanism: verified it reports `Altered column abv (type changed)` and exits 2. We use `character_maximum_length` nowhere.
 
