@@ -232,15 +232,17 @@ It fails **closed** (a loud resolution error, never a wrong fold), so this is av
 | `fold1:aff3f19f44ae1df7010843bf278b05cb` | 2026-07-26 → the pin window | pre-pin; all adversarial testing below was done against it |
 | `fold1:48ee6fc91dbd9146a23585dd65b65fc4` | the pin window onward | post-pin; same fold, `proconfig` added |
 
-#### ⚠️ STATUS: OUR HALF IS COMMITTED, NOT DEPLOYED (2026-08-12)
+#### ✅ STATUS: DEPLOYED AND MEASURED — THE WINDOW IS CLOSED (2026-08-12)
 
-🔒 **Prod is on `fold1:aff3f19f…` (pre-pin), not `48ee6fc9…`.** The pin migration lives only on `feature/catalog-contract-shape`; `main` has not moved since `07be114` and Deplo.io deploys from `main`. **"The window is closed on both sides" described a COMMITTED migration, not a deployed one** — a distinction we blurred, and one the maintenance side separated by asking for a value measured from prod's database rather than read from the repo. Neither gate could see it: theirs checks their half by design, ours reads a CI database built from the branch.
+🔒 **Production measures `fold1:48ee6fc91dbd9146a23585dd65b65fc4`.** Merged as `72647f0`, deployed, and then **MEASURED against the production database** — not derived from migration files. Both fold functions carry `proconfig = {"search_path=pg_catalog, public"}`; `f_unaccent` is correctly unpinned. The value matches the one both sides derived independently *before* either applied anything, and matches the maintenance side's live identity.
 
-Derived from main's 37 migrations with the two branch-only ones physically removed and the count asserted at 37 first: `catalog_fold_v1` carries no `proconfig`, identity `fold1:aff3f19f44ae1df7010843bf278b05cb`. ⚠️ **Derived, not measured** — no production credentials exist in the dev environment, and closing that gap is exactly what the prod-reading replay is for. Confirm the measured value after merge + deploy.
+**Both halves are now applied and both were verified the same way.** The composite is measured on each side rather than inferred from the other's report.
+
+⚠️ **The distinction this section exists to preserve.** Before the deploy, prod was on `fold1:aff3f19f…` while our branch and both sides' expectations said `48ee6fc9…`, and **neither gate could see the gap**: theirs checks their half by design, ours reads a CI database built from the branch. "The window is closed on both sides" had described a **committed** migration, not a **deployed** one — a distinction we blurred and the maintenance side separated by asking for a value measured from prod's database rather than read from the repo. **A derivation from migration files answers "what should be true", never "what is true".** That gap is what the prod-reading replay would close permanently; until it exists, a measured value after every schema deploy is the manual substitute.
 
 ✅ **The re-key question is ANSWERED, and it was theirs to answer.** They measured what a derivation cannot: an unpinned copy of the same body against their pinned one gives **0 differences over 70,514 producer names, 641,775 staged names, every non-null region and a 17-case torture set**, and all 70,514 stored `nameFolded` match a live recompute. **The deploy needs no re-key.** That is the question a deploy actually asks.
 
-⚠️ **The reason to deploy anyway: the exposure fails OPEN, not closed.** `search_path = pg_catalog` makes the unpinned fold *error*, which is safe. But a schema earlier in the path carrying a different `f_unaccent` returned `château margaux` where the pinned fold returns `chateau margaux` — **a different matching key, no error, no trace.** That is prod's current state, not a hypothetical.
+✅ **The reason it was worth deploying — now CLOSED.** The exposure failed OPEN, not closed: `search_path = pg_catalog` made the unpinned fold *error*, which is safe, but a schema earlier in the path carrying a different `f_unaccent` returned `château margaux` where the pinned fold returns `chateau margaux` — **a different matching key, no error, no trace.** That was prod's state until `72647f0`; it is not any more.
 
 #### 🔒 WINDOW PARAMETERS — agreed and independently derived, 2026-08-11
 
@@ -251,7 +253,7 @@ ALTER FUNCTION public.catalog_fold_v1(text)      SET search_path = pg_catalog, p
 ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
 ```
 
-⚠️ **These are EXPECTED values, verified against a BRANCH-MIGRATED database — not measured from production.** Flagged by Codex (2026-08-12) as a wording distinction worth keeping, and it is the same derived-vs-measured line that produced the earlier `aff3f19f…`/`48ee6fc9…` confusion: our side derived a value from migration files and reported it as though the database had been read. Prod stays on `aff3f19f…` until `feature/catalog-contract-shape` merges and deploys; **the measured value is owed to the maintenance side after that, and nothing here substitutes for it.**
+✅ **These were the EXPECTED values, and production has since been MEASURED at the same composite** (`72647f0`, 2026-08-12 — see the status section above). They were originally verified against a branch-migrated database only, which Codex flagged as a wording distinction worth keeping: it is the same derived-vs-measured line that produced the earlier `aff3f19f…`/`48ee6fc9…` confusion, where a value derived from migration files was reported as though a database had been read. **Expectation and measurement now agree; the distinction stays written down because they agreed by verification, not by assumption.**
 
 | Value after the window (expected) | |
 |---|---|
