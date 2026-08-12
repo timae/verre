@@ -86,5 +86,18 @@
 -- replay today; when one is built, this migration is the shape that escapes it.
 -- See the RFC § implementation notes.
 
+-- 🔒 TRANSACTIONAL. Prisma does NOT wrap migration SQL automatically — measured:
+-- a file whose third statement fails leaves the first two COMMITTED. Same
+-- contract as 20260725140000 / 160000 / 220000, and its absence here was a
+-- review finding (Codex, 2026-08-12): these two functions are MUTUALLY
+-- DEPENDENT and jointly fingerprinted, so a failure between them would leave
+-- half a fold configuration — `catalog_fold_v1` pinned, `catalog_fold_arr_v1`
+-- not — which is a composite identity matching NEITHER side and no error to
+-- say so. On failure use `prisma migrate resolve --rolled-back`, which is
+-- truthful ONLY because this file is transactional.
+BEGIN;
+
 ALTER FUNCTION public.catalog_fold_v1(text)       SET search_path = pg_catalog, public;
 ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
+
+COMMIT;
