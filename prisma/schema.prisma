@@ -385,6 +385,10 @@ model Wine {
   // non-null (Postgres default MATCH SIMPLE). Pre-flight confirmed every
   // existing row has a canonical pair; no backfill needed.
   categoryStyle      CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  // ⚠️ The composite FK above is MATCH SIMPLE, so it checks NOTHING when
+  // `style` is null — and style is nullable, leaving `category` unconstrained.
+  // The single-column FK that closes it lives on `feature/catalog-category-fk`,
+  // held until the maintenance side's export filter exists. See CategoryStyle.
   // NoAction on both catalog FKs: ordinary lifecycle NEVER deletes catalog
   // rows (merge is a pointer, not a delete). The exceptional staff hard-purge
   // performs the exact column transitions itself in one transaction, and these
@@ -589,6 +593,47 @@ model Follow {
 // Lookup table that constrains (wines.category, wines.style) to a known set.
 // Soft-deletable (`active=false`) because dropping a style row would break
 // FKs from existing wines. UI dropdowns filter on active=true.
+//
+// ⚠️ `category` IS CURRENTLY UNCONSTRAINED WHEN `style` IS NULL — the composite
+// FK below is MATCH SIMPLE, so it skips its check entirely whenever either
+// column is null, and `style` is nullable by design. Measured on both `wines`
+// and `wine_products`: `category='spirit', style='grappa'` is rejected,
+// `category='spirit', style=NULL` is ACCEPTED.
+//
+// 🔒 THE FIX EXISTS AND IS DELIBERATELY NOT ON THIS BRANCH — see
+// `feature/catalog-category-fk`. It adds a `categories` table as the FK target,
+// and it must NOT deploy until the catalog-maintenance side's category/style
+// export filter exists: they hold 21,671 rows whose category is outside this
+// vocabulary, and the day the FK lands those become rejections at an
+// all-or-nothing import boundary. The two were split so a merge of this branch
+// cannot deploy it by accident.
+
+// 🔒 ADDING A ROW HERE IS A CROSS-SIDE EVENT, not a local seed change.
+//
+// The catalog-maintenance side holds 6,455 rows we cannot store — 2,409
+// `dessert` and 4,046 `fortified` — ingested and excluded from export *until
+// this vocabulary grows*. They pin our style set, so adding `dessert` or
+// `fortified` here unblocks a release on their side that must then be
+// re-decided rather than inherited.
+//
+// ⚠️ So the ordering is OURS-THEN-THEIRS and must not be reversed: this table
+// grows first, then they flip the export filter. Reversed, a deliberate release
+// becomes a batch of FK violations against the composite (category, style) FK —
+// and an import batch is all-or-nothing, so one row fails the whole batch.
+//
+// 🔒 ANNOUNCING A CHANGE HERE IS THE PRIMARY MECHANISM. NOT a courtesy on top of
+// automation. Nothing in THIS repo watches this table's contents (the contract
+// snapshot covers constraints, not seed rows) and there is no app write path —
+// it changes only by migration. And their gate's automatic half re-derives from
+// a clone of this repo, so it only fires if someone has one to hand; without it
+// their check cannot say anything about our vocabulary at all. (They found and
+// corrected that themselves — an earlier version printed a ✅ that compared two
+// of their own constants and read as a statement about us.)
+//
+// So: a migration adding a style passes every check here silently, and may or
+// may not be caught over there. Announce it.
+//
+// See docs/dev/proposals/wine-catalog.md § OPEN — sequencing.
 model CategoryStyle {
   category  String  @db.VarChar(32)
   style     String  @db.VarChar(64)
@@ -978,6 +1023,9 @@ model WineProduct {
   adder         User?     @relation("ProductAdder", fields: [addedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   curator       User?     @relation("ProductCurator", fields: [curatedBy], references: [id], onDelete: SetNull, onUpdate: NoAction)
   categoryStyle CategoryStyle? @relation(fields: [category, style], references: [category, style], onDelete: NoAction, onUpdate: NoAction)
+  // ⚠️ See Wine: the composite FK is MATCH SIMPLE and does not fire when
+  // `style` is null, so `category` is unconstrained here too. Fix held on
+  // `feature/catalog-category-fk`.
   producers     ProductProducer[]
   vintages      WineVintage[]
   eans          ProductEan[]

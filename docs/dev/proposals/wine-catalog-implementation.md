@@ -12,6 +12,8 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 |---|---|---|---|
 | 1 | Domain-schema migration | ✅ **SHIPPED** `4bc14c5` | `staff_roles` + `staff_role_audit`, the four catalog tables, `product_eans`, `wines` link columns, `catalog_audit`, raw SQL |
 | 2 | Add-flow + fuzzy search | ✅ **SHIPPED** `79a49a2`, gated OFF | The five add branches, one `pg_trgm` matcher (GiST KNN), Redis link mirroring |
+| — | **Contract shape gate** | ✅ **SHIPPED** | Committed CHECK snapshot + CI diff (see RFC § Enforcement) |
+| — | **Fold identity handshake** | ⏭️ **PULLED FORWARD** out of phase 4 — see § below | Standalone compare job, both sides, hard-fail |
 | — | **Model change** | 📋 **PLANNED** — [`wine-catalog-model-change.md`](wine-catalog-model-change.md) | Occurrences replace per-event `wines`; ratings→occurrence→catalog; bookmarks→catalog; Postgres-authoritative promotion |
 | 3 | Review queue + merge machinery | Pending | Curator surfaces, merge/unmerge, suggestion policy, **change proposals** |
 | 4 | Integration-schema migration | Pending | Import + pull contract, and the tables they need |
@@ -20,10 +22,16 @@ The RFC's three open decisions are resolved (see its § Open decisions — RESOL
 **Execution order** (from the model-change proposal § 7, which is the spec-of-record):
 
 ```
-attributions page → first catalog fill → model change → review queue (phase 3)
+attributions page → fold identity handshake → first catalog fill → model change → review queue (phase 3)
 ```
 
 The attributions surface is a **licence obligation** and hard-gates the fill. The fill gates the model change, because once anonymous users can only *pick* existing entries an empty catalog leaves them unable to add anything.
+
+⚠️ **The handshake moved ahead of the fill (2026-08-11), out of phase 4.** It was scheduled with the import transport that would carry it, on the reading that the fold dependency was still prospective. It is not: `20260725220000` took it on 2026-07-25. **Four CHECK predicates and five generated columns already depend on a fold that nothing verifies**, and on the maintenance side roughly **70,000 staged rows** whose insertability now depends on it. Verifying that after the fill inverts the cost. It is read-only, needs no schema change, and the expensive part — realigning `f_unaccent` byte-for-byte until both sides derive `fold1:aff3f19f44ae1df7010843bf278b05cb` — is already done.
+
+**What "pulled forward" means concretely**, since there is no import session to hang it on yet: a **standalone job on both sides that computes the identity, compares, and fails loudly.** That is enough to start; it moves under the import session in phase 4 when one exists. The identity query, its six design points, and the seven adversarial checks are unchanged — see phase 4 § A FOLD VERSION BUMP IS A COORDINATED DEPLOY, which remains the spec.
+
+🔒 **Announce-before-deploy stays a hard release condition regardless.** Detection after the fact is not prevention, and the six-row canary in the RFC is exactly the shape of thing that clears a detector but not an announcement: a transliteration change would empty six legitimate non-Latin producer names, and the handshake would report the mismatch only once an exchange was already attempted.
 
 ⚠️ **The phases-2-and-3 release boundary was REVERSED** (Simon, 2026-07-25). It previously read: *public catalog creation stays disabled until phase 3's reject/merge/audit path works, because publicly-searchable user-authored content with no moderation path is not a valid steady state.* That reasoning was sound at the time and is superseded by scale, not by argument — with a handful of testers the accumulation risk is negligible, and blocking the model change behind a full curator UI costs more than it protects. **What must still hold:** entries minted before the queue exists stay `provisional` and are **recorded as awaiting review from day one**, so nothing is silently treated as reviewed. If usage grows before phase 3 lands, re-close the fence rather than letting the backlog accumulate unbounded.
 
@@ -32,7 +40,7 @@ The attributions surface is a **licence obligation** and hard-gates the fill. Th
 - **Timestamps are `@db.Timestamptz(6)`.** The schema has 35 `Timestamptz(6)` columns and zero `(3)`; consistency wins. Never order by timestamp precision — order by id or sequence.
 - **PKs are 21-char nanoids** (`VarChar(21)`), matching `wines.id`. Enumerated columns are `varchar` + `CHECK` (house convention, no PG enums).
 - **One ID for life** (RFC § Lifecycle). Nothing ever re-mints.
-- Catalog table shapes are a versioned interface — see the RFC § Catalog write ownership. Shape changes are surfaced explicitly, never made silently.
+- Catalog table shapes are a versioned interface — see the RFC § Catalog write ownership. Shape changes are surfaced explicitly, never made silently. 🔒 **"Shape" includes CHECK predicates**, by the rejection-surface test defined there; `scripts/check-catalog-contract-checks.mjs` enforces it in CI against a committed snapshot.
 
 ## Phase 1 — Domain-schema migration
 
@@ -185,7 +193,94 @@ Curator-gated, per the phase-1 permission map. Merge is pointer + lifecycle only
 
 ## Phase 4 — Integration-schema migration
 
+### 🔒 OPEN DEFECT: the fold functions have no `search_path` pin (found 2026-08-11)
+
+**Reported by the catalog-maintenance side while staging the `search_path` handover note, and reproduced here. Not fixed — the fix is a coordinated change, see below.**
+
+⚠️ **Qualifying the probe CALL is not enough when the CALLEE'S BODY is unqualified.** The handshake query below schema-qualifies both the definitions and the probe invocation, each for a measured reason. But `catalog_fold_v1`'s own body calls `f_unaccent(...)` unqualified and carries no `proconfig` pin, so *executing* it still depends on the caller's `search_path`. Measured on PG 16:
+
+```
+SET search_path = pg_catalog;
+SELECT public.catalog_fold_v1('Château Margaux');
+  → ERROR: function f_unaccent(text) does not exist
+```
+
+Two levels deep: `catalog_fold_arr_v1` calls `catalog_fold_v1` unqualified as well. ⚠️ Note `gtin_check_digit_ok` **does** carry `SET search_path = pg_catalog, public` — so on our side this is a genuine **inconsistency** inside `20260725090000`/`20260725220000`, not a missing convention: the same migration set pins one function and not the others. (The maintenance side corrected an over-generalisation here — zero of their thirteen functions pin, which is a *uniform absence* rather than an inconsistency. The distinction matters because a uniform absence is a sweep; an inconsistency is a defect with a precedent sitting next to it.)
+
+🔒 **It is worse than a probe-robustness issue on OUR side, because the fold backs five GENERATED COLUMNS.** Any write that computes one resolves `f_unaccent` at insert time, so under a foreign path **an ordinary INSERT fails**:
+
+```
+SET search_path = pg_catalog;
+INSERT INTO public.producers (id,name,status) VALUES (…);
+  → ERROR: function f_unaccent(text) does not exist
+```
+
+It fails **closed** (a loud resolution error, never a wrong fold), so this is availability, not correctness — no stored value can be wrong because of it. The maintenance side rated it robustness-only for the probe; on the write path it is an availability defect. Their exposure is real too: four of their test scripts set `PGOPTIONS` to a scratch path, and four of the nine constraints they have yet to adopt are fold-backed.
+
+**The fix and why it is NOT applied here:** `ALTER FUNCTION catalog_fold_v1(text) SET search_path = pg_catalog, public` (and the same for `catalog_fold_arr_v1`) resolves both the probe and the INSERT — verified. ✅ **Output is byte-identical for all 12 documented probes**, so no `_v2` and no column rewrite is owed on semantic grounds.
+
+🔒 **But it CHANGES THE FOLD IDENTITY HASH** — `proconfig` is part of `pg_get_functiondef`, so `catalog_fold_v1` moves `47f391f0…` → `14a1792d…`. That is exactly the "a cosmetic edit is not a semantic version change but DOES break the byte-identity contract, by design" case recorded in § 2 below. So it is a **coordinated deploy**: both sides pin identically, in the same window, and re-derive the composite identity together. Announce-before-deploy applies. Not something either side lands alone — which is why it is recorded here as open rather than fixed in the contract-shape branch.
+
+#### 🔒 READING OLDER `aff3f19f…` CITATIONS — history, not drift
+
+⚠️ **Every occurrence of `fold1:aff3f19f44ae1df7010843bf278b05cb` elsewhere in this document is ACCURATE HISTORY and must NOT be rewritten** — flagged by the maintenance side after their own re-baseline, because the next reader hits one of those lines with no context and reasonably reads it as drift.
+
+**This is an IDENTITY change, not a FOLD change.** Output was byte-identical across all 12 probes before and after the pin, so every number derived under `aff3f19f…` — the `f_unaccent` realignment, the seven adversarial checks, the maintenance side's false-merge study — remains valid. Rewriting those citations to the new value would quietly claim they were derived under a fold that did not yet exist. Annotate, never retrofit.
+
+| Identity | Valid for | Meaning |
+|---|---|---|
+| `fold1:aff3f19f44ae1df7010843bf278b05cb` | 2026-07-26 → the pin window | pre-pin; all adversarial testing below was done against it |
+| `fold1:48ee6fc91dbd9146a23585dd65b65fc4` | the pin window onward | post-pin; same fold, `proconfig` added |
+
+#### ⚠️ STATUS: OUR HALF IS COMMITTED, NOT DEPLOYED (2026-08-12)
+
+🔒 **Prod is on `fold1:aff3f19f…` (pre-pin), not `48ee6fc9…`.** The pin migration lives only on `feature/catalog-contract-shape`; `main` has not moved since `07be114` and Deplo.io deploys from `main`. **"The window is closed on both sides" described a COMMITTED migration, not a deployed one** — a distinction we blurred, and one the maintenance side separated by asking for a value measured from prod's database rather than read from the repo. Neither gate could see it: theirs checks their half by design, ours reads a CI database built from the branch.
+
+Derived from main's 37 migrations with the two branch-only ones physically removed and the count asserted at 37 first: `catalog_fold_v1` carries no `proconfig`, identity `fold1:aff3f19f44ae1df7010843bf278b05cb`. ⚠️ **Derived, not measured** — no production credentials exist in the dev environment, and closing that gap is exactly what the prod-reading replay is for. Confirm the measured value after merge + deploy.
+
+✅ **The re-key question is ANSWERED, and it was theirs to answer.** They measured what a derivation cannot: an unpinned copy of the same body against their pinned one gives **0 differences over 70,514 producer names, 641,775 staged names, every non-null region and a 17-case torture set**, and all 70,514 stored `nameFolded` match a live recompute. **The deploy needs no re-key.** That is the question a deploy actually asks.
+
+⚠️ **The reason to deploy anyway: the exposure fails OPEN, not closed.** `search_path = pg_catalog` makes the unpinned fold *error*, which is safe. But a schema earlier in the path carrying a different `f_unaccent` returned `château margaux` where the pinned fold returns `chateau margaux` — **a different matching key, no error, no trace.** That is prod's current state, not a hypothetical.
+
+#### 🔒 WINDOW PARAMETERS — agreed and independently derived, 2026-08-11
+
+**Exactly TWO statements. Do not add a third.**
+
+```sql
+ALTER FUNCTION public.catalog_fold_v1(text)      SET search_path = pg_catalog, public;
+ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
+```
+
+⚠️ **These are EXPECTED values, verified against a BRANCH-MIGRATED database — not measured from production.** Flagged by Codex (2026-08-12) as a wording distinction worth keeping, and it is the same derived-vs-measured line that produced the earlier `aff3f19f…`/`48ee6fc9…` confusion: our side derived a value from migration files and reported it as though the database had been read. Prod stays on `aff3f19f…` until `feature/catalog-contract-shape` merges and deploys; **the measured value is owed to the maintenance side after that, and nothing here substitutes for it.**
+
+| Value after the window (expected) | |
+|---|---|
+| Composite identity | `fold1:48ee6fc91dbd9146a23585dd65b65fc4` |
+| `catalog_fold_v1` | `14a1792d752a2e72d194e32c17ad3d0b` |
+| `catalog_fold_arr_v1` | `83bb9c6e13a7328be00a339d4f19462c` |
+| `f_unaccent` (unchanged) | `fa39967c99a9788fb3d28c18da2c4995` |
+| probes | `b6777f07c8fef9d1d8c67dd35cea7593` |
+
+⚠️ **DO NOT PIN `f_unaccent` — the third pin fixes nothing and moves the shared fingerprint.** This was the entire cause of a composite disagreement between the two sides (ours `48ee6fc9…` vs theirs `04dc8409…`) that took a decomposition to resolve: every component matched, the scope differed. Verified here on PG 16 under `search_path = pg_catalog` with only the two pins applied — the INSERT into `producers` succeeds and stores `chateau x`, `catalog_fold_arr_v1` returns `cabernet sauvignon,gruner`, and `public.f_unaccent('Château')` called directly returns `Chateau`. **`proconfig` applies for the DURATION OF THE CALL, so a nested unqualified `f_unaccent` inherits the pinned caller's path**; a directly-qualified call never needed one. 🔒 **On a fingerprinted artifact, gratuitous hardening is not free** — the maintenance side's formulation, and the durable rule here.
+
+✅ **Both sides derived `48ee6fc9…` independently BEFORE either applied anything**, which is a better position than confirming during the window. The disagreement that produced it is the handshake working as designed: two derivations, compared before publication, decomposed rather than averaged.
+
+✅ **The maintenance side's half is APPLIED** (2026-08-11). Live identity `fold1:48ee6fc9…`, matching the pre-derived value. Post-deploy verification on their corpus: **70,514 producer rows, zero where the stored fold differs from a freshly computed one**, `Château Margaux → chateau margaux`. Nothing stored moved, as predicted — output was byte-identical throughout. **Our half is not applied.**
+
+##### 🔒 RUNBOOK — a re-baseline is NOT one line
+
+⚠️ **Handed over by the maintenance side after theirs touched four places, two of which fail loudly.** Ours has a **wider** surface than theirs because our gate records function hashes in *two* structures, not one. Verified by applying the pin to a scratch database: the gate reports **9 problems** — 4 `PREDICATE-FN-CHANGED` (the fold-backed CHECKs) **plus 5 `GENCOL-FN-CHANGED`** (every folded generated column). Their gate would surface only the first class.
+
+Everything below belongs in **one commit** with the migration. The gate stays red until it is:
+
+1. **The migration** — exactly the two `ALTER FUNCTION` statements in § Window parameters. ⚠️ Note the qualified-`ALTER`-escapes-a-replay hazard in the RFC § implementation notes; we have no replay today, but this migration is the exact shape that would escape one.
+2. **`prisma/catalog-contract-checks.json`** — regenerate with `--write`. 🔒 **In the SAME commit**, or CI is red on a change that is deliberate. This is the one the maintenance side flagged as surprising, and it is the one that bites hardest here: 9 entries move, not 4.
+3. ⚠️ **Re-scope the 4 changed CHECKs.** `--write` resets a changed constraint to `UNCLASSIFIED` by design, so the gate stays red even after regenerating until each is re-marked `contract`. That is correct behaviour (scope is a property of the transition), but on *this* change the rejection-surface answer is unchanged — the predicate text and accepted payload set are identical; only `proconfig` moved. Re-mark them `contract`, do not treat it as a new classification question.
+4. **Nothing else.** Older `aff3f19f…` citations are history — see the section above. Do not sweep them.
+
 ### 🔒 A FOLD VERSION BUMP IS A COORDINATED DEPLOY
+
+⏭️ **The handshake in commitment 2 below was PULLED FORWARD out of this phase (2026-08-11)** — it now runs as a standalone both-sides compare job ahead of the first fill, because the fold dependency it protects was already taken by `20260725220000`. See § Phase order. This section remains the **spec**: the identity query, the six design points, and the adversarial checks are unchanged, and the handshake moves back under the import session when this phase builds one.
 
 **Raised by the catalog-maintenance side, 2026-07-26, and accepted.** `catalog_fold_v1` is a Postgres function name inside our schema — **it appears nowhere in the contract**, so nothing on a consumer's side can detect a bump. The versioned name makes divergence *diagnosable after the fact*; it does not prevent it.
 

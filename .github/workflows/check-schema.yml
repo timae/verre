@@ -23,6 +23,18 @@ jobs:
 
       - run: npm ci
 
+      # 🔒 Prisma does NOT wrap migration SQL in a transaction — measured: a file
+      # whose third statement fails leaves the first two COMMITTED. So a
+      # multi-statement migration without BEGIN/COMMIT can leave a half-applied
+      # schema, and the step below (which proves the chain applies cleanly on a
+      # fresh database) says nothing about failure atomicity.
+      #
+      # ⚠️ Runs FIRST and needs no database: it is a static read of the migration
+      # files, and a non-atomic migration should be caught before anything is
+      # applied anywhere.
+      - name: Migrations are transactional
+        run: node scripts/check-migration-transactions.mjs
+
       # Compare the committed migrations directory against schema.prisma.
       # `--exit-code` makes Prisma return 2 when they differ — meaning someone
       # changed the schema without running `prisma migrate dev` to generate
@@ -64,6 +76,21 @@ jobs:
 
       - name: Apply the full migration chain
         run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
+      # The shapes of the five catalog tables are a VERSIONED IMPORT CONTRACT,
+      # and CHECK PREDICATES ARE PART OF THAT SHAPE (RFC § Catalog write
+      # ownership). `20260725220000` changed four of them from `btrim(x) <> ''`
+      # to `catalog_fold_v1(x) <> ''` — strictly stronger, so rows that were
+      # insertable stopped being insertable — with no surface and no version
+      # bump, because neither side had tooling that would notice.
+      #
+      # 🔒 Runs BEFORE the row-writing suites: it reads schema only, so a
+      # contract drift should fail fast rather than after several minutes of
+      # integration tests.
+      - name: Catalog contract CHECK constraints
+        run: node scripts/check-catalog-contract-checks.mjs
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 

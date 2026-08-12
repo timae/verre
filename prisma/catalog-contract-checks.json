@@ -1,0 +1,324 @@
+{
+  "_readme": [
+    "COMMITTED SNAPSHOT of every CHECK constraint on the five catalog contract tables.",
+    "Generated from a real migrated database, never hand-typed. Regenerate with:",
+    "  node scripts/check-catalog-contract-checks.mjs --write   (DATABASE_URL pointed at a migrated DB)",
+    "",
+    "The gate (scripts/check-catalog-contract-checks.mjs, wired into check-schema.yml)",
+    "diffs this against pg_get_constraintdef on a freshly-migrated database and FAILS",
+    "the build on any difference. A predicate change is therefore impossible to ship",
+    "silently -- which is the whole point: 20260725220000 changed four of these from",
+    "btrim(x) <> '' to catalog_fold_v1(x) <> '' with no surface at all.",
+    "",
+    "'scope' is the rejection-surface test from docs/dev/proposals/wine-catalog.md",
+    "§ Catalog write ownership: a constraint is CONTRACT iff a payload valid under the",
+    "old predicate can be REJECTED under the new one. 'contract' constraints require a",
+    "contract version bump + an announcement to the catalog-maintenance side.",
+    "'structural' ones are internal lifecycle invariants no conforming payload can",
+    "violate; they still get diffed (drift is drift) but changing one is not a",
+    "contract event.",
+    "",
+    "'predicateDeps' records every FUNCTION a predicate calls, with a hash of its",
+    "definition, resolved via pg_depend. Without it the gate is blind one level down:",
+    "replacing gtin_check_digit_ok's body changes which barcodes are accepted while",
+    "the constraint reprints byte-identically (measured -- it passed the first version",
+    "of this gate). An ABSENT predicateDeps on a function-backed constraint FAILS the",
+    "gate rather than passing: absent means unverified, not none.",
+    "",
+    "Changing a predicate: update the migration, re-run --write, and state the reason",
+    "in the PR. The gate does not care WHY -- it only guarantees nobody is surprised.",
+    "",
+    "🔒 --write RESETS a changed constraint's scope to UNCLASSIFIED, and the gate then",
+    "fails until a human re-scopes it. That is deliberate: the rejection-surface test",
+    "is a property of a TRANSITION, not a permanent label, so a structural constraint",
+    "edited into a rejecting one must be re-judged rather than inheriting its old scope.",
+    "",
+    "'generatedColumns' is the same protection for the five folded columns, which have",
+    "the blind spot in a worse form: generation_expression records the CALL, so a fold",
+    "body swap re-keys every row written afterwards while the expression is byte-",
+    "identical -- and Postgres never recomputes STORED values, so old and new rows",
+    "disagree with no error. Measured: 'Château X' stored 'CHÂTEAU X' after a swap.",
+    "Note grapes_folded depends on catalog_fold_arr_v1, which NO check constraint",
+    "references -- it was uncovered until this block existed. Absent block = FAIL.",
+    "",
+    "🔒 'foldDependent' is DERIVED from predicateDeps, never carried. It used to be",
+    "copied forward and dropped on change, silently shedding the fold warning. A",
+    "property that is copied can desync from what it describes; a derived one cannot.",
+    "",
+    "🔒 Every claim this gate makes has a STAGED FAILURE behind it (see the RFC).",
+    "If you add a behaviour here, stage its failure first -- that method is what found",
+    "the foldDependent bug, which review and reasoning had both passed over."
+  ],
+  "contractVersion": 1,
+  "constraints": [
+    {
+      "table": "producers",
+      "name": "producers_linked_pointer_check",
+      "scope": "structural",
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "producers",
+      "name": "producers_name_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK ((catalog_fold_v1((name)::text) <> ''::text))",
+      "columnTypes": [
+        "name:character varying(255)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "table": "producers",
+      "name": "producers_no_self_link_check",
+      "scope": "structural",
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
+    },
+    {
+      "table": "producers",
+      "name": "producers_region_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK (((region IS NULL) OR (catalog_fold_v1((region)::text) <> ''::text)))",
+      "columnTypes": [
+        "region:character varying(255)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "table": "producers",
+      "name": "producers_status_check",
+      "scope": "contract",
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "product_eans",
+      "name": "product_eans_check_digit",
+      "scope": "contract",
+      "definition": "CHECK ((((ean)::text !~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'::text) OR gtin_check_digit_ok((ean)::text)))",
+      "columnTypes": [
+        "ean:character varying(14)"
+      ],
+      "predicateDeps": [
+        "gtin_check_digit_ok(text)=6a321303e4ac914e857ff59f42078d6a"
+      ]
+    },
+    {
+      "table": "product_eans",
+      "name": "product_eans_format_check",
+      "scope": "contract",
+      "definition": "CHECK (((ean)::text ~ '^([0-9]{8}|[0-9]{12}|[0-9]{13}|[0-9]{14})$'::text))",
+      "columnTypes": [
+        "ean:character varying(14)"
+      ]
+    },
+    {
+      "table": "product_eans",
+      "name": "product_eans_seen_order_check",
+      "scope": "contract",
+      "definition": "CHECK ((last_seen >= first_seen))",
+      "columnTypes": [
+        "first_seen:timestamp(6) with time zone",
+        "last_seen:timestamp(6) with time zone"
+      ]
+    },
+    {
+      "table": "product_producers",
+      "name": "product_producers_role_check",
+      "scope": "contract",
+      "definition": "CHECK (((role)::text = ANY ((ARRAY['lead'::character varying, 'collaborator'::character varying])::text[])))",
+      "columnTypes": [
+        "role:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_abv_range_check",
+      "scope": "contract",
+      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))",
+      "columnTypes": [
+        "abv:numeric(4,2)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_linked_pointer_check",
+      "scope": "structural",
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_name_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK ((catalog_fold_v1((name)::text) <> ''::text))",
+      "columnTypes": [
+        "name:character varying(255)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_no_self_link_check",
+      "scope": "structural",
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_region_not_blank_check",
+      "scope": "contract",
+      "foldDependent": true,
+      "definition": "CHECK (((region IS NULL) OR (catalog_fold_v1((region)::text) <> ''::text)))",
+      "columnTypes": [
+        "region:character varying(255)"
+      ],
+      "predicateDeps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_scope_check",
+      "scope": "contract",
+      "definition": "CHECK (((scope)::text = ANY ((ARRAY['shared'::character varying, 'owned'::character varying])::text[])))",
+      "columnTypes": [
+        "scope:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_status_check",
+      "scope": "contract",
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_abv_range_check",
+      "scope": "contract",
+      "definition": "CHECK (((abv IS NULL) OR ((abv >= (0)::numeric) AND (abv <= (25)::numeric))))",
+      "columnTypes": [
+        "abv:numeric(4,2)"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_grapes_override_check",
+      "scope": "contract",
+      "definition": "CHECK ((grapes_override OR (cardinality(grapes) = 0)))",
+      "columnTypes": [
+        "grapes:text[]",
+        "grapes_override:boolean"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_linked_pointer_check",
+      "scope": "structural",
+      "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
+      "columnTypes": [
+        "links_to:character varying(21)",
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_no_self_link_check",
+      "scope": "structural",
+      "definition": "CHECK (((links_to)::text IS DISTINCT FROM (id)::text))",
+      "columnTypes": [
+        "id:character varying(21)",
+        "links_to:character varying(21)"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_status_check",
+      "scope": "contract",
+      "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
+      "columnTypes": [
+        "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_vintages",
+      "name": "wine_vintages_year_range_check",
+      "scope": "contract",
+      "definition": "CHECK (((year IS NULL) OR ((year >= 1800) AND (year <= 2200))))",
+      "columnTypes": [
+        "year:integer"
+      ]
+    }
+  ],
+  "generatedColumns": [
+    {
+      "column": "producers.name_folded",
+      "expression": "catalog_fold_v1((name)::text)",
+      "deps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "column": "producers.region_folded",
+      "expression": "catalog_fold_v1((region)::text)",
+      "deps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "column": "wine_products.grapes_folded",
+      "expression": "catalog_fold_arr_v1(grapes)",
+      "deps": [
+        "catalog_fold_arr_v1(text[])=83bb9c6e13a7328be00a339d4f19462c"
+      ]
+    },
+    {
+      "column": "wine_products.name_folded",
+      "expression": "catalog_fold_v1((name)::text)",
+      "deps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    },
+    {
+      "column": "wine_products.region_folded",
+      "expression": "catalog_fold_v1((region)::text)",
+      "deps": [
+        "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
+      ]
+    }
+  ],
+  "styleVocabulary": [
+    "wine/nonalc",
+    "wine/red",
+    "wine/rose",
+    "wine/spark",
+    "wine/white"
+  ]
+}

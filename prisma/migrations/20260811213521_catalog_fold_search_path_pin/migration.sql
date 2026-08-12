@@ -1,0 +1,103 @@
+-- Pin `search_path` on the two fold entry points.
+--
+-- 🔒 THIS IS OUR HALF OF A COORDINATED DEPLOY. The catalog-maintenance side
+-- applied the identical two statements on 2026-08-11 and their live identity is
+-- `fold1:48ee6fc91dbd9146a23585dd65b65fc4`. Both sides derived that value
+-- independently BEFORE either applied anything. Full rationale, window
+-- parameters and the re-baseline runbook:
+-- docs/dev/proposals/wine-catalog-implementation.md § OPEN DEFECT / § WINDOW
+-- PARAMETERS.
+--
+-- ── The defect ──────────────────────────────────────────────────────────────
+--
+-- `catalog_fold_v1`'s body calls `f_unaccent(...)` UNQUALIFIED and carried no
+-- `proconfig`, and `catalog_fold_arr_v1` calls `catalog_fold_v1` the same way.
+-- So executing either depended on the CALLER's `search_path`. Measured on PG 16:
+--
+--   SET search_path = pg_catalog;
+--   SELECT public.catalog_fold_v1('Château Margaux');
+--     → ERROR: function f_unaccent(text) does not exist
+--
+-- ⚠️ Qualifying the CALL is not enough when the CALLEE'S BODY is not qualified.
+-- Reported by the catalog-maintenance side while staging our own `search_path`
+-- handover note — it came back at us in a different object.
+--
+-- 🔒 ON OUR SIDE THIS REACHES THE WRITE PATH, which is why it is worth a
+-- migration rather than a note. The fold backs FIVE generated columns, so an
+-- ordinary INSERT computes it at write time:
+--
+--   SET search_path = pg_catalog;
+--   INSERT INTO public.producers (id,name,status) VALUES (…);
+--     → ERROR: function f_unaccent(text) does not exist
+--
+-- It fails CLOSED — a loud resolution error, never a wrong fold — so no stored
+-- value can ever have been wrong because of it. Availability, not correctness.
+--
+-- ── Why exactly TWO statements ──────────────────────────────────────────────
+--
+-- ⚠️ DO NOT ADD A THIRD. Pinning `f_unaccent` as well fixes NOTHING and moves a
+-- SHARED FINGERPRINT: `proconfig` is part of `pg_get_functiondef`, so a third
+-- pin changes the composite identity both sides compare. That scope difference
+-- was the entire cause of a composite disagreement between the two sides
+-- (`48ee6fc9…` vs `04dc8409…`) which took a component-by-component
+-- decomposition to resolve — every component matched, only the scope differed.
+--
+-- Two is SUFFICIENT, measured rather than assumed. `proconfig` applies for the
+-- DURATION OF THE CALL, so a nested unqualified `f_unaccent` inherits the
+-- pinned caller's path; a directly-qualified call never needed one. Verified on
+-- PG 16 under `search_path = pg_catalog` with only these two applied:
+--   INSERT INTO producers                  → succeeds, stores 'chateau x'
+--   catalog_fold_arr_v1(ARRAY['Grüner',…]) → 'gruner', …
+--   public.f_unaccent('Château')           → 'Chateau'
+--
+-- 🔒 On a fingerprinted artifact, gratuitous hardening is not free.
+--
+-- ── Identity: this is an IDENTITY change, NOT a fold change ──────────────────
+--
+-- ✅ OUTPUT IS BYTE-IDENTICAL across all 12 documented probes, before and after.
+-- So NO `_v2` and NO column rewrite is owed: nothing stored moves, and stored
+-- folds cannot disagree with freshly-written ones. The maintenance side
+-- confirmed this on their live corpus after applying — 70,514 producer rows,
+-- zero where the stored fold differs from a fresh one.
+--
+-- What DOES move is the fingerprint, by design:
+--   catalog_fold_v1      47f391f0bd06a3dd119c05e0a8de1f53 → 14a1792d752a2e72d194e32c17ad3d0b
+--   catalog_fold_arr_v1  8a5ee4329ca947b05def9d1bf6270aab → 83bb9c6e13a7328be00a339d4f19462c
+--   f_unaccent           fa39967c99a9788fb3d28c18da2c4995 (UNCHANGED)
+--   composite            fold1:aff3f19f…                  → fold1:48ee6fc91dbd9146a23585dd65b65fc4
+--
+-- ⚠️ Older documents citing `fold1:aff3f19f…` are ACCURATE HISTORY, not drift —
+-- the adversarial checks and the `f_unaccent` realignment were genuinely done
+-- under it and remain valid, because the output never changed. Never retrofit
+-- them; see § READING OLDER `aff3f19f…` CITATIONS.
+--
+-- ── Not idempotent-by-guard, deliberately ───────────────────────────────────
+--
+-- `ALTER FUNCTION … SET search_path` is naturally idempotent (re-applying sets
+-- the same value), and it hard-errors if the function is absent — which is the
+-- correct outcome, matching the handshake's "missing is the same failure as
+-- mismatched" rule. No IF EXISTS.
+--
+-- ⚠️ NOTE FOR A FUTURE REPLAY. This file names `public.` explicitly, which is
+-- correct for a real apply and FATAL for a scratch-schema replay — a
+-- `public.`-qualified ALTER executes against the REAL functions rather than the
+-- replayed copies. The maintenance side hit exactly this with their re-ingest
+-- test (caught in the same command, reverted, nothing corrupted). We have no
+-- replay today; when one is built, this migration is the shape that escapes it.
+-- See the RFC § implementation notes.
+
+-- 🔒 TRANSACTIONAL. Prisma does NOT wrap migration SQL automatically — measured:
+-- a file whose third statement fails leaves the first two COMMITTED. Same
+-- contract as 20260725140000 / 160000 / 220000, and its absence here was a
+-- review finding (Codex, 2026-08-12): these two functions are MUTUALLY
+-- DEPENDENT and jointly fingerprinted, so a failure between them would leave
+-- half a fold configuration — `catalog_fold_v1` pinned, `catalog_fold_arr_v1`
+-- not — which is a composite identity matching NEITHER side and no error to
+-- say so. On failure use `prisma migrate resolve --rolled-back`, which is
+-- truthful ONLY because this file is transactional.
+BEGIN;
+
+ALTER FUNCTION public.catalog_fold_v1(text)       SET search_path = pg_catalog, public;
+ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
+
+COMMIT;
