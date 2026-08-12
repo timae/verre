@@ -189,11 +189,20 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   The durable statement: a style-based export filter does not keep grappa out of a wine catalogue, and neither did our category column. Three constraints now cover three different mis-categorisations, and none subsumes the others.
 
-  ✅ **SPLIT ONTO ITS OWN BRANCH — `feature/catalog-category-fk` (2026-08-12).** The fix is built and verified but is **NOT** on `feature/catalog-contract-shape`, so merging that branch cannot deploy it by accident. Codex raised the coupling as a High finding twice: documentation described the ordering, and `prisma migrate deploy` ignored the documentation. **The executable artifact now matches the constraint** — the safe fold pin ships alone; the category FK waits.
+  ✅ **UNBLOCKED AND SHIPPING (2026-08-12).** The maintenance side's export filter is in place and gated in CI, so the precondition this migration waited on is satisfied.
 
-  ⚠️ **The hole is therefore still open in production and knowingly so.** `wine_products.category` and `wines.category` accept any value when `style` is NULL. That is the accepted state until the maintenance side's export filter lands; the `CategoryStyle` and `Wine` models in `schema.prisma` say so where someone would look.
+  🔒 **The filter has the three properties this FK needs, and they match the FK's own shape:**
+  1. **Pair-grain matching** — allowed `(category, style)` pairs, not independent category and style sets, so a style valid under one category does not become exportable under another. A NULL style is governed by the category alone, mirroring our plain `category` FK exactly.
+  2. **Fails closed** — a missing or unrecognised category is excluded, never passed through.
+  3. **Pinned exclusion counts in CI**, so the filter widening (or their data shifting under it) fails their build rather than silently changing what we receive. A second gate fails if their allowed pair set ever grows past our vocabulary — which keeps future style releases **ours-then-theirs**: our `category_styles` rows land first, then their filter flips, then they re-pin.
 
-  🔒 **DEPLOY ORDER — why it could not ship with the fold pin (raised 2026-08-12).** The maintenance side holds **21,671 rows whose category is outside prod's vocabulary**, plus the 6,455 undefined-style rows below. Today those are *pinned counts* in their gate. **The day this deploys they become rejections at the import boundary** — and a batch is all-or-nothing, so one row fails all of it. **Their export filter must exclude them first** (their step 9/10, not yet built).
+  The exclusion **cascades**: an excluded product takes its vintages and EANs with it, so no orphaned child rows can reach our import.
+
+  ⚠️ **Accuracy caveat, theirs: this is the boundary PREDICATE, gated — no export run exists yet.** Nothing can reach our import until their exporter is built, and it is required to consume this predicate. So the FK is safe to deploy on the strength of the predicate + its gates, not because data has already flowed through it.
+
+  ⚠️ **Split history, kept because it is the reason this shipped safely.** The FK was held on `feature/catalog-category-fk` while the fold pin shipped alone (`72647f0`). Codex raised the coupling as a High finding twice — documentation described the ordering, and `prisma migrate deploy` ignored the documentation — and the split made the executable artifact match the constraint. ⚠️ **Merging that held branch directly would have REVERTED the measured-identity record**, since `main` had moved four commits past its branch point; the migration was re-applied onto current `main` instead. A stale branch reverts by merging, silently, and git reports no conflict.
+
+  🔒 **DEPLOY ORDER — why it could not ship with the fold pin.** The maintenance side holds **21,671 rows whose category is outside prod's vocabulary**, plus the 6,455 undefined-style rows below. Until the filter existed those were *pinned counts* in their gate; the day this deploys they would have become rejections at the import boundary — and a batch is all-or-nothing, so one row fails all of it.
 
   ⚠️ **The other migration on the same branch — the fold `search_path` pin — IS safe alone and should not be held behind this one.** Two migrations, one branch, different deployment risk; merging as a unit is a decision to deploy both. The constraint is recorded in the migration's own header, not only here.
 
