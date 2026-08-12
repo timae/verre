@@ -189,6 +189,12 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   The durable statement: a style-based export filter does not keep grappa out of a wine catalogue, and neither did our category column. Three constraints now cover three different mis-categorisations, and none subsumes the others.
 
+  🔒 **DEPLOY ORDER — this migration is NOT safe to ship alone (raised 2026-08-12).** The maintenance side holds **21,671 rows whose category is outside prod's vocabulary**, plus the 6,455 undefined-style rows below. Today those are *pinned counts* in their gate. **The day this deploys they become rejections at the import boundary** — and a batch is all-or-nothing, so one row fails all of it. **Their export filter must exclude them first** (their step 9/10, not yet built).
+
+  ⚠️ **The other migration on the same branch — the fold `search_path` pin — IS safe alone and should not be held behind this one.** Two migrations, one branch, different deployment risk; merging as a unit is a decision to deploy both. The constraint is recorded in the migration's own header, not only here.
+
+  ⚠️ **Note the ordering is the OPPOSITE of the dessert/fortified sequencing below**, which runs ours-then-theirs. There the precondition sits on our side; here it sits on theirs. **Check which side holds the precondition before assuming an order** — the two cases look symmetric and are not.
+
   ✅ **FIXED** — `20260811215655_catalog_category_constraint` (Simon's call, 2026-08-11). A new **`categories`** table is the FK target for `wines.category` and `wine_products.category`, seeded from the categories present in `category_styles`.
 
   ⚠️ **A `CHECK (category IN (SELECT …))` was the obvious fix and is NOT LEGAL** — Postgres forbids a subquery in a CHECK. The first sketch was written that way and would not have deployed. The two working shapes are a trigger or a referenced table; the table wins because it keeps "add beer/spirits later" an **INSERT rather than a migration** — the property that made this a blocker in the first place — and because a declarative FK cannot be defeated by a `DISABLE TRIGGER`. `category_styles` cannot be the target itself: its PK is the *pair*, so there is no row to reference for a category alone.

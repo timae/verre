@@ -1,5 +1,27 @@
 -- Constrain `category` on `wines` and `wine_products` to a declared set.
 --
+-- 🔒 DEPLOY ORDER: THIS MIGRATION IS NOT SAFE TO SHIP ALONE. Raised by the
+-- catalog-maintenance side 2026-08-12 and it governs when this may deploy.
+--
+-- They hold **21,671 rows whose category is outside prod's vocabulary**, plus
+-- **6,455 carrying styles we do not define** (2,409 dessert, 4,046 fortified).
+-- Today those are *pinned counts* in their gate — a tripwire. The day this
+-- migration deploys they become **rejections at the import boundary**, and an
+-- import batch is all-or-nothing, so one row fails the whole batch.
+--
+-- ⚠️ REQUIRED BEFORE THIS DEPLOYS: their export filter must exclude those rows.
+-- That is their step 9/10 and does not exist yet.
+--
+-- ✅ The OTHER migration on this branch (`20260811213521`, the fold search_path
+-- pin) IS safe to ship alone and should not be held behind this one — the two
+-- have different deployment risk despite sharing a branch. If this branch merges
+-- as one unit, that is a decision to deploy both, and this one is the gate.
+--
+-- (The reverse ordering — their filter first, then this — is the safe one and
+-- is the same shape as the dessert/fortified sequencing in the RFC, which runs
+-- ours-then-theirs because there the precondition is on our side. Here it is on
+-- theirs. Check which side holds the precondition before assuming an order.)
+--
 -- 🔒 THE DEFECT. `category` was constrained ONLY by the composite FK
 -- `(category, style)` → `category_styles`. That FK is MATCH SIMPLE, so it skips
 -- the check ENTIRELY whenever either column is NULL — and `style` is nullable by

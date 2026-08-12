@@ -232,6 +232,16 @@ It fails **closed** (a loud resolution error, never a wrong fold), so this is av
 | `fold1:aff3f19f44ae1df7010843bf278b05cb` | 2026-07-26 → the pin window | pre-pin; all adversarial testing below was done against it |
 | `fold1:48ee6fc91dbd9146a23585dd65b65fc4` | the pin window onward | post-pin; same fold, `proconfig` added |
 
+#### ⚠️ STATUS: OUR HALF IS COMMITTED, NOT DEPLOYED (2026-08-12)
+
+🔒 **Prod is on `fold1:aff3f19f…` (pre-pin), not `48ee6fc9…`.** The pin migration lives only on `feature/catalog-contract-shape`; `main` has not moved since `07be114` and Deplo.io deploys from `main`. **"The window is closed on both sides" described a COMMITTED migration, not a deployed one** — a distinction we blurred, and one the maintenance side separated by asking for a value measured from prod's database rather than read from the repo. Neither gate could see it: theirs checks their half by design, ours reads a CI database built from the branch.
+
+Derived from main's 37 migrations with the two branch-only ones physically removed and the count asserted at 37 first: `catalog_fold_v1` carries no `proconfig`, identity `fold1:aff3f19f44ae1df7010843bf278b05cb`. ⚠️ **Derived, not measured** — no production credentials exist in the dev environment, and closing that gap is exactly what the prod-reading replay is for. Confirm the measured value after merge + deploy.
+
+✅ **The re-key question is ANSWERED, and it was theirs to answer.** They measured what a derivation cannot: an unpinned copy of the same body against their pinned one gives **0 differences over 70,514 producer names, 641,775 staged names, every non-null region and a 17-case torture set**, and all 70,514 stored `nameFolded` match a live recompute. **The deploy needs no re-key.** That is the question a deploy actually asks.
+
+⚠️ **The reason to deploy anyway: the exposure fails OPEN, not closed.** `search_path = pg_catalog` makes the unpinned fold *error*, which is safe. But a schema earlier in the path carrying a different `f_unaccent` returned `château margaux` where the pinned fold returns `chateau margaux` — **a different matching key, no error, no trace.** That is prod's current state, not a hypothetical.
+
 #### 🔒 WINDOW PARAMETERS — agreed and independently derived, 2026-08-11
 
 **Exactly TWO statements. Do not add a third.**
