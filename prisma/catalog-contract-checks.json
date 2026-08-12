@@ -313,5 +313,12 @@
         "catalog_fold_v1(text)=14a1792d752a2e72d194e32c17ad3d0b"
       ]
     }
+  ],
+  "styleVocabulary": [
+    "wine/nonalc",
+    "wine/red",
+    "wine/rose",
+    "wine/spark",
+    "wine/white"
   ]
 }

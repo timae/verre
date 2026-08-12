@@ -89,6 +89,31 @@ const CANDIDATE_QUERY = `
   ORDER BY 1
 `
 
+// 🔒 OUR HALF OF A CROSS-SIDE PRECONDITION, and it was guarded by a COMMENT.
+//
+// The maintenance side holds 6,455 rows carrying styles we do not define (2,409
+// `dessert`, 4,046 `fortified`), excluded from their export *until this
+// vocabulary grows*. The ordering is OURS-THEN-THEIRS: this set grows first,
+// then they release. Their tripwire fires when it sees the growth — i.e. AFTER
+// we have shipped it. Nothing on our side fired BEFORE.
+//
+// ⚠️ MEASURED (2026-08-12): inserting `wine/dessert` passed the contract gate
+// (exit 0) and the full schema-invariant suite (133/133). The only guard was
+// prose on the `CategoryStyle` model.
+//
+// ⚠️ THE MIRROR OF WHAT THEY FOUND THE SAME DAY: they were watching the
+// precondition WE hold and had nothing on the one THEY hold. We had the same
+// blind spot pointing the other way. **Each side instrumented the other's
+// half.** When a precondition is yours, being able to see the other side's
+// tripwire is not coverage.
+//
+// This asserts the vocabulary matches what was last approved — the same
+// pin-shape as the constraint snapshot, and it fails on ANY change, including a
+// removal or a relabel, because all of those are cross-side events too.
+const STYLE_VOCAB_QUERY = `
+  SELECT category, style FROM category_styles ORDER BY category, style
+`
+
 const write = process.argv.includes('--write')
 
 // 🔒 Read the constraints THE SAME WAY the snapshot was generated:
@@ -268,7 +293,7 @@ function isFoldDependent(depStrings) {
 
 async function main() {
   const prisma = new PrismaClient()
-  let live, deps, genCols, colTypes, candidates
+  let live, deps, genCols, colTypes, candidates, styleVocab
   try {
     // 🔒 PIN THE SEARCH_PATH BEFORE READING ANYTHING. Two distinct hazards, and
     // the second was only found by staging the first.
@@ -300,6 +325,8 @@ async function main() {
     colTypes = await prisma.$queryRawUnsafe(COLTYPE_QUERY, TABLES)
     candidates = await prisma.$queryRawUnsafe(
       CANDIDATE_QUERY, [...TABLES, 'categories'], [...TABLES, ...KNOWN_NON_CATALOG])
+    styleVocab = (await prisma.$queryRawUnsafe(STYLE_VOCAB_QUERY))
+      .map(r => `${r.category}/${r.style}`)
   } finally {
     await prisma.$disconnect()
   }
@@ -364,6 +391,7 @@ async function main() {
     // should have."
     const wasContract = reclassify.filter(k => prior.get(k)?.scope === 'contract')
     snapshot.generatedColumns = genCols
+    snapshot.styleVocabulary = styleVocab
     writeFileSync(SNAPSHOT, `${JSON.stringify(snapshot, null, 2)}\n`)
     console.log(`Wrote ${snapshot.constraints.length} constraints to prisma/catalog-contract-checks.json`)
     const fresh = snapshot.constraints.filter(c => c.scope === 'UNCLASSIFIED')
@@ -453,6 +481,22 @@ async function main() {
     }
   }
 
+  // 🔒 Our half of the cross-side precondition — see STYLE_VOCAB_QUERY.
+  // Absent is a FAILURE, not a pass: a snapshot with no record leaves the
+  // vocabulary unverified, which is the state this check exists to end.
+  if (snapshot.styleVocabulary === undefined) {
+    problems.push({
+      kind: 'STYLE-VOCAB-UNRECORDED', k: '(category_styles)',
+      live: `${styleVocab.length} pair(s) present, none recorded`,
+    })
+  } else if (JSON.stringify(snapshot.styleVocabulary) !== JSON.stringify(styleVocab)) {
+    problems.push({
+      kind: 'STYLE-VOCABULARY-CHANGED', k: '(category_styles)',
+      was: snapshot.styleVocabulary.join(', '),
+      live: styleVocab.join(', '),
+    })
+  }
+
   // 🔒 Did a table join the catalog spine without joining the watch list?
   // Asked of the database rather than trusted to TABLES — see the note there.
   // A new table is reported, never silently skipped; resolving it is a
@@ -527,6 +571,16 @@ async function main() {
     console.error('')
   }
 
+  if (problems.some(p => p.kind === 'STYLE-VOCABULARY-CHANGED')) {
+    console.error('  🔒 THE STYLE VOCABULARY CHANGED — THIS IS A CROSS-SIDE EVENT.')
+    console.error('     The catalog-maintenance side holds 6,455 rows carrying styles we do')
+    console.error('     not define (2,409 dessert, 4,046 fortified), excluded from their')
+    console.error('     export UNTIL this set grows. Growing it releases them.')
+    console.error('     ⚠️ ORDERING IS OURS-THEN-THEIRS: this ships first, then their filter.')
+    console.error('     ANNOUNCE before deploying, then regenerate with --write.')
+    console.error('     (Their tripwire fires when it SEES this — i.e. after we ship it.')
+    console.error('      This one fires before, which is the half we were missing.)\n')
+  }
   if (problems.some(p => p.kind === 'UNWATCHED-CATALOG-TABLE')) {
     console.error('  🔒 A TABLE REFERENCES THE CATALOG SPINE BUT IS NOT WATCHED.')
     console.error('     Its constraints are contract surface by the same argument as the')
