@@ -52,7 +52,34 @@ function stripped(sql) {
 }
 
 function topLevelStatements(sql) {
-  return stripped(sql).split(';').map(s => s.trim()).filter(Boolean).length
+  return stripped(sql).split(';').map(s => s.trim()).filter(Boolean)
+}
+
+// 🔒 THE WRAPPER MUST BE POSITIONAL, NOT MERELY PRESENT.
+//
+// ⚠️ The first version of this gate tested `/^\s*BEGIN\s*;/im` — multiline, so
+// it proved only that the token appeared on SOME line. Measured (Codex review,
+// 2026-08-12): a migration running `ALTER TABLE … ;` BEFORE `BEGIN` and another
+// AFTER `COMMIT` passed as "transactional", with both stray statements
+// executing unprotected. That is the gate's own stated contract — "open with
+// BEGIN and end with COMMIT" — failing on its own terms.
+//
+// A gate written while thinking specifically about atomicity, and it verified
+// less than it claimed. The class does not stop applying to the code you write
+// while thinking about the class.
+//
+// So: BEGIN must be the FIRST top-level statement, COMMIT the LAST, and there
+// must be exactly one of each — anything else leaves statements outside the
+// transaction or nests wrappers ambiguously.
+function wrapperShape(statements) {
+  const begins = statements.filter(s => /^BEGIN$/i.test(s)).length
+  const commits = statements.filter(s => /^COMMIT$/i.test(s)).length
+  return {
+    begins,
+    commits,
+    firstIsBegin: /^BEGIN$/i.test(statements[0] ?? ''),
+    lastIsCommit: /^COMMIT$/i.test(statements[statements.length - 1] ?? ''),
+  }
 }
 
 // 🔒 GRANDFATHERED: migrations applied BEFORE this gate existed.
@@ -107,26 +134,64 @@ let checked = 0
 let exempt = 0
 let grandfathered = 0
 
+// 🔒 A GRANDFATHER ENTRY IS ONLY VALID IF THE MIGRATION PREDATES THE GATE.
+// ⚠️ The list being "closed" was a COMMENT, and a comment cannot stop an append
+// — measured: adding a new name to the set made the gate pass. Enforced now by
+// a cutoff: every grandfathered migration was applied before this gate existed,
+// so a name that sorts at or after the cutoff cannot legitimately be on the
+// list no matter who typed it. The prefix is the Prisma timestamp, so a string
+// compare is a date compare.
+const GRANDFATHER_CUTOFF = '20260726'
+
 for (const name of dirs) {
   let sql
   try {
     sql = readFileSync(join(MIGRATIONS, name, 'migration.sql'), 'utf8')
   } catch {
-    continue
-  }
-  const body = stripped(sql)
-  if (/CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY/i.test(body)) {
-    exempt++
+    // ⚠️ ABSENCE IS A FAILURE, NOT AN EXEMPTION. The directory listing is the
+    // authoritative input, so a directory whose SQL cannot be read means this
+    // gate did not inspect a migration — indistinguishable, on a green run,
+    // from having inspected it and found it correct.
+    problems.push({ name, kind: 'UNREADABLE' })
     continue
   }
   const statements = topLevelStatements(sql)
-  if (statements <= 1) { exempt++; continue }
-  if (GRANDFATHERED.has(name)) { grandfathered++; continue }
+
+  // A single statement is atomic by definition; a wrapper adds nothing.
+  if (statements.length <= 1) { exempt++; continue }
+
+  if (GRANDFATHERED.has(name)) {
+    if (name >= GRANDFATHER_CUTOFF) {
+      problems.push({ name, kind: 'ILLEGITIMATE-GRANDFATHER' })
+      continue
+    }
+    grandfathered++
+    continue
+  }
+
   checked++
-  const hasBegin = /^\s*BEGIN\s*;/im.test(body)
-  const hasCommit = /^\s*COMMIT\s*;/im.test(body)
-  if (!hasBegin || !hasCommit) {
-    problems.push({ name, statements, hasBegin, hasCommit })
+
+  // 🔒 CONCURRENTLY EXEMPTS ONLY ITS OWN STATEMENTS, NOT THE FILE.
+  // ⚠️ Measured: one `CREATE INDEX CONCURRENTLY` previously exempted a file that
+  // also ran an unwrapped `ALTER TABLE` and `DROP TABLE`. The constraint is that
+  // a concurrent build cannot run INSIDE a transaction — which makes such a file
+  // unable to be atomic at all, so it must contain nothing else that needs
+  // protection.
+  const concurrent = statements.filter(s => /CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY/i.test(s))
+  if (concurrent.length > 0) {
+    const others = statements.filter(s => !/CREATE\s+(UNIQUE\s+)?INDEX\s+CONCURRENTLY/i.test(s))
+    if (others.length > 0) {
+      problems.push({ name, kind: 'CONCURRENT-MIXED', extra: others.length })
+    } else {
+      exempt++
+      checked--
+    }
+    continue
+  }
+
+  const shape = wrapperShape(statements)
+  if (!shape.firstIsBegin || !shape.lastIsCommit || shape.begins !== 1 || shape.commits !== 1) {
+    problems.push({ name, kind: 'NOT-WRAPPED', statements: statements.length, shape })
   }
 }
 
@@ -135,10 +200,31 @@ if (problems.length === 0) {
   process.exit(0)
 }
 
-console.error('FAIL: multi-statement migrations without an explicit transaction.\n')
+console.error('FAIL: migration atomicity.\n')
 for (const p of problems) {
-  console.error(`  ${p.name}`)
-  console.error(`     ${p.statements} top-level statements, BEGIN=${p.hasBegin}, COMMIT=${p.hasCommit}`)
+  console.error(`  ${p.kind}  ${p.name}`)
+  if (p.kind === 'NOT-WRAPPED') {
+    const s = p.shape
+    console.error(`     ${p.statements} top-level statements; first=BEGIN:${s.firstIsBegin} last=COMMIT:${s.lastIsCommit} (${s.begins} BEGIN, ${s.commits} COMMIT)`)
+    console.error('     BEGIN must be the FIRST statement and COMMIT the LAST — a token')
+    console.error('     somewhere in the file leaves statements outside the transaction.')
+  }
+  if (p.kind === 'UNREADABLE') {
+    console.error('     migration.sql could not be read. A directory the gate cannot inspect')
+    console.error('     is a failure, not an exemption — a green run would be a lie.')
+  }
+  if (p.kind === 'CONCURRENT-MIXED') {
+    console.error(`     CREATE INDEX CONCURRENTLY plus ${p.extra} other statement(s).`)
+    console.error('     A concurrent build cannot run inside a transaction, so this file')
+    console.error('     cannot be atomic — split it: the concurrent index alone, and the')
+    console.error('     rest in its own wrapped migration.')
+  }
+  if (p.kind === 'ILLEGITIMATE-GRANDFATHER') {
+    console.error(`     on the grandfather list but sorts at/after the ${GRANDFATHER_CUTOFF} cutoff.`)
+    console.error('     The list covers migrations applied BEFORE this gate existed; a newer')
+    console.error('     one has not been applied anywhere, so wrap the file instead.')
+  }
+  console.error('')
 }
 console.error('')
 console.error('  🔒 Prisma does NOT wrap migration SQL. A failure partway through commits')
