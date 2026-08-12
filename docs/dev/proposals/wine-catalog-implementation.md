@@ -251,7 +251,9 @@ ALTER FUNCTION public.catalog_fold_v1(text)      SET search_path = pg_catalog, p
 ALTER FUNCTION public.catalog_fold_arr_v1(text[]) SET search_path = pg_catalog, public;
 ```
 
-| Value after the window | |
+⚠️ **These are EXPECTED values, verified against a BRANCH-MIGRATED database — not measured from production.** Flagged by Codex (2026-08-12) as a wording distinction worth keeping, and it is the same derived-vs-measured line that produced the earlier `aff3f19f…`/`48ee6fc9…` confusion: our side derived a value from migration files and reported it as though the database had been read. Prod stays on `aff3f19f…` until `feature/catalog-contract-shape` merges and deploys; **the measured value is owed to the maintenance side after that, and nothing here substitutes for it.**
+
+| Value after the window (expected) | |
 |---|---|
 | Composite identity | `fold1:48ee6fc91dbd9146a23585dd65b65fc4` |
 | `catalog_fold_v1` | `14a1792d752a2e72d194e32c17ad3d0b` |
