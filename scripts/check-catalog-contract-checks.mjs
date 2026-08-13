@@ -21,10 +21,26 @@
 // accepted-divergence list) before seeing ours, which is about as good as
 // evidence gets that it is the right shape.
 //
-// WHAT IT DOES. Reads every CHECK on the five contract tables from a REAL
-// migrated database and diffs it byte-for-byte against the committed snapshot
-// at prisma/catalog-contract-checks.json. Any added, removed, or altered
-// predicate fails the build.
+// WHAT IT DOES. Reads a REAL migrated database and diffs it byte-for-byte
+// against the committed snapshot at prisma/catalog-contract-checks.json. Any
+// addition, removal or alteration fails the build. Six things are compared,
+// each added because something got through the previous set:
+//
+//   1. CHECK constraints on the five contract tables — the original purpose.
+//   2. The FUNCTION BODIES those predicates call, hashed — a predicate's
+//      meaning is not in its text when it calls a helper.
+//   3. The COLUMN TYPES they constrain — narrowing a type can make a bound
+//      unreachable without touching the predicate.
+//   4. GENERATED COLUMNS and their fold body hashes — same blind spot, worse:
+//      Postgres never recomputes STORED values, so old and new rows disagree.
+//   5. FOREIGN KEYS, including `wines` — a removed FK can reopen a hole another
+//      constraint appears to cover.
+//   6. The STYLE VOCABULARY — a cross-side precondition, not a local seed.
+//
+// ⚠️ `contractVersion` in the snapshot is NOT compared: it is workflow metadata,
+// surfaced only by `--write`. The snapshot's own `_readme` once listed it as a
+// compared section, which was a miscount of exactly the kind this gate exists to
+// catch in the schema (Codex, 2026-08-13).
 //
 // 🔒 IT DIFFS STRUCTURAL CONSTRAINTS TOO. The rejection-surface test decides
 // whether a change is a CONTRACT EVENT (announce + version bump); it does not
@@ -231,6 +247,43 @@ const GENCOL_QUERY = `
 //
 // Resolved via `conkey`, so it covers varchar narrowing too (a
 // `varchar(255)` → `varchar(10)` silently shrinks the accepted set).
+// 🔒 FOREIGN KEYS ARE CONTRACT SURFACE TOO, and their ABSENCE is the failure.
+//
+// ⚠️ Found by Codex (2026-08-13) and reproduced: dropping
+// `wines_category_fkey` and `wine_products_category_fkey` reopened the MATCH
+// SIMPLE hole — `category='spirit', style=NULL` inserted again — while this
+// gate exited 0 and the schema suite reported 133/133. The snapshot tracked
+// CHECKs, generated columns and the style vocabulary; nothing watched FKs. The
+// migration's measurements lived in PROSE, not in an executable invariant.
+//
+// A behavioural test now covers the same ground (`catalog-schema-integration`
+// § 20), and the two are complementary rather than redundant: the test proves
+// the CONSEQUENCE still holds, this proves the CONSTRAINT still exists. A
+// future change could preserve the behaviour by other means and still be a
+// contract event worth surfacing — and this catches a removal directly rather
+// than via a symptom.
+//
+// `pg_get_constraintdef` carries the referenced table AND the delete action, so
+// this also pins the Cascade-vs-NoAction split the RFC treats as load-bearing:
+// eight NoAction/Restrict FKs and exactly one deliberate Cascade
+// (`product_producers.product_id`). Flipping one silently changes what a delete
+// destroys.
+//
+// ⚠️ `wines` IS INCLUDED HERE despite not being a catalog table. It is excluded
+// from the CHECK queries because its rules live in the integration suite — but
+// `wines_category_fkey` is one of the two FKs this finding is about, and
+// scoping this query to TABLES alone would leave it unwatched, which is the
+// exact gap being closed.
+const FK_QUERY = `
+  SELECT c.conrelid::regclass::text     AS "table",
+         c.conname                      AS "name",
+         pg_get_constraintdef(c.oid)    AS "definition"
+  FROM pg_constraint c
+  WHERE c.conrelid::regclass::text = ANY($1::text[])
+    AND c.contype = 'f'
+  ORDER BY 1, 2
+`
+
 const COLTYPE_QUERY = `
   SELECT c.conrelid::regclass::text            AS "table",
          c.conname                             AS "name",
@@ -293,7 +346,7 @@ function isFoldDependent(depStrings) {
 
 async function main() {
   const prisma = new PrismaClient()
-  let live, deps, genCols, colTypes, candidates, styleVocab
+  let live, deps, genCols, colTypes, candidates, styleVocab, fks
   try {
     // 🔒 PIN THE SEARCH_PATH BEFORE READING ANYTHING. Two distinct hazards, and
     // the second was only found by staging the first.
@@ -325,6 +378,7 @@ async function main() {
     colTypes = await prisma.$queryRawUnsafe(COLTYPE_QUERY, TABLES)
     candidates = await prisma.$queryRawUnsafe(
       CANDIDATE_QUERY, [...TABLES, 'categories'], [...TABLES, ...KNOWN_NON_CATALOG])
+    fks = await prisma.$queryRawUnsafe(FK_QUERY, [...TABLES, 'wines'])
     styleVocab = (await prisma.$queryRawUnsafe(STYLE_VOCAB_QUERY))
       .map(r => `${r.category}/${r.style}`)
   } finally {
@@ -391,6 +445,7 @@ async function main() {
     // should have."
     const wasContract = reclassify.filter(k => prior.get(k)?.scope === 'contract')
     snapshot.generatedColumns = genCols
+    snapshot.foreignKeys = fks.map(f => `${f.table}.${f.name}=${f.definition}`)
     snapshot.styleVocabulary = styleVocab
     writeFileSync(SNAPSHOT, `${JSON.stringify(snapshot, null, 2)}\n`)
     console.log(`Wrote ${snapshot.constraints.length} constraints to prisma/catalog-contract-checks.json`)
@@ -481,6 +536,22 @@ async function main() {
     }
   }
 
+  // 🔒 Foreign keys — see FK_QUERY. Absent is a FAILURE, not a pass: a snapshot
+  // with no record leaves every FK unverified, which is the state this section
+  // exists to end.
+  const liveFks = fks.map(f => `${f.table}.${f.name}=${f.definition}`)
+  if (snapshot.foreignKeys === undefined) {
+    problems.push({
+      kind: 'FKS-UNRECORDED', k: '(foreign keys)',
+      live: `${liveFks.length} FK(s) present, none recorded`,
+    })
+  } else {
+    const snapFks = new Set(snapshot.foreignKeys)
+    const liveSet = new Set(liveFks)
+    for (const f of liveFks) if (!snapFks.has(f)) problems.push({ kind: 'FK-ADDED', k: f })
+    for (const f of snapshot.foreignKeys) if (!liveSet.has(f)) problems.push({ kind: 'FK-REMOVED', k: f })
+  }
+
   // 🔒 Our half of the cross-side precondition — see STYLE_VOCAB_QUERY.
   // Absent is a FAILURE, not a pass: a snapshot with no record leaves the
   // vocabulary unverified, which is the state this check exists to end.
@@ -552,7 +623,12 @@ async function main() {
     // leaves prod diverged from its own migration history. That gap needs a
     // REPLAY (re-apply migrations into a scratch schema, diff against live),
     // which we do not have. See the RFC § A pin is not a replay.
-    console.log(`ok  ${live.length} catalog CHECK constraints + ${genCols.length} generated columns match the committed snapshot`)
+    // ⚠️ The message ENUMERATES what was verified. It previously named only
+    // CHECKs and generated columns while the gate also compared foreign keys
+    // and the style vocabulary — understating its own coverage, which is the
+    // mirror of a gate overstating it and just as misleading to read (Codex,
+    // 2026-08-13). If a future section is added here, add it to this line too.
+    console.log(`ok  ${live.length} CHECK constraints + ${fks.length} foreign keys + ${genCols.length} generated columns + ${styleVocab.length} style pairs match the committed snapshot`)
     console.log('    (= matches what was last approved, NOT that the DB matches the migrations —')
     console.log('     an out-of-band ALTER + a matching regenerate passes this gate)')
     return
@@ -571,6 +647,15 @@ async function main() {
     console.error('')
   }
 
+  if (problems.some(p => p.kind === 'FK-REMOVED')) {
+    console.error('  🔒 A FOREIGN KEY WAS REMOVED. Removing one does not merely relax a')
+    console.error('     rule — it can REOPEN a hole another constraint appears to cover.')
+    console.error('     ⚠️ Measured: dropping wines_category_fkey + wine_products_category_fkey')
+    console.error('     let `category=\'spirit\', style=NULL` insert again, because the composite')
+    console.error('     (category, style) FK is MATCH SIMPLE and skips its check when style is')
+    console.error('     null. Every other gate stayed green. Check what the removed FK was the')
+    console.error('     ONLY thing enforcing before recording this as deliberate.\n')
+  }
   if (problems.some(p => p.kind === 'STYLE-VOCABULARY-CHANGED')) {
     console.error('  🔒 THE STYLE VOCABULARY CHANGED — THIS IS A CROSS-SIDE EVENT.')
     console.error('     The catalog-maintenance side holds 6,455 rows carrying styles we do')

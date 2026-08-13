@@ -838,6 +838,70 @@ async function main() {
     `INSERT INTO staff_roles (user_id,role) VALUES (900003,'superuser')`,
     'staff_roles_role_check')
 
+  console.log('\n20. `category` is constrained even when `style` is NULL')
+  // 🔒 WHY THIS SECTION EXISTS. `20260811215655` closed a real hole: the
+  // composite (category, style) FK is MATCH SIMPLE, so it skips its check
+  // ENTIRELY whenever either column is null — and `style` is nullable by design.
+  // The single-column FKs to `categories` are what actually constrain the
+  // category.
+  //
+  // ⚠️ THOSE BEHAVIOURS WERE MEASURED AND THEN WRITTEN INTO PROSE, NOT TESTS
+  // (Codex review, 2026-08-13). Reproduced before fixing: dropping both
+  // `*_category_fkey` constraints reopened the hole while the contract gate
+  // exited 0 and this suite reported 133/133. The migration's own header
+  // asserted these results; nothing executed them. That is the
+  // recorded-in-a-comment failure this workstream exists to stop, committed in
+  // the fix for it.
+  //
+  // The paired accept is as load-bearing as the reject: "known wine, unknown
+  // style" is a SUPPORTED state the add-flow relies on, and the rejected
+  // alternative fix (NOT NULL on `style`) would have broken it. A future change
+  // that over-tightens must fail here too.
+  // 🔒 `__never_a_category__`, NOT a plausible value like 'spirit'. The RFC
+  // anticipates spirits and beer becoming REAL categories — one INSERT into
+  // `categories` away — and on that day a `'spirit'` fixture would silently stop
+  // testing anything: the row would become valid, the assertion would fail, and
+  // the failure would read as a broken FK rather than a stale fixture. A value
+  // that can never legitimately exist keeps the test meaningful across that
+  // change. (Codex, 2026-08-13.)
+  await rejects('wines: an undefined category with NULL style',
+    `INSERT INTO wines (id,name,category,style) VALUES ('test_wCat1','X','__never_a_category__',NULL)`,
+    'wines_category_fkey')
+  await accepts('wines: a known category with NULL style (unknown style stays legal)',
+    `INSERT INTO wines (id,name,category,style) VALUES ('test_wCat2','X','wine',NULL)`)
+  await accepts('wines: a known (category, style) pair',
+    `INSERT INTO wines (id,name,category,style) VALUES ('test_wCat3','X','wine','red')`)
+  await rejects('wines: a style not defined for its category (composite FK still fires)',
+    `INSERT INTO wines (id,name,category,style) VALUES ('test_wCat4','X','wine','grappa')`,
+    'wines_category_style_fkey')
+  // ⚠️ THE LEAD ROW IS MANDATORY IN THIS ASSERTION, and leaving it out was a
+  // real defect caught by mutation-testing this very section: a bare
+  // `wine_products` insert trips the DEFERRED exactly-one-lead trigger, which
+  // fires at COMMIT and masks the FK entirely. With the FKs dropped, the
+  // assertion still "failed" — for the wrong reason — so it would have reported
+  // coverage it did not have. `rejects()` demands the constraint NAME, which is
+  // the only reason this surfaced.
+  //
+  // So the product is created VALID first (via the same `makeProduct` helper
+  // every other section uses, which supplies the lead row), and the assertion
+  // UPDATEs its category. One statement, no deferred trigger in the way, and
+  // the FK is the only thing that can reject it.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO producers (id,name,status) VALUES ('test_pCat','P','confirmed')
+     ON CONFLICT DO NOTHING`)
+  await makeProduct('test_wpCat1', 'test_pCat')
+  await rejects('wine_products: an undefined category with NULL style',
+    `UPDATE wine_products SET category='__never_a_category__', style=NULL WHERE id='test_wpCat1'`,
+    'wine_products_category_fkey')
+  await accepts('wine_products: a known category with NULL style',
+    `UPDATE wine_products SET category='wine', style=NULL WHERE id='test_wpCat1'`)
+  // 🔒 The vocabulary must not be silently emptied: FKs that reference an empty
+  // table reject every write, which is an outage rather than a constraint. The
+  // migration refuses to install them without a 'wine' row; this asserts the
+  // row is still there.
+  const [cat] = await raw(`SELECT count(*)::int n FROM categories WHERE category='wine'`)
+  ok(cat.n === 1, `the 'wine' category row exists (FKs reference a non-empty vocabulary)`)
+
   await reset()
   console.log(`\n${pass} passed, ${failures.length} failed`)
   if (failures.length) {
