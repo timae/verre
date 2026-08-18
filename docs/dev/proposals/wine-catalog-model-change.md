@@ -868,11 +868,15 @@ Two consequences for whoever makes collaborators readable:
   `ON (product_id) WHERE role = 'lead'`), so no de-duplication can remove a product's only
   lead.
 
-  ⚠️ **A resolved read shows FEWER producer links than the stored rows**, where a product
-  linked both `L` and `S`. That is correct — they were one company all along — but anything
-  keyed on link cardinality must expect the resolved count to be lower than the stored one.
-  (Under the read-time model the stored rows do not change, which is exactly why the
-  distinction between stored and resolved counts has to be explicit.)
+  🔒 **STORED vs RESOLVED cardinality must stay EXPLICIT in the read contract** (agreed
+  with the catalog-maintenance side, 2026-08-18 — a requirement on whatever surface ships,
+  not a caveat). Where a product links both `L` and `S`, the stored row count and the
+  resolved count differ, and under the read-time model **the stored rows never change** —
+  so the two numbers coexist permanently rather than converging after a migration. Any
+  field, count, or API shape exposing "the producers of this product" must make clear which
+  of the two it is; a bare `producers.length` that silently means one or the other is the
+  defect this rule exists to prevent. The resolved count being lower is correct — they were
+  one company all along.
 
   ⚠️ **If a future ruling DOES choose write-time re-pointing over read-time resolution**,
   it is a substantive lifecycle change that must explicitly supersede § *Merge = pointer +
@@ -885,8 +889,15 @@ Two consequences for whoever makes collaborators readable:
   (`20260725090000_wine_catalog_schema`, § exactly-one-lead) and in the implementation
   plan § *Exactly one lead*.
 
-  This mirrors how the maintenance side collapses its own provenance links on a merge, so
-  the two sides stay conceptually aligned.
+✅ **The merge fence is CLOSED (catalog-maintenance side, 2026-08-18).** Pointer-only is
+accepted as the app-side constraint: **merge proposals carry identity, never link
+mutations**, and each side then implements that identity according to its own persistence
+requirements. Nothing is open from their side on merges. Two items remain OURS to decide,
+both named above and neither blocked on them:
+
+- **Branch 2's response shape** — does `catalogAddFlow` keep returning the lead's id, or
+  surface collaborators, once a read surface exists?
+- **The stored-vs-resolved distinction** in whatever read contract ships (the 🔒 above).
 
 **Standing agreement with the catalog-maintenance side (2026-08-18):** they will not emit
 collaborator links until a read surface exists, regardless of what the API permits, and a
