@@ -217,8 +217,10 @@ whose proposal was withdrawn can be re-proposed later on fresh evidence, and tha
 proposal is a new row reviewed on its own merits. Scoping the terminal state to
 `(entityType, loserId, survivorId)` instead would make every future proposal for that pair
 an acknowledged no-op forever, failing silently — the trap the EAN `deferred` machinery
-already has, where `rejected` is durable on the pair and reconsideration waits on a staff
-member manually clearing the verdict. The per-row status
+already has, where `rejected` is durable on the pair and reconsideration needs BOTH a staff
+member clearing the verdict AND a `verdict-cleared` delivery to the sender — who otherwise
+cannot observe the clear, and so never re-proposes (RFC § *Merge-suggestion policy*). That
+delivery is unbuilt, so the EAN trap is open today. The per-row status
 in the table above is what avoids it; keep it that way.
 
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
