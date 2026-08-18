@@ -438,6 +438,27 @@ export async function searchProducts(
     // product_producers_producer_id_idx for one producer's handful of
     // products), and stays so; the UNSCOPED path is the one this rescues —
     // broad "reserve" went from ~108 ms to sub-millisecond.
+    // 🔒 `pp.role = 'lead'` in BOTH joins below (here and the survivor re-read)
+    // is why multi-producer is currently write-only: collaborator links exist in
+    // the schema and the write path builds them, but nothing reads them back, so
+    // a collaborator makes a product findable under no second name.
+    //
+    // ⚠️ Widening the role filter is a SHAPE change, not a predicate tweak.
+    // `ProductMatch` carries ONE producer, and this join is what guarantees one
+    // row per product. Admitting collaborators fans a product into N rows, so
+    // the survivor re-read map (keyed by product id) would keep an arbitrary
+    // one and the de-dup below would silently drop the rest. Decide the result
+    // shape first — one row per product carrying a producer LIST, or one row
+    // per link — then change the join.
+    //
+    // Note the alias machinery here is NOT the problem: `groupIds` filters
+    // `pp.producer_id` regardless of role, and the `resolveEffectiveIds`
+    // pass below resolves whatever `producerId` came back, role-agnostically.
+    // The merge-resolution risk lives in any NEW collaborator read surface
+    // built outside this function, which must resolve tombstones the same way
+    // (producer merges are a continuous stream on the maintenance side). See
+    // the model-change proposal § 8b → "Collaborator links must resolve too",
+    // which also records the merge-proposal contract question this depends on.
     const scopeFilter = groupIds ? `AND pp.producer_id = ANY($3)` : ''
     const sql =
       `SELECT wp.id, wp.name, wp.style, wp.region, wp.status, wp.links_to AS "linksTo",

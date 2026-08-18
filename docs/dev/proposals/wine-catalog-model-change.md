@@ -787,6 +787,126 @@ defect class from phases 1 and 2 — a guard that looks correct against a fresh 
 each call site.** Same reasoning as `lib/profileVisibility.ts` and `lib/catalogWrite.ts`;
 consider a CI gate like `check-identity-writes.mjs` if call sites proliferate.
 
+#### 🔒 Collaborator links must resolve too — a named gap, recorded before it bites
+
+**As built, multi-producer is writable but invisible, and the two halves disagree about
+merges.** The write path is complete: `createProduct` (`lib/catalogWrite.ts`) takes
+`collaboratorIds` and writes `role: 'collaborator'` rows, `lib/catalogAddFlow.ts` parses
+and validates them off the request body ("branch 5"), and the one-lead partial unique
+plus the deferred at-least-one-lead trigger enforce *one lead, 0..n collaborators*. But
+**every read is lead-only** — there are exactly **three**, and all three need a decision:
+
+1. `lib/catalogSearch.ts` — the scoped/unscoped search join (`AND pp.role = 'lead'`).
+2. `lib/catalogSearch.ts` — the survivor re-read join, same predicate.
+3. `lib/catalogAddFlow.ts` — branch 2 (adding a vintage to an EXISTING product) selects
+   `producers: { where: { role: 'lead' } }` and returns `producers[0].producerId` in the
+   response. **Name its semantics alongside search**: does branch 2 keep returning the
+   lead, or surface collaborators too? Silence here repeats the § 8b problem.
+
+So a collaborator link today displays nowhere and makes a product findable under no
+second name.
+
+Two consequences for whoever makes collaborators readable:
+
+- **(a) Any NEW collaborator read surface must resolve producer tombstones**, the same way
+  the existing paths do. This is not hypothetical: the catalog-maintenance side reports
+  producer merges as a **continuous stream**, so on the day collaborators become visible,
+  some will already point at merge tombstones. A surface that skips the resolver shows a
+  dead alias — the § 8b silent-failure class, one layer down.
+  ⚠️ Note precisely where the gap is *not*: inside `searchProducts` the alias machinery
+  is already role-agnostic (`groupIds` filters `pp.producer_id` irrespective of role, and
+  the `resolveEffectiveIds` pass resolves whatever producer id the join returned). The
+  blocker for widening THAT join is result **shape**, not merge resolution — `ProductMatch`
+  carries one producer and the join guarantees one row per product, so admitting
+  collaborators fans a product into N rows and the survivor map would keep an arbitrary
+  one. Decide the shape (producer list per row, or row per link) before touching it.
+- **(b) The intent is ruled; the MECHANISM is blocked on a conflict with the RFC.**
+
+  **Ruled (catalog-maintenance side, 2026-08-18) — the INTENT.** A merge proposal covers
+  ALL of the producer's links, regardless of role. The proposal asserts the two producers
+  are one company, so a collaborator link must not be left behind pointing at a tombstone
+  — precisely the (a) risk. This much is settled and is not in question below.
+
+  🔒 **BLOCKED: as stated, the rule was "re-point the loser's links onto the survivor,
+  collapsing PK collisions". That contradicts the RFC's merge model and must NOT be
+  implemented that way.** Recorded rather than silently reconciled, because the conflict is
+  the decision:
+
+  - RFC § *Merge = pointer + lifecycle only*: a merge sets the loser's `status = linked`
+    and `linksTo`, and **"Nothing else. No facts, producer links, or child rows are copied
+    into the survivor — copying would contaminate it after an unmerge."**
+  - The same section: **"unmerge is a single pointer update"**. Re-pointing join rows makes
+    unmerge a multi-row restoration, and a *destructive* collapse makes it irreversible —
+    a dropped collaborator row has nothing left to restore.
+  - `lib/catalogSearch.ts:395` already DEPENDS on links staying with the loser: it scopes
+    on the *effective* producer precisely because "the products stay children of the loser
+    (nothing re-parents)". Re-parenting would invert that comment's premise.
+
+  **The reconciliation that does not fight the model:** the RFC already resolves this class
+  of problem at READ time, via the effective-entity chain — the same mechanism that makes
+  ratings resolve without moving rows. A collaborator link on a merged producer should
+  resolve through `linksTo` when read, exactly as a lead link does. That satisfies the
+  maintenance side's intent (no link stranded on a tombstone) with **no write at all**, so
+  reversibility is untouched. Consequence (a) is then not merely compatible with this
+  ruling — it *is* the implementation of it.
+
+  **What still needs deciding**, and belongs with the proposal-path design rather than here:
+  whether a *read* that resolves two links to the same effective producer de-duplicates
+  them for display, and with which role. The maintenance side's ranking — **lead beats
+  collaborator** — is the right answer for that presentation choice, and their case table
+  holds as a DISPLAY rule:
+
+  | Loser `L` | Survivor `S` | Resolves to |
+  |---|---|---|
+  | lead | collaborator | lead |
+  | collaborator | lead | lead |
+  | collaborator | collaborator | collaborator |
+  | lead | lead | cannot arise on ONE product — the partial unique forbids two leads |
+
+  🔒 **The one-lead invariant is untouched either way**, and the last row is why: two leads
+  on one product cannot coexist (`product_producers_one_lead_idx`, partial unique
+  `ON (product_id) WHERE role = 'lead'`), so no de-duplication can remove a product's only
+  lead.
+
+  🔒 **STORED vs RESOLVED cardinality must stay EXPLICIT in the read contract** (agreed
+  with the catalog-maintenance side, 2026-08-18 — a requirement on whatever surface ships,
+  not a caveat). Where a product links both `L` and `S`, the stored row count and the
+  resolved count differ, and under the read-time model **the stored rows never change** —
+  so the two numbers coexist permanently rather than converging after a migration. Any
+  field, count, or API shape exposing "the producers of this product" must make clear which
+  of the two it is; a bare `producers.length` that silently means one or the other is the
+  defect this rule exists to prevent. The resolved count being lower is correct — they were
+  one company all along.
+
+  ⚠️ **If a future ruling DOES choose write-time re-pointing over read-time resolution**,
+  it is a substantive lifecycle change that must explicitly supersede § *Merge = pointer +
+  lifecycle only*, state what unmerge restores, and update the `catalogSearch.ts:395`
+  premise. Two ordering traps then apply, because **only the at-least-one-lead trigger is
+  deferred — the partial unique and the composite PK are IMMEDIATE**: (1) remove or demote
+  the old lead *before* promoting the new one, or the partial unique fires while both
+  exist; (2) promotion of an existing collaborator is an `UPDATE … SET role`, not an
+  `INSERT`, or the composite PK fires. Both are documented in the phase-1 migration
+  (`20260725090000_wine_catalog_schema`, § exactly-one-lead) and in the implementation
+  plan § *Exactly one lead*.
+
+✅ **The merge fence is CLOSED (catalog-maintenance side, 2026-08-18).** Pointer-only is
+accepted as the app-side constraint: **merge proposals carry identity, never link
+mutations**, and each side then implements that identity according to its own persistence
+requirements. Nothing is open from their side on merges. Two items remain OURS to decide,
+both named above and neither blocked on them:
+
+- **Branch 2's response shape** — does `catalogAddFlow` keep returning the lead's id, or
+  surface collaborators, once a read surface exists?
+- **The stored-vs-resolved distinction** in whatever read contract ships (the 🔒 above).
+
+**Standing agreement with the catalog-maintenance side (2026-08-18):** they will not emit
+collaborator links until a read surface exists, regardless of what the API permits, and a
+second producer per product would arrive as a contract question before any data. So the
+fence does not need to defend against them. If the API is ever changed to reject
+`collaboratorIds` in the meantime, it must **reject loudly, never drop the field** — same
+reasoning as the parser refusing a malformed array instead of filtering it
+(`catalogAddFlow.ts`).
+
 ### 8c. The rating upsert is hand-written SQL
 
 `app/api/session/[code]/rate/route.ts` writes ratings via a raw

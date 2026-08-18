@@ -918,6 +918,17 @@ model Producer {
   // Display form, accents preserved. nameFolded (generated, raw SQL) is the
   // matching key — one value cannot serve both jobs.
   name          String    @db.VarChar(255)
+  // 🔒 The COMPANY'S HOME COUNTRY — never the origin of its wines. A retailer
+  // brand based in GB carries GB even when every wine it sells is French; wine
+  // origin lives on the product/vintage. Definitional ruling from the
+  // catalog-maintenance side (2026-08-18); no schema change, but it is why this
+  // column must not be read as provenance in UI copy or in matching.
+  // ⚠️ Consequently name+country is a WEAK identity signal: two producers
+  // identical on both can be different companies — exactly the residual the
+  // import contract hands to human review. It is NOT a matching or scoring
+  // input today (the fold over `name` is); keep it that way, or the
+  // GB-retailer case starts driving merges. See wine-catalog.md
+  // § Merge-suggestion policy.
   country       String?   @db.VarChar(2)
   // Transitional string (see wine_products.region). Blank normalizes to NULL
   // at the boundary: it feeds regionFolded and joins the fold, so a blank
