@@ -217,7 +217,8 @@ whose proposal was withdrawn can be re-proposed later on fresh evidence, and tha
 proposal is a new row reviewed on its own merits. Scoping the terminal state to
 `(entityType, loserId, survivorId)` instead would make every future proposal for that pair
 an acknowledged no-op forever, failing silently — the trap the EAN `deferred` machinery
-already has, where `rejected` is durable on the pair with no retry path. The per-row status
+already has, where `rejected` is durable on the pair and reconsideration waits on a staff
+member manually clearing the verdict. The per-row status
 in the table above is what avoids it; keep it that way.
 
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
@@ -229,9 +230,15 @@ lock.** Once the sender can withdraw (above), `pending → withdrawn` and
 `pending → accepted/rejected` race. Committing the entry mutation atomically with the
 status is necessary but not sufficient: without a conditional transition, a withdrawal can
 stamp `withdrawn` while the review transaction is applying its merge, leaving a retracted
-proposal that changed the catalog anyway. Exactly one transition wins; the loser takes the
-acknowledged-no-op path and is **not** an error, since both callers acted correctly on the
-state they could see.
+proposal that changed the catalog anyway. Exactly one transition wins.
+
+🔒 **The two losing responses must DIFFER.** A withdrawal that loses to a completed review
+gets the acknowledged no-op above — nothing the sender believed is now false. But a **staff
+review that loses to a withdrawal must return an explicit "no longer pending — withdrawn",
+never apparent success**: a curator who clicks Apply and sees success will believe the
+merge landed when it did not, and will not re-check. Neither case is an *error* — both
+parties acted correctly on the state they could see — but only one of them can be answered
+with silence.
 
 **Stale-base handling:** if the entry changed since a proposal's base version, the curator
 is *shown the conflict*, not silently overridden. The decision stays human; the mechanism
