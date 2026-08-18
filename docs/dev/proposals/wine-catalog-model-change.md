@@ -209,6 +209,14 @@ audit trail must still show the assertion was made, the same reasoning that make
 tombstones. Withdrawing an already-`accepted`/`rejected` proposal is an acknowledged
 no-op: a staff decision that has been applied is never rescinded by the sender.
 
+🔒 **`withdrawn` is terminal on THIS ROW, never on the entity pair it targets.** A pair
+whose proposal was withdrawn can be re-proposed later on fresh evidence, and that new
+proposal is a new row reviewed on its own merits. Scoping the terminal state to
+`(entityType, loserId, survivorId)` instead would make every future proposal for that pair
+an acknowledged no-op forever, failing silently — the trap the EAN `deferred` machinery
+already has, where `rejected` is durable on the pair with no retry path. The per-row status
+in the table above is what avoids it; keep it that way.
+
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
 in that review. A partial apply — entry changed, proposals still `pending`, or two of five
 resolved — is the failure mode this exists to prevent.
