@@ -206,8 +206,11 @@ withdrawal path the queue holds a live assertion nobody stands behind. Two conse
 for this table: the id minted here must be exposed to the proposer rather than kept
 internal to the queue, and a withdrawal is a **terminal state, not a row delete** — the
 audit trail must still show the assertion was made, the same reasoning that makes merges
-tombstones. Withdrawing an already-`accepted`/`rejected` proposal is an acknowledged
-no-op: a staff decision that has been applied is never rescinded by the sender.
+tombstones. Withdrawing a proposal already in ANY terminal state — `accepted`, `rejected`,
+`superseded`, or `withdrawn` — is an acknowledged no-op: a staff decision that has been
+applied is never rescinded by the sender, and the `withdrawn → withdrawn` case is what
+makes a withdrawal retry-safe when its response is lost. An **unknown** id is a hard error,
+and means no row exists — never a row in a terminal state.
 
 🔒 **`withdrawn` is terminal on THIS ROW, never on the entity pair it targets.** A pair
 whose proposal was withdrawn can be re-proposed later on fresh evidence, and that new
@@ -220,6 +223,15 @@ in the table above is what avoids it; keep it that way.
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
 in that review. A partial apply — entry changed, proposals still `pending`, or two of five
 resolved — is the failure mode this exists to prevent.
+
+🔒 **And the status transition must be CONDITIONAL on the current status, under a row
+lock.** Once the sender can withdraw (above), `pending → withdrawn` and
+`pending → accepted/rejected` race. Committing the entry mutation atomically with the
+status is necessary but not sufficient: without a conditional transition, a withdrawal can
+stamp `withdrawn` while the review transaction is applying its merge, leaving a retracted
+proposal that changed the catalog anyway. Exactly one transition wins; the loser takes the
+acknowledged-no-op path and is **not** an error, since both callers acted correctly on the
+state they could see.
 
 **Stale-base handling:** if the entry changed since a proposal's base version, the curator
 is *shown the conflict*, not silently overridden. The decision stays human; the mechanism
