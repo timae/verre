@@ -787,6 +787,52 @@ defect class from phases 1 and 2 — a guard that looks correct against a fresh 
 each call site.** Same reasoning as `lib/profileVisibility.ts` and `lib/catalogWrite.ts`;
 consider a CI gate like `check-identity-writes.mjs` if call sites proliferate.
 
+#### 🔒 Collaborator links must resolve too — a named gap, recorded before it bites
+
+**As built, multi-producer is writable but invisible, and the two halves disagree about
+merges.** The write path is complete: `createProduct` (`lib/catalogWrite.ts`) takes
+`collaboratorIds` and writes `role: 'collaborator'` rows, `lib/catalogAddFlow.ts` parses
+and validates them off the request body ("branch 5"), and the one-lead partial unique
+plus the deferred at-least-one-lead trigger enforce *one lead, 0..n collaborators*. But
+**every read is lead-only** — there are exactly **three**, and all three need a decision:
+
+1. `lib/catalogSearch.ts` — the scoped/unscoped search join (`AND pp.role = 'lead'`).
+2. `lib/catalogSearch.ts` — the survivor re-read join, same predicate.
+3. `lib/catalogAddFlow.ts` — branch 2 (adding a vintage to an EXISTING product) selects
+   `producers: { where: { role: 'lead' } }` and returns `producers[0].producerId` in the
+   response. **Name its semantics alongside search**: does branch 2 keep returning the
+   lead, or surface collaborators too? Silence here repeats the § 8b problem.
+
+So a collaborator link today displays nowhere and makes a product findable under no
+second name.
+
+Two consequences for whoever makes collaborators readable:
+
+- **(a) Any NEW collaborator read surface must resolve producer tombstones**, the same way
+  the existing paths do. This is not hypothetical: the catalog-maintenance side reports
+  producer merges as a **continuous stream**, so on the day collaborators become visible,
+  some will already point at merge tombstones. A surface that skips the resolver shows a
+  dead alias — the § 8b silent-failure class, one layer down.
+  ⚠️ Note precisely where the gap is *not*: inside `searchProducts` the alias machinery
+  is already role-agnostic (`groupIds` filters `pp.producer_id` irrespective of role, and
+  the `resolveEffectiveIds` pass resolves whatever producer id the join returned). The
+  blocker for widening THAT join is result **shape**, not merge resolution — `ProductMatch`
+  carries one producer and the join guarantees one row per product, so admitting
+  collaborators fans a product into N rows and the survivor map would keep an arbitrary
+  one. Decide the shape (producer list per row, or row per link) before touching it.
+- **(b) The merge-proposal contract is silent on whether a proposal covers a producer's
+  collaborator links or only its lead links** — and silence will be read as "lead only"
+  by whoever implements it first. Decide it explicitly when the proposal path is built;
+  do not let the default emerge from an implementation.
+
+**Standing agreement with the catalog-maintenance side (2026-08-18):** they will not emit
+collaborator links until a read surface exists, regardless of what the API permits, and a
+second producer per product would arrive as a contract question before any data. So the
+fence does not need to defend against them. If the API is ever changed to reject
+`collaboratorIds` in the meantime, it must **reject loudly, never drop the field** — same
+reasoning as the parser refusing a malformed array instead of filtering it
+(`catalogAddFlow.ts`).
+
 ### 8c. The rating upsert is hand-written SQL
 
 `app/api/session/[code]/rate/route.ts` writes ratings via a raw
