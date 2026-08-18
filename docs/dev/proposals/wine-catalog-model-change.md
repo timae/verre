@@ -820,38 +820,70 @@ Two consequences for whoever makes collaborators readable:
   carries one producer and the join guarantees one row per product, so admitting
   collaborators fans a product into N rows and the survivor map would keep an arbitrary
   one. Decide the shape (producer list per row, or row per link) before touching it.
-- **(b) RULED (catalog-maintenance side, 2026-08-18): a merge proposal covers ALL of the
-  producer's links, regardless of role.** The proposal asserts the two producers are one
-  company; restricting it to lead links would strand collaborator links on a tombstone —
-  precisely the (a) risk. Adopted now because it costs nothing while no collaborator links
-  exist on either side.
+- **(b) The intent is ruled; the MECHANISM is blocked on a conflict with the RFC.**
 
-  🔒 **The collapse rule.** Re-pointing can collide with the `(product_id, producer_id)`
-  composite PK when both producers already link to the same product. Where that happens,
-  **collapse to ONE row keeping the stronger role — lead beats collaborator.** Never an
-  error, never both rows:
+  **Ruled (catalog-maintenance side, 2026-08-18) — the INTENT.** A merge proposal covers
+  ALL of the producer's links, regardless of role. The proposal asserts the two producers
+  are one company, so a collaborator link must not be left behind pointing at a tombstone
+  — precisely the (a) risk. This much is settled and is not in question below.
 
-  | Loser `L` | Survivor `S` | Result |
+  🔒 **BLOCKED: as stated, the rule was "re-point the loser's links onto the survivor,
+  collapsing PK collisions". That contradicts the RFC's merge model and must NOT be
+  implemented that way.** Recorded rather than silently reconciled, because the conflict is
+  the decision:
+
+  - RFC § *Merge = pointer + lifecycle only*: a merge sets the loser's `status = linked`
+    and `linksTo`, and **"Nothing else. No facts, producer links, or child rows are copied
+    into the survivor — copying would contaminate it after an unmerge."**
+  - The same section: **"unmerge is a single pointer update"**. Re-pointing join rows makes
+    unmerge a multi-row restoration, and a *destructive* collapse makes it irreversible —
+    a dropped collaborator row has nothing left to restore.
+  - `lib/catalogSearch.ts:395` already DEPENDS on links staying with the loser: it scopes
+    on the *effective* producer precisely because "the products stay children of the loser
+    (nothing re-parents)". Re-parenting would invert that comment's premise.
+
+  **The reconciliation that does not fight the model:** the RFC already resolves this class
+  of problem at READ time, via the effective-entity chain — the same mechanism that makes
+  ratings resolve without moving rows. A collaborator link on a merged producer should
+  resolve through `linksTo` when read, exactly as a lead link does. That satisfies the
+  maintenance side's intent (no link stranded on a tombstone) with **no write at all**, so
+  reversibility is untouched. Consequence (a) is then not merely compatible with this
+  ruling — it *is* the implementation of it.
+
+  **What still needs deciding**, and belongs with the proposal-path design rather than here:
+  whether a *read* that resolves two links to the same effective producer de-duplicates
+  them for display, and with which role. The maintenance side's ranking — **lead beats
+  collaborator** — is the right answer for that presentation choice, and their case table
+  holds as a DISPLAY rule:
+
+  | Loser `L` | Survivor `S` | Resolves to |
   |---|---|---|
-  | lead | collaborator | `S` lead; the collaborator row drops |
-  | collaborator | lead | `S` lead; the collaborator row drops |
-  | collaborator | collaborator | one collaborator |
-  | lead | lead | **unrepresentable** — the partial unique already forbids two leads on one product |
+  | lead | collaborator | lead |
+  | collaborator | lead | lead |
+  | collaborator | collaborator | collaborator |
+  | lead | lead | cannot arise on ONE product — the partial unique forbids two leads |
 
-  🔒 **The one-lead invariant holds in every case, and the last row is why**: two leads on
-  one product cannot coexist, so no collapse ever removes a lead — dropping a collaborator
-  cannot change the lead count. Verified against the constraints as built: the partial
-  unique is `ON product_producers (product_id) WHERE role = 'lead'`, and the
-  at-least-one-lead guard is a `DEFERRABLE INITIALLY DEFERRED` constraint trigger checking
-  BOTH `OLD.product_id` and (on a re-point) `NEW.product_id`. The deferral is what makes
-  this implementable — a collapse may pass through a transient state inside the
-  transaction, and only the state at COMMIT is judged.
+  🔒 **The one-lead invariant is untouched either way**, and the last row is why: two leads
+  on one product cannot coexist (`product_producers_one_lead_idx`, partial unique
+  `ON (product_id) WHERE role = 'lead'`), so no de-duplication can remove a product's only
+  lead.
 
-  ⚠️ **Link cardinality SHRINKS across a merge**, and that is correct, not a bug: a product
-  with `L` as lead and `S` as collaborator ends with one link where it had two — they were
-  one company all along. Any count, cache, or assertion keyed on the number of producer
-  links must expect it to decrease. Flagged because "merge two producers" reads like it
-  should preserve or grow link counts.
+  ⚠️ **A resolved read shows FEWER producer links than the stored rows**, where a product
+  linked both `L` and `S`. That is correct — they were one company all along — but anything
+  keyed on link cardinality must expect the resolved count to be lower than the stored one.
+  (Under the read-time model the stored rows do not change, which is exactly why the
+  distinction between stored and resolved counts has to be explicit.)
+
+  ⚠️ **If a future ruling DOES choose write-time re-pointing over read-time resolution**,
+  it is a substantive lifecycle change that must explicitly supersede § *Merge = pointer +
+  lifecycle only*, state what unmerge restores, and update the `catalogSearch.ts:395`
+  premise. Two ordering traps then apply, because **only the at-least-one-lead trigger is
+  deferred — the partial unique and the composite PK are IMMEDIATE**: (1) remove or demote
+  the old lead *before* promoting the new one, or the partial unique fires while both
+  exist; (2) promotion of an existing collaborator is an `UPDATE … SET role`, not an
+  `INSERT`, or the composite PK fires. Both are documented in the phase-1 migration
+  (`20260725090000_wine_catalog_schema`, § exactly-one-lead) and in the implementation
+  plan § *Exactly one lead*.
 
   This mirrors how the maintenance side collapses its own provenance links on a merge, so
   the two sides stay conceptually aligned.
