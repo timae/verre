@@ -194,9 +194,20 @@ A proposal row therefore holds:
 | Entry (product / producer / vintage + id) | What it targets |
 | Proposed field values | The change |
 | **Base version or snapshot of the fields it touches** | Detects the entry moving under the reviewer |
-| **Status** — `pending` / `accepted` / `rejected` / `superseded` | A proposal has a lifecycle |
+| **Status** — `pending` / `accepted` / `rejected` / `superseded` / `withdrawn` | A proposal has a lifecycle |
 | Proposer, proposed-at | Attribution |
 | **Resolver, resolved-at, accepted values as applied** | What was actually committed, which may differ from what was proposed if the curator edited it |
+
+🔒 **`withdrawn` exists because the SENDER can retract, and that forces proposal identity
+to be sender-referenceable** (constraint accepted 2026-08-18 — full semantics in the RFC
+§ *Merge-suggestion policy*, under the tombstone-delivery contract). An upstream proposer
+may revise or drop an identity decision after sending and before review; without a
+withdrawal path the queue holds a live assertion nobody stands behind. Two consequences
+for this table: the id minted here must be exposed to the proposer rather than kept
+internal to the queue, and a withdrawal is a **terminal state, not a row delete** — the
+audit trail must still show the assertion was made, the same reasoning that makes merges
+tombstones. Withdrawing an already-`accepted`/`rejected` proposal is an acknowledged
+no-op: a staff decision that has been applied is never rescinded by the sender.
 
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
 in that review. A partial apply — entry changed, proposals still `pending`, or two of five
