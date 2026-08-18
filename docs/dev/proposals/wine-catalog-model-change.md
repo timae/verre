@@ -194,13 +194,53 @@ A proposal row therefore holds:
 | Entry (product / producer / vintage + id) | What it targets |
 | Proposed field values | The change |
 | **Base version or snapshot of the fields it touches** | Detects the entry moving under the reviewer |
-| **Status** — `pending` / `accepted` / `rejected` / `superseded` | A proposal has a lifecycle |
+| **Status** — `pending` / `accepted` / `rejected` / `superseded` / `withdrawn` | A proposal has a lifecycle |
 | Proposer, proposed-at | Attribution |
 | **Resolver, resolved-at, accepted values as applied** | What was actually committed, which may differ from what was proposed if the curator edited it |
+
+🔒 **`withdrawn` exists because the SENDER can retract, and that forces proposal identity
+to be sender-referenceable** (constraint accepted 2026-08-18 — full semantics in the RFC
+§ *Merge-suggestion policy*, under the tombstone-delivery contract). An upstream proposer
+may revise or drop an identity decision after sending and before review; without a
+withdrawal path the queue holds a live assertion nobody stands behind. Two consequences
+for this table: the id minted here must be exposed to the proposer rather than kept
+internal to the queue, and a withdrawal is a **terminal state, not a row delete** — the
+audit trail must still show the assertion was made, the same reasoning that makes merges
+tombstones. Withdrawing a proposal already in ANY terminal state — `accepted`, `rejected`,
+`superseded`, or `withdrawn` — is an acknowledged no-op: a staff decision that has been
+applied is never rescinded by the sender, and the `withdrawn → withdrawn` case is what
+makes a withdrawal retry-safe when its response is lost. An **unknown** id is a hard error,
+and means no row exists — never a row in a terminal state.
+
+🔒 **`withdrawn` is terminal on THIS ROW, never on the entity pair it targets.** A pair
+whose proposal was withdrawn can be re-proposed later on fresh evidence, and that new
+proposal is a new row reviewed on its own merits. Scoping the terminal state to
+`(entityType, loserId, survivorId)` instead would make every future proposal for that pair
+an acknowledged no-op forever, failing silently — the trap the EAN `deferred` machinery
+already has, where `rejected` is durable on the pair and reconsideration needs BOTH a staff
+member clearing the verdict AND a `verdict-cleared` delivery to the sender — who otherwise
+cannot observe the clear, and so never re-proposes (RFC § *Merge-suggestion policy*). That
+delivery is unbuilt, so the EAN trap is open today. The per-row status
+in the table above is what avoids it; keep it that way.
 
 🔒 **Resolution is one transaction** covering the entry update and every proposal included
 in that review. A partial apply — entry changed, proposals still `pending`, or two of five
 resolved — is the failure mode this exists to prevent.
+
+🔒 **And the status transition must be CONDITIONAL on the current status, under a row
+lock.** Once the sender can withdraw (above), `pending → withdrawn` and
+`pending → accepted/rejected` race. Committing the entry mutation atomically with the
+status is necessary but not sufficient: without a conditional transition, a withdrawal can
+stamp `withdrawn` while the review transaction is applying its merge, leaving a retracted
+proposal that changed the catalog anyway. Exactly one transition wins.
+
+🔒 **The two losing responses must DIFFER.** A withdrawal that loses to a completed review
+gets the acknowledged no-op above — nothing the sender believed is now false. But a **staff
+review that loses to a withdrawal must return an explicit "no longer pending — withdrawn",
+never apparent success**: a curator who clicks Apply and sees success will believe the
+merge landed when it did not, and will not re-check. Neither case is an *error* — both
+parties acted correctly on the state they could see — but only one of them can be answered
+with silence.
 
 **Stale-base handling:** if the entry changed since a proposal's base version, the curator
 is *shown the conflict*, not silently overridden. The decision stays human; the mechanism
