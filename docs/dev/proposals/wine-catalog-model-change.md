@@ -820,10 +820,41 @@ Two consequences for whoever makes collaborators readable:
   carries one producer and the join guarantees one row per product, so admitting
   collaborators fans a product into N rows and the survivor map would keep an arbitrary
   one. Decide the shape (producer list per row, or row per link) before touching it.
-- **(b) The merge-proposal contract is silent on whether a proposal covers a producer's
-  collaborator links or only its lead links** — and silence will be read as "lead only"
-  by whoever implements it first. Decide it explicitly when the proposal path is built;
-  do not let the default emerge from an implementation.
+- **(b) RULED (catalog-maintenance side, 2026-08-18): a merge proposal covers ALL of the
+  producer's links, regardless of role.** The proposal asserts the two producers are one
+  company; restricting it to lead links would strand collaborator links on a tombstone —
+  precisely the (a) risk. Adopted now because it costs nothing while no collaborator links
+  exist on either side.
+
+  🔒 **The collapse rule.** Re-pointing can collide with the `(product_id, producer_id)`
+  composite PK when both producers already link to the same product. Where that happens,
+  **collapse to ONE row keeping the stronger role — lead beats collaborator.** Never an
+  error, never both rows:
+
+  | Loser `L` | Survivor `S` | Result |
+  |---|---|---|
+  | lead | collaborator | `S` lead; the collaborator row drops |
+  | collaborator | lead | `S` lead; the collaborator row drops |
+  | collaborator | collaborator | one collaborator |
+  | lead | lead | **unrepresentable** — the partial unique already forbids two leads on one product |
+
+  🔒 **The one-lead invariant holds in every case, and the last row is why**: two leads on
+  one product cannot coexist, so no collapse ever removes a lead — dropping a collaborator
+  cannot change the lead count. Verified against the constraints as built: the partial
+  unique is `ON product_producers (product_id) WHERE role = 'lead'`, and the
+  at-least-one-lead guard is a `DEFERRABLE INITIALLY DEFERRED` constraint trigger checking
+  BOTH `OLD.product_id` and (on a re-point) `NEW.product_id`. The deferral is what makes
+  this implementable — a collapse may pass through a transient state inside the
+  transaction, and only the state at COMMIT is judged.
+
+  ⚠️ **Link cardinality SHRINKS across a merge**, and that is correct, not a bug: a product
+  with `L` as lead and `S` as collaborator ends with one link where it had two — they were
+  one company all along. Any count, cache, or assertion keyed on the number of producer
+  links must expect it to decrease. Flagged because "merge two producers" reads like it
+  should preserve or grow link counts.
+
+  This mirrors how the maintenance side collapses its own provenance links on a merge, so
+  the two sides stay conceptually aligned.
 
 **Standing agreement with the catalog-maintenance side (2026-08-18):** they will not emit
 collaborator links until a read surface exists, regardless of what the API permits, and a
