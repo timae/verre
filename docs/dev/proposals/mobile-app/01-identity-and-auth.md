@@ -216,6 +216,8 @@ hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-
 
 ## 5a. Session, revocation, and the never-cache invariant
 
+**As built (2026-11-04) — consequences of the 1-year native window (§4 note):** the Expo client's `verre_session_data` cache seeds the app's session atom at launch while its `expiresAt > now`, so a revoked device that never reconnects keeps rendering the account UI offline for up to a year — server trust is unaffected (every request re-validates against the stores). A replaced phone stays listed in Connected devices until its window lapses unless revoked. BA's native revokes enumerate Redis copies from the cold `active-sessions-<userId>` list, so they are not used: `lib/betterAuth.ts` answers `/revoke-sessions` + `/revoke-other-sessions` in its before-hook and the password-change revoke in the `account.update.after` hook, all via `revokeNativeSessionsExcept` (Postgres snapshot, token-driven; a failed token keeps its PG row as a retry target; a password change keeps the caller's current session, like web). Expired native rows are retired through BA by `pruneExpiredNativeSessions` (in-process daily), never raw SQL — a raw delete strands a Redis copy that is ahead of its row. And because BA's refresh writes Redis before Postgres with no ordering against a concurrent delete, `secondaryStorage.get` enforces the converse invariant: a session copy whose row is gone is unauthenticated and deleted on sight (Codex pass 4, barrier-pinned in the suite § 7g). The iOS reinstall-wipe policy (06 §2) is still open and now matters more.
+
 - **Default session = opaque, DB-backed.** A session cookie maps to an `auth_sessions` row checked per
   request. `revokeSession`/`revokeOtherSessions`/`revokeSessions` delete rows → **immediate** revocation
   — the same model as Verre's `user_sessions.revokedAt` gate, native. **As built (step 4): sessions are
@@ -225,9 +227,14 @@ hardcoded cost); wrong passwords reject; the Int `user_id` FK round-trips; lazy-
   row delete therefore does NOT revoke (the Redis copy lives until TTL) — every revocation goes through
   Better Auth (as built: `lib/identityStore.ts` via `$context.internalAdapter` — the `api.revoke*`
   endpoints need a live BA cookie, which web-triggered revokes don't have; see §3 as-built note).
-- **"Logged in forever" = sliding session.** `expiresIn` (7d default) + `updateAge` (1d default)
-  auto-extends on activity → users stay logged in indefinitely while using the app. No hand-built
-  re-issue endpoint.
+- **"Logged in forever" = sliding session.** `expiresIn` + `updateAge` (1d) auto-extend on activity →
+  users stay logged in indefinitely while using the app. No hand-built re-issue endpoint. **As built
+  (2026-11-04): `expiresIn` is ONE YEAR** (set in `lib/betterAuth.ts`; the 7d BA default is a web
+  posture — a phone must survive months unopened), so it is the inactivity window. 🔒 Only the HTTP
+  get-session heartbeat slides: `lib/resolveUser.ts` passes `disableRefresh`, because a server-side
+  slide re-stamps the stores but its Set-Cookie never reaches the device, and the Expo client drops
+  its stored cookie at the stamp of the last Set-Cookie it saw (the 7d-era bug: phones signed out
+  early while the server session was valid). Expired rows are retired daily through the chokepoint (`pruneExpiredNativeSessions`).
 - 🔒 **`cookieCache` MUST stay OFF — enforce with a CI test.** `cookieCache` is an opt-in cache of signed
   session data *in the device's cookie*; the server cannot invalidate another device's cookie, so a
   revoked session lingers up to `maxAge` on other devices — violating Verre's never-cache-`auth()`
@@ -531,10 +538,11 @@ What v1 needs, in order:
      verification gate. Trade-off: native client signs in as a 2nd step. Pinned `_ba-e2e-signup.ts` §9
      (compares free-vs-taken id format — the check the first cut missed). Email-verification gating is
      the named follow-up at the release fence below.
-   - **active-sessions orphan**: mitigated — `deleteUserSessionsSwept` in `lib/identityStore.ts`
-     snapshots the user's `auth_sessions` tokens from Postgres BEFORE the revoke, then `deleteSession`
-     each after, sweeping any Redis copy BA's lossy list missed. All three bulk-revoke call sites use
-     it.
+   - **active-sessions orphan**: closed — `revokeNativeSessionsExcept` in `lib/identityStore.ts`
+     snapshots the user's `auth_sessions` tokens from Postgres and `deleteSession`s each (both stores
+     per token, rethrow on failure so a failed token keeps its row as a retry target). BA's list-driven
+     `deleteUserSessions` is no longer called anywhere; every bulk revoke (web-triggered, native
+     endpoints, password change, account deletion) uses it (2026-11-04, Codex pass 3).
    - **Honeypot/signed-token parity — NOT ported (intentional).** They're web-form-specific (hidden
      DOM input; token minted on server-rendered form load); a JSON native endpoint has neither, and
      reimplementing them badly (a "sign-up intent" token) is security theater. The correct native

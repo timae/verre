@@ -60,7 +60,10 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
   // to null (no throw), and the fall-through path still runs auth()'s own full
   // validation — no claim from the failed branch is carried over.
   try {
-    const ba = await betterAuthServer.api.getSession({ headers: req.headers })
+    // 🔒 disableRefresh — a server-side call must never slide the session; only
+    // the HTTP heartbeat may, because its Set-Cookie is the one the device
+    // stores. Rationale + pin: lib/betterAuth.ts session config.
+    const ba = await betterAuthServer.api.getSession({ headers: req.headers, query: { disableRefresh: true } })
     if (ba?.user) {
       const userId = Number(ba.user.id)
       if (!Number.isInteger(userId) || userId <= 0) return null

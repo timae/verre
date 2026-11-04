@@ -9,7 +9,7 @@ import { redis } from '@/lib/redis'
 import { validateDisplayName } from '@verre/core'
 import { resolveGeoLabel } from '@/lib/geo'
 import { parseUserAgent } from '@/lib/userAgent'
-import { backfillNativeCredential, revokeAllWebSessions, syncCredential } from '@/lib/identityStore'
+import { backfillNativeCredential, revokeAllWebSessions, revokeNativeSessionsExcept, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { bucketStart } from '@/lib/lastSeen'
 
@@ -49,8 +49,43 @@ function syntheticUserId(email: string): string {
 // limiter is per-instance + resets every deploy, useless on Deplo.io). `set`'s
 // 3rd arg is a TTL IN SECONDS — honored via node-redis `EX` so sliding-session
 // / rate-window expiry works. delete maps to node-redis `del`.
+// 🔒 A MISSING auth_sessions ROW MEANS UNAUTHENTICATED, even when Redis holds a
+// valid-looking copy — enforced HERE, the one boundary every Better Auth
+// session lookup crosses (findSession reads Redis-first; BA's own endpoints,
+// resolveUser via api.getSession, listSessions — all of them). Why: BA's
+// sliding refresh is read-Redis → write-Redis → update-Postgres with nothing
+// ordering it against a concurrent delete, so a heartbeat that read its copy
+// just before a revoke completed writes it BACK afterwards (a year of TTL), its
+// Postgres update then fails on the now-missing row, and the copy would keep
+// authenticating with no row for any Postgres-driven revoke or prune to find
+// (Codex pass 4; pinned deterministically with a barrier in
+// scripts/tests/ba-session-lifetime.mjs § 7g). A session copy is therefore
+// only returned if its row still exists; an orphan is deleted on sight and
+// reads as absent. Cost: one indexed `token` lookup per native request — the
+// same per-request DB read the never-cache-auth posture already pays for
+// (lib/CLAUDE.md). Only session copies are checked: BA stores them as
+// `{ session, user }`; the active-sessions list, verification values and
+// rate-limit counters share this store and pass straight through.
+// A PG outage here throws → fail-CLOSED (BA 500s / resolveUser falls through
+// to the web branch, which has no cookie to honour).
+const isSessionCopy = (value: string): boolean => {
+  if (!value.startsWith('{')) return false
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return typeof parsed === 'object' && parsed !== null && 'session' in parsed && 'user' in parsed
+  } catch {
+    return false
+  }
+}
 const secondaryStorage = {
-  get: async (key: string) => (await redis.get(key)) ?? null,
+  get: async (key: string) => {
+    const value = (await redis.get(key)) ?? null
+    if (value === null || !isSessionCopy(value)) return value
+    const row = await prisma.authSession.findUnique({ where: { token: key }, select: { id: true } })
+    if (row) return value
+    await redis.del(key).catch((e) => console.error('secondaryStorage: orphan session copy delete failed', e))
+    return null
+  },
   set: async (key: string, value: string, ttlSeconds?: number) => {
     // Floor at 1: `EX: 0` throws in node-redis, and a falsy-check fallthrough
     // (`if (ttlSeconds)`) would turn a 0-TTL write into a PERMANENT key.
@@ -141,6 +176,25 @@ export const betterAuthServer = betterAuth({
     // sit behind sessionMiddleware and need a live BA cookie, which web-
     // triggered revokes don't have. Never raw row deletes.
     storeSessionInDatabase: true,
+    // Native sessions slide: a get-session heartbeat ≥ updateAge after the last
+    // refresh re-stamps expiresAt to now + expiresIn, so an active device never
+    // signs out and expiresIn is the INACTIVITY window. Ruled 2026-11-04: one
+    // year — the 7d BA default is a web posture; a phone is expected to stay
+    // signed in across months of not opening the app. Native-only: web is
+    // NextAuth (auth.ts) and shares no setting here. Why not "never": expiry is
+    // the only thing that retires a session nobody will revoke (replaced phones;
+    // the iOS Keychain survives uninstall), and the nightly prune in
+    // prisma/maintenance/cleanup-revoked-sessions.sql keys on it.
+    // 🔒 Only HTTP calls may slide. lib/resolveUser.ts — the one non-HTTP
+    // caller — passes disableRefresh: a refresh there re-stamps the server copy
+    // but its Set-Cookie dies with the throwaway context, and the Expo client
+    // drops its stored cookie at the stamp of the LAST Set-Cookie it actually
+    // saw, so a silent server slide could sign the device out early by nearly
+    // the whole window. (The /change-password before-hook's getSessionFromCtx
+    // also slides when due, but inside the HTTP request, so its cookie lands.)
+    // Pinned in scripts/tests/ba-session-lifetime.mjs.
+    expiresIn: 365 * 24 * 3600,
+    updateAge: 24 * 3600,
   },
   verification: {
     modelName: 'authVerification',
@@ -228,6 +282,42 @@ export const betterAuthServer = betterAuth({
         }
       }
 
+      // 🔒 Native revokes are OURS, not Better Auth's (rationale + failure
+      // semantics: revokeNativeSessionsExcept in identityStore — BA's are list-
+      // driven and delete PG rows before Redis copies, which an evicted
+      // `active-sessions-<uid>` list turns into unrevocable ghosts).
+      //  - /revoke-sessions and /revoke-other-sessions are handled HERE in full:
+      //    the caller is resolved from the cookie (getSessionFromCtx — the same
+      //    full store validation sessionMiddleware would do; cookieCache is off),
+      //    every token is deleted from a Postgres snapshot, and the endpoint is
+      //    short-circuited with BA's own `{ status: true }` body (a before-hook
+      //    returning a non-context value IS the response — dispatch.mjs). A
+      //    throw anywhere (snapshot, any token) surfaces as a 500 with the
+      //    remaining rows intact for the retry. No session → fall through to
+      //    the endpoint, which 401s.
+      //  - /change-password: the revoke must only happen once the current
+      //    password has verified, so it lives in the account.update.after
+      //    database hook below (it runs iff the credential row committed, even
+      //    when the endpoint fails afterwards). BA's own revokeOtherSessions is
+      //    switched OFF (its list-driven delete would race ours and rotate the
+      //    caller's session); the caller KEEPS its current session, like web.
+      //    The hook keeps the caller's token from ITS OWN request context (BA
+      //    passes the originating endpoint ctx as the hook's 2nd argument) —
+      //    never from shared state, which a concurrent attempt could overwrite.
+      if (ctx.path === '/revoke-sessions' || ctx.path === '/revoke-other-sessions') {
+        const sess = await getSessionFromCtx(ctx).catch(() => null)
+        const uid = Number(sess?.user?.id)
+        const current = sess?.session?.token
+        if (!Number.isInteger(uid) || uid <= 0 || !current) return
+        try {
+          await revokeNativeSessionsExcept(uid, ctx.path === '/revoke-other-sessions' ? current : null)
+        } catch (e) {
+          console.error(`${ctx.path}: native revoke failed (rows kept for retry)`, e)
+          throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
+        }
+        return ctx.json({ status: true })
+      }
+
       // Lazy credential backfill (§5): an existing WEB user's first native
       // sign-in needs an auth_accounts credential row (BA's credential sign-in
       // fails closed without one and never reads users.password_hash). Copy the
@@ -237,13 +327,13 @@ export const betterAuthServer = betterAuth({
         if (typeof email === 'string' && email) await backfillNativeCredential(email)
         return
       }
-      // Force Verre's password-change posture: a password change revokes every
-      // OTHER session (web does this via revokeAllSessions). Don't trust the
-      // native client to pass revokeOtherSessions — inject it server-side.
-      // The WEB-side revoke for this flow lives in the account.update.after
-      // hook below; this flag covers the BA-side sessions.
+      // Verre's password-change posture: a password change revokes every OTHER
+      // session, web AND native, through the chokepoint — both legs live in the
+      // account.update.after hook below. BA's own revokeOtherSessions is forced
+      // OFF here (don't trust the client to pass it either way): see the native-
+      // revoke comment above for why BA's list-driven version is not used.
       if (ctx.path === '/change-password') {
-        return { context: { body: { ...ctx.body, revokeOtherSessions: true } } }
+        return { context: { body: { ...ctx.body, revokeOtherSessions: false } } }
       }
     }),
   },
@@ -380,12 +470,12 @@ export const betterAuthServer = betterAuth({
     // ships, wire emailAndPassword.onPasswordReset +
     // revokeSessionsOnPasswordReset and pin a test — do not rely on this hook.
     //
-    //  - update fires on ANY credential-account row update, so it self-
-    //    discriminates: skip unless the row's hash differs from
-    //    users.password_hash. A NULL users.password_hash no longer skips —
-    //    since the create-mirror, NULL means a crashed create-mirror, so
-    //    mirroring here is a second heal point (the revoke leg is a harmless
-    //    0-row update for a user who could never log in on web).
+    //  - update fires on ANY credential-account row update. The MIRROR leg
+    //    self-discriminates (skip unless the row's hash differs from
+    //    users.password_hash; a NULL users.password_hash means a crashed
+    //    create-mirror, so mirroring here is a second heal point). The REVOKE
+    //    legs do NOT depend on that comparison when the update originates from
+    //    /change-password — see the hook body.
     //  - No recursion: syncCredential writes auth_accounts via raw Prisma,
     //    which skips BA's databaseHooks.
     //  - Same independence rule as identityStore: the web-session revoke is
@@ -406,35 +496,70 @@ export const betterAuthServer = betterAuth({
         },
       },
       update: {
-        after: async (account) => {
+        // 🔒 (account, ctx): BA hands the ORIGINATING endpoint context as the 2nd
+        // argument (with-hooks.mjs: `toRun(updated, context)` where context is
+        // getCurrentAuthContext() — the per-request ctx dispatch.mjs runs the
+        // handler under). That is what makes the keep decision request-scoped:
+        // a shared per-user slot was overwritable by a concurrent wrong-password
+        // attempt from a stolen session, which then became the session KEPT
+        // (Codex pass 3). ctx is null for non-endpoint callers.
+        after: async (account, ctx) => {
           // optional-chain: updateMany-shaped hook payloads are a count, not a row
           if (account?.providerId !== 'credential' || !account.password) return
           const userId = Number(account.userId)
           if (!Number.isInteger(userId) || userId <= 0) return
           const user = await prisma.user.findUnique({ where: { id: userId }, select: { passwordHash: true } })
-          if (!user || user.passwordHash === account.password) return
-          // Independence rule (same as revokeAllSessions): both legs are
-          // attempted, the revoke (the safety action) runs even if the hash
-          // mirror throws, and the FIRST error rethrows after logging the second
-          // — so a double failure can't silently swallow syncErr. A bare
+          if (!user) return
+          // Two independent triggers, deliberately NOT one guard:
+          //  - fromChangePassword: the ONLY BA path that updates a credential row
+          //    today. A password change ALWAYS revokes the other sessions, web and
+          //    native — regardless of whether the web hash still needs mirroring.
+          //    Gating the revokes on the hash guard let a concurrent native sign-in
+          //    (backfillNativeCredential mirroring the new hash between BA's
+          //    commit and this read) make the hashes equal and SKIP revocation
+          //    entirely, with BA's own revoke switched off (Codex pass 3).
+          //  - mirrorNeeded: the hash self-discrimination the mirror leg still
+          //    uses (a NULL users.password_hash is a crashed create-mirror → heal).
+          const fromChangePassword = ctx?.path === '/change-password'
+          const mirrorNeeded = user.passwordHash !== account.password
+          if (!fromChangePassword && !mirrorNeeded) return
+          const keep = fromChangePassword ? ctx?.context?.session?.session?.token ?? null : null
+          // Independence rule (same as revokeAllSessions): every leg is
+          // attempted, the revokes (the safety action) run even if the hash
+          // mirror throws, and the FIRST error rethrows after logging the rest
+          // — so a multi-failure can't silently swallow syncErr. A bare
           // unguarded `await revokeAllWebSessions` here would drop syncErr when
           // BOTH throw, hiding the crashed-mirror divergence the backfill
           // reconcile then has to detect blind.
           let syncErr: unknown
           let revokeErr: unknown
-          try {
-            await syncCredential(userId, account.password)
-          } catch (e) {
-            syncErr = e
+          let nativeErr: unknown
+          if (mirrorNeeded) {
+            try {
+              await syncCredential(userId, account.password)
+            } catch (e) {
+              syncErr = e
+            }
           }
           try {
             await revokeAllWebSessions(userId, 'password_change')
           } catch (e) {
             revokeErr = e
           }
-          if (syncErr && revokeErr) console.error('account.update.after mirror: revoke leg also failed (rethrowing sync error)', revokeErr)
-          if (syncErr) throw syncErr
-          if (revokeErr) throw revokeErr
+          // Native leg, token-driven (revokeNativeSessionsExcept). Lives HERE, not
+          // in an endpoint after-hook, because this fires iff the credential row
+          // committed — including when BA's handler then fails (runWithAdapter
+          // runs queued db after-hooks even on error), the exact partial-change
+          // case an endpoint-level hook misses. No resolvable keep → keep nothing,
+          // safety over a re-login.
+          try {
+            await revokeNativeSessionsExcept(userId, keep)
+          } catch (e) {
+            nativeErr = e
+          }
+          const errs = [syncErr, revokeErr, nativeErr].filter(Boolean)
+          if (errs.length > 1) console.error('account.update.after mirror: multiple legs failed (rethrowing the first)', errs.slice(1))
+          if (errs.length) throw errs[0]
         },
       },
     },
@@ -664,13 +789,18 @@ export const betterAuthServer = betterAuth({
   //    defensive action (no password prompt for a frictionless logout-all). A
   //    stolen cookie can coarsely revoke-all, but that's marginal over the full
   //    account access the cookie already grants, and symmetric with the owner's
-  //    own panic button. (PR #39 review round 2.)
+  //    own panic button. (PR #39 review round 2.) 🔒 BA's implementations are
+  //    LIST-driven (active-sessions-<uid>) and are NOT what runs: the before-
+  //    hook above answers both paths itself from a Postgres snapshot
+  //    (revokeNativeSessionsExcept in identityStore) so an evicted list can't
+  //    leave a live Redis copy. The paths stay live (not disabledPaths) because
+  //    the hook IS the endpoint; disabling them would 404 before it runs.
   //
   // /change-password was disabled in step 4 (it writes auth_accounts.password
   // ONLY — the old password would keep working on web). Re-enabled in step 5:
   // the account.update.after hook above mirrors the hash to users.password_hash
-  // + revokes web sessions, and the before-hook forces revokeOtherSessions for
-  // the BA side. Other risky endpoints inert by default (verified vs 1.6.15
+  // + revokes web AND native sessions (the latter token-driven; BA's own
+  // revokeOtherSessions is forced OFF by the before-hook). Other risky endpoints inert by default (verified vs 1.6.15
   // dist): /delete-user config-gated off, /set-password has no HTTP route
   // (genuinely SERVER_ONLY — no path string).
   //

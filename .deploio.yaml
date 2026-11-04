@@ -26,6 +26,9 @@ scheduledJobs:
   # was dropped. Daily ~03:00 (cron runs in the platform's timezone, assume UTC;
   # exact hour is irrelevant for this off-peak best-effort job). Active sessions
   # (revoked_at NULL) are never matched. SQL in prisma/maintenance/ (in git).
+  # NOT here: expired native auth_sessions — retired in-process through the
+  # identityStore chokepoint (lib/nativeSessionPrune.ts), because this image
+  # has no lib/ and a raw SQL delete there can strand a live Redis copy.
   - name: "cleanup-revoked-sessions"
     command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js db execute --schema prisma/schema.prisma --file prisma/maintenance/cleanup-revoked-sessions.sql"'
     schedule: "0 3 * * *"

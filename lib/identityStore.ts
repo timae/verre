@@ -33,44 +33,6 @@ async function baInternalAdapter() {
   return (await betterAuthServer.$context).internalAdapter
 }
 
-// Delete ALL of a user's native sessions across both BA stores, WITH an orphan
-// sweep (step-7 hardening). BA's deleteUserSessions drives its Redis token
-// deletion off the `active-sessions-<userId>` list, which is non-atomically
-// maintained — two failure modes leave a live Redis token copy (which keeps
-// authenticating Redis-first until TTL); verified vs 1.6.15 dist
-// (internal-adapter.mjs deleteUserSessions):
-//   - list CORRUPT (safeJSONParse → null): `if (!sessions) return` fires BEFORE
-//     the Postgres delete — so BOTH the Redis copy AND the auth_sessions row
-//     survive.
-//   - list ABSENT/evicted (sessions = []): the Postgres rows ARE deleted, but a
-//     Redis copy not in the (empty) list is orphaned with no DB row left.
-// We close BOTH windows by snapshotting the user's auth_sessions tokens from
-// POSTGRES (the authoritative list) BEFORE the delete, then deleteSession() each
-// after — sweeping the leftover Redis copy (and, in the corrupt case, BA's own
-// deleteSession path also clears the still-present row). deleteSession is a
-// no-op for an already-gone token, so the sweep is safe + idempotent. Whole
-// thing best-effort: a sweep failure must not mask the primary revoke (the
-// caller's own try/catch owns the primary; the sweep swallows + logs).
-async function deleteUserSessionsSwept(userId: number): Promise<void> {
-  let tokens: string[] = []
-  try {
-    const rows = await prisma.authSession.findMany({ where: { userId }, select: { token: true } })
-    tokens = rows.map((r) => r.token)
-  } catch (e) {
-    // Snapshot failed — proceed with the list-driven delete alone (no worse than
-    // before this sweep existed); don't block the revoke on the snapshot.
-    console.error('deleteUserSessionsSwept: token snapshot failed (proceeding list-only)', e)
-  }
-  const adapter = await baInternalAdapter()
-  await adapter.deleteUserSessions(String(userId))
-  for (const token of tokens) {
-    try {
-      await adapter.deleteSession(token)
-    } catch (e) {
-      console.error('deleteUserSessionsSwept: orphan sweep deleteSession failed', e)
-    }
-  }
-}
 
 // Write a user's bcrypt password hash to BOTH credential stores. The ONE place
 // `users.password_hash` is set; the same call mirrors the hash into the Better
@@ -223,15 +185,12 @@ export async function backfillNativeCredential(email: string): Promise<void> {
 // The BA leg deletes ALL of the user's native sessions — no "except" on that
 // side, because every caller is a web session (password change, devices
 // revoke-all): the session being spared is always a user_sessions row, never a
-// native one. internalAdapter.deleteUserSessions deletes each Redis token copy,
-// the active-sessions list, and the auth_sessions rows in one call; the String
-// cast satisfies BA's string-id types — the adapter re-coerces id-reference
-// where-values to Number under generateId 'serial'.
-//
-// BA's deleteUserSessions has an orphan edge (corrupt/absent active-sessions-<id>
-// list → a Redis token copy survives the delete and authenticates until TTL).
-// deleteUserSessionsSwept (above) closes it: snapshot the Postgres tokens first,
-// deleteSession each after. The BA leg here goes through that swept helper.
+// native one. It goes through revokeNativeSessionsExcept(userId, null) (below):
+// token-driven from a Postgres snapshot, both stores per token, a failed token
+// keeps its row as a retry target and the error rethrows. NOT BA's
+// deleteUserSessions — that one is list-driven (`active-sessions-<id>`) and
+// deletes the auth_sessions rows before the Redis copies, so an evicted list
+// plus any failure left a Redis ghost with no row to retry from (Codex pass 3).
 //
 // 🔒 The two legs are INDEPENDENT: each runs in its own try/catch, both are
 // always attempted, and the first error rethrows after both ran — one store
@@ -255,7 +214,7 @@ export async function revokeAllSessions(
     webErr = e
   }
   try {
-    await deleteUserSessionsSwept(userId)
+    await revokeNativeSessionsExcept(userId, null)
   } catch (e) {
     baErr = e
   }
@@ -272,12 +231,79 @@ export async function revokeAllSessions(
 // the account for up to the session TTL and keep authenticating on BA-native
 // endpoints (resolveUser fails closed via its fresh users SELECT, but BA's own
 // routes serve the cached user straight from Redis). A throw aborts the
-// deletion — safe and retryable, nothing has been deleted yet. Goes through the
-// swept helper (snapshot Postgres tokens → delete → sweep) so an orphaned Redis
-// copy can't outlive the deleted account — exactly the leak this leg exists to
-// prevent (the Redis JSON carries name + email).
+// deletion — safe and retryable, nothing has been deleted yet. Goes through
+// revokeNativeSessionsExcept (snapshot Postgres tokens → both-store delete per
+// token, rethrow on any failure) so an orphaned Redis copy can't outlive the
+// deleted account — exactly the leak this leg exists to prevent (the Redis
+// JSON carries name + email).
 export async function deleteAllNativeSessions(userId: number): Promise<void> {
-  await deleteUserSessionsSwept(userId)
+  await revokeNativeSessionsExcept(userId, null)
+}
+
+// Native-INITIATED revokes — BA's /revoke-sessions, /revoke-other-sessions and
+// the revoke half of /change-password — are LIST-DRIVEN in 1.6.15:
+// deleteUserSessions / listSessions enumerate the user's Redis copies from
+// `active-sessions-<userId>`, a cold key written only on session create/update/
+// delete and never read on the hot path, so under eviction it goes first — and
+// with it the revoke's reach: the PG rows die (or, for revoke-other, nothing at
+// all does) while the Redis token copies keep authenticating Redis-first until
+// their own TTL, now up to the 1-year native window. BA's versions are
+// therefore NOT used for native callers (lib/betterAuth.ts hooks take the two
+// coarse endpoints over and switch /change-password's revokeOtherSessions OFF);
+// this helper is the replacement for all three: snapshot the user's tokens from
+// POSTGRES (the authoritative list) and deleteSession() each except `keepToken`.
+// 🔒 Failure semantics are the point (Codex review, 2026-11-04):
+//  - the snapshot throws → NOTHING has been deleted; the caller aborts before
+//    any mutation, so a retry sees the same rows.
+//  - deleteSession is token-driven and both-store PER TOKEN (Redis copy first,
+//    then the PG row), so a token that fails keeps its PG row — a durable,
+//    visible (Connected devices) retry target for the next revoke. Every token
+//    is still attempted, then the first error rethrows so the caller surfaces
+//    the partial failure instead of reporting success.
+//  - deleteSession is a no-op for an already-gone token → idempotent.
+// Pinned in scripts/tests/ba-session-lifetime.mjs § 7 (incl. injected failures).
+export async function revokeNativeSessionsExcept(userId: number, keepToken: string | null): Promise<number> {
+  const rows = await prisma.authSession.findMany({ where: { userId }, select: { token: true } })
+  const adapter = await baInternalAdapter()
+  let revoked = 0
+  let firstErr: unknown
+  for (const { token } of rows) {
+    if (token === keepToken) continue
+    try {
+      await adapter.deleteSession(token)
+      revoked++
+    } catch (e) {
+      console.error('revokeNativeSessionsExcept: deleteSession failed (row kept as retry target)', e)
+      firstErr ??= e
+    }
+  }
+  if (firstErr) throw firstErr
+  return revoked
+}
+
+// Retire native sessions past expires_at. Better Auth never deletes an expired
+// row on its own (only on access, and a device that is gone never accesses it),
+// so with the 1-year window replaced phones would sit in auth_sessions forever.
+// 🔒 Goes through deleteSession, NOT a raw SQL DELETE (the first cut was SQL —
+// Codex showed why that is wrong): BA writes Redis BEFORE Postgres on a refresh,
+// so a PG failure mid-heartbeat leaves a Redis copy a year AHEAD of its row.
+// A raw prune of that row leaves the copy authenticating with no PG row to
+// find it from (unrevocable), and its next heartbeat 500s on P2025 while
+// extending the Redis TTL. deleteSession invalidates the Redis copy FIRST,
+// whatever its TTL, then drops the row. Batched (small, bounded per run) and
+// idempotent; the 1-day margin covers app/DB clock skew. Scheduled in-process
+// by lib/nativeSessionPrune.ts (the Deploio cron image has no lib/).
+export async function pruneExpiredNativeSessions(batch = 500, maxBatches = 20): Promise<number> {
+  const adapter = await baInternalAdapter()
+  const cutoff = new Date(Date.now() - 24 * 3600 * 1000)
+  let total = 0
+  for (let i = 0; i < maxBatches; i++) {
+    const rows = await prisma.authSession.findMany({ where: { expiresAt: { lt: cutoff } }, select: { token: true }, take: batch })
+    for (const { token } of rows) await adapter.deleteSession(token)
+    total += rows.length
+    if (rows.length < batch) break
+  }
+  return total
 }
 
 // Revoke ALL of a user's web sessions (no except) — the web-side mirror for a
@@ -332,7 +358,7 @@ export async function revokeAllForNativeCaller(userId: number): Promise<number> 
     webErr = e
   }
   try {
-    await deleteUserSessionsSwept(userId)
+    await revokeNativeSessionsExcept(userId, null)
   } catch (e) {
     baErr = e
   }
