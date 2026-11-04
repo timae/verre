@@ -229,7 +229,7 @@ The same workflow then applies the real migration chain to a disposable database
 | Gates the deploy | yes (`migrate deploy` failure fails the release) | no (a scheduled-job failure never fails the release) |
 | Purpose | schema + one-shot data migrations | recurring idempotent housekeeping (e.g. retention pruning) |
 
-So a maintenance file MUST be idempotent and safe to re-run any number of times — it is NOT a versioned one-shot. Don't put schema changes here (those are migrations). Current file: `cleanup-revoked-sessions.sql` (prunes `user_sessions` revoked >90 days, daily). pg_cron isn't available on Nine's managed Postgres, but Deplo.io's native `scheduledJobs` (cron, same image + env as the app) is — the job `cd /migrate`s like the deploy job. Wired in `.deploio.yaml`; see `docs/dev/deployment.md`.
+So a maintenance file MUST be idempotent and safe to re-run any number of times — it is NOT a versioned one-shot. Don't put schema changes here (those are migrations). Current file: `cleanup-revoked-sessions.sql` (prunes `user_sessions` revoked >90 days, daily — `auth_sessions` is deliberately NOT prunable from SQL; see `pruneExpiredNativeSessions` in `lib/identityStore.ts`). pg_cron isn't available on Nine's managed Postgres, but Deplo.io's native `scheduledJobs` (cron, same image + env as the app) is — the job `cd /migrate`s like the deploy job. Wired in `.deploio.yaml`; see `docs/dev/deployment.md`.
 
 ## Phase 2 data migration (rewire) — historical
 

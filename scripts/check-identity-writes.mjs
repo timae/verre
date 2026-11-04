@@ -103,10 +103,47 @@ const AUTH_ACCOUNT_RAW = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+auth_accounts
 const AUTH_SESSION_WRITE = /\bauthSession\s*\.\s*(create|createMany|update|updateMany|upsert|delete|deleteMany)\b/
 const AUTH_SESSION_RAW = /\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+auth_sessions\b/i
 
-const files = execSync('git ls-files', { encoding: 'utf8' })
+// prisma/maintenance/*.sql is the one place a raw table write is the NORMAL
+// idiom (the nightly retention job), and it runs with no app code in the
+// loop — so it is held to an EXACT allow-list of WHOLE STATEMENTS, not a verb
+// match: every statement in the file (comments stripped, split on `;`,
+// whitespace collapsed) must equal one of the entries below, or the build
+// fails. A positive list is the only form that cannot be evaded by a
+// multi-line statement, a schema-qualified `public.auth_sessions`, or a
+// `TRUNCATE TABLE` the verb regex never heard of (Codex review, 2026-11-04).
+// The one permitted statement is retention, not revocation: it deletes
+// user_sessions rows already revoked ≥90 days. auth_sessions is deliberately
+// NOT prunable from SQL at all — a raw DELETE there can strand a Redis copy
+// that is ahead of its row (see pruneExpiredNativeSessions in identityStore,
+// which retires expired native rows through Better Auth instead). Anything
+// else gets a human's eyes. Adding a statement here is a chokepoint change:
+// review it as one.
+const inSqlScope = (f) => f.startsWith('prisma/maintenance/') && f.endsWith('.sql')
+const normalizeSql = (stmt) => stmt.replace(/\s+/g, ' ').trim()
+const SQL_ALLOWED = new Set([
+  "DELETE FROM user_sessions WHERE revoked_at < NOW() - INTERVAL '90 days'",
+].map(normalizeSql))
+// Statements with their 1-based start line. Comments are blanked (not removed)
+// so line numbers survive; string literals here are simple enough that a `;`
+// inside one does not occur — the allow-list would reject such a statement anyway.
+function sqlStatements(src) {
+  const blanked = src.replace(/--[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  const out = []
+  let start = 0
+  for (let i = 0; i <= blanked.length; i++) {
+    if (i === blanked.length || blanked[i] === ';') {
+      const raw = blanked.slice(start, i)
+      if (raw.trim()) out.push({ text: normalizeSql(raw), line: blanked.slice(0, start + raw.search(/\S/)).split('\n').length })
+      start = i + 1
+    }
+  }
+  return out
+}
+
+const tracked = execSync('git ls-files', { encoding: 'utf8' })
   .split('\n').map((s) => s.trim()).filter(Boolean)
-  .filter(inScope)
-  .filter((f) => f !== ALLOWED)
+const files = tracked.filter(inScope).filter((f) => f !== ALLOWED)
+const sqlFiles = tracked.filter(inSqlScope)
 
 // Fail loud if scope is empty — almost certainly run from a subdir (git ls-files
 // then returns subdir-relative paths that fail the app/|lib/ prefix), which would
@@ -133,15 +170,23 @@ for (const file of files) {
   })
 }
 
+for (const file of sqlFiles) {
+  if (!existsSync(file)) continue
+  for (const stmt of sqlStatements(readFileSync(file, 'utf8'))) {
+    if (!SQL_ALLOWED.has(stmt.text)) violations.push({ file, line: stmt.line, text: `statement not in the allow-list: ${stmt.text}` })
+  }
+}
+
 if (violations.length === 0) {
-  console.log(`check-identity-writes: OK — no password_hash/revokedAt writes outside ${ALLOWED} (${files.length} files scanned)`)
+  console.log(`check-identity-writes: OK — no password_hash/revokedAt writes outside ${ALLOWED} (${files.length} files + ${sqlFiles.length} maintenance SQL scanned)`)
   process.exit(0)
 }
 
 console.error('check-identity-writes: FAILED — credential/revocation writes (web users.password_hash +')
 console.error('user_sessions.revokedAt AND native auth_accounts + auth_sessions) must go through lib/identityStore.ts')
 console.error('(syncCredential / backfillNativeCredential / revokeAllSessions / revokeAllWebSessions /')
-console.error(' revokeAllForNativeCaller / revokeOneSession / revokeOneNativeSession / deleteAllNativeSessions).')
+console.error(' revokeAllForNativeCaller / revokeOneSession / revokeOneNativeSession / deleteAllNativeSessions /')
+console.error(' revokeNativeSessionsExcept / pruneExpiredNativeSessions). Maintenance SQL: every statement must be on the allow-list.')
 console.error('See proposal §3.\n')
 for (const v of violations) console.error(`  ${v.file}:${v.line}  ${v.text}`)
 process.exit(1)

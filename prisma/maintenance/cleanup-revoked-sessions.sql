@@ -18,3 +18,11 @@
 -- can't serve it — it's a seq scan. Irrelevant at this scale; if user_sessions
 -- ever grows large, add a standalone (revoked_at) index.
 DELETE FROM user_sessions WHERE revoked_at < NOW() - INTERVAL '90 days';
+
+-- NOT here: expired NATIVE sessions (auth_sessions). Those are retired by
+-- pruneExpiredNativeSessions in lib/identityStore.ts (scheduled in-process by
+-- lib/nativeSessionPrune.ts) through Better Auth's deleteSession, because a raw
+-- DELETE of an auth_sessions row can strand a Redis copy that is AHEAD of the
+-- row (BA writes Redis before Postgres on a refresh) — unrevocable, and its
+-- heartbeat then 500s. The identity-writes gate rejects any statement in this
+-- file that is not on its allow-list, so don't add one.

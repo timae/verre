@@ -10,7 +10,9 @@
 // See https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation
 // (conditional-import-by-runtime pattern).
 import { ensureGeoData } from '@/lib/geoData'
+import { scheduleNativeSessionPrune } from '@/lib/nativeSessionPrune'
 
 export async function register() {
   await ensureGeoData()
+  scheduleNativeSessionPrune()
 }

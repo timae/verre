@@ -129,6 +129,26 @@ jobs:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
 
+      # Native session lifetime (lib/betterAuth.ts expiresIn/updateAge + hooks,
+      # lib/resolveUser.ts disableRefresh, identityStore revoke + prune). Drives the
+      # REAL Better Auth instance over both stores: sign-in stamps 365d, the
+      # server-side resolveUser seam never slides, the HTTP heartbeat slides
+      # AND re-issues the cookie (the only way the device learns the new
+      # expiry), expired rows die on access, the chokepoint prune retires only
+      # rows past the margin (incl. a Redis copy ahead of its row), and the
+      # native revokes (/revoke-sessions, /revoke-other-sessions,
+      # /change-password) reach both stores even with BA's active-sessions
+      # list evicted — including under injected snapshot / per-token / post-
+      # commit failures. Mutation-tested: reverting any of the fixes fails the
+      # matching section. AUTH_SECRET is any string — BA signs the cookie with
+      # it and verifies in-process.
+      - name: Native session lifetime
+        run: npx tsx scripts/tests/ba-session-lifetime.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-ba-session-lifetime-secret
+
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
       # writers (pgUpsertWine / pgReassignWineProvenance) and addWineToSession.
