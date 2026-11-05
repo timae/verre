@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
+import { useFreshInstallGuard } from '@/lib/freshInstall';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider } from '@/lib/query';
 import { markUpdateNavigationReady } from '@/lib/updateGate';
@@ -52,16 +53,26 @@ function RootNavigator() {
   const { theme } = useTheme();
   const { data: session, isPending } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
+  // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true
+  // on ANY request made while `data` is null — and the SDK refetches
+  // get-session 10ms after every sign-out (and sign-in). Gating the render on
+  // bare `!isPending` unmounted the whole Stack for that round trip, with the
+  // splash long gone: a blank screen after sign-out (device pass, 2026-11-05).
+  // So the "unknown" treatment is reserved for the FIRST resolution; after it,
+  // a pending refetch keeps the current route group (welcome after sign-out,
+  // the sign-in screen until the post-sign-in heartbeat lands).
+  const [resolvedOnce, setResolvedOnce] = useState(false);
+  useEffect(() => { if (!isPending) setResolvedOnce(true); }, [isPending]);
   // Hide the splash once EITHER the session resolved or we waited long enough.
-  const splashCanHide = !isPending || waitedTooLong;
+  const splashCanHide = !isPending || resolvedOnce || waitedTooLong;
   // ...but only mount a route GROUP once the session is actually known.
-  const sessionResolved = !isPending;
+  const sessionResolved = !isPending || resolvedOnce;
 
   useEffect(() => {
-    if (!isPending) return;
+    if (!isPending || resolvedOnce) return;
     const t = setTimeout(() => setWaitedTooLong(true), SPLASH_MAX_WAIT_MS);
     return () => clearTimeout(t);
-  }, [isPending]);
+  }, [isPending, resolvedOnce]);
 
   useEffect(() => {
     if (!splashCanHide) return;
@@ -147,8 +158,17 @@ export default function RootLayout() {
     InstrumentSans_600SemiBold,
     InstrumentSans_700Bold,
   });
+  // 🔒 The reinstall wipe (lib/freshInstall.ts) must finish BEFORE RootNavigator
+  // mounts: the session atom was seeded from the Keychain items at module init,
+  // so the first frame would paint the previous owner. That seed ALREADY fired
+  // the first get-session heartbeat (a nanostores `get()` mounts the query), so
+  // this gate alone is not enough — lib/bootGate.ts holds every Better Auth
+  // request built before the verdict and drops it after a wipe. The native
+  // splash stays up meanwhile (preventAutoHideAsync above); the guard never
+  // blocks beyond a bounded best-effort sign-out.
+  const installChecked = useFreshInstallGuard();
 
-  if (!fontsLoaded) return null;
+  if (!fontsLoaded || !installChecked) return null;
 
   return (
     // Gesture-handler requires the root wrapper to register its native gesture

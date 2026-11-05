@@ -10,6 +10,7 @@ import 'expo-web-browser';
 import { expoClient } from '@better-auth/expo/client';
 import { createAuthClient } from 'better-auth/react';
 import { CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
+import { acceptAuthResponse, gateAuthRequest } from './bootGate';
 import { API_BASE } from './config';
 import { secureStorage } from './secureStorage';
 import { routeToUpdateRequired } from './updateGate';
@@ -39,7 +40,15 @@ export const authClient = createAuthClient({
     // Longer than apiFetch's 12s default would be pointless here: this is the
     // launch path, and the root layout paints regardless after 2.5s. This
     // deadline exists so the request itself ends rather than lingering.
-    customFetchImpl: (input, init) => {
+    customFetchImpl: async (input, init) => {
+      // 🔒 Reinstall-wipe gate (lib/bootGate.ts): a request built before the
+      // fresh-install verdict is held (dropped if a wipe happened — the cache
+      // seed above fires the first get-session at module init), a stale cookie
+      // is stripped, and a response from an earlier auth generation is
+      // discarded so it cannot overwrite a newer sign-in.
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const gated = await gateAuthRequest(url, init);
+      init = gated.init;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 12_000);
       const upstream = init?.signal;
@@ -47,7 +56,23 @@ export const authClient = createAuthClient({
         if (upstream.aborted) controller.abort();
         else upstream.addEventListener('abort', () => controller.abort(), { once: true });
       }
-      return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+      try {
+        const res = await fetch(input, { ...init, signal: controller.signal });
+        // 🔒 Buffer the body BEFORE the generation check. Expo's fetch resolves
+        // when the headers arrive (ExpoFetchModule `responseReceived`), and
+        // better-fetch only runs its state-writing hooks after awaiting the
+        // body — so a response accepted here could still go stale during that
+        // wait. Buffering under the same deadline closes the window; the
+        // hooks then read a response whose body is already in memory.
+        const body = await res.text();
+        if (!acceptAuthResponse(gated.gen, res)) throw Object.assign(new Error('stale auth generation'), { name: 'AbortError' });
+        const headers = new Headers();
+        res.headers.forEach((v, k) => headers.append(k, v));
+        const nullBody = res.status === 101 || res.status === 204 || res.status === 205 || res.status === 304;
+        return new Response(nullBody ? null : body, { status: res.status, statusText: res.statusText, headers });
+      } finally {
+        clearTimeout(timer);
+      }
     },
     async onError(ctx) {
       if (ctx.response?.status !== 426) return;

@@ -1,4 +1,5 @@
 import { authClient } from './authClient';
+import { cookieIsStale } from './bootGate';
 import { CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
 import { API_BASE } from './config';
 import { routeToUpdateRequired } from './updateGate';
@@ -16,7 +17,8 @@ export async function apiFetch(
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...rest } = init;
   const headers = new Headers(rest.headers);
   if (CLIENT_VERSION) headers.set(CLIENT_VERSION_HEADER, CLIENT_VERSION);
-  const cookie = authClient.getCookie();
+  // A cookie the reinstall wipe could not remove is never sent (lib/bootGate.ts).
+  const cookie = cookieIsStale() ? '' : authClient.getCookie();
   if (cookie) headers.set('Cookie', cookie);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
