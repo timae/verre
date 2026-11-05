@@ -53,16 +53,26 @@ function RootNavigator() {
   const { theme } = useTheme();
   const { data: session, isPending } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
+  // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true
+  // on ANY request made while `data` is null — and the SDK refetches
+  // get-session 10ms after every sign-out (and sign-in). Gating the render on
+  // bare `!isPending` unmounted the whole Stack for that round trip, with the
+  // splash long gone: a blank screen after sign-out (device pass, 2026-11-05).
+  // So the "unknown" treatment is reserved for the FIRST resolution; after it,
+  // a pending refetch keeps the current route group (welcome after sign-out,
+  // the sign-in screen until the post-sign-in heartbeat lands).
+  const [resolvedOnce, setResolvedOnce] = useState(false);
+  useEffect(() => { if (!isPending) setResolvedOnce(true); }, [isPending]);
   // Hide the splash once EITHER the session resolved or we waited long enough.
-  const splashCanHide = !isPending || waitedTooLong;
+  const splashCanHide = !isPending || resolvedOnce || waitedTooLong;
   // ...but only mount a route GROUP once the session is actually known.
-  const sessionResolved = !isPending;
+  const sessionResolved = !isPending || resolvedOnce;
 
   useEffect(() => {
-    if (!isPending) return;
+    if (!isPending || resolvedOnce) return;
     const t = setTimeout(() => setWaitedTooLong(true), SPLASH_MAX_WAIT_MS);
     return () => clearTimeout(t);
-  }, [isPending]);
+  }, [isPending, resolvedOnce]);
 
   useEffect(() => {
     if (!splashCanHide) return;
