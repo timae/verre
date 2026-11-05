@@ -217,11 +217,15 @@ check(
   /guard=\{sessionResolved && !session\}/.test(layout),
   'This is the one that throws the deep link away: unknown must not select the auth group.',
 )
+// The invariant is about WHICH inputs each condition may read, not their exact
+// shape: the deadline (`waitedTooLong`) may feed the splash decision and must
+// never feed route selection. (PR #97 added a `resolvedOnce` latch to both so a
+// post-sign-out refetch keeps the Stack mounted; that latch is a session
+// landing, not a deadline, so it is allowed on both sides.)
 check(
   'splash hiding and route selection are SEPARATE conditions',
-  /splashCanHide/.test(layout) && /sessionResolved/.test(layout) &&
-    /const splashCanHide = !isPending \|\| waitedTooLong/.test(layout) &&
-    /const sessionResolved = !isPending/.test(layout),
+  /const splashCanHide = [^;\n]*\bwaitedTooLong\b/.test(layout) &&
+    /const sessionResolved = (?![^;\n]*\bwaitedTooLong\b)[^;\n]*!isPending/.test(layout),
   'The deadline may hide the splash; only the session landing may pick a route group.',
 )
 check(
