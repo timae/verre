@@ -112,6 +112,32 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
 - `authClient` baseURL must include the full basePath (`…/api/auth/native`).
   Session cookie lives in SecureStore (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`, never
   `requireAuthentication` — the SDK reads it on every request).
+- 🔒 **Reinstall wipe** (`src/lib/freshInstall.ts`, proposal 06 §2): iOS keeps
+  Keychain items through an uninstall, so a first-launch marker lives in
+  AsyncStorage (`verre.installed`, inside the app container, deleted with the
+  app) and its absence at boot resets the session atom, best-effort
+  `signOut()`s (aborted at 3s) and clears `verre_cookie` + `verre_session_data`.
+  ⚠️ ORDERING: the Expo client seeds its session atom from `verre_session_data`
+  synchronously inside `createAuthClient` (module init), and that seed's
+  `sessionAtom.get()` already fires the first get-session heartbeat (nanostores
+  mounts a store on `get()`) whose response re-writes both items — so the wipe
+  runs from `RootLayout` via `useFreshInstallGuard()` AFTER module init but
+  BEFORE `RootNavigator` (the first `useSession` subscriber) mounts, resets the
+  seeded atom itself via `.value` (never `.get()`), and `src/lib/bootGate.ts`
+  holds every Better Auth request built before the verdict (`customFetchImpl`
+  in authClient.ts) and DROPS it if a wipe happened. The same gate keeps an
+  auth generation (sign-out bumps on request, a session-cookie-setting
+  response bumps on arrival) and discards a response from an older generation,
+  so a slow anonymous heartbeat can't sign a fresh login out — checked AFTER
+  the body is buffered, because Expo's fetch resolves at the headers and
+  better-fetch writes state only after awaiting the body. Chunk keys
+  (`<key>.<i>`, all 64 slots) are probed directly: the SDK's short-value write
+  never deletes older chunks, so orphans holding an old session are normal,
+  and a partially failed wipe leaves a sparse run the retry must still find. A wipe counts
+  only when every key READS BACK gone/overwritten (iOS SecureStore discards
+  the `SecItemDelete` status); otherwise no marker and the stale cookie is
+  stripped from every request. Never subscribe to the session above that
+  gate, and never add a BA request path that bypasses `customFetchImpl`.
 - Sign-up is a **two-step flow** (signUp then signIn) because the server sets
   `autoSignIn: false` for enumeration posture — don't "fix" it.
 - All Verre API calls go through **`src/lib/apiFetch.ts`** (cookie +
