@@ -62,7 +62,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from './lib/prismaClient.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SNAPSHOT = join(root, 'prisma', 'catalog-contract-checks.json')
@@ -345,7 +345,7 @@ function isFoldDependent(depStrings) {
 }
 
 async function main() {
-  const prisma = new PrismaClient()
+  const prisma = createPrismaClient()
   let live, deps, genCols, colTypes, candidates, styleVocab, fks
   try {
     // 🔒 PIN THE SEARCH_PATH BEFORE READING ANYTHING. Two distinct hazards, and

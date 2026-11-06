@@ -44,14 +44,20 @@ jobs:
       #
       # `--from-migrations` requires a shadow database: Prisma applies the
       # migration SQL to it, reads the resulting schema, and diffs that
-      # against schema.prisma.
+      # against schema.prisma. Prisma 7 dropped the `--shadow-database-url`
+      # flag; the URL reaches the CLI through SHADOW_DATABASE_URL →
+      # prisma.config.ts `datasource.shadowDatabaseUrl`. `--to-schema` is the
+      # 7 spelling of `--to-schema-datamodel` (the FILE, not a database — the
+      # other v7 destination, `--to-config-datasource`, would introspect a
+      # live database and change what this gate means).
       - name: Check schema and migrations are in sync
         run: |
           npx prisma migrate diff \
             --from-migrations prisma/migrations \
-            --to-schema-datamodel prisma/schema.prisma \
-            --shadow-database-url "postgres://prisma:prisma@localhost:5432/shadow" \
+            --to-schema prisma/schema.prisma \
             --exit-code
+        env:
+          SHADOW_DATABASE_URL: postgres://prisma:prisma@localhost:5432/shadow
 
       # The diff above cannot see CHECK bodies, deferred constraint triggers,
       # partial uniqueness, NULLS NOT DISTINCT, audit immutability, or

@@ -21,10 +21,10 @@ import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from './lib/prismaClient.mjs'
 
 const MIGRATIONS = join(dirname(fileURLToPath(import.meta.url)), '..', 'prisma', 'migrations')
-const prisma = new PrismaClient()
+const prisma = createPrismaClient()
 
 // Prisma checksums the migration.sql bytes with sha256, hex-encoded.
 const hash = p => createHash('sha256').update(readFileSync(p)).digest('hex')

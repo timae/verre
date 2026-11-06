@@ -18,7 +18,7 @@
 // Run against a DISPOSABLE database.
 //   DATABASE_URL=postgresql://…/catalog_test node scripts/tests/staff-role-concurrency.mjs
 
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from '../lib/prismaClient.mjs'
 // 🔒 The APP path must be driven through the ACTUAL exported function, not a
 // hand-written DELETE. A raw `DELETE FROM staff_roles` exercises only the DB
 // trigger, so a suite built on it would report the cross-path race as covered
@@ -27,7 +27,7 @@ import { PrismaClient } from '@prisma/client'
 // script / CI step that runs this file).
 import { revokeStaffRoleAs, demoteToCuratorAs, ADMIN_LOCK_KEY } from '../../lib/staffRole.ts'
 
-const prisma = new PrismaClient()
+const prisma = createPrismaClient()
 const TRIALS = 12
 let pass = 0
 const failures = []
@@ -242,7 +242,7 @@ async function main() {
        VALUES (${held},'Held','held@test.local',now(),now())`)
     await prisma.$executeRawUnsafe(`INSERT INTO staff_roles (user_id,role) VALUES (${held},'admin')`)
 
-    const holder = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } })
+    const holder = createPrismaClient()
     let blocked = null
     // Hold the SAME advisory key the app path uses, then time a competing delete.
     const holding = holder.$transaction(async tx => {
@@ -251,7 +251,7 @@ async function main() {
       // green if the APP constant changed — only half the drift.
       await tx.$executeRawUnsafe(
         `SELECT pg_advisory_xact_lock(hashtext('${ADMIN_LOCK_KEY}'))`)
-      const other = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } })
+      const other = createPrismaClient()
       const t0 = Date.now()
       const attempt = other
         .$executeRawUnsafe(`DELETE FROM users WHERE id=${held}`)
@@ -323,7 +323,7 @@ async function main() {
          (${t},'Target','t${t}@test.local',now(),now())`)
       await prisma.$executeRawUnsafe(
         `INSERT INTO staff_roles (user_id,role) VALUES (${a},'admin'),(${t},'admin')`)
-      const other = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } })
+      const other = createPrismaClient()
       const res = await Promise.allSettled([
         revokeStaffRoleAs(a, t, 'admin', 'lock-order test'),
         other.$executeRawUnsafe(`DELETE FROM users WHERE id=${t}`),
@@ -396,7 +396,7 @@ async function main() {
       //     side therefore gets its own PrismaClient, mirroring the two
       //     independent psql sessions that reproduced this by hand.
       const removeOnOwnConn = id => () => {
-        const c = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } })
+        const c = createPrismaClient()
         return c
           .$transaction(async tx => {
             // ⚠️ $executeRawUnsafe, NOT $queryRawUnsafe: pg_sleep() returns
@@ -504,7 +504,7 @@ async function main() {
       // holder releases. Both then proceed from the same starting state — which is
       // exactly the interleaving the read-before-lock defect needs, because a
       // read taken BEFORE the lock happens while the holder still blocks it.
-      const gate = new PrismaClient({ datasources: { db: { url: process.env.DATABASE_URL } } })
+      const gate = createPrismaClient()
       let release
       const gateHeld = new Promise(r => { release = r })
       const gating = gate.$transaction(async tx => {

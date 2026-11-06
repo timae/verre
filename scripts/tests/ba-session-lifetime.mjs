@@ -229,7 +229,7 @@ async function main() {
   check('fixture: all four rows present before the prune', before === 4, String(before))
   // The web SQL job still runs as-is (one allow-listed statement) — pin that the
   // file executes, so a gate-driven edit can't silently break the cron.
-  execFileSync('npx', ['prisma', 'db', 'execute', '--schema', 'prisma/schema.prisma', '--file', 'prisma/maintenance/cleanup-revoked-sessions.sql'], {
+  execFileSync('npx', ['prisma', 'db', 'execute', '--file', 'prisma/maintenance/cleanup-revoked-sessions.sql'], {
     cwd: REPO_ROOT,
     env: process.env,
     stdio: ['ignore', 'ignore', 'inherit'],
