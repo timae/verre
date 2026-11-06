@@ -36,7 +36,7 @@ npm install
 npx prisma generate
 npm run dev                  # → http://localhost:3000
 npx tsc --noEmit             # type-check
-npm run lint
+npm run lint                 # eslint . (flat config) — `next build` no longer lints since Next 16
 ```
 
 **LAN testing gotcha**: `S3_ENDPOINT` is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. Switching networks → empty the bucket **through the S3 API** and clear `users.image_url`: `docker run --rm --network host -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin amazon/aws-cli:latest --endpoint-url http://localhost:9000 s3 rm s3://verre-local --recursive && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`. ⚠️ Never `rm -rf` the bucket directory inside the RustFS container: it keeps bucket metadata under `/data/.rustfs.sys`, and a directory wipe leaves an "orphaned bucket generation" that refuses recreation (verified 2026-11-06). If that has happened, `docker rm -f verre-s3 && docker volume rm verre-s3-data` and recreate per README.
@@ -53,6 +53,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 - **Plans for new features / non-trivial changes (not yet shipped)** → `docs/dev/proposals/<name>.md`. Bar is the same as the deep-dive bar; use the proposal to align on the *why* and the migration shape before code. If the design conversation would be longer than the diff itself, write the proposal. See `docs/dev/proposals/README.md` for the post-ship lifecycle.
 - **env var added/changed** → `docs/dev/deployment.md` (and README.md if the local dev story changes).
 - **Native-app design decision / ruling** → `docs/design/` (mobile only): ADRs in `decisions/` (append-only, supersede never edit), reusable build recipes in `patterns/`. The component catalog + "reuse before you build" rule + the extraction backlog live in `apps/mobile/CLAUDE.md` (auto-loads on subtree touch). The mockup in `.local/design/` is historical, often stale — the shipped app + ADRs win. (Web design isn't tracked — it's slated for redesign.)
+- **`AGENTS.md`** (root) is only a pointer for agents that read that filename (Codex) plus a block `next dev` manages between its markers. Never put guidance there; it goes in the CLAUDE.md files.
 - **User-facing feature scope changes** → README.md (`What it does` list + API table).
 - **API request/response shape changes for a route already documented in README** → update the README API table (example body shapes must stay accurate).
 

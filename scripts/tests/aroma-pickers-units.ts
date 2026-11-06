@@ -16,6 +16,9 @@ import { themes } from '../../apps/mobile/src/theme/vero-tokens';
 import { FLAVOUR_PALETTE } from '../../apps/mobile/src/theme/flavour-palette/palette';
 import { AROMA_FAMILIES } from '@verre/core';
 
+// Indexed by a runtime theme key, so a theme missing from the palette reads as undefined.
+const PALETTE_BY_KEY = FLAVOUR_PALETTE as Record<string, { aroma: Record<string, string> } | undefined>;
+
 let failures = 0;
 const check = (name: string, ok: boolean, detail = '') => {
   if (!ok) failures++;
@@ -141,17 +144,17 @@ const connectedByDistance = (pts: { x: number; y: number }[], R: number): boolea
   const weakWords: string[] = [];
   const weakArmed: string[] = [];
   for (const [themeKey, t] of Object.entries(themes)) {
-    const aroma = (FLAVOUR_PALETTE as any)[themeKey]?.aroma;
+    const aroma = PALETTE_BY_KEY[themeKey]?.aroma;
     if (!aroma) { check(`palette has aroma set for ${themeKey}`, false); continue; }
     for (const f of AROMA_FAMILIES) {
       const c = aroma[f.label];
       if (!c) { check(`palette maps family '${f.label}' (${themeKey})`, false); continue; }
-      const ink = (t as any).ink as string;
-      const bg = (t as any).bg as string;
+      const ink = t.ink;
+      const bg = t.bg;
       // Resting: solid colour words on the tint fill.
       let worst = Infinity;
       for (const [, fillR] of REST_SITES) {
-        worst = Math.min(worst, contrastRatio(c, mix(c, (t as any).surface, aromaFillRatio(themeKey, f.id, fillR))));
+        worst = Math.min(worst, contrastRatio(c, mix(c, t.surface, aromaFillRatio(themeKey, f.id, fillR))));
       }
       if (worst < 3) weakWords.push(`${themeKey}/${f.label}=${worst.toFixed(2)}`);
       // Armed: inkOn label on the solid family fill.
@@ -166,14 +169,14 @@ const connectedByDistance = (pts: { x: number; y: number }[], R: number): boolea
   let rsBroken = 0;
   let rsKeptSolid = 0;
   for (const [themeKey, t] of Object.entries(themes)) {
-    const aroma = (FLAVOUR_PALETTE as any)[themeKey]?.aroma;
+    const aroma = PALETTE_BY_KEY[themeKey]?.aroma;
     for (const f of AROMA_FAMILIES) {
       const c = aroma?.[f.label];
       if (!c) continue;
-      const fill = mix(c, (t as any).surface, aromaFillRatio(themeKey, f.id, 0.2));
-      const out = readableSolid(c, (t as any).ink, fill);
-      if (out === mix(c, (t as any).ink, 1)) rsKeptSolid++;
-      else if (contrastRatio(out, fill) < 3 && out !== (t as any).ink) rsBroken++;
+      const fill = mix(c, t.surface, aromaFillRatio(themeKey, f.id, 0.2));
+      const out = readableSolid(c, t.ink, fill);
+      if (out === mix(c, t.ink, 1)) rsKeptSolid++;
+      else if (contrastRatio(out, fill) < 3 && out !== t.ink) rsBroken++;
     }
   }
   check('readableSolid: AA or solid or ink everywhere', rsBroken === 0, `${rsKeptSolid}/72 stay 100% solid`);
@@ -188,11 +191,11 @@ const connectedByDistance = (pts: { x: number; y: number }[], R: number): boolea
   let ringWeak = 0;
   let hexStrokeWeak = 0;
   for (const [themeKey, t] of Object.entries(themes)) {
-    const aroma = (FLAVOUR_PALETTE as any)[themeKey]?.aroma;
+    const aroma = PALETTE_BY_KEY[themeKey]?.aroma;
     if (!aroma) continue;
-    const ink = (t as any).ink as string;
-    const bg = (t as any).bg as string;
-    const surface = (t as any).surface as string;
+    const ink = t.ink;
+    const bg = t.bg;
+    const surface = t.surface;
     for (const f of AROMA_FAMILIES) {
       const c = aroma[f.label];
       if (!c) continue;

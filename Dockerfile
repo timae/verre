@@ -1,4 +1,4 @@
-# ── Verre v3 — Next.js 15 ─────────────────────────────────────
+# ── Verre v3 — Next.js 16 ─────────────────────────────────────
 FROM node:24-alpine AS builder
 WORKDIR /app
 # Copy the root manifests AND every workspace package manifest before `npm ci`

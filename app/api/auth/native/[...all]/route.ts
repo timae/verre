@@ -6,8 +6,8 @@ import { clientVersionGate } from '@/lib/clientVersion'
 // Better Auth's catch-all, mounted under /api/auth/native so it never collides
 // with NextAuth's [...nextauth] catch-all (Next.js forbids two catch-alls at one
 // path level). betterAuthServer pulls node:* + bcrypt, so this route is pinned to
-// the Node runtime — never Edge (proposal §6.9; the middleware matcher /me/:path*
-// already excludes /api/auth/*, so NextAuth's Edge config won't run here either).
+// the Node runtime — never Edge (proposal §6.9; the proxy matcher /me/:path*
+// already excludes /api/auth/*, so the proxy's NextAuth instance won't run here either).
 export const runtime = 'nodejs'
 
 const handlers = toNextJsHandler(betterAuthServer)

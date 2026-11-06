@@ -3,10 +3,11 @@ import type { Session } from 'next-auth'
 import { auth } from '@/auth'
 import { prisma } from '@/lib/prisma'
 // Static on purpose: betterAuth.ts is Node-runtime-only (bcrypt), and so is
-// every resolveUser caller (API route handlers). If this seam ever leaks into
-// the Edge graph (middleware/auth.config), the build fails loud — a dynamic
-// import would be bundled for Edge all the same (see app/CLAUDE.md) while
-// hiding the dependency.
+// every resolveUser caller (API route handlers). It must never reach proxy.ts /
+// auth.config.ts: the proxy runs on Node since Next 16, so that no longer fails
+// the build — it would silently put Postgres + bcrypt in front of every /me
+// request (the eslint.config.mjs allowlists catch it). A dynamic import would
+// only hide the dependency (see app/CLAUDE.md).
 import { betterAuthServer } from '@/lib/betterAuth'
 
 // The single auth seam every API handler resolves its caller through. Returns

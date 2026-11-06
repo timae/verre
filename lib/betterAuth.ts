@@ -30,9 +30,11 @@ function syntheticUserId(email: string): string {
 // ── Better Auth — native-app credential layer ─────────────────────────────────
 //
 // 🔒 NODE-RUNTIME ONLY. better-auth + bcrypt pull `node:*` imports. This module
-// must NEVER be reached from middleware.ts / auth.config.ts / instrumentation.ts
-// or `npm run build` fails with UnhandledSchemeError (Edge bundle). It is mounted
-// only in the Node-runtime route handler at app/api/auth/native/[...all].
+// must NEVER be reached from proxy.ts / auth.config.ts / instrumentation.ts.
+// Since Next 16 a leak no longer fails the build (the proxy runs on Node, and
+// Turbopack only warns about Node modules in instrumentation's Edge entry); the
+// import allowlists in eslint.config.mjs (CI: check-lint.yml) catch it instead. It is mounted only in the Node-runtime route
+// handler at app/api/auth/native/[...all].
 //
 // SCOPE (step 5): email/password only. Social providers (Google/Apple) are a
 // TODO(step-6) — they need real client credentials + the native nonce/Apple
