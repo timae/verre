@@ -29,7 +29,7 @@ This file is the always-loaded map: cross-cutting invariants, the destination-ro
 
 ### Local development
 
-Setup (Redis + MinIO + bucket policy + `.env`) is documented in README.md. Day-to-day:
+Setup (Redis + a local S3-compatible store + bucket policy + `.env`) is documented in README.md. Day-to-day:
 
 ```bash
 npm install
@@ -39,7 +39,7 @@ npx tsc --noEmit             # type-check
 npm run lint
 ```
 
-**LAN testing gotcha**: `S3_ENDPOINT` is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. Switching networks → wipe the bucket and clear `users.image_url`: `docker exec verre-minio rm -rf /data/verre-local && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`, then recreate the bucket per README.
+**LAN testing gotcha**: `S3_ENDPOINT` is stored as a literal prefix in `users.image_url`, so rows uploaded under one address won't resolve from another. Switching networks → empty the bucket **through the S3 API** and clear `users.image_url`: `docker run --rm --network host -e AWS_ACCESS_KEY_ID=minioadmin -e AWS_SECRET_ACCESS_KEY=minioadmin amazon/aws-cli:latest --endpoint-url http://localhost:9000 s3 rm s3://verre-local --recursive && psql "$DATABASE_URL" -c "UPDATE users SET image_url = NULL"`. ⚠️ Never `rm -rf` the bucket directory inside the RustFS container: it keeps bucket metadata under `/data/.rustfs.sys`, and a directory wipe leaves an "orphaned bucket generation" that refuses recreation (verified 2026-11-06). If that has happened, `docker rm -f verre-s3 && docker volume rm verre-s3-data` and recreate per README.
 
 Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy semantics): see `prisma/CLAUDE.md`.
 

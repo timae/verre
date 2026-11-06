@@ -103,12 +103,13 @@ Or via Cockpit:
 # Redis
 docker run -d -p 6379:6379 redis:7-alpine
 
-# S3 (MinIO)
-docker run -d --name verre-minio \
+# S3 (RustFS — S3-compatible, Apache-2.0; the MinIO community image was
+# archived in April 2026 and is no longer maintained. Pinned tag on purpose.)
+docker run -d --name verre-s3 \
   -p 9000:9000 -p 9001:9001 \
-  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-  -v verre-minio-data:/data \
-  minio/minio:latest server /data --console-address ":9001"
+  -e RUSTFS_ACCESS_KEY=minioadmin -e RUSTFS_SECRET_KEY=minioadmin \
+  -v verre-s3-data:/data -v verre-s3-logs:/logs \
+  rustfs/rustfs:1.0.4
 
 # First-time bucket creation + public-read policy (so <img src> from
 # the browser can fetch uploaded objects):
@@ -132,7 +133,7 @@ npm run dev
 # → http://localhost:3000
 ```
 
-Local `.env` for the MinIO bucket:
+Local `.env` for the bucket (the access-key values are arbitrary local defaults; `minioadmin` is kept so existing `.env` files keep working):
 ```
 S3_ENDPOINT=http://localhost:9000
 S3_BUCKET=verre-local
