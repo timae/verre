@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { View, Pressable, useWindowDimensions } from 'react-native';
+import { View, Pressable, useWindowDimensions, type ViewInstance } from 'react-native';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Sheet } from '@/components/ui/Sheet';
@@ -40,7 +40,7 @@ export function SelectionSheet({
   const insets = useSafeAreaInsets();
   const { height, width: screenW } = useWindowDimensions();
   const [popup, setPopup] = useState<{ a: string; m: string | null; anchor: MenuAnchor; right?: number } | null>(null);
-  const chipRefs = useRef<Record<string, View | null>>({});
+  const chipRefs = useRef<Record<string, ViewInstance | null>>({});
   const tap = useTapOrDouble();
   const scrolls = ops.value.length > SCROLL_PAST;
   const Wrap = scrolls ? View : BottomSheetView;

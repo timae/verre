@@ -1,5 +1,5 @@
 import { forwardRef, useRef, useState } from 'react';
-import { Pressable, TextInput, View, type TextInputProps } from 'react-native';
+import { Pressable, TextInput, View, type TextInputProps, type ViewInstance, type TextInputInstance } from 'react-native';
 import { Icon } from './Icon';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { usePhoneTokens, type FontSurfaceName } from '@/lib/layout';
@@ -25,7 +25,7 @@ interface Props extends TextInputProps {
 // 1px ring (≈2px) — RN has no inset shadow, so focus thickens the border to 2px
 // (borders draw inside the bounds: no sibling layout shift) and the padding
 // compensates by 1px so the text doesn't nudge.
-export const TextField = forwardRef<TextInput, Props>(function TextField(
+export const TextField = forwardRef<TextInputInstance, Props>(function TextField(
   { label, error, invalid, surface: surfaceName = 'formControl', style, onFocus, onBlur, editable, growLines, ...rest },
   ref,
 ) {
@@ -60,8 +60,8 @@ export const TextField = forwardRef<TextInput, Props>(function TextField(
   const [revealed, setRevealed] = useState(false);
   // Keyboard-safe registration (lib/keyboardDismiss): the input itself and the
   // eye toggle must not bounce the keyboard when tapped.
-  const innerRef = useRef<TextInput | null>(null);
-  const eyeRef = useRef<View | null>(null);
+  const innerRef = useRef<TextInputInstance | null>(null);
+  const eyeRef = useRef<ViewInstance | null>(null);
   useRegisterInput(innerRef);
   useRegisterInput(eyeRef, secure);
   const isInvalid = !!(error || invalid);

@@ -103,13 +103,22 @@ function moved(ids: string[], from: number, to: number): string[] {
 export function DraggableRows({ ids, enabled, denied, onDenied, deniedNote, renderRow, onCommit, scrollRef, scrollY, maxScrollY }: Props) {
   const { height: windowH } = useWindowDimensions();
   // Render GENERATION — the cross-thread seam closer. Every ids change bumps
-  // it (computed during render); each row's style worklet captures the
-  // generation it was rendered under and returns identity transforms when it
-  // doesn't match the UI-side genSV. So the instant the reordered tree
-  // renders, every stale shift/lift is inert IN THAT SAME FABRIC COMMIT —
-  // no old-transform frame, no sibling springs replaying over the new
-  // layout (the "two rows drift apart and back" glitch). The layout effect
-  // then syncs genSV + resets the drag scalars on the UI thread.
+  // it (computed during render). It does two things:
+  //   1. Each row is KEYED on it, so a reordered tree MOUNTS FRESH rows.
+  //      A fresh host view has no entries in reanimated's props registry, and
+  //      that is what makes the hand-off deterministic: on a React commit
+  //      reanimated overlays the registry's last FLUSHED values onto the
+  //      new tree, while the worklets' zeroed transforms sit in a batch that
+  //      is flushed only on the next UI frame. Stable keys made the outcome a
+  //      race between that flush and the commit — sometimes clean, sometimes
+  //      the new order painted with the frozen drag transforms (rows
+  //      overlapping, the moved row drawn rows away) and sprang back ~250ms
+  //      later (reanimated 4.7, device pass 2026-11-06). Remounting costs a
+  //      reconcile of ~a dozen rows in the same commit; nothing visible.
+  //   2. Each row's style worklet captures the generation it was rendered
+  //      under and returns identity transforms while it doesn't match the
+  //      UI-side genSV (belt, cheap). The layout effect then syncs genSV +
+  //      resets the drag scalars on the UI thread.
   const idsKey = ids.join('|');
   const genRef = useRef({ key: idsKey, gen: 0 });
   if (genRef.current.key !== idsKey) genRef.current = { key: idsKey, gen: genRef.current.gen + 1 };
@@ -168,7 +177,7 @@ export function DraggableRows({ ids, enabled, denied, onDenied, deniedNote, rend
     <View>
       {ids.map((id, i) => (
         <DragRow
-          key={id}
+          key={`${id}#${gen}`}
           index={i}
           count={ids.length}
           ids={ids}

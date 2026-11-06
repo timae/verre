@@ -5,7 +5,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useRef, useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
+import { Alert, Pressable, View, type ViewInstance } from 'react-native';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
 import { Icon } from '@/components/ui/Icon';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
@@ -15,7 +15,7 @@ import { useTheme } from '@/theme';
 export function SessionMenuButton({ onOpen }: { onOpen: (anchorBottomY: number) => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const ref = useRef<View>(null);
+  const ref = useRef<ViewInstance>(null);
   return (
     <View ref={ref} collapsable={false}>
       <Pressable

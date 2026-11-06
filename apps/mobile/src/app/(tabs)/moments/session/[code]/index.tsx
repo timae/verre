@@ -2,9 +2,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Easing, Image, Keyboard, Linking, Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Easing, Image, Keyboard, Linking, Pressable, ScrollView, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, runOnJS, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedScrollHandler, useAnimatedStyle, useDerivedValue, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 
@@ -472,7 +472,7 @@ export default function SessionLineup() {
     <OvcAbout meta={meta} isHostViewer={isHostViewer} myIdentityId={myIdentityId} onPeople={() => setPeopleOpen(true)} />
   ) : null;
   const openImpression = (wineId: string) =>
-    router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }));
+    router.push(sessionHref(sessionTab, 'impression/[wineId]', { code, wineId }), { dangerouslySingular: true });
   const openAdd = () => router.push(sessionHref(sessionTab, 'add', { code }));
 
   // First tap arms; the second (while armed) fires the reveal.
@@ -584,6 +584,10 @@ export default function SessionLineup() {
   const plainContentH = useRef(0);
   const plainViewportH = useRef(0);
   const wineById = useMemo(() => new Map((wines ?? []).map((w) => [w.id, w] as const)), [wines]);
+  // Light glyphs only while the photo is actually under the status bar. The
+  // reconnecting strip covers the notch with surfaceSunk, so glyphs revert to
+  // the theme default (light glyphs would vanish on it).
+  const statusBarStyle = heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.
@@ -599,16 +603,14 @@ export default function SessionLineup() {
     {/* The hero variant runs the photo under the status bar, so its container
         drops the safe-area top padding (the floating bar re-applies it). */}
     <View style={{ flex: 1, paddingTop: heroShown ? 0 : insets.top + 8 }}>
-      {/* Always mounted (expo-status-bar is last-mounted-wins and does NOT
-          restore on unmount — a conditional bar would leave white glyphs stuck
-          if the cover is removed mid-screen). White only over the hero photo
-          pre-collapse; the theme default everywhere else. */}
-      <StatusBar
-        // Light glyphs only while the photo is actually under the status bar.
-        // The reconnecting strip covers the notch with surfaceSunk, so glyphs
-        // revert to the theme default (light glyphs would vanish on it).
-        style={heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
-      />
+      {/* iOS reads the screen option (root _layout: screen traits are the only
+          status-bar channel there; the deepest screen with one set wins over
+          the root's themed default). Android goes through expo-status-bar,
+          kept always mounted: it is last-mounted-wins and does NOT restore on
+          unmount, so a conditional bar would leave white glyphs stuck if the
+          cover is removed mid-screen. */}
+      <Stack.Screen options={{ statusBarStyle }} />
+      <StatusBar style={statusBarStyle} />
       {!heroShown ? (
         <View style={{ paddingHorizontal: GUTTER }}>
           <VBar
@@ -1464,7 +1466,7 @@ function HeroTopBar({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
-  const moreRef = useRef<View>(null);
+  const moreRef = useRef<ViewInstance>(null);
   // Add ⇄ ⋯ morph: pill fill + circle fill are ONE SVG path (capsule ∪
   // circle, single GLASS_FILL) — the union paints uniformly by definition,
   // so the intersection can't double into a dark crescent (two stacked
@@ -1597,8 +1599,8 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
   useEffect(() => () => { if (deniedTimer.current) clearTimeout(deniedTimer.current); }, []);
   const phone = usePhoneTokens();
   const { width: screenW } = useWindowDimensions();
-  const btnRef = useRef<View>(null);
-  const sortBtnRef = useRef<View>(null);
+  const btnRef = useRef<ViewInstance>(null);
+  const sortBtnRef = useRef<ViewInstance>(null);
   const [anchorRaw, setAnchor] = useState<{ top: number; bottom: number } | null>(null);
   const [sortAnchorRaw, setSortAnchor] = useState<{ top: number; bottom: number } | null>(null);
   const [menuRight, setMenuRight] = useState(16);

@@ -30,7 +30,8 @@ export default function TabsLayout() {
   const [keyboardShown, setKeyboardShown] = useState(false);
 
   // Cold-start anchor. Kept from the NativeTabs era (classic tabs would honor
-  // initialRouteName, but the replace also covers a stray "/feed" cold start):
+  // an `unstable_settings.anchor`, but the replace also covers a stray "/feed"
+  // cold start):
   // with no index route "/" lands on the first trigger (Feed) — snap the very
   // first mount to Moments; any real deep link (session URL etc.) has a
   // different pathname and is left alone. Caveat: a genuine /feed deep link at

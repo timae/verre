@@ -13,6 +13,8 @@ import {
   StyleSheet,
   View,
   useWindowDimensions,
+  type ViewInstance,
+  type ScrollViewInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as WebBrowser from 'expo-web-browser';
@@ -172,7 +174,7 @@ export default function FeedImpression() {
   // LANDS the pager on the impression that was being viewed (the mock's
   // gLand). `galleryAt` = the wine index it opened from, null = closed.
   const [galleryAt, setGalleryAt] = useState<number | null>(null);
-  const pagerRef = useRef<ScrollView>(null);
+  const pagerRef = useRef<ScrollViewInstance>(null);
   // Mirror every active-page change into the feed card beneath (landing sync,
   // round 3): any close — pull-down, back button, Android back — then lands on
   // the slide being dismissed instead of the one the detail opened from. The
@@ -1018,7 +1020,7 @@ function FloatBar({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const menuBtnRef = useRef<View>(null);
+  const menuBtnRef = useRef<ViewInstance>(null);
   // Glass chrome only over a photo before collapse; photoless + collapsed = ink.
   const onGlass = !solid && !photoless;
   const iconColor = onGlass ? '#fff' : theme.ink;

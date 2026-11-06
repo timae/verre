@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
@@ -80,7 +80,7 @@ export function PeopleSheet({
   const [friendsOnly, setFriendsOnly] = useState(false);
   const [roleFilter, setRoleFilter] = useState<'all' | 'hosts' | 'provider' | 'taster'>('all');
   const [roleMenu, setRoleMenu] = useState<{ top: number; bottom: number } | null>(null);
-  const roleChipRef = useRef<View>(null);
+  const roleChipRef = useRef<ViewInstance>(null);
   const [rowsH, setRowsH] = useState(0);
   useEffect(() => {
     if (!open) {
@@ -446,7 +446,7 @@ function PersonRow({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('compactList');
-  const rowRef = useRef<View>(null);
+  const rowRef = useRef<ViewInstance>(null);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
     isSelf ? { label: 'You', color: 'inkSoft' }

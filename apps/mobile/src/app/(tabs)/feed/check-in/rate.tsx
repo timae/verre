@@ -1,7 +1,7 @@
 import { Stack, useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { ScrollView, View } from 'react-native';
+import { ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { fillFlavourZeros, normalizeVintageText, resolveAxes, type AromaSelection } from '@verre/core';
@@ -78,7 +78,7 @@ export default function CheckinRate() {
   // Aroma search focus → the minimal shift that fits the search block above
   // the keyboard — the SHARED screen-side hook (one implementation with the
   // impression screen; see useAromaSearchScroll).
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const scrollYRef = useRef(0);
   const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, insets.bottom + FOOT_CLEARANCE);
 

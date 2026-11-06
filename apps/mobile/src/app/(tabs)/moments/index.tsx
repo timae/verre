@@ -2,7 +2,7 @@ import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, View, useWindowDimensions, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
 import { normalizeCode, formatCodeInput } from '@verre/core';
@@ -352,7 +352,7 @@ function LiveCard({
   const open = () => {
     if (navigating) return;
     setNavigating(true);
-    router.push({ pathname: '/moments/session/[code]', params: { code: m.code } });
+    router.push({ pathname: '/moments/session/[code]', params: { code: m.code } }, { dangerouslySingular: true });
   };
   const card = (
     <CardSurface width={width} height={cardHeight}>
@@ -391,7 +391,7 @@ function LiveStrip({ moments }: { moments: MySessionRow[] }) {
   const [page, setPage] = useState(0);
   const cardWidth = width - GUTTER * 2;
   const step = cardWidth + 12;
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
 
   const hideMut = useMutation({
     mutationFn: (code: string) => setMomentHidden(code, true),
@@ -538,7 +538,7 @@ function JoinBlock() {
       const joined = await joinMoment(code, auth?.user.name ?? '');
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
       setInput('');
-      router.push({ pathname: '/moments/session/[code]', params: { code: joined.code } });
+      router.push({ pathname: '/moments/session/[code]', params: { code: joined.code } }, { dangerouslySingular: true });
     } catch (e) {
       if (e instanceof ApiError && e.kind === 'not-found') setError('No moment found for that code.');
       else if (e instanceof ApiError && e.kind === 'banned') setError("You can't join this moment.");

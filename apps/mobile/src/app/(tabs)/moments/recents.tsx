@@ -378,7 +378,7 @@ export default function AllMoments() {
                 <View style={{ paddingVertical: 16, alignItems: 'center' }}>
                   <ActivityIndicator />
                 </View>
-              ) : null
+              ) : undefined
             }
             ListEmptyComponent={
               <VText variant="small" color="inkSoft">
@@ -752,7 +752,11 @@ function RecentRow({ row }: { row: MySessionRow }) {
     // .sh-row base: gap 12, 10px vertical padding, transparent.
     <Pressable
       accessibilityRole="button"
-      onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: row.code } })}
+      // dangerouslySingular: react-native-screens 4.30 no longer sinks touches
+      // during a push transition on iOS 26, so a fast double-tap pushed the
+      // same session twice (device pass 2026-11-05). Singular keys the push on
+      // name+params: the second tap finds the route already there.
+      onPress={() => router.push({ pathname: '/moments/session/[code]', params: { code: row.code } }, { dangerouslySingular: true })}
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',

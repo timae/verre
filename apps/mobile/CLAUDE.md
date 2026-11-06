@@ -4,30 +4,159 @@ Local rules for the native app workspace. Root CLAUDE.md still applies. Design
 source of truth: the Vero handoff in `.local/design/` (gitignored — ask Simon
 if missing); proposals: `docs/dev/proposals/mobile-app/`.
 
-## Toolchain facts (SDK 56 — verify against versioned docs, not memory)
+## Toolchain facts (SDK 58 — verify against versioned docs, not memory)
 
-- **Expo SDK 56, Expo Router v7 (`~56.x` — version-matched to the SDK).** The
-  router no longer depends on `@react-navigation/*` packages — it VENDORS them.
-  Classic JS tabs (custom tab bars) come from **`expo-router/js-tabs`**
-  (`BottomTabBarProps` etc.); `NativeTabs` renders the OS tab bar and cannot do
-  the Vero floating pill. Read https://docs.expo.dev/versions/v56.0.0/ before
-  trusting recalled API shapes.
+- **Expo SDK 58, Expo Router `~58.x` (version-matched to the SDK), RN 0.88,
+  React 19.3.** The router no longer depends on `@react-navigation/*` packages —
+  it VENDORS them. Classic JS tabs (custom tab bars) come from
+  **`expo-router/js-tabs`**; `NativeTabs` renders the OS tab bar and cannot do
+  the Vero floating pill. Read https://docs.expo.dev/versions/v58.0.0/ before
+  trusting recalled API shapes. Router-58 contracts the app depends on:
+  `BottomTabBarProps` is `{ state, descriptors, emitter, navigateToTab, insets }`
+  (no `navigation`) — `PillTabBar` emits `tabPress` via `emitter.emit` and
+  navigates with `navigateToTab(route.key)` (the KEY — a route NAME only warns
+  in dev and silently does nothing in release); a layout's cold-start route is
+  `unstable_settings = { anchor }` (`initialRouteName` is deprecated and only
+  warns); `Stack.Protected` guarded screens now render a redirect instead of
+  unmounting (target: `redirectTo`, else the layout's anchor if unguarded,
+  else the first unguarded child in sorted order); `freezeOnBlur` is
+  always off (visited tab scenes stay mounted AND unfrozen — polls must gate on
+  focus themselves, see `useSessionPoll`). 🔒 **A guard's default redirect
+  targets the first unguarded sibling by GROUP href** ("/(tabs)" / "/(auth)"),
+  and a group href only resolves if the group has an `index` leaf — `(tabs)`
+  has none, so "/(tabs)" is `+not-found` ("Nothing here" after sign-in and on
+  every signed-in cold start, device pass 2026-11-05). The `(auth)` guard in
+  `src/app/_layout.tsx` therefore carries `redirectTo="/moments"`; keep it
+  on any guard whose fallback would be `(tabs)`. Verify a redirect target the
+  same way: `getStateFromPath(href, config)` must resolve to a leaf (the probe
+  in the SDK 58 plan page runs the real router against `src/app`).
+- **RN 0.88 ships the STRICT TypeScript API by default** (`types_generated`;
+  SDK 56 was on the legacy types). Components are functions, not classes, so
+  `useRef<View>` is a type error. Convention: type refs with the exported
+  instance types — `useRef<ViewInstance>(null)`, `TextInputInstance`,
+  `ScrollViewInstance` (`import { View, type ViewInstance } from 'react-native'`);
+  `FlatList` is still a class and keeps `useRef<FlatList<T>>`. Strict list
+  props reject `null` (`ListFooterComponent={cond ? <X/> : undefined}`). Do
+  NOT reach for the `react-native-legacy-deep-imports` tsconfig condition — it
+  only defers the same edit.
+- **react-native-gesture-handler 3.x: the app stays on the BUILDER API
+  (`Gesture.Pan()` + `GestureDetector`), which GH 3 marks `@deprecated` but
+  still routes through its legacy detector** (no extra host view; nothing
+  enforces the deprecation — tsc and the root ESLint config both ignore it).
+  The hook API (`usePanGesture` …) is a SEPARATE, whole-app migration PR:
+  relations (`simultaneousWithExternalGesture` etc.) cannot be set between
+  hook-based and builder-based gestures, and `@gorhom/bottom-sheet` +
+  `react-native-gesture-image-viewer` are builder-based. Never mix the two
+  APIs in one relation.
 - **New Architecture is mandatory** (SDK 55 dropped Legacy). Native libs must be
   installed at the SDK-pinned versions. ⚠️ `npx expo install` needs
   `api.expo.dev`, which this sandbox's network policy blocks — same pins are in
-  `node_modules/expo/bundledNativeModules.json`; read the version there and
-  `npm install -w mobile pkg@<pin>`.
+  `node_modules/expo/bundledNativeModules.json`: read the version there, edit
+  `package.json` by hand, then run ONE root `npm install` (see the eviction
+  trap below). Verify with `CI=1 EXPO_OFFLINE=1 npx expo install --check` from
+  `apps/mobile` (works offline against the bundled map). ⚠️ An SDK bump that
+  replaces hoisted `react-native`/`reanimated`/`worklets` can leave the OLD
+  copy at root `node_modules` (kept as a peer-satisfying node from the stale
+  lockfile) with the NEW one nested under `apps/mobile/node_modules` — the
+  tell is `apps/mobile/node_modules` holding more than `@better-auth`,
+  `better-call`, `typescript`, `zod`. `npm dedupe` does not fix it; delete
+  `package-lock.json` + every `node_modules` and reinstall from the manifests.
 - **Custom dev client, tracked iOS project** (no Expo Go, no EAS): `ios/` is
   checked in so a fresh clone can open `ios/Verre.xcworkspace` in Xcode.
   `Pods/` stays gitignored; run `cd ios && pod install` after cloning or when
   native dependencies change. Android remains CNG/generated for now.
-  `npx expo run:ios` on the Mac is still useful, but it may auto-prebuild and
-  rewrite tracked `ios/` files — review those diffs before committing. Do not
-  use `expo prebuild --clean` casually; it deletes the authoritative native
-  project and regenerates it. Simulator needs no Apple account; a physical
+  ⚠️ **Expo CLI 58 prebuild is CLEAN BY DEFAULT**: a plain
+  `npx expo prebuild --platform ios` deletes `ios/` and regenerates it from the
+  SDK template + config plugins (`--no-clean` keeps the existing project).
+  Regeneration is the sanctioned way to take an SDK's native-template changes;
+  afterwards re-apply the ONE hand edit (`Verre.xcscheme` LaunchAction
+  `buildConfiguration = "Release"`), then grep `project.pbxproj` for an EMPTY
+  `DEVELOPMENT_TEAM` before committing (device builds write the Apple Team
+  ID into it; `project.pbxproj` + `Podfile.lock` are kept
+  `git update-index --skip-worktree` on dev machines for that reason — lift
+  it before a prebuild so the regenerated files are reviewable, re-set it
+  after committing), and diff the regenerated `Info.plist` / `.xcscheme`
+  against the template rather than trusting them: a prebuild over an
+  existing project has duplicated `CFBundleURLSchemes` entries, and the
+  template ships a `TestableReference` to a test target this project does
+  not have plus `MARKETING_VERSION = 1.0` (the app's version lives in
+  `app.json` → `Info.plist`). `UIViewControllerBasedStatusBarAppearance`
+  is `true` since SDK 58 (template value; the SDK 56 project had `false`)
+  and must STAY true: apps built with the iOS 27 SDK can't use the
+  app-level status-bar API that `false` relies on. 🔒 Consequence: on iOS
+  the JS `<StatusBar>` element is never consulted — react-native-screens
+  swizzles every view controller's status-bar query and forwards it to the
+  topmost screen, and a screen with no explicit style reports `auto` (the
+  PHONE's appearance, not the app theme → black glyphs on the dark theme,
+  device pass 2026-11-05). The style is therefore a SCREEN OPTION:
+  `statusBarStyle` on the root Stack's `screenOptions` in
+  `src/app/_layout.tsx`, derived from the theme; deeper screens without
+  their own style inherit it. A screen that needs a different style sets
+  its own `statusBarStyle` option, never a `<StatusBar>` element — the
+  DEEPEST screen with the trait set wins (RNS `findChildVCForConfigAndTrait`
+  walks down to the top screen of every nested stack), so a pushed screen
+  without one falls back to the root's themed style by itself. The
+  photo-hero screens (welcome, session line-up, impression) do this via
+  `<Stack.Screen options={{ statusBarStyle }}>` (Codex review, 2026-11-06:
+  their `<StatusBar style="light">` elements had silently stopped working —
+  dark glyphs over the photo on the light theme). They keep the element too,
+  for Android only, where expo-status-bar still drives the bar and is
+  last-mounted-wins. 🔒 A screen presented as a MODAL (`presentation:
+  'transparentModal'`, the feed's impression detail) is skipped by that walk
+  (`includingModals:NO`, RNS doesn't set the capture flag), so its own
+  status-bar options are never honoured — the root-level screen's traits
+  answer while it is up. 🔒 The fullscreen photo viewers (`ui/FullscreenImage`,
+  `feed/FullscreenGallery`) present their RN `Modal` **overFullScreen**: a
+  fullScreen cross-dissolve presented from that transparent-modal detail hid
+  the detail for the whole fade and the feed list showed through (device,
+  2026-11-06). Under overFullScreen UIKit never asks the modal's controller
+  for the status bar, so hiding it is the ROOT Stack's `statusBarHidden`
+  trait, driven by `lib/fullscreenViewer` (`useReportFullscreenViewer` in the
+  viewers, `useFullscreenViewerOpen` in `_layout.tsx`), AND the nearest
+  screen's trait, which the same hook sets with `navigation.setOptions` and
+  RESTORES in its cleanup — a `fullScreenModal` host (feed edit details) is
+  asked by UIKit directly, so the root trait never reaches it, and a
+  `<Stack.Screen>` element would not do: expo-router's `Screen` only calls
+  `setOptions` and leaves the override behind on unmount, so a host that
+  drops the photo while the viewer is open would strand the bar hidden
+  (Codex, 2026-11-06). The gallery keys the hook on `visible &&
+  pages.length > 0`, since it renders no Modal without a photo-bearing page.
+  The viewers' static `<StatusBar hidden />` is the Android path only. Do not switch them back to
+  fullScreen: RN 0.88's modal controller then answers for the bar itself and
+  captures the pre-modal state, which needs the `onShow` dance this replaced.
+  Everything else
+  in `ios/` (permission copy, URL scheme, icon, `RNS_GAMMA_ENABLED`,
+  `Podfile.properties.json`, the splash storyboard + `SplashScreenLogo`
+  imageset) derives from `app.json` + plugins. ⚠️ The splash plugin only
+  writes the storyboard's dark background INSIDE its image step: an
+  `expo-splash-screen` config without an iOS `image` leaves the template's
+  white `systemBackgroundColor` (seen 2026-11-05). The splash is therefore
+  configured platform-neutrally — dark `#1a1815` + the 76 pt icon on BOTH
+  platforms (Simon's ruling, 2026-11-05) — so the plugin owns the storyboard;
+  don't move the image back under `android` only.
+  `npx expo run:ios` on the Mac may also rewrite tracked `ios/` files — review
+  those diffs before committing. Simulator needs no Apple account; a physical
   device needs a free Apple ID (7-day expiry) until the paid program. The Linux
   sandbox cannot build iOS and cannot run `hermesc` — for a bundle smoke test
   use `npx expo export --platform ios --no-bytecode`.
+- **Xcode 27 + the UIKit scene life cycle.** The iOS 27 SDK requires a
+  scene-based life cycle; since the SDK 58 prebuild `ios/Verre/` carries
+  `SceneDelegate.swift` (`ExpoAppSceneDelegate`) + a
+  `UIApplicationSceneManifest` in `Info.plist`, and `AppDelegate.swift` no
+  longer creates the window or overrides the Linking / Universal-Links
+  callbacks — the scene delegate forwards URLs. Cold-start deep links and URL-open-while-running are
+  therefore device-pass items after ANY native-template change. Expo CLI 58
+  knows Xcode 27's DeviceHub. Build with Xcode 27 only; Xcode 26 was a one-off
+  workaround for SDK 56. Xcode 27 rejects deployment targets below iOS 15, and
+  `react_native_post_install` raises the pod targets but NOT the pods'
+  resource-bundle targets (RNCAsyncStorage resources 13.4, RNSVG filters 12.4 →
+  `xcodebuild exited with error code 65`). The SDK 58 `pod install` went
+  through on Xcode 27 without a workaround; if the build ever trips on it,
+  add to the Podfile's `post_install`, after `react_native_post_install`,
+  a loop over `installer.pods_project.targets` that raises each
+  configuration's `IPHONEOS_DEPLOYMENT_TARGET` below
+  `podfile_properties['ios.deploymentTarget']` to that value — and treat it
+  as a tracked hand edit to re-apply after every prebuild.
 - ⚠️ **iOS 26 flipped the back-gesture default to FULL-SCREEN swipe.**
   react-native-screens' `fullScreenSwipeEnabled` defaults to true on iOS ≥ 26
   (the native `interactiveContentPopGestureRecognizer`) — a right-swipe
@@ -51,7 +180,24 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   worklet on a hot view must return ONLY allowlisted keys (even a static
   `left: 0` in the returned object demotes the whole view); (2) reanimated's
   own `ENABLE_SHARED_ELEMENT_TRANSITIONS` flag DISABLES this path entirely —
-  never enable it. The flag is GLOBAL: hit-testing runs against shadow-tree
+  never enable it; (3) since reanimated 4.7 the path is ALSO gated on
+  `USE_ANIMATION_BACKEND` being false (its default) — leave that flag alone.
+  🔒 **A React commit sees only reanimated's FLUSHED registry.** The commit
+  hook overlays the registry's last flushed values on every React commit,
+  while values a worklet writes in the same frame sit in a batch until the
+  next UI frame. So "re-render the tree in a new order and have the worklet
+  zero the stale transforms in the same commit" is a RACE between that
+  flush and the commit (reanimated 4.7, device pass 2026-11-06: the
+  reorder sometimes painted the new order wearing the frozen drag
+  transforms and sprang back ~250 ms later). Any hand-off from
+  UI-thread transforms to a React re-render must not depend on that order:
+  `DraggableRows` keys its rows on the render generation so a reorder
+  MOUNTS FRESH views (no registry entries to overlay). Confirmed on device
+  2026-11-06. Two wrong guesses came before the real cause, both tested on
+  device, don't repeat them: `FORCE_REACT_RENDER_FOR_SETTLED_ANIMATIONS:
+  false` (no effect) and `DISABLE_COMMIT_PAUSING_MECHANISM: true` (changed
+  the odds only); neither is set — reanimated runs its defaults apart from
+  the sync-props flag above. The flag is GLOBAL: hit-testing runs against shadow-tree
   geometry, so a view mid-animation can briefly receive touches at its
   pre-frame position — device-check drag surfaces (PillTabBar lens,
   DraggableRows, pickers) after reanimated bumps. Motivation: the feed
@@ -65,7 +211,7 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   and resolves `@verre/core`'s raw-TS `exports` (package-exports on by default
   since SDK 53). No metro.config.js exists — don't add one just to "fix"
   resolution, and never set `unstable_enablePackageExports: false`.
-- **React is pinned EXACTLY (`19.2.3`) in BOTH package.jsons — root web app
+- **React is pinned EXACTLY (`19.3.0`) in BOTH package.jsons — root web app
   included.** RN's bundled `react-native-renderer` demands the exact same react
   version at runtime (its loose `^` peer range is a lie); a second react
   version anywhere also forces npm to nest the expo subtree under
@@ -88,7 +234,13 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   the root `postinstall`). The patch adds what the library doesn't expose as
   props: double-tap `.maxDelay(300)/.maxDuration(300)` (the un-tuned default
   needed near-impossibly-fast taps) and `withDecay` momentum on zoomed-pan
-  release + `cancelAnimation` on re-grab (upstream stopped dead on let go). The
+  release + `cancelAnimation` on re-grab (upstream stopped dead on let go), and
+  — since SDK 58 — replaces the `InteractionManager.runAfterInteractions`
+  deferral of the initial scroll with `requestIdleCallback` (RN 0.88 REMOVED
+  InteractionManager: the dev getter throws, the release export is undefined,
+  so opening the gallery on any photo but the first crashed; Codex review
+  2026-11-06). Upstream dropped that call in 2.6.0, so a bump to ≥ 2.6 drops
+  this hunk and re-adds the other two. The
   patch filename is **version-pinned** — bumping the library makes patch-package
   warn loudly and the patch must be regenerated (`npx patch-package
   react-native-gesture-image-viewer` after re-applying the edits to

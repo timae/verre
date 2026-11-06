@@ -1,7 +1,7 @@
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, LayoutAnimation, Platform, Pressable, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, LayoutAnimation, Platform, Pressable, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   aggregateFlavourAxes,
@@ -251,7 +251,7 @@ export function CompareToolbar({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const { width: screenW } = useWindowDimensions();
-  const sortBtn = useRef<View>(null);
+  const sortBtn = useRef<ViewInstance>(null);
   const [sortAnchorRaw, setSortAnchor] = useState<MenuAnchor | null>(null);
   const [sortRight, setSortRight] = useState(16);
   // Suppression wins at RENDER time — the menu can't survive into a transition.

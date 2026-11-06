@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react';
-import { Keyboard, useWindowDimensions, type ScrollView } from 'react-native';
+import { Keyboard, useWindowDimensions, type ScrollViewInstance } from 'react-native';
 
 // The screen-side half of AromaInput's keyboard fit — ONE implementation for
 // every screen that hosts the input (session impression + standalone check-in
@@ -16,7 +16,7 @@ import { Keyboard, useWindowDimensions, type ScrollView } from 'react-native';
 // The caller owns the ScrollView ref and must keep `scrollYRef.current` at the
 // live scroll offset (its onScroll handler — screens often track it anyway).
 export function useAromaSearchScroll(
-  scrollRef: RefObject<ScrollView | null>,
+  scrollRef: RefObject<ScrollViewInstance | null>,
   scrollYRef: RefObject<number>,
   /** Height a floating footer (Save & Next bar) covers at the window bottom —
       the fit target is above WHICHEVER covers more, keyboard or footer (the

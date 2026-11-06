@@ -1,5 +1,5 @@
 import { useMemo, useReducer, useRef, useState, useEffect } from 'react';
-import { Pressable, View, type LayoutRectangle } from 'react-native';
+import { Pressable, View, type LayoutRectangle, type ViewInstance } from 'react-native';
 import { BottomSheetScrollView, type BottomSheetScrollViewMethods } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -97,7 +97,7 @@ function BarSegment({ grow, a11yLabel, onPress, spaced, children }: {
   spaced?: boolean;
   children: React.ReactNode;
 }) {
-  const ref = useRef<View>(null);
+  const ref = useRef<ViewInstance>(null);
   return (
     <Pressable
       ref={ref}
@@ -134,7 +134,7 @@ function TopAromaPyramid({ tiers, keepPair, onPressCell }: {
 }) {
   const { theme } = useTheme();
   const aromaColor = useAromaColors();
-  const wrapRef = useRef<View>(null);
+  const wrapRef = useRef<ViewInstance>(null);
   const [w, setW] = useState(0);
   const fs = typeScale.caption.size;
   // 47pt per band + ~21pt extra depth for the weighted apex (apexScale 1.45).
@@ -384,7 +384,7 @@ function InspectableAromaChip({
   muted?: boolean;
   onPress: (rect: LayoutRectangle) => void;
 }) {
-  const ref = useRef<View>(null);
+  const ref = useRef<ViewInstance>(null);
   return (
     <View ref={ref} collapsable={false}>
       <AromaChip

@@ -2,7 +2,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Pressable, StyleSheet, View, useWindowDimensions, type ViewInstance } from 'react-native';
 import Animated, {
   runOnJS,
   useAnimatedStyle,
@@ -187,7 +187,7 @@ function PhotoHero({
 
   // Shared-element source (proposal 09): the detail's hero clone grows out of
   // this photo's measured window frame.
-  const frameRef = useRef<View>(null);
+  const frameRef = useRef<ViewInstance>(null);
   const open = useCallback(() => {
     const node = frameRef.current;
     if (!node) {

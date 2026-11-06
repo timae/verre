@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Keyboard, View, ScrollView, useWindowDimensions } from 'react-native';
+import { Keyboard, View, ScrollView, useWindowDimensions, type ViewInstance } from 'react-native';
 import { AROMA_SELECTION_CAP, searchAromas, type AromaSelection } from '@verre/core';
 import { VText } from '@/components/ui/VText';
 import { Icon } from '@/components/ui/Icon';
@@ -74,7 +74,7 @@ export function AromaInput({
   const [selOpen, setSelOpen] = useState(false);
   // The ⓘ explainer by the hint line (the structure panel's pattern).
   const [helpAnchor, setHelpAnchor] = useState<MenuAnchor | null>(null);
-  const searchRowRef = useRef<View | null>(null);
+  const searchRowRef = useRef<ViewInstance | null>(null);
   const tap = useTapOrDouble();
 
   const q = query.trim();

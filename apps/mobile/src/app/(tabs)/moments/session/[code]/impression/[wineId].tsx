@@ -16,6 +16,8 @@ import {
   ScrollView,
   useWindowDimensions,
   View,
+  type ViewInstance,
+  type ScrollViewInstance,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { countryName, validateScore, fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
@@ -393,7 +395,7 @@ export default function ImpressionDetail() {
   const [pulled, setPulled] = useState(false);
   const nameBottomRef = useRef(0);
   const headerBottomRef = useRef(0);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const scrollYRef = useRef(0);
   const onScroll = (y: number) => {
     scrollYRef.current = y;
@@ -411,6 +413,7 @@ export default function ImpressionDetail() {
   if (!wine) {
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
+        <Stack.Screen options={{ statusBarStyle: theme.scheme === 'dark' ? 'light' : 'dark' }} />
         <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
         <IrBar
           title=""
@@ -498,6 +501,7 @@ export default function ImpressionDetail() {
     </View>
   );
 
+  const statusBarStyle = hasPhoto && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
   return (
     // BottomSheetModalProvider INSIDE the screen (the app's per-screen
     // pattern, see create.tsx / session index) — the AromaInput sheets
@@ -515,16 +519,17 @@ export default function ImpressionDetail() {
         options={{
           animationTypeForReplace: navDir === 'prev' ? 'pop' : 'push',
           gestureResponseDistance: { start: 15 },
+          // iOS status bar: the screen trait is the only channel there (root
+          // _layout), and the deepest screen with one set wins. Light glyphs
+          // only over the photo; the reconnecting overlay covers the notch
+          // with surfaceSunk, so glyphs revert to theme (light would vanish).
+          statusBarStyle,
         }}
       />
-      {/* Always rendered: expo-status-bar doesn't restore on unmount, so a
-          photo→no-photo sibling swap must explicitly reassert the theme
-          style. Over the hero (pre-solid) the bar is white. */}
-      <StatusBar
-        // Light glyphs only over the photo; the reconnecting overlay covers the
-        // notch with surfaceSunk, so glyphs revert to theme (light would vanish).
-        style={hasPhoto && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark'}
-      />
+      {/* Android path (expo-status-bar). Always rendered: it doesn't restore
+          on unmount, so a photo→no-photo sibling swap must explicitly reassert
+          the theme style. Over the hero (pre-solid) the bar is white. */}
+      <StatusBar style={statusBarStyle} />
       {/* Reconnecting bar — overlaid on top of either layout (briefly over the
           floating back/⋯ buttons on the photo variant during the blip). */}
       {showReconnecting ? <ReconnectingBar /> : null}
@@ -696,7 +701,7 @@ function IrBar({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
-  const menuBtnRef = useRef<View>(null);
+  const menuBtnRef = useRef<ViewInstance>(null);
   const anim = useRef(new Animated.Value(titleShown ? 1 : 0)).current;
   useEffect(() => {
     Animated.timing(anim, {

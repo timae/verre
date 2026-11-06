@@ -1,17 +1,47 @@
 diff --git a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
-index 8d3ac76..073ef30 100644
+index 8d3ac76..b418324 100644
 --- a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
 +++ b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
-@@ -3,7 +3,7 @@
+@@ -1,9 +1,9 @@
+ "use strict";
+ 
  import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
- import { InteractionManager, Platform, useWindowDimensions } from 'react-native';
+-import { InteractionManager, Platform, useWindowDimensions } from 'react-native';
++import { Platform, useWindowDimensions } from 'react-native';
  import { Gesture } from 'react-native-gesture-handler';
 -import { Easing, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
 +import { Easing, cancelAnimation, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withDecay, withSpring, withTiming } from 'react-native-reanimated';
  import { scheduleOnRN } from 'react-native-worklets';
  import { registry } from "./GestureViewerRegistry.js";
  import { useGestureViewerPaging } from './useGestureViewerPaging';
-@@ -447,6 +447,10 @@ export const useGestureViewer = ({
+@@ -198,12 +198,20 @@ export const useGestureViewer = ({
+     if (adjustedInitialIndex <= 0 || !listRef.current) {
+       return;
+     }
+-    const runAfterInteractions = InteractionManager.runAfterInteractions(() => {
+-      scrollTo(adjustedInitialIndex, false);
+-    });
+-    return () => {
+-      runAfterInteractions?.cancel();
+-    };
++    // PATCH (patch-package): React Native 0.88 removed InteractionManager
++    // (the __DEV__ getter throws, the release export is undefined), so opening
++    // the viewer on any page but the first crashed here. Mirror upstream
++    // 2.6.0's scheduleInitialScroll: defer the first scroll to an idle slot
++    // (bounded by a timeout), with a plain timer fallback.
++    const idleGlobal = globalThis;
++    const requestIdle = idleGlobal.requestIdleCallback?.bind(idleGlobal);
++    const cancelIdle = idleGlobal.cancelIdleCallback?.bind(idleGlobal);
++    if (requestIdle && cancelIdle) {
++      const idleId = requestIdle(() => scrollTo(adjustedInitialIndex, false), { timeout: 100 });
++      return () => cancelIdle(idleId);
++    }
++    const timerId = setTimeout(() => scrollTo(adjustedInitialIndex, false), 0);
++    return () => clearTimeout(timerId);
+   }, [adjustedInitialIndex, translateY, backdropOpacity, translateX, scale, startScale, rotation, scrollTo]);
+   useEffect(() => {
+     onAnimationCompleteRef.current = triggerAnimation?.onAnimationComplete;
+@@ -447,6 +455,10 @@ export const useGestureViewer = ({
      scheduleOnRN(setIsPinching, false);
    }), [scale, enablePinchZoom, maxZoomScale, translateX, translateY, startScale, initialTranslateX, initialTranslateY, width, height, constrainTranslation, lastFocalX, lastFocalY, startFocalX, startFocalY, hasActiveFocal]);
    const zoomPanGesture = useMemo(() => Gesture.Pan().enabled(enablePanWhenZoomed && isZoomed).activeCursor('grabbing').averageTouches(true).onBegin(() => {
@@ -22,7 +52,7 @@ index 8d3ac76..073ef30 100644
      initialTranslateX.set(translateX.get());
      initialTranslateY.set(translateY.get());
    }).onUpdate(event => {
-@@ -465,7 +469,18 @@ export const useGestureViewer = ({
+@@ -465,7 +477,18 @@ export const useGestureViewer = ({
        translateX.set(constrainedTranslateX);
        translateY.set(constrainedTranslateY);
      }
@@ -42,7 +72,7 @@ index 8d3ac76..073ef30 100644
    const emitSingleTap = useCallback((x, y) => {
      const index = pendingIndexRef.current;
      const currentData = dataRef.current;
-@@ -495,7 +510,7 @@ export const useGestureViewer = ({
+@@ -495,7 +518,7 @@ export const useGestureViewer = ({
      }
      scheduleOnRN(emitSingleTap, event.x, event.y);
    }), [emitSingleTap]);
