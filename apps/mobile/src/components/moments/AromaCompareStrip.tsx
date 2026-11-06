@@ -15,7 +15,7 @@
 // harness-pinned in aromaCompareView.
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Pressable, useWindowDimensions, View, type LayoutRectangle } from 'react-native'
+import { Pressable, useWindowDimensions, View, type LayoutRectangle, type ViewInstance } from 'react-native'
 import {
   popoverContent, unionPopoverContent, packStrip, detailPillColors, stripChipMeasureKey, STRIP_GAP, PRON_BAR,
   type AromaRef, type CompareAromaModel, type StripChip, type PopoverContent, type UnionPopoverContent,
@@ -81,7 +81,7 @@ function CompareChip({ chip, onTap }: {
   chip: StripChip
   onTap: (rect: LayoutRectangle, measure: MeasureChip) => void
 }) {
-  const ref = useRef<View>(null)
+  const ref = useRef<ViewInstance>(null)
   const measure: MeasureChip = (onMeasure) =>
     ref.current?.measureInWindow((x, y, width, height) => onMeasure({ x, y, width, height }))
   return (

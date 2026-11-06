@@ -7,6 +7,7 @@ import { GestureViewer, useGestureViewerEvent, useGestureViewerState } from 'rea
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { GlassPanelInner } from '@/components/feed/FeedGlassPanel';
 import { Icon } from '@/components/ui/Icon';
+import { useReportFullscreenViewer } from '@/lib/fullscreenViewer';
 import { usePhoneTokens, GLASS_FILL } from '@/lib/layout';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space } from '@/theme';
@@ -127,12 +128,19 @@ export function FullscreenGallery({
     toggleBare();
   };
 
+  // Status bar: hidden while open as a screen trait, root + nearest screen —
+  // rationale in ui/FullscreenImage. Keyed on `open`, not `visible`: with no
+  // photo-bearing page there is no Modal, and a refetch that drops the last
+  // photo while the gallery is up must release the hide with it (Codex).
+  const open = visible && pages.length > 0;
+  useReportFullscreenViewer(open);
   if (!pages.length) return null;
   return (
+    // overFullScreen + no status-bar element logic here: see ui/FullscreenImage.
     <Modal
       visible={visible}
       animationType="fade"
-      presentationStyle="fullScreen"
+      presentationStyle="overFullScreen"
       statusBarTranslucent
       navigationBarTranslucent
       onRequestClose={land}

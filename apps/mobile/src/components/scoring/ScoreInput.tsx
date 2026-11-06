@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useRef, useState } from 'react';
-import { TextInput, View } from 'react-native';
+import { TextInput, View, type TextInputInstance } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Svg, { Path } from 'react-native-svg';
 import { STAR_PATH, SCORE_MAX, scoreFromFraction, snapScore, stepScore } from '@verre/core';
@@ -81,7 +81,7 @@ export function ScoreInput({ value, onChange }: Props) {
   const [trackW, setTrackW] = useState(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<TextInputInstance>(null);
   useRegisterInput(inputRef);
   const skipCommitRef = useRef(false);
   const valueRef = useRef(value);

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Pressable, useWindowDimensions, View } from 'react-native';
+import { Animated, Easing, Modal, Pressable, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -194,7 +194,7 @@ export function AnchorButton({
   const phone = usePhoneTokens();
   const controlSize = size === 30 ? phone.size('compactAction') : size;
   const iconSize = size === 30 ? phone.size('compactActionIcon') : 20;
-  const ref = useRef<View>(null);
+  const ref = useRef<ViewInstance>(null);
   return (
     <View ref={ref} collapsable={false}>
       <Pressable

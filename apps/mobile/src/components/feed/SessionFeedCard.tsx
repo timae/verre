@@ -10,6 +10,8 @@ import {
   StyleSheet,
   View,
   useWindowDimensions,
+  type ViewInstance,
+  type ScrollViewInstance,
 } from 'react-native';
 import Animated, {
   runOnJS,
@@ -94,7 +96,7 @@ export function SessionFeedCard({
   // lands on the slide being dismissed, not the one it opened from. The ref
   // points at whichever carousel renders (photo or all-photoless — both page
   // at photoW).
-  const carouselRef = useRef<ScrollView>(null);
+  const carouselRef = useRef<ScrollViewInstance>(null);
   useEffect(
     () =>
       registerFeedLanding(session.id, (i) => {
@@ -107,7 +109,7 @@ export function SessionFeedCard({
   // photo carousel's window frame and hands it to the detail, whose hero clone
   // grows out of it. A slide with no real photo (blind/placeholder) and the
   // all-photoless carousel have nothing to share → the fade presentation.
-  const photoFrameRef = useRef<View>(null);
+  const photoFrameRef = useRef<ViewInstance>(null);
   // uri→rawAspect map, fed by each slide's expo-image onLoad (see the
   // carousel-frame comment below, which consumes it for the frame height).
   const [aspects, setAspects] = useState<Record<string, number>>({});

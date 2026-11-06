@@ -5,6 +5,7 @@ import { FlatList, Modal, Pressable, StyleSheet, useWindowDimensions } from 'rea
 import { GestureViewer, useGestureViewerEvent } from 'react-native-gesture-image-viewer';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon } from '@/components/ui/Icon';
+import { useReportFullscreenViewer } from '@/lib/fullscreenViewer';
 import { GLASS_FILL, usePhoneTokens } from '@/lib/layout';
 
 // Fullscreen image viewer (single image today; data[] is the seam for the
@@ -44,12 +45,29 @@ export function FullscreenImage({
   useEffect(() => {
     if (visible) scaleRef.current = 1;
   }, [visible]);
+  // Status bar: hidden while open as a SCREEN TRAIT, set twice because the
+  // viewer is hosted on three kinds of screen (lib/fullscreenViewer has the
+  // why): the ROOT Stack's trait is what reaches UIKit when the host is a
+  // transparentModal screen (the feed's impression detail), and the NEAREST
+  // screen's trait is what reaches it when the host is itself a
+  // fullScreenModal screen (feed edit details), which UIKit asks directly. The
+  // hook sets both and restores both. A pushed host is covered by either.
+  useReportFullscreenViewer(visible);
 
   return (
+    // overFullScreen, not fullScreen (device pass 2026-11-06, SDK 58): the
+    // feed's impression detail is a transparentModal screen, and a fullScreen
+    // cross-dissolve presented from it hides THAT screen for the whole fade,
+    // so the feed list underneath showed through until the viewer was opaque
+    // (and again on close). Over-full-screen keeps the presenting chain's
+    // views in place and just fades the viewer in over them. Consequence:
+    // UIKit never asks this modal's controller for the status bar, so the
+    // hide is a screen trait (see above) — the <StatusBar> element is the
+    // Android path only.
     <Modal
       visible={visible}
       animationType="fade"
-      presentationStyle="fullScreen"
+      presentationStyle="overFullScreen"
       statusBarTranslucent
       navigationBarTranslucent
       onRequestClose={onClose}

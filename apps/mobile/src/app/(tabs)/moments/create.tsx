@@ -1,7 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { Image, Keyboard, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Image, Keyboard, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withDelay, withSequence, withTiming } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -71,11 +71,11 @@ export default function CreateMoment() {
   // as the user edits.
   const [badFields, setBadFields] = useState({ name: false, start: false });
   const [coverError, setCoverError] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   // Return-key chaining for the disclosure sub-chain (Address → Link, skipping
   // the multiline Description). Moment name stands alone before the date pickers
   // (non-text), so it gets "done". See add.tsx for the same pattern.
-  const linkRef = useRef<TextInput>(null);
+  const linkRef = useRef<TextInputInstance>(null);
 
   const onPickCover = async () => {
     setCoverError(null);

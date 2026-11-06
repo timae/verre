@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Image, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Image, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { countryName, filterVintageInput } from '@verre/core';
@@ -61,17 +61,17 @@ export default function CheckinDetails() {
   const [typeOpen, setTypeOpen] = useState(false);
   const [countryOpen, setCountryOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   // Return-key chaining like 02b·add, per sub-chain (never across a fold):
   // Name→Vintage (a focus target only — number-pad has no return key),
   // Producer→Variety→Venue→City, Region→Process→Purchase link. Type/Country
   // (dropdowns) and Description (multiline) are skipped.
-  const vintageRef = useRef<TextInput>(null);
-  const varietyRef = useRef<TextInput>(null);
-  const venueRef = useRef<TextInput>(null);
-  const cityRef = useRef<TextInput>(null);
-  const processRef = useRef<TextInput>(null);
-  const purchaseRef = useRef<TextInput>(null);
+  const vintageRef = useRef<TextInputInstance>(null);
+  const varietyRef = useRef<TextInputInstance>(null);
+  const venueRef = useRef<TextInputInstance>(null);
+  const cityRef = useRef<TextInputInstance>(null);
+  const processRef = useRef<TextInputInstance>(null);
+  const purchaseRef = useRef<TextInputInstance>(null);
 
   // A mount of this screen IS a new flow (it stays mounted beneath stage 2,
   // so a back-swipe from the rate stage does NOT re-run this). Clear any

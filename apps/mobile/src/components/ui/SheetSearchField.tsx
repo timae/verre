@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { Pressable, View } from 'react-native';
+import { Pressable, View, type ViewInstance } from 'react-native';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { usePhoneTokens } from '@/lib/layout';
 import { useTheme } from '@/theme';
@@ -27,7 +27,7 @@ export function SheetSearchField({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   // Clearing is part of typing — the × must not bounce the keyboard.
-  const clearRef = useRef<View | null>(null);
+  const clearRef = useRef<ViewInstance | null>(null);
   useRegisterInput(clearRef, value !== '');
   // ONE skin everywhere (Simon's standard, 2026-07-03): surface + rule
   // border, matching the chip controls — never the sunken fill. Height rides

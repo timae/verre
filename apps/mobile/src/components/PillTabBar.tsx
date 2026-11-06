@@ -120,7 +120,7 @@ const CENTER_ALPHA = { dark: 0.8, light: 0.6 };
 const FADE_HOLD = 0.55; // fraction of the radius at full center cover
 const REST_ALPHA = 0.07;
 
-export function PillTabBar({ state, navigation }: BottomTabBarProps) {
+export function PillTabBar({ state, emitter, navigateToTab }: BottomTabBarProps) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   // Measured height → an EXACT capsule radius (height/2). The Liquid Glass
@@ -279,8 +279,8 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
     // (the vendored native-stack listens for it). Only a deliberate TAP on
     // the active item does that, via the Pressable path.
     if (route && state.index !== state.routes.indexOf(route)) {
-      const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
-      if (!event.defaultPrevented) navigation.navigate(route.name);
+      const event = emitter.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+      if (!event.defaultPrevented) navigateToTab(route.key);
     }
     dragActive.current = false;
     dragUntil.current = Date.now() + 400;
@@ -399,10 +399,10 @@ export function PillTabBar({ state, navigation }: BottomTabBarProps) {
           // A drag's release must not double-fire as a tap (see dragActive).
           if (dragActive.current || Date.now() < dragUntil.current) return;
           Haptics.selectionAsync().catch(() => {});
-          const event = navigation.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
+          const event = emitter.emit({ type: 'tabPress', target: route.key, canPreventDefault: true });
           if (!active && !event.defaultPrevented) {
             flyTo();
-            navigation.navigate(route.name);
+            navigateToTab(route.key);
           }
         }}
       />

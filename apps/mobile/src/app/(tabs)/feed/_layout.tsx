@@ -7,7 +7,7 @@ import { useTheme } from '@/theme';
 // (app reload → tab press) would cold-mount impression/[id] with no params →
 // the "This impression is gone" screen. Also anchors deep links so the list
 // sits beneath a cold-opened detail (back has somewhere to go).
-export const unstable_settings = { initialRouteName: 'index' };
+export const unstable_settings = { anchor: 'index' };
 
 // The Feed tab is a stack: the feed list (03·12) → the full impression
 // detail page (proposal 08 §3) pushes within the tab. The detail is

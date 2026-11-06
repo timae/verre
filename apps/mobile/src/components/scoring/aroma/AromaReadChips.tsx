@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { View, Pressable, useWindowDimensions, type LayoutRectangle } from 'react-native';
+import { View, Pressable, useWindowDimensions, type LayoutRectangle, type ViewInstance } from 'react-native';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { AromaSelection } from '@verre/core';
@@ -116,7 +116,7 @@ function ReadAromaChip({
   muted?: boolean;
   onPress?: (selection: AromaSelection, rect: LayoutRectangle) => void;
 }) {
-  const ref = useRef<View>(null);
+  const ref = useRef<ViewInstance>(null);
   return (
     <View ref={ref} collapsable={false}>
       <AromaChip

@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, View, Pressable, ScrollView, useWindowDimensions } from 'react-native';
+import { Animated, Easing, View, Pressable, ScrollView, useWindowDimensions, type ViewInstance } from 'react-native';
 import {
   AROMA_FAMILIES,
   AROMA_MODIFIERS,
@@ -749,7 +749,7 @@ export function SelectedChipsRow({ ops, onOverflow }: { ops: AromaOps; onOverflo
   // Real chip widths from the hidden measuring pass, keyed by pair.
   const [chipW, setChipW] = useState<Record<string, number>>({});
   const [popup, setPopup] = useState<{ a: string; m: string | null; anchor: MenuAnchor; right?: number } | null>(null);
-  const chipRefs = useRef<Record<string, View | null>>({});
+  const chipRefs = useRef<Record<string, ViewInstance | null>>({});
   const tap = useTapOrDouble();
   const [flash, setFlash] = useState<string | null>(null);
   const prevKeys = useRef<Set<string>>(new Set(ops.value.map(pairKey)));
@@ -890,7 +890,7 @@ export function ModifierSelectButton({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const { width: screenW } = useWindowDimensions();
-  const btnRef = useRef<View | null>(null);
+  const btnRef = useRef<ViewInstance | null>(null);
   const [anchor, setAnchor] = useState<MenuAnchor | null>(null);
   const [right, setRight] = useState(16);
   const fieldH = phone.surface('formControl').height(36);

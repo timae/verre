@@ -18,6 +18,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
 import { useFreshInstallGuard } from '@/lib/freshInstall';
+import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider } from '@/lib/query';
 import { markUpdateNavigationReady } from '@/lib/updateGate';
@@ -51,6 +52,10 @@ const SPLASH_MAX_WAIT_MS = 2500;
 
 function RootNavigator() {
   const { theme } = useTheme();
+  // A fullscreen photo viewer is open → hide the status bar as a screen trait
+  // (lib/fullscreenViewer; the viewers' Modal is overFullScreen, so only the
+  // root screen's trait reaches UIKit).
+  const viewerOpen = useFullscreenViewerOpen();
   const { data: session, isPending } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
   // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true
@@ -122,8 +127,19 @@ function RootNavigator() {
     <NavThemeProvider value={navTheme}>
       <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
       {/* fullScreenGestureEnabled false: edge-only back gesture — see
-          moments/_layout.tsx (iOS 26 flipped the RNS default to true). */}
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg }, fullScreenGestureEnabled: false }}>
+          moments/_layout.tsx (iOS 26 flipped the RNS default to true).
+          statusBarStyle: 🔒 load-bearing since SDK 58 / the iOS 27 SDK. The
+          app-level status-bar API is a no-op there, so Info.plist runs
+          UIViewControllerBasedStatusBarAppearance=YES, and under that mode
+          react-native-screens forwards every status-bar query to the topmost
+          screen — the <StatusBar> element below is never consulted on iOS. A
+          screen without an explicit style reports "auto", which follows the
+          PHONE's appearance, not the app theme (black glyphs on a dark theme,
+          device pass 2026-11-05). Set here on the root Stack: deeper screens
+          without their own style inherit the nearest ancestor's.
+          statusBarHidden: same mechanism for the fullscreen photo viewers —
+          their overFullScreen Modal is never asked, this root trait is. */}
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg }, fullScreenGestureEnabled: false, statusBarStyle: theme.scheme === 'dark' ? 'light' : 'dark', statusBarHidden: viewerOpen, statusBarAnimation: 'fade' }}>
         {/* 🔒 BOTH guards key on `sessionResolved`, so while the session is
             still pending past the splash deadline NEITHER group is mounted and
             no navigation decision is made. That is what preserves a protected
@@ -134,7 +150,14 @@ function RootNavigator() {
         <Stack.Protected guard={sessionResolved && !!session}>
           <Stack.Screen name="(tabs)" />
         </Stack.Protected>
-        <Stack.Protected guard={sessionResolved && !session}>
+        {/* 🔒 redirectTo is load-bearing (router 58): a screen whose guard
+            closes now renders a redirect instead of unmounting, and the
+            default target is the first unguarded sibling by GROUP href —
+            "/(tabs)", which has no index route and resolves to +not-found
+            (device pass 2026-11-05: "Nothing here" after sign-in and on every
+            signed-in cold start). "/moments" lands on the Moments tab directly.
+            The (tabs) guard needs none: its default "/(auth)" has an index. */}
+        <Stack.Protected guard={sessionResolved && !session} redirectTo="/moments">
           <Stack.Screen name="(auth)" />
         </Stack.Protected>
         {/* Outside both guards: must be reachable in any auth state (proposal 04). */}

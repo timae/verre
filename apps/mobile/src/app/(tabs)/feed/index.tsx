@@ -140,7 +140,7 @@ export default function Feed() {
 
   const openImpression = useCallback(
     (feedItemIdNum: number, wineIndex: number) => {
-      router.push({ pathname: '/feed/impression/[id]', params: { id: String(feedItemIdNum), index: String(wineIndex) } });
+      router.push({ pathname: '/feed/impression/[id]', params: { id: String(feedItemIdNum), index: String(wineIndex) } }, { dangerouslySingular: true });
     },
     [router],
   );
@@ -343,7 +343,7 @@ export default function Feed() {
             <View style={{ paddingVertical: space.lg }}>
               <ActivityIndicator color={theme.inkSoft} />
             </View>
-          ) : null
+          ) : undefined
         }
         ListEmptyComponent={
           feed.hasNextPage || feed.isFetching ? (

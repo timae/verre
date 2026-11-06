@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react';
-import { View } from 'react-native';
+import { View, type ViewInstance } from 'react-native';
 import { AROMA_FAMILIES } from '@verre/core';
 import { useAromaColors } from '@/theme/flavourColors';
 import { AromaCrumbs, CapHint, RefineAddRow, capFirst, usePendingAdd, type AromaOps } from './parts';
@@ -36,7 +36,7 @@ export function CanvasPicker({ ops, onEnsureVisible }: {
   const [enterFrom, setEnterFrom] = useState(0.8);
   const target = pend ?? (path.length ? path[path.length - 1] : null);
   const pendState = usePendingAdd(target, ops);
-  const refineRef = useRef<View | null>(null);
+  const refineRef = useRef<ViewInstance | null>(null);
   // Post-tap, measure the refine row where it ACTUALLY is and ask the host
   // to bring it fully on screen. Twice: next frame, and again after a beat —
   // a drill changes the stage height and only the late pass sees the settled

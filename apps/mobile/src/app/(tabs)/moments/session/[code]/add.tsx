@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, TextInput, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { BottomSheetModalProvider, BottomSheetScrollView } from '@gorhom/bottom-sheet';
@@ -199,18 +199,18 @@ export function ImpressionForm({
   const [posOpen, setPosOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   // Return-key field chaining. Two sub-chains, NOT one across the disclosure
   // fold: the always-visible fields (Name→Vintage→Producer→Variety) and the
   // disclosure fields (Region→Process→Purchase link). We don't jump into a
   // collapsed/unmounted field. Type/Country (dropdowns) and Description
   // (multiline — return = newline) are skipped; the last field in each chain
   // gets returnKeyType="done".
-  const vintageRef = useRef<TextInput>(null);
-  const producerRef = useRef<TextInput>(null);
-  const varietyRef = useRef<TextInput>(null);
-  const processRef = useRef<TextInput>(null);
-  const purchaseRef = useRef<TextInput>(null);
+  const vintageRef = useRef<TextInputInstance>(null);
+  const producerRef = useRef<TextInputInstance>(null);
+  const varietyRef = useRef<TextInputInstance>(null);
+  const processRef = useRef<TextInputInstance>(null);
+  const purchaseRef = useRef<TextInputInstance>(null);
 
   // Add: a new wine can land anywhere 1..count+1 (the +1 = append). Edit: the
   // wine already occupies a slot, so the range is the list itself.
@@ -760,7 +760,7 @@ function PositionPicker({
   // popover is an anchored overlay, not inside a ScrollView), so a plain
   // vertical Pan is safe — no activeOffset arbitration needed.
   const dragStart = useRef(value);
-  const posInputRef = useRef<TextInput | null>(null);
+  const posInputRef = useRef<TextInputInstance | null>(null);
   useRegisterInput(posInputRef);
   const pan = Gesture.Pan()
     .runOnJS(true)

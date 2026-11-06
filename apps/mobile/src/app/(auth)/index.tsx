@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { router, useFocusEffect } from 'expo-router';
+import { router, Stack, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
@@ -20,9 +20,12 @@ import welcomeHero from '../../../assets/images/welcome-hero.jpg';
 export default function Launch() {
   const insets = useSafeAreaInsets();
   const phone = usePhoneTokens();
-  // Light glyphs over the photo, ONLY while this screen is focused: the
-  // pushed sign-up/in screens mount no StatusBar of their own, so this one
-  // must unmount on push to fall back to the root layout's themed bar.
+  // Light glyphs over the photo. iOS reads the Stack.Screen option below
+  // (root _layout: screen traits are the only status-bar channel there, and
+  // the deepest screen with one set wins); a pushed sign-up/in screen sets
+  // none, so it falls back to the root's themed bar on its own. Android still
+  // goes through expo-status-bar, which is last-mounted-wins, so that element
+  // stays and unmounts on push to hand the bar back.
   const [focused, setFocused] = useState(true);
   useFocusEffect(
     useCallback(() => {
@@ -32,6 +35,7 @@ export default function Launch() {
   );
   return (
     <View style={{ flex: 1 }}>
+      <Stack.Screen options={{ statusBarStyle: 'light' }} />
       {focused ? <StatusBar style="light" /> : null}
       {/* .welcome .hero — cover, focal point at centre 40% per the design's
           object-position (expo-image's contentPosition maps to it directly). */}

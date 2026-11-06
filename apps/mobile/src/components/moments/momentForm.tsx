@@ -1,7 +1,7 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { ActionSheetIOS, Keyboard, type LayoutChangeEvent, Modal, Platform, Pressable, TextInput, View } from 'react-native';
+import { ActionSheetIOS, Keyboard, type LayoutChangeEvent, Modal, Platform, Pressable, TextInput, View, type TextInputInstance } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -568,7 +568,7 @@ export function NotesField({
   const phone = usePhoneTokens();
   const surface = phone.surface('formControl');
   const [focused, setFocused] = useState(false);
-  const inputRef = useRef<TextInput | null>(null);
+  const inputRef = useRef<TextInputInstance | null>(null);
   useRegisterInput(inputRef);
   return (
     <View style={{ gap: 7 }}>
