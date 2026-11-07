@@ -1,0 +1,79 @@
+diff --git a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
+index 2df8ef1..66c4a2d 100644
+--- a/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
++++ b/node_modules/react-native-gesture-image-viewer/lib/module/useGestureViewer.js
+@@ -3,13 +3,14 @@
+ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+ import { Platform, useWindowDimensions } from 'react-native';
+ import { Gesture } from 'react-native-gesture-handler';
+-import { Easing, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming } from 'react-native-reanimated';
++import { Easing, cancelAnimation, interpolate, useAnimatedReaction, useAnimatedStyle, useSharedValue, withDecay, withSpring, withTiming } from 'react-native-reanimated';
+ import { scheduleOnRN, scheduleOnUI } from 'react-native-worklets';
+ import { registry } from "./GestureViewerRegistry.js";
+ import { pruneItemDimensionsRegistry, registerItemDimensions, resolveItemDimensions } from "./itemDimensions.js";
+ import { scheduleInitialScroll } from "./scheduleInitialScroll.js";
+ import { useGestureViewerPaging } from './useGestureViewerPaging';
+ import { usePanInertia } from "./usePanInertia.js";
++import { getTranslationBounds } from "./utils/translationBounds.js";
+ import { clampIndex, clampTranslationToBounds, createScrollAction, getLoopAdjustedIndex, getLoopPhysicalIndex, resolveGeometrySyncTranslationMode } from "./utils/index.js";
+ import { getDismissDistance, shouldDismissByDirection } from "./utils/dismiss.js";
+ import { applyTapZoomAtPoint, finishTapZoomOut } from "./utils/tapZoom.js";
+@@ -732,6 +733,11 @@ export const useGestureViewer = ({
+     inertiaHadMultipleTouches.set(event.numberOfTouches > 1);
+   }).onBegin(() => {
+     stopPanInertia();
++    // PATCH: stop our momentum glide (onEnd below) so a re-grab continues from
++    // the live position instead of fighting it. stopPanInertia only cancels
++    // upstream panInertia animations, which this app leaves disabled.
++    cancelAnimation(translateX);
++    cancelAnimation(translateY);
+     initialTranslateX.set(translateX.get());
+     initialTranslateY.set(translateY.get());
+     const bounded = constrainTranslation({
+@@ -763,7 +769,27 @@ export const useGestureViewer = ({
+     if (!success || inertiaHadMultipleTouches.get()) {
+       return;
+     }
+-    startPanInertia(event.velocityX, event.velocityY);
++    // PATCH (patch-package): momentum on zoomed-pan release, kept from the
++    // 2.3.2 patch instead of upstream panInertia (a different deceleration
++    // curve; adopting it is a design decision). Carry the release velocity into
++    // a decaying glide clamped to the same bounds the drag uses, so it eases to
++    // rest at the image edge with a small rubber-band, like the iOS Photos pan.
++    const currentScale = scale.get();
++    if (currentScale <= 1) {
++      return;
++    }
++    const {
++      maxTranslateX,
++      maxTranslateY
++    } = getTranslationBounds({
++      width,
++      height,
++      contentWidth: contentWidth.get(),
++      contentHeight: contentHeight.get(),
++      scale: currentScale
++    });
++    translateX.set(withDecay({ velocity: event.velocityX, clamp: [-maxTranslateX, maxTranslateX], rubberBandEffect: true }));
++    translateY.set(withDecay({ velocity: event.velocityY, clamp: [-maxTranslateY, maxTranslateY], rubberBandEffect: true }));
+   }).onFinalize((_event, success) => {
+     // A tap zoom owns the translations once it starts; a late pan failure
+     // must not replace that animation with an overscroll return.
+@@ -778,7 +804,7 @@ export const useGestureViewer = ({
+     if (bounded.translateX !== translateX.get() || bounded.translateY !== translateY.get()) {
+       startPanInertia(0, 0);
+     }
+-  }), [tapZoomTarget, startPanInertia, stopPanInertia, inertiaHadMultipleTouches, translateX, translateY, enablePanWhenZoomed, scale, panOverflowX, panOverflowY, initialTranslateX, initialTranslateY, constrainTranslation]);
++  }), [tapZoomTarget, startPanInertia, stopPanInertia, inertiaHadMultipleTouches, translateX, translateY, enablePanWhenZoomed, scale, panOverflowX, panOverflowY, initialTranslateX, initialTranslateY, constrainTranslation, width, height, contentWidth, contentHeight]);
+   const emitSingleTap = useCallback((x, y) => {
+     const index = pendingIndexRef.current;
+     const currentData = dataRef.current;
+@@ -808,7 +834,7 @@ export const useGestureViewer = ({
+     }
+     scheduleOnRN(emitSingleTap, event.x, event.y);
+   }), [emitSingleTap]);
+-  const doubleTapGesture = useMemo(() => Gesture.Tap().enabled(enableDoubleTapZoom && Platform.OS !== 'web').numberOfTaps(2).onEnd(event => {
++  const doubleTapGesture = useMemo(() => Gesture.Tap().enabled(enableDoubleTapZoom && Platform.OS !== 'web').numberOfTaps(2).maxDelay(300).maxDuration(300).onEnd(event => {
+     applyTapZoomAtPoint({
+       tapZoomTarget,
+       contentHeight: contentHeight.get(),

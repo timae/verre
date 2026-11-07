@@ -13,6 +13,10 @@ const apiBase: string =
 
 export const API_BASE: string = apiBase;
 
+// The app's URL scheme (app.json `scheme`; a release placeholder). Better Auth
+// sends it as the `expo-origin` header the server maps to a trusted origin.
+export const APP_SCHEME = 'io.verre.app';
+
 // Public web origin used to build shareable links (e.g. the /join/<code> invite
 // URL). In prod this is the real domain; set EXPO_PUBLIC_WEB_URL to it. With no
 // override it falls back to API_BASE so a local deployment's links resolve

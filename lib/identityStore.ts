@@ -241,7 +241,7 @@ export async function deleteAllNativeSessions(userId: number): Promise<void> {
 }
 
 // Native-INITIATED revokes — BA's /revoke-sessions, /revoke-other-sessions and
-// the revoke half of /change-password — are LIST-DRIVEN in 1.6.15:
+// the revoke half of /change-password — are LIST-DRIVEN (1.6.15, still in 1.7.18):
 // deleteUserSessions / listSessions enumerate the user's Redis copies from
 // `active-sessions-<userId>`, a cold key written only on session create/update/
 // delete and never read on the hot path, so under eviction it goes first — and

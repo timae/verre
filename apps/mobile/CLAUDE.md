@@ -234,13 +234,14 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   the root `postinstall`). The patch adds what the library doesn't expose as
   props: double-tap `.maxDelay(300)/.maxDuration(300)` (the un-tuned default
   needed near-impossibly-fast taps) and `withDecay` momentum on zoomed-pan
-  release + `cancelAnimation` on re-grab (upstream stopped dead on let go), and
-  — since SDK 58 — replaces the `InteractionManager.runAfterInteractions`
-  deferral of the initial scroll with `requestIdleCallback` (RN 0.88 REMOVED
-  InteractionManager: the dev getter throws, the release export is undefined,
-  so opening the gallery on any photo but the first crashed; Codex review
-  2026-11-06). Upstream dropped that call in 2.6.0, so a bump to ≥ 2.6 drops
-  this hunk and re-adds the other two. The
+  release + `cancelAnimation` on re-grab (upstream stopped dead on let go). On
+  2.6.0 the glide REPLACES the zoomed pan's `startPanInertia` call in its
+  `onEnd`: upstream's own `panInertia` is left disabled (a different
+  deceleration curve; adopting it is a design decision), and the clamp uses
+  upstream's `getTranslationBounds`, the same bounds the drag uses. (2.3.2's
+  patch also replaced the `InteractionManager` initial-scroll deferral, which
+  crashed on RN 0.88; upstream 2.6.0 ships its own `scheduleInitialScroll`,
+  so that hunk is gone.) 3.x is a paging-API rewrite, not a bump. The
   patch filename is **version-pinned** — bumping the library makes patch-package
   warn loudly and the patch must be regenerated (`npx patch-package
   react-native-gesture-image-viewer` after re-applying the edits to
@@ -258,38 +259,71 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   root pin (root `package.json` also carries an `overrides` entry for core).
   Bumping any of them = bumping all, server included → re-run the CI gates.
 - The server side of the Expo integration is a **vendored bridge** in
-  `lib/betterAuth.ts` (the real `@better-auth/expo` package can't resolve at
-  the repo root next to web's zod 3 — see the plugins comment there). When
-  social sign-in (step 6) lands, that bridge is replaced by the real plugin.
+  `lib/betterAuth.ts` (vendored when the real `@better-auth/expo` couldn't
+  resolve at the repo root next to web's zod 3; the root is on zod 4 now, and
+  the swap waits for social sign-in, which needs the rest of the plugin — see
+  the plugins comment there).
 - `authClient` baseURL must include the full basePath (`…/api/auth/native`).
   Session cookie lives in SecureStore (`WHEN_UNLOCKED_THIS_DEVICE_ONLY`, never
   `requireAuthentication` — the SDK reads it on every request).
-- 🔒 **Reinstall wipe** (`src/lib/freshInstall.ts`, proposal 06 §2): iOS keeps
-  Keychain items through an uninstall, so a first-launch marker lives in
-  AsyncStorage (`verre.installed`, inside the app container, deleted with the
-  app) and its absence at boot resets the session atom, best-effort
-  `signOut()`s (aborted at 3s) and clears `verre_cookie` + `verre_session_data`.
-  ⚠️ ORDERING: the Expo client seeds its session atom from `verre_session_data`
-  synchronously inside `createAuthClient` (module init), and that seed's
-  `sessionAtom.get()` already fires the first get-session heartbeat (nanostores
-  mounts a store on `get()`) whose response re-writes both items — so the wipe
-  runs from `RootLayout` via `useFreshInstallGuard()` AFTER module init but
-  BEFORE `RootNavigator` (the first `useSession` subscriber) mounts, resets the
-  seeded atom itself via `.value` (never `.get()`), and `src/lib/bootGate.ts`
-  holds every Better Auth request built before the verdict (`customFetchImpl`
-  in authClient.ts) and DROPS it if a wipe happened. The same gate keeps an
-  auth generation (sign-out bumps on request, a session-cookie-setting
-  response bumps on arrival) and discards a response from an older generation,
-  so a slow anonymous heartbeat can't sign a fresh login out — checked AFTER
-  the body is buffered, because Expo's fetch resolves at the headers and
-  better-fetch writes state only after awaiting the body. Chunk keys
-  (`<key>.<i>`, all 64 slots) are probed directly: the SDK's short-value write
-  never deletes older chunks, so orphans holding an old session are normal,
-  and a partially failed wipe leaves a sparse run the retry must still find. A wipe counts
-  only when every key READS BACK gone/overwritten (iOS SecureStore discards
-  the `SecItemDelete` status); otherwise no marker and the stale cookie is
-  stripped from every request. Never subscribe to the session above that
-  gate, and never add a BA request path that bypasses `customFetchImpl`.
+- 🔒 **Reinstall guard = install-scoped Keychain keys** (`src/lib/secureStorage.ts`,
+  proposal 06 §2): iOS keeps Keychain items when the app is deleted, and
+  native sessions last a year, so a reinstall would otherwise open signed in
+  as the previous person. Every SecureStore key the SDK uses is prefixed with
+  an install id kept in AsyncStorage (`verre.installId`, inside the app
+  container, deleted with the app). A reinstall gets a new id and never reads
+  the previous install's items: online or offline, whatever the Keychain does
+  with a delete, whatever chunk keys the SDK wrote. An update or an Offload
+  keeps the container, so the session survives. There is NO boot step: no
+  marker, no wipe, no ordering rule for `RootNavigator`. Rules: the storage
+  passed to `expoClient` must stay `secureStorage` (the SDK 1.7.18 calls only
+  its async pair; the sync pair THROWS so a future SDK that reads
+  synchronously fails loudly — re-check on every Better Auth bump); never
+  call `AsyncStorage.clear()` or remove `verre.installId` (that signs the user
+  out, by design: it fails closed); 🔒 auth state is only ever stored under
+  the DURABLE id: while it can't be read (or, on a fresh install, written),
+  reads find nothing and writes are refused (no throwaway namespace — a
+  sign-in + sign-out there would leave the real session to be restored on
+  the next healthy launch), and every storage call retries, so a recovery
+  mid-launch moves straight onto the real namespace. The stored id is never
+  overwritten. The
+  previous install's server session is revoked in the background by
+  `src/lib/previousInstall.ts` (started from `RootLayout`): an unscoped
+  Keychain pointer (`verre_install`) names the install that wrote it, the
+  revoke is a PLAIN `fetch` to `/sign-out` that never touches Better Auth's
+  client state, and until the server answers it stays recorded
+  (`verre.retiringInstall`) and the next launch retries. A pre-scoping install
+  (unprefixed keys, dev devices only) is retired the same way, so it signs
+  out once. Since expo-secure-store 58.0.0 a refused delete REJECTS (it used
+  to be discarded); nothing depends on deletes any more.
+- 🔒 **Sign-out races** (`src/lib/authGate.ts`): ORDERING (`@better-auth/expo`
+  1.7): the client restores its session atom ONCE from `verre_session_data`,
+  inside the init hook of the first get-session (before `customFetchImpl`),
+  and keeps a restored session `isPending` until the heartbeat answers, so
+  `_layout.tsx` counts a restored session as known (`cachedSession`) and a
+  signed-in cold launch paints from the cache as it did on 1.6. The gate
+  keeps an auth generation (a sign-out bumps when it STARTS, a
+  session-cookie-setting response bumps on arrival) and discards a response
+  from an older generation, so a slow anonymous heartbeat can't sign a fresh
+  login out — checked AFTER the body is buffered, because Expo's fetch
+  resolves at the headers and better-fetch writes state only after awaiting
+  the body. Two fetch plugins in authClient.ts bracket `expoClient` in the
+  `plugins` array (better-fetch runs hooks in plugin order) and must stay on
+  their side of it: AHEAD, every request is stamped with the generation
+  BEFORE the Expo client's init awaits the cookie read, and a sign-out bumps
+  it first (that init clears the atom before the request leaves);
+  `customFetchImpl` drops a request whose stamp went stale before sending it;
+  BEHIND, a get-session is checked once more after the Expo client's awaited
+  Keychain writes, just before the SDK applies it to the atom (a sign-out
+  started during those writes would otherwise be undone and, offline, stay
+  undone). The generation only catches requests built BEFORE a sign-out; a
+  heartbeat built after it starts can still read the old cookie, so the
+  signed-out latch (`cookieWithheld`): from a sign-out's start until a
+  response sets a NEW session cookie, no request except a sign-out carries
+  the session cookie, in `customFetchImpl`'s gate and in `apiFetch` alike,
+  checked after the async cookie read. `authClient.getCookie()` is async
+  since 1.7 — await it. Never add a BA request path that bypasses
+  `customFetchImpl`.
 - Sign-up is a **two-step flow** (signUp then signIn) because the server sets
   `autoSignIn: false` for enumeration posture — don't "fix" it.
 - All Verre API calls go through **`src/lib/apiFetch.ts`** (cookie +

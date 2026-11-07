@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
-import { useFreshInstallGuard } from '@/lib/freshInstall';
+import { retirePreviousInstall } from '@/lib/previousInstall';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider } from '@/lib/query';
@@ -68,10 +68,18 @@ function RootNavigator() {
   // the sign-in screen until the post-sign-in heartbeat lands).
   const [resolvedOnce, setResolvedOnce] = useState(false);
   useEffect(() => { if (!isPending) setResolvedOnce(true); }, [isPending]);
+  // A session restored from this install's own cache also counts as known:
+  // the Expo client (1.7) restores it while `isPending` is still true and keeps
+  // it pending until the heartbeat answers. Without this term a signed-in cold
+  // launch would wait on the network (splash, then the neutral screen up to
+  // the 12s fetch deadline) where 1.6 painted from the cache at once. It only
+  // ever resolves as signed IN, and only to this install's own cache: a
+  // previous install's lives under another install id (lib/secureStorage.ts).
+  const cachedSession = session != null;
   // Hide the splash once EITHER the session resolved or we waited long enough.
-  const splashCanHide = !isPending || resolvedOnce || waitedTooLong;
+  const splashCanHide = !isPending || resolvedOnce || cachedSession || waitedTooLong;
   // ...but only mount a route GROUP once the session is actually known.
-  const sessionResolved = !isPending || resolvedOnce;
+  const sessionResolved = !isPending || resolvedOnce || cachedSession;
 
   useEffect(() => {
     if (!isPending || resolvedOnce) return;
@@ -181,17 +189,12 @@ export default function RootLayout() {
     InstrumentSans_600SemiBold,
     InstrumentSans_700Bold,
   });
-  // 🔒 The reinstall wipe (lib/freshInstall.ts) must finish BEFORE RootNavigator
-  // mounts: the session atom was seeded from the Keychain items at module init,
-  // so the first frame would paint the previous owner. That seed ALREADY fired
-  // the first get-session heartbeat (a nanostores `get()` mounts the query), so
-  // this gate alone is not enough — lib/bootGate.ts holds every Better Auth
-  // request built before the verdict and drops it after a wipe. The native
-  // splash stays up meanwhile (preventAutoHideAsync above); the guard never
-  // blocks beyond a bounded best-effort sign-out.
-  const installChecked = useFreshInstallGuard();
+  // A reinstall needs no boot step (the Keychain is install-scoped,
+  // lib/secureStorage.ts). Only the previous install's server session is
+  // revoked, in the background and outside Better Auth's client state.
+  useEffect(() => { void retirePreviousInstall(); }, []);
 
-  if (!fontsLoaded || !installChecked) return null;
+  if (!fontsLoaded) return null;
 
   return (
     // Gesture-handler requires the root wrapper to register its native gesture

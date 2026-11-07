@@ -382,20 +382,25 @@ async function main() {
   // Barrier, not a sleep: the OWNER's handler is held at its first credential
   // lookup (past the before-hook, before verify + commit); the attacker's
   // attempt runs to completion in that window; then the owner is released.
-  const origAcctFindMany = prisma.authAccount.findMany
+  // The lookup is BA-internal: 1.6 read the accounts with findMany
+  // (findAccounts), 1.7 reads the credential row with findFirst
+  // (findCredentialAccount), so the barrier holds whichever comes first.
+  const origAcct = { findMany: prisma.authAccount.findMany, findFirst: prisma.authAccount.findFirst }
   let ownerHeldResolve; const ownerHeld = new Promise((r) => { ownerHeldResolve = r })
   let releaseOwner; const ownerReleased = new Promise((r) => { releaseOwner = r })
   let intercepted = false
-  prisma.authAccount.findMany = async (args) => {
-    if (!intercepted) { intercepted = true; ownerHeldResolve(); await ownerReleased }
-    return origAcctFindMany.call(prisma.authAccount, args)
+  for (const m of ['findMany', 'findFirst']) {
+    prisma.authAccount[m] = async (args) => {
+      if (!intercepted) { intercepted = true; ownerHeldResolve(); await ownerReleased }
+      return origAcct[m].call(prisma.authAccount, args)
+    }
   }
   const pOwner = post('/change-password', own.cookiePair, changePwBody(pwC, pwAfterD))
   await ownerHeld
   const rAtt = await post('/change-password', att.cookiePair, changePwBody('wrong-pw-from-stolen-cookie', 'attacker-chosen-pw-1'))
   releaseOwner()
   const rOwner = await pOwner
-  prisma.authAccount.findMany = origAcctFindMany
+  Object.assign(prisma.authAccount, origAcct)
   check('(d) owner\'s change: 200', rOwner.status === 200, String(rOwner.status))
   check('(d) attacker\'s attempt: 400', rAtt.status === 400, String(rAtt.status))
   if (rOwner.status === 200) pwC = pwAfterD

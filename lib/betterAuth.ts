@@ -79,6 +79,13 @@ const isSessionCopy = (value: string): boolean => {
     return false
   }
 }
+const INCREMENT_SCRIPT = `
+  local cur = redis.call('GET', KEYS[1])
+  if cur and not tonumber(cur) then redis.call('DEL', KEYS[1]) end
+  local n = redis.call('INCR', KEYS[1])
+  if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+  return n
+`
 const secondaryStorage = {
   get: async (key: string) => {
     const value = (await redis.get(key)) ?? null
@@ -97,6 +104,17 @@ const secondaryStorage = {
   delete: async (key: string) => {
     await redis.del(key)
   },
+  // Required since 1.7. BA calls it only to consume a `verification:` value on
+  // the secondary-storage-ONLY path, which storeInDatabase below keeps off — so
+  // it never sees a session copy and needs no row check.
+  getAndDelete: async (key: string) => (await redis.getDel(key)) ?? null,
+  // Required since 1.7: BA's limiter (rateLimit below) is now one atomic step
+  // on this counter. Same INCR-then-EXPIRE-on-create shape as lib/rateLimit.ts
+  // (fixed window from the first hit). 1.6.x kept a JSON object at the same
+  // `<ip>|<path>` key, and INCR on it errors, which would 500 that path until
+  // the old key's TTL ran out — so a non-numeric leftover counts as absent.
+  increment: async (key: string, ttlSeconds: number) =>
+    Number(await redis.eval(INCREMENT_SCRIPT, { keys: [key], arguments: [String(Math.max(1, Math.ceil(ttlSeconds)))] })),
 }
 
 export const betterAuthServer = betterAuth({
@@ -213,15 +231,18 @@ export const betterAuthServer = betterAuth({
     before: createAuthMiddleware(async (ctx) => {
       // 🔒 Atomic, fail-CLOSED rate limit on the auth-critical native paths
       // (step-7 gate). BA's own limiter (rateLimit above) is belt; this is the
-      // braces, and it closes two gaps BA's can't:
-      //   (1) BA's getIp returns null when no client IP resolves and then SKIPS
-      //       the limit entirely (rate-limiter/index.mjs — logs a one-time warning,
-      //       then fail-OPEN; a hardcoded dist behaviour with no config flag).
-      //       Here a missing IP buckets into a shared 'unknown' key (getClientIp),
-      //       so the limit still applies — fail-closed.
-      //   (2) BA's counter is a non-atomic read-modify-write (no Lua/INCR) →
-      //       concurrent requests can under-count. Verre's checkRate is an atomic
-      //       Lua INCR+EXPIRE, so the cap holds under concurrency.
+      // braces. It was added for two gaps BA 1.6 had:
+      //   (1) BA's getIp returns null when no client IP resolves, and 1.6 then
+      //       SKIPPED the limit entirely (fail-OPEN). Here a missing IP buckets
+      //       into a shared 'unknown' key (getClientIp), so the limit still
+      //       applies — fail-closed.
+      //   (2) 1.6's counter was a non-atomic read-modify-write → concurrent
+      //       requests could under-count. Verre's checkRate is an atomic Lua
+      //       INCR+EXPIRE, so the cap holds under concurrency.
+      // 1.7 closed both upstream (a missing IP shares one `no-trusted-ip|<path>`
+      // bucket; the count is one secondaryStorage.increment). The floor stays
+      // the authoritative limit: its keys, budgets and IP rules are Verre's,
+      // and it does not depend on BA's limiter internals across upgrades.
       // Same per-path limits as the documented BA rules (app/api/rate-limits.md)
       // so behaviour is unchanged when an IP IS present — this only adds the
       // floor. Keyed on the trusted-proxy-set client IP (getClientIp; see its
@@ -258,14 +279,14 @@ export const betterAuthServer = betterAuth({
       // always positive Postgres serials), so it can't actually skip a charge for
       // a real session. So a skipped charge never lets a guess through.
       //
-      // ⚠️ getSessionFromCtx caches its result on ctx.context.session, which the
-      // endpoint's sensitiveSessionMiddleware then reuses (no double-resolve).
-      // That's only SAFE because cookieCache.enabled is false (see the session
-      // config above + its CI gate): we pre-populate WITHOUT disableCookieCache,
-      // and the middleware passes disableCookieCache:true — if cookie cache were
-      // ever turned on, our cache-hit would silently defeat the middleware's
-      // freshness intent (a revoked-session gap). The cookieCache-off invariant
-      // is what keeps this harmless; don't enable it without revisiting this.
+      // ⚠️ getSessionFromCtx caches its result on ctx.context.session. On 1.6
+      // the endpoint's sensitiveSessionMiddleware reused that cache, which was
+      // only safe because cookieCache.enabled is false (we resolve WITHOUT
+      // disableCookieCache). Since 1.7 the middleware clears it and re-reads the
+      // store (getAuthoritativeSessionFromCtx, stateful config), so the endpoint
+      // never trusts this lookup. Keep cookieCache off anyway (session config
+      // above + its CI gate): this hook's own lookup would then key the budget
+      // off a cookie-cached copy.
       if (ctx.path === '/change-password') {
         const sess = await getSessionFromCtx(ctx).catch(() => null)
         // Number(...) to match the web routes' EXACT key shape — they do
@@ -648,17 +669,17 @@ export const betterAuthServer = betterAuth({
   // browser's real Origin always wins), and auto-trusts `exp://` in
   // NODE_ENV=development ONLY (never in prod).
   //
-  // ⚠️ VENDORED (verbatim behavior) from @better-auth/expo@1.6.15's expo()
-  // plugin (dist/index.js src/index.ts region), NOT imported: that package's
-  // dependency tree (@better-auth/core peer → better-call peer → zod ^4) can't
-  // resolve at the repo root next to the web app's zod 3 — npm refuses to nest
-  // a peer-of-a-peer (ERESOLVE), and forcing it via overrides fails too. The
+  // ⚠️ VENDORED (verbatim behavior) from @better-auth/expo's expo() plugin
+  // (dist/index.js; the onRequest origin mapping is unchanged from 1.6.15 to
+  // 1.7.18), NOT imported. It was vendored because that package's zod-4 peer
+  // tree could not resolve at the repo root next to the web app's zod 3; the
+  // root is on zod 4 since the 1.7 upgrade, so that blocker is gone, and the
+  // swap is left for social sign-in, which needs the rest of the plugin. The
   // pieces deliberately DROPPED are all social-OAuth machinery, dead until
   // step 6: the expoAuthorizationProxy endpoint, the OAuth-callback
   // cookie-in-redirect after-hooks, and the disableOriginOverride option.
   // TODO(step-6): when social lands, replace this bridge with the real
-  // @better-auth/expo plugin and solve the zod4-at-root resolution then (by
-  // then the web app may be on zod 4, or BA's tree may have moved).
+  // @better-auth/expo plugin.
   plugins: [
     {
       id: 'expo',
@@ -695,10 +716,13 @@ export const betterAuthServer = betterAuth({
   // locally). Apple's origin gets added in step 6 with the social config.
   //
   // 'io.verre.app://' is the native app's custom URL scheme (apps/mobile
-  // app.json `scheme`): non-http(s) entries match by string PREFIX
-  // (matchesOriginPattern in trusted-origins.mjs does url.startsWith(pattern)
-  // for custom schemes — verified 1.6.15), so the trailing :// is load-bearing;
-  // a bare 'io.verre.app' would also prefix-match 'io.verre.appevil://'.
+  // app.json `scheme`). 1.6 matched custom schemes by string PREFIX
+  // (url.startsWith(pattern)), which made the trailing :// load-bearing: a bare
+  // 'io.verre.app' also prefix-matched 'io.verre.appevil://'. 1.7.18 parses
+  // both sides and compares the scheme exactly (trusted-origins.mjs
+  // matchesOriginPattern; with no authority/path in the entry, any
+  // `io.verre.app:` URL matches and look-alike schemes do not). Keep the
+  // trailing :// so the entry stays safe under either rule.
   trustedOrigins: [
     'io.verre.app://',
     ...(process.env.SERVER_ACTIONS_ALLOWED_ORIGINS?.split(',')
