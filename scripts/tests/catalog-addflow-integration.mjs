@@ -633,19 +633,22 @@ async function main() {
   // together, or the deferred exactly-one-lead trigger rejects the batch at
   // COMMIT ("has no lead producer"). That is the invariant working; the same
   // rule binds the phase-4 import batches (§ Exactly one lead).
-  await prisma.$transaction([
-    prisma.$executeRawUnsafe(`
+  // Prisma 7 applies the 5 s transaction timeout to this seed as well, and 30k
+  // rows plus the deferred trigger at COMMIT took 5.2 s on a CI runner, so the
+  // timeout is explicit.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`
       INSERT INTO wine_products (id, name, category, scope, status, grapes, curator_locked, created_at, updated_at)
       SELECT 'p2pseed' || lpad(g::text, 14, '0'),
              CASE WHEN g % 2 = 0 THEN 'P2TEST Reserve Rouge ' || substr(md5(g::text), 1, 8)
                   ELSE 'P2TEST Cuvee ' || substr(md5((g * 7)::text), 1, 10) END,
              'wine', 'shared', 'confirmed', '{}', '{}', now(), now()
-        FROM generate_series(1, 30000) g`),
-    prisma.$executeRawUnsafe(`
+        FROM generate_series(1, 30000) g`)
+    await tx.$executeRawUnsafe(`
       INSERT INTO product_producers (product_id, producer_id, role, created_at)
       SELECT 'p2pseed' || lpad(g::text, 14, '0'), 'p2seed' || lpad(g::text, 15, '0'), 'lead', now()
-        FROM generate_series(1, 30000) g`),
-  ])
+        FROM generate_series(1, 30000) g`)
+  }, { timeout: 60_000 })
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE product_producers')
 

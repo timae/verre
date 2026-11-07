@@ -22,6 +22,12 @@ jobs:
 
       - run: npm ci
 
+      # The suites import lib/catalogWrite.ts → lib/prisma.ts → @prisma/client.
+      # Prisma 7's client no longer generates itself on install, and this
+      # repo's postinstall only runs patch-package.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
       # Pure-unit pins for the free-text vintage field shared by every wine
       # input on web + native (@verre/core vintageText.ts). No DB/Redis/network.
       #
