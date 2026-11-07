@@ -1,7 +1,7 @@
 import type { NextAuthConfig } from 'next-auth'
 
-// Edge-compatible auth config — no Prisma, no bcrypt
-// Used only by middleware.ts (Edge Runtime)
+// Lightweight auth config — no Prisma, no bcrypt. proxy.ts builds its NextAuth
+// instance from this alone (JWT presence only, never revocation); auth.ts extends it.
 export const authConfig: NextAuthConfig = {
   trustHost: true,
   providers: [],

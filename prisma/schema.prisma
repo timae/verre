@@ -5,7 +5,7 @@ generator client {
 
 datasource db {
   provider   = "postgresql"
-  url        = env("DATABASE_URL")
+  // The connection URL lives in prisma.config.ts (Prisma 7: a url here is an error).
   // unaccent powers accent-insensitive moments search (GET /api/me/sessions
   // ?q); pg_trgm adds the typo-tolerant word_similarity fallback. The
   // f_unaccent() IMMUTABLE wrapper + any functional trgm index live in raw

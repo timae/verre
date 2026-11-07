@@ -33,7 +33,7 @@
 // A hand-written SQL twin of those queries would be exactly the "reconstruction
 // that masks a runtime bug" failure this repo has already been bitten by.
 
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from '../lib/prismaClient.mjs'
 import {
   searchProducers,
   searchProducts,
@@ -64,7 +64,7 @@ import { fileURLToPath } from 'node:url'
 // then hangs to the step timeout.
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
-const prisma = new PrismaClient()
+const prisma = createPrismaClient()
 let pass = 0
 const failures = []
 
@@ -633,19 +633,22 @@ async function main() {
   // together, or the deferred exactly-one-lead trigger rejects the batch at
   // COMMIT ("has no lead producer"). That is the invariant working; the same
   // rule binds the phase-4 import batches (§ Exactly one lead).
-  await prisma.$transaction([
-    prisma.$executeRawUnsafe(`
+  // Prisma 7 applies the 5 s transaction timeout to this seed as well, and 30k
+  // rows plus the deferred trigger at COMMIT took 5.2 s on a CI runner, so the
+  // timeout is explicit.
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(`
       INSERT INTO wine_products (id, name, category, scope, status, grapes, curator_locked, created_at, updated_at)
       SELECT 'p2pseed' || lpad(g::text, 14, '0'),
              CASE WHEN g % 2 = 0 THEN 'P2TEST Reserve Rouge ' || substr(md5(g::text), 1, 8)
                   ELSE 'P2TEST Cuvee ' || substr(md5((g * 7)::text), 1, 10) END,
              'wine', 'shared', 'confirmed', '{}', '{}', now(), now()
-        FROM generate_series(1, 30000) g`),
-    prisma.$executeRawUnsafe(`
+        FROM generate_series(1, 30000) g`)
+    await tx.$executeRawUnsafe(`
       INSERT INTO product_producers (product_id, producer_id, role, created_at)
       SELECT 'p2pseed' || lpad(g::text, 14, '0'), 'p2seed' || lpad(g::text, 15, '0'), 'lead', now()
-        FROM generate_series(1, 30000) g`),
-  ])
+        FROM generate_series(1, 30000) g`)
+  }, { timeout: 60_000 })
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
   await prisma.$executeRawUnsafe('VACUUM ANALYZE product_producers')
 
@@ -771,7 +774,7 @@ async function main() {
   // CTE seeded from an unfiltered `FROM producers` is exactly the shape that
   // regressed, and it is trivially detectable in the emitted SQL.
   const emitted = []
-  const sqlSpy = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] })
+  const sqlSpy = createPrismaClient({ log: [{ emit: 'event', level: 'query' }] })
   sqlSpy.$on('query', e => emitted.push(e.query))
   try {
     await sqlSpy.$executeRawUnsafe('SELECT 1')   // prove the spy is wired
@@ -1148,31 +1151,31 @@ async function main() {
   // a plain compound unique would allow unlimited ones.
   const nv = await accepts('an NV vintage (year = null) is created',
     () => createVintage(prod.id, null, TEST_USER))
-  // The expected fragment is the COLUMN PAIR rather than the constraint name:
-  // the Prisma client reports a unique violation as "Unique constraint failed
-  // on the fields: (`product_id`,`year`)" and does not surface the constraint's
-  // name. Still specific — a violation of any OTHER unique constraint names
-  // different columns and would fail this assertion.
+  // The expected fragment is the constraint NAME: since Prisma 7 the client
+  // reports a unique violation as "Unique constraint failed on the constraint:
+  // `wine_vintages_product_year_key`" (the Rust engine used to name the column
+  // pair instead). Still specific — a violation of any OTHER unique constraint
+  // carries a different name and would fail this assertion.
   await rejects('a SECOND NV row on the same product is rejected',
-    () => createVintage(prod.id, null, TEST_USER), '`product_id`,`year`')
+    () => createVintage(prod.id, null, TEST_USER), 'wine_vintages_product_year_key')
   await rejects('a duplicate YEAR on the same product is rejected',
-    () => createVintage(prod.id, 2019, TEST_USER), '`product_id`,`year`')
-  // 🔒 And the same rule asserted through RAW SQL. The expected fragment is
-  // `year)=(` … `null)` — the detail line Postgres emits for the conflicting
-  // KEY — because that is what proves NULLS NOT DISTINCT is in force: it shows
-  // a NULL year COLLIDING with an existing NULL year. Postgres treats NULLs as
+    () => createVintage(prod.id, 2019, TEST_USER), 'wine_vintages_product_year_key')
+  // 🔒 And the same rule asserted through RAW SQL. Postgres treats NULLs as
   // distinct by default, so under a regression that replaced this constraint
-  // with a plain compound unique the insert would SUCCEED and this assertion
-  // would fail. (Prisma does not surface the constraint NAME for a 23505, so
-  // matching on the name is not available here; § below re-checks the name
-  // directly against the catalog.)
+  // with a plain compound unique the insert would SUCCEED and `rejects` fails
+  // on acceptance; when it IS rejected, the fragment pins WHICH constraint did
+  // it. Since Prisma 7 the pg driver surfaces the constraint NAME in a 23505
+  // (`violates unique constraint "<name>"`) and no longer Postgres's DETAIL
+  // line (`Key (product_id, year)=(…, null) already exists`, which the Rust
+  // engine used to include), so the name is the fragment. § below re-checks
+  // the constraint's STRENGTH directly against the catalog.
   await rejects('a second NV row collides on a NULL year (NULLS NOT DISTINCT is in force)',
     () => prisma.$executeRawUnsafe(`
       INSERT INTO wine_vintages (id, product_id, year, status, curator_locked, created_at, updated_at)
       VALUES ('p2nvdup00000000000000'::varchar(21), '${prod.id}', NULL, 'provisional', '{}', now(), now())`),
-    'year)=(')
+    'wine_vintages_product_year_key')
   // The constraint object itself, by name and by strength. Asserted separately
-  // because the runtime errors above cannot name it — and a regression could
+  // because a name alone proves nothing about strength — a regression could
   // drop `NULLS NOT DISTINCT` while keeping the name.
   const nvConstraint = await prisma.$queryRawUnsafe(`
     SELECT conname, pg_get_constraintdef(oid) AS def FROM pg_constraint

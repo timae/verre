@@ -4,7 +4,7 @@ Local rules for `app/*` route segments and pages. Root CLAUDE.md still applies; 
 
 ## Stack
 
-Next.js 15 App Router. UI lives under `app/` (route segments) and `components/`.
+Next.js 16 App Router (Turbopack builds). UI lives under `app/` (route segments) and `components/`.
 
 ## Top-level routes
 
@@ -40,7 +40,7 @@ Bootstrap params like `?name=`, `?id=`, `?host=1` exist solely to seed client UI
 
 ## `instrumentation.ts` — keep Node-only code out of the Edge bundle
 
-`instrumentation.ts`'s `register()` is analyzed and **bundled for BOTH runtimes** (Node *and* Edge — `middleware.ts` makes the Edge runtime real). A `NEXT_RUNTIME === 'nodejs'` runtime guard does **not** stop webpack from *bundling* a module — including a `await import(...)`'d one — for the Edge target. So importing anything that pulls in `node:fs` / `node:path` / `node:child_process` (etc.) directly from `instrumentation.ts` fails the **build** with `UnhandledSchemeError: Reading from "node:fs"…`, even though it would never *run* on Edge. (`tsc` won't catch this — it doesn't bundle; only `npm run build` does.)
+`instrumentation.ts`'s `register()` is analyzed and **bundled for BOTH runtimes** (Node *and* Edge — Next 16 still emits an Edge instrumentation entry even though `proxy.ts` runs on Node). `NEXT_RUNTIME` is replaced at compile time, so a **dynamic** `await import(...)` inside the `=== 'nodejs'` branch is eliminated from the Edge build (there `register()` compiles to a no-op). A **static** top-level import is not: it is bundled for Edge whatever the guard says. Statically importing anything that pulls in `node:fs` / `node:path` / `node:child_process` (etc.) fails a webpack build (Next 15, and the `--webpack` fallback) with `UnhandledSchemeError: Reading from "node:fs"…`; ⚠️ under Turbopack (the Next 16 default) the build SUCCEEDS and only prints `A Node.js module is loaded ('node:fs' …) which is not supported in the Edge Runtime` — treat that warning as a failure. (Fixture-verified 2026-11-06 on 15.5.29 and 16.4.5, both bundlers. `tsc` catches neither.) `eslint.config.mjs` enforces the pattern below on `instrumentation.ts`: no static imports, and dynamic imports only inside the `=== 'nodejs'` branch (CI: `check-lint.yml`).
 
 **Pattern**: put the Node-only boot work in a separate root file `instrumentation-node.ts` and import it ONLY inside the nodejs branch:
 

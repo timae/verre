@@ -21,7 +21,7 @@
 // options are the whole behaviour, and a source assertion is what fails when
 // someone "simplifies" them away. Run: npx tsx scripts/tests/attributions-offline-units.ts
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import Module from 'node:module'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -37,7 +37,7 @@ let apiFetchStub: ApiFetchStub = async () => { throw new Error('no stub installe
 const nodeRequire = Module.createRequire(import.meta.url)
 const originalResolve = (Module as unknown as { _resolveFilename: (...a: unknown[]) => string })._resolveFilename
 const APIFETCH_SHIM = join(root, 'scripts/tests/.apifetch-shim.cjs')
-require('node:fs').writeFileSync(
+writeFileSync(
   APIFETCH_SHIM,
   'module.exports = { apiFetch: (...a) => globalThis.__vrApiFetch(...a) };\n',
 )
@@ -265,7 +265,7 @@ console.log(
     : `\nFAILED — ${failures} check(s) failed.`,
 )
 // Clean up the resolver shim so it never lingers as an untracked artifact.
-try { require('node:fs').unlinkSync(APIFETCH_SHIM) } catch { /* already gone */ }
+try { unlinkSync(APIFETCH_SHIM) } catch { /* already gone */ }
 
 process.exit(failures === 0 ? 0 : 1)
 }

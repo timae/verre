@@ -12,6 +12,10 @@
 # Wrapped in `sh -c` because Deploio execs the command directly (no shell), so
 # `cd /migrate && …` needs a real shell. Migration tooling lives at /migrate
 # (see Dockerfile); calling Prisma's JS entry directly avoids .bin/PATH reliance.
+# Prisma 7 reads the datasource from /migrate/prisma.config.ts, so this job and
+# the cleanup cron below must keep /migrate as their cwd (the Dockerfile copies
+# the file there). `db execute` lost `--schema`/`--url` in 7: `--file` only.
+
 deployJob:
   name: "migrate"
   command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js migrate deploy"'
@@ -30,7 +34,7 @@ scheduledJobs:
   # identityStore chokepoint (lib/nativeSessionPrune.ts), because this image
   # has no lib/ and a raw SQL delete there can strand a live Redis copy.
   - name: "cleanup-revoked-sessions"
-    command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js db execute --schema prisma/schema.prisma --file prisma/maintenance/cleanup-revoked-sessions.sql"'
+    command: 'sh -c "cd /migrate && node node_modules/prisma/build/index.js db execute --file prisma/maintenance/cleanup-revoked-sessions.sql"'
     schedule: "0 3 * * *"
     size: micro
     retries: 0

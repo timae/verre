@@ -36,7 +36,10 @@ async function downloadGeoData(): Promise<number> {
     mkdirSync(GEO_DIR, { recursive: true })
     for (const key of KEYS) {
       const bytes = await getObjectBytes(S3_PREFIX + key)
-      if (bytes) { writeFileSync(join(GEO_DIR, key), bytes); got++ }
+      // GEO_DIR is a runtime data dir outside the project; without the hint
+      // Turbopack can't scope the env-driven path and traces the whole repo
+      // (1.1 GB, incl. apps/ and ios/) into .next/standalone.
+      if (bytes) { writeFileSync(join(/*turbopackIgnore: true*/ GEO_DIR, key), bytes); got++ }
     }
   } catch (err) {
     console.warn('[geo] download failed (geo labels unavailable):', err)

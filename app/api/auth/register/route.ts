@@ -10,7 +10,7 @@ import { syncCredential } from '@/lib/identityStore'
 
 const schema = z.object({
   name:       z.string(),
-  email:      z.string().email(),
+  email:      z.email(),
   password:   z.string().min(8),
   formToken:  z.string(),
   website:  z.string().optional(),

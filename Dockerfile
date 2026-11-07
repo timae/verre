@@ -1,4 +1,4 @@
-# ── Verre v3 — Next.js 15 ─────────────────────────────────────
+# ── Verre v3 — Next.js 16 ─────────────────────────────────────
 FROM node:24-alpine AS builder
 WORKDIR /app
 # Copy the root manifests AND every workspace package manifest before `npm ci`
@@ -34,6 +34,10 @@ COPY --from=builder /app/public ./public
 # node_modules. The Deploio deploy job (.deploio.yaml) cd's into /migrate
 # before invoking the Prisma CLI's JS entry directly.
 COPY --from=builder /app/prisma /migrate/prisma
+# Prisma 7 reads the datasource URL and the migrations path from
+# prisma.config.ts (schema.prisma no longer carries a url), so the CLI needs
+# the file in its cwd. It imports dotenv + prisma/config from node_modules.
+COPY --from=builder /app/prisma.config.ts /migrate/prisma.config.ts
 COPY --from=builder /app/node_modules /migrate/node_modules
 # Geo-data refresh script runs from the deploy job alongside migrations
 # (best-effort; see scripts/refresh-geo-data.mjs + .deploio.yaml).

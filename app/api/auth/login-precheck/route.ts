@@ -12,7 +12,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { peekRates, getClientIp } from '@/lib/rateLimit'
 
-const schema = z.object({ email: z.string().email() })
+const schema = z.object({ email: z.email() })
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))

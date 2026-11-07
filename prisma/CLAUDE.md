@@ -18,6 +18,8 @@ npx prisma migrate dev --name <description>
 
 `prisma db push` is **no longer the canonical workflow** — it bypasses migration history. Only use it during early local exploration where you don't yet care about reproducibility, and never against production.
 
+**Prisma 7 (since 2026-11-06):** the datasource URL and the migrations path live in `prisma.config.ts` at the repo root — `schema.prisma` carries no `url` (one there is a validation error). The CLI reads `.env` only because that file loads it. `db execute` takes `--file`/`--stdin` only; `migrate diff` destinations are `--to-schema` (a schema FILE — what the CI drift gate uses) or `--to-config-datasource` (a live database). Every script builds its client through `scripts/lib/prismaClient.mjs` (the pg driver adapter is mandatory on 7). Pins, image layout, error-text changes and the TLS configuration (verify-ca via the environment CA, `lib/pgTls.mjs`): `docs/dev/deployment.md` § Prisma 7.
+
 ## 🔒 Editing a migration after it has been applied
 
 **Reported by the catalog-maintenance side (2026-07-26), reproduced and extended here.** Prisma records a sha256 `checksum` per applied migration in `_prisma_migrations`. Editing an already-applied `migration.sql` — even adding a comment — diverges the file from that record.

@@ -1,0 +1,37 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # Since Next 16, `next build` no longer runs ESLint, so this is the only
+      # lint gate (on Next 15 the Deplo.io build was). It also enforces the
+      # import allowlists on proxy.ts / auth.config.ts / instrumentation.ts
+      # (eslint.config.mjs), which replace the build-time Edge-bundle failure
+      # that used to catch Prisma / bcrypt / the full auth.ts reaching the proxy.
+      # Errors fail; warnings are an accepted baseline (no --max-warnings).
+      - name: ESLint
+        run: npm run lint
+
+      # Pins the allowlists themselves: a weakened selector would still lint the
+      # real files clean, so mutation cases are checked against the real config.
+      - name: Lint-boundary pins
+        run: node scripts/tests/lint-boundary-units.mjs

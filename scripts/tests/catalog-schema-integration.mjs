@@ -20,13 +20,13 @@
 // separate from Prisma's shadow database (the shadow DB is Prisma's scratch
 // space for computing diffs; sharing it would let the two stomp on each other).
 
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from '../lib/prismaClient.mjs'
 import { readFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const prisma = new PrismaClient()
+const prisma = createPrismaClient()
 let pass = 0
 const failures = []
 
@@ -53,6 +53,10 @@ function ok(cond, label) {
 // `SET CONSTRAINTS ALL IMMEDIATE` forces the DEFERRED triggers to fire inside
 // the savepoint — without it a deferred violation escapes to the outer COMMIT
 // where it cannot be attributed to this statement.
+// For a 23505 the expected fragment is the CONSTRAINT NAME: since Prisma 7 the
+// pg driver surfaces `violates unique constraint "<name>"` and not Postgres's
+// DETAIL line (`Key (…)=(…) already exists`), which the Rust engine used to
+// fold into the message. The name pins WHICH constraint fired just as well.
 async function rejects(label, sql, expect) {
   if (!expect) { ok(false, `${label} (TEST BUG: no expected constraint given)`); return }
   try {
@@ -445,7 +449,7 @@ async function main() {
     `INSERT INTO producers (id,name,status) VALUES ('test_pB','B','confirmed'),('test_pC','C','confirmed')`)
   await rejects('a second, different lead on one product',
     `INSERT INTO product_producers (product_id,producer_id,role) VALUES ('test_wA','test_pB','lead')`,
-    'Key (product_id)=(test_wA) already exists')
+    'product_producers_one_lead_idx')
   await accepts('a collaborator alongside the lead',
     `INSERT INTO product_producers (product_id,producer_id,role) VALUES ('test_wA','test_pB','collaborator')`)
 
@@ -493,7 +497,7 @@ async function main() {
   // must be an UPDATE, or it hits the composite PK.
   await rejects('promoting an existing collaborator via INSERT (must be UPDATE)',
     `INSERT INTO product_producers (product_id,producer_id,role) VALUES ('test_wA','test_pA','lead')`,
-    'Key (product_id, producer_id)=(test_wA, test_pA) already exists')
+    'product_producers_pkey')
 
   console.log('\n9. The purge carve-out — the invariant must not block its own cleanup')
   await makeProduct('test_purge', 'test_pC')
@@ -505,12 +509,12 @@ async function main() {
     `INSERT INTO wine_vintages (id,product_id,year,status) VALUES ('test_v18','test_wA',2018,'confirmed')`)
   await rejects('a duplicate year on one product',
     `INSERT INTO wine_vintages (id,product_id,year,status) VALUES ('test_vdup','test_wA',2018,'confirmed')`,
-    'Key (product_id, year)=(test_wA, 2018) already exists')
+    'wine_vintages_product_year_key')
   await prisma.$executeRawUnsafe(
     `INSERT INTO wine_vintages (id,product_id,year,status) VALUES ('test_vnv','test_wA',NULL,'confirmed')`)
   await rejects('a SECOND NV (null-year) row — what a plain unique would allow',
     `INSERT INTO wine_vintages (id,product_id,year,status) VALUES ('test_vnv2','test_wA',NULL,'confirmed')`,
-    'Key (product_id, year)=(test_wA, null) already exists')
+    'wine_vintages_product_year_key')
   await rejects('an out-of-range year',
     `UPDATE wine_vintages SET year=20255 WHERE id='test_v18'`,
     'wine_vintages_year_range_check')
@@ -561,7 +565,7 @@ async function main() {
   ok(e.ean === '0012345678905', 'the leading zero survived storage')
   await rejects('the same EAN on a second product (a conflict, never auto-reassignment)',
     `INSERT INTO product_eans (ean,product_id) VALUES ('0012345678905','test_wOther')`,
-    'Key (ean)=(0012345678905) already exists')
+    'product_eans_pkey')
   await rejects('a non-digit EAN', `INSERT INTO product_eans (ean,product_id) VALUES ('12-345','test_wOther')`,
     'product_eans_format_check')
   // Exact GTIN lengths only — {8,14} also accepted 9/10/11, which are not
@@ -833,7 +837,7 @@ async function main() {
   console.log('\n19. One live role row per user (no dual-role state)')
   await rejects('a second role row for a user who already holds one',
     `INSERT INTO staff_roles (user_id,role) VALUES (900001,'curator')`,
-    'Key (user_id)=(900001) already exists')
+    'staff_roles_pkey')
   await rejects('an unknown staff role',
     `INSERT INTO staff_roles (user_id,role) VALUES (900003,'superuser')`,
     'staff_roles_role_check')

@@ -7,9 +7,9 @@
 //
 // Exits 0 on success, 1 on any error.
 
-import { PrismaClient } from '@prisma/client'
+import { createPrismaClient } from './lib/prismaClient.mjs'
 
-const prisma = new PrismaClient()
+const prisma = createPrismaClient()
 
 async function main() {
   console.log('Backfilling lifetime counters...')
