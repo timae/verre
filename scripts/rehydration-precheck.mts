@@ -55,9 +55,17 @@ const wineNorm = (w: WineMeta): Record<string, unknown> => {
   }
   return o
 }
-const ratingNorm = (r: Partial<RatingMeta>) => JSON.stringify({
-  score: Number(r.score ?? 0), flavors: r.flavors ?? {}, aromas: r.aromas ?? [], notes: r.notes ?? '', at: Number(r.at ?? 0),
+// Rating CONTENT, key-order independent (Postgres jsonb reorders object keys)
+// and zero-fill independent (a zero flavour key is "not rated"); the mirror
+// token `at` is compared on its own — a token-only difference loses nothing.
+const canon = (v: unknown): string => JSON.stringify(v, (_k, x) =>
+  x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x)
+const ratingContent = (r: Partial<RatingMeta>) => canon({
+  score: Number(r.score ?? 0), aromas: r.aromas ?? [], notes: r.notes ?? '',
+  flavors: Object.fromEntries(Object.entries(r.flavors ?? {}).filter(([, v]) => Number(v) !== 0)),
 })
+// Legacy meta fields no current code reads (dropped at the next meta write).
+const LEGACY_META_FIELDS = new Set(['promotedAt', 'coHosts'])
 
 const live = await prisma.$queryRaw<{ code: string; date_from: Date | null }[]>`
   SELECT code, date_from FROM sessions WHERE deleted_at IS NULL AND code IS NOT NULL ORDER BY code`
@@ -80,7 +88,7 @@ for (const { code, date_from } of live) {
   // (b) meta
   const rebuilt = metaFromRecord(row, await readRecordRoles(prisma, code), cached)
   const metaFields = [...new Set([...Object.keys(rebuilt), ...Object.keys(cached)])]
-    .filter(f => f !== 'promotedAt' && JSON.stringify(norm(f, (rebuilt as Record<string, unknown>)[f])) !== JSON.stringify(norm(f, (cached as Record<string, unknown>)[f])))
+    .filter(f => !LEGACY_META_FIELDS.has(f) && JSON.stringify(norm(f, (rebuilt as Record<string, unknown>)[f])) !== JSON.stringify(norm(f, (cached as Record<string, unknown>)[f])))
   if (metaFields.length) d.metaFields = metaFields
   // (b) lineup
   const winesRaw = await redis.get(k.wines(code))
@@ -125,13 +133,17 @@ for (const { code, date_from } of live) {
   const recRatings = await recordRatings(prisma, row.id, code)
   const keys = new Set(await scanKeys(`s:${code}:r:*`))
   const missing = [...recRatings.keys()].filter(key => !keys.has(key)).length
-  let differing = 0
+  let differing = 0, tokenOnly = 0
   for (const [key, value] of recRatings) {
     if (!keys.has(key)) continue
     const raw = await redis.get(key)
-    if (raw && ratingNorm(JSON.parse(raw)) !== ratingNorm(value)) differing++
+    if (!raw) continue
+    const cached = JSON.parse(raw)
+    if (ratingContent(cached) !== ratingContent(value)) differing++
+    else if (Number(cached.at ?? 0) !== Number(value.at ?? 0)) tokenOnly++
   }
-  if (missing || differing) d.ratings = { missingKeys: missing, differingValues: differing }
+  // `differingContent` is the one that matters; `tokenOnlyDiffs` is informational.
+  if (missing || differing) d.ratings = { missingKeys: missing, differingContent: differing, tokenOnlyDiffs: tokenOnly }
   if (Object.keys(d).length) diffs[code] = d
   // (d)
   let invalid = 0
