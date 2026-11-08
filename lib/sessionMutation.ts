@@ -135,7 +135,8 @@ export type MutationOpts = {
 }
 
 // Test seam (cutover suite): a no-op unless a suite replaces `at`.
-export type HookPoint = 'beforeLock' | 'beforeGen' | 'locked' | 'beforePublish' | 'beforeCommit' | 'afterCommit' | 'beforeProjection'
+// 'recordRead' fires inside the rebuild's plan right after its record reads.
+export type HookPoint = 'beforeLock' | 'beforeGen' | 'locked' | 'recordRead' | 'beforePublish' | 'beforeCommit' | 'afterCommit' | 'beforeProjection'
 export const mutationHooks: { at: (point: HookPoint, code: string, label: string) => Promise<void> } = {
   at: async () => {},
 }

@@ -31,7 +31,7 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 | Writer | Redis lock | Notes |
 |---|---|---|
 | create | yes, no wait, per candidate code | code CLAIMED under the locks; logged-in: row + host member row + hosted/joined counters in one txn, keys as the projection |
-| promotion, rebuild, DELETE, wine CRUD/reorder/reveal, reassign, set-role, settings, name, kick/ban/unban/leave, visit, join, heal, re-seeds, anon rename, profile-rename propagation | yes | rebuild publishes BEFORE COMMIT (fenced, `WATCH gen`); DELETE's fenced wipe is in step 4 |
+| promotion, rebuild, DELETE, wine CRUD/reorder/reveal, reassign, set-role, settings, name, kick/ban/unban/leave, visit, join, heal, re-seeds, anon rename, profile-rename propagation | yes | rebuild publishes BEFORE COMMIT (fenced, `WATCH gen`) — `rehydrateSession` (`ensureSessionLive` = its status) plans (`planPublish`, reads only) then applies; the operator script's dry run takes the advisory + row lock, NO lease, and writes nothing; DELETE's fenced wipe is in step 4 |
 | rate POST / DELETE, bookmark, session-rating check-in PATCH | only when a rating key may be DELETED (rate DELETE, a reaping payload) | always the advisory lock + `bumpGen`; every rating-key write goes through `ratingKeyWrite(ctx, …)` — fenced by this contract's own `gen` token (a stale writer whose backend died is a no-op), and a DEL without the lease throws `ContractNeedsLease` → one re-run WITH the lock; check-in PATCH is `readMeta: false`, owner-admitted |
 | account deletion | leases for wipe candidates, taken before BEGIN | one txn via `withSessionLocks`; fenced renew per session; d: migration under a lease after COMMIT |
 
