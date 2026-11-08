@@ -1452,7 +1452,534 @@ async function round6() {
   check('(r6) the d: migration removes the deleted user\'s kick version', !(await redis.hGet(k.kickv(s.code), `u:${K.id}`)))
 }
 
-const SECTIONS: Record<string, () => Promise<unknown>> = { roundTrip, grants, idempotent, nxxx, b1, fencing, deletions, d1, b2, tombstones, belts, recycling, generation, moderation, checkConstraint, replan, round2, round3, round4, round5, round6 }
+// ── Release C: the operator script (scripts/rehydrate-sessions.mts) ─────────
+// Release-C plan § 7, checks 1–16. Semantic checks drive runRehydration
+// in-process; CLI, abort, outage and privacy checks spawn the CLI or the worker
+// bootstrap (scripts/tests/stubs/rehydrate-sessions-worker.mts).
+const SCRIPT = pjoin(REPO, 'scripts', 'rehydrate-sessions.mts')
+const WORKER = pjoin(HERE, 'stubs', 'rehydrate-sessions-worker.mts')
+type ScriptLine = Record<string, unknown> & { code?: string; outcome?: string; planned?: Counts; confirmed?: Counts; meta?: Record<string, unknown>; info?: Record<string, unknown>; drift?: boolean }
+type Counts = { rebuilt: Record<string, number | boolean>; reconciled: Record<string, number | string[]> & { metaFields: string[] } }
+async function runScript(o: { codes?: string[]; activeSinceDays?: number; apply?: boolean; force?: boolean; concurrency?: number; perCodeTimeoutMs?: number }) {
+  const { runRehydration } = await import('../rehydrate-sessions.mts')
+  const lines: ScriptLine[] = []
+  const r = await runRehydration({ apply: false, force: false, concurrency: 2, perCodeTimeoutMs: 30_000, ...o }, l => { lines.push(l as ScriptLine) })
+  return { lines, summary: r.summary as Record<string, unknown> & { retry: string[]; aborted: string | null }, line: (c: string) => lines.find(l => l.code === c) }
+}
+// A child that outlives `timeoutMs` is SIGKILLed (exit null) — a hang fails its check instead of the suite.
+async function runCli(args: string[], o: { env?: Record<string, string>; unset?: string[]; worker?: Record<string, unknown>; timeoutMs?: number } = {}) {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...o.env }
+  for (const u of o.unset ?? []) delete env[u]
+  if (o.worker) env.REHYDRATE_WORKER = JSON.stringify(o.worker)
+  const t0 = Date.now()
+  const child = spawn(process.execPath, ['--import', 'tsx', o.worker ? WORKER : SCRIPT, ...args], { cwd: REPO, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  let out = '', err = ''
+  child.stdout.on('data', d => { out += String(d) })
+  child.stderr.on('data', d => { err += String(d) })
+  const killer = setTimeout(() => child.kill('SIGKILL'), o.timeoutMs ?? 60_000)
+  // 'close', not 'exit': it fires only after the child's stdio has drained (r1-4).
+  const exit = await new Promise<number | null>(res => child.on('close', c => res(c)))
+  clearTimeout(killer)
+  const lines = out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) as ScriptLine } catch { return { unparsable: l } as ScriptLine } })
+  return { exit, out, err, ms: Date.now() - t0, lines, summary: lines.at(-1)?.summary as Record<string, unknown> | undefined }
+}
+const WRITE_CMDS = /^(SET|SETNX|SETEX|PSETEX|HSET|HSETNX|HDEL|HINCRBY|SADD|SREM|DEL|UNLINK|EXPIRE|PEXPIRE|PERSIST|RENAME|EVAL|EVALSHA|MULTI|EXEC|INCR|FLUSHDB|FLUSHALL)$/
+function parseMonitor(lines: string[]): string[][] {
+  return lines.map((l) => {
+    const m = l.match(/^\+[\d.]+ \[[^\]]+\] (.*)$/)
+    const args = [...(m ? m[1] : l).matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(x => x[1].replace(/\\(["\\])/g, '$1'))
+    if (args[0]) args[0] = args[0].toUpperCase()
+    return args
+  })
+}
+const writesIn = (cmds: string[][]) => cmds.filter(a => WRITE_CMDS.test(a[0] ?? ''))
+const zeroCounts = (c: Counts | undefined) => !!c && Object.values(c.rebuilt).every(v => v === 0 || v === false)
+  && Object.entries(c.reconciled).every(([f, v]) => (f === 'metaFields' ? (v as string[]).length === 0 : v === 0))
+async function freePort(): Promise<number> {
+  const net = await import('node:net')
+  const srv = net.createServer()
+  await new Promise<void>(r => srv.listen(0, '127.0.0.1', () => r()))
+  const port = (srv.address() as { port: number }).port
+  await new Promise<void>(r => srv.close(() => r()))
+  return port
+}
+// A TCP proxy that can be BLACKHOLED: from then on nothing is forwarded in
+// either direction and a closing client no longer closes its upstream — the
+// server keeps its socket, as under a network partition.
+async function tcpProxy(target: URL, defaultPort: number) {
+  const net = await import('node:net')
+  let blackholed = false
+  const sockets: import('node:net').Socket[] = []
+  const server = net.createServer((c) => {
+    const u = net.connect(Number(target.port || defaultPort), target.hostname)
+    sockets.push(c, u)
+    c.on('data', d => { if (!blackholed) u.write(d) })
+    u.on('data', d => { if (!blackholed) c.write(d) })
+    c.on('close', () => { if (!blackholed) u.destroy() })
+    u.on('close', () => { if (!blackholed) c.destroy() })
+    c.on('error', () => {})
+    u.on('error', () => {})
+  })
+  await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()))
+  const port = (server.address() as { port: number }).port
+  const via = (raw: string) => { const x = new URL(raw); x.hostname = '127.0.0.1'; x.port = String(port); return x.toString() }
+  return { via, blackhole: () => { blackholed = true }, close: () => { for (const s of sockets) s.destroy(); server.close() } }
+}
+async function untilFree(code: string, ms: number): Promise<number | null> {
+  const t0 = Date.now()
+  while (Date.now() - t0 < ms) {
+    if (!(await advisoryHolders([code])).length) return Date.now() - t0
+    await sleep(100)
+  }
+  return null
+}
+
+// A dead child's lease lapses on its own (≤ the 15 s lease): wait for it.
+async function leaseGone(code: string): Promise<boolean> {
+  for (let i = 0; i < 200; i++) { if (!(await redis.exists(sessionLockKey(code)))) return true; await sleep(100) }
+  return false
+}
+
+async function operatorScript() {
+  section('release C — the operator script (scripts/rehydrate-sessions.mts)')
+  const { readLiveRow, readRecordRoles, metaFromRecord } = await import('../../lib/sessionRecord.ts')
+  const { lifespanTTL } = await import('../../lib/redis.ts')
+  const recordMeta = async (code: string, cache: Record<string, unknown> | null) => {
+    const row = (await readLiveRow(prisma, code))!
+    return metaFromRecord(row, await readRecordRoles(prisma, code), cache as never)
+  }
+
+  // ── 1. Cold, dry run writes nothing ──
+  const H = await mkUser('Host OS'), C = await mkUser('Cohost OS'), P = await mkUser('Provider OS'), T = await mkUser('Taster OS')
+  const K = await mkUser('Kicked OS'), B = await mkUser('Banned OS'), X = await mkUser('Doomed OS'), Z = await mkUser('Stranger OS')
+  const s = await createSession({ cookie: H.cookie })
+  for (const [u, n] of [[C, 'Cohost OS'], [P, 'Provider OS'], [T, 'Taster OS'], [K, 'Kicked OS'], [B, 'Banned OS'], [X, 'Doomed OS']] as const) await enter(s.code, { cookie: u.cookie }, n)
+  const A = await join(s.code, {}, 'Anon OS')
+  const AB = await join(s.code, {}, 'Anon banned OS')
+  await setRole(s.code, { cookie: H.cookie }, `u:${C.id}`, 'co_host')
+  await setRole(s.code, { cookie: H.cookie }, `u:${P.id}`, 'provider')
+  await setRole(s.code, { cookie: H.cookie }, `u:${X.id}`, 'provider')
+  const w1 = await addWine(s.code, { cookie: H.cookie }, 'One OS')
+  const w2 = await addWine(s.code, { cookie: P.cookie }, 'Two OS')
+  const w3 = await addWine(s.code, { cookie: X.cookie }, 'Three OS')
+  await rate(s.code, { cookie: T.cookie }, w1, 4); await rate(s.code, { cookie: T.cookie }, w2, 4)
+  await rate(s.code, { cookie: K.cookie }, w1, 2); await rate(s.code, { cookie: X.cookie }, w2, 5); await rate(s.code, { anon: A.anon }, w1, 1)
+  await ban(s.code, { cookie: H.cookie }, `u:${K.id}`, 'kick')
+  await ban(s.code, { cookie: H.cookie }, `u:${B.id}`, 'ban')
+  await ban(s.code, { cookie: H.cookie }, AB.id, 'ban')
+  await deleteAccountDurable(X.id)
+  await state(s.code, { cookie: H.cookie })
+  check('setup: the recorded a: ban exists', (await prisma.$queryRaw<{ x: number }[]>`SELECT 1 AS x FROM session_bans WHERE session_code = ${s.code} AND identity_id = ${AB.id}`).length === 1)
+  await wipeCache(s.code)
+  let r1!: Awaited<ReturnType<typeof runScript>>
+  const m1 = parseMonitor(await monitored(async () => { r1 = await runScript({ codes: [s.code] }) }))
+  const l1 = r1.line(s.code)
+  check('(1) cold dry run: outcome planned, state cold', l1?.outcome === 'planned' && l1?.state === 'cold', l1)
+  check('(1) …no write command from any client', writesIn(m1).length === 0, writesIn(m1))
+  check('(1) …planned = the expected cold fill', JSON.stringify(l1?.planned) === JSON.stringify({
+    rebuilt: { meta: true, lineup: true, wines: 3, members: 4, tombstones: 1, ratings: 4, bans: 2, kicked: 1 },
+    reconciled: { metaFields: [], identities: 0, ratingKeys: 0, bans: 0, kicked: 0, provenance: 0 },
+  }), l1?.planned)
+  check('(1) …meta write nx/create, info tombstone 1, lineup order kept', JSON.stringify(l1?.meta) === '{"write":"nx","expect":"create"}'
+    && l1?.info?.tombstoneGroups === 1 && l1?.info?.lineupOrderLost === false, { meta: l1?.meta, info: l1?.info })
+  check('(1) …the keys are still absent', (await scanKeys(`s:${s.code}:*`)).length === 0)
+
+  // ── 2. Apply = plan ──
+  const r2 = await runScript({ codes: [s.code], apply: true })
+  const l2 = r2.line(s.code)
+  check('(2) apply: confirmed = planned, drift false, meta acked', l2?.outcome === 'applied' && JSON.stringify(l2?.confirmed) === JSON.stringify(l2?.planned)
+    && l2?.drift === false && l2?.meta?.acked === true && JSON.stringify(l2?.planned) === JSON.stringify(l1?.planned), l2)
+  const ids2 = await redis.hGetAll(k.identities(s.code))
+  const dKey = Object.keys(ids2).find(id => id.startsWith('d:'))
+  check('(2) …roster = H, C, P, T + one [deleted] group', JSON.stringify(Object.keys(ids2).filter(id => id.startsWith('u:')).sort()) === JSON.stringify([H, C, P, T].map(u => `u:${u.id}`).sort()) && !!dKey && ids2[dKey!] === '[deleted]', ids2)
+  check('(2) …bans {u:B, a:AB}, kicked {u:K}', JSON.stringify((await redis.sMembers(k.bans(s.code))).sort()) === JSON.stringify([`u:${B.id}`, AB.id].sort())
+    && JSON.stringify(await redis.sMembers(k.kicked(s.code))) === JSON.stringify([`u:${K.id}`]))
+  check('(2) …rating keys = the record (incl. the kicked user and the d: group)', JSON.stringify((await scanKeys(`s:${s.code}:r:*`)).sort()) === JSON.stringify([
+    k.rating(s.code, `u:${T.id}`, w1), k.rating(s.code, `u:${T.id}`, w2), k.rating(s.code, `u:${K.id}`, w1), k.rating(s.code, dKey!, w2)].sort()))
+  check('(2) …meta = metaFromRecord, lineup of 3 with the d: owner', JSON.stringify(await metaOf(s.code)) === JSON.stringify(await recordMeta(s.code, null))
+    && (await redisWines(s.code)).length === 3 && (await redisWines(s.code)).find(w => w.id === w3)?.addedByIdentityId === dKey)
+  let r2b!: Awaited<ReturnType<typeof runScript>>
+  const m2 = parseMonitor(await monitored(async () => { r2b = await runScript({ codes: [s.code] }) }))
+  check('(2) a second plain dry run → warm, only the readiness EXISTS, no lock', r2b.line(s.code)?.outcome === 'warm'
+    && m2.length === 1 && m2[0][0] === 'EXISTS' && r2b.summary.converged === null, { m2, converged: r2b.summary.converged })
+
+  // ── 3. Converged ──
+  const r3d = await runScript({ codes: [s.code], force: true })
+  const r3a = await runScript({ codes: [s.code], force: true, apply: true })
+  check('(3) forced dry run on the warm moment: every actionable count 0, metaFields []', zeroCounts(r3d.line(s.code)?.planned) && r3d.summary.converged === true, r3d.line(s.code))
+  check('(3) forced apply: planned and confirmed all 0, drift false', zeroCounts(r3a.line(s.code)?.planned) && zeroCounts(r3a.line(s.code)?.confirmed) && r3a.line(s.code)?.drift === false, r3a.line(s.code))
+  check('(3) informational stays: tombstoneGroups 1', r3a.line(s.code)?.info?.tombstoneGroups === 1 && r3a.line(s.code)?.meta?.expect === 'rewrite')
+
+  // ── 4. Force, both directions ──
+  const staleD = `d:${crypto.randomUUID()}`, anonBan = `a:${crypto.randomUUID()}`, goneKey = k.rating(s.code, 'u:999999999', w1)
+  await redis.del([k.rating(s.code, `u:${T.id}`, w1), k.rating(s.code, `u:${K.id}`, w1)])
+  await redis.hDel(k.identities(s.code), `u:${T.id}`)
+  await redis.sRem(k.bans(s.code), [`u:${B.id}`, AB.id])
+  await redis.hSet(k.identities(s.code), { [`u:${Z.id}`]: 'Stale Z', [staleD]: '[deleted]' })
+  await redis.sAdd(k.bans(s.code), [`u:${Z.id}`, anonBan])
+  await redis.set(goneKey, JSON.stringify({ score: 3, flavors: {}, aromas: [], notes: '', at: 1 }), { EX: 3600 })
+  const m4 = (await metaOf(s.code))!
+  delete m4.hostIdentityId
+  await redis.set(k.meta(s.code), JSON.stringify({ ...m4, coHosts: ['Legacy'], Zqxsentinelfield: 1 }), { XX: true, KEEPTTL: true })
+  const tw2 = k.rating(s.code, `u:${T.id}`, w2)
+  const tw2v = { ...JSON.parse((await redis.get(tw2))!), score: 1 }
+  await redis.set(tw2, JSON.stringify(tw2v), { XX: true, KEEPTTL: true })
+  const lineup4 = await redisWines(s.code)
+  lineup4[0].revealedAt = '2026-01-01T00:00:00.000Z'
+  await redis.set(k.wines(s.code), JSON.stringify(lineup4), { XX: true, KEEPTTL: true })
+  await redis.expire(k.identities(s.code), 100)
+  const metaBefore4 = await metaOf(s.code)
+  const want4 = {
+    rebuilt: { meta: false, lineup: false, wines: 0, members: 1, tombstones: 0, ratings: 2, bans: 2, kicked: 0 },
+    reconciled: { metaFields: ['<other>', 'coHosts', 'hostIdentityId'], identities: 2, ratingKeys: 1, bans: 1, kicked: 0, provenance: 0 },
+  }
+  const r4d = await runScript({ codes: [s.code], force: true })
+  check('(4) forced dry run plans each repair', JSON.stringify(r4d.line(s.code)?.planned) === JSON.stringify(want4) && r4d.line(s.code)?.info?.orphans === 1, r4d.line(s.code))
+  const r4a = await runScript({ codes: [s.code], force: true, apply: true })
+  check('(4) forced apply: confirmed = planned, drift false', JSON.stringify(r4a.line(s.code)?.confirmed) === JSON.stringify(want4) && r4a.line(s.code)?.drift === false, r4a.line(s.code))
+  const ids4 = await redis.hGetAll(k.identities(s.code)), bans4 = new Set(await redis.sMembers(k.bans(s.code)))
+  check('(4) …roster entry back, stale u: and d: out', !!ids4[`u:${T.id}`] && !ids4[`u:${Z.id}`] && !ids4[staleD])
+  check('(4) …u: + recorded a: bans back, stale u: ban out, cache-only a: ban kept', bans4.has(`u:${B.id}`) && bans4.has(AB.id) && !bans4.has(`u:${Z.id}`) && bans4.has(anonBan), [...bans4])
+  check('(4) …missing rating keys back, the gone user\'s key deleted', !!(await redis.get(k.rating(s.code, `u:${T.id}`, w1))) && !!(await redis.get(k.rating(s.code, `u:${K.id}`, w1))) && !(await redis.exists(goneKey)))
+  check('(4) …content kept: the differing cached rating value and the cache-only revealedAt', JSON.parse((await redis.get(tw2))!).score === 1
+    && (await redisWines(s.code))[0].revealedAt === '2026-01-01T00:00:00.000Z')
+  check('(4) an unknown cached meta key is reported as <other>, never by name', !JSON.stringify(r4d.lines).includes('Zqxsentinelfield'))
+  check('(4) …meta = metaFromRecord (legacy coHosts dropped, hostIdentityId back)', JSON.stringify(await metaOf(s.code)) === JSON.stringify(await recordMeta(s.code, metaBefore4)))
+  const life = lifespanTTL((await readLiveRow(prisma, s.code))!.lifespan ?? undefined)
+  const ttls = await Promise.all((await scanKeys(`s:${s.code}:*`)).map(async key => [key, await redis.ttl(key)] as const))
+  check('(4) …every key\'s TTL = the lifespan (the shortened identities TTL refreshed)', ttls.every(([, t]) => t >= life - 10 && t <= life), ttls.filter(([, t]) => t < life - 10 || t > life))
+
+  // ── 5. Deferred account-delete projection ──
+  const H5 = await mkUser('Host OS5'), Y = await mkUser('Doomed cohost OS5'), Y2 = await mkUser('Doomed banned OS5'), Y3 = await mkUser('Doomed kicked OS5'), T5 = await mkUser('Taster OS5')
+  const s5 = await createSession({ cookie: H5.cookie })
+  for (const [u, n] of [[Y, 'Y'], [Y2, 'Y2'], [Y3, 'Y3'], [T5, 'Taster OS5']] as const) await enter(s5.code, { cookie: u.cookie }, n)
+  const A5 = await join(s5.code, {}, 'Anon OS5')
+  await setRole(s5.code, { cookie: H5.cookie }, `u:${Y.id}`, 'co_host')
+  const w5 = await addWine(s5.code, { cookie: Y.cookie }, 'By Y')
+  const w5b = await addWine(s5.code, { cookie: H5.cookie }, 'By host')
+  await rate(s5.code, { cookie: Y.cookie }, w5, 3); await rate(s5.code, { cookie: Y.cookie }, w5b, 4.5)
+  await rate(s5.code, { cookie: T5.cookie }, w5, 2); await rate(s5.code, { anon: A5.anon }, w5, 1)
+  await ban(s5.code, { cookie: H5.cookie }, `u:${Y2.id}`, 'ban')
+  await ban(s5.code, { cookie: H5.cookie }, `u:${Y3.id}`, 'kick')
+  await state(s5.code, { cookie: H5.cookie })
+  for (const u of [Y, Y2, Y3]) await deleteAccountDurable(u.id, { hooks: { failProjection: true, failInvalidation: true } })
+  const pre5 = await snapshot(s5.code)
+  const preIds = pre5[k.identities(s5.code)] as Record<string, string>
+  check('(5) setup: the projection never ran (u:Y still cached, u:Y2 ban still cached)', !!preIds[`u:${Y.id}`] && (pre5[k.bans(s5.code)] as string[]).includes(`u:${Y2.id}`))
+  const metaBefore5 = await metaOf(s5.code)
+  const r5 = await runScript({ codes: [s5.code], force: true, apply: true })
+  const l5 = r5.line(s5.code)
+  const ids5 = await redis.hGetAll(k.identities(s5.code))
+  const d5 = Object.keys(ids5).find(id => id.startsWith('d:'))
+  check('(5) forced apply: planned the deletion repairs', JSON.stringify(l5?.planned) === JSON.stringify({
+    rebuilt: { meta: false, lineup: false, wines: 0, members: 0, tombstones: 1, ratings: 2, bans: 0, kicked: 0 },
+    reconciled: { metaFields: ['coHostIds'], identities: 1, ratingKeys: 2, bans: 1, kicked: 0, provenance: 1 },
+  }) && l5?.drift === false, l5)
+  check('(5) …u:Y out of identities + its rating keys gone; u:Y2 ban gone', !ids5[`u:${Y.id}`] && (await scanKeys(`s:${s5.code}:r:u:${Y.id}:*`)).length === 0
+    && !(await redis.sIsMember(k.bans(s5.code), `u:${Y2.id}`)))
+  check('(5) …d: group in as [deleted] with the record values', !!d5 && ids5[d5!] === '[deleted]'
+    && JSON.parse((await redis.get(k.rating(s5.code, d5!, w5)))!).score === 3 && JSON.parse((await redis.get(k.rating(s5.code, d5!, w5b)))!).score === 4.5)
+  const byY = (await redisWines(s5.code)).find(w => w.id === w5) as { addedByIdentityId?: string; addedByDisplayName?: string } | undefined
+  check('(5) …Y\'s wine provenance = d: / [deleted]', byY?.addedByIdentityId === d5 && byY?.addedByDisplayName === '[deleted]', byY)
+  check('(5) …meta role lists from the record (u:Y gone)', JSON.stringify(await metaOf(s5.code)) === JSON.stringify(await recordMeta(s5.code, metaBefore5))
+    && !((await metaOf(s5.code))!.coHostIds as string[]).includes(`u:${Y.id}`))
+  check('(5) …preserved: other roster names, other rating values, anonymous entries',
+    ids5[`u:${H5.id}`] === preIds[`u:${H5.id}`] && ids5[`u:${T5.id}`] === preIds[`u:${T5.id}`] && ids5[A5.id] === preIds[A5.id]
+    && JSON.stringify(JSON.parse((await redis.get(k.rating(s5.code, `u:${T5.id}`, w5)))!)) === JSON.stringify(pre5[k.rating(s5.code, `u:${T5.id}`, w5)])
+    && !!(await redis.get(k.rating(s5.code, A5.id, w5))))
+  check('(5) …the inert residuals stay: Y3 kicked marker + kick version, Y lastseen', await redis.sIsMember(k.kicked(s5.code), `u:${Y3.id}`)
+    && !!(await redis.hGet(k.kickv(s5.code), `u:${Y3.id}`)) && !!(await redis.hGet(k.lastSeen(s5.code), String(Y.id))))
+
+  // ── 6. Busy is skipped, once ──
+  const H6 = await mkUser('Host OS6')
+  const s6 = await createSession({ cookie: H6.cookie })
+  await addWine(s6.code, { cookie: H6.cookie }, 'w6')
+  await wipeCache(s6.code)
+  const held6 = (await acquireSessionLock(s6.code))!
+  let lockEntries = 0
+  mutationHooks.at = async (p, c, l) => { if (p === 'beforeLock' && c === s6.code && l === 'rebuild') lockEntries++ }
+  let r6!: Awaited<ReturnType<typeof runScript>>
+  const m6 = parseMonitor(await monitored(async () => { r6 = await runScript({ codes: [s6.code], apply: true }) }))
+  noHooks()
+  check('(6) busy: outcome busy, exactly one lock attempt (never retried), code in retry', r6.line(s6.code)?.outcome === 'busy' && lockEntries === 1
+    && r6.summary.retry.includes(s6.code) && String(r6.summary.retryCommand).includes(`--apply ${s6.code}`) && r6.summary.converged === false, { line: r6.line(s6.code), lockEntries, s: r6.summary })
+  check('(6) …nothing written but the refused SET NX lock attempts', writesIn(m6).every(a => a[0] === 'SET' && a[1] === sessionLockKey(s6.code) && a.includes('NX')) && !(await redis.exists(k.meta(s6.code))))
+  const { renewSessionLock } = await import('../../lib/sessionLock.ts')
+  check('setup: the held lock renewed for the CLI run', await renewSessionLock(s6.code, held6))
+  const c6 = await runCli(['--apply', s6.code])
+  check('(6) …the CLI exits 1', c6.exit === 1 && c6.lines.find(l => l.code === s6.code)?.outcome === 'busy', { exit: c6.exit, out: c6.out })
+  await releaseSessionLock(s6.code, held6)
+
+  // ── 7. Refused + healthy serialization ──
+  const H7 = await mkUser('Host OS7'), T7 = await mkUser('Taster OS7')
+  const s7 = await createSession({ cookie: H7.cookie })
+  await enter(s7.code, { cookie: T7.cookie }, 'Taster OS7')
+  const w7 = await addWine(s7.code, { cookie: H7.cookie }, 'w7')
+  await rate(s7.code, { cookie: T7.cookie }, w7, 4)
+  await wipeCache(s7.code)
+  const p7 = pauseAt('beforePublish', s7.code, 'rebuild')
+  const r7p = runScript({ codes: [s7.code], apply: true })
+  await p7.entered
+  await redis.set(k.gen(s7.code), crypto.randomUUID(), { EX: 3600 })
+  p7.release()
+  const r7 = await r7p
+  check('(7a) a generation change after the baseline → refused, nothing published', r7.line(s7.code)?.outcome === 'refused' && !(await redis.exists(k.meta(s7.code))) && !(await redis.exists(k.wines(s7.code))), r7.line(s7.code))
+  await ensureSessionLive(s7.code)
+  const p7b = pauseAt('beforePublish', s7.code, 'rebuild:force')
+  const r7bp = runScript({ codes: [s7.code], apply: true, force: true })
+  await p7b.entered
+  const rate7 = rate(s7.code, { cookie: T7.cookie }, w7, 2)
+  check('(7b) a real rate during the forced apply is BLOCKED on the advisory lock', await blockedOnLock(rate7))
+  p7b.release()
+  const r7b = await r7bp, rr7 = await rate7
+  check('(7b) …the rebuild applies, then the rate commits and its key holds the new value', r7b.line(s7.code)?.outcome === 'applied' && rr7.status === 200
+    && JSON.parse((await redis.get(k.rating(s7.code, `u:${T7.id}`, w7)))!).score === 2, { line: r7b.line(s7.code), rate: rr7.status })
+
+  // ── 8. No live row ──
+  const s8 = await createSession({})
+  check('setup: an anonymous moment is Redis-only', !(await liveRow(s8.code)))
+  await redis.del(k.wines(s8.code))
+  let r8!: Awaited<ReturnType<typeof runScript>>
+  const absentCode = `Z${crypto.randomUUID().replace(/[^0-9]/g, '').slice(0, 7).padEnd(7, '9')}`
+  const m8 = parseMonitor(await monitored(async () => { r8 = await runScript({ codes: [s8.code, absentCode], apply: true }) }))
+  check('(8) Redis-only with its wines evicted → redisOnly, no write (no D5 re-seed from the script)', r8.line(s8.code)?.outcome === 'redisOnly' && writesIn(m8).length === 0 && !(await redis.exists(k.wines(s8.code))), { line: r8.line(s8.code), w: writesIn(m8) })
+  check('(8) a code with nothing anywhere → absent', r8.line(absentCode)?.outcome === 'absent')
+
+  // ── 9. Selection + warming effects ──
+  const H9 = await mkUser('Host OS9'), T9 = await mkUser('Taster OS9')
+  const mk9 = async () => {
+    const x = await createSession({ cookie: H9.cookie })
+    await enter(x.code, { cookie: T9.cookie }, 'Taster OS9')
+    const w = await addWine(x.code, { cookie: H9.cookie }, 'w9')
+    await rate(x.code, { cookie: T9.cookie }, w, 3)
+    const row = (await liveRow(x.code))!
+    await prisma.$executeRaw`UPDATE session_members SET joined_at = now() - interval '30 days' WHERE session_code = ${x.code}`
+    await prisma.$executeRaw`UPDATE wines SET created_at = now() - interval '30 days' WHERE session_id = ${row.id}`
+    await prisma.$executeRaw`UPDATE ratings SET rated_at = now() - interval '30 days', mirror_at = now() - interval '30 days' WHERE session_id = ${row.id}`
+    return { code: x.code, id: row.id, wine: w }
+  }
+  const [sel1, sel2, sel3, old4, vis5, del6] = [await mk9(), await mk9(), await mk9(), await mk9(), await mk9(), await mk9()]
+  await prisma.$executeRaw`UPDATE session_members SET joined_at = now() WHERE session_code = ${sel1.code} AND user_id = ${T9.id}`
+  await prisma.$executeRaw`UPDATE wines SET created_at = now() WHERE session_id = ${sel2.id}`
+  await prisma.$executeRaw`UPDATE ratings SET mirror_at = now() WHERE session_id = ${sel3.id}`
+  await visit(vis5.code, { cookie: T9.cookie })
+  await prisma.$executeRaw`UPDATE wines SET created_at = now() WHERE session_id = ${del6.id}`
+  await call(codeRoute.DELETE, 'DELETE', `/api/session/${del6.code}`, { cookie: H9.cookie }, undefined, { code: del6.code })
+  const r9 = await runScript({ activeSinceDays: 7, concurrency: 8 })
+  const picked = new Set([...r9.lines.map(l => l.code).filter(Boolean) as string[], ...r9.summary.retry])
+  check('(9) --active-since: recent member / recent wine / recent mirror_at selected', picked.has(sel1.code) && picked.has(sel2.code) && picked.has(sel3.code))
+  check('(9) …all old, visited-only (the named gap) and soft-deleted are not', !picked.has(old4.code) && !picked.has(vis5.code) && !picked.has(del6.code))
+  const meSessions = async () => ((await call((await import('../../app/api/me/sessions/route.ts')).GET, 'GET', '/api/me/sessions', { cookie: H9.cookie })).json as unknown as { code: string; status: string }[])
+  const fut = await createSession({ cookie: H9.cookie })
+  await wipeCache(fut.code)
+  const before9 = (await meSessions()).find(x => x.code === fut.code)?.status
+  await runScript({ codes: [fut.code], apply: true })
+  const after9 = (await meSessions()).find(x => x.code === fut.code)?.status
+  check('(9) warming a future-dated moment: /api/me/sessions past → upcoming', before9 === 'past' && after9 === 'upcoming', { before9, after9 })
+
+  // ── 10. Watchdog abort (child) ──
+  const s10 = await createSession({ cookie: H9.cookie })
+  await wipeCache(s10.code)
+  const c10 = await runCli(['--apply', '--per-code-timeout', '2', s10.code], { worker: { at: 'beforePublish', label: 'rebuild', hang: true } })
+  check('(10) watchdog: exit 3 within the bound, the code reported unknown, summary aborted', c10.exit === 3 && c10.ms < 15_000
+    && c10.lines.find(l => l.code === s10.code)?.outcome === 'unknown' && typeof c10.summary?.aborted === 'string', { exit: c10.exit, ms: c10.ms, out: c10.out })
+  const pttl10 = Number(await redis.pTTL(sessionLockKey(s10.code)))
+  check('(10) …afterwards the advisory lock is free, the Redis lease self-expires, nothing published', (await untilFree(s10.code, 5000)) !== null
+    && pttl10 <= lockTiming.leaseMs && !(await redis.exists(k.meta(s10.code))), { pttl10 })
+
+  const c10b = await runCli([s10.code], { worker: { hangQuit: true }, timeoutMs: 20_000 })
+  check('(10b) a Redis QUIT that never answers after the summary does not hold the CLI (bounded close, exit 0)', c10b.exit === 0 && !!c10b.summary && c10b.ms < 12_000, { exit: c10b.exit, ms: c10b.ms })
+
+  // ── 11. Outages + server bounds (child) ──
+  const c11a = await runCli([s10.code], { env: { REDIS_URL: `redis://127.0.0.1:${await freePort()}` } })
+  check('(11a) Redis unreachable → exit 3 within 10 s, nothing selected', c11a.exit === 3 && c11a.ms < 12_000 && c11a.out === '', { exit: c11a.exit, ms: c11a.ms, out: c11a.out })
+  check('setup: check 10\'s dead holder\'s lease lapsed', await leaseGone(s10.code))
+  const rp = await tcpProxy(new URL(process.env.REDIS_URL!), 6379)
+  const sig11b = `c11b:${Date.now()}`
+  const l11b = await listenFor(sig11b)
+  const c11bp = runCli(['--apply', '--per-code-timeout', '2', s10.code], { env: { REDIS_URL: rp.via(process.env.REDIS_URL!) }, worker: { at: 'locked', label: 'rebuild', notify: sig11b, holdMs: 500 } })
+  check('setup: the worker reached the lock', await l11b.wait(20_000))
+  rp.blackhole()
+  const c11b = await c11bp
+  rp.close()
+  check('(11b) Redis blackholed mid-run → exit 3 via the watchdog, nothing published', c11b.exit === 3 && !(await redis.exists(k.meta(s10.code))) && (await untilFree(s10.code, 5000)) !== null, { exit: c11b.exit, out: c11b.out })
+  check('setup: the blackholed holder\'s lease lapsed', await leaseGone(s10.code))
+  const pp = await tcpProxy(new URL(DB), 5432)
+  const sig11c = `c11c:${Date.now()}`
+  const l11c = await listenFor(sig11c)
+  const c11cp = runCli(['--apply', '--per-code-timeout', '2', s10.code], { env: { DATABASE_URL: pp.via(DB), PGOPTIONS: '-c idle_in_transaction_session_timeout=4s' }, worker: { at: 'locked', label: 'rebuild', notify: sig11c, holdMs: 300 } })
+  check('setup: the worker reached the lock (via the Postgres proxy)', await l11c.wait(20_000))
+  const tHook = Date.now()
+  pp.blackhole()
+  const c11c = await c11cp
+  const heldAtExit = (await advisoryHolders([s10.code])).length > 0
+  const freedC = await untilFree(s10.code, 10_000)
+  const sinceHook = Date.now() - tHook
+  pp.close()
+  check(`(11c) Postgres blackholed mid-transaction → exit 3; the client exit does NOT free the lock, the server's idle timeout does (freed ${sinceHook} ms after the hook, idle 4 s)`, c11c.exit === 3 && heldAtExit && freedC !== null && sinceHook <= 4000 + 2500, { exit: c11c.exit, heldAtExit, sinceHook })
+  check('setup: the 11c holder\'s lease lapsed', await leaseGone(s10.code))
+  const pp2 = await tcpProxy(new URL(DB), 5432)
+  const { Client } = await import('pg')
+  const holder = new Client({ connectionString: DB })
+  await holder.connect()
+  await holder.query('BEGIN')
+  await holder.query('SELECT 1 FROM sessions WHERE code = $1 AND deleted_at IS NULL FOR UPDATE', [s10.code])
+  const c11dp = runCli(['--apply', '--per-code-timeout', '2', s10.code], { env: { DATABASE_URL: pp2.via(DB), PGOPTIONS: '-c idle_in_transaction_session_timeout=4s' } })
+  let waiting = false
+  for (let i = 0; i < 200 && !waiting; i++) {
+    const [{ n }] = await prisma.$queryRaw<{ n: bigint }[]>`SELECT count(*) AS n FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'`
+    waiting = Number(n) > 0
+    if (!waiting) await sleep(50)
+  }
+  check('setup: the worker\'s contract waits inside its row-lock statement', waiting)
+  const tBlack = Date.now()
+  pp2.blackhole()
+  await sleep(1000)
+  await holder.query('COMMIT')
+  await holder.end()
+  const c11d = await c11dp
+  const freedD = await untilFree(s10.code, 12_000)
+  const elapsedD = Date.now() - tBlack
+  pp2.close()
+  check(`(11c′) blackholed DURING a statement: freed after the statement ends + the idle timeout (the combined bound: ${elapsedD} ms, wait 1 s + idle 4 s)`, c11d.exit === 3 && freedD !== null
+    && elapsedD > 4000 && elapsedD <= 1000 + 4000 + 2500, { exit: c11d.exit, elapsedD })
+  check('setup: the 11c′ holder\'s lease lapsed', await leaseGone(s10.code))
+  const header = (err: string) => {
+    const m = err.match(/idle_in_transaction_session_timeout (\S+), lock_timeout (\S+), statement_timeout (\S+), TimeZone (\S+)/)
+    return m ? m.slice(1).join(' ') : null
+  }
+  const c11e = await runCli([s10.code], { unset: ['PGOPTIONS', 'DATABASE_STATEMENT_TIMEOUT_MS'] })
+  check('(11d) defaults: the header reports 20s / 5s / 15s / UTC', header(c11e.err) === '20s 5s 15s UTC' && c11e.exit === 0, { h: header(c11e.err), exit: c11e.exit })
+  const c11f = await runCli([s10.code], { env: { PGOPTIONS: '-c lock_timeout=2s' }, unset: ['DATABASE_STATEMENT_TIMEOUT_MS'] })
+  check('(11e) an operator override is preserved, the others stay default', header(c11f.err) === '20s 2s 15s UTC', header(c11f.err))
+  const c11g = await runCli([s10.code], { env: { PGOPTIONS: '-c idle_in_transaction_session_timeout=0' } })
+  const c11h = await runCli([s10.code], { env: { DATABASE_STATEMENT_TIMEOUT_MS: 'abc' } })
+  check('(11f) a disabled bound refuses: idle 0 → exit 2, nothing selected', c11g.exit === 2 && c11g.out === '', { exit: c11g.exit, h: header(c11g.err) })
+  check('(11f) …an invalid DATABASE_STATEMENT_TIMEOUT_MS (effective 0) → exit 2', c11h.exit === 2 && c11h.out === '', { exit: c11h.exit, h: header(c11h.err) })
+
+  // ── 12. Command order ──
+  const H12 = await mkUser('Host OS12'), T12 = await mkUser('Taster OS12')
+  const s12 = await createSession({ cookie: H12.cookie })
+  await enter(s12.code, { cookie: T12.cookie }, 'Taster OS12')
+  const w12 = await addWine(s12.code, { cookie: H12.cookie }, 'w12')
+  await rate(s12.code, { cookie: T12.cookie }, w12, 4)
+  await wipeCache(s12.code)
+  const m12 = parseMonitor(await monitored(() => runScript({ codes: [s12.code], apply: true })))
+  const sig = (a: string[]) => `${a[0]} ${a.slice(1).filter(x => x.startsWith('s:') || x.startsWith('lock:')).join(' ')}`
+  const prefix = m12.slice(0, 5).map(sig)
+  check('(12) entry reads: EXISTS readiness → SET lock NX PX → GET lock → GET meta → MGET meta wines', JSON.stringify(prefix) === JSON.stringify([
+    `EXISTS ${k.meta(s12.code)} ${k.wines(s12.code)}`, `SET ${sessionLockKey(s12.code)}`, `GET ${sessionLockKey(s12.code)}`, `GET ${k.meta(s12.code)}`, `MGET ${k.meta(s12.code)} ${k.wines(s12.code)}`,
+  ]) && m12[1].includes('NX') && m12[1].includes('PX'), prefix)
+  const at = (pred: (a: string[]) => boolean) => m12.findIndex(pred)
+  const iEval = at(a => a[0] === 'EVAL' && a[3] === k.gen(s12.code))
+  const planning = [at(a => a[0] === 'HGETALL' && a[1] === k.identities(s12.code)), at(a => a[0] === 'SCAN'), at(a => a[0] === 'SMEMBERS' && a[1] === k.bans(s12.code)),
+    at(a => a[0] === 'SMEMBERS' && a[1] === k.kicked(s12.code)), at(a => a[0] === 'GET' && a[1] === k.wines(s12.code))]
+  check('(12) the generation baseline precedes every planning read', iEval > 4 && planning.every(i => i > iEval), { iEval, planning })
+  const iWatch = at(a => a[0] === 'WATCH'), iMulti = at(a => a[0] === 'MULTI'), iExec = at(a => a[0] === 'EXEC')
+  const inMulti = m12.slice(iMulti + 1, iExec)
+  check('(12) WATCH before MULTI; wines SET NX first, meta SET NX last; rating SETs carry NX', iWatch > 0 && iWatch < iMulti
+    && inMulti[0][0] === 'SET' && inMulti[0][1] === k.wines(s12.code) && inMulti[0].includes('NX')
+    && inMulti.at(-1)![0] === 'SET' && inMulti.at(-1)![1] === k.meta(s12.code) && inMulti.at(-1)!.includes('NX')
+    && inMulti.filter(a => a[0] === 'SET' && a[1].startsWith(`s:${s12.code}:r:`)).every(a => a.includes('NX'))
+    && inMulti.some(a => a[0] === 'SET' && a[1].startsWith(`s:${s12.code}:r:`)), inMulti.map(a => a.slice(0, 2).join(' ')))
+  const lw12 = await redisWines(s12.code)
+  lw12[0].addedByIdentityId = 'u:999999999'
+  await redis.set(k.wines(s12.code), JSON.stringify(lw12), { XX: true, KEEPTTL: true })
+  const m12b = parseMonitor(await monitored(() => runScript({ codes: [s12.code], apply: true, force: true })))
+  const inMultiB = m12b.slice(m12b.findIndex(a => a[0] === 'MULTI') + 1, m12b.findIndex(a => a[0] === 'EXEC'))
+  check('(12) forced warm apply: provenance patch XX KEEPTTL, meta XX KEEPTTL', inMultiB.some(a => a[0] === 'SET' && a[1] === k.wines(s12.code) && a.includes('XX') && a.includes('KEEPTTL'))
+    && inMultiB.at(-1)![1] === k.meta(s12.code) && inMultiB.at(-1)!.includes('XX') && inMultiB.at(-1)!.includes('KEEPTTL'))
+  await wipeCache(s12.code)
+  const labels: string[] = []
+  mutationHooks.at = async (p, c, l) => { if (c === s12.code && (p === 'beforeLock' || p === 'beforePublish')) labels.push(`${p}:${l}`) }
+  await runScript({ codes: [s12.code], apply: true, force: true })
+  noHooks()
+  check('(12) forced COLD apply: contract label rebuild:force, beforePublish label rebuild', JSON.stringify(labels) === JSON.stringify(['beforeLock:rebuild:force', 'beforePublish:rebuild']), labels)
+  await wipeCache(s12.code)
+  const prevAt = mutationHooks.at
+  mutationHooks.at = async (p, c, l) => { if (p === 'recordRead' && c === s12.code && l === 'rebuild') await redis.set(k.gen(s12.code), crypto.randomUUID(), { EX: 3600 }) }
+  const r12 = await runScript({ codes: [s12.code], apply: true })
+  mutationHooks.at = prevAt
+  check('(12) the baseline precedes the record reads: a generation change at recordRead refuses the publish', r12.line(s12.code)?.outcome === 'refused' && !(await redis.exists(k.meta(s12.code))), r12.line(s12.code))
+  const s12d = await createSession({})
+  await redis.del(k.wines(s12d.code))
+  const m12d = parseMonitor(await monitored(() => ensureSessionLive(s12d.code)))
+  check('(12) D5 (the app on a Redis-only moment) still re-seeds [] NX PX', m12d.some(a => a[0] === 'SET' && a[1] === k.wines(s12d.code) && a[2] === '[]' && a.includes('NX') && a.includes('PX')))
+
+  // ── 13. Dry run is an estimate ──
+  await ensureSessionLive(s12.code)
+  const N = await mkUser('Newcomer OS13')
+  const p13 = pauseAt('beforeProjection', s12.code, 'join')
+  const j13 = join(s12.code, { cookie: N.cookie }, 'Newcomer OS13')
+  await p13.entered
+  const r13d = await runScript({ codes: [s12.code], force: true })
+  check('(13) a forced dry run during the join\'s projection window plans the joiner (no lease, no wait)', r13d.line(s12.code)?.planned?.rebuilt.members === 1, r13d.line(s12.code))
+  const a13 = runScript({ codes: [s12.code], force: true, apply: true })
+  check('(13) …a forced apply meanwhile waits for the lease', await stillPending(a13, 600))
+  p13.release()
+  const [r13a] = await Promise.all([a13, j13])
+  check('(13) …and, re-planned under its own locks, reports members 0', r13a.line(s12.code)?.outcome === 'applied' && r13a.line(s12.code)?.planned?.rebuilt.members === 0, r13a.line(s12.code))
+
+  // ── 14. Confirmed effects ──
+  await runScript({ codes: [s12.code], force: true, apply: true })
+  const p14 = pauseAt('beforePublish', s12.code, 'rebuild:force')
+  const r14p = runScript({ codes: [s12.code], force: true, apply: true })
+  await p14.entered
+  await redis.del(k.meta(s12.code))
+  p14.release()
+  const r14 = await r14p, l14 = r14.line(s12.code)
+  check('(14) a converged moment whose meta expires before the EXEC: rewrite not acked, every count 0, drift — and the summary is NOT converged', l14?.meta?.expect === 'rewrite' && l14?.meta?.acked === false
+    && zeroCounts(l14?.planned) && zeroCounts(l14?.confirmed) && l14?.drift === true && r14.summary.converged === false, { l14, converged: r14.summary.converged })
+  check('(14) …the next ensureSessionLive rebuilds it', (await ensureSessionLive(s12.code)) === 'live' && !!(await redis.get(k.meta(s12.code))))
+  await redis.hDel(k.identities(s12.code), `u:${T12.id}`)
+  const l14b = (await runScript({ codes: [s12.code], force: true, apply: true })).line(s12.code)
+  check('(14) a planned HSETNX that lands → confirmed true', l14b?.confirmed?.rebuilt.members === 1 && l14b?.drift === false, l14b)
+  await redis.hDel(k.identities(s12.code), `u:${T12.id}`)
+  const p14c = pauseAt('beforePublish', s12.code, 'rebuild:force')
+  const r14cp = runScript({ codes: [s12.code], force: true, apply: true })
+  await p14c.entered
+  await redis.hSet(k.identities(s12.code), `u:${T12.id}`, 'Taster OS12')
+  p14c.release()
+  const l14c = (await r14cp).line(s12.code)
+  check('(14) …one whose entry appears in the window → confirmed false, drift', l14c?.planned?.rebuilt.members === 1 && l14c?.confirmed?.rebuilt.members === 0 && l14c?.drift === true, l14c)
+
+  // ── 15. Privacy ──
+  const SENT = ['Zqxsentinelname', 'Zqxsentinelwine', 'Zqxsentinelnote', 'Zqxsentinelmeta', 'Zqxsentinelprisma', 'Zqxsentinelredis', 'Zqxsentinelreject', 'Zqxsentinelimport']
+  const leaks = (txt: string) => SENT.filter(x => txt.includes(x))
+  const HS = await mkUser('Zqxsentinelname Host'), TS = await mkUser('Taster OS15')
+  const s15 = await createSession({ cookie: HS.cookie })
+  await enter(s15.code, { cookie: TS.cookie }, 'Taster OS15')
+  const w15 = await addWine(s15.code, { cookie: HS.cookie }, 'Zqxsentinelwine')
+  await rate(s15.code, { cookie: TS.cookie }, w15, 4, { notes: 'Zqxsentinelnote' })
+  const sc = await createSession({ cookie: HS.cookie })
+  await redis.set(k.meta(sc.code), 'Zqxsentinelmeta{', { XX: true, KEEPTTL: true })
+  await redis.del(k.identities(s15.code))
+  const c15a = await runCli(['--force', s15.code, sc.code])
+  const c15b = await runCli(['--force', '--apply', s15.code, sc.code])
+  check('(15a) data path: no sentinel on stdout or stderr (dry run + apply)', [c15a, c15b].every(c => leaks(c.out + c.err).length === 0), [c15a, c15b].map(c => leaks(c.out + c.err)))
+  check('(15a) …the corrupt code ends error with a class name only; the other plans/applies', c15a.lines.find(l => l.code === sc.code)?.error === 'SyntaxError'
+    && c15a.lines.find(l => l.code === s15.code)?.outcome === 'planned' && c15b.lines.find(l => l.code === s15.code)?.outcome === 'applied', c15a.out)
+  check('(15a) …no identity id on stdout', [c15a, c15b].every(c => !/\b[uad]:[0-9a-f]/.test(c.out)))
+  const c15c = await runCli([s15.code], { worker: { prismaError: 'Zqxsentinelprisma' } })
+  check('(15b) a real Prisma error-log line quoting a sentinel → only its tag', leaks(c15c.out + c15c.err).length === 0 && c15c.err.includes('prisma:error'), c15c.err)
+  const c15d = await runCli([s15.code], { worker: { redisError: 'Zqxsentinelredis' } })
+  check('(15c) the Redis client\'s error listener fed a sentinel → only tag + class', leaks(c15d.out + c15d.err).length === 0 && c15d.err.includes('redis err: Error'), c15d.err)
+  const c15e = await runCli([s15.code], { worker: { rejectWith: 'Zqxsentinelreject' } })
+  check('(15d) an unhandled rejection carrying a sentinel → sanitized, exit 3', leaks(c15e.out + c15e.err).length === 0 && c15e.exit === 3 && c15e.err.includes('unhandled rejection: Error'), { exit: c15e.exit, err: c15e.err })
+  const c15f = await runCli([s15.code], { worker: { importFail: true } })
+  check('(15e) a lib import that throws → sanitized, exit 3', leaks(c15f.out + c15f.err).length === 0 && c15f.exit === 3 && /\bError\b/.test(c15f.err), { exit: c15f.exit, err: c15f.err })
+
+  // ── 16. CLI ──
+  const u1 = await runCli([s15.code, '--active-since', '1'])
+  const u2 = await runCli(['NOT-A-CODE!'])
+  const u3 = await runCli(['--concurrency', '9', s15.code])
+  check('(16) usage errors exit 2: codes + --active-since, an invalid code, --concurrency 9', u1.exit === 2 && u2.exit === 2 && u3.exit === 2 && !u1.out && !u2.out && !u3.out, [u1.exit, u2.exit, u3.exit])
+  const ok16 = await runCli([s15.code, s12.code])
+  check('(16) a dry run\'s stdout is JSON lines + one summary', ok16.exit === 0 && ok16.lines.length === 3 && ok16.lines.every(l => !('unparsable' in l))
+    && ok16.lines.slice(0, 2).every(l => typeof l.code === 'string') && !!ok16.summary && (ok16.summary.selected as number) === 2, ok16.out)
+}
+
+const SECTIONS: Record<string, () => Promise<unknown>> = { roundTrip, grants, idempotent, nxxx, b1, fencing, deletions, d1, b2, tombstones, belts, recycling, generation, moderation, checkConstraint, replan, round2, round3, round4, round5, round6, operatorScript }
 try {
   noHooks()
   for (const [name, fn] of Object.entries(SECTIONS)) {
