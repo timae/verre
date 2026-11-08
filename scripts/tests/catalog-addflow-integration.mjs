@@ -1495,17 +1495,15 @@ async function main() {
   // would violate the composite FK at runtime) passed green. The right fix was
   // to give CI a Redis service — it is one workflow block — rather than accept
   // a weaker assertion. Both writers are now driven for real.
-  const { pgUpsertWine, pgReassignWineProvenance } = await import('../../lib/session.ts')
-  // Both writers re-read the lineup from Redis under the session row's lock
-  // and project THAT (redis-rehydration release A — a stale caller snapshot can
-  // no longer resurrect or overwrite a wine), so the fixture writes Redis first,
-  // exactly as the routes do, then calls the mirror.
-  const { redis: liveRedis, k: rk } = await import('../../lib/redis.ts')
-  const setLineup = (wines) => liveRedis.set(rk.wines('P2TESTSS'), JSON.stringify(wines))
-  await prisma.$executeRawUnsafe(`
+  const { reassignProvenance, mirrorLineup } = await import('../../lib/session.ts')
+  // Release B: both writers run INSIDE the session mutation contract's
+  // transaction and project the lineup the contract read under its locks
+  // (passed in), so the fixture drives them in a transaction directly.
+  const [{ id: p2sid }] = await prisma.$queryRawUnsafe(`
     INSERT INTO sessions (code, host_name, created_at)
     VALUES ('P2TESTSS', 'P2 Host', now())
-    ON CONFLICT (code) DO NOTHING`)
+    ON CONFLICT (code) DO UPDATE SET host_name = EXCLUDED.host_name
+    RETURNING id`)
   const linkedWine = {
     id: 'p2test_wine_reassig', name: 'P2 Linked', producer: 'P2 Producer',
     vintage: '2019', grape: '', type: 'red', image: '', imageUrl: '',
@@ -1518,8 +1516,7 @@ async function main() {
   // The CREATE arm — no wines row exists yet, which is the exact case this
   // upsert exists for, and the arm that was found omitting the link.
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${linkedWine.id}'`)
-  await setLineup([linkedWine])
-  await pgReassignWineProvenance('P2TESTSS', linkedWine)
+  await prisma.$transaction(tx => reassignProvenance(tx, p2sid, [linkedWine], linkedWine))
   const reassigned = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${linkedWine.id}'`)
   // 🔒 Asserts the VALUES, not merely that the columns are non-null — that is
@@ -1527,25 +1524,22 @@ async function main() {
   eq(reassigned[0]?.product_id, prod.id, 'a reassign that CREATES the row stores the right productId')
   eq(reassigned[0]?.vintage_id, vintage.id, 'a reassign that CREATES the row stores the right vintageId')
 
-  // pgUpsertWine, both arms.
+  // The lineup mirror (every list write projects the whole array), both arms.
   const archiveId = 'p2test_wine_archive'
   await prisma.$executeRawUnsafe(`DELETE FROM wines WHERE id = '${archiveId}'`)
-  await setLineup([linkedWine, { ...linkedWine, id: archiveId }])
-  await pgUpsertWine('P2TESTSS', { ...linkedWine, id: archiveId })
+  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId }]))
   const created = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
-  eq(created[0]?.product_id, prod.id, 'pgUpsertWine CREATE stores the right productId')
-  eq(created[0]?.vintage_id, vintage.id, 'pgUpsertWine CREATE stores the right vintageId')
+  eq(created[0]?.product_id, prod.id, 'mirrorLineup CREATE stores the right productId')
+  eq(created[0]?.vintage_id, vintage.id, 'mirrorLineup CREATE stores the right vintageId')
   // The UPDATE arm must carry it too — unlike provenance (frozen on purpose),
   // the link is deliberately MUTABLE, so a re-link or an identity-edit CLEAR
   // has to reach Postgres.
-  await setLineup([linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }])
-  await pgUpsertWine('P2TESTSS', { ...linkedWine, id: archiveId, productId: null, vintageId: null })
+  await prisma.$transaction(tx => mirrorLineup(tx, p2sid, [linkedWine, { ...linkedWine, id: archiveId, productId: null, vintageId: null }]))
   const clearedRow = await prisma.$queryRawUnsafe(
     `SELECT product_id, vintage_id FROM wines WHERE id = '${archiveId}'`)
   eq(clearedRow[0]?.product_id, null,
-    'pgUpsertWine UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
-  await liveRedis.del(rk.wines('P2TESTSS'))
+    'mirrorLineup UPDATE propagates a CLEARED link (the link is mutable, unlike provenance)')
 
   // ── D1: addWineToSession's round-trip, the trap its own comment names ─────
   //

@@ -215,7 +215,7 @@ jobs:
 
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
-      # writers (pgUpsertWine / pgReassignWineProvenance) and addWineToSession.
+      # writers (mirrorLineup / reassignProvenance) and addWineToSession.
       # Importing that module connects to Redis eagerly, so the suite needs one.
       # An earlier version of the suite worked around its absence by reading the
       # writers' SOURCE for the expected field names — which review showed was

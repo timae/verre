@@ -87,7 +87,7 @@ export type WineMeta = {
   // identifying field added here is exposed BY DEFAULT unless it is
   // explicitly overwritten there. See lib/wineRedaction.ts.
   //
-  // Mirrored to Postgres by pgUpsertWine on archival; every wine-edit path
+  // Mirrored to Postgres by mirrorLineup (every list write); every wine-edit path
   // must round-trip them (the PATCH route replaces the Redis object
   // wholesale, so omitting them silently drops the link).
   productId?: string | null
