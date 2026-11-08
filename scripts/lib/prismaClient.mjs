@@ -15,6 +15,7 @@ import { config as loadEnv } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import { PrismaPg } from '@prisma/adapter-pg'
 import { pgTlsConfig } from '../../lib/pgTls.mjs'
+import { withSessionPin } from '../../lib/pgSession.mjs'
 
 loadEnv({ quiet: true })
 
@@ -24,9 +25,11 @@ loadEnv({ quiet: true })
  */
 export function createPrismaClient({ url = process.env.DATABASE_URL, ...options } = {}) {
   if (!url) throw new Error('DATABASE_URL is not set (export it or pass { url })')
+  // Session TimeZone = UTC (lib/pgSession.mjs) — the adapter's timestamp
+  // conversions assume it.
   // Bounded wait: pg's default is to queue forever for a free connection; Prisma
   // 6 failed a queued request after 10 s (P2024). Without this a script or CI
   // suite hangs instead of failing during database trouble (review, 2026-11-06).
   const ssl = pgTlsConfig(url)
-  return new PrismaClient({ adapter: new PrismaPg({ connectionString: url, connectionTimeoutMillis: 10_000, ...(ssl ? { ssl } : {}) }), ...options })
+  return new PrismaClient({ adapter: new PrismaPg(withSessionPin({ connectionString: url, connectionTimeoutMillis: 10_000, ...(ssl ? { ssl } : {}) })), ...options })
 }
