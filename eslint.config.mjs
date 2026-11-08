@@ -16,6 +16,13 @@ const noLoaderGlobals = ["error", ...["require", "module", "__non_webpack_requir
 // Only the exact compile-time expression lets the bundler drop the branch from the Edge build.
 const NODEJS_BRANCH = "IfStatement[test.operator='==='][test.left.type='MemberExpression'][test.left.computed=false][test.left.property.name='NEXT_RUNTIME'][test.left.object.type='MemberExpression'][test.left.object.computed=false][test.left.object.property.name='env'][test.left.object.object.type='Identifier'][test.left.object.object.name='process'][test.right.type='Literal'][test.right.value='nodejs']";
 
+// redis-rehydration mechanism 1 (lib/CLAUDE.md § NX/XX): `meta` and `wines` are
+// written with NX to create and XX to update, so a wiped or evicted key can never
+// be recreated by a stale writer, whatever lock it holds or doesn't. Any
+// `.set(k.meta(…) | k.wines(…), …)` without an NX/XX option is an error. Stated
+// limit: a key held in a variable evades it — write these keys inline.
+const SET_META_WINES_WITHOUT_NX_XX = "CallExpression[callee.property.name='set'][arguments.0.type='CallExpression'][arguments.0.callee.object.name='k'][arguments.0.callee.property.name=/^(meta|wines)$/]:not(:has(Property[key.name=/^(NX|XX)$/]))";
+
 export default defineConfig([
   ...nextCoreWebVitals,
   ...nextTypescript,
@@ -64,6 +71,13 @@ export default defineConfig([
         { selector: "Identifier[name='process']:not(MemberExpression > .object)", message: "Use `process` only as `process.env…` here, so the NEXT_RUNTIME guard is the real compile-time one (no shadowing or aliasing)." },
         ...noIndirectLoads.slice(1)],
       "no-restricted-globals": noLoaderGlobals,
+    },
+  },
+  {
+    files: ["app/**/*.{ts,tsx}", "lib/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-syntax": ["error",
+        { selector: SET_META_WINES_WITHOUT_NX_XX, message: "s:{CODE}:meta / s:{CODE}:wines are written NX (create) or XX (update) — never a bare SET (redis-rehydration § 5.4 mechanism 1, lib/CLAUDE.md)." }],
     },
   },
   // apps/mobile is its own workspace (expo lint); the rest are gitignored build/scratch output.

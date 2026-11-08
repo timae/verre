@@ -10,7 +10,7 @@ import {
 } from '@/lib/profileVisibility'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds } from '@/lib/userBlock'
-import { loadSessionFeedWines, detectExpiredCodes, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -129,11 +129,11 @@ export async function GET(req: NextRequest) {
       // Session is included for kind='session' rendering — we read
       // deletedAt (tombstone label), name, blind (phase 3 redaction),
       // hostName + hostUserId (header byline + own-host bypass for the
-      // SessionFeedCard wine join). `code` drives the expired-blind
-      // detection (Redis meta key gone → auto-reveal short-circuit).
+      // SessionFeedCard wine join). dateFrom/dateTo/createdAt drive the
+      // over-by-its-dates auto-reveal (sessionIsOver, owner ruling Q5).
       session: {
         select: {
-          id: true, code: true, deletedAt: true, name: true, blind: true, blindForEveryone: true,
+          id: true, code: true, deletedAt: true, name: true, blind: true, blindForEveryone: true, dateFrom: true, dateTo: true, createdAt: true,
           hostName: true, hostUserId: true,
         },
       },
@@ -222,14 +222,9 @@ export async function GET(req: NextRequest) {
   // Tombstoned sessions short-circuit redaction (see SessionFeedPair
   // comment for the trade-off); the session-level identity (name + host)
   // is still scrubbed at the payload layer below.
-  // Expired-blind detection — see SessionFeedPair `expired` comment for
-  // the why. Tombstoned sessions (deletedAt set, code scrubbed) already
-  // short-circuit via `deleted` so skip them here.
-  const expiredCodes = await detectExpiredCodes(
-    feedItems
-      .filter(f => f.kind === 'session' && f.session && !f.session.deletedAt && f.session.code)
-      .map(f => f.session!.code!)
-  )
+  // Over-blind auto-reveal — see SessionFeedPair `expired` for the rule (the
+  // record's dates, never cache absence). Tombstoned sessions short-circuit
+  // via `deleted`.
 
   const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f => {
     if (f.kind !== 'session' || !f.session) return []
@@ -239,7 +234,7 @@ export async function GET(req: NextRequest) {
       blind: !!f.session.blind,
       blindForEveryone: !!f.session.blindForEveryone,
       deleted: !!f.session.deletedAt,
-      expired: f.session.code != null && expiredCodes.has(f.session.code),
+      expired: !f.session.deletedAt && sessionIsOver(f.session),
       hostUserId: f.session.hostUserId ?? null,
     }]
   })

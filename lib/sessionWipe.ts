@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto'
+import { Prisma } from '@prisma/client'
 import { redis, k, scanKeys } from '@/lib/redis'
-import { mutateWines, pgMirrorWineList } from '@/lib/session'
-import { prisma } from '@/lib/prisma'
+import { mutateWines, mirrorLineup, isMutateReject, type SessionMeta, type WineMeta } from '@/lib/session'
+import { withSessionMutation, type MutationCtx } from '@/lib/sessionMutation'
+import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
+import type { Identity } from '@/lib/identity'
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
 
 // Local copy of reclaimImage to avoid coupling sessionWipe to accountDelete.
@@ -34,234 +38,178 @@ async function reclaimImage(url: string | null | undefined) {
 }
 
 // Single helper for all flavors of removing a participant from a session,
-// invoked by both the host-side ban/kick endpoint and the kicked-user's
-// self-service "delete my data" endpoint.
+// invoked by the host-side ban/kick endpoint and the kicked user's self-service
+// "delete my data" endpoint (/leave?cleanup=full).
 //
 // Scope semantics:
-//   - 'kick-keep'   → strip from identities + cohost list; reset
-//                     session_members.role to 'taster'. Leave the rest
-//                     intact so /me/sessions still shows the session.
-//   - 'kick-delete' → kick-keep + delete the user's session-scoped data
-//                     (ratings, hof, bookmarks-of-wines-in-this-session,
+//   - 'kick-keep'   → strip from identities + role lists; the member row becomes
+//                     (taster, removed_state 'kicked') — UPSERTed, so a
+//                     historical rating author with no member row is recorded
+//                     as kicked too (r1-4). Ratings stay for their own history.
+//   - 'kick-delete' → kick + delete the user's session-scoped data (ratings,
+//                     hof, feed item, bookmarks-of-wines-in-this-session,
 //                     session_members).
-//   - 'ban'         → kick-delete + add to bans Set so they can't rejoin.
-//                     Wines they added are orphaned (session_id NULL) if
-//                     the caller passes deleteAddedWines=true; otherwise
-//                     left attached. The wines themselves are never hard-
-//                     deleted — that would cascade-delete other tasters'
-//                     bookmarks and ratings on that wine.
+//   - 'ban'         → kick-delete + the ban (session_bans row = the record for
+//                     a Postgres-backed session; the Redis set is its cache).
+//   Wines the target added are orphaned (session_id NULL, never hard-deleted —
+//   other tasters' bookmarks survive) when the caller passes deleteAddedWines.
 //
-// Order: Postgres transaction first (atomic), then Redis (idempotent
-// follow-up). Bans-Set SADD lives in the Postgres txn-equivalent slot in
-// Redis — it's the smallest and most-important Redis op, written before
-// the identities hash strip so a partial-failure recovery still keeps
-// the user out.
+// 🔒 A mutation-contract participant (redis-rehydration § 5.4; release-B plan
+// § 3): the caller's authorization and the TARGET's role/host status are
+// decided under the locks from ctx (the caller's fresh grant, the target's
+// fresh member row) — never from cached arrays. Order inside the transaction
+// (plan § 1.4, D1): the deny-direction cache writes first (SADD bans/kicked,
+// HDEL identities, fenced — a denial that survives a rollback fails closed),
+// then the Postgres rows, then meta rewritten from the record (role lists
+// stripped) and the fenced lineup filter + mirror. After COMMIT: the rating
+// keys (content, removed only once the record no longer has the ratings) and
+// the S3 reclaims.
 //
-// Concurrency: callers should hold the per-session ban lock (see
-// lib/sessionBan.ts acquireBanLock) when running this helper so the
-// wines JSON write-back doesn't race a concurrent host action.
+// `d:<uuid>` targets (a deleted account's tombstoned ratings in this session,
+// § 4.3) support scope 'kick-delete' ONLY: their ratings by tombstone_key (and
+// keys) and the identities entry go; wine provenance is never touched.
 
 export type WipeScope = 'kick-keep' | 'kick-delete' | 'ban'
+
+export type WipeTarget = { strictHost: boolean; cohost: boolean }
 
 export interface WipeOptions {
   code: string
   identityId: string
   scope: WipeScope
-  // Only meaningful for scope='ban'. Ignored otherwise.
+  // Host's toggle, for kick and ban alike. Ignored for d: targets.
   deleteAddedWines?: boolean
+  caller: Identity
+  // The incarnation the request opened (a raw caller carries none — r2 R1-2).
+  expectedCreatedAt?: number
+  label: string
+  // The caller's authorization, decided UNDER the locks; throw refuse(…) to deny.
+  authorize: (ctx: MutationCtx, target: WipeTarget) => void
+  // Extra grant-direction projection after COMMIT (leave: SREM kicked).
+  afterCommit?: (ctx: MutationCtx) => Promise<void>
 }
 
-// `d:<uuid>` targets (a deleted account's tombstoned ratings in this session,
-// redis-rehydration § 4.3) support scope 'kick-delete' ONLY: a tombstone cannot
-// rejoin, so ban and kick-keep are meaningless and are rejected by the routes.
-// The d: wipe removes the ratings carrying that tombstone_key in this session
-// (Postgres + their Redis keys) and the identities entry; it never touches wine
-// provenance and has no member row, feed item or bookmark to remove.
 export async function sessionWipe(opts: WipeOptions): Promise<void> {
   const { code, identityId, scope } = opts
   const userId = identityId.startsWith('u:') ? Number(identityId.slice(2)) : null
   const isTombstone = identityId.startsWith('d:')
   if (isTombstone && scope !== 'kick-delete') throw new Error(`sessionWipe: ${scope} is not valid for a tombstone identity`)
   const deleteAddedWines = !isTombstone && (opts.deleteAddedWines ?? false)
+  const reclaim: string[] = []
 
-  // ── Redis: bans-Set first (only on scope='ban'). Idempotent; if the
-  // Postgres txn below fails the bans entry alone is enough to keep them
-  // out, and a retry replays cleanly.
-  if (scope === 'ban') await redis.sAdd(k.bans(code), identityId)
+  // bumpGen: the wipe deletes rating keys — an unleased writer's late SET with
+  // an older generation must not recreate one (r2 R1-6).
+  await withSessionMutation(code, { label: opts.label, redisLock: { waitMs: 3000 }, caller: opts.caller, expectedCreatedAt: opts.expectedCreatedAt, bumpGen: true }, async (tx, ctx) => {
+    reclaim.length = 0   // per attempt: a rolled-back attempt's captures never reach the reclaim (r3 P1)
+    const fence = ctx.fence!
+    const meta = ctx.meta!
+    const row = ctx.row
+    opts.authorize(ctx, await readTarget(tx, ctx, identityId))
+    const ttl = await redis.pTTL(k.meta(code))
 
-  // For kicks (any variant), mark the identity as "kicked" so the bounce
-  // page on /join can identify a recently-removed participant whose
-  // identity hash entry got stripped. Cleared on rejoin OR on Delete via
-  // /leave. Doesn't act as an authorization gate — it's purely a marker
-  // for the UI bounce screen.
-  if ((scope === 'kick-keep' || scope === 'kick-delete') && !isTombstone) {
-    await redis.sAdd(k.kicked(code), identityId)
-  }
+    // ── Deny-direction cache writes first (fenced). The identities HDEL is a
+    // removal; the token mapping is preserved on every scope (the removed
+    // caller must still resolve to reach the bounce + /leave).
+    await fence.exec((m) => {
+      if (scope === 'ban') m.sAdd(k.bans(code), identityId)
+      if (!isTombstone && scope !== 'ban') {
+        m.sAdd(k.kicked(code), identityId)
+        m.hSet(k.kickv(code), identityId, randomUUID())   // a fresh token per kick — a counter would restart after an eviction (r5 N5)
+      }
+      for (const key of [k.bans(code), k.kicked(code), k.kickv(code)]) if (Number(ttl) > 0) m.pExpire(key, Number(ttl))
+      m.hDel(k.identities(code), identityId)
+    })
 
-  // ── Capture rating_images URLs BEFORE the transaction so we can reclaim
-  // them from S3 AFTER commit. Capture-first / commit / reclaim-after is
-  // the contract for any S3 cleanup paired with a DB delete (rollback-safe
-  // — a txn rollback doesn't leave orphan S3 deletes). Only relevant for
-  // kick-delete + ban; kick-keep doesn't drop ratings so there's nothing
-  // to reclaim.
-  let ratingImageUrls: string[] = []
-  if ((scope === 'kick-delete' || scope === 'ban') && userId !== null) {
-    const rows = await prisma.$queryRaw<{ image_url: string }[]>`
-      SELECT ri.image_url
-      FROM rating_images ri
-      JOIN ratings r ON r.id = ri.rating_id
-      JOIN wines w ON w.id = r.wine_id
-      JOIN sessions s ON s.id = w.session_id
-      WHERE r.user_id = ${userId}
-        AND s.code = ${code}
-        AND s.deleted_at IS NULL`
-    ratingImageUrls = rows.map(r => r.image_url).filter(Boolean)
-  } else if (isTombstone) {
-    const rows = await prisma.$queryRaw<{ image_url: string }[]>`
-      SELECT ri.image_url
-      FROM rating_images ri
-      JOIN ratings r ON r.id = ri.rating_id
-      JOIN sessions s ON s.id = r.session_id
-      WHERE r.tombstone_key = ${identityId}
-        AND r.user_id IS NULL
-        AND s.code = ${code}
-        AND s.deleted_at IS NULL`
-    ratingImageUrls = rows.map(r => r.image_url).filter(Boolean)
-  }
-
-  // ── Postgres in a single transaction.
-  await prisma.$transaction(async tx => {
-    // FOR UPDATE on the live sessions row (redis-rehydration § 4.2): the ban
-    // row below is written only for a Postgres-backed session, and the lock is
-    // what keeps that decision true until COMMIT — both soft-delete paths take
-    // the same row lock first, so a ban either commits before the delete (whose
-    // DELETE FROM session_bans then removes it) or finds no live row.
-    const live = await tx.$queryRaw<{ id: number }[]>`
-      SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
-    const sessionId = live[0]?.id ?? null
-    if (scope === 'ban' && sessionId !== null) {
-      await tx.$executeRaw`
-        INSERT INTO session_bans (session_code, identity_id) VALUES (${code}, ${identityId})
-        ON CONFLICT DO NOTHING`
-    }
-    if (isTombstone) {
-      if (sessionId !== null) {
+    // ── The record.
+    if (row) {
+      if (scope === 'ban') {
+        await tx.$executeRaw`INSERT INTO session_bans (session_code, identity_id) VALUES (${code}, ${identityId}) ON CONFLICT DO NOTHING`
+      }
+      if (isTombstone) {
+        reclaim.push(...await ratingImages(tx, Prisma.sql`r.session_id = ${row.id} AND r.tombstone_key = ${identityId} AND r.user_id IS NULL`))
+        await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND tombstone_key = ${identityId} AND user_id IS NULL`
+      } else if (userId !== null && scope === 'kick-keep') {
         await tx.$executeRaw`
-          DELETE FROM ratings
-           WHERE session_id = ${sessionId} AND tombstone_key = ${identityId} AND user_id IS NULL`
-      }
-    } else if (scope === 'kick-keep') {
-      // Reset cohost role so /me/sessions doesn't show a stale "co-host"
-      // tag. The user's ratings + bookmarks + session_members row stay
-      // — they decide on the bounce screen what to do with them. Feed_item
-      // also stays (the user's session post is theirs to keep until they
-      // actively choose to leave-with-cleanup).
-      if (userId !== null) {
-        // Reset role AND mark the row kicked — the durable mirror of the Redis
-        // `s:<C>:kicked` SADD above, so /api/me/sessions can exclude this
-        // moment in SQL (exact counts + lists) after Redis expiry. Cleared on
-        // rejoin (join route). kick-DELETE/ban skip this branch (row deleted).
-        await tx.sessionMember.updateMany({
-          where: { userId, sessionCode: code },
-          data: { role: 'taster', removedState: 'kicked' },
-        })
-      }
-    } else {
-      // kick-delete and ban share the full per-user wipe.
-      if (userId !== null) {
-        // Ratings link to wines (not directly to sessions). Walk the
-        // relation so we delete only ratings whose wines belong to THIS
-        // session. rating_images cascade with the ratings (FK on ratings.id).
-        await tx.rating.deleteMany({
-          where: { userId, wine: { session: { code } } },
-        })
-        // Drop the user's session post. The rewire makes feed_items the
-        // social wrapper around session ratings; without this delete, a
-        // banned user's feed_item lingers pointing at the now-deleted
-        // ratings — empty card, orphan post. Match by (userId, session)
-        // via relation traversal so we don't need a separate sessionId
-        // lookup.
-        await tx.feedItem.deleteMany({
-          where: { userId, session: { code } },
-        })
-        await tx.hallOfFame.deleteMany({ where: { userId, sessionCode: code } })
-        // Bookmarks pointing at wines belonging to this session. Other
-        // tasters' bookmarks on the same wines stay.
-        await tx.bookmark.deleteMany({
-          where: { userId, wine: { session: { code } } },
-        })
-        await tx.sessionMember.deleteMany({ where: { userId, sessionCode: code } })
+          INSERT INTO session_members (user_id, session_code, role, removed_state)
+          SELECT ${userId}, ${code}, 'taster', 'kicked' WHERE EXISTS (SELECT 1 FROM users WHERE id = ${userId})
+          ON CONFLICT (user_id, session_code) DO UPDATE SET role = 'taster', removed_state = 'kicked'`
+      } else if (userId !== null) {
+        // 🔒 Scoped by ratings.session_id, not through the wine's current
+        // session (r5-1): a wine orphaned by an earlier deleteAddedWines keeps
+        // its ratings' session_id, and a surviving rating would re-admit the
+        // user as an author.
+        reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
+        await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
+        await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
+        await tx.$executeRaw`DELETE FROM hall_of_fame WHERE user_id = ${userId} AND session_code = ${code}`
+        await tx.$executeRaw`
+          DELETE FROM bookmarks b USING wines w WHERE b.wine_id = w.id AND w.session_id = ${row.id} AND b.user_id = ${userId}`
+        await tx.$executeRaw`DELETE FROM session_members WHERE user_id = ${userId} AND session_code = ${code}`
       }
     }
-    // Wine-orphan toggle applies to both kick and ban (host's call,
-    // regardless of mode). Orphan (session_id NULL) rather than
-    // hard-delete so third-party bookmarks survive.
+
+    // ── Role lists. A Postgres-backed session's meta is written FROM the
+    // record as this transaction now sees it (its committed state minus the
+    // target's role — deny-direction relative to what is committed); a
+    // Redis-only session's meta is the authority, edited directly.
+    if (row) {
+      const next = metaFromRecord((await readLiveRow(tx, code))!, await readRecordRoles(tx, code), stripRoles(meta, identityId))
+      await fence.exec(m => { m.set(k.meta(code), JSON.stringify(next), { XX: true, KEEPTTL: true }) })
+    } else if (meta.coHostIds?.includes(identityId) || meta.providerIds?.includes(identityId)) {
+      await fence.exec(m => { m.set(k.meta(code), JSON.stringify(stripRoles(meta, identityId)), { XX: true, KEEPTTL: true }) })
+    }
+
+    // ── Wines the target brought: the ids come from the RECORD's orphan UPDATE
+    // (r3-5 — cached provenance can lag a committed reassign); in a Redis-only
+    // session the cached provenance is the authority.
     if (deleteAddedWines) {
-      await tx.wine.updateMany({
-        where: { session: { code }, addedByIdentityId: identityId },
-        data: { sessionId: null },
-      })
+      const ids = row
+        ? (await tx.$queryRaw<{ id: string }[]>`
+            UPDATE wines SET session_id = NULL WHERE session_id = ${row.id} AND added_by_identity_id = ${identityId} RETURNING id`).map(r => r.id)
+        : (ctx.meta ? (JSON.parse((await redis.get(k.wines(code))) ?? '[]') as WineMeta[]) : []).filter(w => w.addedByIdentityId === identityId).map(w => w.id)
+      if (ids.length) {
+        const drop = new Set(ids)
+        const next = await mutateWines(fence, wines => wines.filter(w => !drop.has(w.id)))
+        if (!isMutateReject(next)) await mirrorLineup(tx, row?.id ?? null, next)
+      }
     }
+  }, async (ctx) => {
+    // ── After COMMIT: the rating keys of a removed rater (the record no longer
+    // has those ratings). Kick-keep keeps them (the roster guard hides them).
+    if (scope !== 'kick-keep') {
+      const keys = await scanKeys(`s:${code}:r:${identityId}:*`)
+      if (keys.length) await ctx.fence!.exec(m => { m.del(keys) })
+    }
+    await opts.afterCommit?.(ctx)
   })
+  for (const url of reclaim) reclaimImage(url)
+}
 
-  // ── S3 reclaim AFTER commit. Fire-and-forget; if S3 fails the ratings
-  // are already gone — orphan bytes for a future cleanup, never broken
-  // DB state.
-  for (const url of ratingImageUrls) reclaimImage(url)
+async function ratingImages(tx: Prisma.TransactionClient, where: Prisma.Sql): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ image_url: string | null }[]>`
+    SELECT ri.image_url FROM rating_images ri JOIN ratings r ON r.id = ri.rating_id WHERE ${where}`
+  return rows.map(r => r.image_url).filter((u): u is string => !!u)
+}
 
-  // ── Redis cleanup (post-transaction; each op is idempotent).
-  // Per-rating keys via SCAN to avoid blocking Redis on large sessions.
-  if (scope !== 'kick-keep') {
-    const prefix = `s:${code}:r:${identityId}:`
-    const keys = await scanKeys(`${prefix}*`)
-    if (keys.length > 0) await redis.del(keys)
+function stripRoles(meta: SessionMeta, id: string): SessionMeta {
+  return { ...meta, coHostIds: (meta.coHostIds ?? []).filter(x => x !== id), providerIds: (meta.providerIds ?? []).filter(x => x !== id) }
+}
+
+// The TARGET's role and host status, fresh under the locks (§ 4.7 audit: the
+// strict-host-only "banning a cohost" check must not consult a cached array).
+// `u:` target of a Postgres-backed session → its member row + the row's host;
+// anyone else → Redis meta, their authority.
+async function readTarget(tx: Prisma.TransactionClient, ctx: MutationCtx, id: string): Promise<WipeTarget> {
+  if (id.startsWith('u:') && ctx.row) {
+    const uid = Number(id.slice(2))
+    const m = await tx.$queryRaw<{ role: string }[]>`
+      SELECT role FROM session_members WHERE session_code = ${ctx.code} AND user_id = ${uid} FOR UPDATE`
+    return { strictHost: ctx.row.hostUserId === uid, cohost: m[0]?.role === 'co_host' }
   }
-
-  // Drop from identities. Token mapping (`s:<C>:tokens`) is preserved
-  // across all wipe scopes — on ban so the next request resolves token
-  // → identityId → bans hit → authRemoved bounce; on kick-keep so the
-  // kicked anon user can reach `/leave?cleanup=full` to clean up their
-  // data; on kick-delete so the same /leave call (which triggers this
-  // scope) can resolve the caller in the first place. The token alone
-  // doesn't grant access — bans-Set membership and identities-hash
-  // absence both gate participation. The token-hash entry becomes a
-  // stale pointer but doesn't leak anything since the session expires
-  // with its TTL.
-  await redis.hDel(k.identities(code), identityId)
-
-  // Strip from cohort + provider lists in meta. Use KEEPTTL so a session
-  // with a remaining lifespan (default 48h, or pro 72h/1w/unlimited)
-  // doesn't get its TTL clobbered to "no expiration" by the SET.
-  // Both lists checked in one read/write to avoid a second meta round-trip.
-  const rawMeta = await redis.get(k.meta(code))
-  if (rawMeta) {
-    const meta = JSON.parse(rawMeta)
-    let changed = false
-    if (Array.isArray(meta.coHostIds) && meta.coHostIds.includes(identityId)) {
-      meta.coHostIds = meta.coHostIds.filter((id: string) => id !== identityId)
-      changed = true
-    }
-    if (Array.isArray(meta.providerIds) && meta.providerIds.includes(identityId)) {
-      meta.providerIds = meta.providerIds.filter((id: string) => id !== identityId)
-      changed = true
-    }
-    if (changed) {
-      await redis.set(k.meta(code), JSON.stringify(meta), { KEEPTTL: true })
-    }
-  }
-
-  // Wines JSON write-back if we orphaned any. Mirror the Postgres step
-  // — drop the wines from the live Redis array so the live session
-  // doesn't keep showing wines that no longer belong to it. The
-  // orphaned Postgres rows still hold the wine bytes for /me/saved.
-  if (deleteAddedWines) {
-    // Atomic read-modify-write like every other wines mutator — a concurrent
-    // wine add/edit/reorder must not clobber this filter (and vice versa).
-    await mutateWines(code, (wines) => wines.filter(w => w.addedByIdentityId !== identityId))
-    // The orphaned rows left the session in the transaction above; the list
-    // mirror renormalizes the survivors' positions from the committed array
-    // (redis-rehydration § 4.6). Best-effort like every content mirror.
-    try { await pgMirrorWineList(code) }
-    catch (err) { console.error('[sessionWipe] pg mirror failed', { code, kind: 'wine-list', err }) }
+  if (id.startsWith('d:')) return { strictHost: false, cohost: false }
+  const meta = ctx.meta!
+  return {
+    strictHost: meta.hostIdentityId === id || (!!meta.hostUserId && `u:${meta.hostUserId}` === id),
+    cohost: !!meta.coHostIds?.includes(id),
   }
 }

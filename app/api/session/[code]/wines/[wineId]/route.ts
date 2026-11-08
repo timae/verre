@@ -1,16 +1,42 @@
+import { reclaimImages } from '@/lib/engagementCascade'
 import { NextRequest, NextResponse } from 'next/server'
+import type { Prisma } from '@prisma/client'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, isMutateReject, addWineToSession, pgMirrorWineList, pgReassignWineProvenance, pgSessionExists, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, wineToWire, buildKickedUserNameLookup, reclaimIfUnreferenced } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
 import { isSameOrigin } from '@/lib/csrf'
-import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { resolveCatalogLink, applyIdentityEditRule, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
-import type { Identity } from '@/lib/identity'
-import type { SessionMeta, WineMeta } from '@/lib/session'
+import { withSessionMutation, admitted, refuse, bestEffortMirror, ContractCold, type MutationCtx } from '@/lib/sessionMutation'
+import { readGrant, grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import type { WineMeta } from '@/lib/session'
+
+// A provider's own-wine check (plan § 2, G2): ownership is a privilege, so for
+// a `u:` caller with a grant it is read from the RECORD
+// (wines.added_by_identity_id) under the contract's locks; otherwise from the
+// cached provenance — Redis is the anonymous caller's and the Redis-only
+// session's authority.
+async function ownsWine(tx: Prisma.TransactionClient, ctx: MutationCtx, caller: AuthorizedIdentity, wine: WineMeta): Promise<boolean> {
+  if (caller.grant && ctx.row) {
+    const rows = await tx.$queryRaw<{ added_by_identity_id: string | null }[]>`
+      SELECT added_by_identity_id FROM wines WHERE id = ${wine.id} AND session_id = ${ctx.row.id}`
+    return rows[0]?.added_by_identity_id === caller.id
+  }
+  return wine.addedByIdentityId === caller.id
+}
+
+// The wine as the lineup holds it NOW, under the contract's locks (an absent
+// lineup is a cold cache, never "no such wine").
+async function currentWine(code: string, wineId: string): Promise<WineMeta | null> {
+  const raw = await redis.get(k.wines(code))
+  if (raw === null) throw new ContractCold(code)
+  return (JSON.parse(raw) as WineMeta[]).find(w => w.id === wineId) ?? null
+}
+
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
 
@@ -23,14 +49,15 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const pp = await participantOrBanned(c, req, session)
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
+  const { meta, wines } = opened
+  const pp = await participantOrBanned(c, req, session, opened.meta)
+  if (pp.status === 'unavailable') return authUnavailable()
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
 
-  const wines = await getWines(c)
   const idx = wines.findIndex(w => w.id === wineId)
   if (idx === -1) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
@@ -39,23 +66,21 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // `addedByIdentityId`. Wines from before the provider feature have
   // NULL provenance and aren't editable by providers.
   const isHost = isHostByIdentity(meta, identity)
-  const isOwnAsProvider = isProviderById(meta, identity.id) && wines[idx].addedByIdentityId === identity.id
+  // Early reject only: the power and the ownership are re-decided under the
+  // locks (fresh grant, record ownership).
+  // A record-backed provider's ownership is the record's (r2 N4: cached
+  // provenance can trail a committed reassign) — the contract decides it.
+  const isOwnAsProvider = isProvider(meta, identity) && (!!identity.grant || wines[idx].addedByIdentityId === identity.id)
   if (!isHost && !isOwnAsProvider) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can edit it' }, { status: 403 })
   }
 
-  // ── Reassign "Brought by" — bounded v1 (docs/dev/proposals/reassign-brought-by.md,
-  // shipped as the deliberately-scoped version, NOT the outbox design). It is an
-  // OWNERSHIP-ONLY request: a PATCH carrying broughtByIdentityId may carry NOTHING
-  // else (no name/producer/type/image/…), so the critical section is S3-free and
-  // touches only the two provenance fields. Handled as its own branch — it never
-  // goes through addWineToSession. Consistency is within the repo's existing
-  // best-effort Redis→PG contract: synchronous PG mirror with Redis-restore
-  // compensation on failure; a process crash / lock expiry / double failure can
-  // still leave archival drift (documented, self-corrects on the next reassign),
-  // same class as every other pgUpsertWine. Redis stays the live-auth source.
+  // ── Reassign "Brought by" — bounded v1 (docs/dev/proposals/reassign-brought-by.md).
+  // OWNERSHIP-ONLY: a PATCH carrying broughtByIdentityId may carry nothing else,
+  // so the critical section is S3-free and touches only the two provenance
+  // fields. Record-first since release B (plan D2) — see reassignBroughtBy.
   if (body.broughtByIdentityId !== undefined) {
-    return reassignBroughtBy({ c, wineId, body, meta, identity, isHost })
+    return reassignBroughtBy({ c, wineId, body, identity, isHost, showProvenance: meta.showProvenance !== false })
   }
 
   // ── Catalog link on edit ─────────────────────────────────────────────────
@@ -107,53 +132,66 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // wine we read, then atomically splice it in by id below.
   const result = await addWineToSession(c, { ...body, ...link }, wines[idx])
   if ('error' in result) return NextResponse.json(result, { status: 400 })
+  // S3 effects follow the authorized commit (r3 P1): this edit's own upload is
+  // reclaimed if the write is refused; the image it replaces only after COMMIT.
+  // The image this edit decides: removal (null) or a SUCCESSFUL upload. Any
+  // other image input (an upload that failed, a non-data value) keeps the
+  // CURRENT locked imageUrl and reclaims nothing (r4 P1-2 — the snapshot's URL
+  // may already have been replaced and reclaimed by a concurrent edit).
+  const uploaded = result.imageUrl && result.imageUrl !== wines[idx].imageUrl ? result.imageUrl : null
+  const imageDecided = body.image === null || !!uploaded
+  let replacedUrl: string | null = null
+  let mirrored = false
 
-  const out = await mutateWines(c, (current) => {
-    const i = current.findIndex(w => w.id === wineId)
-    if (i === -1) return { reject: 'wine not found' }
-    const next = current.slice()
-    // Preserve the CURRENT provenance read inside the transform (D4). `result`
-    // was built from a pre-transform snapshot; if a reassign committed between
-    // that read and this write, splicing `result` wholesale would silently
-    // revert the reassignment. Ordinary edits never change ownership, so always
-    // carry the live owner from `current[i]` (WATCH re-runs this on conflict, so
-    // it always reflects the latest committed provenance).
-    next[i] = {
-      ...result,
-      addedByIdentityId: current[i].addedByIdentityId,
-      addedByDisplayName: current[i].addedByDisplayName,
-      // 🔒 SAME RULE FOR THE CATALOG LINK, for the same reason. `link` was
-      // computed from a PRE-TRANSFORM snapshot, so on a COSMETIC edit (where
-      // the rule resolved to "keep what's stored") splicing it wholesale would
-      // write back the link as it looked BEFORE a concurrent re-link — silently
-      // reverting that re-link, exactly as the provenance case above did.
-      //
-      // Only a DELIBERATE link decision may overwrite the live value: an
-      // explicit re-link/clear from this request, or the identity-changing-edit
-      // rule firing. `linkIsDeliberate` captures that distinction outside the
-      // transform (it depends only on the request, not on current state), so
-      // the transform stays pure and re-runs correctly under WATCH retry.
-      ...(linkIsDeliberate
-        ? { productId: link.productId, vintageId: link.vintageId }
-        : { productId: current[i].productId ?? null, vintageId: current[i].vintageId ?? null }),
-    }
-    return next
-  })
-  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
+  // The write, inside the session mutation contract. The replacement was
+  // prepared before the lock (across the upload), so everything another writer
+  // may have changed since is taken from the CURRENT entry inside the transform:
+  // provenance (frozen on edits), the catalog link unless this edit set it
+  // deliberately, and 🔒 revealedAt (r3-2 — a concurrent hide must not be undone
+  // by this edit's stale copy). The lineup mirror projects the whole array.
+  let written: WineMeta
+  try {
+    written = await withSessionMutation(c, { label: 'wine-edit', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+      replacedUrl = null; mirrored = false   // per attempt (r3 P1)
+      const caller = admitted(ctx)
+      const wine = await currentWine(c, wineId)
+      if (!wine) throw refuse(404, 'wine not found')
+      if (!isHostByIdentity(ctx.meta!, caller) && !(isProvider(ctx.meta!, caller) && await ownsWine(tx, ctx, caller, wine))) {
+        throw refuse(403, 'only the host or the provider who added this wine can edit it')
+      }
+      const out = await mutateWines(ctx.fence!, (current) => {
+        const i = current.findIndex(w => w.id === wineId)
+        if (i === -1) return { reject: 'wine not found' }
+        const next = current.slice()
+        next[i] = {
+          ...result,
+          // An edit that did not touch the image keeps the CURRENT one (a
+          // concurrent image change must not be reverted to stale bytes).
+          ...(imageDecided ? {} : { imageUrl: current[i].imageUrl, ...(body.image === undefined ? { image: current[i].image } : {}) }),
+          revealedAt: current[i].revealedAt ?? null,
+          addedByIdentityId: current[i].addedByIdentityId,
+          addedByDisplayName: current[i].addedByDisplayName,
+          // An edit that made NO deliberate link decision keeps whatever link is
+          // live now (a concurrent link edit must not be undone by this copy).
+          ...(linkIsDeliberate
+            ? { productId: link.productId, vintageId: link.vintageId }
+            : { productId: current[i].productId ?? null, vintageId: current[i].vintageId ?? null }),
+        }
+        replacedUrl = imageDecided && current[i].imageUrl && current[i].imageUrl !== next[i].imageUrl ? current[i].imageUrl : null
+        return next
+      })
+      if (isMutateReject(out)) throw refuse(404, out.reject)
+      mirrored = await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out))
+      return out.find(w => w.id === wineId)!
+    })
+  } catch (err) {
+    if (uploaded) await reclaimIfUnreferenced(c, uploaded)
+    return contractFailure(err, c, { label: 'wine-edit' })
+  }
+  // Only once the RECORD no longer references it (the mirror landed — r4 P1-1);
+  // a failed mirror leaves the old bytes (a leak, never a dead reference).
+  if (replacedUrl && mirrored) reclaimImages([replacedUrl])
   await touchWithMeta(c)
-  // Build the response + PG mirror from the ACTUALLY-WRITTEN wine (`out[i]`), not
-  // the pre-mutation `result`. They differ in exactly one case: a reassign
-  // committed between our read and this write, so `written` carries the current
-  // owner while `result` has the stale one. Using `written` keeps the response's
-  // addedBy*/isMine truthful (Codex P3). PG mirror freezes provenance on update
-  // regardless, so it never moves ownership from here.
-  const written = (out as WineMeta[]).find(w => w.id === wineId)!
-
-  // Best-effort mirror for EVERY caller (row existence decides, not login);
-  // provenance FROZEN on update (ordinary edits never move ownership — only
-  // the reassign path forces it).
-  try { await pgMirrorWineList(c) }
-  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   // Same wire shape as GET so a client storing this response back into
   // its wines cache doesn't see a different shape than the polling GET
@@ -165,145 +203,82 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   return NextResponse.json(wineToWire(written, identity.id, identities, userNameLookup, meta.showProvenance !== false))
 }
 
-// Reassign "Brought by" (bounded v1). Ownership-only; runs the whole
-// ownership-critical section under the ban lock (serialized with sessionWipe +
-// the role endpoint + wine DELETE), re-authorizing against FRESH meta and
-// re-validating the target inside the lock. Redis is written first, then PG is
-// mirrored synchronously; on a PG failure the prior provenance is RESTORED in
-// Redis (compensation) and the request 500s — no outbox. Accepted residual: a
-// crash between the failed PG write and the compensating Redis restore leaves
-// archival drift, self-correcting on the next reassign — same best-effort class
-// as every pgUpsertWine. See docs/dev/proposals/reassign-brought-by.md.
+// Reassign "Brought by" (bounded v1), RECORD-FIRST inside the session mutation
+// contract (plan D2): every check is re-made under the locks (the caller's
+// fresh grant; the target admitted in this moment — by the record for a `u:`
+// target); the lineup + the FORCED provenance commit in Postgres; the Redis
+// provenance is the projection after COMMIT. Ownership decides provider edit
+// rights, so the cache must never name an owner the record does not (A's
+// Redis-first compensation could, after a crash). v1 is limited to
+// Postgres-backed moments (docs/dev/proposals/reassign-brought-by.md).
 async function reassignBroughtBy({
-  c, wineId, body, meta, identity, isHost,
+  c, wineId, body, identity, isHost, showProvenance,
 }: {
   c: string
   wineId: string
   body: Record<string, unknown>
-  meta: SessionMeta
-  identity: Identity
+  identity: AuthorizedIdentity
   isHost: boolean
+  showProvenance: boolean
 }): Promise<NextResponse> {
-  // Ownership-only: the body may contain ONLY broughtByIdentityId. A strict
-  // allowlist (not a denylist of known fields) so an UNKNOWN key can't sneak
-  // through — the contract is "may carry nothing else", and this stays correct
-  // when new wine fields are added later (Codex P3).
   if (Object.keys(body).some(key => key !== 'broughtByIdentityId')) {
     return NextResponse.json({ error: 'change who brought it on its own — save other edits separately' }, { status: 400 })
   }
-  // Cheap pre-lock rejections (re-checked against fresh meta inside the lock).
   if (!isHost) {
     return NextResponse.json({ error: 'only a host or co-host can change who brought an impression' }, { status: 403 })
   }
-  if (meta.showProvenance === false) {
+  if (!showProvenance) {
     return NextResponse.json({ error: 'turn on “show who brought each impression” to change it' }, { status: 400 })
   }
-  // A `d:` tombstone is a valid identity for targeting a kick-delete only — it
-  // can never be made the owner of a wine (the deleted account cannot act).
+  // A tombstone (d:) is never a valid new owner.
   if (!isValidIdentityId(body.broughtByIdentityId) || isTombstoneIdentityId(body.broughtByIdentityId)) {
     return NextResponse.json({ error: 'invalid identity' }, { status: 400 })
   }
   const target = body.broughtByIdentityId as string
-
-  // Ownership state is shared with sessionWipe (deletes wines by
-  // addedByIdentityId) + role writes + wine DELETE — serialize under the ban lock.
-  if (!(await acquireBanLock(c))) {
-    return NextResponse.json(
-      { error: 'busy, try again' },
-      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '1' } },
-    )
-  }
   try {
-    // Re-authorize against FRESH meta (a demotion/ban that completed before the
-    // lock is now visible).
-    const freshMeta = await getSessionMeta(c)
-    if (!freshMeta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-    if (!isHostByIdentity(freshMeta, identity)) {
-      return NextResponse.json({ error: 'only a host or co-host can change who brought an impression' }, { status: 403 })
-    }
-    if (freshMeta.showProvenance === false) {
-      return NextResponse.json({ error: 'turn on “show who brought each impression” to change it' }, { status: 400 })
-    }
-    // Target must be a current participant, NOT banned/kicked. Under the lock a
-    // wipe can't run concurrently, so this is stable through the write.
-    const [targetName, inBans, inKicked] = await Promise.all([
-      redis.hGet(k.identities(c), target),
-      redis.sIsMember(k.bans(c), target),
-      redis.sIsMember(k.kicked(c), target),
-    ])
-    if (!targetName || inBans || inKicked) {
-      return NextResponse.json({ error: 'that person is not in this moment' }, { status: 400 })
-    }
-
-    // v1 is limited to ALREADY-ARCHIVED sessions (Simon, 2026-07-20). Reject
-    // BEFORE mutating Redis if there's no live PG session row — a pure Redis-only
-    // anon moment (root CLAUDE.md: anon sessions stay Redis-only). We do NOT
-    // force-archive it (that would break the anon lifecycle) and do NOT allow a
-    // Redis-only ownership change (that would reintroduce the first-archival
-    // provenance race when a logged-in participant later archives). This gate is
-    // a fast pre-check, NOT a guarantee: session delete / account cleanup don't
-    // take the ban lock, so the row can still vanish TOCTOU between here and the
-    // mirror — handled at the mirror stage (pgReassignWineProvenance throws →
-    // Redis compensation → 500). Documented bounded-v1 limitation: attribution
-    // can't be changed on a moment that no logged-in participant has archived yet.
-    if (!(await pgSessionExists(c))) {
-      return NextResponse.json(
-        { error: 'this moment isn’t saved yet — a signed-in guest needs to rate or join before you can change who brought it' },
-        { status: 409 },
-      )
-    }
-
-    // Capture the PRIOR provenance for compensation, then write the two fields.
-    // mutateWines rejects if the wine was concurrently deleted (→ 404), so no
-    // resurrection of a gone wine.
-    let prior: { id?: string; name?: string } | null = null
-    const out = await mutateWines(c, (current) => {
-      const i = current.findIndex(w => w.id === wineId)
-      if (i === -1) return { reject: 'wine not found' }
-      prior = { id: current[i].addedByIdentityId, name: current[i].addedByDisplayName }
-      const next = current.slice()
-      next[i] = { ...current[i], addedByIdentityId: target, addedByDisplayName: targetName }
-      return next
-    })
-    if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
-    await touchWithMeta(c)
-    const reassigned = (out as WineMeta[]).find(w => w.id === wineId)!
-
-    // Synchronous PG mirror — UPSERTS the wine row with the new owner FORCED on
-    // both create + update (a provenance-only update could no-op if the wine row
-    // is absent while the session row exists — e.g. session archived but this
-    // wine not yet — letting a later archival write create it with the OLD
-    // owner). The 409 gate above ensured a session row existed, but session
-    // delete / account cleanup DON'T take the ban lock, so it can vanish TOCTOU —
-    // pgReassignWineProvenance THROWS in that case (not a silent no-op), landing
-    // in the catch below. On any failure, COMPENSATE: restore prior Redis
-    // provenance and 500. No outbox; the client retries the idempotent request once.
-    try {
-      await pgReassignWineProvenance(c, reassigned)
-    } catch {
-      try {
-        await mutateWines(c, (current) => {
-          const i = current.findIndex(w => w.id === wineId)
-          if (i === -1) return { reject: 'gone' } // wine deleted meanwhile — nothing to restore
-          const next = current.slice()
-          next[i] = { ...current[i], addedByIdentityId: prior?.id, addedByDisplayName: prior?.name }
-          return next
-        })
-      } catch {
-        // Double failure (compensation also failed) — documented accepted
-        // residual: Redis holds the new owner, PG holds the old. Self-corrects
-        // on the next reassign of this wine. Redis is still the live-auth truth.
+    const reassigned = await withSessionMutation(c, { label: 'reassign', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+      const caller = admitted(ctx)
+      if (!isHostByIdentity(ctx.meta!, caller)) throw refuse(403, 'only a host or co-host can change who brought an impression')
+      const provenanceShown = ctx.row ? ctx.row.showProvenance !== false : ctx.meta!.showProvenance !== false
+      if (!provenanceShown) throw refuse(400, 'turn on “show who brought each impression” to change it')
+      // The new owner must be a current participant: live roster entry (its name
+      // is the snapshot), not banned or kicked — and admitted by the record for
+      // a `u:` target.
+      const [targetName, inBans, inKicked] = await Promise.all([
+        redis.hGet(k.identities(c), target), redis.sIsMember(k.bans(c), target), redis.sIsMember(k.kicked(c), target),
+      ])
+      const recordAdmits = /^u:\d{1,18}$/.test(target) && ctx.row
+        ? await readGrant(tx, c, Number(target.slice(2))).then(g => !!g && grantStatus(g) === 'ok')
+        : true
+      if (!targetName || inBans || inKicked || !recordAdmits) throw refuse(400, 'that person is not in this moment')
+      if (!ctx.row) {
+        throw refuse(409, 'this moment isn’t saved yet — a signed-in guest needs to rate or join before you can change who brought it')
       }
-      return NextResponse.json({ error: 'could not save; please try again' }, { status: 500 })
-    }
-
+      const raw = await redis.get(k.wines(c))
+      if (raw === null) throw new ContractCold(c)
+      const wines = JSON.parse(raw) as WineMeta[]
+      const i = wines.findIndex(w => w.id === wineId)
+      if (i === -1) throw refuse(404, 'wine not found')
+      const next = wines.slice()
+      next[i] = { ...wines[i], addedByIdentityId: target, addedByDisplayName: targetName }
+      await reassignProvenance(tx, ctx.row.id, next, next[i])
+      return next[i]
+    }, async (ctx, wine) => {
+      await mutateWines(ctx.fence!, (current) => {
+        const i = current.findIndex(w => w.id === wineId)
+        if (i === -1) return { reject: 'gone' }
+        const next = current.slice()
+        next[i] = { ...current[i], addedByIdentityId: wine.addedByIdentityId, addedByDisplayName: wine.addedByDisplayName }
+        return next
+      })
+    })
+    await touchWithMeta(c)
     const identities = await redis.hGetAll(k.identities(c))
     const userNameLookup = await buildKickedUserNameLookup([reassigned], identities)
-    // showProvenance is guaranteed not-false here (rejected above), so the echo
-    // always surfaces the new owner.
+    // Reaching here means showProvenance is on (gated above).
     return NextResponse.json(wineToWire(reassigned, identity.id, identities, userNameLookup, true))
-  } finally {
-    await releaseBanLock(c)
+  } catch (err) {
+    return contractFailure(err, c, { busy: 429, label: 'reassign' })
   }
 }
 
@@ -314,70 +289,59 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
 
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const pp = await participantOrBanned(c, req, session)
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
+  const { meta, wines } = opened
+  const pp = await participantOrBanned(c, req, session, opened.meta)
+  if (pp.status === 'unavailable') return authUnavailable()
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
 
-  const wines = await getWines(c)
   const targetWine = wines.find(w => w.id === wineId)
   if (!targetWine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-
-  // Same provider/host rules as PATCH.
-  const isHost = isHostByIdentity(meta, identity)
-  const isOwnAsProvider = isProviderById(meta, identity.id) && targetWine.addedByIdentityId === identity.id
-  if (!isHost && !isOwnAsProvider) {
+  // Same provider/host rules as PATCH. Early reject only — re-decided under the locks.
+  if (!isHostByIdentity(meta, identity) && !(isProvider(meta, identity) && (!!identity.grant || targetWine.addedByIdentityId === identity.id))) {
     return NextResponse.json({ error: 'only the host or the provider who added this wine can delete it' }, { status: 403 })
   }
 
-  // Take the ban lock so a delete and a "Brought by" reassign of the SAME wine
-  // serialize (D4, DELETE arm) — otherwise a reassign could mirror provenance to
-  // PG for a wine this delete is removing, leaving a PG-only orphan. Same lock
-  // the reassign path + role endpoint + sessionWipe hold. Ordinary field edits
-  // don't touch ownership state and stay lock-free.
-  if (!(await acquireBanLock(c))) {
-    return NextResponse.json(
-      { error: 'busy, try again' },
-      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '1' } },
-    )
-  }
+  // Inside the session mutation contract (the power and the record ownership
+  // fresh under the locks): the fenced lineup filter (content), the mirror that
+  // deletes the wine's row (its ratings cascade) and re-positions the rest, and
+  // the wine's rating keys — every rating-key-deleting path holds the lease
+  // (plan § 3, r3-3). The S3 bytes go after COMMIT.
+  let deletedUrl: string | null = null
+  let deleteMirrored = false
   try {
-    // Re-authorize inside the lock against FRESH meta + FRESH wine ownership —
-    // the pre-lock check (above) can go stale: a provider passes as owner A,
-    // then a reassign moves the wine A→B (or a cohost is demoted) before the
-    // lock is acquired. Without this a no-longer-owner provider could still
-    // delete. (Codex P2.) Host/cohost re-check + provider own-wine re-check on
-    // the CURRENT addedByIdentityId.
-    const freshMeta = await getSessionMeta(c)
-    if (!freshMeta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-    const freshWine = (await getWines(c)).find(w => w.id === wineId)
-    if (!freshWine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-    const freshIsHost = isHostByIdentity(freshMeta, identity)
-    const freshOwnAsProvider = isProviderById(freshMeta, identity.id) && freshWine.addedByIdentityId === identity.id
-    if (!freshIsHost && !freshOwnAsProvider) {
-      return NextResponse.json({ error: 'only the host or the provider who added this wine can delete it' }, { status: 403 })
-    }
-
-    const out = await mutateWines(c, (current) => {
-      if (!current.some(w => w.id === wineId)) return { reject: 'wine not found' }
-      return current.filter(w => w.id !== wineId)
+    await withSessionMutation(c, { label: 'wine-delete', redisLock: { waitMs: 3000 }, caller: identity, bumpGen: true }, async (tx, ctx) => {
+      deletedUrl = null; deleteMirrored = false   // per attempt (r3 P1)
+      const caller = admitted(ctx)
+      const wine = await currentWine(c, wineId)
+      if (!wine) throw refuse(404, 'wine not found')
+      if (!isHostByIdentity(ctx.meta!, caller) && !(isProvider(ctx.meta!, caller) && await ownsWine(tx, ctx, caller, wine))) {
+        throw refuse(403, 'only the host or the provider who added this wine can delete it')
+      }
+      const out = await mutateWines(ctx.fence!, (current) => {
+        const gone = current.find(w => w.id === wineId)
+        if (!gone) return { reject: 'wine not found' }
+        deletedUrl = gone.imageUrl || null
+        return current.filter(w => w.id !== wineId)
+      })
+      if (isMutateReject(out)) throw refuse(404, out.reject)
+      deleteMirrored = await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, out, { deletedId: wineId }))
+      const ratingKeys = await scanKeys(`s:${c}:r:*:${wineId}`)
+      if (ratingKeys.length > 0) await ctx.fence!.exec(m => { m.del(ratingKeys) })
     })
-    if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 404 })
-    const ratingKeys = await scanKeys(`s:${c}:r:*:${wineId}`)
-    if (ratingKeys.length > 0) await redis.del(ratingKeys)
-    deleteImage(wineId).catch(() => {})
-    await touchWithMeta(c)
-
-    // The row delete runs inside the list mirror's transaction (under the live
-    // row's lock), so a concurrent mirror cannot re-insert the wine; the
-    // survivors' positions are renormalized in the same transaction.
-    try { await pgMirrorWineList(c, { deletedId: wineId }) }
-    catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
-
-    return NextResponse.json({ ok: true })
-  } finally {
-    await releaseBanLock(c)
+  } catch (err) {
+    return contractFailure(err, c, { busy: 429, label: 'wine-delete' })
   }
+  // The wine's S3 image after COMMIT: the URL it referenced (unique-keyed since
+  // r3) and the legacy id-keyed object. Fire-and-forget.
+  // Only when the record's wine row went too (r4 P1-1).
+  if (deleteMirrored) {
+    if (deletedUrl) reclaimImages([deletedUrl])
+    deleteImage(wineId).catch(() => {})
+  }
+  await touchWithMeta(c)
+  return NextResponse.json({ ok: true })
 }

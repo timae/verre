@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, mutateWines, addWineToSession, pgUpsertSession, pgMirrorWineList, wineToWire } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, addWineToSession, ensurePromoted, mirrorLineup, isMutateReject, wineToWire, reclaimIfUnreferenced } from '@/lib/session'
 import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
+import { withSessionMutation, admitted, refuse, bestEffortMirror } from '@/lib/sessionMutation'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { resolveCatalogLink, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
@@ -15,30 +17,25 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  // Session opened first: 404 only when it is really gone (the client goes
+  // home), 503 while a cold moment is restored — distinct from 401 ("session
+  // exists but you're not a participant" → /join/<code>).
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
+  const { meta } = opened
   const session = await resolveUser(req)
 
-  // Session-existence check first. If the session was deleted or never
-  // existed, return 404 — distinct from 401 ("session exists but you're
-  // not a participant"). The client uses this to decide whether to bounce
-  // the participant home (404 = session gone, leave) vs to /join/<code>
-  // (401 = token bad / not in session, try to join).
-  if (!(await redis.exists(k.meta(c)))) {
-    return NextResponse.json({ error: 'not found' }, { status: 404 })
-  }
-
-  const p = await participantOrBanned(c, req, session)
+  const p = await participantOrBanned(c, req, session, opened.meta)
+  if (p.status === 'unavailable') return authUnavailable()
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
   if (p.status === 'invalid') return authInvalid('not a participant')
   const identity = p.identity
-
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
 
   // Wire-shape assembly (hideLineup gate, blind redaction branch,
   // wineToWire) lives in lib/sessionState.ts buildWinesView — shared with
   // /api/session/:code/state.
   const identities = await redis.hGetAll(k.identities(c))
-  const wines = await buildWinesView(c, meta, identity, identities)
+  const wines = await buildWinesView(c, meta, identity, identities, opened.wines)
   return NextResponse.json(
     wines,
     // Response varies per viewer (blind redaction, the isMine flag). Force
@@ -57,18 +54,20 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'session not found' }, { status: 404 })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
+  const { meta } = opened
   // Banned cohosts must not be able to write wines until they next poll
   // and bounce. participantOrBanned does the same check that GET uses.
-  const pp = await participantOrBanned(c, req, session)
+  const pp = await participantOrBanned(c, req, session, opened.meta)
+  if (pp.status === 'unavailable') return authUnavailable()
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
   const identity = pp.identity
-  // Hosts, cohosts, and providers can all add wines. Providers can only
-  // edit/delete the wines they added (gated in the [wineId] route by
-  // matching `addedByIdentityId` to the caller).
-  if (!isHostByIdentity(meta, identity) && !isProviderById(meta, identity.id)) {
+  // Hosts, cohosts, and providers can all add wines (providers then edit/delete
+  // only their own — the [wineId] route). Early reject only: re-decided under
+  // the locks from the fresh grant.
+  if (!isHostByIdentity(meta, identity) && !isProvider(meta, identity)) {
     return NextResponse.json({ error: 'only the host or a provider can add wines' }, { status: 403 })
   }
 
@@ -119,36 +118,48 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const result = await addWineToSession(c, { ...body, ...link }, undefined, identity.id, adderDisplayName)
   if ('error' in result) return NextResponse.json(result, { status: 400 })
 
-  // Optional one-shot insert position (1-indexed). Out-of-range silently
-  // falls through to "append at end" — frontend validates the range.
-  // Host-only: the standalone reorder endpoint is host-only, and we don't
-  // want providers driving a partial reorder via the POST back door
-  // (they're documented as unable to reorder wines). Ignored for
-  // non-host callers — appends at end. Resolved against the CURRENT list
-  // inside the transform so a concurrent add doesn't shift the position.
-  const callerIsHost = isHostByIdentity(meta, identity)
-  const pos = Number(body.position)
-  await mutateWines(c, (current) => {
-    const next = current.slice()
-    next.push(result)
-    if (callerIsHost && Number.isInteger(pos) && pos >= 1 && pos < next.length) {
-      next.pop()
-      next.splice(pos - 1, 0, result)
-    }
-    return next
-  })
-  await touchWithMeta(c)
-
   // Promotion stays a logged-in act (an anonymous-only session is never
-  // promoted); the wine-list mirror runs for EVERY caller and decides on row
-  // existence inside its transaction (redis-rehydration § 4.4) — anonymous
-  // adds to a Postgres-backed session are mirrored too.
+  // promoted) and runs BEFORE this route's own contract (the locks are not
+  // re-entrant). Best-effort here: a failed promotion leaves the session
+  // Redis-only and the add proceeds; the next logged-in act retries it.
   if (session?.user) {
-    try { await pgUpsertSession(c, meta) }
+    try { await ensurePromoted(c, meta) }
     catch (err) { console.error('[wines] promotion failed', { code: c, err }) }
   }
-  try { await pgMirrorWineList(c) }
-  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
+
+  // The add, inside the session mutation contract: the power is re-decided from
+  // the caller's FRESH grant; the fenced mutateWines is the content write
+  // (Redis-first by design); the lineup mirror decides on row existence under
+  // the locks (ctx.row) — anonymous adds to a Postgres-backed session are
+  // mirrored too (§ 4.4) — and projects the whole array with positions (§ 4.6).
+  //
+  // Optional one-shot insert position (1-indexed), host-only (providers cannot
+  // reorder), resolved against the CURRENT list inside the transform; out of
+  // range falls through to "append".
+  const pos = Number(body.position)
+  try {
+    await withSessionMutation(c, { label: 'wine-add', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+      const caller = admitted(ctx)
+      if (!isHostByIdentity(ctx.meta!, caller) && !isProvider(ctx.meta!, caller)) {
+        throw refuse(403, 'only the host or a provider can add wines')
+      }
+      const callerIsHost = isHostByIdentity(ctx.meta!, caller)
+      const next = await mutateWines(ctx.fence!, (current) => {
+        const out = current.slice()
+        if (callerIsHost && Number.isInteger(pos) && pos >= 1 && pos < out.length + 1) out.splice(pos - 1, 0, result)
+        else out.push(result)
+        return out
+      })
+      if (isMutateReject(next)) throw refuse(409, next.reject)
+      await bestEffortMirror(tx, c, 'wine-list', () => mirrorLineup(tx, ctx.row?.id ?? null, next))
+    })
+  } catch (err) {
+    // A refused add leaves no orphan upload (r3 P1) — unless the Redis write
+    // landed before the failure and the live lineup references it (r4).
+    if (result.imageUrl) await reclaimIfUnreferenced(c, result.imageUrl)
+    return contractFailure(err, c, { label: 'wine-add' })
+  }
+  await touchWithMeta(c)
 
   // Same wire shape as GET — clients that store POST responses back
   // into their wines list shouldn't see a different shape than the

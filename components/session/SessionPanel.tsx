@@ -8,7 +8,7 @@ import { useSession as useAuthSession } from 'next-auth/react'
 import { LifespanSelector } from './LifespanSelector'
 import { RoleBadge } from './RoleBadge'
 import { sessionFetch } from '@/lib/sessionFetch'
-import { formatCode } from '@verre/core'
+import { formatCode, BLIND_FEED_REVEAL_NOTE } from '@verre/core'
 import { joinPath } from '@/lib/sessionCode'
 import { ProfilePreviewInline } from '@/components/profile/ProfilePreviewInline'
 import { ParticipantActionsMenu } from './ParticipantActionsMenu'
@@ -550,6 +550,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                   {!isPro && !blind && <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>}
                 </div>
                 <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
+                {blind && <div style={{fontSize:10,color:'var(--fg-dim)',opacity:0.8,marginTop:4,maxWidth:280}}>{BLIND_FEED_REVEAL_NOTE}</div>}
               </div>
               <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
                 border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>

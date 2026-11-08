@@ -147,7 +147,7 @@ export function SettingsFooter({ saving, error, onDiscard, onSave, bottomInset }
 
 // .trow — switch row with an optional PRO badge + locked-reason caption.
 export function ToggleRow({
-  title, subtitle, value, onChange, disabled, proBadge, reason,
+  title, subtitle, value, onChange, disabled, proBadge, reason, note,
 }: {
   title: string;
   subtitle: string;
@@ -156,6 +156,8 @@ export function ToggleRow({
   disabled?: boolean;
   proBadge?: boolean;
   reason?: string;
+  // A second, quieter line under the subtitle (e.g. the blind feed-reveal rule).
+  note?: string;
 }) {
   const { theme } = useTheme();
   return (
@@ -173,6 +175,7 @@ export function ToggleRow({
           ) : null}
         </View>
         <VText variant="caption" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: 2, maxWidth: 210 }}>{subtitle}</VText>
+        {note ? <VText variant="caption" color="inkFaint" style={{ marginTop: 4, maxWidth: 230 }}>{note}</VText> : null}
         {reason ? <VText variant="caption" color="accent" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 3 }}>{reason}</VText> : null}
       </View>
       <Switch value={value} onValueChange={onChange} disabled={disabled} trackColor={{ true: theme.accent }} accessibilityLabel={title} />

@@ -69,13 +69,16 @@ export const k = {
   // from identities, so the only other anchor for "you were removed"
   // would be lost). Removed when the user re-joins or chooses Delete.
   kicked:     (c: string) => `s:${c}:kicked`,
-  // Short-lived advisory lock serializing concurrent kick/ban wipes against
-  // each other (the bans/kicked set + identities + meta write-back during a
-  // wipe). The wines JSON write-back is NOT guarded by this lock — it goes
-  // through `mutateWines`' WATCH/MULTI optimistic concurrency like every
-  // other wine mutator, which is safe against writers that never take this
-  // lock (the wine CRUD routes don't).
-  banLock:    (c: string) => `s:${c}:lock:ban`,
+  // Per-identity kick VERSION (a fresh random token on every kick, lib/sessionWipe.ts): /join
+  // binds a rejoin to the kick it observed — the Redis-only twin of the member
+  // row's xmin (code review r4 N5). Expires with the session.
+  kickv:      (c: string) => `s:${c}:kickv`,
+  // The publication generation (redis-rehydration release-B plan § 3): a random
+  // token a rebuild records under its locks and requires unchanged at its
+  // fenced publish. Set by every writer that changes durable state without
+  // holding lock:session:{CODE}, and by every scoped invalidation. Lives and
+  // dies with the session (re-EXPIREd by touchWithMeta, SCAN-wiped).
+  gen:        (c: string) => `s:${c}:gen`,
   // USER-scoped (NOT s:{CODE}: — the first user-scoped session-related key):
   // the set of session codes this user dismissed from the Moments-home
   // highlight carousel. Must outlive any single session, so it can't ride a

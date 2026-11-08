@@ -91,9 +91,8 @@ const checkinRoute = await import('../../app/api/checkins/[id]/route.ts')
 const accountRoute = await import('../../app/api/me/account/route.ts')
 const { deleteAccountDurable, migrateTombstonedSession, D_MIGRATION_SCRIPT, AccountDeleteTooManyWipesError, AccountDeleteRetryableError } = await import('../../lib/accountDelete.ts')
 const { sessionWipe } = await import('../../lib/sessionWipe.ts')
-const { ensureMember } = await import('../../lib/sessionMember.ts')
-const { pgUpsertWine, pgReassignWineProvenance, pgMirrorWineList, mutateWines } = await import('../../lib/session.ts')
-const { acquireBanLock, releaseBanLock } = await import('../../lib/sessionBan.ts')
+const { reassignProvenance } = await import('../../lib/session.ts')
+const { acquireSessionLock, releaseSessionLock } = await import('../../lib/sessionLock.ts')
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 let pass = 0
@@ -281,17 +280,21 @@ async function mirrors() {
   check('edit mirrors content', e.status === 200 && (await prisma.wine.findUnique({ where: { id: w2 } }))?.name === 'Renamed')
   const d = await call(wineRoute.DELETE, 'DELETE', `/api/session/${s.code}/wines/${w2}`, { cookie: H.cookie }, undefined, { code: s.code, wineId: w2 })
   check('delete removes the row and renormalizes the survivors', d.status === 200 && !(await prisma.wine.findUnique({ where: { id: w2 } })) && await positionsMatch(s.code))
-  const stale = { id: w2, name: 'Renamed', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '' }
-  check('a stale FK-row write after the delete does not resurrect the wine (R1 finding 1)', !(await pgUpsertWine(s.code, stale)) && !(await prisma.wine.findUnique({ where: { id: w2 } })))
+  // Release B: the rate's FK row is written inside its contract from the array
+  // read under the locks — a rate on the deleted wine is refused and resurrects nothing.
+  check('a rate after the delete does not resurrect the wine (R1 finding 1)', (await rate(s.code, { cookie: H.cookie }, w2)).status === 404 && !(await prisma.wine.findUnique({ where: { id: w2 } })))
 
   const J = await mkUser('Joiner J')
   const jr = await join(s.code, { cookie: J.cookie }, 'Taster J')
   check('/join-only logged-in member has a row', !!(await prisma.sessionMember.findUnique({ where: { userId_sessionCode: { userId: J.id, sessionCode: s.code } } })), jr)
   const R = await mkUser('Rater R')
   await join(s.code, { cookie: R.cookie }, 'Taster R')
+  // Release B: admission is the record's — a historical RATER without a member
+  // row is admitted as an author (a registration with neither is 'invalid', Q2).
+  await rate(s.code, { cookie: R.cookie }, w3)
   await prisma.sessionMember.deleteMany({ where: { userId: R.id, sessionCode: s.code } })
   const rr = await rate(s.code, { cookie: R.cookie }, w1)
-  check('/rate-only logged-in member has a row', (rr.status === 200 || (console.log(rr), false)) && !!(await prisma.sessionMember.findUnique({ where: { userId_sessionCode: { userId: R.id, sessionCode: s.code } } })))
+  check('/rate by a member-less historical rater writes the member row', (rr.status === 200 || (console.log(rr), false)) && !!(await prisma.sessionMember.findUnique({ where: { userId_sessionCode: { userId: R.id, sessionCode: s.code } } })))
 
   // § 1b mirror token
   const ratingRow = (await prisma.$queryRaw<{ id: number; ms: number }[]>`
@@ -306,10 +309,10 @@ async function mirrors() {
   check('check-in PATCH: one statement, mirror_at equals the Redis `at` token', pr.status === 200 && ratingRow2.ms === at2 && Number(ratingRow2.score) === 3 && at2 > at, { pr: pr.status, ratingRow2, at2 })
 
   // § 1b2 a wine DELETE whose Postgres mirror failed, then another list write:
-  // positions stay unique and all set; the stale row is not removed in A
-  // (release B's reject-on-absent rule makes that safe — see pgMirrorWineList)
+  // positions stay unique and all set; the stale row is not removed (owner
+  // ruling — see mirrorLineup)
   const wd1 = await addWine(s.code, { cookie: H.cookie }, 'Doomed by a failed mirror')
-  await mutateWines(s.code, (ws) => ws.filter(w => w.id !== wd1))   // Redis delete; its mirror "failed"
+  await redis.set(k.wines(s.code), JSON.stringify((await redisWines(s.code)).filter(w => w.id !== wd1)), { XX: true, KEEPTTL: true })   // Redis delete; its mirror "failed"
   const wd2 = await addWine(s.code, { cookie: H.cookie }, 'Added after')
   const sid = (await liveRow(s.code)).id
   const pos = await prisma.$queryRaw<{ id: string; position: number | null }[]>`SELECT id, position FROM wines WHERE session_id = ${sid} ORDER BY position`
@@ -324,10 +327,10 @@ async function mirrors() {
   // § 1c bans
   check('ban writes a session_bans row', (await ban(s.code, { cookie: H.cookie }, `u:${J.id}`, 'ban')).status === 200
     && !!(await prisma.sessionBan.findUnique({ where: { sessionCode_identityId: { sessionCode: s.code, identityId: `u:${J.id}` } } })))
-  await acquireBanLock(s.code)
+  const held = (await acquireSessionLock(s.code))!
   const busy = await call(unbanRoute.DELETE, 'DELETE', `/api/session/${s.code}/bans/u%3A${J.id}`, { cookie: H.cookie }, undefined, { code: s.code, identityId: `u%3A${J.id}` })
-  await releaseBanLock(s.code)
-  check('unban serializes on the ban lock (promotion holds it while copying bans)', busy.status === 409)
+  await releaseSessionLock(s.code, held)
+  check('unban serializes on the session lock (promotion holds it while copying bans)', busy.status === 409, busy)
   const ub = await call(unbanRoute.DELETE, 'DELETE', `/api/session/${s.code}/bans/u%3A${J.id}`, { cookie: H.cookie }, undefined, { code: s.code, identityId: `u%3A${J.id}` })
   check('unban removes the row, then the Redis entry', ub.status === 200
     && !(await prisma.sessionBan.findUnique({ where: { sessionCode_identityId: { sessionCode: s.code, identityId: `u:${J.id}` } } }))
@@ -489,16 +492,22 @@ async function accountDeletion() {
   const wg = await call(winesRoute.GET, 'GET', `/api/session/${SA.code}/wines`, { cookie: Hx.cookie }, undefined, { code: SA.code })
   const wire = (wg.json as unknown as { wines?: { id: string; addedByDisplayName: string | null }[] })?.wines ?? (wg.json as unknown as { id: string; addedByDisplayName: string | null }[])
   check('brought-by reads "[deleted]" on the wire (R3-5)', Array.isArray(wire) && wire.find(w => w.id === wx)?.addedByDisplayName === '[deleted]', wg.status)
+  const reassign = (wine: Record<string, unknown>) => prisma.$transaction(async (tx) => {
+    const ws = await redisWines(SA.code) as unknown as Parameters<typeof reassignProvenance>[2]
+    await reassignProvenance(tx, sa.id, ws, wine as unknown as Parameters<typeof reassignProvenance>[3])
+  }).then(() => false, () => true)
   await prisma.$executeRaw`UPDATE wines SET session_id = NULL WHERE id = ${wa}`
   check('a reassignment of a wine whose row was orphaned (ban-wipe cleanup failed) is refused, not a silent 200',
-    await pgReassignWineProvenance(SA.code, { id: wa, name: 'SA wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${Hx.id}`, addedByDisplayName: 'Other host' }).then(() => false, () => true))
+    await reassign({ id: wa, name: 'SA wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${Hx.id}`, addedByDisplayName: 'Other host' }))
   await prisma.$executeRaw`UPDATE wines SET session_id = ${sa.id} WHERE id = ${wa}`
-  check('a reassignment to the deleted user is refused (R1 finding 1)', await pgReassignWineProvenance(SA.code, { id: wx, name: 'Brought by X', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X.id}`, addedByDisplayName: 'X' }).then(() => false, () => true))
+  check('a reassignment to the deleted user is refused (R1 finding 1)', await reassign({ id: wx, name: 'Brought by X', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X.id}`, addedByDisplayName: 'X' }))
 
-  // (c) d: is a kick-delete target only
+  // (c) d: is a kick-delete target only — release B (G4): POST /bans mode 'kick'
+  // on a d: runs kick-DELETE; mode 'ban' stays 400; a direct kick-keep throws.
   const banD = await ban(SA.code, { cookie: Hx.cookie }, kSA[0], 'ban')
-  check('ban / kick-keep of a d: identity → 400', banD.status === 400 && (await ban(SA.code, { cookie: Hx.cookie }, kSA[0], 'kick')).status === 400)
-  await sessionWipe({ code: SA.code, identityId: kSA[0], scope: 'kick-delete', deleteAddedWines: true })
+  check('ban of a d: identity → 400', banD.status === 400)
+  check('a direct kick-keep of a d: identity throws', await sessionWipe({ code: SA.code, identityId: kSA[0], scope: 'kick-keep', caller: { id: `u:${Hx.id}`, displayName: '', kind: 'user' }, label: 'test', authorize: () => {} }).then(() => false, () => true))
+  check('kick of a d: identity runs kick-delete through the real route', (await ban(SA.code, { cookie: Hx.cookie }, kSA[0], 'kick', true)).status === 200)
   check('kick-delete of a d: identity removes its ratings and keys, never wine provenance',
     (await prisma.rating.count({ where: { tombstoneKey: kSA[0] } })) === 0 && (await scanKeys(`s:${SA.code}:r:${kSA[0]}:*`)).length === 0
     && (await prisma.wine.findUnique({ where: { id: wx } }))?.addedByIdentityId === kSA[0])
@@ -531,6 +540,13 @@ async function crashAndRedis() {
   check('worker paused inside the transaction holding its advisory locks, then SIGKILLed', paused && heldWhilePaused > 0, { paused, heldWhilePaused })
   check('…its backend and locks are gone within 3 s', released)
   check('killed worker: every durable reference unchanged (Postgres rolled back)', (await fingerprint(Y.id, [SB.code, SG.code])) === before)
+  // Release B: the dead worker's Redis lease on its wipe candidate lives out its
+  // 15 s — an immediate retry is told "busy, try again" (retryable, nothing
+  // changed); once the lease has expired the retry completes.
+  const early = await deleteAccountDurable(Y.id).then(() => null, e => e)
+  check('…an immediate retry while the dead worker\'s lease lives is refused retryably', early instanceof AccountDeleteRetryableError && (await fingerprint(Y.id, [SB.code, SG.code])) === before, String(early))
+  const { sessionLockKey } = await import('../../lib/sessionLock.ts')
+  for (let i = 0; i < 170 && (await redis.exists(sessionLockKey(SG.code))); i++) await sleep(100)
   const retry = await deleteAccountDurable(Y.id)
   check('retry from another worker completes once', !(await prisma.user.findUnique({ where: { id: Y.id } })) && retry.plan.toDelete.includes(SG.code))
 
@@ -585,7 +601,8 @@ async function crashAndRedis() {
   await join(SB.code, { cookie: P.cookie }, 'Pauline Real'); await visit(SB.code, { cookie: P.cookie }); await rate(SB.code, { cookie: P.cookie }, wb)
   await setRole(SB.code, { cookie: Hy.cookie }, `u:${P.id}`, 'provider')
   const wp = await addWine(SB.code, { cookie: P.cookie }, 'Brought by Pauline')
-  const res = await deleteAccountDurable(P.id, { hooks: { failProjection: true } })
+  // Both the d: migration AND its invalidation fail (residual (ii)): the cache stays stale.
+  const res = await deleteAccountDurable(P.id, { hooks: { failProjection: true, failInvalidation: true } })
   const staleWine = (await redisWines(SB.code)).find(w => w.id === wp)
   const wg = await call(winesRoute.GET, 'GET', `/api/session/${SB.code}/wines`, { cookie: Hy.cookie }, undefined, { code: SB.code })
   const wire = ((wg.json as unknown as { wines?: unknown[] })?.wines ?? wg.json) as unknown as { id: string; addedByDisplayName: string | null; addedByUserId: number | null }[]
@@ -598,11 +615,18 @@ async function crashAndRedis() {
   check('projection failure: deletion completes, the record is correct', !(await prisma.user.findUnique({ where: { id: P.id } }))
     && (await prisma.rating.count({ where: { sessionId: sbRow.id, tombstoneKey: key } })) === 1)
   check('…the cache is stale (u: entry still there)', !!(await redis.hGet(k.identities(SB.code), `u:${P.id}`)))
-  const rep = await migrateTombstonedSession(P.id, res.sessions.find(s => s.code === SB.code)!)
-  check('…and the projection repairs it from the committed mapping', rep === 'ok' && !(await redis.hGet(k.identities(SB.code), `u:${P.id}`))
+  // Release B: a failed projection invalidates (meta DEL + generation bump); the
+  // next open rebuilds from the record — reconciliation removes the gone user.
+  const { scopedInvalidate } = await import('../../lib/sessionMutation.ts')
+  await scopedInvalidate(SB.code, sbRow.created_at.getTime())   // what the invalidation fallback does
+  check('…scoped invalidation drops this incarnation\'s meta', !(await redis.get(k.meta(SB.code))))
+  await call(winesRoute.GET, 'GET', `/api/session/${SB.code}/wines`, { cookie: Hy.cookie }, undefined, { code: SB.code })
+  check('…and the next open rebuilds: the gone user is reconciled away, the d: group projected', !(await redis.hGet(k.identities(SB.code), `u:${P.id}`))
     && (await redis.hGet(k.identities(SB.code), key)) === '[deleted]')
-  check('…re-running the migration is a no-op', (await migrateTombstonedSession(P.id, res.sessions.find(s => s.code === SB.code)!)) === 'ok'
+  const tok = (await acquireSessionLock(SB.code))!
+  check('…re-running the migration under a lease is a no-op', (await migrateTombstonedSession(P.id, res.sessions.find(s => s.code === SB.code)!, tok)) === 'ok'
     && (await redis.hGet(k.identities(SB.code), key)) === '[deleted]')
+  await releaseSessionLock(SB.code, tok)
 
   // (f0) the bound counts ACTUAL wipe decisions: a hosted session engaged only by
   // an anonymous rating (Redis) is anonymized, so maxWipes 0 does not refuse it
@@ -612,8 +636,13 @@ async function crashAndRedis() {
   const anonV = await join(SV.code, {}, 'Anon rater')
   check('setup: an anonymous rating exists only in Redis', (await rate(SV.code, { anon: anonV.anon }, wv)).status === 200
     && (await prisma.rating.count({ where: { wineId: wv } })) === 0)
-  const resV = await deleteAccountDurable(Z4.id, { maxWipes: 0 }).then(r => r, e => e)
-  check('…maxWipes 0 still deletes the account and anonymizes that moment', !(resV instanceof Error) && !(await prisma.user.findUnique({ where: { id: Z4.id } }))
+  // Release B (spec § 6): the bound also counts the leased CANDIDATES (Postgres-
+  // unengaged hosted sessions) up front — refused before anything — while the
+  // decision under the lock still anonymizes an anonymously-engaged one.
+  const refusedV = await deleteAccountDurable(Z4.id, { maxWipes: 0 }).then(() => null, e => e)
+  check('…maxWipes 0 refuses up front (the candidate is leased before it is classified)', refusedV instanceof AccountDeleteTooManyWipesError && !!(await prisma.user.findUnique({ where: { id: Z4.id } })))
+  const resV = await deleteAccountDurable(Z4.id, { maxWipes: 1 }).then(r => r, e => e)
+  check('…with room for it, the account is deleted and that moment anonymized (not wiped)', !(resV instanceof Error) && !(await prisma.user.findUnique({ where: { id: Z4.id } }))
     && !!(await liveRow(SV.code)) && (resV as { plan: { toPseudonymize: string[] } }).plan.toPseudonymize.includes(SV.code), String(resV))
 
   // (f) the size bound fails BEFORE any durable statement
@@ -696,12 +725,12 @@ async function schedules() {
   check('…the deletion completes and leaves no rating referencing the user', !(await prisma.user.findUnique({ where: { id: D.id } }))
     && (await prisma.rating.count({ where: { userId: D.id } })) === 0)
 
-  // (e) ensureMember's admission re-check under the row lock (R1 finding 2)
+  // (e) the member write's admission re-check under the lock (R1 finding 2) —
+  // release B: /visit decides from the fresh grant read under the locks
   const Hk = await mkUser('Host K')
   const K = await mkUser('Kicked K')
   const SL = await createSession({ cookie: Hk.cookie })
   await join(SL.code, { cookie: K.cookie }, 'Taster K'); await visit(SL.code, { cookie: K.cookie })
-  const meta = JSON.parse((await redis.get(k.meta(SL.code)))!)
   const g5 = gate(), in5 = gate()
   const kick = prisma.$transaction(async (tx) => {
     // the kick's shape: Redis kicked SADD first, then the row-locked transaction
@@ -712,13 +741,13 @@ async function schedules() {
     await g5.p
   }, { timeout: 30_000 })
   await in5.p
-  const em = ensureMember(K.id, SL.code, meta)
+  const em = visit(SL.code, { cookie: K.cookie })
   check('a member write racing a kick waits on the row lock', await blockedOnLock(em))
   g5.open()
   await kick
   const emRes = await em
   const m = await prisma.sessionMember.findUnique({ where: { userId_sessionCode: { userId: K.id, sessionCode: SL.code } } })
-  check('…and sees the kick: no self-heal, the completed kick survives', emRes === 'kicked' && m?.removedState === 'kicked', { emRes, m })
+  check('…and sees the kick: no self-heal, the completed kick survives', emRes.status === 401 && m?.removedState === 'kicked', { emRes, m })
 
   // (f) a rate racing a kick: blocked on the row lock, then nothing archived
   const K2 = await mkUser('Kicked rater K2')
@@ -740,7 +769,12 @@ async function schedules() {
   const rkRes = await rk
   check('…then answers removed and archives nothing', rkRes.status === 401 && (await prisma.rating.count({ where: { userId: K2.id } })) === 0, rkRes)
 
-  // (g) an explicit rejoin racing a kick: the kick that lands after the SREM wins
+  // (g) an explicit rejoin racing a FRESH kick: the kick wins. Release B: /join
+  // re-admits only from a kick already in place when it arrived (K2 is kicked
+  // since (f) — rejoin first, so this kick is fresh). A RE-kick racing a rejoin
+  // from the first kick lets the rejoin win (no kick version in the record —
+  // documented in the build log).
+  check('setup: K2 rejoins from the earlier kick', (await join(SL.code, { cookie: K2.cookie }, 'Taster K2')).status === 200)
   const g7 = gate()
   let holding = false
   const kick3 = prisma.$transaction(async (tx) => {
@@ -752,7 +786,7 @@ async function schedules() {
   }, { timeout: 30_000 })
   while (!holding) await sleep(20)
   const rj = join(SL.code, { cookie: K2.cookie }, 'Taster K2')
-  check('an explicit rejoin waits on the row lock after its SREM', await blockedOnLock(rj) && !(await redis.sIsMember(k.kicked(SL.code), `u:${K2.id}`)))
+  check('an explicit rejoin waits on the row lock', await blockedOnLock(rj))
   g7.open()
   await kick3
   const rjRes = await rj
@@ -858,10 +892,10 @@ async function schedules() {
   const SM = await createSession({ cookie: Hm.cookie })
   await join(SM.code, { cookie: X2.cookie }, 'Real Adder'); await visit(SM.code, { cookie: X2.cookie })
   // the add's Redis write landed; its Postgres mirror has not run yet
-  await mutateWines(SM.code, (ws) => [...ws, { id: `late${Date.now()}`.slice(0, 21), name: 'Late wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X2.id}`, addedByDisplayName: 'Real Adder' }])
+  await redis.set(k.wines(SM.code), JSON.stringify([...(await redisWines(SM.code)), { id: `late${Date.now()}`.slice(0, 21), name: 'Late wine', producer: '', vintage: '', grape: '', type: 'red', image: '', imageUrl: '', addedByIdentityId: `u:${X2.id}`, addedByDisplayName: 'Real Adder' }]), { XX: true, KEEPTTL: true })
   const lateId = (await redisWines(SM.code)).find(w => w.addedByIdentityId === `u:${X2.id}`)!.id
-  await deleteAccountDurable(X2.id, { hooks: { failProjection: true } })
-  await pgMirrorWineList(SM.code)
+  await deleteAccountDurable(X2.id, { hooks: { failProjection: true, failInvalidation: true } })
+  await addWine(SM.code, { cookie: Hm.cookie }, 'next list write')   // its mirror projects the whole array
   const late = await prisma.wine.findUnique({ where: { id: lateId }, select: { addedByIdentityId: true, addedByDisplayName: true } })
   check('…the delayed first mirror writes no adder and "[deleted]"', late?.addedByIdentityId === null && late?.addedByDisplayName === '[deleted]', late)
 }
@@ -880,13 +914,19 @@ async function misc() {
   // (b) the migration script validates every compare-and-set before mutating
   const code = anonHost.code
   await redis.set(k.rating(code, 'u:999999', 'wz'), '{"score":1}')
-  const keys = [k.meta(code), k.wines(code), k.identities(code), k.lastSeen(code), k.kicked(code), k.rating(code, 'u:999999', 'wz'), k.rating(code, 'd:x', 'wz')]
-  const r = await redis.eval(D_MIGRATION_SCRIPT, { keys, arguments: ['stale meta', 'x', '__absent__', '', 'u:999999', 'd:x', '1', 'rename', '999999'] })
+  const { sessionLockKey } = await import('../../lib/sessionLock.ts')
+  const lease = (await acquireSessionLock(code))!
+  const keys = [sessionLockKey(code), k.gen(code), k.meta(code), k.wines(code), k.identities(code), k.lastSeen(code), k.kicked(code), k.kickv(code), k.rating(code, 'u:999999', 'wz'), k.rating(code, 'd:x', 'wz')]
+  const tail = (token: string) => [token, 'gen-token', '60000']
+  const r0 = await redis.eval(D_MIGRATION_SCRIPT, { keys, arguments: ['x', 'x', '__absent__', '', 'u:999999', 'd:x', '1', 'rename', '999999', ...tail('not-the-lease')] })
+  check('wrong lease → explicit lost and NO mutation', r0 === 'lost' && !!(await redis.get(k.rating(code, 'u:999999', 'wz'))))
+  const r = await redis.eval(D_MIGRATION_SCRIPT, { keys, arguments: ['stale meta', 'x', '__absent__', '', 'u:999999', 'd:x', '1', 'rename', '999999', ...tail(lease)] })
   check('stale meta → explicit conflict and NO mutation', r === 'conflict' && !!(await redis.get(k.rating(code, 'u:999999', 'wz'))) && !(await redis.get(k.rating(code, 'd:x', 'wz'))))
   const metaNow = (await redis.get(k.meta(code)))!
   const winesNow = (await redis.get(k.wines(code)))!
-  const r2 = await redis.eval(D_MIGRATION_SCRIPT, { keys: [...keys, k.rating(code, 'u:999999', 'gone'), k.rating(code, 'd:x', 'gone')], arguments: [metaNow, metaNow, winesNow, winesNow, 'u:999999', 'd:x', '0', 'rename', '999999'] })
-  check('fresh values → applied; a missing key is skipped', r2 === 'ok' && !!(await redis.get(k.rating(code, 'd:x', 'wz'))) && !(await redis.get(k.rating(code, 'u:999999', 'wz'))))
+  const r2 = await redis.eval(D_MIGRATION_SCRIPT, { keys: [...keys, k.rating(code, 'u:999999', 'gone'), k.rating(code, 'd:x', 'gone')], arguments: [metaNow, metaNow, winesNow, winesNow, 'u:999999', 'd:x', '0', 'rename', '999999', ...tail(lease)] })
+  check('fresh values → applied; a missing key is skipped; the generation is bumped', r2 === 'ok' && !!(await redis.get(k.rating(code, 'd:x', 'wz'))) && !(await redis.get(k.rating(code, 'u:999999', 'wz'))) && (await redis.get(k.gen(code))) === 'gen-token')
+  await releaseSessionLock(code, lease)
 
   // (c) old writer against release A's schema, then the legacy catch-up
   const Hl = await mkUser('Host legacy')
@@ -896,29 +936,41 @@ async function misc() {
   await setRole(S.code, { cookie: Hl.cookie }, `u:${L.id}`, 'provider')
   const wl = await addWine(S.code, { cookie: L.cookie }, 'Legacy brought')
   await rate(S.code, { cookie: L.cookie }, wl)
-  const oldWriter = await prisma.$transaction(async (tx) => {
+  // Release B (plan § 12, r1-14): B's CHECK correctly refuses the old writer, so
+  // the release-A case runs on A's schema EXACTLY — inside one transaction that
+  // first drops the constraint, and is rolled back at the end.
+  const ROLLBACK = new Error('rollback')
+  const outcome: Record<string, unknown> = {}
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe('ALTER TABLE ratings DROP CONSTRAINT ratings_session_rater_known')
     // today's (pre-release-A) account-delete SQL, verbatim in shape
     await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${L.id} AND session_id IS NULL`
     await tx.$executeRaw`UPDATE ratings SET user_id = NULL, rater_name = '[deleted]' WHERE user_id = ${L.id} AND session_id IS NOT NULL`
     await tx.$executeRaw`UPDATE hall_of_fame SET user_id = NULL, rater_name = '[deleted]' WHERE user_id = ${L.id}`
     await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = '[deleted]' WHERE host_user_id = ${L.id}`
     await tx.$executeRaw`DELETE FROM users WHERE id = ${L.id}`
-    return true
-  }).catch(e => e)
-  check('the OLD writer succeeds against release A\'s schema (no CHECK yet)', oldWriter === true, String(oldWriter))
-  const violating = async () => (await prisma.$queryRaw<{ n: bigint }[]>`
-    SELECT count(*) AS n FROM ratings WHERE session_id IS NOT NULL AND user_id IS NULL AND tombstone_key IS NULL`)[0].n
-  check('…leaving a both-NULL tombstone (what B\'s catch-up exists for)', (await violating()) >= 1n)
-  const sql = readFileSync(pjoin(REPO, 'prisma/migrations/20261108072132_redis_rehydration_release_a/migration.sql'), 'utf8')
-  const recipe = sql.slice(sql.indexOf('-- @recipe:legacy-tombstones'), sql.indexOf('-- @endrecipe'))
-  await prisma.$executeRawUnsafe(recipe)
-  const wlRow = await prisma.wine.findUnique({ where: { id: wl }, select: { addedByIdentityId: true, addedByDisplayName: true } })
-  const lRating = await prisma.rating.findFirst({ where: { wineId: wl, userId: null }, select: { tombstoneKey: true } })
-  check('catch-up recipe stamps the key and re-attributes the gone user\'s wine to it', (await violating()) === 0n
+    outcome.oldWriter = true
+    const violating = async () => (await tx.$queryRaw<{ n: bigint }[]>`
+      SELECT count(*) AS n FROM ratings WHERE session_id IS NOT NULL AND user_id IS NULL AND tombstone_key IS NULL`)[0].n
+    outcome.left = await violating()
+    const sql = readFileSync(pjoin(REPO, 'prisma/migrations/20261108072132_redis_rehydration_release_a/migration.sql'), 'utf8')
+    const recipe = sql.slice(sql.indexOf('-- @recipe:legacy-tombstones'), sql.indexOf('-- @endrecipe'))
+    await tx.$executeRawUnsafe(recipe)
+    outcome.wlRow = await tx.wine.findUnique({ where: { id: wl }, select: { addedByIdentityId: true, addedByDisplayName: true } })
+    outcome.lRating = await tx.rating.findFirst({ where: { wineId: wl, userId: null }, select: { tombstoneKey: true } })
+    outcome.after = await violating()
+    const snap = JSON.stringify(await tx.$queryRaw`SELECT id, tombstone_key FROM ratings WHERE tombstone_key IS NOT NULL ORDER BY id`)
+    await tx.$executeRawUnsafe(recipe)
+    outcome.idempotent = JSON.stringify(await tx.$queryRaw`SELECT id, tombstone_key FROM ratings WHERE tombstone_key IS NOT NULL ORDER BY id`) === snap
+    throw ROLLBACK
+  }, { timeout: 30_000 }).catch(e => { if (e !== ROLLBACK) outcome.error = String(e) })
+  check('the OLD writer succeeds against release A\'s schema (no CHECK)', outcome.oldWriter === true, outcome.error ?? '')
+  check('…leaving a both-NULL tombstone (what B\'s catch-up exists for)', (outcome.left as bigint) >= 1n)
+  const { wlRow, lRating } = outcome as { wlRow: { addedByIdentityId: string | null; addedByDisplayName: string | null } | null; lRating: { tombstoneKey: string | null } | null }
+  check('catch-up recipe stamps the key and re-attributes the gone user\'s wine to it', outcome.after === 0n
     && !!lRating?.tombstoneKey && wlRow?.addedByIdentityId === lRating.tombstoneKey && wlRow?.addedByDisplayName === '[deleted]', { wlRow, lRating })
-  const snap = JSON.stringify(await prisma.$queryRaw`SELECT id, tombstone_key FROM ratings WHERE tombstone_key IS NOT NULL ORDER BY id`)
-  await prisma.$executeRawUnsafe(recipe)
-  check('…and is idempotent (second run changes nothing)', JSON.stringify(await prisma.$queryRaw`SELECT id, tombstone_key FROM ratings WHERE tombstone_key IS NOT NULL ORDER BY id`) === snap)
+  check('…and is idempotent (second run changes nothing)', outcome.idempotent === true)
+  check('…and the whole case rolled back (the CHECK is in place again)', !!(await prisma.user.findUnique({ where: { id: L.id } })))
 }
 
 // ── Run ─────────────────────────────────────────────────────────────────────

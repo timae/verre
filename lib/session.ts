@@ -1,42 +1,34 @@
-import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { nanoid } from 'nanoid'
 import { WatchError } from 'redis'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
-import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
+import { sessionLockKey, LockLost } from '@/lib/sessionLock'
+import { withSessionMutation, ContractCold, ContractGone, type Fence } from '@/lib/sessionMutation'
+import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { normalizeVintageText } from '@verre/core'
 import { uploadImage } from '@/lib/s3'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
-import type { Identity } from '@/lib/identity'
+import { grantStatus, type AuthorizedIdentity } from '@/lib/sessionGrant'
 import { userIdentityId } from '@/lib/identity'
 
-// Inlined S3 reclaim — see app/api/checkins/[id]/route.ts for the same
-// helper and the bundler-bug rationale.
-const _S3_ENDPOINT = process.env.S3_ENDPOINT
-const _S3_BUCKET = process.env.S3_BUCKET
-const _s3 = _S3_ENDPOINT
-  ? new S3Client({
-      endpoint: _S3_ENDPOINT,
-      region: process.env.S3_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId: process.env.S3_ACCESS_KEY || '',
-        secretAccessKey: process.env.S3_SECRET_KEY || '',
-      },
-      forcePathStyle: true,
-    })
-  : null
-async function reclaimImage(url: string | null | undefined) {
-  if (!_s3 || !_S3_BUCKET || !url || !_S3_ENDPOINT) return
-  const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
-  if (!url.startsWith(prefix)) return
-  const key = url.slice(prefix.length)
-  if (!key) return
+// After a FAILED wine write: reclaim this request's own upload only if the live
+// lineup does not reference it — a content write that landed in Redis before
+// the failure keeps its bytes (a leak at worst, never a dead reference). The
+// URL is unique to this request, so "unreferenced now" means never. A Redis
+// error keeps the bytes.
+export async function reclaimIfUnreferenced(code: string, url: string): Promise<void> {
+  // Both stores must PROVE they do not reference it (r5): a lineup key that is
+  // absent proves nothing (evicted after another writer mirrored it), and a
+  // later list write may have mirrored the published array into Postgres.
   try {
-    await _s3.send(new DeleteObjectCommand({ Bucket: _S3_BUCKET, Key: key }))
-  } catch (err) {
-    console.warn('[s3] reclaimImage failed:', { key, err })
-  }
+    const raw = await redis.get(k.wines(code))
+    if (!raw || (JSON.parse(raw) as WineMeta[]).some(w => w.imageUrl === url)) return
+    const { prisma } = await import('@/lib/prisma')
+    if ((await prisma.$queryRaw<{ x: number }[]>`SELECT 1 AS x FROM wines WHERE image_url = ${url} LIMIT 1`).length) return
+  } catch { return }
+  const { reclaimImages } = await import('@/lib/engagementCascade')
+  reclaimImages([url])
 }
 
 export type WineMeta = {
@@ -95,7 +87,7 @@ export type WineMeta = {
   // identifying field added here is exposed BY DEFAULT unless it is
   // explicitly overwritten there. See lib/wineRedaction.ts.
   //
-  // Mirrored to Postgres by pgUpsertWine on archival; every wine-edit path
+  // Mirrored to Postgres by mirrorLineup (every list write); every wine-edit path
   // must round-trip them (the PATCH route replaces the Redis object
   // wholesale, so omitting them silently drops the link).
   productId?: string | null
@@ -251,6 +243,10 @@ export type SessionMeta = {
   // impressions can be added + the category vocabulary. Mirrors
   // sessions.category.
   category?: string
+  // Promotion time (sessions.archived_at), epoch ms: stamped by promotion's
+  // fenced projection and by every meta written from the record. Presentation
+  // only — nothing gates on it.
+  promotedAt?: number
 }
 
 // Where each SessionMeta field is durable (redis-rehydration § 4.2 / § 5.2).
@@ -267,7 +263,7 @@ export const SESSION_META_PERSISTENCE: Record<keyof SessionMeta, 'column' | 'ses
   address: 'column', dateFrom: 'column', dateTo: 'column', timezone: 'column',
   description: 'column', link: 'column', hideLineup: 'column',
   hideLineupMinutesBefore: 'column', showProvenance: 'column',
-  coverPhotoUrl: 'column', category: 'column',
+  coverPhotoUrl: 'column', category: 'column', promotedAt: 'column',
 }
 
 // 🔒 The ONE spelling of SessionMeta → sessions columns (R1-11). The logged-in
@@ -310,15 +306,10 @@ export function sessionSettingsColumns(meta: SessionMeta) {
 
 export { genCode } from '@/lib/sessionCode'
 
-export async function getSessionMeta(code: string): Promise<SessionMeta | null> {
-  const raw = await redis.get(k.meta(code))
-  return raw ? JSON.parse(raw) : null
-}
-
-export async function getWines(code: string): Promise<WineMeta[]> {
-  const raw = await redis.get(k.wines(code))
-  return raw ? JSON.parse(raw) : []
-}
+// No raw meta/lineup getters: session routes open the session with
+// openSession / loadLiveWines (lib/sessionRehydrate.ts — absent-aware, never a
+// `[]` for an evicted lineup), and list/enrichment reads keep their own raw
+// reads and never rebuild (redis-rehydration § 5.3).
 
 // Sentinel a transform returns to abort the write based on the CURRENT
 // wines state (e.g. the target wine was deleted by a concurrent request
@@ -329,105 +320,101 @@ export function isMutateReject(v: unknown): v is MutateReject {
   return typeof v === 'object' && v !== null && 'reject' in v
 }
 
-// Atomic read-modify-write of the `s:{CODE}:wines` blob: the whole wine list
-// is one Redis string, so an un-guarded read→edit→write-back lets two
-// concurrent writers clobber each other (one's edit silently lost). WATCH +
-// MULTI makes the write conditional on the value being unchanged since the
-// read, retrying on conflict.
+// Atomic read-modify-write of the `s:{CODE}:wines` blob, FENCED by the session
+// lock (redis-rehydration § 4.6 / mechanism 1+2): the caller holds
+// lock:session:{CODE} inside a mutation contract and passes its fence. On an
+// isolated connection: WATCH the lock + wines, check the token, read, transform,
+// MULTI SET XX KEEPTTL, EXEC — a holder that lost its lease writes nothing
+// (LockLost), and a concurrent change retries with the fresh value.
 //
-// WATCH is connection-scoped, so this MUST run on an isolated connection
-// (`executeIsolated`) — a command on the shared `redis` singleton would void
-// the WATCH. The transform MUST be pure (it re-runs on each retry): keep side
-// effects (S3, Postgres, response building) in the caller, after the commit.
+// 🔒 An absent wines key is a REJECT, never a create (ContractCold → the route
+// answers through ensureSessionLive: a rebuild then 503, or 404 if the session is
+// really gone). A wiped or evicted lineup can never be recreated holding only
+// one wine by a writer working from stale state.
 //
-// `transform` returns the new array to commit, or a MutateReject for
-// current-state validation (e.g. wine gone). KEEPTTL preserves the session's
-// lifespan per the TTL rule in lib/CLAUDE.md.
+// The transform MUST be pure (it re-runs on each retry): side effects (S3,
+// Postgres, response building) stay in the caller. Return a MutateReject for
+// current-state validation (e.g. wine gone → the caller maps it to 404/400).
 export async function mutateWines(
-  code: string,
+  fence: Fence,
   transform: (wines: WineMeta[]) => WineMeta[] | MutateReject,
 ): Promise<WineMeta[] | MutateReject> {
-  const key = k.wines(code)
+  const code = fence.code
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const result = await redis.executeIsolated(async (client) => {
-        await client.watch(key)
-        let next: WineMeta[] | MutateReject
+      return await fence.client.executeIsolated(async (client) => {
+        await client.watch([sessionLockKey(code), k.wines(code)])
         try {
-          const raw = await client.get(key)
+          if ((await client.get(sessionLockKey(code))) !== fence.token) throw new LockLost(code)
+          const raw = await client.get(k.wines(code))
+          if (raw === null) throw new ContractCold(code)
           // A throwing transform (or malformed JSON) must release the WATCH —
-          // the connection returns to the pool, and a leaked WATCH would
-          // poison the next borrower's transaction.
-          next = transform(raw ? JSON.parse(raw) : [])
+          // the connection returns to the pool.
+          const next = transform(JSON.parse(raw))
           if (isMutateReject(next)) {
             await client.unwatch()
             return next
           }
-          // Don't materialise an empty wines key that didn't exist — a bare
-          // SET with KEEPTTL on an absent key creates it with NO expiry.
-          if (raw === null && next.length === 0) {
-            await client.unwatch()
-            return next
-          }
+          const res = await client.multi().set(k.wines(code), JSON.stringify(next), { XX: true, KEEPTTL: true }).exec()
+          if (res === null) throw new WatchError()
+          return next
         } catch (inner) {
-          await client.unwatch()
+          await client.unwatch().catch(() => {})
           throw inner
         }
-        await client.multi().set(key, JSON.stringify(next), { KEEPTTL: true }).exec()
-        return next
       })
-      return result
     } catch (err) {
-      // node-redis throws WatchError when a WATCHed key changed before EXEC
-      // (the optimistic-lock conflict) — retry with the fresh value. Any
-      // other error propagates.
       if (err instanceof WatchError) continue
       throw err
     }
   }
-  throw new Error(`mutateWines: too much contention on ${key}`)
+  throw new Error(`mutateWines: too much contention on ${k.wines(code)}`)
 }
 
-// Host check by stable identity id. Returns true for the strict host AND
-// for any cohost — both are allowed to do host-equivalent actions like
-// editing wines and settings. Strict-host-only actions (cohost role
-// assignment, session delete, banning a cohost) check via `isStrictHost`.
-export function isHostByIdentity(meta: SessionMeta, identity: Identity | null): boolean {
-  if (!identity) return false
-  if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
-  if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
-  if (meta.coHostIds?.includes(identity.id)) return true
-  return false
-}
-
-// Strict-host check: only the original session host, never a cohost.
-// Used for actions that mutate role/membership semantics — cohost
-// promote/demote, session delete, banning a cohost.
-export function isStrictHost(meta: SessionMeta, identity: Identity | null): boolean {
-  if (!identity) return false
-  if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
-  if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
-  return false
-}
-
-// Check whether a session-scoped identity-id refers to a cohost. Used
-// by ban/kick targeting rules to enforce "cohosts can't ban cohosts."
-export function isCohostId(meta: SessionMeta, identityId: string): boolean {
-  return !!meta.coHostIds?.includes(identityId)
-}
-
-// Provider check by stable identity id. NOT a superset of host/cohost —
-// providers are their own tier with narrowly scoped wine-CRUD powers
-// limited to wines they added themselves (matched via the wine's
-// `addedByIdentityId` field). Note: the provenance anchor
-// `wines.addedByIdentityId` is independent of role grant — a user who
-// added wines as a provider and later got demoted to taster keeps the
-// provenance, but loses edit power until re-promoted.
+// ── Privilege helpers (redis-rehydration § 4.7) ─────────────────────────────
 //
-// Signature mirrors isCohostId — takes an identityId string for use at
-// any call site where the full Identity object isn't on hand.
-export function isProviderById(meta: SessionMeta, identityId: string): boolean {
-  return !!meta.providerIds?.includes(identityId)
+// 🔒 They take an AuthorizedIdentity (lib/sessionGrant.ts), never a raw
+// resolveIdentity() result: for a `u:` caller of a Postgres-backed session the
+// answer comes from `identity.grant` — the COMMITTED record — and the cached
+// role lists in meta are presentation only (a stale cohost/provider entry
+// grants nothing), and a role grants nothing while its holder is kicked or banned
+// (grantStatus must be 'ok' — r2 N1). Without a grant (anonymous caller, Redis-only session) Redis
+// meta is the authority, as before. Inside a contract, pass ctx.caller (fresh
+// grant), never the pre-lock identity.
+
+// Strict host OR cohost — host-equivalent actions (wines, settings, reveals,
+// kick/ban of tasters). Strict-host-only actions use isStrictHost.
+export function isHostByIdentity(meta: SessionMeta, identity: AuthorizedIdentity | null): boolean {
+  if (!identity || identity.denied) return false
+  if (identity.grant) return grantStatus(identity.grant) === 'ok' && (identity.grant.strictHost || identity.grant.role === 'co_host')
+  return isStrictHost(meta, identity) || !!meta.coHostIds?.includes(identity.id)
+}
+
+// The original session host only — cohost role assignment, session delete,
+// banning a cohost.
+export function isStrictHost(meta: SessionMeta, identity: AuthorizedIdentity | null): boolean {
+  if (!identity || identity.denied) return false
+  if (identity.grant) return grantStatus(identity.grant) === 'ok' && identity.grant.strictHost
+  if (meta.hostIdentityId && identity.id === meta.hostIdentityId) return true
+  if (meta.hostUserId && identity.id === userIdentityId(meta.hostUserId)) return true
+  return false
+}
+
+// Provider: its own tier, NOT a superset of host — may add wines and edit/
+// delete only the wines it added. Ownership itself (wines.added_by_identity_id)
+// is checked by the caller, from the record for a `u:` caller with a grant
+// (plan § 2, G2).
+export function isProvider(meta: SessionMeta, identity: AuthorizedIdentity | null): boolean {
+  if (!identity || identity.denied) return false
+  if (identity.grant) return grantStatus(identity.grant) === 'ok' && identity.grant.role === 'provider'
+  return !!meta.providerIds?.includes(identity.id)
+}
+
+// Session-wide "no host identity at all" (§ 4.5): ruling 4 lets cohosts delete a
+// host-less moment. Never a display-name branch.
+export function isHostless(meta: SessionMeta, identity: AuthorizedIdentity | null): boolean {
+  if (identity?.grant) return identity.grant.hostless && !meta.hostIdentityId
+  return !meta.hostIdentityId && !meta.hostUserId
 }
 
 export function sanitizeImage(value: unknown): string {
@@ -528,8 +515,11 @@ export async function addWineToSession(
   let image = body.image === undefined
     ? (existing?.image || '')
     : sanitizeImage(body.image)
+  // 🔒 No S3 delete here (r3 P1): this runs BEFORE the route's contract, which
+  // may still refuse the edit (a provider editing a wine it does not own). The
+  // route reclaims the replaced bytes only after an AUTHORIZED commit, and
+  // reclaims this call's own upload when the write is refused.
   if (existing && body.image === null) {
-    if (existing.imageUrl) reclaimImage(existing.imageUrl)
     imageUrl = ''
     image = ''
   }
@@ -540,13 +530,15 @@ export async function addWineToSession(
   // deleting the previous URL only after the new upload succeeds. This
   // upload-first-then-cleanup ordering is failure-safe: if the new upload
   // throws or returns empty, the old image stays referenced and accessible.
-  if (image && image.startsWith('data:image/')) {
+  // A UNIQUE key per upload — never the live object's key, so an upload whose
+  // write is then refused cannot overwrite the bytes the wine references.
+  // Only an EXPLICIT image input uploads (r5): a metadata-only edit must not
+  // upload inline image data its stale snapshot carries (a failed earlier
+  // upload) and so replace a photo committed meanwhile.
+  if (body.image !== undefined && image && image.startsWith('data:image/')) {
     try {
-      const url = await uploadImage(`wines/${id}`, image)
+      const url = await uploadImage(`wines/${id}_${nanoid(8)}`, image)
       if (url) {
-        if (existing?.imageUrl && existing.imageUrl !== url) {
-          reclaimImage(existing.imageUrl)
-        }
         imageUrl = url
         image = ''
       }
@@ -604,69 +596,80 @@ export async function addWineToSession(
   }
 }
 
-// ── Postgres mirrors of a session (redis-rehydration § 4.4 / § 4.6) ──────────
+// ── Postgres side of a session (redis-rehydration § 4.4 / § 4.6) ─────────────
 //
 // 🔒 Mode is decided by whether the live `sessions` row exists, never by the
-// caller's login state. Every writer below takes the live row's lock inside its
-// own transaction and makes its decision there; both soft-delete paths take the
-// same row FOR UPDATE first, so a mirror either commits before a delete (which
-// then orphans/scrubs what it wrote) or finds no live row and writes nothing.
+// caller's login state — and that decision is made INSIDE the writer's mutation
+// contract (ctx.row, read FOR UPDATE under the advisory lock), so it stays true
+// until COMMIT. Both soft-delete paths take the same locks.
 
-// Today's `pgUpsertSession` contract (returns the live sessions.id), split into
-// its two arms. Touch: the row exists → name-only refresh, as before. Create
-// (promotion — Redis-only → Postgres-backed): only for a logged-in caller's act
-// (the callers decide that), one transaction that inserts the row from
-// sessionMetaToColumns AND copies the session's current lineup (positions) and
-// Redis bans set, read inside the transaction. The create arm holds the
-// session's ban lock so a ban or unban (which hold it too) cannot fall between
-// the bans snapshot and the COMMIT. In release B this becomes ensurePromoted
-// inside the mutation contract (registry + incarnation checks).
-export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<number> {
+// Promotion (Redis-only → Postgres-backed), the create arm of the old
+// pgUpsertSession, now ONE unit of work inside the contract (§ 4.4): under the
+// Redis lock + advisory lock, with the incarnation checked against the caller's
+// meta and the delete registry checked so a stale caller cannot promote what a
+// committed delete removed; the snapshot (meta, lineup, bans, roster) is read
+// INSIDE. Writes the row, the lineup (positions), the bans and a member row for
+// EVERY registered `u:` (G3 — roles from the fresh meta, the one moment Redis is
+// still the authority; kicked-set entries as removed_state 'kicked'; joined
+// counters on insert). Projection: meta rewritten from the record (promotedAt).
+// The trigger stays "a logged-in caller acted" (the callers decide that), and it
+// runs BEFORE the caller's own contract — the locks are not re-entrant.
+// Returns the live sessions.id.
+export async function ensurePromoted(code: string, meta: SessionMeta): Promise<number> {
   const live = await prisma.session.findFirst({ where: { code, deletedAt: null }, select: { id: true } })
-  if (live) {
-    if (meta.name) await prisma.session.updateMany({ where: { id: live.id, deletedAt: null }, data: { name: meta.name } })
-    return live.id
-  }
-  // The ban lock lives 10 s at most; waiting most of that keeps a first
-  // logged-in act on an anonymous session from failing to archive behind a
-  // moderation action in progress.
-  if (!(await acquireBanLockWithin(code, 8000))) throw new Error(`promotion: ban lock busy for ${code}`)
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const existing = await tx.$queryRaw<{ id: number }[]>`
-        SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
-      if (existing[0]) return existing[0].id
-      const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(meta) }, select: { id: true } })
-      await upsertLineup(tx, row.id, await getWines(code))
-      const bans = await redis.sMembers(k.bans(code))
+  if (live) return live.id
+  return withSessionMutation(code, { label: 'promote', redisLock: { waitMs: 8000 }, expectedCreatedAt: meta.createdAt },
+    async (tx, ctx) => {
+      if (ctx.row) return ctx.row.id
+      const fresh = ctx.meta!
+      const dead = await tx.$queryRaw<{ x: number }[]>`
+        SELECT 1 AS x FROM session_tombstones WHERE code = ${code} AND created_at = ${new Date(fresh.createdAt)}`
+      if (dead[0]) throw new ContractGone(code)
+      const winesRaw = await redis.get(k.wines(code))
+      if (winesRaw === null) throw new ContractCold(code)
+      const [bans, identities, kicked] = await Promise.all([
+        redis.sMembers(k.bans(code)), redis.hGetAll(k.identities(code)), redis.sMembers(k.kicked(code)),
+      ])
+      const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(fresh) }, select: { id: true } })
+      // Belt: member rows are only ever for codes with a live row (r1-2).
+      await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${code}`
+      await upsertLineup(tx, row.id, JSON.parse(winesRaw) as WineMeta[])
       if (bans.length > 0) {
         await tx.$executeRaw`
-          INSERT INTO session_bans (session_code, identity_id)
-          SELECT ${code}, unnest(${bans}::text[])
-          ON CONFLICT DO NOTHING`
+          INSERT INTO session_bans (session_code, identity_id) SELECT ${code}, unnest(${bans}::text[]) ON CONFLICT DO NOTHING`
+      }
+      const userIds = (ids: string[]) => ids.filter(id => /^u:\d{1,18}$/.test(id) && !bans.includes(id)).map(id => Number(id.slice(2)))
+      const candidates = [...new Set([...userIds(Object.keys(identities)), ...userIds(kicked)])]
+      const users = candidates.length
+        ? await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ANY(${candidates}::bigint[]) FOR KEY SHARE`
+        : []
+      for (const { id } of users) {
+        const uid = `u:${id}`
+        const role = fresh.hostUserId === Number(id) || fresh.hostIdentityId === uid ? 'host'
+          : fresh.coHostIds?.includes(uid) ? 'co_host'
+          : fresh.providerIds?.includes(uid) ? 'provider'
+          : 'taster'
+        const removed = kicked.includes(uid) && !(uid in identities) ? 'kicked' : null
+        const inserted = await tx.$queryRaw<{ user_id: number }[]>`
+          INSERT INTO session_members (user_id, session_code, role, removed_state) VALUES (${Number(id)}, ${code}, ${role}, ${removed})
+          ON CONFLICT (user_id, session_code) DO NOTHING RETURNING user_id`
+        if (inserted[0]) await tx.$executeRaw`UPDATE users SET lifetime_sessions_joined = lifetime_sessions_joined + 1 WHERE id = ${Number(id)}`
       }
       return row.id
-    })
-  } catch (err) {
-    // A concurrent create that does not hold the ban lock (the create route is
-    // the only one, and it runs before the code is known) — take its row.
-    if ((err as { code?: string })?.code === 'P2002') {
-      const row = await prisma.session.findFirst({ where: { code, deletedAt: null }, select: { id: true } })
-      if (row) return row.id
-    }
-    throw err
-  } finally {
-    await releaseBanLock(code)
-  }
+    },
+    async (ctx) => { await projectMetaFromRecord(ctx.fence!, ctx.meta) })
 }
 
-async function acquireBanLockWithin(code: string, ms: number): Promise<boolean> {
-  const deadline = Date.now() + ms
-  for (;;) {
-    if (await acquireBanLock(code)) return true
-    if (Date.now() >= deadline) return false
-    await new Promise(r => setTimeout(r, 50))
-  }
+// Rewrite a Postgres-backed session's meta FROM THE RECORD (plan § 1.5 / D4) ⊕
+// the cache-only `a:` bits of `cache`, XX KEEPTTL, fenced. Every meta write of a
+// session with a live row goes through here (after COMMIT for grant-direction
+// changes), so a refused or lost projection is repaired by the next one.
+export async function projectMetaFromRecord(fence: Fence, cache: SessionMeta | null, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<SessionMeta | null> {
+  const row = await readLiveRow(db, fence.code)
+  if (!row) return null
+  const meta = metaFromRecord(row, await readRecordRoles(db, fence.code), cache)
+  await fence.exec(m => { m.set(k.meta(fence.code), JSON.stringify(meta), { XX: true, KEEPTTL: true }) })
+  return meta
 }
 
 // Writes the given wines of a session, in array order (position = index), in
@@ -732,105 +735,49 @@ async function upsertLineup(tx: Prisma.TransactionClient, sessionId: number, win
            EXCLUDED.vintage_id, EXCLUDED.position)`
 }
 
-async function lockLiveSession(tx: Prisma.TransactionClient, code: string): Promise<number | null> {
-  const rows = await tx.$queryRaw<{ id: number }[]>`
-    SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
-  return rows[0]?.id ?? null
+// The wine-list mirror, run INSIDE the caller's contract after EVERY wine-list
+// mutation (add, edit, delete, reorder, reveal/hide, ban-wipe) by EVERY caller —
+// anonymous adds included — with `wines` = the array the fenced mutateWines just
+// committed to Redis (content is Redis-first by design, § 3) and `sessionId` =
+// ctx.row.id (null for a Redis-only session: nothing to mirror). Projects the
+// WHOLE array (content + positions renormalized); the advisory lock orders the
+// mirrors, so the last committer projected the newest array. `deletedId` removes
+// that wine's row in the same transaction (the wine DELETE route).
+//
+// Rows of this session the array no longer lists (a wine DELETE whose mirror
+// failed before release B) are positioned AFTER the array, so positions stay
+// unique and all set. They are deliberately not removed (owner ruling: the
+// catalog model change reshapes per-event wines).
+export async function mirrorLineup(tx: Prisma.TransactionClient, sessionId: number | null, wines: WineMeta[], opts: { deletedId?: string } = {}): Promise<void> {
+  if (sessionId === null) return
+  if (opts.deletedId) await tx.$executeRaw`DELETE FROM wines WHERE id = ${opts.deletedId} AND session_id = ${sessionId}`
+  await upsertLineup(tx, sessionId, wines)
+  await tx.$executeRaw`
+    UPDATE wines w SET position = ${wines.length}::int + o.rank - 1
+      FROM (SELECT id, row_number() OVER (ORDER BY position NULLS LAST, created_at, id) AS rank
+              FROM wines WHERE session_id = ${sessionId} AND NOT (id = ANY(${wines.map(x => x.id)}::text[]))) o
+     WHERE w.id = o.id AND w.position IS DISTINCT FROM ${wines.length}::int + o.rank - 1`
 }
 
-// The wine-list mirror, run after EVERY wine-list mutation (add, edit, delete,
-// reorder, reveal/hide, ban-wipe) by EVERY caller — anonymous adds included.
-// Under the live row's lock it re-reads the committed Redis array and projects
-// the WHOLE of it (content + positions renormalized), so: mirrors serialize on
-// the row lock and each projects the newest array as of its own read — the last
-// committer converges Postgres on Redis; a mirror that failed earlier is
-// repaired by the next one; and a session's positions are all set or all NULL.
-// `deletedId` removes that wine's row in the same transaction (the wine DELETE
-// route), so a concurrent mirror cannot re-insert it. Best-effort for content
-// (redis-rehydration § 3): callers log a failure, the next list write repairs.
-// Returns the array it projected, or null for a Redis-only session.
-export async function pgMirrorWineList(code: string, opts: { deletedId?: string } = {}): Promise<WineMeta[] | null> {
-  return prisma.$transaction(async (tx) => {
-    const sessionId = await lockLiveSession(tx, code)
-    if (sessionId === null) return null
-    if (opts.deletedId) await tx.$executeRaw`DELETE FROM wines WHERE id = ${opts.deletedId} AND session_id = ${sessionId}`
-    const wines = await getWines(code)
-    await upsertLineup(tx, sessionId, wines)
-    // Rows of this session that the array no longer lists (a wine DELETE whose
-    // mirror failed) are positioned AFTER the array, so positions stay unique
-    // and all set. They are deliberately NOT removed in release A: until
-    // release B's reject-on-absent rule, mutateWines re-creates an evicted
-    // wines key holding only the new wine, and "remove what the array lacks"
-    // would then detach the session's whole lineup. Their membership repair
-    // ships with that rule (release B).
-    await tx.$executeRaw`
-      UPDATE wines w SET position = ${wines.length}::int + o.rank - 1
-        FROM (SELECT id, row_number() OVER (ORDER BY position NULLS LAST, created_at, id) AS rank
-                FROM wines WHERE session_id = ${sessionId} AND NOT (id = ANY(${wines.map(x => x.id)}::text[]))) o
-       WHERE w.id = o.id AND w.position IS DISTINCT FROM ${wines.length}::int + o.rank - 1`
-    return wines
-  })
-}
-
-// The rate / bookmark FK row: those writers need the wine's row to exist before
-// they insert a rating or bookmark referencing it. It is the list mirror — the
-// wine is written from the array re-read under the lock, never from the
-// caller's earlier snapshot, so a wine deleted meanwhile is not resurrected and
-// a stale copy cannot overwrite a newer mirror. True iff the wine is live.
-export async function pgUpsertWine(sessionCode: string, wine: WineMeta): Promise<boolean> {
-  const wines = await pgMirrorWineList(sessionCode)
-  return !!wines?.some(w => w.id === wine.id)
-}
-
-// True iff a live (non-soft-deleted) Postgres session row exists for this code.
-// The reassign handler gates on this BEFORE any write: v1 reassignment is
-// limited to already-archived sessions (Simon, 2026-07-20). A pure Redis-only
-// anon moment (root CLAUDE.md: anon sessions stay Redis-only) has no PG row, so
-// a reassign there is rejected — NOT force-archived (that would break the anon
-// lifecycle contract) and NOT allowed as a Redis-only ownership change (that
-// would reintroduce the first-archival provenance race when a logged-in user
-// later archives). See docs/dev/proposals/reassign-brought-by.md.
-export async function pgSessionExists(sessionCode: string): Promise<boolean> {
-  const row = await prisma.session.findFirst({
-    where: { code: sessionCode, deletedAt: null },
-    select: { id: true },
-  })
-  return !!row
-}
-
-// Mirror a "Brought by" REASSIGNMENT to Postgres: the lineup is projected first
-// (which inserts the row with the new owner if it was missing — Redis was
-// reassigned before this runs), then provenance is FORCED on the row, because
-// the list mirror freezes it on update. Forcing it here is what makes the
-// reassign's owner the durable last writer whatever order it interleaves with
-// archival writes (a stale-snapshot insert that beat it to the row is
-// corrected; every later mirror freezes the new owner). Runs under the ban lock
-// in the caller, which restores the prior Redis provenance if this throws —
-// docs/dev/proposals/reassign-brought-by.md. Under the live row's lock, and a `u:`
-// target must still have a users row, read with FOR KEY SHARE: account deletion
-// holds that row FOR UPDATE, so a reassign either commits before the deletion
-// (whose in-transaction re-read then rewrites it to the tombstone key) or waits
-// and finds the user gone. Throws on any refusal so the caller's Redis
-// compensation runs and the request 500s.
-export async function pgReassignWineProvenance(sessionCode: string, wine: WineMeta): Promise<void> {
-  await prisma.$transaction(async (tx) => {
-    const sessionId = await lockLiveSession(tx, sessionCode)
-    if (sessionId === null) throw new Error('reassign mirror: session row disappeared')
-    const owner = wine.addedByIdentityId ?? null
-    if (owner?.startsWith('u:')) {
-      const users = await tx.$queryRaw<{ id: number }[]>`
-        SELECT id FROM users WHERE id = ${Number(owner.slice(2))} FOR KEY SHARE`
-      if (!users[0]) throw new Error('reassign mirror: target user is gone')
-    }
-    const wines = await getWines(sessionCode)
-    if (!wines.some(w => w.id === wine.id)) throw new Error('reassign mirror: wine is gone')
-    await upsertLineup(tx, sessionId, wines)
-    // Zero rows = the wine's row is not this session's (orphaned by a ban-wipe
-    // whose Redis cleanup failed, so it is still listed live): the owner change
-    // would not persist — refuse, so the caller compensates instead of a 200.
-    const n = await tx.$executeRaw`
-      UPDATE wines SET added_by_identity_id = ${owner}, added_by_display_name = ${wine.addedByDisplayName ?? null}
-       WHERE id = ${wine.id} AND session_id = ${sessionId}`
-    if (n !== 1) throw new Error('reassign mirror: the wine row is not part of this session')
-  })
+// A "Brought by" REASSIGNMENT, RECORD-FIRST (plan D2): inside the reassign's
+// contract, the lineup is projected from the current array (inserting the row
+// if it was missing), then provenance is FORCED on the row (the list mirror
+// freezes it on update). The Redis provenance is the projection after COMMIT —
+// ownership decides provider edit rights, so the cache must never name an owner
+// the record does not. A `u:` target must still have a users row (FOR KEY
+// SHARE — account deletion holds it FOR UPDATE). Throws on any refusal; nothing
+// commits.
+export async function reassignProvenance(tx: Prisma.TransactionClient, sessionId: number, wines: WineMeta[], wine: WineMeta): Promise<void> {
+  const owner = wine.addedByIdentityId ?? null
+  if (owner?.startsWith('u:')) {
+    const users = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ${Number(owner.slice(2))} FOR KEY SHARE`
+    if (!users[0]) throw new Error('reassign: target user is gone')
+  }
+  await mirrorLineup(tx, sessionId, wines)
+  // Zero rows = the wine's row is not this session's (orphaned by a ban-wipe):
+  // the owner change would not persist — refuse.
+  const n = await tx.$executeRaw`
+    UPDATE wines SET added_by_identity_id = ${owner}, added_by_display_name = ${wine.addedByDisplayName ?? null}
+     WHERE id = ${wine.id} AND session_id = ${sessionId}`
+  if (n !== 1) throw new Error('reassign: the wine row is not part of this session')
 }

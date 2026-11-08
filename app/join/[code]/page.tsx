@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation'
 import { auth } from '@/auth'
 import { JoinClient } from '@/components/session/JoinClient'
 import { RemovedView } from '@/components/session/RemovedView'
-import { redis, k } from '@/lib/redis'
+import { openSession } from '@/lib/sessionRehydrate'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode, formatCode } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
@@ -25,10 +25,17 @@ export default async function JoinPage({
   // Fetch session meta for the welcome screen — only if the code is valid.
   let sessionMeta: { host: string; name: string } | null = null
   if (C) {
-    try {
-      const raw = await redis.get(k.meta(C))
-      if (raw) sessionMeta = JSON.parse(raw)
-    } catch {}
+    // Opened like every session route (redis-rehydration § 5.3): a cold
+    // Postgres-backed moment is rebuilt here. 'restoring' gets one short retry,
+    // then the error page — never "not found" for a live moment (JoinClient
+    // renders a missing meta as an ended session).
+    let opened = await openSession(C)
+    if (opened.status === 'restoring') {
+      await new Promise(r => setTimeout(r, 300))
+      opened = await openSession(C)
+    }
+    if (opened.status === 'restoring') throw new Error('This moment is being restored — try again in a moment.')
+    if (opened.status === 'live') sessionMeta = opened.meta
   }
 
   // Removed-bounce path. The session-fetch helper redirects here with

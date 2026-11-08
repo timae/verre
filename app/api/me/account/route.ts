@@ -110,14 +110,16 @@ export async function PATCH(req: NextRequest) {
   // failure must not fail the rename itself.
   if (updates.name !== undefined) {
     const newName = updates.name as string
-    try { await propagateDisplayNameToSessions(userId, newName) }
-    catch (e) { console.error('rename propagation failed:', e) }
+    // host_name first: the propagation rewrites a Postgres-backed session's
+    // meta from the record (redis-rehydration D4).
     try {
       await prisma.session.updateMany({
         where: { hostUserId: userId, deletedAt: null },
         data: { hostName: newName },
       })
     } catch (e) { console.error('rename host_name mirror failed:', e) }
+    try { await propagateDisplayNameToSessions(userId, newName) }
+    catch (e) { console.error('rename propagation failed:', e) }
   }
 
   // After a password change, revoke every OTHER device's session so a stolen

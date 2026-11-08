@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup, pgMirrorWineList } from '@/lib/session'
+import { isHostByIdentity, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
+import { openAsParticipant, hostLineupWrite } from '@/lib/sessionRoute'
 import { isSameOrigin } from '@/lib/csrf'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
@@ -15,12 +15,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const pp = await participantOrBanned(c, req, session)
-  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
-  if (pp.status === 'invalid') return authInvalid()
-  const identity = pp.identity
+  const op = await openAsParticipant(c, req, session)
+  if (op instanceof NextResponse) return op
+  const { meta, identity } = op
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can reorder wines' }, { status: 403 })
   }
@@ -31,7 +28,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // checks (length + id-set match) run inside the transform against the
   // watched value — a wine added/removed by a concurrent request would
   // otherwise pass a stale check and then clobber that change.
-  const out = await mutateWines(c, (wines) => {
+  const out = await hostLineupWrite(c, identity, { label: 'reorder', forbidden: 'only the host can reorder wines', rejectStatus: 400 }, (wines) => {
     if (orderedIds.length !== wines.length) return { reject: 'orderedIds length mismatch' }
     const byId = new Map(wines.map(w => [w.id, w]))
     if (orderedIds.some(id => !byId.has(id)) || new Set(orderedIds).size !== wines.length) {
@@ -39,11 +36,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     }
     return orderedIds.map(id => byId.get(id)!)
   })
-  if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 400 })
+  if (out instanceof NextResponse) return out
   await touchWithMeta(c)
-  // Positions are renormalized from the committed array (redis-rehydration § 4.6).
-  try { await pgMirrorWineList(c) }
-  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
   // Same wire shape as the wines GET — strip `addedByIdentityId` and
   // synthesize `isMine`. Without this, the reorder response would leak
   // provenance the GET pipeline carefully keeps server-internal.

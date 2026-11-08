@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, hasKey } from '@/lib/redis'
+import { hasKey } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
-import { resolveIdentity } from '@/lib/identity'
+import { resolveIdentity, participantOrBanned } from '@/lib/identity'
+import { openSession } from '@/lib/sessionRehydrate'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -30,8 +31,10 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ state: 'none' }, { headers: noStore })
-  if (!(await redis.exists(k.meta(c)))) {
-    return NextResponse.json({ state: 'none' }, { headers: noStore })
+  const opened = await openSession(c)
+  if (opened.status === 'absent') return NextResponse.json({ state: 'none' }, { headers: noStore })
+  if (opened.status !== 'live') {
+    return NextResponse.json({ error: 'session is being restored' }, { status: 503, headers: { ...noStore, 'Retry-After': '1' } })
   }
   const session = await resolveUser(req)
   const identity = await resolveIdentity(c, req, session)
@@ -45,19 +48,18 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     )
   }
 
-  if (await redis.sIsMember(k.bans(c), identity.id)) {
+  // The same admission as every session route: the record decides for a `u:`
+  // caller of a Postgres-backed session (re-seeding a missing Redis entry), the
+  // Redis sets for everyone else.
+  const p = await participantOrBanned(c, req, session, opened.meta)
+  if (p.status === 'banned') {
     return NextResponse.json({ state: 'banned', identityId: identity.id }, { headers: noStore })
   }
-  if (await redis.sIsMember(k.kicked(c), identity.id)) {
-    // Did they have any ratings to keep/delete? Surface as a hint so
-    // the bounce can skip the prompt when there's nothing actionable.
-    // hasKey uses SCAN under the hood — non-blocking, stops on first
-    // match.
-    const hasRatings = await hasKey(`s:${c}:r:${identity.id}:*`)
-    return NextResponse.json(
-      { state: 'kicked', identityId: identity.id, hasRatings },
-      { headers: noStore },
-    )
+  if (p.status === 'kicked') {
+    // Did they have any ratings to keep/delete? Surface as a hint so the
+    // bounce can skip the prompt when there's nothing actionable.
+    const hasRatings = !!p.identity.grant?.author || await hasKey(`s:${c}:r:${identity.id}:*`)
+    return NextResponse.json({ state: 'kicked', identityId: identity.id, hasRatings }, { headers: noStore })
   }
   return NextResponse.json({ state: 'none' }, { headers: noStore })
 }

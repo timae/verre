@@ -1,17 +1,6 @@
 # Live-moment recovery: Postgres as the record, Redis as the cache
 
-**Status:** PROPOSAL, revision 8 — **design review closed** (2026-11-08). Eight Codex
-rounds (`.local/redis-rehydration-codex-review.md`, `…-round-2.md` … `…-round-8.md`).
-Round 4 consolidated what remained into three contracts; round 5 closed B3 and replaced a
-false cross-store-atomicity claim with the rule that the record grants and the cache only
-denies; round 6 closed that and moved the CHECK to release B; round 7 closed R6-2 and
-left two edits inside § 6's account-deletion transaction; round 8 confirmed both closed
-with no new findings: *"ready for release A implementation … the next substantial reviews
-should assess the implementation, migrations and integration results at the release
-boundaries."* Rulings from the owner are marked **RULED**. Nothing is built. **Next:
-release A (§ 10).** The implementation must keep two distinctions the review kept finding
-violated: tentative plans made outside a lock never decide anything, and no durable write
-commits outside the transaction that owns it.
+**Status:** releases A and B BUILT (A merged as PR #101; B on `feature/redis-rehydration-b`, 2026-11-08 — plan `.local/redis-rehydration-release-b-plan.md`, Codex-converged in six rounds; owner rulings Q1–Q5 there). Release C (the operator script, § 7) pending. Design review closed at revision 8 after eight Codex rounds (`.local/redis-rehydration-codex-review.md`, `…-round-2.md` … `…-round-8.md`). Rulings from the owner are marked **RULED**. Where the as-built release B deviates from the text below — deny-first cache writes before COMMIT (D1, incl. tightened visibility flags), record-first reassign (D2), meta of a Postgres-backed session always written from the record (D4), the publication generation `s:{C}:gen`, a contract retrying once after a rebuild when it finds the cache cold, the feed reveal by record dates (Q5) — the build log and `lib/CLAUDE.md` are the record. The implementation keeps two distinctions the review kept finding violated: tentative plans made outside a lock never decide anything, and no durable write commits outside the transaction that owns it.
 
 Supersedes the 2026-11-06 rough idea. The next project after `dependency-upgrades.md`.
 

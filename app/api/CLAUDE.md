@@ -15,11 +15,13 @@ export async function POST(req: NextRequest) {
 
 ## Authorization patterns
 
-- **Session reads** (`GET /api/session/:code`, `/wines`, `/ratings`, `/state`) require participant: `requireParticipant()` rejects with 401 + `X-Vr-Auth: invalid` if the caller isn't a registered participant in this session's identities map.
+- **Session routes open the session first**: `openSession(code)` (`lib/sessionRehydrate.ts`, or `openAsParticipant` in `lib/sessionRoute.ts`) as the first call after `normalizeCode` — a cold Postgres-backed moment is rebuilt; `'absent'` → 404, `'restoring'` → **503 + `Retry-After: 1`, never 404** for a live row. Lineup reads after that go through `loadLiveWines` (absent-aware), never a `[]` stand-in. Exceptions: `carousel-hidden`, bookmark DELETE (user-scoped), `/api/me/sessions` + feed enrichment (lists never rebuild).
+- **Session reads** (`GET /api/session/:code`, `/wines`, `/ratings`, `/state`) require participant: `participantOrBanned()` — for a `u:` caller of a Postgres-backed session the RECORD admits (member, rating author, strict host; minus kicked/banned; a Redis ban denies first), a missing roster entry is healed; 401 + `X-Vr-Auth: invalid` when not admitted, `removed` when banned/kicked, 503 on `'unavailable'`.
 - **Session read bodies are built ONLY by the `lib/sessionState.ts` builders** (`buildMetaView` / `buildWinesView` / `buildRatingsView`), shared by the three standalone GETs and the aggregate `GET /:code/state`. Never re-derive the per-viewer transforms (block-pair arrays, avatar tier gate, blind/hideLineup redaction) in a route body — a drifted copy silently leaks (a blind wine identity, a block pair). `/state` degrades per-section: a failed builder returns `null` for that section, all-three-failed → 500.
 - **Session existence is checked first**; nonexistent/deleted sessions return 404 (no auth header) so the client can distinguish "session is gone, go home" from "your token is bad, retry join."
-- **Host actions** (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)`, which matches `meta.hostIdentityId` first, then `meta.hostUserId` (logged-in fallback), then any entry in `meta.coHostIds`. Pure id-based; no display-name fallback.
-- **Strict-host actions** (cohost role assignment, session delete) bypass the cohost check — only the actual session host can perform them.
+- **Host actions** (wine CRUD, settings, reveal/hide, name) check `isHostByIdentity(meta, identity)` with an **`AuthorizedIdentity`** (`lib/sessionGrant.ts` — the helpers refuse a raw `resolveIdentity` result at compile time): from `identity.grant` (strict host or `co_host` in the RECORD) when present, else from meta (`hostIdentityId` / `hostUserId` / `coHostIds` — anonymous callers, Redis-only sessions). Pure id-based; no display-name fallback. Routes that a removed caller may reach (bans list/preview, removed-state, leave) use `resolveAuthorized` (same grant, no participant gate).
+- **Strict-host actions** (cohost role assignment, session delete, removing a cohost) use `isStrictHost`. Session delete additionally lets a cohost delete a moment with no host identity at all (`isHostless`, § 4.5).
+- 🔒 **Every write runs inside the session mutation contract** (`lib/CLAUDE.md`): the pre-lock checks above are only early rejects; the real decision is re-made under the locks from `ctx.caller` (fresh grant) and the target's fresh record state. Map failures with `contractFailure()`: busy → 503 + Retry-After (set-role, reassign, wine DELETE keep their 429; bans, unban, leave their 409).
 
 ## Header conventions
 
@@ -43,12 +45,12 @@ Any response whose body varies by viewer — block-pair-scrubbed counts, gate st
 
 The vocabulary glossary lives in root CLAUDE.md. Implementation:
 
-- **strict host** — match `meta.hostIdentityId === identity.id`. Reserved for cohost role assignment (any transition touching `co_host`), session deletion, and banning a cohost.
-- **host** — `isHostByIdentity(meta, identity)`: strict host OR `identity.id ∈ meta.coHostIds`.
-- **provider** — `isProviderById(meta, identity)`: `identity.id ∈ meta.providerIds`.
-- **participant** — `requireParticipant`: registered in the session's identities map. Implementation in `lib/identity.ts`.
+- **strict host** — `isStrictHost(meta, identity)`: the grant's `strictHost` (`sessions.host_user_id`), else `meta.hostIdentityId`/`hostUserId`. Reserved for cohost role assignment (any transition touching `co_host`), session deletion, and banning a cohost.
+- **host** — `isHostByIdentity(meta, identity)`: strict host OR cohost (the grant's role, else `meta.coHostIds`).
+- **provider** — `isProvider(meta, identity)`: the grant's role `provider`, else `identity.id ∈ meta.providerIds`; own-wine ownership is read from the record for a `u:` caller.
+- **participant** — `requireParticipant` / `participantOrBanned`: admitted by the record for a `u:` caller of a Postgres-backed session, else registered in the identities map. Implementation in `lib/identity.ts`.
 
-For removed-bounce-aware endpoints, use `participantOrBanned(code, identity)` which returns `'ok' | 'banned' | 'kicked' | 'invalid'` and let `authRemoved()` build the response.
+For removed-bounce-aware endpoints, use `participantOrBanned(code, req, session)` which returns `'ok' | 'banned' | 'kicked' | 'invalid' | 'unavailable'` (→ `authUnavailable()`, 503) and let `authRemoved()` build the response.
 
 ## Anon per-session rename
 

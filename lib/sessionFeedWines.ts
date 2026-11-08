@@ -14,8 +14,7 @@
 // host's profile / feed shows their own session post un-redacted.
 
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber } from '@verre/core'
-import { existsKey, k } from '@/lib/redis'
+import { decimalToNumber, momentIsOver } from '@verre/core'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 // Input record per session feed_item. `blind`, `hostUserId`, and
@@ -30,18 +29,16 @@ import type { SessionFeedWine } from '@/lib/feedTypes'
 // "treat scrubbed-blind as blind" over-redacts non-blind sessions
 // forever because non-blind wines never have `revealedAt` set.)
 //
-// `expired: true` mirrors the `deleted` short-circuit for blind
-// sessions whose Redis lifespan (48h/72h/1w/unlimited) ran out before
-// the host revealed. Once the session's Redis state is gone there is
-// no live URL to reveal in and no off-session reveal API — leaving
-// the post permanently redacted as "Wine N" with no recovery path.
-// Treating expired-blind as auto-reveal is the safer default (a host
-// who let their session expire has effectively authorised reveal,
-// same as one who deleted it). Detection uses `detectExpiredCodes`
-// below — `EXISTS` on both `s:CODE:meta` AND `s:CODE:wines` so a
-// single-key LRU eviction (where `meta` is gone but `wines` survives)
-// won't falsely trigger reveal on a still-live session. See
-// docs/dev/proposals/rewire.md "Auto-reveal for blind sessions".
+// `expired: true` mirrors the `deleted` short-circuit for blind sessions that
+// are OVER BY THEIR RECORD DATES before the host revealed (owner ruling Q5 (b),
+// 2026-11-08): over ⇔ now > date_to, else date_from + 48 h (a legacy row with
+// neither: created_at + 48 h) — see `sessionIsOver`. Never "the cache is
+// gone": after redis-rehydration release B a live durable moment can drop out
+// of Redis mid-tasting (flush, eviction) and is rebuilt on its next open, so
+// cache absence would reveal a lineup before the moment is over. A host who let
+// a blind moment end unrevealed has effectively authorised the reveal, the same
+// as one who deleted it. Not "+ lifespan": app moments are `unlimited`, which
+// would mean a year. The GUI says this rule wherever blind tasting is set up.
 export type SessionFeedPair = {
   authorId: number
   sessionId: number
@@ -61,24 +58,9 @@ export function pairKey(authorId: number, sessionId: number): string {
   return `${authorId}:${sessionId}`
 }
 
-// Detect which of the given session codes have expired (Redis lifespan
-// ran out). Returns a Set of codes whose `s:CODE:meta` AND `s:CODE:wines`
-// keys are both gone — the two-key gate defends against an LRU policy
-// that could evict `meta` alone on a still-live session and force a
-// premature reveal. Caller passes only LIVE codes (deletedAt IS NULL,
-// non-null code); tombstoned sessions short-circuit via `deleted` and
-// don't need this check.
-export async function detectExpiredCodes(codes: string[]): Promise<Set<string>> {
-  const out = new Set<string>()
-  if (codes.length === 0) return out
-  const unique = [...new Set(codes)]
-  const results = await Promise.all(unique.map(async c => {
-    const [meta, wines] = await Promise.all([existsKey(k.meta(c)), existsKey(k.wines(c))])
-    return { code: c, alive: meta || wines }
-  }))
-  for (const r of results) if (!r.alive) out.add(r.code)
-  return out
-}
+// The Q5 end rule (see SessionFeedPair `expired`), defined once in @verre/core
+// beside the setup copy that states it. PG-only, rebuild-free.
+export const sessionIsOver = momentIsOver
 
 export async function loadSessionFeedWines(
   pairs: SessionFeedPair[],

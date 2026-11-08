@@ -8,7 +8,7 @@ import { useDashboardSections } from './DashboardSettings'
 import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
 import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCode, formatCodeInput } from '@verre/core'
+import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
 
@@ -173,6 +173,7 @@ export function MeDashboard({ user }: { user: User }) {
                 {!isPro && <span style={{fontSize:9,background:'var(--bg3)',border:'1px solid var(--border2)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--fg-dim)'}}>pro</span>}
               </div>
               <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only — you reveal after</div>
+              {blind && <div style={{fontSize:10,color:'var(--fg-dim)',opacity:0.8,marginTop:4,maxWidth:280}}>{BLIND_FEED_REVEAL_NOTE}</div>}
             </div>
             <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>
               <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: blind ? 18 : 2,transition:'left .2s'}} />

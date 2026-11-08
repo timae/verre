@@ -1,0 +1,13 @@
+{
+  "_readme": "CHECK constraints on the session-record tables, as pg_get_constraintdef prints them. Diffed by scripts/check-session-record-checks.mjs in check-schema.yml. Regenerate with --write only for a deliberate change.",
+  "tables": [
+    "ratings",
+    "sessions",
+    "session_members",
+    "session_bans",
+    "session_tombstones"
+  ],
+  "checks": {
+    "ratings.ratings_session_rater_known": "CHECK (((session_id IS NULL) OR (user_id IS NOT NULL) OR (tombstone_key IS NOT NULL)))"
+  }
+}

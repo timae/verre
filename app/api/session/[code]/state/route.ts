@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k } from '@/lib/redis'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
-import { type SessionMeta } from '@/lib/session'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
+import { openSession, unavailable } from '@/lib/sessionRehydrate'
 import { normalizeCode } from '@verre/core'
 import {
   buildMetaView,
@@ -32,24 +32,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
 
-  // Session-existence check before participant check. 404 on a deleted /
-  // never-existed session lets the client distinguish "go home" from "your
-  // token is bad, retry join" (401 + x-vr-auth: invalid).
-  const raw = await redis.get(k.meta(c))
-  if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  // Session opened first (redis-rehydration § 5.3): a cold Postgres-backed
+  // moment is rebuilt here; 404 only when it is really gone (the client then
+  // goes home), 503 + Retry-After while restoring — never a 404 for a live row.
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
+  const { meta, wines } = opened
 
   const session = await resolveUser(req)
-  const p = await participantOrBanned(c, req, session)
+  const p = await participantOrBanned(c, req, session, opened.meta)
+  if (p.status === 'unavailable') return authUnavailable()
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
   if (p.status === 'invalid') return authInvalid('not a participant')
   const caller = p.identity
 
-  const meta = JSON.parse(raw) as SessionMeta
   const identities = await redis.hGetAll(k.identities(c))
 
   const [metaR, winesR, ratingsR] = await Promise.allSettled([
     buildMetaView(c, meta, caller, viewerUserIdFrom(session), identities),
-    buildWinesView(c, meta, caller, identities),
+    buildWinesView(c, meta, caller, identities, wines),
     buildRatingsView(c, identities),
   ])
   for (const [name, r] of [['meta', metaR], ['wines', winesR], ['ratings', ratingsR]] as const) {

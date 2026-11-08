@@ -1,15 +1,16 @@
 import { redis, k, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import type { Session } from 'next-auth'
-import type { Identity } from '@/lib/identity'
+import type { AuthorizedIdentity } from '@/lib/sessionGrant'
 import {
   type SessionMeta,
+  type WineMeta,
   type WireWine,
   isHostByIdentity,
-  getWines,
   wineToWire,
   buildKickedUserNameLookup,
 } from '@/lib/session'
+import { ensureSessionLive, ratingsLost } from '@/lib/sessionRehydrate'
 import { redactWine } from '@/lib/wineRedaction'
 import { blockPairIds } from '@/lib/userBlock'
 import {
@@ -27,8 +28,8 @@ import {
 // call sites. See docs/dev/proposals/mobile-app/02-realtime.md §2.
 //
 // Builders assume the caller already ran the route preamble: code normalized,
-// session existence checked (404), participantOrBanned resolved (removed /
-// invalid handling). `identities` is the session's identities map, fetched
+// the session opened (openSession — 404 only when absent, 503 while
+// restoring), participantOrBanned resolved (removed / invalid handling). `identities` is the session's identities map, fetched
 // once by the caller (`redis.hGetAll(k.identities(c))`) and shared across
 // builders.
 //
@@ -60,7 +61,7 @@ export function viewerUserIdFrom(session: Session | null): number | null {
 export async function buildMetaView(
   c: string,
   meta: SessionMeta,
-  caller: Identity,
+  caller: AuthorizedIdentity,
   viewerUserId: number | null,
   identities: Record<string, string>,
 ): Promise<SessionMetaView> {
@@ -183,13 +184,15 @@ export async function buildMetaView(
   }
 }
 
+// `wines` is the lineup the route loaded absent-aware (openSession /
+// loadLiveWines) — never a `[]` standing in for an evicted key.
 export async function buildWinesView(
   c: string,
   meta: SessionMeta,
-  identity: Identity,
+  identity: AuthorizedIdentity,
   identities: Record<string, string>,
+  wines: WineMeta[],
 ): Promise<WireWine[]> {
-  const wines = await getWines(c)
   const isUserHost = isHostByIdentity(meta, identity)
 
   // Lineup hidden until X minutes before start
@@ -220,6 +223,14 @@ export async function buildWinesView(
   //     hosts — the helper itself decides per-wine whether to short-circuit
   //     on `revealed`).
   if (meta.blind && (!isUserHost || meta.blindForEveryone)) {
+    // 🔒 The own-wine bypass is a privilege: for a `u:` caller with a grant,
+    // ownership comes from the RECORD (wines.added_by_identity_id), never the
+    // cached provenance — a refused reassign projection would otherwise leave
+    // the former owner seeing the wine un-redacted (plan § 2, r1-5).
+    const owned = identity.grant
+      ? new Set((await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM wines WHERE session_id = ${identity.grant.sessionId} AND added_by_identity_id = ${identity.id}`).map(r => r.id))
+      : null
     // Per-wine redaction: see lib/wineRedaction.ts for the full rule.
     // Pre-feature wines have NULL `addedByIdentityId` and never match the
     // provider exception — they redact like any other wine the caller
@@ -228,7 +239,7 @@ export async function buildWinesView(
       const redacted = redactWine(w, {
         revealed: !!w.revealedAt,
         isHost: isUserHost,
-        ownsWine: !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
+        ownsWine: owned ? owned.has(w.id) : !!w.addedByIdentityId && w.addedByIdentityId === identity.id,
         index: i,
         blindForEveryone: !!meta.blindForEveryone,
       })
@@ -251,13 +262,24 @@ export async function buildWinesView(
 //
 // Live ratings come straight from Redis as already-numeric JSON — the
 // Decimal→string coercion trap lives on the Postgres-backed read paths only.
+//
+// Ratings-scan trigger (redis-rehydration § 5.1, ruling 5 — single-key
+// eviction): an empty SCAN for a Postgres-backed session that has committed
+// ratings means the rating keys were lost — a reconciling `force` rebuild, then
+// one rescan (with the identities map it reconciled).
 export async function buildRatingsView(
   c: string,
   identities: Record<string, string>,
 ): Promise<RatingsView> {
   const prefix = `s:${c}:r:`
-  const keys = await scanKeys(`${prefix}*`)
+  let keys = await scanKeys(`${prefix}*`)
   const result: RatingsView = {}
+  if (keys.length === 0 && await ratingsLost(c)) {
+    if ((await ensureSessionLive(c, { force: true })) === 'live') {
+      keys = await scanKeys(`${prefix}*`)
+      identities = await redis.hGetAll(k.identities(c))
+    }
+  }
   if (keys.length === 0) return result
   const values = await redis.mGet(keys)
 

@@ -2,10 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveIdentity, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
-import { getSessionMeta, isHostByIdentity, isStrictHost, isCohostId } from '@/lib/session'
-import { listBans, acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
+import { resolveAuthorized, authUnavailable, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
+import { isHostByIdentity, isStrictHost } from '@/lib/session'
+import { listBans } from '@/lib/sessionBan'
 import { sessionWipe } from '@/lib/sessionWipe'
+import { refuse } from '@/lib/sessionMutation'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -21,12 +23,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const identity = await resolveIdentity(c, req, session)
+  const identity = await resolveAuthorized(c, req, session, opened.meta)
+  if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
-  if (!isHostByIdentity(meta, identity)) {
+  if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
   const bans = await listBans(c)
@@ -45,12 +48,14 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const identity = await resolveIdentity(c, req, session)
+  const identity = await resolveAuthorized(c, req, session, opened.meta)
+  if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
-  if (!isHostByIdentity(meta, identity)) {
+  // Early reject only — every gating decision is re-made under the locks.
+  if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
 
@@ -66,9 +71,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // client could accumulate junk in the bans Set or burn a Postgres txn
   // on a no-op wipe.
   // A `d:` tombstone (a deleted account's ratings, redis-rehydration § 4.3)
-  // cannot rejoin, so ban and kick-keep are meaningless for it — same 400 as a
-  // malformed id. It is a target for kick-delete only (lib/sessionWipe.ts).
-  if (!isValidIdentityId(identityId) || isTombstoneIdentityId(identityId)) {
+  // cannot rejoin, so ban and kick-keep are meaningless for it: `mode: 'kick'`
+  // on a d: runs kick-DELETE (G4 — its ratings by tombstone_key go, wine
+  // provenance stays), `mode: 'ban'` is the same 400 as a malformed id.
+  if (!isValidIdentityId(identityId) || (isTombstoneIdentityId(identityId) && mode === 'ban')) {
     return NextResponse.json({ error: 'invalid identityId' }, { status: 400, headers: noStore })
   }
   if (mode !== 'kick' && mode !== 'ban') {
@@ -76,15 +82,6 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
   if (identityId === identity.id) {
     return NextResponse.json({ error: 'cannot remove yourself' }, { status: 400, headers: noStore })
-  }
-  // Targeting the strict host is never allowed.
-  if (isStrictHost(meta, { id: identityId, displayName: '', kind: 'user' })) {
-    return NextResponse.json({ error: 'cannot remove the host' }, { status: 400, headers: noStore })
-  }
-  // Targeting a cohost requires strict-host. Cohosts can only ban
-  // regular tasters.
-  if (isCohostId(meta, identityId) && !isStrictHost(meta, identity)) {
-    return NextResponse.json({ error: 'only the host can remove a co-host' }, { status: 403, headers: noStore })
   }
 
   // Rate limit AFTER permission gates: validated cohost actions still
@@ -97,23 +94,27 @@ export async function POST(req: NextRequest, { params }: Ctx) {
     )
   }
 
-  // Hold the per-session ban lock during the wipe so the wines JSON
-  // write-back doesn't race a concurrent host action.
-  if (!(await acquireBanLock(c))) {
-    return NextResponse.json({ error: 'another moderation action is in progress' }, { status: 409, headers: noStore })
-  }
+  // The whole wipe runs inside the session mutation contract; the caller's
+  // power and the target's role/host status are decided there, fresh (§ 4.7):
+  // the host can never be targeted; removing a cohost requires the strict host.
   try {
     await sessionWipe({
       code: c,
       identityId,
-      scope: mode === 'kick' ? 'kick-keep' : 'ban',
-      // Host's wine-delete toggle applies to both kick and ban — the
-      // wines belong to the session, not the participant, so it's the
-      // host's call regardless of mode.
+      scope: isTombstoneIdentityId(identityId) ? 'kick-delete' : mode === 'kick' ? 'kick-keep' : 'ban',
+      // Host's wine-delete toggle applies to both kick and ban — the wines
+      // belong to the session, not the participant.
       deleteAddedWines: deleteAddedWines === true,
+      caller: identity,
+      label: 'ban',
+      authorize: (ctx, target) => {
+        if (ctx.callerStatus !== 'ok' || !isHostByIdentity(ctx.meta!, ctx.caller)) throw refuse(403, 'forbidden')
+        if (target.strictHost) throw refuse(400, 'cannot remove the host')
+        if (target.cohost && !isStrictHost(ctx.meta!, ctx.caller)) throw refuse(403, 'only the host can remove a co-host')
+      },
     })
-  } finally {
-    await releaseBanLock(c)
+  } catch (err) {
+    return contractFailure(err, c, { busy: 409, label: 'ban' })
   }
 
   return NextResponse.json({ ok: true }, { headers: noStore })

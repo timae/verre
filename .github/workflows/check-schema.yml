@@ -100,6 +100,14 @@ jobs:
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
 
+      # The session record's CHECK predicates (redis-rehydration § 4.3:
+      # `ratings_session_rater_known` — account deletion is structured around
+      # it). Same blind spot as above, same remedy: a committed snapshot.
+      - name: Session-record CHECK constraints
+        run: node scripts/check-session-record-checks.mjs
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+
       # Needs `psql` on PATH: § 18 executes the prisma/CLAUDE.md bootstrap recipes
       # VERBATIM (they are documented as psql scripts with BEGIN;/COMMIT;, which
       # Prisma's executeRaw cannot accept). ubuntu-latest ships psql, and the
@@ -178,7 +186,8 @@ jobs:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/tz_test
 
       # Redis rehydration release A (docs/dev/proposals/redis-rehydration.md
-      # § 9 "additive release"): mirrors, the mirror token, tombstones, the
+      # § 9 "additive release", kept green on release B's tree — its mechanism
+      # assertions were moved to B's): mirrors, the mirror token, tombstones, the
       # one-transaction account deletion incl. worker-kill and Redis-unreachable
       # schedules, the old-writer compatibility case and the delete registry.
       # Real route handlers + lib against this Postgres + the throwaway Redis.
@@ -190,9 +199,23 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
 
+      # Release B ("cutover", redis-rehydration § 9 + the release-B plan § 12):
+      # the rebuild round trip, record-grants / cache-denies, NX/XX, the B1/B2
+      # schedules (pause hooks + "assert B blocked"), deletion races and worker
+      # kills, fencing, the publication generation vs zombie rebuilds, eviction
+      # belts, the D1 blind crash, code recycling and the CHECK + B's migration
+      # body. Runs on the same database after the additive suite.
+      - name: Redis rehydration — release B (cutover)
+        run: npx tsx scripts/tests/redis-rehydration-cutover.mts
+        timeout-minutes: 15
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
+
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
-      # writers (pgUpsertWine / pgReassignWineProvenance) and addWineToSession.
+      # writers (mirrorLineup / reassignProvenance) and addWineToSession.
       # Importing that module connects to Redis eagerly, so the suite needs one.
       # An earlier version of the suite worked around its absence by reading the
       # writers' SOURCE for the expected field names — which review showed was

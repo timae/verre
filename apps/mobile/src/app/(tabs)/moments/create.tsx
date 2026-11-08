@@ -1,4 +1,5 @@
 import { useRouter } from 'expo-router';
+import { BLIND_FEED_REVEAL_NOTE } from '@verre/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Keyboard, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
@@ -281,6 +282,7 @@ export default function CreateMoment() {
           title="Blind Tasting"
           proBadge
           subtitle="Hide what you're tasting until it's revealed"
+          note={blind ? BLIND_FEED_REVEAL_NOTE : undefined}
           value={blind}
           onChange={setBlind}
           disabled={!pro}

@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
-import { prisma } from '@/lib/prisma'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
-import { type SessionMeta } from '@/lib/session'
-import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
+import { type SessionMeta, isHostByIdentity, isStrictHost, isHostless } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { TOMBSTONE_NAME } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
 import { buildMetaView, viewerUserIdFrom } from '@/lib/sessionState'
+import { withSessionMutation, refuse } from '@/lib/sessionMutation'
+import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 
 // Inlined S3 reclaim — same pattern as app/api/checkins/[id]/route.ts and
 // lib/session.ts. Adding a third named export to lib/s3.ts trips a Next 15.5 /
@@ -44,11 +44,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const raw = await redis.get(k.meta(c))
-  if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
 
   const session = await resolveUser(req)
-  const p = await participantOrBanned(c, req, session)
+  const p = await participantOrBanned(c, req, session, opened.meta)
+  if (p.status === 'unavailable') return authUnavailable()
   if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
   if (p.status === 'invalid') return authInvalid('not a participant')
   const caller = p.identity
@@ -60,9 +61,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   // SECURITY: viewerBlocksOut/In carry the viewer's block-pair list. They
   // MUST NOT be logged or mirrored anywhere shared; the Cache-Control header
   // below forces private no-store on the whole response for this reason.
-  const meta = JSON.parse(raw) as SessionMeta
   const identities = await redis.hGetAll(k.identities(c))
-  const body = await buildMetaView(c, meta, caller, viewerUserIdFrom(session), identities)
+  const body = await buildMetaView(c, opened.meta, caller, viewerUserIdFrom(session), identities)
   return NextResponse.json(body, { headers: { 'Cache-Control': 'private, no-store' } })
 }
 
@@ -76,157 +76,107 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { targetId: targetIdFromBody, action, role: roleFromBody } = body as Record<string, unknown>
 
-  // Banned/kicked callers get the `removed` bounce header (same as the
-  // polled GETs and wine routes) so their client reroutes to
-  // /join/<C>?removed=1 instead of seeing a bare 403.
-  const pp = await participantOrBanned(c, req, session)
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
+  // Banned/kicked callers get the `removed` bounce header (same as the polled
+  // GETs and wine routes) so their client reroutes to /join/<C>?removed=1.
+  const pp = await participantOrBanned(c, req, session, opened.meta)
+  if (pp.status === 'unavailable') return authUnavailable()
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
-  const callerIdentity = pp.identity
 
-  // Serialize meta read-modify-write against concurrent role mutations
-  // and kick/ban operations (which also mutate coHostIds/providerIds via
-  // sessionWipe). Without the lock two strict-host calls could each read
-  // the same starting meta, derive divergent coHostIds/providerIds sets,
-  // and the later write would silently clobber the earlier.
-  if (!(await acquireBanLock(c))) {
-    return NextResponse.json(
-      { error: 'busy, try again' },
-      { status: 429, headers: { 'Cache-Control': 'private, no-store', 'Retry-After': '1' } },
-    )
-  }
+  // set-role runs inside the session mutation contract (redis-rehydration § 4.7):
+  // the caller's power comes from its FRESH grant and the target's current role
+  // and host status are read fresh under the locks — cached arrays never decide.
+  // RECORD-FIRST for a `u:` target of a Postgres-backed session: the member row
+  // is the role, committed first; the meta rewrite from the record is the
+  // projection (a refused one only lags presentation — the cache never grants).
+  // For an anonymous target, or in a Redis-only session, meta IS the authority:
+  // the fenced write inside the transaction is the change.
   try {
-    const raw = await redis.get(k.meta(c))
-    if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
-    const meta = JSON.parse(raw) as SessionMeta
-
-    // Coarse moderator gate inside the lock — fresh meta is the
-    // authoritative view of cohost membership. Closes the enumeration
-    // oracle that would otherwise let a non-participant probe `targetId:
-    // u:<n>` and distinguish session members (400 unknown-target) from
-    // non-members (403). Action-specific strict-host gates run below.
-    const strictHostNow = !!(
-      (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
-      (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
-    )
-    const cohostNow = !!meta.coHostIds?.includes(callerIdentity.id)
-    if (!strictHostNow && !cohostNow) {
-      return NextResponse.json({ error: 'only the host or a co-host can assign roles' }, { status: 403 })
-    }
-
-    // Action-specific strict-host pre-check BEFORE target resolution.
-    // Closes an enumeration oracle a cohost could otherwise use to probe
-    // `targetId: u:<n>` and tell from the response code (400
-    // unknown-target vs 403 wrong-role) whether the user is in the
-    // session: for actions that are strict-host-only regardless of the
-    // target's identity, the answer must be 403 either way. Cohost
-    // attempting to demote another cohost (touchesCohost on set-role
-    // with newRole=taster|provider) still requires target resolution,
-    // but the blast radius is contained — cohosts already see the
-    // session identities map.
-    if (action === 'set-role' && roleFromBody === 'co_host' && !strictHostNow) {
-      return NextResponse.json({ error: 'only the host can assign or remove the co-host role' }, { status: 403 })
-    }
-
-    // Resolve the target by id — must be an identities-map entry, the
-    // trust source. Display-name lookup (`targetUser`) was removed
-    // because names are presentation-only per CLAUDE.md.
-    const idsByName = await redis.hGetAll(k.identities(c))
-    // Guard against prototype property names (`__proto__`, `constructor`,
-    // `toString`) — without hasOwnProperty, those would resolve to
-    // Object.prototype members (truthy), letting a host plant junk
-    // identity-ids into coHostIds/providerIds via a crafted body.
-    let targetId: string | null = null
-    if (
-      typeof targetIdFromBody === 'string' &&
-      targetIdFromBody &&
-      Object.hasOwn(idsByName, targetIdFromBody)
-    ) {
-      targetId = targetIdFromBody
-    }
-    if (!targetId) {
-      return NextResponse.json({ error: 'targetId required' }, { status: 400 })
-    }
-
-    // Self-target rejected for all role mutations.
-    if (targetId === callerIdentity.id) {
-      return NextResponse.json({ error: 'cannot change your own role' }, { status: 400 })
-    }
-    // Strict host cannot be re-roled — would orphan the session. The
-    // only path that moves the host slot is account-deletion (which
-    // tombstones host fields and softens the strict-host check so
-    // cohosts inherit delete rights via `lib/accountDelete.ts`).
-    const targetIsStrictHost = (
-      (meta.hostIdentityId && targetId === meta.hostIdentityId) ||
-      (meta.hostUserId && targetId === `u:${meta.hostUserId}`)
-    )
-
-    // Only `set-role` is supported — `transfer-host` was removed
-    // because no UI calls it and the host-handoff case is covered by
-    // account-deletion's tombstone mechanism.
-    if (action !== 'set-role') {
-      return NextResponse.json({ error: 'unknown action' }, { status: 400 })
-    }
-    if (targetIsStrictHost) {
-      return NextResponse.json({ error: 'cannot change the host\'s role' }, { status: 400 })
-    }
-    if (roleFromBody !== 'taster' && roleFromBody !== 'co_host' && roleFromBody !== 'provider') {
-      return NextResponse.json({ error: 'role must be taster, co_host, or provider' }, { status: 400 })
-    }
-    const newRole = roleFromBody as 'taster' | 'co_host' | 'provider'
-    const currentRole: 'taster' | 'co_host' | 'provider' =
-      meta.coHostIds?.includes(targetId) ? 'co_host'
-      : meta.providerIds?.includes(targetId) ? 'provider'
-      : 'taster'
-    if (currentRole === newRole) {
-      return NextResponse.json(
-        { ok: true, meta },
-        { headers: { 'Cache-Control': 'private, no-store' } },
-      )
-    }
-    // Locked transition rule: any role mutation that adds or removes the
-    // cohost designation requires strict-host. Demoting a cohost to taster
-    // or provider still requires target resolution (the residual leak:
-    // bad-target → 400, real-cohost-target → 403 — accepted because
-    // cohosts already see the identities map via the session GET).
-    const touchesCohost = newRole === 'co_host' || currentRole === 'co_host'
-    if (touchesCohost && !strictHostNow) {
-      return NextResponse.json({ error: 'only the host can assign or remove the co-host role' }, { status: 403 })
-    }
-
-    // Apply role change to meta. coHostIds and providerIds are mutually
-    // exclusive — strip from both first, then add to the destination
-    // list (if any).
-    meta.coHostIds = (meta.coHostIds ?? []).filter(id => id !== targetId)
-    meta.providerIds = (meta.providerIds ?? []).filter(id => id !== targetId)
-    if (newRole === 'co_host') meta.coHostIds.push(targetId)
-    else if (newRole === 'provider') meta.providerIds.push(targetId)
-
-    // Mirror to Postgres session_members.role for logged-in targets.
-    if (targetId.startsWith('u:')) {
-      const targetUserId = Number(targetId.slice(2))
-      try {
-        await prisma.sessionMember.upsert({
-          where: { userId_sessionCode: { userId: targetUserId, sessionCode: c } },
-          create: { userId: targetUserId, sessionCode: c, role: newRole },
-          update: { role: newRole },
-        })
-      } catch (err) { console.error('set-role mirror failed:', err) }
-    }
-
-    // KEEPTTL preserves the session's existing TTL (which may be 72h / 1w /
-    // unlimited for pro hosts). Hardcoding an EX value would silently
-    // downgrade any longer lifespan on every role toggle.
-    await redis.set(k.meta(c), JSON.stringify(meta), { KEEPTTL: true })
-    return NextResponse.json(
-      { ok: true, meta },
-      // Response carries coHostIds/providerIds which vary per-session
-      // and arrive in the meta envelope. Match the GET cache posture so
-      // intermediaries don't ever serve a stale role-mutation result.
-      { headers: { 'Cache-Control': 'private, no-store' } },
-    )
-  } finally {
-    await releaseBanLock(c)
+    const { meta } = await withSessionMutation(c, { label: 'set-role', redisLock: { waitMs: 3000 }, caller: pp.identity }, async (tx, ctx) => {
+      const meta = ctx.meta!
+      const caller = ctx.caller!
+      const strictHostNow = isStrictHost(meta, caller)
+      // Coarse moderator gate — closes the enumeration oracle that would let a
+      // non-participant probe `targetId: u:<n>` (400 unknown-target vs 403).
+      if (ctx.callerStatus !== 'ok' || !isHostByIdentity(meta, caller)) {
+        throw refuse(403, 'only the host or a co-host can assign roles')
+      }
+      // Strict-host-only regardless of the target: answer 403 before target
+      // resolution so a cohost cannot tell members from non-members.
+      if (action === 'set-role' && roleFromBody === 'co_host' && !strictHostNow) {
+        throw refuse(403, 'only the host can assign or remove the co-host role')
+      }
+      // The target must be part of this session — an identities-map entry, or
+      // for a `u:` of a Postgres-backed session the record (member or rater).
+      // Object.hasOwn guards prototype names (`__proto__`, `constructor`).
+      if (typeof targetIdFromBody !== 'string' || !targetIdFromBody) throw refuse(400, 'targetId required')
+      const targetId = targetIdFromBody
+      const identities = await redis.hGetAll(k.identities(c))
+      const targetUserId = /^u:\d{1,18}$/.test(targetId) ? Number(targetId.slice(2)) : null
+      const member = ctx.row && targetUserId !== null
+        ? (await tx.$queryRaw<{ role: string; removed_state: string | null }[]>`
+            SELECT role, removed_state FROM session_members WHERE session_code = ${c} AND user_id = ${targetUserId} FOR UPDATE`)[0] ?? null
+        : null
+      const author = ctx.row && targetUserId !== null && !member
+        ? !!(await tx.$queryRaw<{ x: number }[]>`SELECT 1 AS x FROM ratings WHERE session_id = ${ctx.row.id} AND user_id = ${targetUserId} LIMIT 1`)[0]
+        : false
+      if (!Object.hasOwn(identities, targetId) && !member && !author) throw refuse(400, 'targetId required')
+      if (targetId === caller.id) throw refuse(400, 'cannot change your own role')
+      // Only `set-role` is supported (`transfer-host` was removed).
+      if (action !== 'set-role') throw refuse(400, 'unknown action')
+      // The strict host cannot be re-roled — it would orphan the session.
+      const recordBacked = !!ctx.row && targetUserId !== null
+      const targetIsStrictHost = recordBacked
+        ? ctx.row!.hostUserId === targetUserId
+        : (!!meta.hostIdentityId && targetId === meta.hostIdentityId) || (!!meta.hostUserId && targetId === `u:${meta.hostUserId}`)
+      if (targetIsStrictHost) throw refuse(400, 'cannot change the host\'s role')
+      if (roleFromBody !== 'taster' && roleFromBody !== 'co_host' && roleFromBody !== 'provider') {
+        throw refuse(400, 'role must be taster, co_host, or provider')
+      }
+      const newRole = roleFromBody as 'taster' | 'co_host' | 'provider'
+      // A removed target gets no role (r2 N1): a kicked user holding co_host
+      // would be one rejoin away from host powers — and a role on a removed
+      // member is never what the host meant. Demotion stays allowed.
+      if (newRole !== 'taster') {
+        const removed = member?.removed_state === 'kicked'
+          || await redis.sIsMember(k.kicked(c), targetId) || await redis.sIsMember(k.bans(c), targetId)
+        if (removed) throw refuse(409, 'that person was removed from this moment')
+      }
+      const currentRole = recordBacked
+        ? (member?.role === 'co_host' || member?.role === 'provider' ? member.role : 'taster')
+        : meta.coHostIds?.includes(targetId) ? 'co_host' : meta.providerIds?.includes(targetId) ? 'provider' : 'taster'
+      if (currentRole === newRole) return { meta, project: false }
+      // Any transition that adds or removes the cohost designation needs the
+      // strict host (residual: bad-target 400 vs real-cohost 403 — cohosts see
+      // the identities map anyway).
+      if ((newRole === 'co_host' || currentRole === 'co_host') && !strictHostNow) {
+        throw refuse(403, 'only the host can assign or remove the co-host role')
+      }
+      if (recordBacked) {
+        await tx.$executeRaw`
+          INSERT INTO session_members (user_id, session_code, role)
+          SELECT ${targetUserId}, ${c}, ${newRole} WHERE EXISTS (SELECT 1 FROM users WHERE id = ${targetUserId})
+          ON CONFLICT (user_id, session_code) DO UPDATE SET role = EXCLUDED.role`
+        const next = metaFromRecord((await readLiveRow(tx, c))!, await readRecordRoles(tx, c), meta)
+        return { meta: next, project: true }
+      }
+      const next: SessionMeta = {
+        ...meta,
+        coHostIds: [...(meta.coHostIds ?? []).filter(id => id !== targetId), ...(newRole === 'co_host' ? [targetId] : [])],
+        providerIds: [...(meta.providerIds ?? []).filter(id => id !== targetId), ...(newRole === 'provider' ? [targetId] : [])],
+      }
+      const written = ctx.row ? metaFromRecord(ctx.row, await readRecordRoles(tx, c), next) : next
+      await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(written), { XX: true, KEEPTTL: true }) })
+      return { meta: written, project: false }
+    }, async (ctx, r) => {
+      if (r.project) await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(r.meta), { XX: true, KEEPTTL: true }) })
+    })
+    // Carries coHostIds/providerIds — private, no-store like the GET.
+    return NextResponse.json({ ok: true, meta }, { headers: { 'Cache-Control': 'private, no-store' } })
+  } catch (err) {
+    return contractFailure(err, c, { busy: 429, label: 'set-role' })
   }
 }
 
@@ -260,196 +210,92 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
 
-  const raw = await redis.get(k.meta(c))
-  if (!raw) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const meta = JSON.parse(raw) as SessionMeta
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
 
-  // Banned/kicked callers get the `removed` bounce header (same protocol
-  // as the polled GETs and wine routes). Without this a banned host
-  // (impossible today, but defense-in-depth) or a banned cohost trying
-  // to delete the session would see a bare 403 instead of bouncing.
-  const pp = await participantOrBanned(c, req, session)
+  // Banned/kicked callers get the `removed` bounce header (same protocol as the
+  // polled GETs and wine routes).
+  const pp = await participantOrBanned(c, req, session, opened.meta)
+  if (pp.status === 'unavailable') return authUnavailable()
   if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
   if (pp.status === 'invalid') return authInvalid()
-  const callerIdentity = pp.identity
-  const callerIsHost = (
-    (meta.hostIdentityId && callerIdentity.id === meta.hostIdentityId) ||
-    (meta.hostUserId && callerIdentity.id === `u:${meta.hostUserId}`)
-  )
-  // Cohosts inherit the right to delete a session whose host has tombstoned
-  // their account (host fields tombstoned and hostIdentityId/hostUserId both
-  // null). Without this, an orphaned active session would be undeletable.
-  const hostIsGone = !meta.hostIdentityId && !meta.hostUserId && meta.host === TOMBSTONE_NAME
-  const callerIsCohost = !!meta.coHostIds?.includes(callerIdentity.id)
-  if (!callerIsHost && !(hostIsGone && callerIsCohost)) {
-    return NextResponse.json({ error: 'only the host can delete this session' }, { status: 403 })
-  }
 
-  // Order: Redis wipe FIRST, then Postgres scrub.
+  // The soft-delete protocol (redis-rehydration § 5.4), inside the mutation
+  // contract: authorization from the caller's fresh grant; the scrub (or, for a
+  // Redis-only session, the registry row alone) and the FENCED wipe of every
+  // s:{CODE}:* key both inside the transaction — a refused wipe ('lost') rolls
+  // the scrub back (503), and a crash after the wipe but before COMMIT leaves a
+  // live row whose next open rebuilds: the delete did not happen, consistently.
+  // The registry row (session_tombstones) is what makes a committed delete
+  // visible to a promotion that comes later. Covers are reclaimed after COMMIT.
   //
-  // This NARROWS but does not fully close the pgUpsertSession-resurrection
-  // race. Mechanism: a rate POST that has already read `s:{CODE}:meta` from
-  // Redis still holds live meta in memory; if it then races a soft-delete,
-  // it proceeds to pgUpsertSession, finds no live row by code (the scrub
-  // nulled it), and creates a fresh sessions row with the same code — a
-  // phantom session, undeletable.
-  //
-  // Redis-first prevents the wider window (requests that haven't read Redis
-  // yet 404 cleanly). The residual race is "rate POST in flight at the
-  // exact moment of delete" — a few-ms window at Tim+Simon scale, accepted.
-  // Closing it fully would need keeping `code` on the tombstone + a partial
-  // unique index `WHERE deleted_at IS NULL`; out of scope for phase 2.
-  //
-  // Failure semantics: if the Postgres scrub fails after Redis is wiped,
-  // the session is "gone from the user's perspective" (404 on every
-  // endpoint) but the Postgres row remains live. Recoverable — the operator
-  // can re-run the soft-delete by hand (the trigger lets soft-delete UPDATEs
-  // through), or wait for lifespan expiry. Strictly preferable to the
-  // phantom-row alternative.
+  // Who may delete: the strict host; and a cohost when the moment has NO host
+  // identity at all (§ 4.5, ruling 4 — an anonymous host after a rebuild, or a
+  // tombstoned one). Never a display-name branch.
+  let reclaimUrls: string[]
   try {
-    const keys = await scanKeys(`s:${c}:*`)
-    if (keys.length > 0) await redis.del(keys)
+    reclaimUrls = await withSessionMutation(c, { label: 'delete', redisLock: { waitMs: 3000 }, caller: pp.identity, expectedCreatedAt: opened.meta.createdAt },
+      async (tx, ctx): Promise<string[]> => {
+        const meta = ctx.meta!
+        const caller = ctx.caller!
+        const cohost = isHostByIdentity(meta, caller) && !isStrictHost(meta, caller)
+        if (ctx.callerStatus !== 'ok' || !(isStrictHost(meta, caller) || (cohost && isHostless(meta, caller)))) {
+          throw refuse(403, 'only the host can delete this session')
+        }
+        const urls = new Set<string>(meta.coverPhotoUrl ? [meta.coverPhotoUrl] : [])
+        const row = ctx.row
+        if (!row) {
+          await tx.$executeRaw`
+            INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${new Date(meta.createdAt)}) ON CONFLICT DO NOTHING`
+        } else {
+          if (row.coverPhotoUrl) urls.add(row.coverPhotoUrl)
+          // Images of wines nobody bookmarked: bookmarked wines stay reachable
+          // from /me/saved, orphans lose their last reader with this session.
+          const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
+            SELECT image_url FROM wines
+             WHERE session_id = ${row.id} AND image_url IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)`
+          for (const r of orphanImages) if (r.image_url) urls.add(r.image_url)
+          // Ratings + feed_items SURVIVE (rewire § 8): their session_id still
+          // points at the tombstoned row. HoF (legacy, still load-bearing):
+          // keep an entry if the rater also bookmarked the wine. The JOIN uses
+          // wines.session_id, still set at this point.
+          await tx.$executeRaw`
+            DELETE FROM hall_of_fame h
+             WHERE h.session_code = ${c} AND h.user_id IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM bookmarks b JOIN wines w ON w.id = b.wine_id
+                  WHERE w.session_id = ${row.id} AND b.user_id = h.user_id AND w.name = h.wine_name)`
+          // Wines orphan (session_id NULL); member + ban rows go — both are
+          // keyed by code, and codes are recycled after the scrub.
+          await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`
+          await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
+          await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c}`
+          await tx.$executeRaw`
+            INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${row.createdAt ?? new Date(meta.createdAt)}) ON CONFLICT DO NOTHING`
+          // Scrub to a tombstone: only `id` and `deleted_at` survive.
+          await tx.$executeRaw`
+            UPDATE sessions
+              SET deleted_at = NOW(), code = NULL, host_user_id = NULL, host_name = NULL, blind = NULL,
+                  blind_for_everyone = NULL, created_at = NULL, archived_at = NULL, name = NULL, address = NULL,
+                  date_from = NULL, date_to = NULL, timezone = NULL, description = NULL, link = NULL,
+                  cover_photo_url = NULL, category = NULL, lifespan = NULL, hide_lineup = NULL,
+                  hide_lineup_minutes_before = NULL, show_provenance = NULL
+             WHERE id = ${row.id}`
+        }
+        const keys = await scanKeys(`s:${c}:*`)
+        for (let i = 0; i < keys.length; i += 500) {
+          const batch = keys.slice(i, i + 500)
+          await ctx.fence!.exec(m => { m.del(batch) })
+        }
+        return [...urls]
+      })
   } catch (err) {
-    console.error('session delete (redis) error:', err)
+    return contractFailure(err, c, { label: 'session delete' })
   }
 
-  // Cover capture (capture/commit/reclaim-after): the Redis meta was read
-  // before the wipe above; the pg row is the fallback for drift. Reclaim
-  // fires only after the transaction commits.
-  const coverFromMeta = meta.coverPhotoUrl || null
-
-  let reclaimUrls: string[] = []
-  try {
-    reclaimUrls = await prisma.$transaction(async (tx): Promise<string[]> => {
-      // Soft-deleted sessions have `code = NULL` per the §8 contract,
-      // so the findUnique below naturally misses them. The explicit
-      // `deletedAt: null` filter makes intent obvious and survives any
-      // future change that re-populates `code` on a tombstoned row.
-      //
-      // FOR UPDATE: the row lock is what serializes this delete against every
-      // row-existence-dependent writer of release A (ban rows in sessionWipe,
-      // ensureMember, the wine-list mirror) — they take a lock on the live row
-      // and, once this commits, find no live row and write nothing.
-      const rows = await tx.$queryRaw<{ id: number; cover_photo_url: string | null; created_at: Date | null }[]>`
-        SELECT id, cover_photo_url, created_at FROM sessions
-         WHERE code = ${c} AND deleted_at IS NULL
-         FOR UPDATE`
-      const sessionRow = rows[0]
-      // No live pg row (anon-hosted session): Redis is already wiped, so a
-      // meta-held cover has no remaining owner — release the bytes. The
-      // registry row is written for this branch too (redis-rehydration § 5.4,
-      // R3-7): it is what lets a later promotion see that this incarnation was
-      // deleted, and an anonymous-only session has no other durable trace.
-      if (!sessionRow) {
-        await tx.$executeRaw`
-          INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${new Date(meta.createdAt)})
-          ON CONFLICT DO NOTHING`
-        return coverFromMeta ? [coverFromMeta] : []
-      }
-      const sessionId = sessionRow.id
-      const coverPhotoUrl = sessionRow.cover_photo_url
-      // Union of pg + meta covers: a silently-failed settings mirror can
-      // leave the two diverged — reclaim both rather than orphan one.
-      const coverUrls = [...new Set([coverPhotoUrl, coverFromMeta].filter((u): u is string => !!u))]
-
-      // Capture image URLs of wines nobody bookmarked. Bookmarked wines stay
-      // reachable from /me/saved so we keep their image; orphans lose their
-      // last reader the moment this session is gone, so the bytes can go.
-      // Race window: a bookmark INSERT racing this tx (READ COMMITTED) could
-      // land after this SELECT but before commit, leaving the bookmarker with
-      // a wine row whose image we then reclaim. Narrow (single-user clicking
-      // bookmark in the seconds during host delete) and acceptable.
-      const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
-        SELECT image_url FROM wines
-        WHERE session_id = ${sessionId}
-          AND image_url IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
-      `
-
-      // 1. Ratings + feed_items SURVIVE per the §8 contract. The scrub on
-      //    `sessions` below tombstones the parent row; children keep their
-      //    `session_id` reference, providing the grouping signal for the
-      //    user's own Tastes / Posts views. No DELETE FROM ratings here
-      //    (was the pre-rewire bookmark-or-drop rule — gone).
-      //
-      // 2. HoF cleanup (legacy table) — still load-bearing while Tim's
-      //    HoF v2 ranking hasn't shipped. The bookmark-aware rule below
-      //    matches today's semantics: keep HoF if the rater also bookmarked
-      //    the wine; drop otherwise. Note the JOIN uses wines.session_id,
-      //    which is still set at this point — the orphaning UPDATE in
-      //    step 3 runs AFTER this DELETE.
-      await tx.$executeRaw`
-        DELETE FROM hall_of_fame h
-        WHERE h.session_code = ${c}
-          AND h.user_id IS NOT NULL
-          AND NOT EXISTS (
-            SELECT 1 FROM bookmarks b JOIN wines w ON w.id = b.wine_id
-            WHERE w.session_id = ${sessionId}
-              AND b.user_id = h.user_id
-              AND w.name = h.wine_name
-          )
-      `
-
-      // 3. Orphan the wines (sessionId NULL) — today's behaviour preserved
-      //    per Q3. The wishlist tombstone-label resolver reads session
-      //    context via the wine's own ratings (`ratings.session_id` still
-      //    points at the now-scrubbed sessions row), not via wines.session_id.
-      //    This commits to the future direction where `wines.session_id`
-      //    becomes deprecated entirely.
-      await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
-
-      // 4. Delete session_members and session_bans rows for this session —
-      //    both are keyed by code, and codes are recycled after the scrub.
-      await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
-      await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c}`
-      await tx.$executeRaw`
-        INSERT INTO session_tombstones (code, created_at)
-        VALUES (${c}, ${sessionRow.created_at ?? new Date(meta.createdAt)})
-        ON CONFLICT DO NOTHING`
-
-      // 5. Scrub the sessions row to a tombstone per the §8 data-survival
-      //    contract. Only `id` and `deleted_at` survive; every other column
-      //    is set to NULL. `code` going NULL is intentional — deep-link
-      //    lookup by code returns no row, and the unique index on `code`
-      //    permits multiple NULLs (Postgres treats NULLs as distinct), so
-      //    soft-deleted sessions don't collide with each other or with
-      //    live ones. The schema-level NOT NULL is gone (phase 2
-      //    nullability migration applied earlier in this PR).
-      await tx.$executeRaw`
-        UPDATE sessions
-          SET deleted_at = NOW(),
-              code = NULL,
-              host_user_id = NULL,
-              host_name = NULL,
-              blind = NULL,
-              blind_for_everyone = NULL,
-              created_at = NULL,
-              archived_at = NULL,
-              name = NULL,
-              address = NULL,
-              date_from = NULL,
-              date_to = NULL,
-              timezone = NULL,
-              description = NULL,
-              link = NULL,
-              cover_photo_url = NULL,
-              category = NULL,
-              lifespan = NULL,
-              hide_lineup = NULL,
-              hide_lineup_minutes_before = NULL,
-              show_provenance = NULL
-         WHERE id = ${sessionId}
-      `
-
-      return [...orphanImages.map(r => r.image_url).filter(Boolean), ...coverUrls]
-    })
-  } catch (err) {
-    console.error('session delete (postgres) error:', err)
-  }
-
-  // Reclaim S3 objects fire-and-forget after commit. If the transaction rolled
-  // back, reclaimUrls is [] so nothing happens. If S3 fails, the row is
-  // already gone — orphan bytes for a future cleanup, never broken DB state.
+  // Reclaim S3 objects fire-and-forget after COMMIT: orphan bytes at worst,
+  // never broken DB state.
   for (const url of reclaimUrls) reclaimImage(url)
 
   return NextResponse.json({ ok: true })

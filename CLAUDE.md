@@ -81,11 +81,13 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 | Accounts & history | Postgres | Users, archived sessions, bookmarks, Hall of Fame (public leaderboard of 5★ ratings) |
 | Images | S3 (Nine Object Storage) | Bottle photos, avatars |
 
-**Postgres archival is incremental**: Redis → Postgres only when a logged-in user commits a rating or joins a session. Anonymous sessions stay Redis-only.
+**Postgres archival is incremental**: a session is promoted to Postgres on a logged-in act (visit, rate, wine add, bookmark). Anonymous-only sessions stay Redis-only.
+
+🔒 **A session with a live `sessions` row is Postgres-authoritative; Redis is its rebuildable cache** (redis-rehydration, shipped). A miss rebuilds (`ensureSessionLive` / `openSession`, `lib/sessionRehydrate.ts`) — `'restoring'` answers **503 + Retry-After, never 404** (mobile renders 404 as "This moment has ended"). Mode is decided by the row's existence, never the caller's login. There is **no cross-store transaction**: every durable session writer goes through the session mutation contract (`lib/sessionMutation.ts` — fenced `lock:session:{CODE}`, one advisory lock per session, decisions under the locks, COMMIT, then the projection). Lifespan is only the cache TTL for such a session — it is reopenable whatever its age. Contract, participation table, ordering rule: `lib/CLAUDE.md`.
 
 **Lifetime counter snapshots on `users`**: rate/visit/create endpoints atomically increment monotonic counters (lifetime_ratings, five_star, sessions_joined, etc.). Never decrement — protects badge progression and gives O(1) reads on the badge hot path.
 
-**`KEEPTTL` is mandatory** on all writes to `s:{CODE}:meta` and `s:{CODE}:wines` after session-create. Hardcoded `{ EX: 48 * 3600 }` would silently downgrade a pro session's lifespan (72h / 1w / unlimited) on every role-toggle, rename, or wipe. Wine-list writes go through `mutateWines` (`lib/session.ts`), which preserves it — easy to violate from `app/api/session/[code]/route.ts`.
+**NX to create, XX + `KEEPTTL` to update** on `s:{CODE}:meta` and `s:{CODE}:wines` (lint-gated, `eslint.config.mjs`): a wiped or evicted key can never be recreated by a stale writer, and a hardcoded `{ EX: … }` would downgrade a pro lifespan. Wine-list writes go through `mutateWines(fence, …)` (`lib/session.ts`) inside the contract — it rejects on an absent lineup.
 
 Redis key namespace, SCAN helpers (`scanKeys`, `hasKey`, preferred over `redis.keys` which blocks the event loop): see `lib/CLAUDE.md`.
 
@@ -102,6 +104,7 @@ Full pipeline (HoF trigger, flavour integration): see `docs/dev/score-system.md`
 ### Trust model
 
 - **Identity ids are the only trust anchor**: `u:<userId>` for logged-in, `a:<uuid>` for anonymous. Resolved via `lib/identity.ts` `resolveIdentity(code, req, session)`. Never read identity from a request body.
+- 🔒 **For a `u:` identity in a Postgres-backed session, authorization derives from COMMITTED Postgres state — the cache can deny, never grant.** One grant read per request inside `participantOrBanned` (`lib/sessionGrant.ts`), carried as `AuthorizedIdentity.grant`; the privilege helpers (`isHostByIdentity`, `isStrictHost`, `isProvider`) take only that type. Cached role lists / roster / kicks are presentation; a Redis ban still bounces first. Anonymous identities and Redis-only sessions keep Redis as their authority.
 - **Display names are presentation-only**: user-chosen, mutable, non-unique within a session (collisions get an emoji suffix). Carry **zero** trust. Never used for identification, authentication, authorization, matching, or lookup. There is no concept of "username" in this codebase — if a ticket or PR talks about matching on username/name, push back and translate to identity id. Fields like `meta.host`, `ratings.rater_name`, and the values (not keys) of `s:{CODE}:identities` are display strings: store them, render them, never branch on them.
 - **URL query parameters are presentation-only too**: `?name=`, `?id=`, `?host=1` exist solely to seed client UI on first render after a redirect. Capture them synchronously into state and strip via `router.replace` on mount. Never branch authorization on a URL param.
 - 🔒 **SECURITY: don't log `viewerBlocksOut` / `viewerBlocksIn`.** These arrays from `GET /api/session/[code]` carry the viewer's block-pair list scoped to a session. They must not be mirrored to analytics, stored in shared cache, or persisted outside the response.
@@ -209,7 +212,8 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Profile visibility](docs/dev/profile-visibility.md) — four tiers + FoF, chokepoint API, HoF exception, audit log
 - [Session features](docs/dev/session-features.md) — blind tasting, blind-for-everyone toggle, hide-lineup, roles, lifespan, disambiguation, enumeration-oracle posture
 - [Session codes](docs/dev/session-codes.md) — Crockford alphabet, 4/8-char canonical forms, three-forms rule, collision check
-- [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, Redis wipe, participant bounce
+- [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, the soft-delete protocol inside the mutation contract (fenced wipe, `session_tombstones` registry, crash table), participant bounce
+- [Redis rehydration](docs/dev/proposals/redis-rehydration.md) — **SHIPPED** (releases A + B): Postgres as the record, Redis as the cache — rebuild + reconciliation, the session mutation contract, the grant read, the publication generation (`s:{C}:gen`), eviction belts, the `ratings_session_rater_known` CHECK (`prisma/session-record-checks.json` gate). Release C (operator script) pending.
 - [Moments-home routing](docs/dev/moments-home.md) — the mobile Moments tab's `status` (lists) / `pinned` (carousel) / `carouselLabel` (chip) model, the cross-product, server-authoritative label rationale
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning
 - [Per-device sessions](docs/dev/proposals/auth-sessions.md) — `user_sessions` revocation gate (never-cache-`auth()`), Connected-devices panel, password-change + signOut revoke, revocation-reason login notices. Cross-cutting invariants in `lib/CLAUDE.md`. (Doc is the shipped proposal w/ as-built deviations noted.)

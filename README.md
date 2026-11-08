@@ -204,6 +204,8 @@ Day-to-day JS iteration after the first build: `npx expo start`. See `apps/mobil
 
 Authentication: logged-in users carry a NextAuth session cookie; anonymous users carry a per-session `x-vr-anon-token` header. See `CLAUDE.md` for the full authorization rules per endpoint.
 
+Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** while a moment whose cache was lost is being restored from Postgres, or while it is busy — retry; **404** only when the moment is really gone.
+
 **Auth + account**
 
 | Method | Path | Description |
@@ -247,7 +249,7 @@ Authentication: logged-in users carry a NextAuth session cookie; anonymous users
 | PATCH | /api/session/:code/name | Rename session (host-only) |
 | PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
 | GET | /api/session/:code/bans | List banned identities (host + cohost) |
-| POST | /api/session/:code/bans | Kick or ban a participant (body: `{identityId, mode: 'kick'\|'ban', deleteAddedWines?}`). Strict-host required when target is a cohost |
+| POST | /api/session/:code/bans | Kick or ban a participant (body: `{identityId, mode: 'kick'\|'ban', deleteAddedWines?}`). Strict-host required when target is a cohost. A `d:` (deleted account) target accepts `mode: 'kick'` only — it removes their ratings |
 | DELETE | /api/session/:code/bans/:identityId | Unban (host + cohost); shares 60/10min rate limit with POST |
 | GET | /api/session/:code/bans/preview/:identityId | Preview before kick/ban (host + cohost) |
 | GET | /api/session/:code/removed-state | Caller's own removed-state, used by the `?removed=1` bounce screen |
