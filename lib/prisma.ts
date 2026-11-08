@@ -4,6 +4,7 @@ import type { PoolConfig } from 'pg'
 import os from 'node:os'
 import { readFileSync } from 'node:fs'
 import { pgTlsConfig } from './pgTls.mjs'
+import { withSessionPin } from './pgSession.mjs'
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient }
 
@@ -46,8 +47,10 @@ const globalForPrisma = globalThis as unknown as { prisma: PrismaClient }
 // when trying to connect" instead of P2024 — same shape: fail fast, never
 // queue without bound.
 //
-// `DATABASE_URL`'s own query parameters (Nine's `sslmode`, any `options`) are
-// parsed by pg from the connection string and are not touched here.
+// `DATABASE_URL`'s own query parameters (Nine's `sslmode` etc.) are parsed by
+// pg from the connection string and are not touched here — except that one
+// carrying `options` makes building the client throw, because pg would let it replace the
+// UTC session pin (lib/pgSession.mjs).
 //
 // ⚠️ Validate rather than pass through: a non-numeric value would silently
 // leave the pool on its default while the deploy believes it was configured.
@@ -106,13 +109,16 @@ function buildPoolConfig(): PoolConfig {
   // Deliberately generous when set — a runaway fence, not a latency target.
   // Realistic catalog search measures 0.9–41 ms at 300k rows.
   const ssl = pgTlsConfig(process.env.DATABASE_URL)
-  return {
+  // 🔒 Session TimeZone = UTC — the adapter's timestamp conversions assume it
+  // (lib/pgSession.mjs; prod Postgres defaults to Europe/Zurich). Wraps the
+  // COMPLETE config: the guard checks what pg will actually send.
+  return withSessionPin({
     connectionString: process.env.DATABASE_URL,
     ...(ssl ? { ssl } : {}),
     max: limit ?? physicalCpuCount() * 2 + 1,
     connectionTimeoutMillis: (poolTimeout ?? 10) * 1000,
     ...(wantsTimeout ? { statement_timeout: Math.floor(statementTimeoutMs) } : {}),
-  }
+  })
 }
 
 export const prisma =
