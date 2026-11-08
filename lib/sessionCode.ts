@@ -9,7 +9,12 @@
 import crypto from 'crypto'
 import { ALPHABET, CANONICAL_LENGTH, formatCode } from '@verre/core'
 
+// Test seam (cutover suite, r2-1): codes queued here are handed out first.
+export const codeTestQueue: string[] = []
+
 export function genCode(): string {
+  const queued = codeTestQueue.shift()
+  if (queued) return queued
   const buf = crypto.randomBytes(CANONICAL_LENGTH)
   let out = ''
   for (let i = 0; i < CANONICAL_LENGTH; i++) {

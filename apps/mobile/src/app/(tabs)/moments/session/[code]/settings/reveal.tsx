@@ -1,4 +1,5 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { BLIND_FEED_REVEAL_NOTE } from '@verre/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
@@ -131,6 +132,7 @@ function RevealForm({
           title="Blind Tasting"
           proBadge
           subtitle="Hide each impression until revealed"
+          note={blind ? BLIND_FEED_REVEAL_NOTE : undefined}
           value={blind}
           onChange={(v) => { setBlind(v); if (!v) setBlindForEveryone(false); }}
           disabled={!pro}

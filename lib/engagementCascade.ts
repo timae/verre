@@ -19,6 +19,7 @@
 // avoid this; do NOT wrap them in prisma.$transaction.
 
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
+import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 
 // Inlined S3 reclaim — see comment in lib/accountDelete.ts. Tracked for
@@ -86,21 +87,29 @@ export async function engagementDeletionCascade(
   ratingId: number,
   mode: 'empty-only' | 'force' = 'empty-only',
 ): Promise<boolean> {
-  // 1. Capture image URLs before the DELETE.
-  const images = await prisma.ratingImage.findMany({
-    where: { ratingId },
-    select: { imageUrl: true },
-  })
-  const imageUrls = images.map(i => i.imageUrl).filter((u): u is string => !!u)
+  const imageUrls = await engagementCascadeIn(prisma, ratingId, mode)
+  if (imageUrls === null) return false
+  reclaimImages(imageUrls)
+  return true
+}
 
-  // 2. Statement 1 — DELETE the rating. Empty-only mode adds the
-  // payload guard; force mode bypasses it.
+// The same cascade inside a caller's transaction (the session mutation contract
+// — redis-rehydration § 5.4: the rate and check-in writers commit their cascade
+// with the rating write). Separate statements in one transaction see each
+// other's effects; the id <> $ratingId self-exclusion stays as the belt. Returns
+// the image URLs to reclaim AFTER COMMIT (capture / commit / reclaim-after), or
+// null when nothing was reaped.
+export async function engagementCascadeIn(
+  db: Prisma.TransactionClient | typeof prisma,
+  ratingId: number,
+  mode: 'empty-only' | 'force' = 'empty-only',
+): Promise<string[] | null> {
+  const images = await db.ratingImage.findMany({ where: { ratingId }, select: { imageUrl: true } })
+  const imageUrls = images.map(i => i.imageUrl).filter((u): u is string => !!u)
   const deleted = mode === 'force'
-    ? await prisma.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
-        DELETE FROM ratings
-         WHERE id = ${ratingId}
-         RETURNING user_id, session_id`
-    : await prisma.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
+    ? await db.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
+        DELETE FROM ratings WHERE id = ${ratingId} RETURNING user_id, session_id`
+    : await db.$queryRaw<{ user_id: number | null; session_id: number | null }[]>`
         DELETE FROM ratings
          WHERE id = ${ratingId}
            AND (score = 0 OR score IS NULL)
@@ -108,17 +117,10 @@ export async function engagementDeletionCascade(
            AND aromas = '[]'::jsonb
            AND (notes IS NULL OR notes = '')
          RETURNING user_id, session_id`
-
-  if (deleted.length === 0) return false
-
+  if (deleted.length === 0) return null
   const { user_id, session_id } = deleted[0]
-  // Anon ratings (user_id NULL) or standalone (session_id NULL) don't
-  // have feed_items to clean up. S3 reclaim still fires below.
   if (user_id != null && session_id != null) {
-    // 3. Statement 2 — drop the session feed_item if no other ratings
-    // remain for (user, session). The id<>$ratingId self-exclusion in
-    // NOT EXISTS guards against MVCC visibility lag.
-    await prisma.$executeRaw`
+    await db.$executeRaw`
       DELETE FROM feed_items
        WHERE user_id = ${user_id}
          AND session_id = ${session_id}
@@ -129,11 +131,10 @@ export async function engagementDeletionCascade(
               AND id <> ${ratingId}
          )`
   }
+  return imageUrls
+}
 
-  // 4. S3 reclaim AFTER commit. Fire-and-forget; if S3 fails the DB
-  // row is already gone — orphan bytes for a future cleanup, never
-  // broken DB state.
-  for (const url of imageUrls) reclaimImage(url)
-
-  return true
+// Fire-and-forget S3 reclaim of rating photos, after the deleting COMMIT.
+export function reclaimImages(urls: string[]): void {
+  for (const url of urls) reclaimImage(url)
 }

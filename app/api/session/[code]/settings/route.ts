@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
-import { getSessionMeta, isHostByIdentity, sessionSettingsColumns } from '@/lib/session'
+import { k, lifespanTTL, scanKeys } from '@/lib/redis'
+import { isHostByIdentity, sessionSettingsColumns, type SessionMeta } from '@/lib/session'
 import { applySessionFields } from '@/lib/sessionFields'
 import { normalizeCode } from '@verre/core'
-import { prisma } from '@/lib/prisma'
-import { resolveIdentity, participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
+import { withSessionMutation, admitted, refuse, ContractRefused } from '@/lib/sessionMutation'
+import { readRecordRoles, metaFromRecord, readLiveRow } from '@/lib/sessionRecord'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openAsParticipant } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 
@@ -40,6 +42,70 @@ async function reclaimImage(url: string | null | undefined) {
   }
 }
 
+// The settings body applied to `base` — pure, run twice: once on the cached
+// meta for an early answer (before the cover upload, so a rejection can't orphan
+// S3 bytes), and again UNDER THE LOCKS on the record's current settings, where
+// it decides. Throws refuse(…) on a rejectable payload.
+//
+// Pro-gated settings (blind, lifespan, showProvenance): a non-pro caller may
+// submit the current value (a cohost saving unrelated edits with the full
+// payload) but cannot change it in either direction (symmetric gate). Disabling
+// blind clears blindForEveryone (a stale flag must not resurrect on re-enable);
+// blindForEveryone itself is not pro-gated (only flipping a session TO blind
+// is). showProvenance defaults ON (absent = true).
+function applySettings(base: SessionMeta, body: Record<string, unknown>, isPro: boolean): SessionMeta {
+  const meta: SessionMeta = { ...base }
+  const fieldError = applySessionFields(meta, body)
+  if (fieldError) throw refuse(400, fieldError)
+  if (body.blind !== undefined) {
+    const newBlind = !!body.blind
+    if (newBlind !== !!base.blind && !isPro) throw refuse(403, 'blind tastings require a pro account')
+    meta.blind = newBlind
+    if (!newBlind) meta.blindForEveryone = false
+  }
+  if (body.blindForEveryone !== undefined) meta.blindForEveryone = !!body.blindForEveryone
+  if (body.showProvenance !== undefined) {
+    const newShow = !!body.showProvenance
+    if (newShow !== (base.showProvenance !== false) && !isPro) {
+      throw refuse(403, 'changing impression attribution requires a pro account')
+    }
+    meta.showProvenance = newShow
+  }
+  if (body.lifespan !== undefined) {
+    // Same allow-list as create — a junk string would map to 48h silently.
+    if (typeof body.lifespan !== 'string' || !['48h', '72h', '1w', 'unlimited'].includes(body.lifespan)) {
+      throw refuse(400, 'unsupported lifespan')
+    }
+    if (body.lifespan !== base.lifespan && !isPro) throw refuse(403, 'extended lifespan requires a pro account')
+    meta.lifespan = body.lifespan
+  }
+  return meta
+}
+
+// 🔒 D1 (release-B plan § 9) — the cache may DENY before COMMIT, never grant.
+// The meta written INSIDE the transaction keeps every field of `prev` but takes
+// the TIGHTER of prev/next for each visibility flag: blind, blindForEveryone and
+// hideLineup OR'd, showProvenance AND'd, and — when the lineup is hidden in
+// either — whichever (dateFrom, hideLineupMinutesBefore) pair yields the LATER
+// reveal instant. A crash after COMMIT and before the projection then leaves a
+// cache that hides at least as much as the record, never less (with
+// commit-then-project only, tasters would see wine identities the record hides).
+function tightened(prev: SessionMeta, next: SessionMeta): SessionMeta {
+  const out: SessionMeta = {
+    ...prev,
+    blind: !!prev.blind || !!next.blind,
+    blindForEveryone: !!prev.blindForEveryone || !!next.blindForEveryone,
+    hideLineup: !!prev.hideLineup || !!next.hideLineup,
+    showProvenance: prev.showProvenance !== false && next.showProvenance !== false,
+  }
+  const revealAt = (m: SessionMeta) => m.hideLineup && m.dateFrom ? Date.parse(m.dateFrom) - (m.hideLineupMinutesBefore || 0) * 60_000 : -Infinity
+  if (revealAt(next) > revealAt(prev)) {
+    out.dateFrom = next.dateFrom
+    out.hideLineupMinutesBefore = next.hideLineupMinutesBefore
+  }
+  return out
+}
+
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code } = await params
@@ -49,103 +115,26 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
 
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  const pp = await participantOrBanned(c, req, session)
-  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
-  if (pp.status === 'invalid') return authInvalid()
-  const identity = pp.identity
-  if (!isHostByIdentity(meta, identity)) {
+  const op = await openAsParticipant(c, req, session, 'identity required')
+  if (op instanceof NextResponse) return op
+  const { meta: cached, identity } = op
+  if (!isHostByIdentity(cached, identity)) {
     return NextResponse.json({ error: 'only the host can change session settings' }, { status: 403 })
   }
-
   const isPro = !!(session?.user as { pro?: boolean })?.pro
+  try { applySettings(cached, body, isPro) }
+  catch (err) { if (err instanceof ContractRefused) return err.response; throw err }
 
-  // Detail fields (name/address/dates/timezone/description/link/hideLineup)
-  // apply via the helper shared with POST /api/session — validators (scrub,
-  // cleanUrl scheme guard, length caps) live in lib/sessionFields.ts.
-  const fieldError = applySessionFields(meta, body)
-  if (fieldError) return NextResponse.json({ error: fieldError }, { status: 400 })
-
-  // Pro-gated settings (blind, lifespan): a non-pro caller may submit
-  // the current value (no-op, e.g. a cohost saving unrelated edits with
-  // the full settings payload) but cannot change it in either direction.
-  // Symmetric gate — both enabling and disabling require pro. Per-wine
-  // reveal-all already covers the "show everything in a blind session"
-  // case without needing to flip the meta.blind flag, so disabling is
-  // not a workflow the non-pro caller actually needs.
-  if (body.blind !== undefined) {
-    const newBlind = !!body.blind
-    if (newBlind !== meta.blind && !isPro) {
-      return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
-    }
-    meta.blind = newBlind
-    // Disabling blind also clears blindForEveryone. Otherwise the host could
-    // disable blind, re-enable it later, and find themselves blinded again
-    // because the stale flag persisted — a UX surprise. Keep blindForEveryone's
-    // scope strictly within an active blind session.
-    if (!newBlind) meta.blindForEveryone = false
-  }
-  // "Blind for all" — composes on top of meta.blind. NOT pro-gated
-  // (running a blind tasting is fine for free hosts who happen to flip
-  // an existing pro-blind session; only flipping a session TO blind needs
-  // pro, which is gated above). Silently no-ops when meta.blind is false
-  // — there's no rendered effect, so accept the value but it doesn't do
-  // anything until blind is true.
-  if (body.blindForEveryone !== undefined)        meta.blindForEveryone             = !!body.blindForEveryone
-
-  // "Show who brought each impression" (Moment Setup). PRO-gated, symmetric
-  // like blind: a change in EITHER direction requires pro. DEFAULT ON, so the
-  // effective current value treats an absent flag as true. A non-pro caller
-  // (host OR free cohost) can't flip it in either direction — they're locked at
-  // whatever the host set, which may be OFF (a pro host hid it, a free cohost
-  // now views it), so this is not a "can't hide it" gate but a "can't change
-  // it" gate. A pure gate before any write, so a 403 orphans nothing.
-  if (body.showProvenance !== undefined) {
-    const newShow = !!body.showProvenance
-    const curShow = meta.showProvenance !== false
-    if (newShow !== curShow && !isPro) {
-      // Direction-neutral: the gate blocks ANY change by a non-pro (hiding OR
-      // re-showing an already-hidden moment), so a "hiding requires pro"
-      // message misreads on the unhide attempt.
-      return NextResponse.json({ error: 'changing impression attribution requires a pro account' }, { status: 403 })
-    }
-    meta.showProvenance = newShow
-  }
-
-  if (body.lifespan !== undefined) {
-    // Same allow-list as create — without it a pro caller could persist a
-    // junk string that lifespanTTL silently maps to 48h while meta records
-    // the junk.
-    if (typeof body.lifespan !== 'string' || !['48h', '72h', '1w', 'unlimited'].includes(body.lifespan)) {
-      return NextResponse.json({ error: 'unsupported lifespan' }, { status: 400 })
-    }
-    if (body.lifespan !== meta.lifespan && !isPro) {
-      return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
-    }
-    meta.lifespan = body.lifespan
-  }
-
-  // Cover photo LAST among the gates: every rejection path above is pure
-  // (no side effects), so a 403 on blind/lifespan can't orphan an already-
-  // uploaded cover. Data URL = replace, explicit null = remove. The prior
-  // bytes are reclaimed only AFTER the meta + Postgres mirror writes
-  // succeed (capture/commit/reclaim-after, root CLAUDE.md). Logged-in
-  // hosts only — an anon-hosted session has no Postgres row, so its TTL
-  // expiry would orphan the S3 bytes with no deletion path.
-  let priorCoverUrl: string | null = null
-  let coverChanged = false
+  // Cover photo LAST among the gates: every rejection above is pure. Data URL =
+  // replace, explicit null = remove. Logged-in callers only — an anon-hosted
+  // session has no Postgres row, so its expiry would orphan the bytes. Uploaded
+  // OUTSIDE the locks; the prior bytes are reclaimed only after COMMIT (and the
+  // new bytes if the save fails) — capture/commit/reclaim-after.
+  let newCoverUrl: string | null | undefined
   if (body.coverPhoto !== undefined) {
-    if (!session?.user) {
-      // Identity resolved (participant+host above) but the caller class
-      // lacks the capability — permission-denied, not auth-invalid.
-      return NextResponse.json({ error: 'sign in to change the cover photo' }, { status: 403 })
-    }
-    priorCoverUrl = meta.coverPhotoUrl || null
-    if (body.coverPhoto === null) {
-      meta.coverPhotoUrl = undefined
-      coverChanged = !!priorCoverUrl
-    } else {
+    if (!session?.user) return NextResponse.json({ error: 'sign in to change the cover photo' }, { status: 403 })
+    if (body.coverPhoto === null) newCoverUrl = null
+    else {
       if (typeof body.coverPhoto !== 'string' || body.coverPhoto.length > MAX_IMAGE_DATA_URL_BYTES) {
         return NextResponse.json({ error: 'image too large' }, { status: 400 })
       }
@@ -157,55 +146,52 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
           { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
         )
       }
-      const newUrl = await uploadImage(`sessions/${c}_${Date.now()}`, body.coverPhoto).catch(() => '')
-      if (!newUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
-      meta.coverPhotoUrl = newUrl
-      coverChanged = priorCoverUrl !== newUrl
+      newCoverUrl = await uploadImage(`sessions/${c}_${Date.now()}`, body.coverPhoto).catch(() => '')
+      if (!newCoverUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
     }
   }
 
-  const ttl = lifespanTTL(meta.lifespan)
-  await redis.set(k.meta(c), JSON.stringify(meta), { EX: ttl })
-  // Re-applying the full TTL here is intended: a settings save may change
-  // the lifespan, and re-stamping all keys keeps the session's expiry
-  // coherent.
-  const keys = await scanKeys(`s:${c}:*`)
-  if (keys.length > 0) {
-    const tx = redis.multi()
-    for (const key of keys) tx.expire(key, ttl)
-    await tx.exec()
-  }
-
-  let mirrorOk = true
+  // Inside the session mutation contract: the power from the caller's fresh
+  // grant; the body re-applied to the RECORD's current settings (a Postgres-
+  // backed session — meta is a projection of the record, D4) or to the cached
+  // meta (a Redis-only session, where meta is the data). Postgres first, the
+  // tightened meta before COMMIT (D1), the record's meta as the projection
+  // after it, plus a fenced EXPIRE of every key when the lifespan changed.
+  let prior: string | null = null
+  let result: SessionMeta
   try {
-    // Soft-deleted sessions have `code = NULL` (§8 contract), so the
-    // updateMany below naturally targets only live rows. Explicit filter
-    // documents intent and survives any future change to the scrub set.
-    // The settings subset of the one meta → columns spelling (lib/session.ts);
-    // it used to list columns by hand and missed lifespan, show-provenance and
-    // the hide-lineup pair.
-    await prisma.session.updateMany({
-      where: { code: c, deletedAt: null },
-      data: sessionSettingsColumns(meta),
+    result = await withSessionMutation(c, { label: 'settings', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+      const caller = admitted(ctx)
+      if (!isHostByIdentity(ctx.meta!, caller)) throw refuse(403, 'only the host can change session settings')
+      const base = ctx.row ? metaFromRecord(ctx.row, await readRecordRoles(tx, c), ctx.meta) : ctx.meta!
+      const next = applySettings(base, body, isPro)
+      prior = base.coverPhotoUrl || null
+      if (newCoverUrl !== undefined) next.coverPhotoUrl = newCoverUrl || undefined
+      if (ctx.row) {
+        await tx.session.update({ where: { id: ctx.row.id }, data: sessionSettingsColumns(next) })
+        await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(tightened(ctx.meta!, next)), { XX: true, KEEPTTL: true }) })
+        return metaFromRecord((await readLiveRow(tx, c))!, await readRecordRoles(tx, c), ctx.meta)
+      }
+      await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(next), { XX: true, KEEPTTL: true }) })
+      if (next.lifespan !== base.lifespan) await expireAll(ctx.fence!, c, next.lifespan)
+      return next
+    }, async (ctx, next) => {
+      if (!ctx.row) return
+      await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(next), { XX: true, KEEPTTL: true }) })
+      if (next.lifespan !== ctx.meta!.lifespan) await expireAll(ctx.fence!, c, next.lifespan)
     })
   } catch (err) {
-    // Non-fatal: Redis is the live-session source of truth, so the live
-    // /session/<code> surface is unaffected. The PG mirror repairs on the next
-    // SUCCESSFUL settings PATCH — NOT on a visit/rate archive touch, whose
-    // pgUpsertSession update path rewrites only `name`, never these columns.
-    // A cover change is the case that bites: /api/me/sessions reads
-    // cover_photo_url from Postgres, so a failed mirror means PG still holds
-    // the PRIOR url. Surface it, and (below) DON'T reclaim the prior bytes —
-    // deleting them would leave Moments home serving a dead image. The new
-    // bytes stay addressable and are reclaimed on the next successful change.
-    mirrorOk = false
-    console.error('[session] cover/settings PG mirror failed', { code: c, coverChanged, err })
+    if (newCoverUrl) reclaimImage(newCoverUrl).catch(() => {})
+    return contractFailure(err, c, { label: 'settings' })
   }
+  if (newCoverUrl !== undefined && prior && prior !== newCoverUrl) reclaimImage(prior).catch(() => {})
+  return NextResponse.json({ ok: true, meta: result })
+}
 
-  // Reclaim the replaced/removed cover bytes only once the mirror committed —
-  // otherwise the prior url is still the live Postgres value. Fire-and-forget;
-  // a transient S3 error must not fail the settings save.
-  if (coverChanged && priorCoverUrl && mirrorOk) reclaimImage(priorCoverUrl).catch(() => {})
-
-  return NextResponse.json({ ok: true, meta })
+// A lifespan change re-stamps every key of the session to the new TTL, fenced
+// (the meta writes themselves are XX KEEPTTL — mechanism 1).
+async function expireAll(fence: NonNullable<import('@/lib/sessionMutation').MutationCtx['fence']>, c: string, lifespan?: string) {
+  const ttl = lifespanTTL(lifespan)
+  const keys = await scanKeys(`s:${c}:*`)
+  if (keys.length) await fence.exec(m => { for (const key of keys) m.expire(key, ttl) })
 }

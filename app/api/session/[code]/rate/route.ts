@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, TTL, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
-import { WatchError } from 'redis'
-import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
-import { ensureMember } from '@/lib/sessionMember'
+import { redis, k, touchWithMeta, bumpLastSeen, unhideCarousel, lifespanTTL } from '@/lib/redis'
+import { ensurePromoted, mirrorLineup, type WineMeta } from '@/lib/session'
+import { ensureMemberRow } from '@/lib/sessionMember'
 import { normalizeCode } from '@verre/core'
-import { prisma } from '@/lib/prisma'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateFlavors } from '@/lib/checkinValidation'
 import { gateAndFillFlavors } from '@/lib/flavours'
 import { gateAromas, type AromaSelection } from '@/lib/aromas'
 import { validateScore } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { engagementDeletionCascade } from '@/lib/engagementCascade'
+import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
+import { withSessionMutation, admitted, refuse, ContractCold, ratingKeyWrite } from '@/lib/sessionMutation'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openAsParticipant } from '@/lib/sessionRoute'
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -53,404 +53,191 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     return NextResponse.json({ error: 'notes too long' }, { status: 400 })
   }
 
-  // Identity comes from auth() or x-vr-anon-token. Never from the request
-  // body. Also gates against ban/kick — a banned cookie can't keep
-  // writing ratings until the host notices.
-  const p = await participantOrBanned(c, req, session)
-  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
-  if (p.status === 'invalid') return authInvalid()
-  const identity = p.identity
+  // Identity comes from the auth cookie or x-vr-anon-token, never the body; the
+  // ban/kick gate runs against the record for a `u:` caller of a
+  // Postgres-backed session (and is re-made under the locks below).
+  const op = await openAsParticipant(c, req, session, 'identity required')
+  if (op instanceof NextResponse) return op
+  const { identity } = op
+  // Early 404 for a wine that isn't in the session (re-checked under the locks):
+  // a rate landing after a wine DELETE must not write an orphan rating.
+  if (!op.wines.some(w => w.id === wineId)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
   const ratingScore = sc.value ?? 0
   const validFlavors = fl.value
-
-  // Resolve the wine before the write. A rating for a wine that isn't in the
-  // session is rejected, never stored: the only way to get here is the
-  // delete-race (a rate POST landing after the wine was deleted — the DELETE
-  // handler already SCAN-deletes that wine's ratings), and writing anyway would
-  // re-create an orphan Redis rating that never re-renders. 404, write nothing.
-  const wines = await getWines(c)
-  const wine = wines.find(w => w.id === wineId)
-  if (!wine) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
-
-  // Server-side flavour normalisation (§6g gate + §5 zero-fill in one — see
-  // gateAndFillFlavors): wine.type is the SERVER's current style, so the stored
-  // shape (filled-or-empty, registry-keyed) holds for every writer regardless
-  // of what the client sent — a zero-valued off-style key from a stale-type
-  // race is stripped; a non-zero descriptor key from a stale client → 400.
-  const norm = gateAndFillFlavors(validFlavors, 'wine', wine.type)
-  if (norm.error) return NextResponse.json({ error: norm.error }, { status: 400 })
-  const storedFlavors = norm.value ?? {}
-
-  // Omitted-preserves needs the prior Redis value for the live copy (the PG
-  // upsert below preserves independently via CASE on the conflict row, so a
-  // TTL'd-away Redis key can't wipe the archived selections).
-  //
-  // ACCEPTED RACE (same class as the double-bump below): this read-modify-
-  // write has no WATCH guard, so if an aromas-PRESENT post from another
-  // surface lands between this read and the set, the live Redis copy keeps
-  // the stale aromas while PG keeps the new ones — divergence until the next
-  // aromas-present write. Requires the same user saving the same wine from
-  // two clients simultaneously; not worth the mutateWines-style isolated
-  // connection here.
-  let storedAromas: AromaSelection[] = ar.value ?? []
-  if (!aromasProvided) {
-    let preserved: AromaSelection[] | null = null
-    const priorRaw = await redis.get(k.rating(c, identity.id, wineId))
-    if (priorRaw) {
-      try {
-        const priorAromas = JSON.parse(priorRaw)?.aromas
-        if (Array.isArray(priorAromas)) preserved = priorAromas
-      } catch {}
-    }
-    // Redis has no usable prior (key TTL'd away, or the rating predates the
-    // aromas field) → hydrate from the archive. Without this, the Redis
-    // write below would rebuild the live copy with aromas:[] while PG
-    // preserves — and an aroma-AWARE client reading that live state would
-    // then save the [] back, making the wipe permanent. Logged-in only
-    // (anon ratings never archive, so Redis is their whole truth).
-    if (preserved === null && identity.kind === 'user') {
-      try {
-        const rows = await prisma.$queryRaw<{ aromas: unknown }[]>`
-          SELECT r.aromas FROM ratings r
-            JOIN sessions s ON r.session_id = s.id
-           WHERE r.wine_id = ${wineId}
-             AND r.user_id = ${Number(identity.id.slice(2))}
-             AND s.code = ${c}
-           LIMIT 1`
-        const pgAromas = rows[0]?.aromas
-        if (Array.isArray(pgAromas)) preserved = pgAromas as AromaSelection[]
-      } catch (err) {
-        console.error('rate aromas hydrate error:', err)
-      }
-    }
-    if (preserved !== null) storedAromas = preserved
+  const userId = identity.kind === 'user' ? Number(identity.id.slice(2)) : null
+  // Promotion is a logged-in act and runs BEFORE this route's own contract (the
+  // locks are not re-entrant). Best-effort: if it fails the rating stays
+  // Redis-only, as before; the next logged-in act retries the promotion.
+  if (userId !== null) {
+    try { await ensurePromoted(c, op.meta) }
+    catch (err) { console.error('[rate] promotion failed', { code: c, err }) }
   }
 
-  // Rating is keyed by identity id, never by display name. Two participants
-  // sharing a display name (legitimately via collision, or accidentally via
-  // a client-side race) cannot overwrite each other's ratings.
+  // The rate, inside the session mutation contract (redis-rehydration § 5.4,
+  // plan § 3). Every rate takes the advisory lock (the record is serialized:
+  // rate, check-in PATCH, deletes, rebuild) and bumps the publication generation
+  // (a rebuild whose backend died cannot publish a stale rating over this one).
+  // 🔒 A rate that may REAP its rating (an empty payload — score 0, no chips, no
+  // notes, aromas omitted or empty) may DELETE the rating key, so it also takes
+  // the Redis lease (r3-3: a key-deleting path must hold it, or a zombie
+  // rebuild's NX publish could resurrect the deleted rating).
   //
-  // `at` here is the mirror-ordering token, nothing else — no client reads
-  // it (RatingMeta.at is carried but unconsumed). For logged-in raters it is
-  // a PROVISIONAL always-loses 0: the post-commit re-assert below replaces
-  // it with the row's PG-clock token. Stamping app time here would let a
-  // skewed app clock (ahead of PG) out-stamp real PG tokens — the re-assert
-  // AND a later-committing PATCH mirror would both skip behind the phantom-
-  // future value and Redis would never converge (Codex round 4). With 0 the
-  // provisional never blocks any writer's version guard; whichever PG-
-  // stamped mirror lands next owns the key, and every interleaving of
-  // rate/PATCH converges to the last PG committer. (A request-id ownership
-  // tag was considered and rejected: a PATCH mirror running before the
-  // owner's re-assert still skips against the future stamp, then the owner
-  // normalizes to an OLDER token — diverged again.) Anons keep app time:
-  // single writer, never archived, never mirrored.
-  await redis.set(
-    k.rating(c, identity.id, wineId),
-    JSON.stringify({
-      score: ratingScore, flavors: storedFlavors, aromas: storedAromas, notes: notes || '',
-      at: identity.kind === 'user' ? 0 : Date.now(),
-    }),
-    { EX: TTL },
-  )
-
-  if (identity.kind === 'user') {
-    const userId = Number(identity.id.slice(2))  // strip "u:" prefix
-    try {
-      const meta = await getSessionMeta(c)
-      if (meta) {
-        // pgUpsertSession returns the sessions.id directly (one DB roundtrip
-        // instead of upsert + findUnique). The integer id is what the new
-        // partial unique on ratings (user_id, wine_id, session_id) needs
-        // for its FK write.
-        const sessionId = await pgUpsertSession(c, meta)
-        // The durable member row (redis-rehydration § 4.4): /rate used to
-        // promote and archive without one when the rater never /visit-ed. Its
-        // admission re-check runs under the session row lock: a ban or kick
-        // that landed after this request's gate wins — nothing is archived and
-        // the caller gets the removed bounce.
-        const member = await ensureMember(userId, c, meta)
-        if (member === 'banned' || member === 'kicked') return authRemoved('removed from session')
-        await pgUpsertWine(c, wine)
-
-        // Snapshot the prior rating so the lifetime_* counters bump
-        // only on the relevant transitions (new rating, first 5★, longer
-        // note, new month). Counters NEVER decrement. Raw SELECT instead
-        // of prisma.rating.findUnique({wineId_userId:…}) because the
-        // compound-key accessor disappears once this PR's migration
-        // drops @@unique([wineId, userId]).
-        //
-        // Scoped to (wine_id, user_id, session_id) so the prior we read
-        // matches the row the upsert below will target. Without the
-        // session_id clause, once phase 2 ships standalone ratings
-        // (session_id IS NULL) for the same (wine, user) pair, this
-        // SELECT could pick up the standalone row and mis-attribute
-        // counter deltas for the session row.
-        //
-        // Race note: a brand-new (wine, user, session) triple under two
-        // concurrent tabs has both SELECTs returning null and both
-        // INSERTs racing on the partial unique. The row itself collapses
-        // to one (ON CONFLICT DO UPDATE — no 23505), but both branches
-        // compute isNew=true and double-bump lifetime_ratings by 1. This
-        // is unchanged from the old upsert and accepted at current scale;
-        // see future-work-rewire.md if it ever becomes user-visible.
-        const priorRows = await prisma.$queryRaw<{ score: unknown; notes: string | null }[]>`
-          SELECT score, notes FROM ratings
-           WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${sessionId}
-           LIMIT 1`
-        const prior = priorRows[0] ?? null
-        const noteLen = (notes || '').length
-        const wroteNote = noteLen > 5
-
-        // `origin` shipped in rewire phase 1 (additive). Every rating
-        // from this endpoint is by definition session-origin. The raw
-        // INSERT…ON CONFLICT shape mirrors the SQL phase 2 needs — race-
-        // safe under the new partial unique (concurrent same-(user,wine,
-        // session) POSTs collapse to a single UPDATE instead of a 23505).
-        // Conflict target columns must match the partial-unique index
-        // declaration exactly so Postgres picks it as the arbiter.
-        //
-        // Caveat documented in rewire.md §6 phase 1.5: raw SQL bypasses
-        // Prisma's typecheck — a future column rename won't be caught
-        // at compile time. Same trade-off the lifetime-counter UPDATE
-        // below already accepts.
-        // RETURNING id is captured so the engagement-deletion cascade
-        // below (when the upsert lands an empty payload) can target the
-        // exact row. ON CONFLICT DO UPDATE … RETURNING returns the
-        // pre-existing id on conflict — the canonical row, not the
-        // client's stale local id.
-        // `aromas` mirrors the request's present/omitted split: on conflict an
-        // omitted field keeps the existing row's value (CASE on ratings.aromas)
-        // so a client that predates aromas can't wipe them — the Redis
-        // omitted-preserves above covers the live copy, this covers the
-        // archive even when the Redis key already TTL'd away. RETURNING
-        // `aromas` hands back the value the row actually COMMITTED (which on
-        // the omitted path can be a concurrent PATCH's newer selection, not
-        // the request-side `storedAromas` pre-read) — the engagement check +
-        // re-assert below must use it, or Redis converges to a stale array.
-        // `mirror_at = clock_timestamp()` is the mirror-ordering token, set IN
-        // the statement that produces it and returned as `ts` (redis-rehydration
-        // § 4.3: the token is durable so a later rebuild stamps the same value).
-        // On the conflict path DO UPDATE runs after the conflicting row lock is
-        // acquired, so lock-queue order = token order = commit order — matching
-        // the PATCH's in-statement clock_timestamp(). rated_at's NOW()
-        // (transaction-START time) must NOT be used as the token: a statement
-        // that blocked behind a PATCH commits later yet carries the EARLIER
-        // stamp, and the re-assert would wrongly skip. DO UPDATE re-evaluates
-        // clock_timestamp() rather than taking EXCLUDED.mirror_at, which was
-        // computed before the lock wait.
-        const upsertRows = await prisma.$queryRaw<{ id: number; aromas: unknown; ts: Date }[]>`
-          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at, mirror_at)
-          VALUES (
-            ${wineId},
-            ${userId},
-            ${sessionId},
-            'session',
-            ${identity.displayName},
-            ${ratingScore}::numeric,
-            ${JSON.stringify(storedFlavors)}::jsonb,
-            ${JSON.stringify(storedAromas)}::jsonb,
-            ${notes || null},
-            NOW(),
-            clock_timestamp()
-          )
-          ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL
-          DO UPDATE SET
-            rater_name = EXCLUDED.rater_name,
-            score = EXCLUDED.score,
-            flavors = EXCLUDED.flavors,
-            aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
-            notes = EXCLUDED.notes,
-            rated_at = EXCLUDED.rated_at,
-            mirror_at = clock_timestamp()
-          RETURNING id, aromas, mirror_at AS ts`
-        const ratingId = upsertRows[0]?.id
-        const pgStampMs = upsertRows[0]?.ts ? new Date(upsertRows[0].ts).getTime() : null
-        const committedAromas: AromaSelection[] = Array.isArray(upsertRows[0]?.aromas)
-          ? upsertRows[0].aromas as AromaSelection[]
-          : storedAromas
-
-        // Materialise the session feed_item on first engagement. The engagement
-        // trigger from §3 of the rewire: any rating with score > 0, flavour
-        // chips, or a note counts as engagement. A rate POST with all three
-        // empty (e.g. a misbehaving or hostile client) lands the rating row
-        // — that's the user's interaction with the wine — but does NOT create
-        // a social post. Phase 3's engagement-deletion auto-cascade reaps any
-        // emptied rating; this guard avoids materialising the post in the
-        // first place so the user doesn't accumulate empty session posts.
-        //
-        // Idempotent via the partial unique (user_id, session_id). Subsequent
-        // rates in the same session collapse to ON CONFLICT DO NOTHING — the
-        // feed_item's createdAt is never updated, so post chronology stays
-        // anchored on first engagement.
-        //
-        // Anon ratings never reach this branch (the outer `identity.kind ===
-        // 'user'` gate at the top of the handler skips them). feed_items.user_id
-        // NOT NULL enforces this at the schema level.
-        const hasEngagement = ratingScore > 0
-          || Object.keys(storedFlavors).length > 0
-          || committedAromas.length > 0
-          || (notes != null && notes.length > 0)
-        let cascadeReaped = false
-        if (hasEngagement) {
-          await prisma.$executeRaw`
-            INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
-            VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
-            ON CONFLICT (user_id, session_id) DO NOTHING`
-        } else if (ratingId != null) {
-          // Engagement-deletion cascade — the user just cleared score +
-          // chips + notes on a previously-engaged rating. Reap the
-          // empty row and drop the session feed_item if this was their
-          // only rating in the session. The empty-payload predicate on
-          // the cascade is a safety net: if a concurrent engaged POST
-          // (from another tab) lands between this handler's upsert and
-          // the cascade's SELECT, the row no longer matches the empty
-          // predicate, cascade no-ops, and we MUST leave Redis alone —
-          // wiping it would clobber the other tab's just-written state.
-          // The cascade returns true only when it actually reaped; gate
-          // the Redis cleanup AND the lifetime-counter bump on it.
-          cascadeReaped = await engagementDeletionCascade(ratingId)
-          if (cascadeReaped) await redis.del(k.rating(c, identity.id, wineId))
+  // Inside, in order: admission from the caller's FRESH grant (Redis for
+  // anonymous callers); the wine read under the locks (an absent lineup is a
+  // cold cache → rebuild, never "no such wine"); the server-side flavour
+  // normalisation against the wine's CURRENT style; then, for a logged-in
+  // rater of a Postgres-backed session, the member row, the wine's FK row
+  // (the lineup mirror), the rating upsert (mirror_at = the token, § 4.3), the
+  // feed item or the engagement-deletion cascade, the lifetime counters and the
+  // HoF entry — all in this one transaction. The rating key is written last,
+  // with the committed row's own token: under the advisory lock every writer of
+  // the row is serialized, so the last committer also wrote the key last (the
+  // old provisional-0 + post-commit re-assert dance existed only because the
+  // check-in PATCH was not serialized with the rate).
+  const reaps = userId !== null && ratingScore === 0 && Object.keys(validFlavors ?? {}).length === 0
+    && !(typeof notes === 'string' && notes.length > 0) && (!aromasProvided || (ar.value ?? []).length === 0)
+  let reclaim: string[] = []
+  try {
+    await withSessionMutation(c, {
+      label: 'rate', redisLock: reaps ? { waitMs: 3000 } : false, caller: identity, bumpGen: true, expectedCreatedAt: op.meta.createdAt,
+    }, async (tx, ctx) => {
+      // Per attempt: a rolled-back attempt's captures must not survive into a
+      // re-run (r3 P1 — the cold / lease / superseded retries).
+      reclaim = []
+      const caller = admitted(ctx)
+      const raw = await redis.get(k.wines(c))
+      if (raw === null) throw new ContractCold(c)
+      const wines = JSON.parse(raw) as WineMeta[]
+      const wine = wines.find(w => w.id === wineId)
+      if (!wine) throw refuse(404, 'wine not found')
+      // §6g gate + §5 zero-fill in one: the stored shape holds for every writer
+      // whatever the client sent (an off-style zero key is stripped; a non-zero
+      // descriptor key from a stale client → 400).
+      const norm = gateAndFillFlavors(validFlavors, 'wine', wine.type)
+      if (norm.error) throw refuse(400, norm.error)
+      const storedFlavors = norm.value ?? {}
+      const key = k.rating(c, caller.id, wineId)
+      // Aromas are present-replaces / omitted-preserves (aroma-layer.md §4): an
+      // omitted field keeps the prior selection — from the live key, else from
+      // the archive (a TTL'd key must not let a stale client wipe them).
+      let storedAromas: AromaSelection[] = ar.value ?? []
+      if (!aromasProvided) {
+        let preserved: AromaSelection[] | null = null
+        const priorRaw = await redis.get(key)
+        if (priorRaw) {
+          try { const a = JSON.parse(priorRaw)?.aromas; if (Array.isArray(a)) preserved = a } catch {}
         }
-
-        // Post-commit RE-ASSERT (PR #81 review P2 — one ordering authority).
-        // The pre-archive SET above stamps a provisional always-loses 0 (see
-        // its comment); the feed PATCH mirror stamps PG clock_timestamp().
-        // Without this re-assert, a PATCH that commits between our Redis
-        // write and our PG commit overwrote the key with its (newer-stamped)
-        // payload while OUR upsert became the last PG committer — stores
-        // diverged until the next write. Re-asserting here with the
-        // upsert's own post-lock clock_timestamp() (`ts` in RETURNING — NOT
-        // rated_at's transaction-start NOW(), see the upsert comment) puts
-        // both writers on the SAME PG-clock token: whoever acquired the row
-        // lock last carries the highest stamp and wins the key, so Redis
-        // always converges to the PG winner. The payload uses
-        // `committedAromas` (the row's RETURNING value), not the request-
-        // side pre-read — on the omitted path PG may have preserved a
-        // concurrent PATCH's newer selection. Version-guarded like the
-        // PATCH mirror (skip when the stored payload is same-or-newer; skip
-        // when the key is gone — a concurrent clear/wipe must not be
-        // resurrected). Best-effort: PG is committed, a Redis hiccup must
-        // not fail the rate.
-        if (!cascadeReaped && pgStampMs != null) {
-          try {
-            for (let attempt = 0; attempt < 5; attempt++) {
-              try {
-                await redis.executeIsolated(async (iso) => {
-                  const key = k.rating(c, identity.id, wineId)
-                  await iso.watch([key])
-                  try {
-                    const cur = await iso.get(key)
-                    if (!cur) { await iso.unwatch(); return }
-                    let curAt = 0
-                    try { curAt = Number(JSON.parse(cur)?.at) || 0 } catch { curAt = 0 }
-                    if (curAt >= pgStampMs) { await iso.unwatch(); return }
-                    await iso.multi().set(key, JSON.stringify({
-                      score: ratingScore, flavors: storedFlavors, aromas: committedAromas, notes: notes || '', at: pgStampMs,
-                    }), { EX: TTL }).exec()
-                  } catch (inner) {
-                    await iso.unwatch().catch(() => {})
-                    throw inner
-                  }
-                })
-                break
-              } catch (err) {
-                if (err instanceof WatchError) continue
-                throw err
-              }
-            }
-          } catch (err) {
-            console.warn('rate mirror re-assert failed (PG committed):', err)
-          }
+        if (preserved === null && userId !== null && ctx.row) {
+          const rows = await tx.$queryRaw<{ aromas: unknown }[]>`
+            SELECT aromas FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${ctx.row.id} LIMIT 1`
+          if (Array.isArray(rows[0]?.aromas)) preserved = rows[0].aromas as AromaSelection[]
         }
+        if (preserved !== null) storedAromas = preserved
+      }
+      const pttl = Number(await redis.pTTL(k.meta(c)))
+      const ttlMs = pttl > 0 ? pttl : lifespanTTL(ctx.row?.lifespan ?? undefined) * 1000
+      const value = (aromas: AromaSelection[], at: number) =>
+        JSON.stringify({ score: ratingScore, flavors: storedFlavors, aromas, notes: notes || '', at })
 
-        // Lifetime counter updates. Done as a single SQL UPDATE with
-        // GREATEST() / conditional increments so we never double-count
-        // (e.g. re-rating to 5★ after rating to 5★ doesn't bump again).
-        // Prisma surfaces Decimal columns as runtime Decimal objects;
-        // coerce via Number() (or toNumber()) before strict equality.
-        //
-        // Skip entirely when the cascade just reaped the row — incrementing
-        // lifetime_ratings for a row that no longer exists would leave
-        // permanent drift (counters never decrement). first_rated_at
-        // similarly should anchor on a real engagement, not on a no-op
-        // empty rate from a misbehaving client.
-        const isNew = !prior
-        const priorScore = prior?.score == null ? null : Number(prior.score)
-        const newFiveStar = ratingScore === 5 && priorScore !== 5
-        const newOneStar  = ratingScore === 1 && priorScore !== 1
-        const newNote     = wroteNote && (!prior || (prior.notes || '').length <= 5)
-        const newPhoto    = isNew && !!(wine.imageUrl || wine.image)
-
-        // Did this rating add a brand-new month bucket to the user's set?
-        // Only checked on NEW ratings (re-rating same wine doesn't add a
-        // month). We just inserted, so the current month is guaranteed
-        // present; bump only if THIS rating is the only one in the bucket.
-        let newMonth = false
-        if (isNew && !cascadeReaped) {
-          const [{ count }] = await prisma.$queryRaw<[{count:bigint}]>`
-            SELECT COUNT(*) AS count FROM ratings
-            WHERE user_id=${userId}
-              AND DATE_TRUNC('month', rated_at) = DATE_TRUNC('month', NOW())`
-          newMonth = Number(count) === 1
-        }
-
-        if (!cascadeReaped) {
-          await prisma.$executeRaw`
-            UPDATE users SET
-              lifetime_ratings = lifetime_ratings + ${isNew ? 1 : 0},
-              lifetime_five_star = lifetime_five_star + ${newFiveStar ? 1 : 0},
-              lifetime_one_star = lifetime_one_star + ${newOneStar ? 1 : 0},
-              lifetime_notes_written = lifetime_notes_written + ${newNote ? 1 : 0},
-              lifetime_max_note_len = GREATEST(lifetime_max_note_len, ${noteLen}),
-              lifetime_photos_added = lifetime_photos_added + ${newPhoto ? 1 : 0},
-              lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
-              first_rated_at = COALESCE(first_rated_at, NOW())
-            WHERE id = ${userId}`
+      if (userId === null || !ctx.row) {
+        // Anonymous (never archived — Redis is their whole truth), or a
+        // logged-in rater of a Redis-only session.
+        await ratingKeyWrite(ctx, key, value(storedAromas, Date.now()), { pxMs: ttlMs })
+        return
+      }
+      const sessionId = ctx.row.id
+      await ensureMemberRow(tx, ctx.row, userId)
+      await mirrorLineup(tx, sessionId, wines)
+      // The prior row, for the counter transitions (counters never decrement).
+      const priorRows = await tx.$queryRaw<{ score: unknown; notes: string | null }[]>`
+        SELECT score, notes FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${sessionId} LIMIT 1`
+      const prior = priorRows[0] ?? null
+      // The arbiter matches the partial unique (user_id, wine_id, session_id).
+      // On conflict an omitted aromas field keeps the row's value; RETURNING
+      // aromas is what the row actually committed. mirror_at =
+      // clock_timestamp() is the mirror-ordering token, set in the statement
+      // that produces it (§ 4.3 — rated_at's transaction-start NOW() is not).
+      const upsertRows = await tx.$queryRaw<{ id: number; aromas: unknown; ts: Date }[]>`
+        INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at, mirror_at)
+        VALUES (${wineId}, ${userId}, ${sessionId}, 'session', ${caller.displayName}, ${ratingScore}::numeric,
+                ${JSON.stringify(storedFlavors)}::jsonb, ${JSON.stringify(storedAromas)}::jsonb, ${notes || null}, NOW(), clock_timestamp())
+        ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL
+        DO UPDATE SET
+          rater_name = EXCLUDED.rater_name, score = EXCLUDED.score, flavors = EXCLUDED.flavors,
+          aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
+          notes = EXCLUDED.notes, rated_at = EXCLUDED.rated_at, mirror_at = clock_timestamp()
+        RETURNING id, aromas, mirror_at AS ts`
+      const { id: ratingId, ts } = upsertRows[0]
+      const committedAromas = Array.isArray(upsertRows[0].aromas) ? upsertRows[0].aromas as AromaSelection[] : storedAromas
+      // The session feed item materialises on first engagement (score, chips,
+      // aromas or a note); idempotent via the partial unique (user_id,
+      // session_id). An emptied rating is reaped instead (engagement-deletion
+      // cascade) — and its key goes with it.
+      const engaged = ratingScore > 0 || Object.keys(storedFlavors).length > 0 || committedAromas.length > 0 || (notes != null && notes.length > 0)
+      if (engaged) {
+        await tx.$executeRaw`
+          INSERT INTO feed_items (user_id, kind, session_id, created_at, location_public)
+          VALUES (${userId}, 'session', ${sessionId}, NOW(), false)
+          ON CONFLICT (user_id, session_id) DO NOTHING`
+      } else {
+        const reaped = await engagementCascadeIn(tx, ratingId, 'empty-only')
+        if (reaped) {
+          reclaim = reaped
+          await ratingKeyWrite(ctx, key, null)
+          return
         }
       }
-    } catch (err) {
-      console.error('rate counter update error:', err)
-    }
-
-    if (ratingScore === 5) {
-      try {
-        await prisma.hallOfFame.upsert({
+      // Lifetime counters on their transitions (GREATEST / conditional
+      // increments, never a decrement). Decimal → Number before equality.
+      const noteLen = (notes || '').length
+      const isNew = !prior
+      const priorScore = prior?.score == null ? null : Number(prior.score)
+      const newNote = noteLen > 5 && (!prior || (prior.notes || '').length <= 5)
+      let newMonth = false
+      if (isNew) {
+        const [{ count }] = await tx.$queryRaw<[{ count: bigint }]>`
+          SELECT COUNT(*) AS count FROM ratings WHERE user_id = ${userId} AND DATE_TRUNC('month', rated_at) = DATE_TRUNC('month', NOW())`
+        newMonth = Number(count) === 1
+      }
+      await tx.$executeRaw`
+        UPDATE users SET
+          lifetime_ratings = lifetime_ratings + ${isNew ? 1 : 0},
+          lifetime_five_star = lifetime_five_star + ${ratingScore === 5 && priorScore !== 5 ? 1 : 0},
+          lifetime_one_star = lifetime_one_star + ${ratingScore === 1 && priorScore !== 1 ? 1 : 0},
+          lifetime_notes_written = lifetime_notes_written + ${newNote ? 1 : 0},
+          lifetime_max_note_len = GREATEST(lifetime_max_note_len, ${noteLen}),
+          lifetime_photos_added = lifetime_photos_added + ${isNew && !!(wine.imageUrl || wine.image) ? 1 : 0},
+          lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
+          first_rated_at = COALESCE(first_rated_at, NOW())
+        WHERE id = ${userId}`
+      if (ratingScore === 5) {
+        await tx.hallOfFame.upsert({
           where: { wineName_userId: { wineName: wine.name, userId } },
           create: {
             wineName: wine.name, producer: wine.producer || null, vintage: wine.vintage || null,
-            style: wine.type || null, score: 5, raterName: identity.displayName,
-            userId, sessionCode: c, ratedAt: new Date(),
+            style: wine.type || null, score: 5, raterName: caller.displayName, userId, sessionCode: c, ratedAt: new Date(),
           },
-          update: { raterName: identity.displayName, score: 5, ratedAt: new Date() },
+          update: { raterName: caller.displayName, score: 5, ratedAt: new Date() },
         })
-      } catch {}
-    }
+      }
+      await ratingKeyWrite(ctx, key, value(committedAromas, new Date(ts).getTime()), { pxMs: ttlMs })
+    })
+  } catch (err) {
+    return contractFailure(err, c, { label: 'rate' })
   }
-
+  reclaimImages(reclaim)
   await touchWithMeta(c)
 
-  // Award badges + XP directly (no HTTP round-trip). Logged-in users only.
-  if (identity.kind === 'user') {
-    const userId = Number(identity.id.slice(2))
-    // In-moment activity → keep a date-less session pinned as "Just visited"
-    // and un-hide it from the carousel if dismissed (re-engagement = un-hide).
-    // bumpLastSeen sets the hash's TTL itself (it can be the first write, with
-    // no prior /visit, after touchWithMeta's scan above already ran).
+  // Logged-in only: keep a date-less session pinned as "Just visited", un-hide
+  // it from the carousel (re-engagement), award badges + XP in the background.
+  if (userId !== null) {
     await bumpLastSeen(c, userId)
     await unhideCarousel(userId, c)
     const hasNote = (notes || '').length > 5
-    const action = ratingScore === 5
-      ? (hasNote ? 'rate_5star_note' : 'rate_5star')
-      : (hasNote ? 'rate_with_note' : 'rate')
-    // Fire-and-forget: badge awards run in the background after the rate
-    // POST has already responded. Log unexpected errors so genuine bugs
-    // (DB drops, schema drift) stay visible — checkAndAwardBadges itself
-    // already swallows the two known-safe Prisma codes (P2002/P2003).
-    import('@/lib/badgeService').then(({ checkAndAwardBadges }) =>
-      checkAndAwardBadges(userId, action)
-    ).catch(err => console.error('[badges] award failed in rate handler:', err))
+    const action = ratingScore === 5 ? (hasNote ? 'rate_5star_note' : 'rate_5star') : (hasNote ? 'rate_with_note' : 'rate')
+    import('@/lib/badgeService').then(({ checkAndAwardBadges }) => checkAndAwardBadges(userId, action))
+      .catch(err => console.error('[badges] award failed in rate handler:', err))
   }
-
   return NextResponse.json({ ok: true })
 }

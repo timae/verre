@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import type { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
-import { redis, k, scanKeys, createFailFastRedis, type FailFastRedis } from '@/lib/redis'
+import { redis, k, scanKeys, lifespanTTL, createFailFastRedis, type FailFastRedis } from '@/lib/redis'
 import { userIdentityId } from '@/lib/identity'
 import { deleteAllNativeSessions } from '@/lib/identityStore'
-import { withSessionLocks, type LockedSession } from '@/lib/sessionMutation'
+import { withSessionLocks, scopedInvalidate, type LockedSession } from '@/lib/sessionMutation'
+import { acquireSessionLock, releaseSessionLock, renewSessionLock, sessionLockHeld, sessionLockKey, fencedDel, lockTiming } from '@/lib/sessionLock'
 import type { SessionMeta, WineMeta } from '@/lib/session'
 
 export const TOMBSTONE_NAME = '[deleted]'
@@ -39,7 +40,7 @@ async function reclaimImage(url: string | null | undefined) {
   }
 }
 
-// ── Account deletion (docs/dev/proposals/redis-rehydration.md § 6, release A) ──
+// ── Account deletion (docs/dev/proposals/redis-rehydration.md § 6) ──────────────
 //
 // 🔒 ONE Postgres transaction over every session the user touched AND the user
 // row. Nothing is committed per session: a failure anywhere rolls everything
@@ -59,19 +60,30 @@ async function reclaimImage(url: string | null | undefined) {
 //               session's Redis copy; Redis-only registrations; the carousel key
 //               — projections, best-effort and time-bounded
 //
-// The wipe of an empty hosted session deletes its Redis keys INSIDE the
-// transaction (the § 5.4 soft-delete rule): a Redis failure rolls the whole
-// deletion back. No Redis lease in release A (owner ruling): no other writer
-// takes one yet, so it would guard against nobody; lease, renewal and 'replan'
-// arrive in release B with the lock every writer takes. Accepted A caveat: a
-// transaction that fails after its Redis wipe leaves that empty moment gone
-// from Redis while its row is live (there is no rebuild before release B).
+// The Redis lease, renew and 'replan' (release B, plan § 5). Discovery names the
+// WIPE CANDIDATES — hosted live sessions with no Postgres rating by anyone else,
+// plus every code reserved by an earlier 'replan' — and their
+// lock:session:{CODE} leases are taken BEFORE the transaction, sorted, on the
+// fail-fast client (a lease taken while holding advisory locks would invert the
+// lock order: Redis → advisory → row). Under the locks every branch is decided
+// fresh: a hosted session that is unengaged in Postgres is wiped only if it is
+// LEASED (and its anonymous rating keys say unengaged too — read under the
+// lease); one that became empty after discovery is a 'replan' (roll back,
+// release, restart with the code reserved — bounded); one that became engaged is
+// anonymized and its lease goes unused. Every held lease is renewed (fenced)
+// before each session's work, and a refused renew rolls everything back
+// (retryable). The wipe is a fenced DEL through the lease, INSIDE the
+// transaction (the § 5.4 soft-delete rule). Redis unreachable or a lease busy
+// → the deletion fails retryably — the fence is never waived for availability.
+// A deletion that fails after its wipe leaves a live row whose next open
+// rebuilds it (release A's caveat is closed by the rebuild).
 //
-// Accepted A residual (owner ruling Q1): the "engaged now" re-read is
-// authoritative for committed Postgres ratings — a rating INSERT's FK takes FOR
-// KEY SHARE on the sessions row, which conflicts with our FOR UPDATE — but
-// anonymous Redis rating keys have no lock in A, so an anonymous rate landing
-// between the re-read and the wipe is wiped with the moment (today's window).
+// After COMMIT, each live tombstoned session's d: migration runs under that
+// session's lease (the held one, or one acquired for it) and bumps the
+// publication generation; busy or failed → scoped invalidation (meta DEL if
+// it is still this incarnation + a generation bump), so the next open
+// rebuilds from the record and a rebuild that read the pre-deletion record
+// can never publish it.
 //
 // 🔒 Lock order and deadlocks: advisory (sorted) → sessions rows (sorted) →
 // users row. A cycle can only involve the deleting user's OWN concurrent write
@@ -86,6 +98,7 @@ async function reclaimImage(url: string | null | undefined) {
 
 export const ACCOUNT_DELETE_MAX_WIPES = 25
 const MAX_ATTEMPTS = 3
+const MAX_REPLANS = 3
 const REDIS_TIMEOUT_MS = 3000
 const POST_COMMIT_BUDGET_MS = 8000
 const NATIVE_REVOKE_TIMEOUT_MS = 10_000
@@ -97,15 +110,22 @@ export class AccountDeleteTooManyWipesError extends AccountDeleteRetryableError 
   }
 }
 class TouchedSetGrewError extends AccountDeleteRetryableError {}
+// A hosted session that became empty in Postgres after discovery, without a
+// lease: roll back, release, and restart with the code reserved.
+class ReplanError extends Error {
+  constructor(readonly code: string) { super(`replan: ${code} became a wipe candidate`) }
+}
 
 export type AccountDeleteHooks = {
   afterDiscovery?: () => Promise<void>
+  afterLeases?: () => Promise<void>
   afterLocks?: () => Promise<void>
   afterSession?: (code: string) => Promise<void>
   beforeWipeDel?: (client: FailFastRedis) => Promise<void>
   beforeUserDelete?: () => Promise<void>
-  // Test seams: make the post-commit projections fail; observe reclaims.
+  // Test seams: make the post-commit projections (and their invalidation) fail; observe reclaims.
   failProjection?: boolean
+  failInvalidation?: boolean
   onReclaim?: (url: string) => void
 }
 
@@ -184,11 +204,19 @@ export async function deleteAccountDurable(userId: number, opts: AccountDeleteOp
   const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { imageUrl: true } })
 
   let committed: Committed | null = null
-  for (let attempt = 1; ; attempt++) {
+  const reserved = new Set<string>()
+  for (let attempt = 1, replans = 0; ; attempt++) {
     try {
-      committed = await attemptDelete(userId, opts)
+      committed = await attemptDelete(userId, opts, reserved)
       break
     } catch (err) {
+      if (err instanceof ReplanError) {
+        if (++replans > MAX_REPLANS) throw new AccountDeleteRetryableError('moments kept changing during the deletion; try again')
+        reserved.add(err.code)
+        attempt--
+        console.warn('[accountDelete] replan', { code: err.code, replans })
+        continue
+      }
       const retry = err instanceof TouchedSetGrewError || isDeadlock(err)
       if (!retry || attempt >= MAX_ATTEMPTS) throw err
       console.warn('[accountDelete] retrying after', { attempt, reason: (err as Error).message })
@@ -216,6 +244,8 @@ type Committed = {
   sessions: SessionOutcome[]
   liveCodes: Set<string>
   reclaimUrls: string[]
+  // Leases held through COMMIT, reused by the post-commit projections.
+  leases: Map<string, string>
 }
 
 function isDeadlock(err: unknown): boolean {
@@ -239,26 +269,49 @@ async function touchedLiveCodes(db: Prisma.TransactionClient | typeof prisma, us
   return rows.map(r => r.code).sort()
 }
 
-async function attemptDelete(userId: number, opts: AccountDeleteOptions): Promise<Committed> {
+async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserved: Set<string>): Promise<Committed> {
   const hooks = opts.hooks ?? {}
   const maxWipes = opts.maxWipes ?? ACCOUNT_DELETE_MAX_WIPES
   const uid = userIdentityId(userId)
 
-  // ── Discovery (tentative). Decides nothing: it only names the codes to lock.
-  // The size bound is enforced on the decisions made UNDER the locks, still
-  // BEFORE any durable statement (R7-1B — no pre-pass); a discovery-time count
-  // would be wrong both ways (it cannot see anonymous Redis ratings, and
-  // engagement can change before the locks).
+  // ── Discovery (tentative). Decides nothing: it names the codes to lock and
+  // the WIPE CANDIDATES to lease (hosted, no Postgres rating by anyone else ∪
+  // the codes reserved by a 'replan'). Both size bounds fail BEFORE any durable
+  // statement (R7-1B — no pre-pass): the candidate count here, the decided
+  // wipe count under the locks.
   const codes = await touchedLiveCodes(prisma, userId)
+  const candidates = [...new Set([...(await unengagedHosted(prisma, userId)), ...[...reserved].filter(c => codes.includes(c))])].sort()
   await hooks.afterDiscovery?.()
+  if (candidates.length > maxWipes) throw new AccountDeleteTooManyWipesError(candidates.length, maxWipes)
 
-  // Redis for the durable path is a dedicated FAIL-FAST connection, opened
-  // only if a hosted session turns out empty in Postgres (the PG-only path
-  // issues no Redis command at all) and closed when the attempt ends.
+  // Redis for the durable path is a dedicated FAIL-FAST connection, opened only
+  // when there is a wipe candidate (the PG-only path issues no Redis command at
+  // all) and closed when the attempt ends. The leases are taken on it, sorted,
+  // BEFORE the transaction.
   const durable = new DurableRedis()
+  const leases = new Map<string, string>()
+  let committed = false
   try {
-    return await prisma.$transaction(async (tx): Promise<Committed> => {
+    for (const code of candidates) {
+      const token = await durable.step(`lease ${code}`, (c) => acquireSessionLock(code, { waitMs: REDIS_TIMEOUT_MS - 500, client: c }))
+      if (!token) throw new AccountDeleteRetryableError(`moment ${code} is busy; try again`)
+      leases.set(code, token)
+    }
+    await hooks.afterLeases?.()
+    const out = await prisma.$transaction(async (tx): Promise<Committed> => {
       const locked = await withSessionLocks(tx, codes)
+      // Entry checks for the leased codes, inside the locks: the lease is still
+      // ours and the cache holds this incarnation (or nothing).
+      for (const [code, token] of leases) {
+        const row = locked.get(code)
+        await durable.step(`entry ${code}`, async (c) => {
+          if (!(await sessionLockHeld(code, token, c))) throw new AccountDeleteRetryableError(`lease on ${code} was lost`)
+          const raw = await c.get(k.meta(code))
+          if (raw && row?.createdAt && (JSON.parse(raw) as SessionMeta).createdAt !== row.createdAt.getTime()) {
+            throw new AccountDeleteRetryableError(`moment ${code} changed incarnation`)
+          }
+        })
+      }
       await hooks.afterLocks?.()
 
       // The users row, AFTER the session locks (module header: lock order). From
@@ -288,7 +341,15 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions): Promis
         const member = await tx.$queryRaw<{ removed_state: string | null }[]>`
           SELECT removed_state FROM session_members WHERE user_id = ${userId} AND session_code = ${code} FOR UPDATE`
         const kicked = member[0]?.removed_state === 'kicked'
-        const wipe = hosted && !(await engagedUnderLock(tx, row, userId, durable))
+        // hosted ∧ unengaged in Postgres: wipe only under a lease (then the
+        // anonymous rating keys decide), else 'replan' — never take a lease
+        // while holding advisory locks.
+        let wipe = false
+        if (hosted && !(await engagedInPostgres(tx, row, userId))) {
+          const token = leases.get(code)
+          if (!token) throw new ReplanError(code)
+          wipe = !(await engagedInRedis(row, userId, durable))
+        }
         decisions.push({ row, hosted, kicked, wipe })
       }
       const wipes = decisions.filter(d => d.wipe).length
@@ -297,8 +358,15 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions): Promis
       for (const { row, hosted, kicked, wipe } of decisions) {
         const code = row.code
         liveCodes.add(code)
+        // Every held lease is renewed (fenced) before each session's work — a
+        // refused renew means a lease was lost: everything rolls back.
+        for (const [c, token] of leases) {
+          await durable.step(`renew ${c}`, async (cl) => {
+            if (!(await renewSessionLock(c, token, lockTiming.leaseMs, cl))) throw new AccountDeleteRetryableError(`lease on ${c} was lost`)
+          })
+        }
         if (wipe) {
-          reclaimUrls.push(...await wipeEmptySession(tx, row, userId, durable, hooks))
+          reclaimUrls.push(...await wipeEmptySession(tx, row, userId, durable, leases.get(code)!, hooks))
           plan.toDelete.push(code)
         } else {
           const key = `d:${randomUUID()}`
@@ -362,22 +430,52 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions): Promis
       // auth_sessions. ratings.user_id and sessions.host_user_id are NO ACTION:
       // a session rating or hosted session missed above makes this refuse.
       await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
-      return { plan, sessions, liveCodes, reclaimUrls }
+      return { plan, sessions, liveCodes, reclaimUrls, leases }
     }, { timeout: opts.txTimeoutMs ?? 60_000, maxWait: 10_000 })
+    committed = true
+    return out
   } finally {
+    // An attempt that did not commit releases its leases here; a committed one
+    // hands them to the post-commit projections (released there).
+    if (!committed) for (const [code, token] of leases) await releaseQuietly(code, token)
     await durable.close()
   }
 }
 
+// Best-effort lease release on the shared client — skipped when it is offline
+// (it would queue the command indefinitely) and bounded; an unreleased lease
+// simply expires (15 s).
+async function releaseQuietly(code: string, token: string): Promise<void> {
+  if (!redis.isReady) return
+  let timer: NodeJS.Timeout | undefined
+  await Promise.race([releaseSessionLock(code, token), new Promise(r => { timer = setTimeout(r, 1000) })])
+    .catch(() => {}).finally(() => timer && clearTimeout(timer))
+}
+
+// Hosted live sessions with no Postgres rating by anyone else (tombstones
+// count) — the wipe candidates of discovery. Tentative: decided again under
+// the locks.
+async function unengagedHosted(db: typeof prisma, userId: number): Promise<string[]> {
+  const rows = await db.$queryRaw<{ code: string }[]>`
+    SELECT s.code FROM sessions s
+     WHERE s.deleted_at IS NULL AND s.host_user_id = ${userId}
+       AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.session_id = s.id AND (r.user_id IS NULL OR r.user_id <> ${userId}))`
+  return rows.map(r => r.code)
+}
+
 // Engagement of a hosted session, decided under its locks: any Postgres rating
-// by someone else (tombstones count), and — only when Postgres says empty —
-// any rating key in Redis from another identity (anonymous raters live only
-// there). A Redis failure throws: the wipe decision cannot be made, the
-// deletion fails retryably.
-async function engagedUnderLock(tx: Prisma.TransactionClient, row: LockedSession, userId: number, durable: DurableRedis): Promise<boolean> {
+// by someone else (tombstones count) — authoritative, every rating writer takes
+// the session's advisory lock this transaction holds — and, only when Postgres
+// says empty and the session is leased, any rating key in Redis from another
+// identity (anonymous raters live only there). A Redis failure throws: the wipe
+// decision cannot be made, the deletion fails retryably.
+async function engagedInPostgres(tx: Prisma.TransactionClient, row: LockedSession, userId: number): Promise<boolean> {
   const others = await tx.$queryRaw<{ x: number }[]>`
     SELECT 1 AS x FROM ratings WHERE session_id = ${row.id} AND (user_id IS NULL OR user_id <> ${userId}) LIMIT 1`
-  if (others[0]) return true
+  return !!others[0]
+}
+
+async function engagedInRedis(row: LockedSession, userId: number, durable: DurableRedis): Promise<boolean> {
   const mine = `s:${row.code}:r:${userIdentityId(userId)}:`
   const keys = await durable.step(`engagement ${row.code}`, (c) => scanAll(c, `s:${row.code}:r:*`))
   return keys.some(key => !key.startsWith(mine))
@@ -388,7 +486,7 @@ async function engagedUnderLock(tx: Prisma.TransactionClient, row: LockedSession
 // registry row; the host's own ratings go with it (there are no others). The
 // Redis keys are deleted HERE, before COMMIT (§ 5.4): if that fails, the throw
 // rolls the whole account deletion back. Returns the URLs to reclaim.
-async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession, userId: number, durable: DurableRedis, hooks: AccountDeleteHooks): Promise<string[]> {
+async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession, userId: number, durable: DurableRedis, token: string, hooks: AccountDeleteHooks): Promise<string[]> {
   const imgs = await tx.$queryRaw<{ image_url: string }[]>`
     SELECT ri.image_url FROM rating_images ri JOIN ratings r ON r.id = ri.rating_id
      WHERE r.session_id = ${row.id} AND r.user_id = ${userId} AND ri.image_url IS NOT NULL`
@@ -436,7 +534,9 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
     // window is the one round trip between this check and the DEL — the § 5.4
     // "after the wipe, before COMMIT" row: an absence the record repairs.)
     await tx.$queryRaw`SELECT 1`
-    if (keys.length > 0) await c.del(keys)
+    // Fenced through the lease: a holder that lost it deletes nothing.
+    for (let i = 0; i < keys.length; i += 500) await fencedDel(row.code, token, keys.slice(i, i + 500), c)
+    if (keys.length === 0 && !(await sessionLockHeld(row.code, token, c))) throw new AccountDeleteRetryableError(`lease on ${row.code} was lost`)
   })
   return [...imgs.map(i => i.image_url), row.coverPhotoUrl].filter((u): u is string => !!u)
 }
@@ -509,25 +609,30 @@ async function scanAll(c: FailFastRedis, pattern: string): Promise<string[]> {
 // wineToWire renders the '[deleted]' snapshot from it. Release B's
 // reconciliation repairs whatever these miss.
 
-// The d: migration of one live tombstoned session (§ 4.3). Validates EVERY
+// The d: migration of one live tombstoned session (§ 4.3), FENCED by the
+// session lease (`token`: KEYS[1] must still hold it — 'lost' otherwise) and
+// bumping the publication generation (KEYS[2]) so a rebuild that read the
+// pre-deletion record can never publish it (r4-2). Validates EVERY
 // compare-and-set before mutating anything and reports a conflict explicitly
 // (Node re-reads and retries); then, atomically: the user's rating keys are
 // RENAMEd to the d: identity (skip missing; an existing target wins) — or
 // DELETED where the record hard-deleted them (kicked); the identities entry is
 // swapped (only when the user has tombstoned ratings there, and never creating
-// a TTL-less hash); lastseen + kicked entries go; meta and wines are written
+// a TTL-less hash); lastseen + kicked entries and the kick version (KEYS[8],
+// in the same fenced step — r6) go; rating-key pairs start at KEYS[9]; meta and wines are written
 // with KEEPTTL. JSON stays in Node: cjson would re-encode an empty array as
 // `{}`, turning `coHostIds: []` into an object.
 export const D_MIGRATION_SCRIPT = `
-local meta = redis.call('GET', KEYS[1])
+if redis.call('GET', KEYS[1]) ~= ARGV[10] then return 'lost' end
+local meta = redis.call('GET', KEYS[3])
 if meta ~= ARGV[1] then return 'conflict' end
-local wines = redis.call('GET', KEYS[2])
+local wines = redis.call('GET', KEYS[4])
 if ARGV[3] == '__absent__' then
   if wines then return 'conflict' end
 elseif wines ~= ARGV[3] then
   return 'conflict'
 end
-for i = 6, #KEYS, 2 do
+for i = 9, #KEYS, 2 do
   if redis.call('EXISTS', KEYS[i]) == 1 then
     if ARGV[8] == 'delete' or redis.call('EXISTS', KEYS[i + 1]) == 1 then
       redis.call('DEL', KEYS[i])
@@ -536,14 +641,17 @@ for i = 6, #KEYS, 2 do
     end
   end
 end
-if redis.call('EXISTS', KEYS[3]) == 1 then
-  redis.call('HDEL', KEYS[3], ARGV[5])
-  if ARGV[7] == '1' then redis.call('HSET', KEYS[3], ARGV[6], '${TOMBSTONE_NAME}') end
+if redis.call('EXISTS', KEYS[5]) == 1 then
+  redis.call('HDEL', KEYS[5], ARGV[5])
+  if ARGV[7] == '1' then redis.call('HSET', KEYS[5], ARGV[6], '${TOMBSTONE_NAME}') end
 end
-redis.call('HDEL', KEYS[4], ARGV[9])
-redis.call('SREM', KEYS[5], ARGV[5])
-if ARGV[2] ~= ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL') end
-if ARGV[3] ~= '__absent__' and ARGV[4] ~= ARGV[3] then redis.call('SET', KEYS[2], ARGV[4], 'KEEPTTL') end
+redis.call('HDEL', KEYS[6], ARGV[9])
+redis.call('SREM', KEYS[7], ARGV[5])
+redis.call('HDEL', KEYS[8], ARGV[5])
+if ARGV[2] ~= ARGV[1] then redis.call('SET', KEYS[3], ARGV[2], 'KEEPTTL') end
+if ARGV[3] ~= '__absent__' and ARGV[4] ~= ARGV[3] then redis.call('SET', KEYS[4], ARGV[4], 'KEEPTTL') end
+local ttl = redis.call('PTTL', KEYS[3])
+if ttl > 0 then redis.call('SET', KEYS[2], ARGV[11], 'PX', ttl) else redis.call('SET', KEYS[2], ARGV[11], 'PX', ARGV[12]) end
 return 'ok'
 `
 
@@ -551,12 +659,18 @@ return 'ok'
 // trace of the user): no record to tombstone, so the cache is the only copy of
 // the display name. Relabel the entry when the user has rating keys there
 // (other tasters' compare keeps them, today's behaviour), else remove it.
+// Fenced like every shared-state write (r1-11): under the session's lock
+// (KEYS[4] must hold our token), the meta compare doubling as the incarnation
+// check. Busy → skipped and logged (no record to invalidate from).
 const SCRUB_REGISTRATION_SCRIPT = `
+if redis.call('GET', KEYS[4]) ~= ARGV[6] then return 'lost' end
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 'conflict' end
 if redis.call('HEXISTS', KEYS[2], ARGV[3]) == 1 then
   if ARGV[5] == '1' then redis.call('HSET', KEYS[2], ARGV[3], '${TOMBSTONE_NAME}') else redis.call('HDEL', KEYS[2], ARGV[3]) end
 end
 redis.call('HDEL', KEYS[3], ARGV[4])
+redis.call('SREM', KEYS[5], ARGV[3])
+redis.call('HDEL', KEYS[6], ARGV[3])
 if ARGV[2] ~= ARGV[1] then redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL') end
 return 'ok'
 `
@@ -574,14 +688,17 @@ function scrubMeta(meta: SessionMeta, userId: number, hosted: boolean): SessionM
   return next
 }
 
-export async function migrateTombstonedSession(userId: number, s: SessionOutcome): Promise<'ok' | 'skipped' | 'conflict'> {
+export async function migrateTombstonedSession(userId: number, s: SessionOutcome, token: string): Promise<'ok' | 'skipped' | 'conflict' | 'lost'> {
   const uid = userIdentityId(userId)
   for (let attempt = 0; attempt < 5; attempt++) {
     const metaRaw = await redis.get(k.meta(s.code))
-    if (!metaRaw) return 'skipped'
+    // Cold (or another incarnation): nothing to migrate in place — but the
+    // generation is still bumped and our incarnation's meta (if any) dropped.
+    if (!metaRaw || !s.createdAt || (JSON.parse(metaRaw) as SessionMeta).createdAt !== s.createdAt.getTime()) {
+      if (s.createdAt) await scopedInvalidate(s.code, s.createdAt.getTime())
+      return 'skipped'
+    }
     const meta = JSON.parse(metaRaw) as SessionMeta
-    // Another incarnation of the code (soft-deleted + recycled since COMMIT).
-    if (!s.createdAt || meta.createdAt !== s.createdAt.getTime()) return 'skipped'
     const winesRaw = await redis.get(k.wines(s.code))
     const nextMeta = JSON.stringify(scrubMeta(meta, userId, s.hosted))
     let nextWines = winesRaw ?? ''
@@ -594,16 +711,17 @@ export async function migrateTombstonedSession(userId: number, s: SessionOutcome
       }
     }
     const src = await scanKeys(`s:${s.code}:r:${uid}:*`)
-    const keys = [k.meta(s.code), k.wines(s.code), k.identities(s.code), k.lastSeen(s.code), k.kicked(s.code)]
+    const keys = [sessionLockKey(s.code), k.gen(s.code), k.meta(s.code), k.wines(s.code), k.identities(s.code), k.lastSeen(s.code), k.kicked(s.code), k.kickv(s.code)]
     for (const key of src) keys.push(key, key.replace(`:r:${uid}:`, `:r:${s.key}:`))
     const res = await redis.eval(D_MIGRATION_SCRIPT, {
       keys,
       arguments: [
         metaRaw, nextMeta, winesRaw ?? '__absent__', nextWines, uid, s.key,
         s.hadRatings ? '1' : '0', s.kicked ? 'delete' : 'rename', String(userId),
+        token, randomUUID(), String(lifespanTTL() * 1000),
       ],
     })
-    if (res === 'ok') return 'ok'
+    if (res === 'ok' || res === 'lost') return res
   }
   return 'conflict'
 }
@@ -619,17 +737,27 @@ async function scrubRedisOnlyRegistrations(userId: number, known: Set<string>, d
     for (const metaKey of res.keys) {
       const code = metaKey.split(':')[1]
       if (!code || known.has(code)) continue
-      if (!(await redis.hExists(k.identities(code), uid))) continue
-      const relabel = (await scanKeys(`s:${code}:r:${uid}:*`)).length > 0
-      for (let attempt = 0; attempt < 5; attempt++) {
-        const metaRaw = await redis.get(metaKey)
-        if (!metaRaw) break
-        const nextMeta = JSON.stringify(scrubMeta(JSON.parse(metaRaw) as SessionMeta, userId, false))
-        const r = await redis.eval(SCRUB_REGISTRATION_SCRIPT, {
-          keys: [metaKey, k.identities(code), k.lastSeen(code)],
-          arguments: [metaRaw, nextMeta, uid, String(userId), relabel ? '1' : '0'],
-        })
-        if (r === 'ok') { scrubbed++; break }
+      // Registered, or only a kick trace left (kicked marker / kick version — r5)
+      if (!(await redis.hExists(k.identities(code), uid)) && !(await redis.sIsMember(k.kicked(code), uid)) && !(await redis.hExists(k.kickv(code), uid))) continue
+      const token = await acquireSessionLock(code, { waitMs: 1000 })
+      if (!token) { console.warn('[accountDelete] Redis-only registration scrub skipped: session busy', { code }); continue }
+      try {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          // Decided under the lease (r2 N7): a wine delete committed while the
+          // scrub waited may have taken the user's last rating key.
+          const relabel = (await scanKeys(`s:${code}:r:${uid}:*`)).length > 0
+          const metaRaw = await redis.get(metaKey)
+          if (!metaRaw) break
+          const nextMeta = JSON.stringify(scrubMeta(JSON.parse(metaRaw) as SessionMeta, userId, false))
+          const r = await redis.eval(SCRUB_REGISTRATION_SCRIPT, {
+            keys: [metaKey, k.identities(code), k.lastSeen(code), sessionLockKey(code), k.kicked(code), k.kickv(code)],
+            arguments: [metaRaw, nextMeta, uid, String(userId), relabel ? '1' : '0', token],
+          })
+          if (r === 'ok') { scrubbed++; break }
+          if (r === 'lost') break
+        }
+      } finally {
+        await releaseSessionLock(code, token).catch(() => {})
       }
     }
   } while (cursor !== 0)
@@ -638,26 +766,45 @@ async function scrubRedisOnlyRegistrations(userId: number, known: Set<string>, d
 
 async function projectAfterCommit(userId: number, committed: Committed, opts: AccountDeleteOptions): Promise<void> {
   const deadline = Date.now() + POST_COMMIT_BUDGET_MS
-  const bounded = async (label: string, fn: () => Promise<unknown>) => {
+  // Each projection (and its invalidation fallback) is guarded the same way:
+  // never on a disconnected client (the shared client QUEUES commands while
+  // offline — an unbounded wait), and bounded by the remaining budget.
+  const guarded = async (fn: () => Promise<unknown>) => {
+    if (!redis.isReady) throw new Error('Redis is not reachable')
+    const left = Math.max(250, deadline - Date.now())
+    let timer: NodeJS.Timeout | undefined
+    await Promise.race([
+      fn(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), left) }),
+    ]).finally(() => timer && clearTimeout(timer))
+  }
+  const bounded = async (label: string, fn: () => Promise<unknown>, onFail?: () => Promise<unknown>) => {
     try {
       if (opts.hooks?.failProjection) throw new Error('injected projection failure')
-      if (!redis.isReady) throw new Error('Redis is not reachable')
-      const left = Math.max(250, deadline - Date.now())
-      let timer: NodeJS.Timeout | undefined
-      await Promise.race([
-        fn(),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), left) }),
-      ]).finally(() => timer && clearTimeout(timer))
+      await guarded(fn)
     } catch (err) {
       console.error(`[accountDelete] post-commit projection failed (${label}) — record is correct, cache repairs on reconciliation`, { userId, err })
+      if (onFail && !opts.hooks?.failInvalidation) await guarded(onFail).catch(e => console.error('[accountDelete] invalidation failed too', { label, e }))
     }
   }
   for (const s of committed.sessions) {
-    await bounded(`d: migration ${s.code}`, async () => {
-      const r = await migrateTombstonedSession(userId, s)
-      if (r === 'conflict') throw new Error('compare-and-set kept conflicting')
-    })
+    let token = committed.leases.get(s.code) ?? null
+    try {
+      await bounded(`d: migration ${s.code}`, async () => {
+        token ??= await acquireSessionLock(s.code, { waitMs: REDIS_TIMEOUT_MS })
+        if (!token) throw new Error('session busy')
+        const r = await migrateTombstonedSession(userId, s, token)
+        if (r === 'conflict' || r === 'lost') throw new Error(`d: migration ${r}`)
+      }, async () => {
+        // Refused or failed: drop this incarnation's meta and bump the
+        // generation — the next open rebuilds from the record (R7, r4-2).
+        if (s.createdAt) await scopedInvalidate(s.code, s.createdAt.getTime())
+      })
+    } finally {
+      if (token && !committed.leases.has(s.code)) await guarded(() => releaseSessionLock(s.code, token!)).catch(() => {})
+    }
   }
+  for (const [code, token] of committed.leases) await guarded(() => releaseSessionLock(code, token)).catch(() => {})
   await bounded('redis-only registrations', () => scrubRedisOnlyRegistrations(userId, committed.liveCodes, deadline))
   // User-scoped Redis keys are NOT under any `s:{code}:*` pattern — delete them
   // explicitly. Any future `u:{userId}:*` key MUST be added here (lib/CLAUDE.md).

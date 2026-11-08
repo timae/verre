@@ -1,67 +1,59 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { prisma } from '@/lib/prisma'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
-import { getWines } from '@/lib/session'
-import { engagementDeletionCascade } from '@/lib/engagementCascade'
+import type { WineMeta } from '@/lib/session'
+import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
+import { withSessionMutation, admitted, ratingKeyWrite } from '@/lib/sessionMutation'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openAsParticipant } from '@/lib/sessionRoute'
 
+// DELETE /api/session/<code>/rate/<wineId> — the explicit "Reset" of the
+// caller's rating of one wine: the rating key, and for a logged-in rater of a
+// Postgres-backed session the archived row (force-mode engagement cascade:
+// the rating, then the session feed item if it was their last rating there;
+// photos reclaimed after COMMIT) and the HoF entry (wineName + userId +
+// sessionCode).
+//
+// 🔒 Inside the session mutation contract, holding the Redis lease (r3-3: a
+// path that deletes a rating key must hold it — otherwise a rebuild whose
+// backend died after its read could republish the deleted rating with its NX
+// publish), with the publication generation bumped and the admission re-made
+// under the locks.
 export async function DELETE(req: NextRequest, { params }: { params: Promise<{ code: string; wineId: string }> }) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const { code, wineId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
+  const op = await openAsParticipant(c, req, session, 'identity required')
+  if (op instanceof NextResponse) return op
+  const { identity } = op
 
-  const p = await participantOrBanned(c, req, session)
-  if (p.status === 'banned' || p.status === 'kicked') return authRemoved('removed from session')
-  if (p.status === 'invalid') return authInvalid()
-  const identity = p.identity
-
-  await redis.del(k.rating(c, identity.id, wineId))
-  await touchWithMeta(c)
-
-  // Remove the Postgres archive too. Anon raters never had a row, so
-  // skip them. The Hall of Fame entry (if any) keys on (wineName,
-  // userId), so we look up the wine name from Redis to target the
-  // exact row — wineName + userId + sessionCode triple.
-  //
-  // Engagement-deletion auto-cascade (rewire.md §3): force-delete the
-  // rating, then drop the session feed_item if this was the user's
-  // last rating in the session. Rating photos S3-reclaim AFTER commit.
-  // The DELETE endpoint is the explicit "Reset" path — the rating
-  // gate (origin check, participant check, identity check) has
-  // already authorised the wipe, so force-mode bypasses the empty-
-  // payload predicate (the POST path uses empty-only mode).
-  if (identity.kind === 'user') {
-    const userId = Number(identity.id.slice(2))
-    if (Number.isInteger(userId) && userId > 0) {
-      const sessionRow = await prisma.session.findFirst({
-        where: { code: c, deletedAt: null },
-        select: { id: true },
-      })
-      if (sessionRow) {
-        // Resolve the canonical rating_id. The path param is wineId; the
-        // cascade keys on rating_id for the self-exclusion guard in
-        // step 2. Scoped to (userId, sessionId) so a same-(user,wine)
-        // standalone or other-session rating is never touched.
-        const rating = await prisma.rating.findFirst({
-          where: { wineId, userId, sessionId: sessionRow.id },
-          select: { id: true },
-        })
-        if (rating) await engagementDeletionCascade(rating.id, 'force')
+  let reclaim: string[] = []
+  try {
+    await withSessionMutation(c, {
+      label: 'rate-delete', redisLock: { waitMs: 3000 }, caller: identity, bumpGen: true, expectedCreatedAt: op.meta.createdAt,
+    }, async (tx, ctx) => {
+      reclaim = []   // per attempt (r3 P1)
+      const caller = admitted(ctx)
+      if (caller.kind === 'user' && ctx.row) {
+        const userId = Number(caller.id.slice(2))
+        // Scoped to (user, session) so a same-(user, wine) standalone or
+        // other-session rating is never touched.
+        const rating = await tx.$queryRaw<{ id: number }[]>`
+          SELECT id FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${ctx.row.id} LIMIT 1`
+        if (rating[0]) reclaim = (await engagementCascadeIn(tx, rating[0].id, 'force')) ?? []
+        const wine = (JSON.parse((await redis.get(k.wines(c))) ?? '[]') as WineMeta[]).find(w => w.id === wineId)
+        if (wine) await tx.hallOfFame.deleteMany({ where: { wineName: wine.name, userId, sessionCode: c } })
       }
-      const wines = await getWines(c)
-      const wine = wines.find(w => w.id === wineId)
-      if (wine) {
-        await prisma.hallOfFame.deleteMany({
-          where: { wineName: wine.name, userId, sessionCode: c },
-        })
-      }
-    }
+      await ratingKeyWrite(ctx, k.rating(c, caller.id, wineId), null)
+    })
+  } catch (err) {
+    return contractFailure(err, c, { label: 'rate-delete' })
   }
-
+  reclaimImages(reclaim)
+  await touchWithMeta(c)
   return NextResponse.json({ ok: true })
 }

@@ -15,6 +15,7 @@ export {
 } from './sessionCode'
 
 export { validateScore } from './checkinValidation'
+export { BLIND_FEED_REVEAL_NOTE, MOMENT_DEFAULT_SPAN_MS, momentIsOver } from './blindReveal'
 export {
   WHEEL_MAX,
   HUB_FRACTION,

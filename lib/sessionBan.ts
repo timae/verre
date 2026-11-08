@@ -1,22 +1,10 @@
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 
-// Bans live in Redis only (`s:<C>:bans`, Set of identity-ids). TTL matches
-// the session lifespan — when the session expires, the ban list dies with
-// it. Anon bans are best-effort: a banned anon can clear localStorage and
-// rejoin as a fresh `a:<uuid>`. Documented in docs/kick-ban.md.
-
-export async function addBan(code: string, identityId: string): Promise<void> {
-  await redis.sAdd(k.bans(code), identityId)
-}
-
-export async function removeBan(code: string, identityId: string): Promise<void> {
-  await redis.sRem(k.bans(code), identityId)
-}
-
-export async function isBanned(code: string, identityId: string): Promise<boolean> {
-  return (await redis.sIsMember(k.bans(code), identityId)) === true
-}
+// Bans: `s:<C>:bans` (Set of identity-ids) is the cache; for a Postgres-backed
+// session the record is `session_bans` (redis-rehydration § 4.2) and decides for
+// `u:` identities (§ 4.7). Anon bans are best-effort: a banned anon can clear
+// localStorage and rejoin as a fresh `a:<uuid>`. Documented in docs/kick-ban.md.
 
 export async function listBans(code: string): Promise<
   { identityId: string; displayName: string; imageUrl: string | null }[]
@@ -54,26 +42,6 @@ export async function listBans(code: string): Promise<
   })
 }
 
-// Acquire the per-session meta-mutation lock. Returns true on success.
-// Short TTL so a crashed handler doesn't block forever. Callers should
-// SET NX + EX, then release on success/failure.
-//
-// Originally introduced for kick/ban to serialize the wines JSON write-back
-// (hence the `lock:ban` key name kept for continuity), it now also guards
-// the `set-role` read-modify-write on `s:<C>:meta` in
-// `app/api/session/[code]/route.ts`. Two concurrent strict-host actions
-// without the lock could each read the same starting meta, build divergent
-// coHostIds/providerIds sets, and silently drop one of the writes.
-const BAN_LOCK_TTL_SECONDS = 10
-
-export async function acquireBanLock(code: string): Promise<boolean> {
-  const res = await redis.set(k.banLock(code), '1', {
-    NX: true,
-    EX: BAN_LOCK_TTL_SECONDS,
-  })
-  return res === 'OK'
-}
-
-export async function releaseBanLock(code: string): Promise<void> {
-  await redis.del(k.banLock(code))
-}
+// The per-session lock that used to live here (`s:{C}:lock:ban`) is replaced by
+// the fenced lock:session:{CODE} (lib/sessionLock.ts) taken through the mutation
+// contract (lib/sessionMutation.ts) — redis-rehydration § 5.4.

@@ -6,7 +6,7 @@ import { prisma } from '@/lib/prisma'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { decimalToNumber } from '@verre/core'
-import { loadSessionFeedWines, detectExpiredCodes, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
 export type LoadedCheckin = {
@@ -183,7 +183,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       _count: { select: { likes: true } },
       session: {
         select: {
-          id: true, code: true, name: true, deletedAt: true, blind: true, blindForEveryone: true,
+          id: true, code: true, name: true, deletedAt: true, blind: true, blindForEveryone: true, dateFrom: true, dateTo: true, createdAt: true,
           hostName: true, hostUserId: true,
         },
       },
@@ -192,11 +192,6 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
 
   // Per-wine bulk-load for the session feed_items, mirroring /api/feed.
   // Tombstoned + expired short-circuits — see SessionFeedPair comment.
-  const expiredCodes = await detectExpiredCodes(
-    sessionFeedItems
-      .filter(f => f.session && !f.session.deletedAt && f.session.code)
-      .map(f => f.session!.code!)
-  )
 
   const sessionPairs: SessionFeedPair[] = sessionFeedItems.flatMap(f => {
     if (!f.session) return []
@@ -206,7 +201,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
       blind: !!f.session.blind,
       blindForEveryone: !!f.session.blindForEveryone,
       deleted: !!f.session.deletedAt,
-      expired: f.session.code != null && expiredCodes.has(f.session.code),
+      expired: !f.session.deletedAt && sessionIsOver(f.session),
       hostUserId: f.session.hostUserId ?? null,
     }]
   })

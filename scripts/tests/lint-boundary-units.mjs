@@ -63,6 +63,13 @@ const CASES = [
   ['instrumentation.ts', true, reg("  const process = { env: { NEXT_RUNTIME: 'nodejs' } }\n  if (process.env.NEXT_RUNTIME === 'nodejs') { await import('node:fs') }")],
   ['instrumentation.ts', true, "export async function register(process = { env: { NEXT_RUNTIME: 'nodejs' } }) {\n  if (process.env.NEXT_RUNTIME === 'nodejs') { await import('node:fs') }\n}\n"],
   ['instrumentation.ts', true, reg("  const p = process\n  if (p.env.NEXT_RUNTIME === 'nodejs') { await import('node:fs') }")],
+  // redis-rehydration mechanism 1: meta/wines are SET with NX or XX only (app/** + lib/**)
+  ['lib/x.ts', true, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.meta(c), '{}', { EX: 60 })\n"],
+  ['lib/x.ts', true, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.wines(c), '[]', { KEEPTTL: true })\n"],
+  ['app/api/x/route.ts', true, "import { k } from '@/lib/redis'\nexport const f = (m: { set: (...a: unknown[]) => void }, c: string) => m.set(k.wines(c), '[]')\n"],
+  ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.meta(c), '{}', { XX: true, KEEPTTL: true })\n"],
+  ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.wines(c), '[]', { NX: true, EX: 60 })\n"],
+  ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.rating(c, 'u:1', 'w'), '{}', { EX: 60 })\n"],
 ]
 
 const eslint = new ESLint()

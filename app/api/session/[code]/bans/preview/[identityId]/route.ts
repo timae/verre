@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, scanKeys } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
-import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
-import { getSessionMeta, getWines, isHostByIdentity } from '@/lib/session'
+import { resolveAuthorized, authUnavailable, isValidIdentityId } from '@/lib/identity'
+import { isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
+import { readGrant } from '@/lib/sessionGrant'
+import { openSession, unavailable } from '@/lib/sessionRehydrate'
 
 type Ctx = { params: Promise<{ code: string; identityId: string }> }
 
@@ -33,12 +35,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code, identityId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const identity = await resolveIdentity(c, req, session)
+  const identity = await resolveAuthorized(c, req, session, opened.meta)
+  if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
-  if (!isHostByIdentity(meta, identity)) {
+  if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
   const targetId = decodeURIComponent(identityId)
@@ -54,7 +57,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
     redis.sIsMember(k.bans(c), targetId),
     redis.sIsMember(k.kicked(c), targetId),
   ])
-  if (!inIdentities && !inBans && !inKicked) {
+  // A `u:` target of a Postgres-backed session is also part of it when the
+  // record says so (member row, rating, ban) — the cache may have lost them.
+  const inRecord = !inIdentities && !inBans && !inKicked && /^u:\d{1,18}$/.test(targetId)
+    ? await readGrant(prisma, c, Number(targetId.slice(2))).then(g => !!g && (g.member || g.author || g.banned))
+    : false
+  if (!inIdentities && !inBans && !inKicked && !inRecord) {
     return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   }
 
@@ -72,7 +80,7 @@ export async function GET(req: NextRequest, { params }: Ctx) {
 
   // Wines the target added — read from Redis (live state); the Postgres
   // row may not exist yet for sessions still in their first 48h.
-  const winesP = getWines(c)
+  const winesP = Promise.resolve(opened.wines)
 
   // Display name for the modal header. Pull from identities hash if
   // still present; fall back to the Postgres users row for logged-in

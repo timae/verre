@@ -1,21 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, lifespanTTL } from '@/lib/redis'
+import { k, lifespanTTL, scanKeys } from '@/lib/redis'
 import { genCode, sessionMetaToColumns, type SessionMeta } from '@/lib/session'
+import { withSessionMutation, ContractBusy, LockLost, type MutationCtx } from '@/lib/sessionMutation'
 import { applySessionFields } from '@/lib/sessionFields'
-import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@verre/core'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
-import {
-  newAnonIdentityId,
-  newAnonToken,
-  recordAnonToken,
-  recordIdentity,
-  userIdentityId,
-} from '@/lib/identity'
+import { newAnonIdentityId, newAnonToken, userIdentityId } from '@/lib/identity'
 
 // Inlined S3 reclaim — same workaround as app/api/me/avatar/route.ts: a
 // third export on lib/s3.ts gets dropped by webpack, so each route that
@@ -123,38 +117,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Collision check on BOTH Redis and Postgres. Anonymous sessions only
-  // touch Redis, but a Postgres row can survive a Redis TTL expiry — re-using
-  // such a code would clobber the unique constraint at create time. Log the
-  // retry count so namespace-exhaustion shows up in logs before it bites.
-  //
-  // Soft-deleted sessions have `code = NULL` per the §8 scrub, so the
-  // `findUnique({where:{code:candidate}})` below naturally misses them and
-  // their codes are freed for re-use. Intentional — the unique index permits
-  // multiple NULLs (NULLs are distinct), and a tombstoned session has no
-  // public surface that the recycled code would conflict with.
-  let code: string | null = null
-  let attempts = 0
-  for (let i = 0; i < 10; i++) {
-    attempts++
-    const candidate = genCode()
-    const [redisHit, pgHit] = await Promise.all([
-      redis.exists(k.meta(candidate)),
-      prisma.session.findUnique({ where: { code: candidate }, select: { id: true } }),
-    ])
-    if (!redisHit && !pgHit) {
-      code = candidate
-      break
-    }
-  }
-  if (!code) {
-    console.error(`[session] code generation failed after ${attempts} attempts`)
-    return NextResponse.json({ error: 'could not allocate session code' }, { status: 500 })
-  }
-  if (attempts > 1) {
-    console.warn(`[session] code allocated after ${attempts} attempts`)
-  }
-
   // Mint the host's identity id up front so it can be stamped into meta —
   // host checks then work purely by id, no display-name fallback needed.
   let anonToken: string | null = null
@@ -169,7 +131,7 @@ export async function POST(req: NextRequest) {
   const meta: SessionMeta = {
     host: hostName,
     name: '',
-    createdAt: Date.now(),
+    createdAt: 0,
     hostUserId: session?.user?.id ? Number(session.user.id) : null,
     hostIdentityId: identityId,
     blind: !!blind,
@@ -204,65 +166,66 @@ export async function POST(req: NextRequest) {
   if (!meta.dateFrom) return NextResponse.json({ error: 'Please set a start date.' }, { status: 400 })
 
   // Upload the cover last among the validations (every rejection above is
-  // side-effect-free). The code keys the S3 object; timestamped so recycled
-  // codes (soft-delete frees them) can't collide and replacement leaves
-  // prior bytes addressable for reclaim. uploadImage carries the full
-  // hardening (MIME allow-list, magic bytes, size cap, JPEG EXIF strip) —
-  // '' means rejected.
+  // side-effect-free). Timestamped so recycled codes can't collide; keyed by a
+  // random prefix here because the code is only claimed below. uploadImage
+  // carries the full hardening — '' means rejected.
   let coverPhotoUrl = ''
   if (typeof coverPhoto === 'string' && coverPhoto) {
-    coverPhotoUrl = await uploadImage(`sessions/${code}_${Date.now()}`, coverPhoto).catch(() => '')
+    coverPhotoUrl = await uploadImage(`sessions/new_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`, coverPhoto).catch(() => '')
     if (!coverPhotoUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
     meta.coverPhotoUrl = coverPhotoUrl
   }
 
-  await redis.set(k.meta(code), JSON.stringify(meta), { EX: sessionTTL })
-  await redis.set(k.wines(code), '[]', { EX: sessionTTL })
-
-  // Register the host in the identities map so participant-gated reads
-  // (wines, ratings, session meta) work right after create.
-  await recordIdentity(code, {
-    id: identityId,
-    displayName: hostName,
-    kind: session?.user?.id ? 'user' : 'anon',
-  })
-  if (anonToken) {
-    await recordAnonToken(code, anonToken, identityId)
-    await redis.expire(k.tokens(code), sessionTTL)
-  }
-  await redis.expire(k.identities(code), sessionTTL)
-
-  if (session?.user) {
+  // 🔒 The code is CLAIMED INSIDE THE SESSION LOCKS (redis-rehydration release-B
+  // plan § 3, r2-1): for each candidate, under its Redis lock (no wait — a held
+  // lock means someone is working on that code: take another) and its advisory
+  // lock, re-check that no live row and no meta exists. A create that checked
+  // outside the locks could claim a code a paused promotion was about to commit.
+  // Keys left by an ended Redis-only session (meta evicted) are orphans and are
+  // removed first, so a fresh incarnation never inherits a stale roster, ban
+  // set or lineup. Then — anonymous: the fenced NX writes are the change (meta
+  // LAST, mechanism 1). Logged-in: the sessions row, the host's member row and
+  // both lifetime counters (hosted + joined, once per create — the host's later
+  // /visit finds the member row) commit in ONE transaction, and the keys are the
+  // projection after COMMIT; a projection that never lands leaves a live row
+  // whose next open rebuilds it (meta from the record).
+  const userId = session?.user?.id ? Number(session.user.id) : null
+  let code: string | null = null
+  for (let attempt = 1; attempt <= 10 && !code; attempt++) {
+    const candidate = genCode()
     try {
-      // One spelling of meta → columns (sessionMetaToColumns): the create used to
-      // list columns by hand and dropped lifespan and the hide-lineup pair.
-      await prisma.session.create({ data: { code, ...sessionMetaToColumns(meta) } })
+      code = await withSessionMutation(candidate, { label: 'create', redisLock: { waitMs: 0 }, readMeta: 'optional' }, async (tx, ctx) => {
+        if (ctx.row || ctx.meta) return null
+        meta.createdAt = Date.now()
+        const stale = await scanKeys(`s:${candidate}:*`)
+        if (stale.length) await ctx.fence!.exec(m => { m.del(stale) })
+        if (userId === null) {
+          await publish(ctx, candidate, meta, identityId, hostName, sessionTTL, anonToken)
+          return candidate
+        }
+        await tx.session.create({ data: { code: candidate, ...sessionMetaToColumns(meta) } })
+        await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${candidate}`
+        await tx.$executeRaw`INSERT INTO session_members (user_id, session_code, role) VALUES (${userId}, ${candidate}, 'host')`
+        await tx.$executeRaw`
+          UPDATE users SET lifetime_sessions_hosted = lifetime_sessions_hosted + 1,
+                           lifetime_sessions_joined = lifetime_sessions_joined + 1
+           WHERE id = ${userId}`
+        return candidate
+      }, async (ctx, claimed) => {
+        if (claimed && userId !== null) await publish(ctx, claimed, meta, identityId, hostName, sessionTTL, null)
+      })
+      if (!code) console.warn(`[session] code candidate taken (attempt ${attempt})`)
     } catch (err) {
-      // Pre-create collision check ran above, so a P2002 here means a race —
-      // log loudly and surface it. Tear down the Redis state we just wrote:
-      // a logged-in session has no other archival path, so leaving the keys
-      // would orphan a live session with NO Postgres row — and native's
-      // 'unlimited' lifespan makes that a ~1-year orphan, not a 48h one. Cover
-      // bytes are likewise NOT TTL'd, so reclaim them too. (No tokens key here
-      // — anonToken is null on the logged-in path.) Cleanup is best-effort and
-      // must not mask the original failure.
-      console.error('[session] postgres create failed', err)
-      await Promise.all([
-        redis.del(k.meta(code)),
-        redis.del(k.wines(code)),
-        redis.del(k.identities(code)),
-      ]).catch(() => {})
+      if (err instanceof ContractBusy || err instanceof LockLost) continue
+      console.error('[session] create failed', err)
       if (coverPhotoUrl) reclaimImage(coverPhotoUrl).catch(() => {})
-      return NextResponse.json({ error: 'could not archive session' }, { status: 500 })
+      return NextResponse.json({ error: 'could not create session' }, { status: 500 })
     }
-    // Best-effort counter bump. A failure here doesn't undo the session.
-    try {
-      await prisma.$executeRaw`
-        UPDATE users SET lifetime_sessions_hosted = lifetime_sessions_hosted + 1
-        WHERE id = ${Number(session.user.id)}`
-    } catch (err) {
-      console.warn('[session] lifetime counter bump failed', err)
-    }
+  }
+  if (!code) {
+    console.error('[session] code generation failed after 10 attempts')
+    if (coverPhotoUrl) reclaimImage(coverPhotoUrl).catch(() => {})
+    return NextResponse.json({ error: 'could not allocate session code' }, { status: 500 })
   }
 
   return NextResponse.json({
@@ -276,5 +239,18 @@ export async function POST(req: NextRequest) {
     category,
     ...(coverPhotoUrl ? { coverPhotoUrl } : {}),
     ...(anonToken ? { anonToken } : {}),
+  })
+}
+
+// The new session's keys, fenced: wines NX, the host's roster entry (and the
+// anonymous host's token), then meta NX LAST — the existence signal every
+// reader keys on.
+async function publish(ctx: MutationCtx, code: string, meta: SessionMeta, identityId: string, hostName: string, ttl: number, anonToken: string | null): Promise<void> {
+  await ctx.fence!.exec(m => {
+    m.set(k.wines(code), '[]', { NX: true, EX: ttl })
+    m.hSet(k.identities(code), identityId, hostName)
+    m.expire(k.identities(code), ttl)
+    if (anonToken) { m.hSet(k.tokens(code), anonToken, identityId); m.expire(k.tokens(code), ttl) }
+    m.set(k.meta(code), JSON.stringify(meta), { NX: true, EX: ttl })
   })
 }

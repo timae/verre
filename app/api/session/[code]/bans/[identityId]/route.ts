@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
 import { resolveUser } from '@/lib/resolveUser'
+import { k } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
-import { getSessionMeta, isHostByIdentity } from '@/lib/session'
-import { removeBan, acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
+import { resolveAuthorized, authUnavailable, isValidIdentityId } from '@/lib/identity'
+import { isHostByIdentity } from '@/lib/session'
+import { withSessionMutation, refuse } from '@/lib/sessionMutation'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string; identityId: string }> }
@@ -26,12 +27,13 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const { code, identityId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
-  const meta = await getSessionMeta(c)
-  if (!meta) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const identity = await resolveIdentity(c, req, session)
+  const identity = await resolveAuthorized(c, req, session, opened.meta)
+  if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
-  if (!isHostByIdentity(meta, identity)) {
+  if (!isHostByIdentity(opened.meta, identity)) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
   // URL-decode the identity-id (path segment, may contain "%3A" for ":")
@@ -48,26 +50,22 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     )
   }
 
-  // Record first, then the cache (redis-rehydration § 4.2): the durable ban
-  // row goes, then the Redis SREM. A Postgres failure answers 500 with the
-  // user still banned in both stores (retryable); an SREM that never runs after
-  // the commit leaves a Redis entry that only DENIES — the cache erring closed.
-  // Under the ban lock, like ban and promotion: promotion copies the Redis
-  // bans set into session_bans while holding it, so an unban cannot delete
-  // "no row yet", SREM, and then have promotion commit its older snapshot.
-  if (!(await acquireBanLock(c))) {
-    return NextResponse.json({ error: 'another moderation action is in progress' }, { status: 409, headers: noStore })
-  }
+  // Record first, then the cache (redis-rehydration § 4.2 / plan § 1.4), inside
+  // the mutation contract: the durable ban row goes and COMMITs, then the SREM
+  // is the projection — an SREM that never runs leaves a Redis entry that only
+  // DENIES (the cache erring closed) until reconciliation. For an anonymous
+  // target, and in a Redis-only session, Redis is the authority: the SREM is
+  // the change itself, fenced, inside the transaction.
   try {
-    try {
-      await prisma.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c} AND identity_id = ${targetId}`
-    } catch (err) {
-      console.error('[unban] session_bans delete failed', { code: c, err })
-      return NextResponse.json({ error: 'could not lift the ban, try again' }, { status: 500, headers: noStore })
-    }
-    await removeBan(c, targetId)
-  } finally {
-    await releaseBanLock(c)
+    await withSessionMutation(c, { label: 'unban', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
+      if (ctx.callerStatus !== 'ok' || !isHostByIdentity(ctx.meta!, ctx.caller)) throw refuse(403, 'forbidden')
+      if (ctx.row) await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c} AND identity_id = ${targetId}`
+      if (!ctx.row || targetId.startsWith('a:')) await ctx.fence!.exec(m => { m.sRem(k.bans(c), targetId) })
+    }, async (ctx) => {
+      if (ctx.row && !targetId.startsWith('a:')) await ctx.fence!.exec(m => { m.sRem(k.bans(c), targetId) })
+    })
+  } catch (err) {
+    return contractFailure(err, c, { busy: 409, label: 'unban' })
   }
   return NextResponse.json({ ok: true }, { headers: noStore })
 }

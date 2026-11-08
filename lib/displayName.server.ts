@@ -1,4 +1,6 @@
 import { redis, k, scanKeys } from '@/lib/redis'
+import { withSessionMutation } from '@/lib/sessionMutation'
+import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 
 // Server-only display-name helper. Lives in a separate file from the
 // rest of `lib/displayName.ts` so client components (e.g.
@@ -36,58 +38,50 @@ export async function disambiguateDisplayName(code: string, name: string): Promi
   return `${name} ${pickEmoji()}`
 }
 
+// Pure form for a writer that already holds the participant names (the
+// rebuild, the per-user heal — both run under the session lock).
+export function disambiguateAgainst(name: string, taken: Iterable<string>): string {
+  for (const n of taken) if (n === name) return `${name} ${pickEmoji()}`
+  return name
+}
+
 function pickEmoji(): string {
   return FOOD_EMOJI[Math.floor(Math.random() * FOOD_EMOJI.length)]
 }
 
-// Propagate a profile rename into every LIVE session the user participates
-// in: the identities-hash value (the roster name) and `meta.host` where they
-// are the host. This implements the documented "changing it once in profile
-// settings propagates to every session" behavior — without it the Redis
-// snapshots written at join/visit time stay frozen until the session expires.
-// The caller also mirrors the Postgres `sessions.host_name` snapshot (feed /
-// profile session cards read it). Frozen-by-policy snapshots
-// (ratings.rater_name, checkins) are deliberately NOT touched.
+// A profile rename pushed into every live session that registers the user:
+// the roster entry, and for a session they host the meta.host snapshot.
 //
-// Best-effort by design: a Redis hiccup must not fail the rename (the
-// snapshot just stays stale), so each session is wrapped individually.
-// ⚠️ The meta write is a non-WATCHed read-modify-write of the whole JSON —
-// same pattern as the settings PATCH. If this races a concurrent settings
-// save, the last writer wins the whole blob, and a rename landing on a stale
-// read could drop a just-made settings change (incl. authz-relevant fields
-// like coHostIds). The window is one round-trip and requires a same-instant
-// settings save; the proper fix is a WATCH'd mutateMeta helper mirroring
-// mutateWines — deferred until a second meta-mutating background path
-// appears. KEEPTTL+XX on the meta write is load-bearing (lib/CLAUDE.md):
-// KEEPTTL preserves pro lifespans, XX refuses to resurrect a meta key that
-// expired between the read and the write.
+// 🔒 Per session under the session lock (G1 — identities and meta are
+// shared-state keys), with the decision re-made inside: still registered (a
+// kick that landed meanwhile must not be resurrected by this HSET), the
+// incarnation unchanged; fenced writes. A Postgres-backed session's meta is
+// rewritten FROM THE RECORD (D4) — the caller updates sessions.host_name first.
+// Best-effort per session: a busy lock or a failure skips it (the snapshot just
+// stays stale until the next rename or rebuild).
 export async function propagateDisplayNameToSessions(userId: number, newName: string): Promise<void> {
   const id = `u:${userId}`
-  const keys = await scanKeys('s:*:identities')
-  for (const key of keys) {
+  for (const key of await scanKeys('s:*:identities')) {
+    const code = key.split(':')[1]
+    if (!code || !(await redis.hExists(key, id))) continue
     try {
-      const identities = await redis.hGetAll(key)
-      if (!(id in identities)) continue
-      // Per-session collision check against OTHER participants — the user's
-      // own old entry must not trigger the emoji suffix.
-      const taken = Object.entries(identities).some(([pid, n]) => pid !== id && n === newName)
-      const resolved = taken ? `${newName} ${pickEmoji()}` : newName
-      // Recheck membership right before the write: a kick landing between
-      // the hGetAll and here must not be resurrected by this hSet.
-      if (!(await redis.hExists(key, id))) continue
-      await redis.hSet(key, id, resolved)
-
-      const code = key.split(':')[1]
-      const raw = await redis.get(k.meta(code))
-      if (raw) {
-        const meta = JSON.parse(raw)
-        if (meta.hostUserId === userId || meta.hostIdentityId === id) {
-          meta.host = resolved
-          await redis.set(k.meta(code), JSON.stringify(meta), { KEEPTTL: true, XX: true })
-        }
-      }
-    } catch {
-      // Per-session best-effort — skip and continue.
+      await withSessionMutation(code, { label: 'propagate-name', redisLock: { waitMs: 500 } }, async (tx, ctx) => {
+        const identities = await redis.hGetAll(k.identities(code))
+        if (!(id in identities)) return
+        // Collision check against OTHER participants only.
+        const resolved = disambiguateAgainst(newName, Object.entries(identities).filter(([pid]) => pid !== id).map(([, n]) => n))
+        const meta = ctx.meta!
+        const hosts = meta.hostUserId === userId || meta.hostIdentityId === id
+        const nextMeta = !hosts ? null
+          : ctx.row ? metaFromRecord((await readLiveRow(tx, code))!, await readRecordRoles(tx, code), meta)
+          : { ...meta, host: resolved }
+        await ctx.fence!.exec(m => {
+          m.hSet(k.identities(code), id, resolved)
+          if (nextMeta) m.set(k.meta(code), JSON.stringify(nextMeta), { XX: true, KEEPTTL: true })
+        })
+      })
+    } catch (err) {
+      console.warn('[rename] propagation skipped a session', { code, err: (err as Error).message })
     }
   }
 }

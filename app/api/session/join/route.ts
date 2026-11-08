@@ -1,21 +1,16 @@
+import { prisma } from '@/lib/prisma'
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { ensureMember } from '@/lib/sessionMember'
-import type { SessionMeta } from '@/lib/session'
+import { ensureMemberRow } from '@/lib/sessionMember'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { validateDisplayName } from '@verre/core'
-import { disambiguateDisplayName } from '@/lib/displayName.server'
+import { disambiguateAgainst } from '@/lib/displayName.server'
 import { checkRate, resetRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
-import {
-  newAnonIdentityId,
-  newAnonToken,
-  recordAnonToken,
-  recordIdentity,
-  userIdentityId,
-  authRemoved,
-} from '@/lib/identity'
+import { newAnonIdentityId, newAnonToken, userIdentityId, participantOrBanned, authRemoved } from '@/lib/identity'
+import { withSessionMutation, refuse, ContractRefused, type MutationCtx } from '@/lib/sessionMutation'
+import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 
 export async function POST(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
@@ -49,64 +44,89 @@ export async function POST(req: NextRequest) {
 
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
-  const raw = await redis.get(k.meta(c))
-  if (!raw) return NextResponse.json({ error: 'session not found' }, { status: 404 })
+  // Opened first (a cold Postgres-backed moment is rebuilt): 404 only when the
+  // session is really gone, 503 while restoring.
+  const opened = await openSession(c)
+  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
 
-  // Logged-in users have a stable identity-id (`u:<userId>`). If they're
-  // already registered for this session, reuse their stored displayName so
-  // repeated join calls (back/forward, refresh, etc.) don't accumulate
-  // emoji suffixes. Anonymous joiners always get a fresh identity — each
-  // browser session is a new participant from the server's point of view.
+  // Logged-in users have a stable identity-id (`u:<userId>`): an existing
+  // registration keeps its stored displayName (repeated joins don't stack emoji
+  // suffixes). Anonymous joiners always get a fresh identity.
   //
-  // Banned check: logged-in user's stable identity gets blocked here.
-  // Anon users always mint a fresh id on join, so the bans Set can't
-  // catch a determined re-joiner who cleared localStorage — documented
-  // weakness, not a defect.
+  // Everything is decided inside the session mutation contract. Logged-in: a
+  // ban (record, or the cache — it can deny) is rejected with the literal
+  // 'banned' (client contract: components/session/JoinClient.tsx redirects to
+  // the full RemovedView on it); otherwise the explicit /join RE-ADMITS a
+  // kicked member (kick-ban.md) — the member row's removed_state is cleared in
+  // the transaction (/join does not promote: a Redis-only session gets its
+  // member rows at promotion), and the SREM kicked + roster HSET are the
+  // grant-direction projection after COMMIT. In a Redis-only session, and for
+  // anonymous joiners, Redis is the authority: the fenced writes inside the
+  // transaction are the change.
   //
-  // resetRate happens AFTER the ban check and only on success — the ban
-  // path keeps consuming the rate-limit budget so an attacker can't
-  // fast-probe `u:<n>` ids for banned-status via response timing.
+  // resetRate happens only on success — the ban path keeps consuming the
+  // rate-limit budget so banned-id probing via response timing stays bounded.
   let anonToken: string | null = null
   let identityId: string
-  if (session?.user?.id) {
-    identityId = userIdentityId(session.user.id)
-    if (await redis.sIsMember(k.bans(c), identityId)) {
-      // The literal error string 'banned' is part of the client contract:
-      // components/session/JoinClient.tsx matches on `data.error ===
-      // 'banned'` to redirect manual-rejoin attempts to the full
-      // RemovedView (?removed=1) instead of showing a small inline error.
-      // If you change this string, update JoinClient too.
-      return NextResponse.json({ error: 'banned' }, { status: 403 })
-    }
-    const registered = await redis.hGet(k.identities(c), identityId)
-    if (registered) {
-      displayName = registered
+  try {
+    if (session?.user?.id) {
+      const uid = Number(session.user.id)
+      identityId = userIdentityId(uid)
+      const id = identityId
+      // The explicit rejoin clears only a kick the caller is rejoining FROM —
+      // one already in place when this request arrived. A kick that commits
+      // while this join waits on the lock wins (A's R1 finding 2): the user's
+      // intent predates it. This captures intent, not authorization (the ban
+      // and kick state themselves are read fresh under the locks).
+      // …and WHICH kick (r2/r3 N5): the member row's version — xmin (every
+      // UPDATE changes it), 'absent' when there is no row (a kick-delete) —
+      // read BEFORE the admission, so any change after it (another device
+      // rejoined, the host kicked again) is a different version and wins. Any
+      // other change to the row also refuses, which only costs a retry.
+      const memberVersion = async (db: Pick<typeof prisma, '$queryRaw'>, lock: boolean) =>
+        (lock
+          ? await db.$queryRaw<{ v: string }[]>`SELECT xmin::text AS v FROM session_members WHERE session_code = ${c} AND user_id = ${uid} FOR UPDATE`
+          : await db.$queryRaw<{ v: string }[]>`SELECT xmin::text AS v FROM session_members WHERE session_code = ${c} AND user_id = ${uid}`)[0]?.v ?? 'absent'
+      const kickVersion = await memberVersion(prisma, false)
+      // The Redis-only twin (r4 N5): the per-identity kick counter.
+      const cacheKickVersion = (await redis.hGet(k.kickv(c), id)) ?? 'none'
+      const kickedBefore = (await participantOrBanned(c, req, session, opened.meta)).status === 'kicked'
+      displayName = await withSessionMutation(c, {
+        label: 'join', redisLock: { waitMs: 3000 }, expectedCreatedAt: opened.meta.createdAt,
+        caller: { id, displayName, kind: 'user' },
+      }, async (tx, ctx) => {
+        if (ctx.callerStatus === 'banned') throw refuse(403, 'banned')
+        const kickedNow = ctx.row ? !!ctx.caller?.grant?.kicked : await redis.sIsMember(k.kicked(c), id)
+        if (kickedNow && !kickedBefore) throw new ContractRefused(authRemoved('removed from session'))
+        if (kickedNow && ctx.row && (await memberVersion(tx, true)) !== kickVersion) throw new ContractRefused(authRemoved('removed from session'))
+        if (kickedNow && !ctx.row && ((await redis.hGet(k.kickv(c), id)) ?? 'none') !== cacheKickVersion) throw new ContractRefused(authRemoved('removed from session'))
+        if (ctx.row) await ensureMemberRow(tx, ctx.row, uid, { clearKick: true })
+        const identities = await redis.hGetAll(k.identities(c))
+        const name = identities[id] ?? disambiguateAgainst(displayName, Object.values(identities))
+        if (!ctx.row) await admit(ctx, id, name, identities[id] == null)
+        return name
+      }, async (ctx, name) => {
+        if (ctx.row) await admit(ctx, id, name, true)
+      })
     } else {
-      displayName = await disambiguateDisplayName(c, displayName)
-      await recordIdentity(c, { id: identityId, displayName, kind: 'user' })
+      identityId = newAnonIdentityId()
+      anonToken = newAnonToken()
+      const id = identityId
+      const token = anonToken
+      displayName = await withSessionMutation(c, { label: 'join-anon', redisLock: { waitMs: 3000 }, expectedCreatedAt: opened.meta.createdAt },
+        async (_tx, ctx) => {
+          const name = disambiguateAgainst(displayName, Object.values(await redis.hGetAll(k.identities(c))))
+          const ttl = Number(await redis.pTTL(k.meta(c)))
+          await ctx.fence!.exec(m => {
+            m.hSet(k.identities(c), id, name)
+            m.hSet(k.tokens(c), token, id)
+            if (ttl > 0) { m.pExpire(k.identities(c), ttl); m.pExpire(k.tokens(c), ttl) }
+          })
+          return name
+        })
     }
-    // Clear any prior kicked-marker so this rejoin starts clean — Redis here,
-    // then the durable mirror inside ensureMember: it clears removed_state
-    // ('kicked' → NULL) UNDER the session row lock after re-reading the Redis
-    // kicked set, so a kick that lands between this SREM and that lock wins
-    // instead of being undone by a reset made outside it. ensureMember also
-    // writes the member row /join used to leave out (redis-rehydration § 4.4)
-    // — only when the session already has a live Postgres row (/join does not
-    // promote; a Redis-only session gets its row at promotion's next trigger).
-    await redis.sRem(k.kicked(c), identityId)
-    try {
-      const member = await ensureMember(Number(session.user.id), c, JSON.parse(raw) as SessionMeta)
-      if (member === 'banned') return NextResponse.json({ error: 'banned' }, { status: 403 })
-      if (member === 'kicked') return authRemoved('removed from session')
-    } catch (err) {
-      console.error('[join] member mirror failed', { code: c, err })
-    }
-  } else {
-    displayName = await disambiguateDisplayName(c, displayName)
-    identityId = newAnonIdentityId()
-    anonToken = newAnonToken()
-    await recordIdentity(c, { id: identityId, displayName, kind: 'anon' })
-    await recordAnonToken(c, anonToken, identityId)
+  } catch (err) {
+    return contractFailure(err, c, { label: 'join' })
   }
 
   await touchWithMeta(c)
@@ -116,10 +136,21 @@ export async function POST(req: NextRequest) {
   await resetRate(rlKey)
 
   return NextResponse.json({
-    ...JSON.parse(raw),
+    ...opened.meta,
     code: c,
     id: identityId,
     displayName,
     ...(anonToken ? { anonToken } : {}),
+  })
+}
+
+// The re-admission writes (fenced): clear the kicked marker, register the
+// roster entry (+ EXPIRE — the hash may have been evicted).
+async function admit(ctx: MutationCtx, id: string, name: string, writeName: boolean): Promise<void> {
+  const ttl = Number(await redis.pTTL(k.meta(ctx.code)))
+  await ctx.fence!.exec(m => {
+    m.sRem(k.kicked(ctx.code), id)
+    if (writeName) m.hSet(k.identities(ctx.code), id, name)
+    if (ttl > 0) m.pExpire(k.identities(ctx.code), ttl)
   })
 }

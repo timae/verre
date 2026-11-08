@@ -3,9 +3,11 @@ import { resolveUser } from '@/lib/resolveUser'
 import { redis, k } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { validateDisplayName } from '@verre/core'
-import { disambiguateDisplayName } from '@/lib/displayName.server'
+import { disambiguateAgainst } from '@/lib/displayName.server'
+import { withSessionMutation, admitted } from '@/lib/sessionMutation'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openAsParticipant } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -37,10 +39,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 
   // Participant gate first — must be in the identities map. Banned /
   // kicked / unknown identity all reject before we touch the name.
-  const pp = await participantOrBanned(c, req, session)
-  if (pp.status === 'banned' || pp.status === 'kicked') return authRemoved('removed from session')
-  if (pp.status === 'invalid') return authInvalid()
-  const identity = pp.identity
+  const op = await openAsParticipant(c, req, session)
+  if (op instanceof NextResponse) return op
+  const { identity } = op
 
   // Anon-only: identity.id is `u:<userId>` for logged-in, `a:<uuid>` for anon.
   if (identity.id.startsWith('u:')) {
@@ -86,16 +87,25 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // disambig adds an emoji to break the (self-)collision. That's a
   // no-op edit anyway; if you want to suppress it, early-return when
   // the typed name equals the current name.
-  const identities = await redis.hGetAll(k.identities(c))
-  const currentName = identities[identity.id]
-  if (currentName === name) {
-    return NextResponse.json({ name }, { headers: noStore })
+  // A full contract (G1, r1-10): the identities hash is shared state, and a
+  // rename that waited behind a kick must not restore the removed identity —
+  // under the locks the caller must still be registered, not banned, not
+  // kicked, and the incarnation must be the one it opened; then the fenced HSET.
+  let resolvedName: string
+  try {
+    resolvedName = await withSessionMutation(c, { label: 'anon-rename', redisLock: { waitMs: 1000 }, caller: identity, expectedCreatedAt: op.meta.createdAt },
+      async (_tx, ctx) => {
+        admitted(ctx)
+        const identities = await redis.hGetAll(k.identities(c))
+        if (identities[identity.id] === name) return name
+        // Collision check against the OTHER participants only.
+        const resolved = disambiguateAgainst(name, Object.entries(identities).filter(([id]) => id !== identity.id).map(([, n]) => n))
+        await ctx.fence!.exec(m => { m.hSet(k.identities(c), identity.id, resolved) })
+        return resolved
+      })
+  } catch (err) {
+    return contractFailure(err, c, { label: 'anon-rename' })
   }
-  const resolvedName = await disambiguateDisplayName(c, name)
-
-  // hSet on an existing hash preserves the key's TTL (TTL is per-key,
-  // not per-field). No KEEPTTL needed because we're not running SET.
-  await redis.hSet(k.identities(c), identity.id, resolvedName)
 
   return NextResponse.json({ name: resolvedName }, { headers: noStore })
 }

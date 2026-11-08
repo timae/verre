@@ -27,6 +27,19 @@ The minimal contract is the easiest to audit for privacy and forces explicit doc
 - All ratings, feed_items, likes, tags, and `rating_images` survive untouched.
 - `ratings.rated_at` is the relevant timestamp for "when did the user taste this" — on the rating row, never on the session, so deletion doesn't affect it.
 
+### The soft-delete protocol (redis-rehydration release B)
+
+Both delete paths (`DELETE /api/session/<code>`, account deletion's empty-session wipe) run inside the session mutation contract (`lib/sessionMutation.ts`): the fenced Redis lock `lock:session:{CODE}`, the advisory lock, the live row `FOR UPDATE`, the caller's fresh grant. Inside the transaction: the scrub (or, for an anonymous-only session with no row, nothing but the registry row), a `session_tombstones (code, created_at)` row, and the **fenced wipe of every `s:{CODE}:*` key** — the one deliberate exception to "cache writes after COMMIT", because the surviving effect of a crash is an absence the record repairs. Covers are reclaimed after COMMIT. A refused wipe (lease lost) rolls the scrub back → 503.
+
+| Dies… | Postgres | Redis | Next state |
+|---|---|---|---|
+| before the wipe | rolled back | intact | nothing happened; retryable |
+| mid-wipe | rolled back | partial | readiness pair missing → rebuild (Postgres-backed) or the anonymous-only session is gone (ruling 3) |
+| after the wipe, before COMMIT | rolled back, no registry row | empty | the next open rebuilds — the delete did not happen, consistently |
+| after COMMIT | scrubbed + registry row | empty | done; a late promotion finds the registry row (or no meta) → creates nothing |
+
+**Who may delete:** the strict host; and a cohost when the moment has NO host identity at all (an anonymous host after a rebuild, or a tombstoned one — redis-rehydration § 4.5). Never a display-name branch.
+
 ### Adding a new column to `sessions`
 
 Whenever a new column lands on the `sessions` model, the `UPDATE sessions SET ... = NULL` scrub list in `app/api/session/[code]/route.ts` MUST be extended to include it (and the matching list in `lib/accountDelete.ts:deleteSessionFromPostgres`). The schema-level enforcement is the nullability — but a NOT-NULL column added later would block soft-delete with a constraint error. Make all new columns nullable, and add them to the scrub.
@@ -50,10 +63,10 @@ A session can be in one of three states:
 | State | `deleted_at` | Redis | UI behaviour |
 |---|---|---|---|
 | **Live** | NULL | `s:{CODE}:meta` exists | Full live behaviour (admin, rate, etc.) |
-| **Expired by lifespan** | NULL | gone (TTL expired) | Postgres row stays. Profile/feed/Tastes JOIN it as a normal session and render its name as historical context. Live-session URL doesn't work because Redis is empty. The session-existence filter does **not** exclude it. |
+| **Cold** (cache TTL'd out or evicted) | NULL | gone | Postgres row stays and the moment is **reopenable**: opening it rebuilds the cache from the record (redis-rehydration — lifespan is only the cache TTL for a Postgres-backed moment). Feed/profile auto-reveal a blind lineup once the moment is over by its dates, never because the cache is gone. An anonymous-only moment that TTL'd out is gone (no record). |
 | **Soft-deleted** | non-null | wiped | Profile/feed/Tastes surfaces render "[deleted session]" with no link. Live-session URL 404s. |
 
-Two different lifecycles, no overlap. The `deleted_at` column is for explicit host-deletion only; expiry-by-lifespan is unchanged from today.
+Two different lifecycles, no overlap. The `deleted_at` column is for explicit host-deletion only.
 
 ## Side effects that continue to fire on the soft-delete path
 

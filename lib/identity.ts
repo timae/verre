@@ -2,6 +2,11 @@ import crypto from 'crypto'
 import { NextResponse, type NextRequest } from 'next/server'
 import type { Session } from 'next-auth'
 import { redis, k } from '@/lib/redis'
+import { prisma } from '@/lib/prisma'
+import { readGrant, grantStatus, authorized, type AuthorizedIdentity, type Grant, cacheAdmission } from '@/lib/sessionGrant'
+import { healRegistration, reseedRemoval } from '@/lib/sessionRehydrate'
+
+export type { AuthorizedIdentity } from '@/lib/sessionGrant'
 
 // Stable identity for a session participant. id is the trust anchor — never
 // derived from a request body. displayName is cosmetic, can change, can collide.
@@ -96,93 +101,151 @@ export async function resolveIdentity(
   return null
 }
 
-// Authorization check for session-scoped reads. A caller is a "participant"
-// if their resolved identity is registered in this session's identities map
-// AND not in the session's bans Set. Returns the identity on success.
-// Returns null when the caller should be rejected. Callers that need to
-// distinguish "banned" from "invalid identity" (to render a different
-// bounce) should use `participantOrBanned` below — it returns the tri-state.
-//
-// Most existing callers use this thin shape and emit `authInvalid()`,
-// which clears the client's local state on bounce. For banned callers
-// that's wrong — we want to PRESERVE local state so the /join page can
-// identify them and show "You were removed." Use `participantOrBanned`
-// in any endpoint that polls (the session GET, ratings, wines) so the
-// banned user gets the right bounce header.
+// Authorization check for session-scoped reads: the caller is an admitted
+// participant (participantOrBanned 'ok'). Returns the AuthorizedIdentity on
+// success, null when the caller should be rejected. Endpoints that poll should
+// use participantOrBanned so a removed caller gets the right bounce header.
 export async function requireParticipant(
   code: string,
   req: NextRequest,
   authSession: Session | null,
-): Promise<Identity | null> {
-  const result = await participantOrBanned(code, req, authSession)
+  opened: Opened,
+): Promise<AuthorizedIdentity | null> {
+  const result = await participantOrBanned(code, req, authSession, opened)
   return result.status === 'ok' ? result.identity : null
 }
 
-// Quad-state variant. Endpoints that poll the session use this to
-// distinguish:
-//   - 'ok'      — active participant, proceed.
-//   - 'banned'  — in bans Set; emit authRemoved (preserves token).
-//   - 'kicked'  — removed from identities but not banned; also emit
-//                 authRemoved so the bounce-screen can offer Keep/Delete.
-//   - 'invalid' — no identity / never joined; emit authInvalid.
+// Quad-state admission, plus 'unavailable':
+//   - 'ok'          — admitted participant, proceed.
+//   - 'banned'      — emit authRemoved (preserves token).
+//   - 'kicked'      — removed but not banned; also authRemoved.
+//   - 'invalid'     — no identity / never joined; emit authInvalid.
+//   - 'unavailable' — the record and the cache disagree on the incarnation
+//                     (never expected — fail closed with a 503).
+//
+// 🔒 redis-rehydration § 4.7 — THE RECORD GRANTS, THE CACHE ONLY DENIES. For a
+// `u:` caller of a Postgres-backed session the answer comes from one indexed
+// read of COMMITTED Postgres state (lib/sessionGrant.ts), carried on the
+// identity as `grant`; the Redis bans set is still checked FIRST (a cached ban
+// denies), but a cached roster entry, role or a missing kick never admits or
+// grants. When the record answers banned/kicked and Redis lacks the entry, it is
+// re-seeded (fenced, no wait); when it answers ok and the identities hash lacks
+// the user, the per-user heal registers them (fenced, bounded wait) — mobile
+// treats `invalid` as fatal, so the heal must be server-side. Anonymous callers
+// and Redis-only sessions keep Redis as their authority (ruling 3).
 export type ParticipantResult =
-  | { status: 'ok'; identity: Identity }
-  | { status: 'banned'; identity: Identity }
-  | { status: 'kicked'; identity: Identity }
+  | { status: 'ok'; identity: AuthorizedIdentity }
+  | { status: 'banned'; identity: AuthorizedIdentity }
+  | { status: 'kicked'; identity: AuthorizedIdentity }
   | { status: 'invalid' }
+  | { status: 'unavailable' }
 
 export async function participantOrBanned(
   code: string,
   req: NextRequest,
   authSession: Session | null,
+  opened: Opened,
 ): Promise<ParticipantResult> {
   const identity = await resolveIdentity(code, req, authSession)
   if (!identity) return { status: 'invalid' }
-  // Banned check first — ban is the hard gate.
-  if (await redis.sIsMember(k.bans(code), identity.id)) {
-    return { status: 'banned', identity }
+  const resolved = await resolveGrant(code, identity, opened)
+  if (resolved === 'unavailable') return { status: 'unavailable' }
+  const { grant: grantRes, incarnation } = resolved
+  if (!grantRes) {
+    // Cache authority (anonymous caller, Redis-only session): the incarnation
+    // check and the admission read in ONE step (r3 R1-1) — a code reused
+    // between two commands could otherwise admit through the successor's roster.
+    const r = await cacheAdmission(code, identity.id, incarnation)
+    if (r === 'mismatch') return { status: 'unavailable' }
+    // 'host' (a meta-proven strict host missing from the roster) is not a
+    // participant here — unchanged; the privilege helpers still grant it.
+    if (r === 'banned') return { status: 'banned', identity: authorized(identity, null, incarnation, true) }
+    if (r === 'kicked') return { status: 'kicked', identity: authorized(identity, null, incarnation) }
+    if (r !== 'ok') return { status: 'invalid' }
+    return { status: 'ok', identity: authorized(identity, null, incarnation) }
   }
-  const registered = await redis.hGet(k.identities(code), identity.id)
-  if (registered === null || registered === undefined) {
-    // Identity isn't in the participants list. Check kicked Set so the
-    // recently-kicked user gets a "removed" bounce instead of a stale-
-    // token "invalid" bounce.
-    if (await redis.sIsMember(k.kicked(code), identity.id)) {
-      return { status: 'kicked', identity }
+  if (await redis.sIsMember(k.bans(code), identity.id)) return { status: 'banned', identity: authorized(identity, grantRes, incarnation, true) }
+  const auth = authorized(identity, grantRes, incarnation)
+  {
+    const status = grantStatus(grantRes)
+    if (status === 'banned' || status === 'kicked') {
+      await reseedRemoval(code, identity.id, status)
+      return { status, identity: auth }
     }
-    return { status: 'invalid' }
+    // Not in the record (e.g. kick-deleted: no member row, no ratings left): a
+    // cached kicked marker still shapes the bounce ("You were removed") — a
+    // denial, which the cache may give.
+    if (status === 'invalid') {
+      return (await redis.sIsMember(k.kicked(code), identity.id)) ? { status: 'kicked', identity: auth } : { status: 'invalid' }
+    }
+    if ((await redis.hGet(k.identities(code), identity.id)) == null) {
+      const name = await healRegistration(code, auth)
+      if (name) return { status: 'ok', identity: authorized({ ...identity, displayName: name }, grantRes, incarnation) }
+    }
+    return { status: 'ok', identity: auth }
   }
-  return { status: 'ok', identity }
 }
 
-export async function recordIdentity(code: string, identity: Identity): Promise<void> {
-  await redis.hSet(k.identities(code), identity.id, identity.displayName)
+
+// The caller's authorization WITHOUT the participant gate — for routes a
+// removed caller may still reach (bans list, ban preview, removed-state, leave):
+// the same grant read, so host checks answer from the record.
+export async function resolveAuthorized(
+  code: string,
+  req: NextRequest,
+  authSession: Session | null,
+  opened: Opened,
+): Promise<AuthorizedIdentity | null | 'unavailable'> {
+  const identity = await resolveIdentity(code, req, authSession)
+  if (!identity) return null
+  const resolved = await resolveGrant(code, identity, opened)
+  if (resolved === 'unavailable') return 'unavailable'
+  // No participant gate here, so the cache's denials are carried as `denied` —
+  // every privilege helper refuses it: a cached ban for anyone (r2/r3 N1); for
+  // a cache-authority caller also a kick or an off-roster identity, whatever
+  // stale role entry meta still holds (r4 N1). Same atomic read as admission.
+  if (!resolved.grant) {
+    const r = await cacheAdmission(code, identity.id, resolved.incarnation)
+    if (r === 'mismatch') return 'unavailable'
+    return authorized(identity, null, resolved.incarnation, r !== 'ok' && r !== 'host')
+  }
+  return authorized(identity, resolved.grant, resolved.incarnation, await redis.sIsMember(k.bans(code), identity.id))
 }
 
-export async function recordAnonToken(code: string, token: string, id: string): Promise<void> {
-  await redis.hSet(k.tokens(code), token, id)
+
+// The snapshot the route opened (openSession's meta) — the incarnation the
+// whole request is bound to. null only where nothing was opened.
+type Opened = { createdAt: number } | null
+
+// The grant for a `u:` identity (null for anon / Redis-only), with the
+// incarnation belt (r2-1): the grant must belong to the SAME incarnation as
+// the snapshot the route opened (and will build its response from) — never a
+// fresh read, which a code recycled between the open and the grant read would
+// pass (code review r1 P1-1). The incarnation is then carried on the
+// AuthorizedIdentity into every contract the request enters.
+async function resolveGrant(code: string, identity: Identity, opened: Opened): Promise<{ grant: Grant | null; incarnation: number | undefined } | 'unavailable'> {
+  let seen = opened?.createdAt
+  const grant = identity.kind === 'user' ? await readGrant(prisma, code, Number(identity.id.slice(2))) : null
+  // Without a grant (cache authority) the callers check the cache's
+  // incarnation atomically with their admission read (cacheAdmission).
+  if (!grant) return { grant: null, incarnation: seen }
+  if (seen === undefined) {
+    const raw = await redis.get(k.meta(code))
+    if (raw) seen = (JSON.parse(raw) as { createdAt?: number }).createdAt
+  }
+  if (seen !== undefined && grant.createdAt !== null && seen !== grant.createdAt) {
+    console.error('[grant] incarnation mismatch', { code })
+    return 'unavailable'
+  }
+  return { grant, incarnation: seen ?? grant.createdAt ?? undefined }
 }
 
-// Standardized rejection for "you have no valid identity for this session"
-// (resolver returned null, or you're not a participant). The X-Vr-Auth header
-// signals the client to drop its stored token and bounce to /join, which is
-// distinct from a permission-denied 403 (e.g. "only the host can do this") —
-// those should NOT clear the token.
-export function authInvalid(error = 'identity required', status = 401): NextResponse {
-  return NextResponse.json({ error }, {
-    status,
-    headers: { 'X-Vr-Auth': 'invalid', 'Cache-Control': 'private, no-store' },
+// 503 for the 'unavailable' admission (and the resolveAuthorized form).
+export function authUnavailable(): NextResponse {
+  return NextResponse.json({ error: 'session is being restored' }, {
+    status: 503,
+    headers: { 'Retry-After': '1', 'Cache-Control': 'private, no-store' },
   })
 }
 
-// Variant for callers who were a participant but got removed (kicked or
-// banned). The 'removed' sentinel tells the client to PRESERVE the local
-// token + name + id keys (vs 'invalid' which wipes them), bounce to
-// /join/<code>, and let that page identify them via the preserved token
-// and render the right "You were removed" copy.
-export function authRemoved(error = 'removed from session', status = 401): NextResponse {
-  return NextResponse.json({ error }, {
-    status,
-    headers: { 'X-Vr-Auth': 'removed', 'Cache-Control': 'private, no-store' },
-  })
-}
+export { authInvalid, authRemoved } from '@/lib/authResponses'
