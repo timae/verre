@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
-import { prisma } from '@/lib/prisma'
+import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup, pgMirrorWineList } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -38,17 +37,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const revealedWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
-  // Mirror the reveal to Postgres so the post-rewire feed-read path
-  // (which queries wines.revealed_at directly) renders correctly after
-  // Redis evicts the session. Silently no-ops for anon-host wines —
-  // their Postgres row doesn't exist because pgUpsertWine only fires
-  // for logged-in hosts. Captured in .local/future-work-rewire.md
-  // ("Anon-host blind session reveal persistence").
-  try {
-    await prisma.wine.updateMany({ where: { id: wineId }, data: { revealedAt } })
-  } catch (err) {
-    console.error('reveal pg update error:', err)
-  }
+  // Mirror the reveal to Postgres (the feed-read path queries wines.revealed_at
+  // after Redis evicts the session) through the wine-list mirror — for every
+  // session with a live row, anon-hosted included once promoted.
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup([revealedWine], identities)
@@ -88,12 +81,9 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const hiddenWine = out.find(w => w.id === wineId)!
   await touchWithMeta(c)
 
-  // Mirror the un-reveal to Postgres — same rationale as the POST path.
-  try {
-    await prisma.wine.updateMany({ where: { id: wineId }, data: { revealedAt: null } })
-  } catch (err) {
-    console.error('un-reveal pg update error:', err)
-  }
+  // Mirror the un-reveal — same path as the POST.
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   const identities = await redis.hGetAll(k.identities(c))
   const userNameLookup = await buildKickedUserNameLookup([hiddenWine], identities)

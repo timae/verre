@@ -3,6 +3,8 @@ import { nanoid } from 'nanoid'
 import { WatchError } from 'redis'
 import { redis, k } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
+import { Prisma } from '@prisma/client'
+import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { normalizeVintageText } from '@verre/core'
 import { uploadImage } from '@/lib/s3'
 import { cleanCountry, cleanUrl, scrub } from '@/lib/textSafe'
@@ -158,7 +160,17 @@ export function wineToWire(
   const { addedByIdentityId: provenance, addedByDisplayName: snapshot, ...rest } = w
   let resolvedName: string | null = null
   let userId: number | null = null
-  if (provenance && showProvenance) {
+  const lookedUp = provenance ? userNameLookup.get(provenance) : undefined
+  if (provenance && showProvenance && lookedUp === UNRESOLVED_USER) {
+    // The users lookup failed: whether this adder still exists is unknown, so
+    // the name is withheld rather than taken from a possibly stale cache.
+  } else if (provenance && showProvenance && lookedUp === GONE_USER) {
+    // 🔒 A `u:` adder whose users row is gone is never legitimate after account
+    // deletion (redis-rehydration § 4.3): the d: migration of the live copy is
+    // a post-commit projection that can fail or never run, and then the stale
+    // identities entry or the snapshot would render the deleted person's name.
+    resolvedName = '[deleted]'
+  } else if (provenance && showProvenance) {
     if (identities[provenance]) resolvedName = identities[provenance]
     else if (provenance.startsWith('u:') && userNameLookup.has(provenance)) {
       resolvedName = userNameLookup.get(provenance)!
@@ -239,6 +251,61 @@ export type SessionMeta = {
   // impressions can be added + the category vocabulary. Mirrors
   // sessions.category.
   category?: string
+}
+
+// Where each SessionMeta field is durable (redis-rehydration § 4.2 / § 5.2).
+// `Record<keyof SessionMeta, …>` is exhaustive: a field added to SessionMeta
+// fails `tsc` here until someone decides where it lives — a field nobody
+// classified is a field that silently disappears on the first Redis wipe.
+//   'column'          — a sessions column, written by sessionMetaToColumns
+//   'session_members' — derived from session_members.role (the role mirror)
+//   'derived'         — reconstructible from other columns (u:<host_user_id>)
+export const SESSION_META_PERSISTENCE: Record<keyof SessionMeta, 'column' | 'session_members' | 'derived'> = {
+  host: 'column', name: 'column', createdAt: 'column', hostUserId: 'column',
+  hostIdentityId: 'derived', blind: 'column', blindForEveryone: 'column',
+  lifespan: 'column', coHostIds: 'session_members', providerIds: 'session_members',
+  address: 'column', dateFrom: 'column', dateTo: 'column', timezone: 'column',
+  description: 'column', link: 'column', hideLineup: 'column',
+  hideLineupMinutesBefore: 'column', showProvenance: 'column',
+  coverPhotoUrl: 'column', category: 'column',
+}
+
+// 🔒 The ONE spelling of SessionMeta → sessions columns (R1-11). The logged-in
+// create, the promotion create arm (pgUpsertSession) and the settings PATCH
+// mirror all write this; they had drifted when each listed columns by hand.
+// Absent optional settings map to NULL, which every reader treats as the
+// default (48h, lineup shown, provenance shown). The settings mirror omits the
+// identity + creation columns: sessionSettingsColumns is the mutable subset.
+export function sessionMetaToColumns(meta: SessionMeta) {
+  return {
+    hostName: meta.host,
+    hostUserId: meta.hostUserId,
+    createdAt: new Date(meta.createdAt),
+    ...sessionSettingsColumns(meta),
+  }
+}
+
+// The columns a settings save may change. Never the host or creation columns:
+// writing those from a request's meta could put back a host that account
+// deletion tombstoned in Postgres after the request read Redis.
+export function sessionSettingsColumns(meta: SessionMeta) {
+  return {
+    name: meta.name || null,
+    blind: !!meta.blind,
+    blindForEveryone: !!meta.blindForEveryone,
+    address: meta.address || null,
+    dateFrom: meta.dateFrom ? new Date(meta.dateFrom) : null,
+    dateTo: meta.dateTo ? new Date(meta.dateTo) : null,
+    timezone: meta.timezone || null,
+    description: meta.description || null,
+    link: meta.link || null,
+    coverPhotoUrl: meta.coverPhotoUrl || null,
+    category: meta.category || 'wine',
+    lifespan: meta.lifespan ?? null,
+    hideLineup: meta.hideLineup ?? null,
+    hideLineupMinutesBefore: meta.hideLineupMinutesBefore ?? null,
+    showProvenance: meta.showProvenance ?? null,
+  }
 }
 
 export { genCode } from '@/lib/sessionCode'
@@ -383,11 +450,18 @@ function clean(v: unknown): string {
 // unchanged; addWineToSession below keeps using them.
 export { cleanCountry, cleanUrl }
 
-// Batch-lookup display names for `u:<id>` adders whose identity is no
-// longer in the session's identities map (kicked / banned logged-in
-// users). One Prisma query per request — empty input short-circuits.
-// Anonymous adders (`a:<uuid>`) have no users row to fall back to and
-// are excluded from the input here.
+// Sentinel values in the name lookup: this `u:` adder's account is gone; or
+// the lookup failed, so whether it is gone is unknown.
+export const GONE_USER = '\u0000gone'
+export const UNRESOLVED_USER = '\u0000unresolved'
+
+// Batch-lookup the `u:<id>` adders of these wines: display names for those
+// no longer in the session's identities map (kicked / banned logged-in
+// users), and GONE_USER for those whose users row no longer exists (deleted
+// accounts — wineToWire then renders '[deleted]' whatever the identities map
+// or snapshot still say). One Prisma query per request; no `u:` adder
+// short-circuits. Anonymous adders (`a:<uuid>`) have no users row and are
+// excluded.
 //
 // Used by the wines GET / reorder / POST / PATCH / reveal routes when
 // they build the wire response. Postgres failures collapse to an empty
@@ -398,24 +472,32 @@ export async function buildKickedUserNameLookup(
   wines: WineMeta[],
   identities: Record<string, string>,
 ): Promise<Map<string, string>> {
-  const missingUserIds = new Set<number>()
+  const userIds = new Set<number>()
   for (const w of wines) {
     const id = w.addedByIdentityId
     if (!id || !id.startsWith('u:')) continue
-    if (identities[id]) continue  // covered by the live map
     const n = Number(id.slice(2))
-    if (Number.isInteger(n) && n > 0) missingUserIds.add(n)
+    if (Number.isInteger(n) && n > 0) userIds.add(n)
   }
-  if (missingUserIds.size === 0) return new Map()
+  if (userIds.size === 0) return new Map()
   const out = new Map<string, string>()
   try {
     const rows = await prisma.user.findMany({
-      where: { id: { in: [...missingUserIds] } },
+      where: { id: { in: [...userIds] } },
       select: { id: true, name: true },
     })
-    for (const r of rows) out.set(`u:${r.id}`, r.name)
+    const found = new Map(rows.map(r => [`u:${r.id}`, r.name]))
+    for (const n of userIds) {
+      const id = `u:${n}`
+      const name = found.get(id)
+      if (name === undefined) out.set(id, GONE_USER)
+      else if (!identities[id]) out.set(id, name)
+    }
   } catch (err) {
-    console.error('[wines] buildKickedUserNameLookup failed, falling back:', err)
+    // Fail closed on names: a deleted adder's stale identities entry or
+    // snapshot must not render because Postgres was briefly unreachable.
+    console.error('[wines] buildKickedUserNameLookup failed — withholding u: adder names:', err)
+    for (const n of userIds) out.set(`u:${n}`, UNRESOLVED_USER)
   }
   return out
 }
@@ -522,77 +604,184 @@ export async function addWineToSession(
   }
 }
 
+// ── Postgres mirrors of a session (redis-rehydration § 4.4 / § 4.6) ──────────
+//
+// 🔒 Mode is decided by whether the live `sessions` row exists, never by the
+// caller's login state. Every writer below takes the live row's lock inside its
+// own transaction and makes its decision there; both soft-delete paths take the
+// same row FOR UPDATE first, so a mirror either commits before a delete (which
+// then orphans/scrubs what it wrote) or finds no live row and writes nothing.
+
+// Today's `pgUpsertSession` contract (returns the live sessions.id), split into
+// its two arms. Touch: the row exists → name-only refresh, as before. Create
+// (promotion — Redis-only → Postgres-backed): only for a logged-in caller's act
+// (the callers decide that), one transaction that inserts the row from
+// sessionMetaToColumns AND copies the session's current lineup (positions) and
+// Redis bans set, read inside the transaction. The create arm holds the
+// session's ban lock so a ban or unban (which hold it too) cannot fall between
+// the bans snapshot and the COMMIT. In release B this becomes ensurePromoted
+// inside the mutation contract (registry + incarnation checks).
 export async function pgUpsertSession(code: string, meta: SessionMeta): Promise<number> {
-  const row = await prisma.session.upsert({
-    where: { code },
-    create: {
-      code,
-      hostName: meta.host,
-      hostUserId: meta.hostUserId,
-      name: meta.name || null,
-      // `blind` must round-trip to Postgres for the SessionFeedCard
-      // redaction predicate (lib/sessionFeedWines.ts). Pre-rewire the
-      // column existed but was never written, so every Postgres-side
-      // read of `blind` came back NULL and redaction silently no-op'd
-      // on the feed / profile surfaces. Live session route reads from
-      // Redis where blind WAS set — that's why the bug stayed dormant.
-      blind: !!meta.blind,
-      // `blindForEveryone` mirrors what's in Redis at create time so a
-      // hypothetical future create-path that seeds it (today's create
-      // endpoint doesn't — settings PATCH is the only writer) survives
-      // to Postgres. Same rationale as `blind`: the SessionFeedCard
-      // redaction predicate reads this column.
-      blindForEveryone: !!meta.blindForEveryone,
-      createdAt: new Date(meta.createdAt),
-      // Cover, category, and the scheduled-moment detail fields all mirror
-      // what's in Redis at archive time. This is the delayed-archive path for
-      // an ANON-created session (reached when a logged-in user later visits /
-      // rates / adds a wine / bookmarks); the logged-in create writes the same
-      // set directly. They MUST match the create route's field set —
-      // /api/me/sessions reads date_from/date_to (and the rest) from Postgres,
-      // so dropping them here would make an anon-created scheduled moment look
-      // date-less and detail-less to a logged-in participant and break the
-      // upcoming/live/recent routing. Like blind, NOT in the update path — the
-      // settings PATCH's updateMany is the writer for changes.
-      coverPhotoUrl: meta.coverPhotoUrl || null,
-      category: meta.category || 'wine',
-      address:     meta.address     || null,
-      dateFrom:    meta.dateFrom    ? new Date(meta.dateFrom) : null,
-      dateTo:      meta.dateTo      ? new Date(meta.dateTo)   : null,
-      timezone:    meta.timezone    || null,
-      description: meta.description || null,
-      link:        meta.link        || null,
-    },
-    // Note: `blind` and `blindForEveryone` are intentionally NOT in the
-    // update path. Settings changes route through a separate
-    // `prisma.session.updateMany` in `app/api/session/[code]/settings/
-    // route.ts` that writes both. Leaving them out of this update path
-    // avoids accidentally flipping them if a future meta-update code
-    // path forgets to carry the values.
-    update: { name: meta.name || undefined },
-    select: { id: true },
-  })
-  return row.id
+  const live = await prisma.session.findFirst({ where: { code, deletedAt: null }, select: { id: true } })
+  if (live) {
+    if (meta.name) await prisma.session.updateMany({ where: { id: live.id, deletedAt: null }, data: { name: meta.name } })
+    return live.id
+  }
+  // The ban lock lives 10 s at most; waiting most of that keeps a first
+  // logged-in act on an anonymous session from failing to archive behind a
+  // moderation action in progress.
+  if (!(await acquireBanLockWithin(code, 8000))) throw new Error(`promotion: ban lock busy for ${code}`)
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const existing = await tx.$queryRaw<{ id: number }[]>`
+        SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
+      if (existing[0]) return existing[0].id
+      const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(meta) }, select: { id: true } })
+      await upsertLineup(tx, row.id, await getWines(code))
+      const bans = await redis.sMembers(k.bans(code))
+      if (bans.length > 0) {
+        await tx.$executeRaw`
+          INSERT INTO session_bans (session_code, identity_id)
+          SELECT ${code}, unnest(${bans}::text[])
+          ON CONFLICT DO NOTHING`
+      }
+      return row.id
+    })
+  } catch (err) {
+    // A concurrent create that does not hold the ban lock (the create route is
+    // the only one, and it runs before the code is known) — take its row.
+    if ((err as { code?: string })?.code === 'P2002') {
+      const row = await prisma.session.findFirst({ where: { code, deletedAt: null }, select: { id: true } })
+      if (row) return row.id
+    }
+    throw err
+  } finally {
+    await releaseBanLock(code)
+  }
 }
 
-// Mirror a "Brought by" REASSIGNMENT to Postgres. UPSERTS the wine row (from the
-// current Redis `wine`) with provenance FORCED on BOTH the create and update
-// paths — unlike `pgUpsertWine`, which freezes provenance on update.
+async function acquireBanLockWithin(code: string, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms
+  for (;;) {
+    if (await acquireBanLock(code)) return true
+    if (Date.now() >= deadline) return false
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
+// Writes the given wines of a session, in array order (position = index), in
+// ONE statement. Content, reveal state, catalog link and position follow the
+// array; provenance is set on INSERT only (the original adder is the anchor —
+// only the reassignment path moves it). The update arm skips a row whose
+// session_id differs (an orphaned wine is never re-attached or re-positioned
+// from a stale array) and a row that would not change (no dead tuples on the
+// hot rate path).
 //
-// Why an upsert (not a provenance-only updateMany): if the PG row doesn't exist
-// yet (anon session pre-archival), a provenance-only update would no-op, and a
-// CONCURRENT rating/bookmark could then CREATE the row from a Redis snapshot
-// captured before the reassign — permanently archiving the OLD owner even though
-// every op "succeeded" (Codex P2). By upserting here, a PG row with the NEW owner
-// always exists after the reassign; any later `pgUpsertWine` from a stale-snapshot
-// archival write hits its UPDATE path, which FREEZES provenance, so it keeps the
-// new owner. And because THIS forces provenance on its own update path, it also
-// wins if a stale archival create beat it to the row. Net: reassign's owner is
-// the durable last-writer regardless of interleaving with archival writes.
-//
-// Runs under the ban lock in the caller; the caller compensates (restores prior
-// Redis provenance) if this throws. Best-effort within the Redis→PG contract —
-// see docs/dev/proposals/reassign-brought-by.md.
+// 🔒 A `u:` adder whose users row is gone is written as no adder + '[deleted]'
+// (on INSERT — the only arm that writes provenance). A wine added just before
+// its adder's account deletion can get its FIRST mirror after that deletion
+// committed (it waited on the session row lock), and its Redis copy still
+// names the person; written verbatim it would restore the deleted identity and
+// name, and every later mirror would freeze them. The adders are read FOR KEY
+// SHARE, which conflicts with account deletion's FOR UPDATE on the users row,
+// so a mirror either commits before the deletion (whose in-transaction re-read
+// then rewrites the row) or sees the user gone.
+async function upsertLineup(tx: Prisma.TransactionClient, sessionId: number, wines: WineMeta[]) {
+  if (wines.length === 0) return
+  const adderIds = [...new Set(wines.map(w => w.addedByIdentityId).filter((id): id is string => !!id && /^u:\d{1,18}$/.test(id)).map(id => Number(id.slice(2))))]
+  const liveAdders = new Set<string>()
+  if (adderIds.length > 0) {
+    const live = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ANY(${adderIds}::bigint[]) FOR KEY SHARE`
+    for (const r of live) liveAdders.add(`u:${r.id}`)
+  }
+  const provenance = (w: WineMeta): [string | null, string | null] =>
+    w.addedByIdentityId?.startsWith('u:') && !liveAdders.has(w.addedByIdentityId)
+      ? [null, '[deleted]']
+      : [w.addedByIdentityId ?? null, w.addedByDisplayName?.slice(0, 64) ?? null]
+  // Clamped to the column widths: one statement writes the whole lineup, so a
+  // single over-long field (the add path does not cap name / producer / grape)
+  // must not fail the mirror for every wine of the session.
+  const cut = (v: string | undefined, n: number) => (v ? v.slice(0, n) : null)
+  const rows = wines.map((w, i) => Prisma.sql`(
+    ${w.id}, ${sessionId}, ${w.name.slice(0, 255)}, ${cut(w.producer, 255)}, ${cut(w.vintage, 4)}, ${cut(w.grape, 255)},
+    ${cut(w.type, 64)}, ${w.imageUrl || null}, ${cut(w.description, 1000)}, ${cut(w.region, 255)},
+    ${cut(w.country, 2)}, ${cut(w.vinification, 1000)}, ${cut(w.purchaseUrl, 1000)},
+    ${w.revealedAt ? new Date(w.revealedAt) : null}::timestamptz,
+    ${provenance(w)[0]}, ${provenance(w)[1]},
+    ${w.productId || null}, ${w.vintageId || null}, ${i}::int)`)
+  await tx.$executeRaw`
+    INSERT INTO wines (id, session_id, name, producer, vintage, grape, style, image_url, description, region,
+                       country, vinification, purchase_url, revealed_at, added_by_identity_id,
+                       added_by_display_name, product_id, vintage_id, position)
+    VALUES ${Prisma.join(rows)}
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name, producer = EXCLUDED.producer, vintage = EXCLUDED.vintage,
+      grape = EXCLUDED.grape, style = EXCLUDED.style, image_url = EXCLUDED.image_url,
+      description = EXCLUDED.description, region = EXCLUDED.region, country = EXCLUDED.country,
+      vinification = EXCLUDED.vinification, purchase_url = EXCLUDED.purchase_url,
+      revealed_at = EXCLUDED.revealed_at, product_id = EXCLUDED.product_id,
+      vintage_id = EXCLUDED.vintage_id, position = EXCLUDED.position
+    WHERE wines.session_id = EXCLUDED.session_id
+      AND (wines.name, wines.producer, wines.vintage, wines.grape, wines.style, wines.image_url,
+           wines.description, wines.region, wines.country, wines.vinification, wines.purchase_url,
+           wines.revealed_at, wines.product_id, wines.vintage_id, wines.position)
+          IS DISTINCT FROM
+          (EXCLUDED.name, EXCLUDED.producer, EXCLUDED.vintage, EXCLUDED.grape, EXCLUDED.style,
+           EXCLUDED.image_url, EXCLUDED.description, EXCLUDED.region, EXCLUDED.country,
+           EXCLUDED.vinification, EXCLUDED.purchase_url, EXCLUDED.revealed_at, EXCLUDED.product_id,
+           EXCLUDED.vintage_id, EXCLUDED.position)`
+}
+
+async function lockLiveSession(tx: Prisma.TransactionClient, code: string): Promise<number | null> {
+  const rows = await tx.$queryRaw<{ id: number }[]>`
+    SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
+  return rows[0]?.id ?? null
+}
+
+// The wine-list mirror, run after EVERY wine-list mutation (add, edit, delete,
+// reorder, reveal/hide, ban-wipe) by EVERY caller — anonymous adds included.
+// Under the live row's lock it re-reads the committed Redis array and projects
+// the WHOLE of it (content + positions renormalized), so: mirrors serialize on
+// the row lock and each projects the newest array as of its own read — the last
+// committer converges Postgres on Redis; a mirror that failed earlier is
+// repaired by the next one; and a session's positions are all set or all NULL.
+// `deletedId` removes that wine's row in the same transaction (the wine DELETE
+// route), so a concurrent mirror cannot re-insert it. Best-effort for content
+// (redis-rehydration § 3): callers log a failure, the next list write repairs.
+// Returns the array it projected, or null for a Redis-only session.
+export async function pgMirrorWineList(code: string, opts: { deletedId?: string } = {}): Promise<WineMeta[] | null> {
+  return prisma.$transaction(async (tx) => {
+    const sessionId = await lockLiveSession(tx, code)
+    if (sessionId === null) return null
+    if (opts.deletedId) await tx.$executeRaw`DELETE FROM wines WHERE id = ${opts.deletedId} AND session_id = ${sessionId}`
+    const wines = await getWines(code)
+    await upsertLineup(tx, sessionId, wines)
+    // Rows of this session that the array no longer lists (a wine DELETE whose
+    // mirror failed) are positioned AFTER the array, so positions stay unique
+    // and all set. They are deliberately NOT removed in release A: until
+    // release B's reject-on-absent rule, mutateWines re-creates an evicted
+    // wines key holding only the new wine, and "remove what the array lacks"
+    // would then detach the session's whole lineup. Their membership repair
+    // ships with that rule (release B).
+    await tx.$executeRaw`
+      UPDATE wines w SET position = ${wines.length}::int + o.rank - 1
+        FROM (SELECT id, row_number() OVER (ORDER BY position NULLS LAST, created_at, id) AS rank
+                FROM wines WHERE session_id = ${sessionId} AND NOT (id = ANY(${wines.map(x => x.id)}::text[]))) o
+       WHERE w.id = o.id AND w.position IS DISTINCT FROM ${wines.length}::int + o.rank - 1`
+    return wines
+  })
+}
+
+// The rate / bookmark FK row: those writers need the wine's row to exist before
+// they insert a rating or bookmark referencing it. It is the list mirror — the
+// wine is written from the array re-read under the lock, never from the
+// caller's earlier snapshot, so a wine deleted meanwhile is not resurrected and
+// a stale copy cannot overwrite a newer mirror. True iff the wine is live.
+export async function pgUpsertWine(sessionCode: string, wine: WineMeta): Promise<boolean> {
+  const wines = await pgMirrorWineList(sessionCode)
+  return !!wines?.some(w => w.id === wine.id)
+}
+
 // True iff a live (non-soft-deleted) Postgres session row exists for this code.
 // The reassign handler gates on this BEFORE any write: v1 reassignment is
 // limited to already-archived sessions (Simon, 2026-07-20). A pure Redis-only
@@ -609,119 +798,39 @@ export async function pgSessionExists(sessionCode: string): Promise<boolean> {
   return !!row
 }
 
+// Mirror a "Brought by" REASSIGNMENT to Postgres: the lineup is projected first
+// (which inserts the row with the new owner if it was missing — Redis was
+// reassigned before this runs), then provenance is FORCED on the row, because
+// the list mirror freezes it on update. Forcing it here is what makes the
+// reassign's owner the durable last writer whatever order it interleaves with
+// archival writes (a stale-snapshot insert that beat it to the row is
+// corrected; every later mirror freezes the new owner). Runs under the ban lock
+// in the caller, which restores the prior Redis provenance if this throws —
+// docs/dev/proposals/reassign-brought-by.md. Under the live row's lock, and a `u:`
+// target must still have a users row, read with FOR KEY SHARE: account deletion
+// holds that row FOR UPDATE, so a reassign either commits before the deletion
+// (whose in-transaction re-read then rewrites it to the tombstone key) or waits
+// and finds the user gone. Throws on any refusal so the caller's Redis
+// compensation runs and the request 500s.
 export async function pgReassignWineProvenance(sessionCode: string, wine: WineMeta): Promise<void> {
-  const session = await prisma.session.findFirst({
-    where: { code: sessionCode, deletedAt: null },
-    select: { id: true },
-  })
-  // The caller gated on pgSessionExists before mutating Redis, but session
-  // deletion / account cleanup do NOT take the ban lock — so the row CAN vanish
-  // (TOCTOU) between that gate and here, AFTER Redis was already changed. That's
-  // a mirror FAILURE, not a no-op: returning silently would leave Redis=new /
-  // PG=gone and the route would 200. THROW so the caller's Redis compensation
-  // runs and the request 500s (Codex catch). (A genuinely absent row for a
-  // never-archived session can't reach here — the caller's 409 gate stops it.)
-  if (!session) throw new Error('reassign mirror: session row disappeared')
-  const cols = {
-    name: wine.name,
-    producer: wine.producer || null,
-    vintage: wine.vintage || null,
-    grape: wine.grape || null,
-    style: wine.type || null,
-    imageUrl: wine.imageUrl || null,
-    description: wine.description || null,
-    region: wine.region || null,
-    country: wine.country || null,
-    vinification: wine.vinification || null,
-    purchaseUrl: wine.purchaseUrl || null,
-    addedByIdentityId: wine.addedByIdentityId ?? null,
-    addedByDisplayName: wine.addedByDisplayName ?? null,
-    // 🔒 The catalog link rides the CREATE arm. This function's whole reason
-    // for being an upsert (see the note above) is that the wines row may not
-    // exist yet — and a row minted here without the link would look exactly
-    // like a legacy unlinked row, which phase 5's exact-match backfill would
-    // then re-derive from STRINGS. That would reintroduce string-derived
-    // linking on a wine whose link came from an explicit user choice. The RFC
-    // names this path directly: "every path that writes a `wines` row from
-    // Redis state — rate/visit archival, wine edits, BROUGHT-BY REASSIGNMENT,
-    // session archive — carries both fields verbatim."
-    //
-    // ⚠️ Deliberately NOT added to the `update` arm below: that arm exists to
-    // force provenance and nothing else, and widening it would let a reassign
-    // built from a stale Redis snapshot overwrite a link the edit path had
-    // already corrected.
-    productId: wine.productId || null,
-    vintageId: wine.vintageId || null,
-  }
-  await prisma.wine.upsert({
-    where: { id: wine.id },
-    create: { id: wine.id, sessionId: session.id, ...cols },  // category defaults to 'wine' (schema default), matching pgUpsertWine
-    // FORCE provenance on update (the whole point) — a stale archival create
-    // that beat us to the row is corrected here.
-    update: { addedByIdentityId: cols.addedByIdentityId, addedByDisplayName: cols.addedByDisplayName },
-  })
-}
-
-export async function pgUpsertWine(sessionCode: string, wine: WineMeta) {
-  // Skip soft-deleted sessions (code = NULL after the §8 scrub naturally
-  // misses, but the explicit filter documents intent and survives any
-  // future scrub-set change).
-  const session = await prisma.session.findFirst({
-    where: { code: sessionCode, deletedAt: null },
-    select: { id: true },
-  })
-  if (!session) return
-  await prisma.wine.upsert({
-    where: { id: wine.id },
-    create: {
-      id: wine.id,
-      sessionId: session.id,
-      name: wine.name,
-      producer: wine.producer || null,
-      vintage: wine.vintage || null,
-      grape: wine.grape || null,
-      style: wine.type || null,
-      imageUrl: wine.imageUrl || null,
-      description: wine.description || null,
-      region: wine.region || null,
-      country: wine.country || null,
-      vinification: wine.vinification || null,
-      purchaseUrl: wine.purchaseUrl || null,
-      addedByIdentityId: wine.addedByIdentityId ?? null,
-      addedByDisplayName: wine.addedByDisplayName ?? null,
-      // Catalog link mirrored from Redis. `|| null` rather than `?? null`
-      // is deliberate here for the same reason it is on the fields above:
-      // the empty string must collapse to NULL, or the wines link-state
-      // CHECK sees a set-but-meaningless product_id.
-      productId: wine.productId || null,
-      vintageId: wine.vintageId || null,
-    },
-    update: {
-      name: wine.name,
-      producer: wine.producer || null,
-      vintage: wine.vintage || null,
-      grape: wine.grape || null,
-      style: wine.type || null,
-      imageUrl: wine.imageUrl || null,
-      description: wine.description || null,
-      region: wine.region || null,
-      country: wine.country || null,
-      vinification: wine.vinification || null,
-      purchaseUrl: wine.purchaseUrl || null,
-      // 🔒 IN THE UPDATE ARM TOO, unlike provenance. Provenance is frozen
-      // on create because the original adder is the authoritative anchor;
-      // the catalog link is the opposite — it stays MUTABLE on the wine
-      // instance by design (RFC § v1 data model), so that a later
-      // re-link, or the identity-changing-edit rule CLEARING the link,
-      // actually reaches Postgres. Omitting it here would archive the
-      // first-seen link forever and silently ignore every correction.
-      productId: wine.productId || null,
-      vintageId: wine.vintageId || null,
-      // Don't overwrite provenance on edit — the original adder is the
-      // authoritative anchor. If the row was created pre-feature with
-      // addedByIdentityId=NULL we leave it NULL (no way to back-attribute).
-      // addedByDisplayName is the same frozen-on-create story; omit
-      // from update so an edit doesn't refresh it.
-    },
+  await prisma.$transaction(async (tx) => {
+    const sessionId = await lockLiveSession(tx, sessionCode)
+    if (sessionId === null) throw new Error('reassign mirror: session row disappeared')
+    const owner = wine.addedByIdentityId ?? null
+    if (owner?.startsWith('u:')) {
+      const users = await tx.$queryRaw<{ id: number }[]>`
+        SELECT id FROM users WHERE id = ${Number(owner.slice(2))} FOR KEY SHARE`
+      if (!users[0]) throw new Error('reassign mirror: target user is gone')
+    }
+    const wines = await getWines(sessionCode)
+    if (!wines.some(w => w.id === wine.id)) throw new Error('reassign mirror: wine is gone')
+    await upsertLineup(tx, sessionId, wines)
+    // Zero rows = the wine's row is not this session's (orphaned by a ban-wipe
+    // whose Redis cleanup failed, so it is still listed live): the owner change
+    // would not persist — refuse, so the caller compensates instead of a 200.
+    const n = await tx.$executeRaw`
+      UPDATE wines SET added_by_identity_id = ${owner}, added_by_display_name = ${wine.addedByDisplayName ?? null}
+       WHERE id = ${wine.id} AND session_id = ${sessionId}`
+    if (n !== 1) throw new Error('reassign mirror: the wine row is not part of this session')
   })
 }

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, getSessionMeta, mutateWines, isMutateReject, wineToWire, buildKickedUserNameLookup, pgMirrorWineList } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -41,6 +41,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   })
   if (isMutateReject(out)) return NextResponse.json({ error: out.reject }, { status: 400 })
   await touchWithMeta(c)
+  // Positions are renormalized from the committed array (redis-rehydration § 4.6).
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
   // Same wire shape as the wines GET — strip `addedByIdentityId` and
   // synthesize `isMine`. Without this, the reorder response would leak
   // provenance the GET pipeline carefully keeps server-internal.

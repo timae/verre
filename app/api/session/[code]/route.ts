@@ -325,17 +325,32 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
       // so the findUnique below naturally misses them. The explicit
       // `deletedAt: null` filter makes intent obvious and survives any
       // future change that re-populates `code` on a tombstoned row.
-      const sessionRow = await tx.session.findFirst({
-        where: { code: c, deletedAt: null },
-        select: { id: true, coverPhotoUrl: true },
-      })
+      //
+      // FOR UPDATE: the row lock is what serializes this delete against every
+      // row-existence-dependent writer of release A (ban rows in sessionWipe,
+      // ensureMember, the wine-list mirror) — they take a lock on the live row
+      // and, once this commits, find no live row and write nothing.
+      const rows = await tx.$queryRaw<{ id: number; cover_photo_url: string | null; created_at: Date | null }[]>`
+        SELECT id, cover_photo_url, created_at FROM sessions
+         WHERE code = ${c} AND deleted_at IS NULL
+         FOR UPDATE`
+      const sessionRow = rows[0]
       // No live pg row (anon-hosted session): Redis is already wiped, so a
-      // meta-held cover has no remaining owner — release the bytes.
-      if (!sessionRow) return coverFromMeta ? [coverFromMeta] : []
+      // meta-held cover has no remaining owner — release the bytes. The
+      // registry row is written for this branch too (redis-rehydration § 5.4,
+      // R3-7): it is what lets a later promotion see that this incarnation was
+      // deleted, and an anonymous-only session has no other durable trace.
+      if (!sessionRow) {
+        await tx.$executeRaw`
+          INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${new Date(meta.createdAt)})
+          ON CONFLICT DO NOTHING`
+        return coverFromMeta ? [coverFromMeta] : []
+      }
       const sessionId = sessionRow.id
+      const coverPhotoUrl = sessionRow.cover_photo_url
       // Union of pg + meta covers: a silently-failed settings mirror can
       // leave the two diverged — reclaim both rather than orphan one.
-      const coverUrls = [...new Set([sessionRow.coverPhotoUrl, coverFromMeta].filter((u): u is string => !!u))]
+      const coverUrls = [...new Set([coverPhotoUrl, coverFromMeta].filter((u): u is string => !!u))]
 
       // Capture image URLs of wines nobody bookmarked. Bookmarked wines stay
       // reachable from /me/saved so we keep their image; orphans lose their
@@ -383,8 +398,14 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
       //    becomes deprecated entirely.
       await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${sessionId}`
 
-      // 4. Delete session_members rows for this session.
+      // 4. Delete session_members and session_bans rows for this session —
+      //    both are keyed by code, and codes are recycled after the scrub.
       await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${c}`
+      await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${c}`
+      await tx.$executeRaw`
+        INSERT INTO session_tombstones (code, created_at)
+        VALUES (${c}, ${sessionRow.created_at ?? new Date(meta.createdAt)})
+        ON CONFLICT DO NOTHING`
 
       // 5. Scrub the sessions row to a tombstone per the §8 data-survival
       //    contract. Only `id` and `deleted_at` survive; every other column
@@ -412,7 +433,11 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
               description = NULL,
               link = NULL,
               cover_photo_url = NULL,
-              category = NULL
+              category = NULL,
+              lifespan = NULL,
+              hide_lineup = NULL,
+              hide_lineup_minutes_before = NULL,
+              show_provenance = NULL
          WHERE id = ${sessionId}
       `
 

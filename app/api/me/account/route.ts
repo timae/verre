@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
 import { validateDisplayName } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { executeAccountDelete } from '@/lib/accountDelete'
+import { executeAccountDelete, AccountDeleteRetryableError, AccountDeleteTooManyWipesError } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
 import { propagateDisplayNameToSessions } from '@/lib/displayName.server'
@@ -187,6 +187,14 @@ export async function DELETE(req: NextRequest) {
     console.warn(`[account-delete] user=${userId} sessionsDeleted=${plan.toDelete.length} sessionsTombstoned=${plan.toPseudonymize.length} otherScrubs=${plan.scrubOnly.length}`)
   } catch (err) {
     console.error('[account-delete] failed', err)
+    // Nothing durable happened (one transaction — lib/accountDelete.ts); the
+    // size bound and transient conflicts / Redis outages are worth a retry.
+    if (err instanceof AccountDeleteTooManyWipesError) {
+      return NextResponse.json({ error: err.message }, { status: 409 })
+    }
+    if (err instanceof AccountDeleteRetryableError) {
+      return NextResponse.json({ error: 'deletion could not complete, please try again' }, { status: 503, headers: { 'Retry-After': '5' } })
+    }
     return NextResponse.json({ error: 'deletion failed' }, { status: 500 })
   }
   return NextResponse.json({ ok: true })

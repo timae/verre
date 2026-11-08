@@ -1,5 +1,5 @@
 import { redis, k, scanKeys } from '@/lib/redis'
-import { mutateWines } from '@/lib/session'
+import { mutateWines, pgMirrorWineList } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { DeleteObjectCommand, S3Client } from '@aws-sdk/client-s3'
 
@@ -71,9 +71,18 @@ export interface WipeOptions {
   deleteAddedWines?: boolean
 }
 
+// `d:<uuid>` targets (a deleted account's tombstoned ratings in this session,
+// redis-rehydration § 4.3) support scope 'kick-delete' ONLY: a tombstone cannot
+// rejoin, so ban and kick-keep are meaningless and are rejected by the routes.
+// The d: wipe removes the ratings carrying that tombstone_key in this session
+// (Postgres + their Redis keys) and the identities entry; it never touches wine
+// provenance and has no member row, feed item or bookmark to remove.
 export async function sessionWipe(opts: WipeOptions): Promise<void> {
-  const { code, identityId, scope, deleteAddedWines = false } = opts
+  const { code, identityId, scope } = opts
   const userId = identityId.startsWith('u:') ? Number(identityId.slice(2)) : null
+  const isTombstone = identityId.startsWith('d:')
+  if (isTombstone && scope !== 'kick-delete') throw new Error(`sessionWipe: ${scope} is not valid for a tombstone identity`)
+  const deleteAddedWines = !isTombstone && (opts.deleteAddedWines ?? false)
 
   // ── Redis: bans-Set first (only on scope='ban'). Idempotent; if the
   // Postgres txn below fails the bans entry alone is enough to keep them
@@ -85,7 +94,7 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
   // identity hash entry got stripped. Cleared on rejoin OR on Delete via
   // /leave. Doesn't act as an authorization gate — it's purely a marker
   // for the UI bounce screen.
-  if (scope === 'kick-keep' || scope === 'kick-delete') {
+  if ((scope === 'kick-keep' || scope === 'kick-delete') && !isTombstone) {
     await redis.sAdd(k.kicked(code), identityId)
   }
 
@@ -107,11 +116,41 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         AND s.code = ${code}
         AND s.deleted_at IS NULL`
     ratingImageUrls = rows.map(r => r.image_url).filter(Boolean)
+  } else if (isTombstone) {
+    const rows = await prisma.$queryRaw<{ image_url: string }[]>`
+      SELECT ri.image_url
+      FROM rating_images ri
+      JOIN ratings r ON r.id = ri.rating_id
+      JOIN sessions s ON s.id = r.session_id
+      WHERE r.tombstone_key = ${identityId}
+        AND r.user_id IS NULL
+        AND s.code = ${code}
+        AND s.deleted_at IS NULL`
+    ratingImageUrls = rows.map(r => r.image_url).filter(Boolean)
   }
 
   // ── Postgres in a single transaction.
   await prisma.$transaction(async tx => {
-    if (scope === 'kick-keep') {
+    // FOR UPDATE on the live sessions row (redis-rehydration § 4.2): the ban
+    // row below is written only for a Postgres-backed session, and the lock is
+    // what keeps that decision true until COMMIT — both soft-delete paths take
+    // the same row lock first, so a ban either commits before the delete (whose
+    // DELETE FROM session_bans then removes it) or finds no live row.
+    const live = await tx.$queryRaw<{ id: number }[]>`
+      SELECT id FROM sessions WHERE code = ${code} AND deleted_at IS NULL FOR UPDATE`
+    const sessionId = live[0]?.id ?? null
+    if (scope === 'ban' && sessionId !== null) {
+      await tx.$executeRaw`
+        INSERT INTO session_bans (session_code, identity_id) VALUES (${code}, ${identityId})
+        ON CONFLICT DO NOTHING`
+    }
+    if (isTombstone) {
+      if (sessionId !== null) {
+        await tx.$executeRaw`
+          DELETE FROM ratings
+           WHERE session_id = ${sessionId} AND tombstone_key = ${identityId} AND user_id IS NULL`
+      }
+    } else if (scope === 'kick-keep') {
       // Reset cohost role so /me/sessions doesn't show a stale "co-host"
       // tag. The user's ratings + bookmarks + session_members row stay
       // — they decide on the bounce screen what to do with them. Feed_item
@@ -219,5 +258,10 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
     // Atomic read-modify-write like every other wines mutator — a concurrent
     // wine add/edit/reorder must not clobber this filter (and vice versa).
     await mutateWines(code, (wines) => wines.filter(w => w.addedByIdentityId !== identityId))
+    // The orphaned rows left the session in the transaction above; the list
+    // mirror renormalizes the survivors' positions from the committed array
+    // (redis-rehydration § 4.6). Best-effort like every content mirror.
+    try { await pgMirrorWineList(code) }
+    catch (err) { console.error('[sessionWipe] pg mirror failed', { code, kind: 'wine-list', err }) }
   }
 }

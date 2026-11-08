@@ -3,7 +3,7 @@ import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
 import { getSessionMeta, pgUpsertSession } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { prisma } from '@/lib/prisma'
+import { ensureMember } from '@/lib/sessionMember'
 import { userIdentityId, recordIdentity, authRemoved } from '@/lib/identity'
 import { disambiguateDisplayName } from '@/lib/displayName.server'
 import { isSameOrigin } from '@/lib/csrf'
@@ -52,27 +52,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     } catch {}
   }
 
-  // Persist the role at join time — the DURABLE snapshot that survives Redis
-  // expiry (moments-server-filtering.md Part A). The strict-host check is by
-  // id; cohosts and providers get distinct roles so an expired-session role
-  // read (/api/me/sessions fallback) and future archival audits can
-  // reconstruct who had what permissions. Don't reuse isHostByIdentity here
-  // — it lumps hosts and cohosts together, which would mislabel cohosts as
-  // host. Snapshot precedence mirrors the live-auth precedence: host >
-  // cohost > provider > taster (a strict host who is also somehow in a role
-  // list still reads as host).
-  //
-  // This is a CREATE-only snapshot (update: {} below): the role route is the
-  // authoritative mirror for every subsequent transition (both directions,
-  // incl. provider), so re-visits must NOT overwrite it. Overwriting on
-  // re-visit would let a stale/racing meta read clobber a role-route grant.
-  const isStrictHost = (meta.hostIdentityId && meta.hostIdentityId === id)
-    || (meta.hostUserId && userIdentityId(meta.hostUserId) === id)
-  const isCohost = !!meta.coHostIds?.includes(id)
-  const isProvider = !!meta.providerIds?.includes(id)
-  const role: 'host' | 'co_host' | 'provider' | 'taster' =
-    isStrictHost ? 'host' : isCohost ? 'co_host' : isProvider ? 'provider' : 'taster'
-
+  // Promote (a logged-in visit is a promotion trigger), then the durable member
+  // row — create-only role snapshot, joined-counter bump and kicked self-heal —
+  // through ensureMember, shared with /join and /rate. Its admission re-check
+  // runs under the session row lock: a ban/kick that landed after the gate
+  // above wins, and the visit bounces instead of undoing it.
   try {
     await pgUpsertSession(c, meta)
     const userId = Number(session.user.id)
@@ -81,31 +65,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     // brings the card back to the highlights).
     await bumpLastSeen(c, userId)
     await unhideCarousel(userId, c)
-    const existing = await prisma.sessionMember.findUnique({
-      where: { userId_sessionCode: { userId, sessionCode: c } },
-    })
-    await prisma.sessionMember.upsert({
-      where: { userId_sessionCode: { userId, sessionCode: c } },
-      create: { userId, sessionCode: c, role },
-      update: {},
-    })
-    // Self-heal a stale durable kick flag. We only reach here AFTER the kicked
-    // gate above (a still-kicked user was already bounced), so a lingering
-    // removed_state='kicked' means Redis was cleared but the PG mirror wasn't —
-    // the rejoin partial-failure window (join clears Redis then PG; if the PG
-    // write failed, the moment would stay durably hidden). A separate statement
-    // (NOT the create-only role upsert above), so it never clobbers the role
-    // snapshot. Idempotent + a no-op for the common already-null case.
-    await prisma.sessionMember.updateMany({
-      where: { userId, sessionCode: c, removedState: 'kicked' },
-      data: { removedState: null },
-    })
-    // First-ever join of this session by this user → bump joined counter.
-    if (!existing) {
-      await prisma.$executeRaw`
-        UPDATE users SET lifetime_sessions_joined = lifetime_sessions_joined + 1
-        WHERE id = ${userId}`
-    }
+    const member = await ensureMember(userId, c, meta)
+    if (member === 'banned' || member === 'kicked') return authRemoved('removed from session')
   } catch (err) {
     console.error('visit error:', err)
   }

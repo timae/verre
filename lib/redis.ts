@@ -16,6 +16,31 @@ export const redis =
 
 redis.on('error', (err) => console.error('redis err:', err))
 
+// A dedicated client that FAILS FAST: no offline queue, no reconnect, a
+// bounded connect. The shared client above QUEUES commands while disconnected
+// and replays them on reconnect — for a durable path that issues a Redis write
+// inside a Postgres transaction (account deletion's in-transaction wipe), a
+// replay after the caller timed out and rolled back would apply the write to
+// state it no longer decided about. Returned UNCONNECTED so the caller holds
+// the object from the start and can destroy its socket even mid-handshake;
+// close it with disconnect() (QUIT marks the client closed before it is sent,
+// so an unanswered QUIT would leave the socket open).
+export function createFailFastRedis({ url = REDIS_URL, connectTimeoutMs = 2000 }: { url?: string; connectTimeoutMs?: number } = {}) {
+  const client = createClient({
+    url,
+    disableOfflineQueue: true,
+    socket: {
+      tls: url.startsWith('rediss://'),
+      rejectUnauthorized: false,
+      connectTimeout: connectTimeoutMs,
+      reconnectStrategy: false,
+    },
+  })
+  client.on('error', () => {})
+  return client
+}
+export type FailFastRedis = ReturnType<typeof createFailFastRedis>
+
 if (!redis.isOpen) redis.connect()
 
 if (process.env.NODE_ENV !== 'production') globalForRedis.redis = redis
