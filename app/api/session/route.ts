@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, lifespanTTL } from '@/lib/redis'
-import { genCode, type SessionMeta } from '@/lib/session'
+import { genCode, sessionMetaToColumns, type SessionMeta } from '@/lib/session'
 import { applySessionFields } from '@/lib/sessionFields'
 import { prisma } from '@/lib/prisma'
 import { validateDisplayName } from '@verre/core'
@@ -234,24 +234,9 @@ export async function POST(req: NextRequest) {
 
   if (session?.user) {
     try {
-      await prisma.session.create({
-        data: {
-          code,
-          hostUserId: Number(session.user.id),
-          hostName,
-          name: meta.name || null,
-          blind: !!blind,
-          createdAt: new Date(meta.createdAt),
-          category,
-          coverPhotoUrl: coverPhotoUrl || null,
-          address: meta.address || null,
-          dateFrom: meta.dateFrom ? new Date(meta.dateFrom) : null,
-          dateTo: meta.dateTo ? new Date(meta.dateTo) : null,
-          timezone: meta.timezone || null,
-          description: meta.description || null,
-          link: meta.link || null,
-        },
-      })
+      // One spelling of meta → columns (sessionMetaToColumns): the create used to
+      // list columns by hand and dropped lifespan and the hide-lineup pair.
+      await prisma.session.create({ data: { code, ...sessionMetaToColumns(meta) } })
     } catch (err) {
       // Pre-create collision check ran above, so a P2002 here means a race —
       // log loudly and surface it. Tear down the Redis state we just wrote:

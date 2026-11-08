@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
-import { getSessionMeta, isHostByIdentity } from '@/lib/session'
+import { getSessionMeta, isHostByIdentity, sessionSettingsColumns } from '@/lib/session'
 import { applySessionFields } from '@/lib/sessionFields'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
@@ -181,20 +181,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
     // Soft-deleted sessions have `code = NULL` (§8 contract), so the
     // updateMany below naturally targets only live rows. Explicit filter
     // documents intent and survives any future change to the scrub set.
+    // The settings subset of the one meta → columns spelling (lib/session.ts);
+    // it used to list columns by hand and missed lifespan, show-provenance and
+    // the hide-lineup pair.
     await prisma.session.updateMany({
       where: { code: c, deletedAt: null },
-      data: {
-        name:        meta.name        || null,
-        blind:       !!meta.blind,
-        blindForEveryone: !!meta.blindForEveryone,
-        address:     meta.address     || null,
-        dateFrom:    meta.dateFrom    ? new Date(meta.dateFrom) : null,
-        dateTo:      meta.dateTo      ? new Date(meta.dateTo)   : null,
-        timezone:    meta.timezone    || null,
-        description: meta.description || null,
-        link:        meta.link        || null,
-        coverPhotoUrl: meta.coverPhotoUrl || null,
-      },
+      data: sessionSettingsColumns(meta),
     })
   } catch (err) {
     // Non-fatal: Redis is the live-session source of truth, so the live

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
+import { Prisma } from '@prisma/client'
 import { uploadImage, MAX_IMAGE_DATA_URL_BYTES } from '@/lib/s3'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { validateFlavors } from '@/lib/checkinValidation'
@@ -539,29 +540,32 @@ async function patchSessionRating(req: NextRequest, feedItemId: number, sessionI
   let updated: { score: unknown; flavors: unknown; aromas: unknown; notes: string | null } = rating
   const didUpdate = Object.keys(data).length > 0
   // The mirror's ordering token: concurrent UPDATEs to the same row serialize
-  // on the row lock (held to commit), so a clock_timestamp() read in the SAME
-  // transaction is a true per-row VERSION token — later commit ⇒ strictly
-  // later ts. A wall-clock stamped at mirror time (the previous design)
-  // ordered the mirror WRITES, not the payloads they carry: an older commit
-  // mirroring late would out-stamp a newer one (Codex round 4).
+  // on the row lock (held to commit), so a clock_timestamp() evaluated by the
+  // UPDATE itself — after it acquired the row lock — is a true per-row VERSION
+  // token: later commit ⇒ strictly later ts. A wall-clock stamped at mirror
+  // time (the previous design) ordered the mirror WRITES, not the payloads they
+  // carry: an older commit mirroring late would out-stamp a newer one (Codex
+  // round 4). The token is DURABLE (redis-rehydration § 4.3): it is written to
+  // ratings.mirror_at in the same statement and returned, so the Redis `at`
+  // and the column are one value. One raw statement replaces the Prisma update
+  // + separate SELECT clock_timestamp(); zero rows = a concurrent delete
+  // (account cascade / kick wipe) → 404, as P2025 was before.
   let versionTs = t0
   if (didUpdate) {
-    try {
-      const [row, tsRows] = await prisma.$transaction([
-        prisma.rating.update({
-          where: { id: rating.id },
-          data,
-          select: { score: true, flavors: true, aromas: true, notes: true },
-        }),
-        prisma.$queryRaw<[{ ts: Date }]>`SELECT clock_timestamp() AS ts`,
-      ])
-      updated = row
-      versionTs = tsRows[0].ts.getTime()
-    } catch (err) {
-      // P2025 = concurrent delete (account cascade / kick wipe) — surface 404.
-      if ((err as { code?: string })?.code === 'P2025') return NextResponse.json({ error: 'not found' }, { status: 404 })
-      throw err
-    }
+    const sets: Prisma.Sql[] = []
+    if (data.score !== undefined) sets.push(Prisma.sql`score = ${data.score}::numeric`)
+    if (data.flavors !== undefined) sets.push(Prisma.sql`flavors = ${JSON.stringify(data.flavors)}::jsonb`)
+    if (data.aromas !== undefined) sets.push(Prisma.sql`aromas = ${JSON.stringify(data.aromas)}::jsonb`)
+    if (data.notes !== undefined) sets.push(Prisma.sql`notes = ${data.notes}`)
+    sets.push(Prisma.sql`mirror_at = clock_timestamp()`)
+    const rows = await prisma.$queryRaw<{ score: unknown; flavors: unknown; aromas: unknown; notes: string | null; ts: Date }[]>`
+      UPDATE ratings SET ${Prisma.join(sets, ', ')}
+       WHERE id = ${rating.id}
+      RETURNING score, flavors, aromas, notes, mirror_at AS ts`
+    if (rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    const { ts, ...row } = rows[0]
+    updated = row
+    versionTs = ts.getTime()
   }
   let nextScore = decimalToNumber(updated.score as never)
   let nextFlavors = (updated.flavors as Record<string, number> | null) ?? {}

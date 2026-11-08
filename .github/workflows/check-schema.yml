@@ -155,6 +155,19 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-ba-session-lifetime-secret
 
+      # Redis rehydration release A (docs/dev/proposals/redis-rehydration.md
+      # § 9 "additive release"): mirrors, the mirror token, tombstones, the
+      # one-transaction account deletion incl. worker-kill and Redis-unreachable
+      # schedules, the old-writer compatibility case and the delete registry.
+      # Real route handlers + lib against this Postgres + the throwaway Redis.
+      - name: Redis rehydration — release A (additive)
+        run: npx tsx scripts/tests/redis-rehydration-additive.mts
+        timeout-minutes: 10
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
+
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
       # writers (pgUpsertWine / pgReassignWineProvenance) and addWineToSession.

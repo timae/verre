@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { prisma } from '@/lib/prisma'
+import { ensureMember } from '@/lib/sessionMember'
+import type { SessionMeta } from '@/lib/session'
 import { redis, k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { validateDisplayName } from '@verre/core'
@@ -13,6 +14,7 @@ import {
   recordAnonToken,
   recordIdentity,
   userIdentityId,
+  authRemoved,
 } from '@/lib/identity'
 
 export async function POST(req: NextRequest) {
@@ -83,17 +85,22 @@ export async function POST(req: NextRequest) {
       displayName = await disambiguateDisplayName(c, displayName)
       await recordIdentity(c, { id: identityId, displayName, kind: 'user' })
     }
-    // Clear any prior kicked-marker so this rejoin starts clean — Redis AND
-    // the durable Postgres mirror. The PG reset MUST live here (not in /visit):
-    // /visit's session_members upsert is create-only (`update: {}` to preserve
-    // the role snapshot), so it would NOT clear a surviving kick-keep row's
-    // removed_state. Scoped to this exact (user, session) row; a no-op if no
-    // row exists yet (first-ever join writes it fresh on the next /visit).
+    // Clear any prior kicked-marker so this rejoin starts clean — Redis here,
+    // then the durable mirror inside ensureMember: it clears removed_state
+    // ('kicked' → NULL) UNDER the session row lock after re-reading the Redis
+    // kicked set, so a kick that lands between this SREM and that lock wins
+    // instead of being undone by a reset made outside it. ensureMember also
+    // writes the member row /join used to leave out (redis-rehydration § 4.4)
+    // — only when the session already has a live Postgres row (/join does not
+    // promote; a Redis-only session gets its row at promotion's next trigger).
     await redis.sRem(k.kicked(c), identityId)
-    await prisma.sessionMember.updateMany({
-      where: { userId: Number(session!.user!.id), sessionCode: c, removedState: 'kicked' },
-      data: { removedState: null },
-    })
+    try {
+      const member = await ensureMember(Number(session.user.id), c, JSON.parse(raw) as SessionMeta)
+      if (member === 'banned') return NextResponse.json({ error: 'banned' }, { status: 403 })
+      if (member === 'kicked') return authRemoved('removed from session')
+    } catch (err) {
+      console.error('[join] member mirror failed', { code: c, err })
+    }
   } else {
     displayName = await disambiguateDisplayName(c, displayName)
     identityId = newAnonIdentityId()

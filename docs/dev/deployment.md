@@ -229,6 +229,17 @@ SELECT a.pid, c.relname, l.mode, l.granted, a.state, a.xact_start,
 
 The `f_unaccent(text)` IMMUTABLE wrapper (pins unaccent's dictionary arg so it's index-safe) lives in raw migration SQL, not `schema.prisma` — Prisma's datamodel can't express a SQL function or a functional expression index, and `prisma migrate diff` ignores both, so they never register as schema drift (verified against the `check-schema.yml` CI command).
 
+## Redis rehydration release A — post-deploy backfill (one-shot)
+
+Release A (`docs/dev/proposals/redis-rehydration.md` § 10) adds `sessions.lifespan`, `hide_lineup`, `hide_lineup_minutes_before`, `show_provenance`. Sessions that were live when it deployed have NULL there while Redis still holds the real values, so **right after the deploy, while Redis is still warm**, run once from a checkout against prod (same runner as the planned operator script — the Deplo.io image carries no `lib/`):
+
+```bash
+DATABASE_URL=… REDIS_URL=… npx tsx scripts/backfill-session-meta.mts           # dry run: what would change
+DATABASE_URL=… REDIS_URL=… npx tsx scripts/backfill-session-meta.mts --apply   # write
+```
+
+Idempotent (a re-run reports `changed: 0`). Re-run the dry run immediately before release B and confirm `changed: 0`. The migration itself also stamps legacy tombstoned ratings (`tombstone_key`, one per session) and logs the counts with `RAISE NOTICE`.
+
 ## Session-row cleanup (bounded retention)
 
 A **daily scheduled job** (`.deploio.yaml` `scheduledJobs` → `cleanup-revoked-sessions`, 03:00) prunes `user_sessions` rows revoked >90 days: `prisma db execute --file prisma/maintenance/cleanup-revoked-sessions.sql`. A scheduled-job failure never affects the release. Because it's a real daily cron (not deploy-driven), retention is a true 90-day floor. This keeps revoked rows (a per-user login ledger: device label, country, timestamps) from accumulating indefinitely — the same privacy reason the audit-log table was dropped. Active rows are never touched. (pg_cron isn't on Nine's Postgres, but Deplo.io's native `scheduledJobs` is the scheduler.) See `prisma/maintenance/cleanup-revoked-sessions.sql`. **Expired native `auth_sessions` are NOT pruned by this job** — the cron image has no `lib/`, and a raw SQL delete there can strand a Redis session copy. They are retired in-process (`lib/nativeSessionPrune.ts` → `pruneExpiredNativeSessions`, via Better Auth's both-store delete): once ~5 min after boot, then daily, de-duplicated across replicas by the `lock:native-session-prune` Redis NX lock.

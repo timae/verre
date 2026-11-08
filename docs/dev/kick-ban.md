@@ -14,6 +14,10 @@ No Postgres changes for the gate itself.
 
 ## Schema (Postgres)
 
+`session_bans (session_code, identity_id, banned_at)` — the durable record of a ban (redis-rehydration release A, `docs/dev/proposals/redis-rehydration.md` § 4.2). Rows exist ONLY for Postgres-backed sessions: written inside the `sessionWipe` ban transaction under `FOR UPDATE` on the live `sessions` row, and copied from the Redis `bans` set when a session is promoted (promotion holds the ban lock while it does); deleted by unban (row first, then the `SREM`, under the ban lock), by both soft-delete paths (codes are recycled) and, for the deleted user's own `u:` id, by account deletion. Release A still gates on the Redis set; the rows are what release B reads for logged-in identities.
+
+**`d:<uuid>` targets** — a deleted account's tombstoned ratings in one session (`ratings.tombstone_key`). Valid for targeting, never for authenticating. `sessionWipe` supports them for **kick-delete only** (their ratings in the session + Redis rating keys + identities entry; wine provenance untouched); `POST /bans` answers the existing 400 for ban and kick of a `d:` target, and brought-by reassignment refuses one. No route exposes the `d:` kick-delete yet. **Hall of Fame is outside this contract** (deprecated surface): its tombstoned rows keep reading `[deleted]` and get no key.
+
 `wines.added_by_identity_id VARCHAR(64)` (nullable) — records who added each wine. Populated on wine POST from the resolved identity; preserved on ordinary edit. **Exception — host/cohost reassignment**: a host can change who brought each impression via an ownership-only `PATCH /wines/[wineId]` (`broughtByIdentityId`); it rewrites this field (and `added_by_display_name`) to the new owner, moving provider edit-rights + the ban-sweep filter. That reassign runs under the ban lock (serialized with `sessionWipe` + wine DELETE + role writes) and mirrors to PG synchronously with Redis-restore compensation on failure (bounded v1 — best-effort within the Redis→PG contract, `docs/dev/proposals/reassign-brought-by.md`). Existing pre-feature rows stay NULL and never match a "delete their wines" filter. Indexed on `(session_id, added_by_identity_id)`.
 
 `wines.added_by_display_name VARCHAR(64)` (nullable) — snapshot of the adder's display name. Populated on POST from the live `s:{CODE}:identities` map, preserved verbatim on ordinary edit; **re-snapshotted to the new owner's current name on a reassignment** (same exception as `added_by_identity_id`). Pre-feature rows are NULL. Used as a fallback by the wire-time resolver when the adder has been kicked/banned and is no longer in the live identities map.
@@ -56,7 +60,7 @@ New header distinct from `invalid`. Existing `invalid` clears local state on the
 
 1. `SADD bans` — smallest Redis op, idempotent. Bans-Set membership alone is the authoritative gate, so even on partial failure the user can't rejoin.
 2. `SADD kicked` (for both kick variants).
-3. `prisma.$transaction`: delete user's ratings + hof + bookmarks (for wines in this session) + session_members. If `deleteAddedWines`: orphan their wines.
+3. `prisma.$transaction`, opened with `FOR UPDATE` on the live sessions row: insert the `session_bans` row (ban, Postgres-backed sessions only); delete user's ratings + hof + bookmarks (for wines in this session) + session_members. If `deleteAddedWines`: orphan their wines (the wine-list mirror then renormalizes the survivors' positions).
 4. Redis cleanup (idempotent): delete per-rating keys, drop from identities, strip from `coHostIds` AND `providerIds` (one read-modify-write to meta), filter wines JSON.
 
 The full wipe runs under `s:<C>:lock:ban` (`SET NX EX 10`) so two concurrent host actions on the same session don't clobber each other's wines JSON write-back.
@@ -65,7 +69,7 @@ The full wipe runs under `s:<C>:lock:ban` (`SET NX EX 10`) so two concurrent hos
 
 - `GET /api/session/<C>/bans` — host or cohost. Lists banned identities.
 - `POST /api/session/<C>/bans` — host or cohost. Body `{identityId, mode: 'kick'|'ban', deleteAddedWines?: boolean}`. Strict-host required when targeting a cohost.
-- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. Lifts the ban-Set entry; data is already gone (deleted at ban time) and not restored.
+- `DELETE /api/session/<C>/bans/:identityId` — host or cohost. Deletes the `session_bans` row, then lifts the ban-Set entry, under the ban lock (409 when another moderation action holds it); data is already gone (deleted at ban time) and not restored.
 - `GET /api/session/<C>/bans/preview/:identityId` — host or cohost. Returns `{identityId, displayName, ratingCount, addedWines}` for the host-side modal.
 - `GET /api/session/<C>/removed-state` — caller's own state. Returns `{state: 'banned'|'kicked'|'none', identityId?, hasRatings?}`. Used by `<RemovedView>` on the `/join/<C>?removed=1` bounce screen.
 - `POST /api/session/<C>/leave?cleanup={keep|full}` — kicked-user self-service. `keep` is a no-op (default). `full` runs the `kick-delete` wipe (ratings + hof + bookmarks + session_members). Authorization: caller must be in `bans` or NOT in identities (active participants can't use this path).

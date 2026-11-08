@@ -21,10 +21,20 @@ export function userIdentityId(userId: string | number): string {
 // Used at request boundaries to reject malformed input before it hits
 // Redis SADD / Postgres queries — without this check a bad client could
 // bloat the bans Set with junk or burn a wipe txn on a no-op.
+//
+// `d:<uuid>` is the TOMBSTONE identity of a deleted account's ratings in one
+// session (ratings.tombstone_key, redis-rehydration § 4.3). It is valid for
+// TARGETING (a host may kick-delete it) and never for authenticating — no
+// cookie or token resolves to one. Sites that must not accept it as a target
+// (ban, kick-keep, brought-by reassignment) reject it with isTombstoneIdentityId.
 const USER_ID_PATTERN = /^u:\d+$/
 const ANON_ID_PATTERN = /^a:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const TOMBSTONE_ID_PATTERN = /^d:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function isValidIdentityId(id: unknown): id is string {
-  return typeof id === 'string' && (USER_ID_PATTERN.test(id) || ANON_ID_PATTERN.test(id))
+  return typeof id === 'string' && (USER_ID_PATTERN.test(id) || ANON_ID_PATTERN.test(id) || TOMBSTONE_ID_PATTERN.test(id))
+}
+export function isTombstoneIdentityId(id: unknown): boolean {
+  return typeof id === 'string' && TOMBSTONE_ID_PATTERN.test(id)
 }
 
 export function newAnonIdentityId(): string {

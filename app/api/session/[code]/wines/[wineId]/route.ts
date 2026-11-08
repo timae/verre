@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, isMutateReject, addWineToSession, pgUpsertWine, pgReassignWineProvenance, pgSessionExists, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, isProviderById, getSessionMeta, getWines, mutateWines, isMutateReject, addWineToSession, pgMirrorWineList, pgReassignWineProvenance, pgSessionExists, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved, isValidIdentityId } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
 import { deleteImage } from '@/lib/s3'
-import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
@@ -150,11 +149,11 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // regardless, so it never moves ownership from here.
   const written = (out as WineMeta[]).find(w => w.id === wineId)!
 
-  if (session?.user) {
-    // Best-effort mirror, provenance FROZEN on update (ordinary edits never move
-    // ownership — only the reassign path forces it).
-    try { await pgUpsertWine(c, written) } catch {}
-  }
+  // Best-effort mirror for EVERY caller (row existence decides, not login);
+  // provenance FROZEN on update (ordinary edits never move ownership — only
+  // the reassign path forces it).
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   // Same wire shape as GET so a client storing this response back into
   // its wines cache doesn't see a different shape than the polling GET
@@ -199,7 +198,9 @@ async function reassignBroughtBy({
   if (meta.showProvenance === false) {
     return NextResponse.json({ error: 'turn on “show who brought each impression” to change it' }, { status: 400 })
   }
-  if (!isValidIdentityId(body.broughtByIdentityId)) {
+  // A `d:` tombstone is a valid identity for targeting a kick-delete only — it
+  // can never be made the owner of a wine (the deleted account cannot act).
+  if (!isValidIdentityId(body.broughtByIdentityId) || isTombstoneIdentityId(body.broughtByIdentityId)) {
     return NextResponse.json({ error: 'invalid identity' }, { status: 400 })
   }
   const target = body.broughtByIdentityId as string
@@ -369,7 +370,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     deleteImage(wineId).catch(() => {})
     await touchWithMeta(c)
 
-    try { await prisma.wine.delete({ where: { id: wineId } }) } catch {}
+    // The row delete runs inside the list mirror's transaction (under the live
+    // row's lock), so a concurrent mirror cannot re-insert the wine; the
+    // survivors' positions are renormalized in the same transaction.
+    try { await pgMirrorWineList(c, { deletedId: wineId }) }
+    catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
     return NextResponse.json({ ok: true })
   } finally {

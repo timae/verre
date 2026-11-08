@@ -3,6 +3,7 @@ import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, TTL, touchWithMeta, bumpLastSeen, unhideCarousel } from '@/lib/redis'
 import { WatchError } from 'redis'
 import { getSessionMeta, getWines, pgUpsertSession, pgUpsertWine } from '@/lib/session'
+import { ensureMember } from '@/lib/sessionMember'
 import { normalizeCode } from '@verre/core'
 import { prisma } from '@/lib/prisma'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -163,6 +164,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // partial unique on ratings (user_id, wine_id, session_id) needs
         // for its FK write.
         const sessionId = await pgUpsertSession(c, meta)
+        // The durable member row (redis-rehydration § 4.4): /rate used to
+        // promote and archive without one when the rater never /visit-ed. Its
+        // admission re-check runs under the session row lock: a ban or kick
+        // that landed after this request's gate wins — nothing is archived and
+        // the caller gets the removed bounce.
+        const member = await ensureMember(userId, c, meta)
+        if (member === 'banned' || member === 'kicked') return authRemoved('removed from session')
         await pgUpsertWine(c, wine)
 
         // Snapshot the prior rating so the lifetime_* counters bump
@@ -220,15 +228,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
         // the omitted path can be a concurrent PATCH's newer selection, not
         // the request-side `storedAromas` pre-read) — the engagement check +
         // re-assert below must use it, or Redis converges to a stale array.
-        // RETURNING `clock_timestamp()` is the mirror-ordering token: it
-        // evaluates AFTER the conflicting row lock is acquired (RETURNING
-        // runs post-write), so lock-queue order = token order = commit order
-        // — matching the PATCH's post-update clock_timestamp(). rated_at's
-        // NOW() (transaction-START time) must NOT be used as the token: a
-        // statement that blocked behind a PATCH commits later yet carries
-        // the EARLIER stamp, and the re-assert would wrongly skip.
+        // `mirror_at = clock_timestamp()` is the mirror-ordering token, set IN
+        // the statement that produces it and returned as `ts` (redis-rehydration
+        // § 4.3: the token is durable so a later rebuild stamps the same value).
+        // On the conflict path DO UPDATE runs after the conflicting row lock is
+        // acquired, so lock-queue order = token order = commit order — matching
+        // the PATCH's in-statement clock_timestamp(). rated_at's NOW()
+        // (transaction-START time) must NOT be used as the token: a statement
+        // that blocked behind a PATCH commits later yet carries the EARLIER
+        // stamp, and the re-assert would wrongly skip. DO UPDATE re-evaluates
+        // clock_timestamp() rather than taking EXCLUDED.mirror_at, which was
+        // computed before the lock wait.
         const upsertRows = await prisma.$queryRaw<{ id: number; aromas: unknown; ts: Date }[]>`
-          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at)
+          INSERT INTO ratings (wine_id, user_id, session_id, origin, rater_name, score, flavors, aromas, notes, rated_at, mirror_at)
           VALUES (
             ${wineId},
             ${userId},
@@ -239,7 +251,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             ${JSON.stringify(storedFlavors)}::jsonb,
             ${JSON.stringify(storedAromas)}::jsonb,
             ${notes || null},
-            NOW()
+            NOW(),
+            clock_timestamp()
           )
           ON CONFLICT (user_id, wine_id, session_id) WHERE session_id IS NOT NULL AND user_id IS NOT NULL
           DO UPDATE SET
@@ -248,8 +261,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
             flavors = EXCLUDED.flavors,
             aromas = CASE WHEN ${aromasProvided} THEN EXCLUDED.aromas ELSE ratings.aromas END,
             notes = EXCLUDED.notes,
-            rated_at = EXCLUDED.rated_at
-          RETURNING id, aromas, clock_timestamp() AS ts`
+            rated_at = EXCLUDED.rated_at,
+            mirror_at = clock_timestamp()
+          RETURNING id, aromas, mirror_at AS ts`
         const ratingId = upsertRows[0]?.id
         const pgStampMs = upsertRows[0]?.ts ? new Date(upsertRows[0].ts).getTime() : null
         const committedAromas: AromaSelection[] = Array.isArray(upsertRows[0]?.aromas)

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, getSessionMeta, mutateWines } from '@/lib/session'
-import { prisma } from '@/lib/prisma'
+import { isHostByIdentity, getSessionMeta, mutateWines, pgMirrorWineList } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
 import { isSameOrigin } from '@/lib/csrf'
@@ -33,20 +32,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }))
   await touchWithMeta(c)
 
-  // Mirror to Postgres — restricted to rows that need flipping
-  // (revealed_at IS NOT NULL). No-ops for anon-host wines whose
-  // Postgres row doesn't exist.
-  try {
-    const sessionRow = await prisma.session.findFirst({ where: { code: c, deletedAt: null }, select: { id: true } })
-    if (sessionRow) {
-      await prisma.wine.updateMany({
-        where: { sessionId: sessionRow.id, revealedAt: { not: null } },
-        data: { revealedAt: null },
-      })
-    }
-  } catch (err) {
-    console.error('hide-all pg update error:', err)
-  }
+  // The wine-list mirror projects revealed_at (and positions) for the whole
+  // lineup from the committed array; a Redis-only session has no row → no-op.
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   return NextResponse.json({ ok: true })
 }

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveIdentity, isValidIdentityId } from '@/lib/identity'
+import { resolveIdentity, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
 import { getSessionMeta, isHostByIdentity, isStrictHost, isCohostId } from '@/lib/session'
 import { listBans, acquireBanLock, releaseBanLock } from '@/lib/sessionBan'
 import { sessionWipe } from '@/lib/sessionWipe'
@@ -65,7 +65,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // isValidIdentityId rejects malformed shapes — without it, a bad
   // client could accumulate junk in the bans Set or burn a Postgres txn
   // on a no-op wipe.
-  if (!isValidIdentityId(identityId)) {
+  // A `d:` tombstone (a deleted account's ratings, redis-rehydration § 4.3)
+  // cannot rejoin, so ban and kick-keep are meaningless for it — same 400 as a
+  // malformed id. It is a target for kick-delete only (lib/sessionWipe.ts).
+  if (!isValidIdentityId(identityId) || isTombstoneIdentityId(identityId)) {
     return NextResponse.json({ error: 'invalid identityId' }, { status: 400, headers: noStore })
   }
   if (mode !== 'kick' && mode !== 'ban') {

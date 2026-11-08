@@ -312,6 +312,14 @@ model Session {
   // (category, style), so no single-column FK). v1 allow-list: 'wine'.
   // Nullable for the soft-delete scrub contract; create writes 'wine'.
   category    String?    @db.VarChar(32)
+  // Settings that previously lived only in Redis meta (redis-rehydration § 4.2).
+  // Written by every path that writes a sessions row from meta, through
+  // `sessionMetaToColumns` (lib/session.ts). NULL = never written / scrubbed;
+  // readers treat NULL as the default (48h, lineup shown, provenance shown).
+  lifespan                String?  @db.VarChar(16)
+  hideLineup              Boolean? @map("hide_lineup")
+  hideLineupMinutesBefore Int?     @map("hide_lineup_minutes_before")
+  showProvenance          Boolean? @map("show_provenance")
   // Soft-delete tombstone marker. NULL = live; non-null = deleted at this
   // instant, with every other column scrubbed to NULL per the §8 data-survival
   // contract in docs/dev/proposals/rewire.md. The row itself stays so
@@ -363,6 +371,12 @@ model Wine {
   country            String?        @db.VarChar(2)
   vinification       String?        @db.VarChar(1000)
   revealedAt         DateTime?      @map("revealed_at") @db.Timestamptz(6)
+  // Index of this wine in the session's live lineup. Rewritten for EVERY wine
+  // of the session after every wine-list mutation (renormalized, never "this
+  // wine's slot"), so a session's positions are all set or all NULL
+  // (redis-rehydration § 4.6). NULL = never written; read order then falls
+  // back to created_at, id.
+  position           Int?
   createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
   // Identity-id of the user or anon who added this wine. Used by kick/ban
   // to identify which wines a host can choose to orphan when removing a
@@ -458,6 +472,18 @@ model Rating {
   aromas    Json          @default("[]")
   notes     String?
   ratedAt   DateTime      @map("rated_at") @db.Timestamptz(6)
+  // The live-mirror ordering token (redis-rehydration § 4.3): set to
+  // clock_timestamp() IN the statement that produces it (rate upsert, session
+  // check-in PATCH) and equal to the Redis rating's `at`. NOT rated_at, which
+  // is transaction-start NOW() and can be older than a prior writer's token.
+  // NULL for rows written before the column; readers fall back to rated_at.
+  mirrorAt  DateTime?     @map("mirror_at") @db.Timestamptz(6)
+  // Durable rater identity of a tombstoned session rating: 'd:<uuid>', one key
+  // per (deleted user, session), minted by account deletion; legacy tombstones
+  // got one key per session in the release-A migration. NULL while user_id is
+  // set. Release B adds CHECK (session_id IS NULL OR user_id IS NOT NULL OR
+  // tombstone_key IS NOT NULL) once every writer honours it.
+  tombstoneKey String?    @map("tombstone_key") @db.VarChar(40)
   // Restrict matches the §2 design: hard-deleting a referenced session
   // should fail loudly. Soft-delete (sessions.deletedAt) is the contract;
   // any future GDPR purge must null this FK explicitly first.
@@ -504,6 +530,36 @@ model SessionMember {
   // join on session_code; without this index they degrade to seq scans.
   @@index([sessionCode])
   @@map("session_members")
+}
+
+// Durable record of a session ban (redis-rehydration § 4.2). Rows exist ONLY
+// for Postgres-backed sessions: written inside the sessionWipe ban transaction
+// (under FOR UPDATE on the live sessions row) and copied from the Redis bans
+// set at promotion; deleted by unban, by both soft-delete paths (codes are
+// recycled) and, for the deleted user's own identity, by account deletion.
+// Keyed by code like session_members — no FK to sessions or users (identity
+// ids are strings: 'u:<id>', 'a:<uuid>', 'd:<uuid>').
+model SessionBan {
+  sessionCode String   @map("session_code") @db.VarChar(16)
+  identityId  String   @map("identity_id") @db.VarChar(64)
+  bannedAt    DateTime @default(now()) @map("banned_at") @db.Timestamptz(6)
+
+  @@id([sessionCode, identityId])
+  @@index([identityId])
+  @@map("session_bans")
+}
+
+// Registry of soft-deleted session incarnations (redis-rehydration § 5.4).
+// Written by BOTH soft-delete paths, including the anonymous-only branch that
+// has no sessions row; read only by promotion (release B) so a delete that
+// already committed fences a later promotion of the same incarnation.
+model SessionTombstone {
+  code      String   @db.VarChar(16)
+  createdAt DateTime @map("created_at") @db.Timestamptz(6)
+  deletedAt DateTime @default(now()) @map("deleted_at") @db.Timestamptz(6)
+
+  @@id([code, createdAt])
+  @@map("session_tombstones")
 }
 
 model Bookmark {

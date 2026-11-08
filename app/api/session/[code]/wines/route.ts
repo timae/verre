@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProviderById, getSessionMeta, mutateWines, addWineToSession, pgUpsertSession, pgUpsertWine, wineToWire } from '@/lib/session'
+import { isHostByIdentity, isProviderById, getSessionMeta, mutateWines, addWineToSession, pgUpsertSession, pgMirrorWineList, wineToWire } from '@/lib/session'
 import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved } from '@/lib/identity'
@@ -139,12 +139,16 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   })
   await touchWithMeta(c)
 
+  // Promotion stays a logged-in act (an anonymous-only session is never
+  // promoted); the wine-list mirror runs for EVERY caller and decides on row
+  // existence inside its transaction (redis-rehydration § 4.4) — anonymous
+  // adds to a Postgres-backed session are mirrored too.
   if (session?.user) {
-    try {
-      await pgUpsertSession(c, meta)
-      await pgUpsertWine(c, result)
-    } catch {}
+    try { await pgUpsertSession(c, meta) }
+    catch (err) { console.error('[wines] promotion failed', { code: c, err }) }
   }
+  try { await pgMirrorWineList(c) }
+  catch (err) { console.error('[wines] pg mirror failed', { code: c, kind: 'wine-list', err }) }
 
   // Same wire shape as GET — clients that store POST responses back
   // into their wines list shouldn't see a different shape than the
