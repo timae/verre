@@ -1052,11 +1052,17 @@ function FloatBar({
         <Pressable
           onPress={onBack}
           accessibilityRole="button"
-          accessibilityLabel="Back"
+          accessibilityLabel="Close"
           hitSlop={8}
           style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
         >
-          <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
+          {/* Points DOWN: this detail is a modal dismissed by pull-down (no
+              edge-swipe pop), and the pager already owns left/right. The back
+              glyph rotated keeps its stroke and size identical to the sibling
+              Moments detail bar, which is a real push and keeps the left arrow. */}
+          <View style={{ transform: [{ rotate: '-90deg' }] }}>
+            <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
+          </View>
         </Pressable>
         {solid && !pending ? (
           // Collapsed title taps through to About (scroll-to-section).
