@@ -180,6 +180,9 @@ async function reset() {
     // precisely so cleanup does not have to sequence this by hand — the same
     // purge carve-out the migration documents.
     `DELETE FROM wine_products WHERE name LIKE 'P2TEST%'`,
+    // § 13g's declared non-wine category, after the products that reference it.
+    `DELETE FROM category_styles WHERE category = '__test_category__'`,
+    `DELETE FROM categories WHERE category = '__test_category__'`,
     `UPDATE producers SET status = 'provisional', links_to = NULL WHERE name LIKE 'P2TEST%' OR id LIKE 'p2%'`,
     `DELETE FROM producers WHERE name LIKE 'P2TEST%' OR id LIKE 'p2seed%'`,
     `DELETE FROM users WHERE id = ${TEST_USER}`,
@@ -896,7 +899,7 @@ async function main() {
   // 🔒 A merged PRODUCT alias resolves too — the product grain had the same
   // defect as the producer grain, and only the producer half was covered.
   const mProdSurv = await createProduct(
-    { name: 'P2TEST Surviving Bottling', producerId: mSurv.id }, TEST_USER)
+    { name: 'P2TEST Surviving Bottling', producerId: mSurv.id, colour: 'white', sparkling: true }, TEST_USER)
   await prisma.$executeRawUnsafe(
     `UPDATE wine_products SET status = 'linked', links_to = '${mProdSurv.id}' WHERE id = '${mProd.id}'`)
   await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
@@ -904,6 +907,11 @@ async function main() {
   ok(prodAlias.some(r => r.id === mProdSurv.id) && !prodAlias.some(r => r.id === mProd.id),
     `searching a merged PRODUCT alias returns the survivor, not the tombstone (got ${
       JSON.stringify(prodAlias.map(r => r.name))})`)
+  // The survivor row comes from the SECOND product SELECT (resolveProductMatches),
+  // so this is the only assertion that sees a column dropped from that one.
+  const survHit = prodAlias.find(r => r.id === mProdSurv.id)
+  eq(survHit && [survHit.colour, survHit.sparkling], ['white', true],
+    'a resolved survivor carries colour and sparkling (the survivor SELECT)')
   // Unwind.
   await prisma.$executeRawUnsafe(
     `UPDATE wine_products SET status = 'provisional', links_to = NULL WHERE id = '${mProd.id}'`)
@@ -1706,6 +1714,70 @@ async function main() {
   await rejects('branch 2 without a year is rejected',
     () => mintEntries({ productId: b3.productId }, TEST_USER),
     'year is required when adding a vintage')
+
+  // ══════════════════════════════════════════════════════════════════════
+  console.log('\n§ 13g — product kind: colour / sparkling / style, through the dispatcher')
+  // 🔒 Through `mintEntries`, not `createProduct`: the defect this pins lived in
+  // the dispatcher, which narrowed a non-string `style` to NULL before the
+  // validator saw it, so `style: 42` minted a product with a 200 (Codex,
+  // 2026-11-09). Calling the helper directly cannot see that wiring.
+  const kindCount = () => prisma.$queryRawUnsafe(
+    `SELECT (SELECT count(*)::int FROM producers WHERE name LIKE 'P2TEST Kind%') AS p,
+            (SELECT count(*)::int FROM wine_products WHERE name LIKE 'P2TEST Kind%') AS w`)
+  const kindMint = product => mintEntries(
+    { producer: { name: 'P2TEST Kind Maker' }, product: { name: 'P2TEST Kind Wine', ...product } }, TEST_USER)
+  const kindRow = id => prisma.$queryRawUnsafe(
+    `SELECT colour, sparkling, style FROM wine_products WHERE id = $1`, id).then(r => r[0])
+  const beforeKind = await kindCount()
+  for (const [label, product, expect] of [
+    ['a non-string style', { style: 42 }, 'style must be a string or null'],
+    ['an old style token (red)', { style: 'red' }, 'style must be dessert, fortified or null'],
+    ['an old style token (spark)', { style: 'spark' }, 'style must be dessert, fortified or null'],
+    ['an old style token (nonalc)', { style: 'nonalc' }, 'style must be dessert, fortified or null'],
+    // Strict, not normalized: a refactor through optionalFact would turn these
+    // into NULL / 'dessert' silently (Codex, 2026-11-09).
+    ['a blank style', { style: '' }, 'style must be dessert, fortified or null'],
+    ['a whitespace-only style', { style: '   ' }, 'style must be dessert, fortified or null'],
+    ['a padded style', { style: ' dessert ' }, 'style must be dessert, fortified or null'],
+    ['a blank colour', { colour: '' }, 'colour must be red, white, rose or null'],
+    ['a whitespace-only colour', { colour: '   ' }, 'colour must be red, white, rose or null'],
+    ['a padded colour', { colour: ' rose ' }, 'colour must be red, white, rose or null'],
+    ['a non-string colour', { colour: 42 }, 'colour must be red, white, rose or null'],
+    ['colour orange (ruled: orange wine is white)', { colour: 'orange' }, 'colour must be red, white, rose or null'],
+    ['a non-boolean sparkling', { sparkling: 'true' }, 'sparkling must be true or false'],
+    ['sparkling null (it has no unknown state)', { sparkling: null }, 'sparkling must be true or false'],
+  ]) await rejects(`mintEntries rejects ${label}`, () => kindMint(product), expect)
+  const kindErr = await kindMint({ style: 42 }).catch(e => e)
+  ok(kindErr instanceof CatalogValidationError,
+    'and the rejection is a CatalogValidationError (the route maps it to 400, not 500)')
+  eq(await kindCount(), beforeKind, 'and NOTHING was committed by any rejected mint, producer included')
+  // The paired accepts.
+  const kDef = await kindMint({})
+  eq(await kindRow(kDef.productId), { colour: null, sparkling: false, style: null },
+    'omitted colour / sparkling / style take their defaults (null, false, null)')
+  const kNull = await kindMint({ name: 'P2TEST Kind Nulls', colour: null, style: null, sparkling: false })
+  eq(await kindRow(kNull.productId), { colour: null, sparkling: false, style: null },
+    'explicit null colour / style and sparkling false are accepted')
+  const kSweet = await kindMint({ name: 'P2TEST Kind Sweet Rose', colour: 'rose', sparkling: true, style: 'dessert' })
+  eq(await kindRow(kSweet.productId), { colour: 'rose', sparkling: true, style: 'dessert' },
+    'a sweet sparkling rosé persists (the shape the old single token could not express)')
+  const kFort = await kindMint({ name: 'P2TEST Kind Fortified', colour: 'red', style: 'fortified' })
+  eq(await kindRow(kFort.productId), { colour: 'red', sparkling: false, style: 'fortified' },
+    'a fortified red persists')
+  await prisma.$executeRawUnsafe('VACUUM ANALYZE wine_products')
+  const kHit = (await searchProducts('Kind Sweet Rose')).find(r => r.id === kSweet.productId)
+  eq(kHit && [kHit.colour, kHit.sparkling, kHit.style], ['rose', true, 'dessert'],
+    'product search returns colour and sparkling (the primary SELECT)')
+  // 🔒 WINE-SCOPED, like the CHECK: another category's style is left to the
+  // composite FK, so adding a category stays an INSERT with no code change. A
+  // validator that applied the wine vocabulary everywhere rejects this.
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO categories (category, label) VALUES ('__test_category__', 'Test')`)
+  await prisma.$executeRawUnsafe(
+    `INSERT INTO category_styles (category, style, label) VALUES ('__test_category__', '__test_style__', 'Test')`)
+  const kOther = await accepts('a non-wine category keeps its own declared style (validation is wine-scoped)',
+    () => kindMint({ name: 'P2TEST Kind Other', category: '__test_category__', style: '__test_style__' }))
+  if (kOther) eq((await kindRow(kOther.productId)).style, '__test_style__', 'and the style is stored as given')
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 13d — the release fence (lib/catalogGate.ts)')

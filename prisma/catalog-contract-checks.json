@@ -63,7 +63,7 @@
     "If you add a behaviour here, stage its failure first -- that method is what found",
     "the foldDependent bug, which review and reasoning had both passed over."
   ],
-  "contractVersion": 1,
+  "contractVersion": 2,
   "constraints": [
     {
       "table": "producers",
@@ -171,6 +171,15 @@
     },
     {
       "table": "wine_products",
+      "name": "wine_products_colour_check",
+      "scope": "contract",
+      "definition": "CHECK (((colour IS NULL) OR ((colour)::text = ANY ((ARRAY['red'::character varying, 'white'::character varying, 'rose'::character varying])::text[]))))",
+      "columnTypes": [
+        "colour:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_products",
       "name": "wine_products_linked_pointer_check",
       "scope": "structural",
       "definition": "CHECK ((((status)::text = 'linked'::text) = (links_to IS NOT NULL)))",
@@ -231,6 +240,16 @@
       "definition": "CHECK (((status)::text = ANY ((ARRAY['provisional'::character varying, 'confirmed'::character varying, 'linked'::character varying, 'archived'::character varying, 'rejected'::character varying])::text[])))",
       "columnTypes": [
         "status:character varying(16)"
+      ]
+    },
+    {
+      "table": "wine_products",
+      "name": "wine_products_style_check",
+      "scope": "contract",
+      "definition": "CHECK ((((category)::text <> 'wine'::text) OR (style IS NULL) OR ((style)::text = ANY ((ARRAY['dessert'::character varying, 'fortified'::character varying])::text[]))))",
+      "columnTypes": [
+        "category:character varying(32)",
+        "style:character varying(64)"
       ]
     },
     {
@@ -329,6 +348,8 @@
     }
   ],
   "styleVocabulary": [
+    "wine/dessert",
+    "wine/fortified",
     "wine/nonalc",
     "wine/red",
     "wine/rose",

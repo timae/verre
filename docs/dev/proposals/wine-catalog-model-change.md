@@ -27,8 +27,9 @@ tables are empty", which the ruled execution order makes FALSE by the time this
 phase runs.** The fill lands BEFORE the model change (§ 7), so the catalog is
 populated here. Nothing else in the timing argument depended on emptiness — the `product_id`-is-NULL and code-accretion points stand on their own —
 but the phrase mattered because it was also being read as a claim about the seed
-being clean. It is not: see § 7's fourth disposition verdict (`link to an existing
-catalog entry`), which exists precisely because the catalog is populated at
+being clean. It is not: see § 6's `link` verdict (to a delivered catalog entry,
+ruled 2026-11-09; an earlier pointer here named a § 7 verdict that was never
+written), which exists precisely because the catalog is populated at
 curation time. The related precondition at § 2 ("pick an existing entry" is a dead
 end against an empty catalog) is the reason the order is what it is, and is
 unaffected.
@@ -141,6 +142,12 @@ distinct wines silently and irreversibly.
 **Minting requires producer + name + type.** Today a wine needs only a name, so "the
 orange one" is a valid entry. As a permanent catalog row it is unfindable and unmergeable.
 Three required fields is a keystroke of friction, not a barrier.
+
+⚠️ **Reopened (2026-11-09): "type" predates the colour / sparkling / style split.** A
+catalog product now carries `colour` (nullable), `sparkling` and `style` (dessert /
+fortified / NULL) instead of one type token (`catalog-colour-sparkling.md`). What a user
+must supply when minting is decided when this phase is built. Imported entries are valid
+with colour NULL, sparkling false and style NULL either way.
 
 ⚠️ **The anon restriction has a precondition.** "Pick an existing entry" is a dead end
 against an empty catalog. The restriction is therefore switched on when the first catalog
@@ -393,6 +400,20 @@ wine`, `Impression 1–4`, `Crockford verify wine`.
 read by a human, which is both cheaper and more accurate than any matching rule. It also
 means the catalog gets a clean seed rather than junk that curators inherit.
 
+🔒 **Link first, else mint (Simon, 2026-11-09).** A human links each kept wine to a
+*delivered* catalog entry where one exists; only the rest are minted as provisional
+entries. And **no existing wine is linked or minted before the first catalog delivery**:
+the structural change may ship earlier (§ 7, the anon-restriction-off fallback), but the
+conversion waits for the data.
+
+⚠️ **This supersedes the automatic backfill** of RFC § Legacy backfill and
+implementation-plan phase 5 (exact-match auto-link, remainder provisional), which
+disagreed with this section and never said what happens when a converted wine matches a
+delivered entry. The exact-match rules no longer link anything on their own; a human
+decides every link. The RFC's vintage-string cases (year / NV token / anything else →
+product grain) still describe how a kept wine's vintage text resolves, and its "never
+mints" rule bounded an automatic pass, not a human mint through the ordinary path.
+
 ⚠️ **"Unreferenced" is not the same as "junk".** 58 rows have no rating and no bookmark,
 but some of those are real wines whose session was deleted — `Riesling Kabinett / Robert
 Weil`, `Blaue Libelle / Andreas Tscheppe`, several Sardinian producers. The rule is "keep
@@ -412,8 +433,8 @@ synthetic is not evidence that nothing references the row.
 **Rules for the migration, all three mandatory:**
 
 1. **Per-row disposition, written down before anything runs.** Every one of the 130 rows
-   gets an explicit verdict — convert / drop / needs-a-look — reviewed as a list, not
-   decided inside a `WHERE` clause.
+   gets an explicit verdict — link (to a named delivered entry) / mint (a provisional
+   entry) / drop / needs-a-look — reviewed as a list, not decided inside a `WHERE` clause.
 2. **A referenced row is never dropped as a side effect.** If a referenced row is genuinely
    litter, its ratings and bookmarks are deleted *explicitly and named*, as a separate
    confirmed step. Never silently, via cascade.
@@ -469,7 +490,7 @@ Three things in the real data that an automated conversion would get wrong:
 Also worth a human eye: `Mâcon-Village` vs `Mâcon-Villages "Les Sardines"` (same producer,
 arguably one product), and `Soif Blanc / Kleines Gut / 2024` appearing twice.
 
-**Converted entries enter the review queue like any other user-minted entry.** Duplicates
+**Minted entries enter the review queue like any other user-minted entry.** Duplicates
 among them are resolved by merge, never by pre-collapsing — the same 🔒 rule.
 
 **Existing wine ids are inherited by the occurrences they become.** This costs nothing at
@@ -994,6 +1015,34 @@ Carried from phase 2, both now due:
   from a retry is indistinguishable from a legitimate duplicate bottle, so this cannot be
   verified by inspection.
 - **Measure the cache-revision read cost** before assuming it is acceptable (§ 8a).
+
+### Owed from the colour / sparkling / style split (2026-11-09)
+
+The catalog side shipped in `20261109120000` (`catalog-colour-sparkling.md`); `wines` was
+left on the old `style` tokens on purpose, because this phase replaces it. Everything
+below lands here:
+
+- **User-side split.** Bubbles from `sparkling` instead of `style === 'spark'` across the
+  ~25 `resolveAxes` / `fillFlavourZeros` call sites (server, `@verre/core`, web, mobile).
+  Keep emitting a derived legacy `type` and accepting legacy writes for shipped TestFlight
+  builds; Redis cached lineups carry `type` (and `upsertLineup` writes `style = w.type`
+  back, where `bestEffortMirror` would swallow a CHECK failure and promotion would fail);
+  badges (`type_spark_*`, `type_nonalc_5`, `type_all`; `unique_styles_8` is already
+  unearnable, 5 styles against a threshold of 8).
+- **Snapshot gap.** The occurrence keeps only a name / producer / vintage snapshot (§ 1,
+  § 5a). An unlinked or purged occurrence would lose the Bubbles axis on its ratings
+  unless the snapshot also carries `sparkling`.
+- **Conversion rulings** — link first, else mint, and nothing before the first delivery:
+  § 6.
+- **`nonalc` → `abv = 0`** for existing user wines, filled only where no ABV is recorded
+  (Simon, 2026-11-09: 0 is a valid alcohol level, and it keeps the alcohol-free fact,
+  which NULL would lose). The catalog-maintenance side sends ABV as measured (a 0.5%
+  de-alcoholised wine stays 0.5); the alcohol-free threshold is decided here.
+- **Retiring the old pairs.** Once `wines` no longer carries `style`, delete
+  `wine/red | white | rose | spark | nonalc` from `category_styles` (an announced
+  vocabulary change). `wine_products_style_check` then duplicates the FK and may be
+  dropped, which only loosens.
+- **Minting requirements** after the split (§ 2, reopened).
 
 ## 10. Open
 

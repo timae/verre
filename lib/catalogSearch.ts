@@ -159,6 +159,8 @@ export type ProductMatch = {
   id: string
   name: string
   style: string | null
+  colour: string | null
+  sparkling: boolean
   region: string | null
   status?: string
   score: number
@@ -461,7 +463,7 @@ export async function searchProducts(
     // which also records the merge-proposal contract question this depends on.
     const scopeFilter = groupIds ? `AND pp.producer_id = ANY($3)` : ''
     const sql =
-      `SELECT wp.id, wp.name, wp.style, wp.region, wp.status, wp.links_to AS "linksTo",
+      `SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
               ${trgmScoreSql('wp.name_folded')} AS score,
               pr.id AS "producerId", pr.name AS "producerName"
          FROM wine_products wp
@@ -509,7 +511,7 @@ async function resolveProductMatches(
   const survivorIds = [...new Set(toSurvivor.values())]
   const survivors = survivorIds.length
     ? await prisma.$queryRawUnsafe<(ProductMatch & { linksTo: string | null })[]>(
-        `SELECT wp.id, wp.name, wp.style, wp.region, wp.status, wp.links_to AS "linksTo",
+        `SELECT wp.id, wp.name, wp.style, wp.colour, wp.sparkling, wp.region, wp.status, wp.links_to AS "linksTo",
                 pr.id AS "producerId", pr.name AS "producerName"
            FROM wine_products wp
            JOIN product_producers pp ON pp.product_id = wp.id AND pp.role = 'lead'

@@ -302,7 +302,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | /api/catalog/search | Suggestions — `?kind=producer&q=` or `?kind=product&q=&producerId=`. Returns likely matches for a person to choose from; picking one is always an explicit choice, never automatic. 30/min |
-| POST | /api/catalog/entries | Create catalog entries for a wine being added. Body `{producerId?, producer?, product, year?, collaboratorIds?}` — supply `producerId` for an existing maker or `producer` to create one. `year` absent = link at product level (year unknown), `null` = the non-vintage bottling, a number = that vintage. Everything created here is provisional and enters the review queue. 60/h |
+| POST | /api/catalog/entries | Create catalog entries for a wine being added. Body `{producerId?, producer?, product, year?, collaboratorIds?}` — supply `producerId` for an existing maker or `producer` to create one. `product` is `{name, category?, colour?, sparkling?, style?, abv?, grapes?, region?}`: `colour` is `red`, `white`, `rose` or null (unknown), `sparkling` a boolean (default false), and for wine `style` is `dessert`, `fortified` or null. Alcohol-free is `abv`. An omitted field takes its default; a present invalid one is a 400 (the old style values `red`, `spark`, `nonalc` etc. are rejected, not mapped). `year` absent = link at product level (year unknown), `null` = the non-vintage bottling, a number = that vintage. Everything created here is provisional and enters the review queue. 60/h |
 
 **Public**
 

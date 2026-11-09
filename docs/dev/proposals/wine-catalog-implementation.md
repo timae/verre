@@ -480,7 +480,7 @@ The consumer did nothing wrong — it read in sequence order and advanced — wh
 
 ## Phase 5 — Legacy backfill + product pages
 
-The exact-match-only backfill of RFC § Legacy backfill — the sole exception to "links are never set by strings", never fuzzy, with the unmatched remainder feeding the provisional review path. Plus the reusable UI from `feature/wine-product-pages` (local and on origin): the web product page, the aggregate query re-pointed at vintage→product roll-up with transitive `linksTo` resolution, and the mobile screen.
+The exact-match-only backfill of RFC § Legacy backfill — the sole exception to "links are never set by strings", never fuzzy, with the unmatched remainder feeding the provisional review path. ⚠️ **Superseded for existing wines (2026-11-09):** they are hand-linked to a delivered entry where one exists, otherwise minted provisional, and nothing is linked before the first delivery — no automatic link (`wine-catalog-model-change.md` § 6). Plus the reusable UI from `feature/wine-product-pages` (local and on origin): the web product page, the aggregate query re-pointed at vintage→product roll-up with transitive `linksTo` resolution, and the mobile screen.
 
 ## Owed tests — and WHEN each must happen
 

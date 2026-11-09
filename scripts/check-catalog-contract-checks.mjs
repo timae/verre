@@ -107,9 +107,10 @@ const CANDIDATE_QUERY = `
 
 // 🔒 OUR HALF OF A CROSS-SIDE PRECONDITION, and it was guarded by a COMMENT.
 //
-// The maintenance side holds 6,455 rows carrying styles we do not define (2,409
-// `dessert`, 4,046 `fortified`), excluded from their export *until this
-// vocabulary grows*. The ordering is OURS-THEN-THEIRS: this set grows first,
+// The maintenance side holds rows carrying styles we do not define, excluded
+// from their export *until this vocabulary grows* (in 2026-08: 6,455 dessert +
+// fortified rows, released by 20261109120000; every later style is the same
+// event). The ordering is OURS-THEN-THEIRS: this set grows first,
 // then they release. Their tripwire fires when it sees the growth — i.e. AFTER
 // we have shipped it. Nothing on our side fired BEFORE.
 //
@@ -658,9 +659,9 @@ async function main() {
   }
   if (problems.some(p => p.kind === 'STYLE-VOCABULARY-CHANGED')) {
     console.error('  🔒 THE STYLE VOCABULARY CHANGED — THIS IS A CROSS-SIDE EVENT.')
-    console.error('     The catalog-maintenance side holds 6,455 rows carrying styles we do')
-    console.error('     not define (2,409 dessert, 4,046 fortified), excluded from their')
-    console.error('     export UNTIL this set grows. Growing it releases them.')
+    console.error('     The catalog-maintenance side excludes rows carrying styles we do')
+    console.error('     not define from its export UNTIL this set grows. Growing it')
+    console.error('     releases them; shrinking it makes their rows non-insertable.')
     console.error('     ⚠️ ORDERING IS OURS-THEN-THEIRS: this ships first, then their filter.')
     console.error('     ANNOUNCE before deploying, then regenerate with --write.')
     console.error('     (Their tripwire fires when it SEES this — i.e. after we ship it.')
