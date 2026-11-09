@@ -1043,6 +1043,12 @@ below lands here:
   vocabulary change). `wine_products_style_check` then duplicates the FK and may be
   dropped, which only loosens.
 - **Minting requirements** after the split (§ 2, reopened).
+- **`colour` may be NULL; never assume it.** The catalog-maintenance side expects it
+  absent on part of the catalog, mostly sparkling and dessert/fortified wines. So the
+  derived legacy `type` maps a non-sparkling wine with no colour to NULL (shipped builds
+  already handle a NULL type), never to a guessed colour, and sparkling maps to `spark`
+  whatever the colour; badges that count by type or colour, and any colour filter or
+  label, need an "unknown" state.
 
 ## 10. Open
 

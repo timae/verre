@@ -228,7 +228,7 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   ### ✅ RESOLVED (2026-11-09) — sequencing: dessert / fortified need our vocabulary to grow FIRST
 
-  ✅ **Our half shipped in `20261109120000_catalog_colour_sparkling`**, together with the colour / sparkling / style split it needed (`catalog-colour-sparkling.md`): `wine/dessert` and `wine/fortified` are in `category_styles`, and the maintenance side releases its dessert/fortified products (about 6,570 by then) once we confirm the deploy. The history below is kept as written.
+  ✅ **Our half shipped in `20261109120000_catalog_colour_sparkling`**, together with the colour / sparkling / style split it needed (`catalog-colour-sparkling.md`): `wine/dessert` and `wine/fortified` are in `category_styles`, and the deploy was confirmed to the maintenance side the same day. Their release of the dessert/fortified products (about 6,570) is held on THEIR side until their entries are converted to the colour / sparkling / style form; they announce before anything new arrives. The history below is kept as written.
 
   🔒 **Raised by the maintenance side, 2026-08-11.** Our style vocabulary is exactly `wine × {red, white, rose, spark, nonalc}`. Theirs holds **6,455 rows we cannot store**: **2,409 `dessert`** and **4,046 `fortified`**. Their contract doc has these ingested, flagged, and excluded from export *"until the app style set grows — flip the export filter to release them, no re-ingest."*
 
