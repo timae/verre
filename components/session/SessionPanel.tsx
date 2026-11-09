@@ -5,7 +5,6 @@ import { useQueryClient } from '@tanstack/react-query'
 import { QRCodeSVG } from 'qrcode.react'
 import { useSession } from './SessionShell'
 import { useSession as useAuthSession } from 'next-auth/react'
-import { LifespanSelector } from './LifespanSelector'
 import { RoleBadge } from './RoleBadge'
 import { sessionFetch } from '@/lib/sessionFetch'
 import { formatCode, BLIND_FEED_REVEAL_NOTE } from '@verre/core'
@@ -83,7 +82,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
   const [description,             setDescription]             = useState(m?.description             || '')
   const [link,                    setLink]                    = useState(m?.link                    || '')
   const [blind,                   setBlind]                   = useState(!!m?.blind)
-  const [lifespan,                setLifespan]                = useState(m?.lifespan                || '48h')
   const [hideLineup,              setHideLineup]              = useState(!!m?.hideLineup)
   const [hideLineupMinutesBefore, setHideLineupMinutesBefore] = useState(m?.hideLineupMinutesBefore ?? 0)
 
@@ -196,7 +194,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
     const dateToISO   = dateToDate   && dateToTime   ? new Date(`${dateToDate}T${dateToTime}`).toISOString()     : ''
     const res = await sessionFetch(code, `/api/session/${code}/settings`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, lifespan, hideLineup, hideLineupMinutesBefore }),
+      body: JSON.stringify({ name, address, dateFrom: dateFromISO, dateTo: dateToISO, description, link, blind, hideLineup, hideLineupMinutesBefore }),
     })
     setSaving(false)
     if (res.ok) {
@@ -549,7 +547,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                   🙈 Blind tasting
                   {!isPro && !blind && <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>}
                 </div>
-                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden — you reveal them one by one</div>
+                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Wine identities hidden. You reveal them one by one.</div>
                 {blind && <div style={{fontSize:10,color:'var(--fg-dim)',opacity:0.8,marginTop:4,maxWidth:280}}>{BLIND_FEED_REVEAL_NOTE}</div>}
               </div>
               <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',
@@ -557,8 +555,6 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                 <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',position:'absolute',top:2,left: blind ? 18 : 2,transition:'left .2s'}} />
               </div>
             </div>
-
-            <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
             {saveError && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{saveError}</p>}
             <button
@@ -571,7 +567,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
               <div style={{marginTop:24,padding:14,border:'1px solid rgba(224,112,112,0.3)',background:'rgba(224,112,112,0.04)',borderRadius:8}}>
                 <div style={{fontSize:9,letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--danger)',marginBottom:6,fontFamily:'var(--mono)'}}>danger zone</div>
                 <div style={{fontSize:11,color:'var(--fg-dim)',marginBottom:10,lineHeight:1.5}}>
-                  Close this session for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted. This cannot be undone.
+                  Close this session for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved. The session itself just shows as deleted. This cannot be undone.
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
@@ -595,7 +591,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
           <div style={{maxWidth:420,width:'100%',background:'var(--bg2)',borderRadius:16,padding:20,border:'1px solid rgba(224,112,112,0.3)'}}>
             <div style={{fontFamily:'var(--mono)',fontSize:13,fontWeight:700,letterSpacing:'0.04em',marginBottom:10,color:'var(--danger)'}}>Delete this session?</div>
             <div style={{fontSize:12,color:'var(--fg)',lineHeight:1.6,marginBottom:14}}>
-              The session closes for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved — the session itself just shows as deleted.
+              The session closes for good. Your tasters keep their ratings, notes and tasting history on their own profiles, and anyone who bookmarked a wine still has it under Saved. The session itself just shows as deleted.
               <div style={{marginTop:8,color:'var(--danger)',fontSize:11,fontWeight:700}}>This cannot be undone.</div>
             </div>
             {deleteError && <p style={{color:'var(--danger)',fontSize:11,marginBottom:8}}>{deleteError}</p>}

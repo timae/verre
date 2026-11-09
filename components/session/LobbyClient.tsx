@@ -4,7 +4,6 @@ import { useRouter } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { setAnonToken } from '@/lib/sessionFetch'
 import { validateCodeInput, formatCodeInput } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
@@ -19,7 +18,6 @@ export function LobbyClient({ user }: { user: User }) {
   // instant on submit, like the /me dashboard create form.
   const [dateFromDate, setDateFromDate] = useState('')
   const [dateFromTime, setDateFromTime] = useState('')
-  const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [createError, setCreateError] = useState('')
   // Which required create fields failed the last submit (red border), cleared
@@ -59,7 +57,6 @@ export function LobbyClient({ user }: { user: User }) {
       body: JSON.stringify({
         hostDisplayName: displayName.trim(), sessionName: sessionName.trim(),
         dateFrom: dateFromISO, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        lifespan,
       }),
     })
     setLoading(false)
@@ -86,7 +83,7 @@ export function LobbyClient({ user }: { user: User }) {
       switch (v.error) {
         case 'empty':           setJoinError('Enter a code'); return
         case 'invalid-length':  setJoinError('Code must be 4 or 8 characters'); return
-        case 'invalid-char':    setJoinError('Your code contains invalid characters — check for typos'); return
+        case 'invalid-char':    setJoinError('Your code contains invalid characters. Check for typos.'); return
       }
     }
     const code = v.code
@@ -156,8 +153,6 @@ export function LobbyClient({ user }: { user: User }) {
             </div>
           </div>
 
-          <LifespanSelector value={lifespan} onChange={setLifespan} isPro={false} />
-
           {/* Blind tasting toggle — greyed out when not logged in or not pro */}
           <div
             style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,border:'1px solid var(--border)',background:'var(--bg3)',marginBottom:10,opacity:0.5,cursor:'default'}}
@@ -168,7 +163,7 @@ export function LobbyClient({ user }: { user: User }) {
                 🙈 Blind tasting
                 <span style={{fontSize:9,background:'var(--bg)',border:'1px solid rgba(200,150,60,0.4)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--accent)'}}>pro</span>
               </div>
-              <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only — host reveals after</div>
+              <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only. The host reveals after.</div>
             </div>
             <div style={{width:36,height:20,borderRadius:10,background:'var(--bg4)',border:'1px solid var(--border2)',position:'relative',flexShrink:0}}>
               <div style={{width:14,height:14,borderRadius:'50%',background:'#fff',opacity:0.4,position:'absolute',top:2,left:2}} />
@@ -178,6 +173,7 @@ export function LobbyClient({ user }: { user: User }) {
           <button className="btn-p" onClick={createSession} disabled={loading} style={{marginBottom:8}}>
             {loading ? 'creating…' : '→ create new tasting'}
           </button>
+          {!user && <p style={{fontSize:10,color:'var(--fg-faint)',letterSpacing:'0.06em'}}>Guest moments last 48 hours. Sign in to keep yours.</p>}
           {createError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{createError}</p>}
 
           <div className="lobby-divider">or join an existing room</div>
@@ -253,7 +249,7 @@ const FREE_FEATURES = [
   { icon: '📄', title: 'PDF export',               copy: 'Print a clean A4 tasting report straight from the compare view.',       pro: false },
   { icon: '🙈', title: 'Blind tastings',           copy: 'Tasters see Wine #1, #2… Host reveals after everyone has scored.',      pro: true  },
   { icon: '👑', title: 'Co-host roles',            copy: 'Delegate wine management to trusted co-hosts mid-session.',             pro: true  },
-  { icon: '🔖', title: 'AI label scanning',        copy: 'Point your camera at a label — fields fill themselves.',                pro: false },
+  { icon: '🔖', title: 'AI label scanning',        copy: 'Point your camera at a label: fields fill themselves.',                pro: false },
   { icon: '🎯', title: 'Hall of Fame',             copy: 'Every 5-star rating is permanent. Your name on the board.',            pro: false },
 ]
 

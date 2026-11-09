@@ -259,7 +259,7 @@ export default function AllMoments() {
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: GUTTER, paddingTop: 6, paddingBottom: 2 }}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={activeCount > 0 ? `Filters — ${activeCount} active` : 'Filters'}
+            accessibilityLabel={activeCount > 0 ? `Filters, ${activeCount} active` : 'Filters'}
             onPress={() => openFilter()}
             hitSlop={{ top: 4, bottom: 4 }}
             style={({ pressed }) => ({

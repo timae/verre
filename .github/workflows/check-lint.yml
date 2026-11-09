@@ -35,3 +35,9 @@ jobs:
       # real files clean, so mutation cases are checked against the real config.
       - name: Lint-boundary pins
         run: node scripts/tests/lint-boundary-units.mjs
+
+      # No em dash in user-facing copy (root CLAUDE.md § Coding style). ESLint
+      # above covers app/, components/ and packages/core/src; apps/mobile has no
+      # ESLint config, so this TS-AST twin covers it (same exemptions, own pins).
+      - name: No em dash in mobile copy
+        run: node scripts/check-no-em-dash-copy.mjs

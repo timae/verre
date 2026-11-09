@@ -1033,7 +1033,7 @@ export default function DevGallery() {
 
         <View style={{ gap: space.xs }}>
           <VText variant="heading">Structure input</VText>
-          <VText variant="small" color="inkSoft">Fill-track — tap/drag; wheel below updates live. Badge-tint fill + ink font (ruled 2026-07-11).</VText>
+          <VText variant="small" color="inkSoft">Fill-track: tap/drag; wheel below updates live. Badge-tint fill + ink font (ruled 2026-07-11).</VText>
           <StructureInput style={SAMPLE_STYLE} value={levels} onChange={setLevels} />
         </View>
 
@@ -1142,7 +1142,7 @@ export default function DevGallery() {
                 pill picks which armed treatment renders. */}
             <View style={{ gap: 6 }}>
               <VText variant="caption" color="inkFaint">
-                resting — tap = armed, double-tap = pronounced; armed treatment:
+                resting: tap = armed, double-tap = pronounced; armed treatment:
               </VText>
               {/* switches wrap onto their own lines (Simon) — no overflow on
                   narrow screens. */}
@@ -1247,7 +1247,7 @@ export default function DevGallery() {
               </View>
             </View>
             <View style={{ gap: 6 }}>
-              <VText variant="caption" color="inkFaint">theme-coloured rows — font (tap a chip = pronounced):</VText>
+              <VText variant="caption" color="inkFaint">theme-coloured rows, font (tap a chip = pronounced):</VText>
               <View style={{ flexDirection: 'row', alignSelf: 'flex-start', gap: 3, padding: 2, borderRadius: 999, backgroundColor: theme.bg }}>
                 {(['tint', 'solid'] as const).map((k) => {
                   const on = monoSolidFill === (k === 'solid');
@@ -1287,7 +1287,7 @@ export default function DevGallery() {
             </View>
             {([['accent', theme.accent], ['neutral ink', theme.ink]] as const).map(([label, tintColor]) => (
               <View key={label} style={{ gap: 5 }}>
-                <VText variant="caption" color="inkFaint">theme-coloured — {label} (exploration: all families one colour)</VText>
+                <VText variant="caption" color="inkFaint">theme-coloured, {label} (exploration: all families one colour)</VText>
                 <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
                   {AROMA_FAMILIES.map((f) => (
                     <AromaChip

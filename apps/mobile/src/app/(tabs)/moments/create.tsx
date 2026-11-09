@@ -36,7 +36,7 @@ import { motion, radius, useTheme } from '@/theme';
 //   End (To) stays optional. Fields still render EMPTY and seed on a
 //   deliberate tap (no-prefilled-values ruling holds); the submit guard blocks
 //   a create with no name/From. OS compact datetime picker (native-chrome).
-// - No lifespan row (per the mock): native creates default to unlimited
+// - No lifespan row (per the mock): every logged-in create is unlimited
 //   server-side.
 export default function CreateMoment() {
   const { theme } = useTheme();
@@ -83,7 +83,7 @@ export default function CreateMoment() {
     const picked = await pickPhoto();
     if (!picked) return; // user cancelled
     if ('failed' in picked) {
-      setCoverError("Couldn't use that photo — try another.");
+      setCoverError("Couldn't use that photo. Try another.");
       return;
     }
     setCover(picked);
@@ -399,7 +399,7 @@ function CoverPicker({
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>
         Add a cover photo
       </VText>
-      <VText variant="caption" color="inkSoft">optional — gives your moment a face</VText>
+      <VText variant="caption" color="inkSoft">Optional. Gives your moment a face.</VText>
     </Pressable>
   );
 }

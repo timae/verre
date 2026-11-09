@@ -34,7 +34,7 @@ export default async function JoinPage({
       await new Promise(r => setTimeout(r, 300))
       opened = await openSession(C)
     }
-    if (opened.status === 'restoring') throw new Error('This moment is being restored — try again in a moment.')
+    if (opened.status === 'restoring') throw new Error('This moment is being restored. Try again in a moment.')
     if (opened.status === 'live') sessionMeta = opened.meta
   }
 
@@ -63,13 +63,15 @@ export default async function JoinPage({
   // durably hidden from their Moments home. Fall through to <JoinClient> so
   // clicking the invite link genuinely re-joins them and clears the flag —
   // the documented "rejoin by code/link" contract (docs/dev/kick-ban.md).
+  //
+  // redirect() THROWS (NEXT_REDIRECT), so it runs after the lookup, never inside
+  // a try whose catch would swallow it: a failed lookup only falls through to the
+  // join screen.
   if (session?.user?.id && C && sessionMeta) {
-    try {
-      const member = await prisma.sessionMember.findUnique({
-        where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
-      })
-      if (member && member.removedState !== 'kicked') redirect(sessionPath(C))
-    } catch {}
+    const member = await prisma.sessionMember.findUnique({
+      where: { userId_sessionCode: { userId: Number(session.user.id), sessionCode: C } },
+    }).catch(() => null)
+    if (member && member.removedState !== 'kicked') redirect(sessionPath(C))
   }
 
   return (

@@ -221,7 +221,7 @@ export function ImpressionForm({
     const picked = await pickPhoto(MAX_WINE_IMAGE_BYTES);
     if (!picked) return; // cancelled
     if ('failed' in picked) {
-      setPhotoError("Couldn't use that photo — try another.");
+      setPhotoError("Couldn't use that photo. Try another.");
       return;
     }
     setPhoto({ kind: 'new', ...picked });
@@ -284,7 +284,7 @@ export function ImpressionForm({
             queryClient.invalidateQueries({ queryKey: ['session-state', code] });
             router.back();
             const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-            Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply — the line-up may have changed. Try moving it again.");
+            Alert.alert('Details saved', msg && msg !== 'http' ? `But the position change failed: ${msg}` : "But the position change didn't apply: the line-up may have changed. Try moving it again.");
             return;
           }
         }
@@ -375,7 +375,10 @@ export function ImpressionForm({
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year / NV"
+              // "Year" is the handoff spec: "Year / NV" overflowed the 76-wide field.
+              // NV stays typeable; the hint carries it for VoiceOver.
+              placeholder="Year"
+              accessibilityHint="A year, or NV for non-vintage."
               value={vintage}
               onChangeText={(t) => setVintage(filterVintageInput(t))}
               autoCapitalize="characters"
@@ -424,7 +427,7 @@ export function ImpressionForm({
                 taster; the pre-existing owner isn't second-guessed. */}
             {bringer && roleOf(bringer.id) === 'taster' ? (
               <VText variant="caption" color="caution">
-                {bringer.displayName} won’t be able to edit it — give them at least provider role in People.
+                {bringer.displayName} won’t be able to edit it. Give them at least provider role in People.
               </VText>
             ) : null}
           </View>
@@ -573,7 +576,7 @@ function PhotoPicker({
     >
       <Icon name="cam" size={24} color={theme.inkSoft} />
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-      <VText variant="caption" color="inkSoft">optional — a label or pour</VText>
+      <VText variant="caption" color="inkSoft">Optional. A label or pour.</VText>
     </Pressable>
   );
 }
@@ -702,7 +705,7 @@ function BringerPicker({
                         "Can't edit" for any taster (anon or registered). A
                         role-holder shows neither. */}
                     {anon ? <VText variant="caption" color="inkFaint">Unregistered</VText> : null}
-                    {role === 'taster' ? <VText variant="caption" color="caution">Can’t edit it — needs at least provider role</VText> : null}
+                    {role === 'taster' ? <VText variant="caption" color="caution">Can’t edit it (needs at least provider role)</VText> : null}
                   </View>
                   {on ? <Icon name="check" size={20} color={theme.accent} /> : null}
                 </Pressable>

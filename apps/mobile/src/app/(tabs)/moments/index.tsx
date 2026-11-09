@@ -542,7 +542,7 @@ function JoinBlock() {
     } catch (e) {
       if (e instanceof ApiError && e.kind === 'not-found') setError('No moment found for that code.');
       else if (e instanceof ApiError && e.kind === 'banned') setError("You can't join this moment.");
-      else if (e instanceof ApiError && e.kind === 'rate-limited') setError(e.message || 'Too many attempts — try again soon.');
+      else if (e instanceof ApiError && e.kind === 'rate-limited') setError(e.message || 'Too many attempts. Try again soon.');
       else setError('Something went wrong. Try again.');
     } finally {
       setBusy(false);
@@ -570,7 +570,10 @@ function JoinBlock() {
             surface="code"
             value={input}
             onChangeText={(t) => { setInput(formatCodeInput(t)); setError(null); }}
-            placeholder="8H4K – Q2NP"
+            // The example goes through the same formatter as the typed value, so
+            // placeholder and input share separator and spacing (only the colour
+            // differs). The handoff's "8H4K – Q2NP" did not match what typing produces.
+            placeholder={formatCodeInput('8H4KQ2NP')}
             keyboardType={Platform.OS === 'android' ? 'visible-password' : 'ascii-capable'}
             autoCapitalize="characters"
             autoCorrect={false}

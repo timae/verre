@@ -6,7 +6,7 @@ import { ImageLightbox } from '@/components/ui/ImageLightbox'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Verre — Wine Tasting OS',
+  title: 'Verre · Wine Tasting OS',
   description: 'Shared wine tasting sessions with live ratings, flavour profiles, and print-ready export.',
   icons: { icon: '/favicon.png', apple: '/favicon.png' },
 }

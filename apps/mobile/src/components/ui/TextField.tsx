@@ -101,11 +101,21 @@ export const TextField = forwardRef<TextInputInstance, Props>(function TextField
       onFocus={(e) => { setFocused(true); onFocus?.(e); }}
       onBlur={(e) => { setFocused(false); onBlur?.(e); }}
       placeholderTextColor={theme.inkFaint}
+      // Defensive workaround, UNVERIFIED (2026-11-09): a placeholder was seen
+      // ~14pt low and clipped, intermittently, gone after a relaunch. Fabric
+      // recycles native text fields on iOS; the HYPOTHESIS is that UIKit keeps
+      // an attribute RN's dict leaves unset (paragraph style, kern) from the
+      // previous field (ScoreInput's lineHeight 48 would give that offset). So a
+      // single-line field always sends an explicit paragraph style (this;
+      // "tail", not the paragraph default word wrapping, which likely caused the
+      // July wrap-on-blur bug) and an explicit letterSpacing (below).
+      lineBreakModeIOS={rest.lineBreakModeIOS ?? (grows || rest.multiline ? undefined : 'tail')}
       {...surface.textProps}
       style={[
         {
           fontFamily: 'InstrumentSans_400Regular',
           fontSize: text.fontSize,
+          letterSpacing: 0,
           // lineHeight ONLY in grow (multiline) mode. ⚠️ On a single-line iOS
           // TextInput, a lineHeight makes a long value WRAP onto several lines
           // (visible on blur) instead of scrolling horizontally — the reported

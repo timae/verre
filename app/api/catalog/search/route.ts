@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
     // curator hunting duplicates has no producer to scope by).
     if (!producerId) {
       return NextResponse.json(
-        { error: 'producerId is required — choose a producer first' },
+        { error: 'producerId is required. Choose a producer first.' },
         { status: 400, headers: NO_STORE },
       )
     }

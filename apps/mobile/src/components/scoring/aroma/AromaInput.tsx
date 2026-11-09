@@ -312,7 +312,7 @@ export function AromaInput({
             makes room (the spec bans a counter, not a rejection message). */}
         {q && capHit ? (
           <VText variant="small" style={{ marginTop: 8, textAlign: 'center', color: theme.critical }}>
-            Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
+            Limit reached: an impression holds up to {AROMA_SELECTION_CAP} aromas.
           </VText>
         ) : null}
       </View>

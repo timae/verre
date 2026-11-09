@@ -621,7 +621,7 @@ function DangerZone({ email }: { email: string }) {
             This is permanent. Your bookmarks and badges will be deleted. Your ratings in active sessions stay visible to other tasters but attributed to <em>[deleted]</em>.
           </p>
           <p style={{fontSize:12,marginBottom:14,lineHeight:1.5}}>
-            Sessions you host: if no one other than you has rated yet, the session is deleted entirely. If others have rated, the session keeps running under <em>[deleted]</em> so they can finish — your co-hosts (if any) inherit the right to delete it.
+            Sessions you host: if no one other than you has rated yet, the session is deleted entirely. If others have rated, the session keeps running under <em>[deleted]</em> so they can finish. Your co-hosts (if any) inherit the right to delete it.
           </p>
           <div className="field">
             <div className="fl">deleting account for</div>

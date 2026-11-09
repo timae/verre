@@ -356,7 +356,7 @@ export default function Feed() {
           ) : (
             <CenteredMessage
               title="Nothing here yet"
-              body="Follow other tasters or join a moment — what your network drinks shows up here."
+              body="Follow other tasters or join a moment. What your network drinks shows up here."
             />
           )
         }

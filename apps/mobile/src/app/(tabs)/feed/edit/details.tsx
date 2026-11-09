@@ -75,7 +75,7 @@ export default function EditCheckinDetails() {
     const picked = await pickPhoto(MAX_COVER_BYTES);
     if (!picked) return;
     if ('failed' in picked) {
-      setPhotoError("Couldn't use that photo — try another.");
+      setPhotoError("Couldn't use that photo. Try another.");
       return;
     }
     setPhoto(picked);
@@ -134,7 +134,7 @@ export default function EditCheckinDetails() {
           >
             <Icon name="cam" size={24} color={theme.inkSoft} />
             <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
-            <VText variant="caption" color="inkSoft">optional — capture the moment</VText>
+            <VText variant="caption" color="inkSoft">Optional. Capture the moment.</VText>
           </Pressable>
         )}
         {photoError ? (
@@ -153,7 +153,10 @@ export default function EditCheckinDetails() {
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year / NV"
+              // "Year" is the handoff spec: "Year / NV" overflowed the 76-wide field.
+              // NV stays typeable; the hint carries it for VoiceOver.
+              placeholder="Year"
+              accessibilityHint="A year, or NV for non-vintage."
               value={vintage}
               onChangeText={(t) => setVintage(filterVintageInput(t))}
               autoCapitalize="characters"

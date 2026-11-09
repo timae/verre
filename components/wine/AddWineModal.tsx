@@ -77,7 +77,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
     const provider = (localStorage.getItem('vr_ai_provider') || 'openai') as 'openai' | 'claude'
     const cfg = AI_PROVIDERS[provider]
     const key = localStorage.getItem(cfg.keyStore)
-    if (!key) { setScanStatus(`no ${cfg.label} key saved — add one below`); return }
+    if (!key) { setScanStatus(`no ${cfg.label} key saved: add one below`); return }
     setScanning(true); setScanStatus('scanning label…')
     try {
       const prompt = 'This is a wine bottle label. Extract: wine name, producer/winery, vintage (the 4-digit year, or "NV" if the label says non-vintage / NV / N.V.), grape variety/blend, wine type (red/white/sparkling/rosé). Return JSON: {name,producer,vintage,grape,type} where type is one of: red,white,spark,rose,nonalc. Only return the JSON object.'
@@ -134,7 +134,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
       if (gotType && TYPES.find(t => t.k === gotType)) setType(gotType)
       setScanStatus('fields prefilled ✓')
     } catch {
-      setScanStatus('scan failed — check your key')
+      setScanStatus('scan failed: check your key')
     }
     setScanning(false)
   }
@@ -410,7 +410,7 @@ export function AddWineModal({ code, onClose, onSaved, editWine, winesCount = 0 
                 placeholder={String(maxPosition)}
                 style={{width:88}} />
               <div style={{fontSize:10,color:'var(--fg-faint)',marginTop:4,fontFamily:'var(--mono)'}}>
-                ↻ not a fixed placement — host &amp; cohost can reorder anytime
+                ↻ not a fixed placement: host &amp; cohost can reorder anytime
               </div>
             </div>
           )}

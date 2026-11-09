@@ -70,6 +70,23 @@ const CASES = [
   ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.meta(c), '{}', { XX: true, KEEPTTL: true })\n"],
   ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.wines(c), '[]', { NX: true, EX: 60 })\n"],
   ['lib/x.ts', false, "import { redis, k } from '@/lib/redis'\nexport const f = (c: string) => redis.set(k.rating(c, 'u:1', 'w'), '{}', { EX: 60 })\n"],
+  // No em dash in user-facing copy (app/**, components/**, packages/core/src/**)
+  ['components/x.tsx', true, "export const a = 'Saved \u2014 nice'\n"],
+  ['components/x.tsx', true, "export const C = () => <p>Saved \u2014 nice</p>\n"],
+  ['components/x.tsx', true, "export const C = () => <p title='a \u2014 b' />\n"],
+  ['components/x.tsx', true, "export const f = (n: number) => `Filters \u2014 ${n}`\n"],
+  ['app/x/page.tsx', true, "export const a = 'This moment is being restored \u2014 try again'\n"],
+  ['packages/core/src/x.ts', true, "export const a = 'A \u2014 b'\n"],
+  ['components/x.tsx', true, "export const f = (a: string, b: string) => `${a} \u2014 ${b}`\n"],
+  ['components/x.tsx', true, "export const C = ({ a, b }: { a: string; b: string }) => <p>{a} \u2014 {b}</p>\n"],
+  ['components/x.tsx', true, "export const a = 'x\u2014y'\n"],
+  ['components/x.tsx', false, "export const a = '\u2014'\nexport const C = () => <span>\u2014</span>\n"],
+  ['components/x.tsx', false, "export const a = ` \u2014 `\nexport const C = () => <span>\n  \u2014\n</span>\n"],
+  ['components/x.tsx', false, "// a comment \u2014 fine\nexport const a = 1 /* and \u2014 here */\n"],
+  ['components/x.tsx', false, "export const f = (e: unknown) => console.error('[x] failed \u2014 retrying', e)\n"],
+  ['app/api/x/route.ts', false, "declare const sql: (s: TemplateStringsArray) => string\nexport const q = sql`SELECT 1 -- a \u2014 b`\n"],
+  ['components/x.tsx', false, "export const f = (a: string, b: string) => `${a} \u2013 ${b}`\n"],
+  ['lib/x.ts', false, "export const a = 'server log \u2014 not copy'\n"],
 ]
 
 const eslint = new ESLint()

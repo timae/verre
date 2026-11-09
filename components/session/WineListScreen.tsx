@@ -288,7 +288,7 @@ export function WineListScreen() {
               ? 'Loading wines…'
               : canManage
                 ? 'Add the first wine to get started.'
-                : 'No wines yet — the host hasn\'t added any.'}
+                : 'No wines yet. The host hasn\'t added any.'}
           </div>
         )}
 

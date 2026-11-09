@@ -983,7 +983,7 @@ function NameBlock({
           ? revealing
             ? 'Revealing…'
             : hostBlind
-              ? 'Hidden from guests — reveal to show it'
+              ? 'Hidden from guests. Reveal to show it.'
               : 'Revealed when the host or co-host reveals it'
           : [wine.producer, wineTypeLabel(wine.type)].filter(Boolean).join(' · ')}
       </VText>

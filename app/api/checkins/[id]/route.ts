@@ -195,7 +195,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
       // that silently kept the old image reads as "saved" while the photo
       // vanished (device-observed with S3 down). 502 lets the client surface
       // a retryable error instead.
-      return NextResponse.json({ error: 'photo upload failed — try again' }, { status: 502 })
+      return NextResponse.json({ error: 'photo upload failed, try again' }, { status: 502 })
     }
     nextImageUrl = uploaded
     freshUploadUrl = uploaded

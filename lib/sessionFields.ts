@@ -5,8 +5,8 @@ import { scrub } from '@/lib/textSafe'
 // POST /api/session (create, milestone 4 native 02a) and the settings PATCH
 // — one home so the validators can't drift. Mutates `meta` in place (the
 // PATCH's existing contract). Deliberately NOT here: the pro-gated fields
-// (blind, lifespan) and the cover photo — their gating differs between
-// create and settings and stays in the routes.
+// (blind, showProvenance), lifespan and the cover photo: their gating differs
+// between create and settings and stays in the routes.
 
 type SessionFieldsTarget = {
   name?: string

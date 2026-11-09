@@ -973,7 +973,7 @@ function HeroTitle({ wine, index, onNamePress }: { wine: SessionFeedWine; index:
   return (
     <View pointerEvents={onNamePress ? 'box-none' : 'none'} style={{ position: 'absolute', left: GUTTER, right: GUTTER, bottom: HERO_IDENTITY_SEAM_GAP + radius.xl }}>
       {onNamePress ? (
-        <Pressable onPress={onNamePress} accessibilityRole="button" accessibilityLabel={`${name} — about this impression`}>
+        <Pressable onPress={onNamePress} accessibilityRole="button" accessibilityLabel={`${name}, about this impression`}>
           {nameTitle}
         </Pressable>
       ) : (

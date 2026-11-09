@@ -115,7 +115,7 @@ export default function Launch() {
         {/* .content — bottom copy + buttons. */}
         <View style={{ paddingHorizontal: 22 }}>
           <VText variant="small" style={{ textAlign: 'center', color: 'rgba(255,255,255,0.92)', fontFamily: 'InstrumentSans_600SemiBold', marginBottom: 22, lineHeight: Math.round(phone.text('small').fontSize * 1.5) }}>
-            Wine, coffee, the dish you can&apos;t stop thinking about — capture it, score it, remember why.
+            Wine, coffee, the dish you can&apos;t stop thinking about: Capture it, score it, remember why.
           </VText>
           <View style={{ gap: 10 }}>
             <Button title="Get Started" bar block variant="onlight" onPress={() => router.push('/sign-up')} />

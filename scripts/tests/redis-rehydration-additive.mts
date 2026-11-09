@@ -366,7 +366,7 @@ async function mirrors() {
   check('promotion (logged-in visit) copies the lineup with positions', !!prow && await positionsMatch(anonHost.code)
     && !!(await prisma.wine.findUnique({ where: { id: pa } })) && !!(await prisma.wine.findUnique({ where: { id: pb } })))
   check('promotion copies the Redis bans set', !!(await prisma.sessionBan.findUnique({ where: { sessionCode_identityId: { sessionCode: anonHost.code, identityId: B.id } } })))
-  check('promotion writes the columns from meta (lifespan)', prow?.lifespan === '48h', prow)
+  check('promotion writes the columns from meta, lifespan unlimited (a Postgres-backed moment)', prow?.lifespan === 'unlimited', prow)
   check('promotion writes the visitor member row', !!(await prisma.sessionMember.findUnique({ where: { userId_sessionCode: { userId: V.id, sessionCode: anonHost.code } } })))
   return { H, s, A }
 }
