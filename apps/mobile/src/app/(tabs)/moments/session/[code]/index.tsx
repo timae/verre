@@ -14,7 +14,7 @@ import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { Thumb } from '@/components/ui/Thumb';
-import { VBar } from '@/components/VBar';
+import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
 import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
@@ -1476,20 +1476,12 @@ function HeroTopBar({
   // resting, 0 = merged); pill size arrives via onSize.
   const morph = useSharedValue(showAdd ? 1 : 0);
   const [pillSize, setPillSize] = useState<{ w: number; h: number } | null>(null);
-  const anim = useRef(new Animated.Value(collapsed ? 1 : 0)).current;
-  useEffect(() => {
-    Animated.timing(anim, {
-      toValue: collapsed ? 1 : 0,
-      duration: motion.dur2,
-      easing: Easing.bezier(...motion.ease),
-      useNativeDriver: true,
-    }).start();
-  }, [collapsed, anim]);
+  // The shared bar-title motion; the same value also fades the solid bar in.
+  const anim = useBarTitleProgress(collapsed);
 
   const iconColor = collapsed ? theme.ink : '#fff';
   const controlSize = phone.size('heroAction');
   const iconSize = phone.size('heroActionIcon');
-  const titleText = phone.text('subhead');
   const circle = collapsed
     ? { width: controlSize, height: controlSize, alignItems: 'center' as const, justifyContent: 'center' as const }
     : { width: controlSize, height: controlSize, borderRadius: controlSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const };
@@ -1518,14 +1510,8 @@ function HeroTopBar({
             style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
             <Icon name="back" size={iconSize} color={iconColor} />
           </Pressable>
-          {/* Title appears only collapsed (fades in with a 4px rise). */}
-          <Animated.View
-            style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
-          >
-            <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...titleText, color: theme.ink }}>
-              {title}
-            </VText>
-          </Animated.View>
+          {/* Title appears only collapsed (the shared BarTitle: fade + 4pt rise). */}
+          <BarTitle title={title} progress={anim} inset={10} />
           {/* Add (left of ⋯) — glass pill over the photo, collapsing to a bare
               + glyph once the bar goes solid (label drop mirrors the Crave
               button). Host/cohost/provider only; morphs into the ⋯ on Compare. */}

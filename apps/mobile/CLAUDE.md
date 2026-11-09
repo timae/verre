@@ -450,7 +450,8 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
 - **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile.
 - **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` (`profile/`) — see § You profile.
-- **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens.
+- **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens; `back={false}` for a tab root; `titleShown` turns the title into a SCROLL title (fades in once content scrolls under the bar), `titleLeading` puts a node before it.
+- **Bar title**: `BarTitle` + `useBarTitleProgress` (`VBar.tsx`) — THE bar title (subhead 600, `topBar` surface, ink or white on a photo; fade + 4pt rise over dur-2 off a 0→1 `Animated.Value`). VBar, the moment cover bar and the rate-impression bar all render through it; a bar whose background fades with the title (the moment cover bar) drives both from the same `useBarTitleProgress` value. Never restate the title style or the fade in a new bar.
 - **Bottom nav**: `PillTabBar` (`PillTabBar.tsx`) — the floating-pill tab bar (`.tabbar-float`, ADR-0006) with the drag-lens (hold ≈180ms → a real Liquid Glass lens rides the bar; release commits; landing on the current tab is NOT input). Rendered via the tabs layout's `tabBar` prop; absolute overlay: content clears it with `insets.bottom + TAB_BAR_CLEARANCE`. ⚠️ The glass layering in that file is LOAD-BEARING physics learned over a day of device checks — read the in-file header + ADR-0006 and re-run the dev-gallery GLASS LABS (`/you/dev-gallery`) before touching any glass property. Don't add per-screen nav bars.
 - **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
 - **Thumb**: `ui/Thumb.tsx` — square cover/wine thumbnail with the glass-glyph placeholder; props `uri`, `size`, `radius`. ALL cover/wine thumbs (wrap + overlay for the line-up hidden-from-guests badge).
@@ -476,6 +477,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - ✅ **DONE — `ClampText`** promoted to `components/ui/ClampText.tsx` (the feed impression detail became its second consumer; 02e now imports it). `OvcAbout`'s description block is still a copy — migrate when next touched.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
+- **Feed post detail bar title → `BarTitle`** — `feed/impression/[id].tsx` still renders its own title (same type, but it POPS in on `solid` instead of fading, and it is tappable → About). Adopting `BarTitle` (with a press slot) changes that behaviour: a design call, not a refactor.
 - ✅ **DONE (partial) — `<CenteredMessage>`** built in `ui/ConnectionState.tsx` and adopted in the edit-impression screen (in the primitives list above). **The FatalView copy is now SHARED but still un-migrated**: `SessionFatalView` (`moments/SessionFatalView.tsx`, extracted from index.tsx for Compare) still hand-rolls the flex-center layout because `<CenteredMessage>` has no button/footer slot — extend CenteredMessage with a footer slot, then adopt it there. Still open: decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
 - **Shared layout constants** — `GUTTER` (`=22`, the intentional `20` in `impression/[wineId].tsx` is a documented override), `FOOT_CLEARANCE`, are re-declared per-file ~8× / ~5×. Move to `lib/layout.ts` (alongside `TAB_BAR_CLEARANCE`) so the one intentional override is visible.
 - Also noted: `DateField` (`momentForm.tsx`) hand-rolls its OWN `Modal`+scrim bottom-sheet (not `ui/Sheet`) to host the OS date picker — justified, but reuse IT if you need a native-picker-in-a-sheet rather than rolling a third.
@@ -871,13 +873,24 @@ editing and the cover hero (04·R5i·b).
   confirm via the house native alert
   (Block uses the design's BLOCKSHEET copy); Follow and Mute act at once.
 - **No Blocked list yet** (ruled 2026-11-09): after leaving a blocked
-  profile there is no in-app unblock path until the real Settings.
+  profile there is no in-app unblock path until the real Settings. Same
+  accepted gap for MUTE: a profile is reachable only from a feed card, so a
+  muted person you don't follow has no way back to their profile (to
+  unmute) until People / Search / Settings exist.
+- **Bar title**: once the header name scrolls under the bar, the bar shows
+  the 26pt photo + name — plain `VBar` with `titleShown` / `titleLeading`
+  (`back={false}` on the tab root); trigger = the measured name bottom via
+  `ProfileIdentity onNameBottom` + `FeedList onScrollY`. It is the shared
+  `BarTitle` (see the catalog), NOT the mock's body-size title + photo
+  scale: that read as a different bar next to a moment's (ruled on device,
+  2026-11-09).
 - **Deviations (flagged):** name = `heading` bold (mock 26/700, no 26 token);
   the average numeral is StarScore's accent (mock: ink); empty tiles drop the
   mock's 1px outline (no-borders ruling); the own-variant Settings row pushes
   `/you/settings` even from the Feed stack.
 - `you/settings.tsx` is INTERIM (Help & About, Dev Gallery, Sign Out).
-  `Button` gained `icon` (leading glyph); `Avatar` gained `tint` (the
+  `Button` gained `icon` (leading glyph); `VBar` gained `back` /
+  `titleShown` / `titleLeading`; `Avatar` gained `tint` (the
   `.yo-rav-ini` initials disc); icons `user-plus`, `block`, `logout`.
 
 ## About / Attributions (You tab)

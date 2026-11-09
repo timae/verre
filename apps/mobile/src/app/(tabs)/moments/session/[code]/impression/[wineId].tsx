@@ -8,8 +8,6 @@ import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
-  Animated,
-  Easing,
   Image,
   Keyboard,
   Pressable,
@@ -29,6 +27,7 @@ import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { BarTitle, useBarTitleProgress } from '@/components/VBar';
 import { ClampText } from '@/components/ui/ClampText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
 import {
@@ -49,7 +48,7 @@ import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
-import { motion, radius, useTheme } from '@/theme';
+import { radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
@@ -702,21 +701,12 @@ function IrBar({
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const menuBtnRef = useRef<ViewInstance>(null);
-  const anim = useRef(new Animated.Value(titleShown ? 1 : 0)).current;
-  useEffect(() => {
-    Animated.timing(anim, {
-      toValue: titleShown ? 1 : 0,
-      duration: motion.dur2,
-      easing: Easing.bezier(...motion.ease),
-      useNativeDriver: true,
-    }).start();
-  }, [titleShown, anim]);
+  const anim = useBarTitleProgress(titleShown);
 
   const onGlass = glass && !solid;
   const iconColor = onGlass ? '#fff' : theme.ink;
   const glassSize = phone.size('heroAction');
   const plainSize = phone.size('compactAction');
-  const titleText = phone.text('subhead');
   const pillHeight = phone.size('actionPillHeight');
   const circle = onGlass
     ? { width: glassSize, height: glassSize, borderRadius: glassSize / 2, backgroundColor: GLASS_FILL, alignItems: 'center' as const, justifyContent: 'center' as const }
@@ -729,14 +719,8 @@ function IrBar({
         style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}>
         <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
       </Pressable>
-      {/* .ir-bartitle: 18/600, flex 1, fades in with a 4px rise */}
-      <Animated.View
-        style={{ flex: 1, minWidth: 0, paddingHorizontal: 10, opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [4, 0] }) }] }}
-      >
-        <VText numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', ...titleText, color: onGlass ? '#fff' : theme.ink }}>
-          {title}
-        </VText>
-      </Animated.View>
+      {/* .ir-bartitle: the shared BarTitle (18/600, fades in with a 4pt rise) */}
+      <BarTitle title={title} progress={anim} inset={10} onGlass={onGlass} />
       {/* .ir-reveal — host reveal/hide (blind session). Same glass/borderless
           treatment as Crave; label drops once the title hands in. */}
       {showReveal ? (

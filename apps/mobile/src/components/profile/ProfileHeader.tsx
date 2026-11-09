@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { View } from 'react-native';
 import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
@@ -43,18 +44,41 @@ export function ProfileIdentity({
   name,
   imageUrl,
   children,
+  onNameBottom,
 }: {
   name: string;
   imageUrl: string | null;
   children?: React.ReactNode;
+  // The name's bottom edge within this row (the bar title shows once it has
+  // scrolled under the bar).
+  onNameBottom?: (y: number) => void;
 }) {
+  const sideY = useRef<number | null>(null);
+  const nameBottom = useRef<number | null>(null);
+  const report = () => {
+    if (sideY.current != null && nameBottom.current != null) onNameBottom?.(sideY.current + nameBottom.current);
+  };
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginLeft: -8 }}>
       <Avatar imageUrl={imageUrl} name={name} size={AVATAR} tint />
-      <View style={{ flex: 1, minWidth: 0, gap: 4, paddingLeft: 2, alignItems: 'flex-start' }}>
+      <View
+        onLayout={(e) => {
+          sideY.current = e.nativeEvent.layout.y;
+          report();
+        }}
+        style={{ flex: 1, minWidth: 0, gap: 4, paddingLeft: 2, alignItems: 'flex-start' }}
+      >
         {/* .yo-ncname — 700 26px in the mock; the nearest type token is
             heading (23), bold. Flagged deviation: no inline font sizes. */}
-        <VText variant="heading" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_700Bold', marginBottom: 2, maxWidth: '100%' }}>
+        <VText
+          variant="heading"
+          numberOfLines={1}
+          onLayout={(e) => {
+            nameBottom.current = e.nativeEvent.layout.y + e.nativeEvent.layout.height;
+            report();
+          }}
+          style={{ fontFamily: 'InstrumentSans_700Bold', marginBottom: 2, maxWidth: '100%' }}
+        >
           {name}
         </VText>
         {children}
@@ -117,16 +141,19 @@ export function ProfileHeader({
   own,
   onFollowPress,
   followBusy,
+  onNameBottom,
 }: {
   profile: FullProfile;
   own: boolean;
   onFollowPress: () => void;
   followBusy: boolean;
+  // The identity row is the header's first child, so its y is the header's.
+  onNameBottom?: (y: number) => void;
 }) {
   const t = profile.tiles;
   return (
     <View style={{ gap: 16 }}>
-      <ProfileIdentity name={profile.name} imageUrl={profile.imageUrl}>
+      <ProfileIdentity name={profile.name} imageUrl={profile.imageUrl} onNameBottom={onNameBottom}>
         <StatLine level={profile.level.name} avgScore={profile.flavor.avgScore} />
         <Counts friends={profile.friendsCount} followers={profile.stats.followers} />
       </ProfileIdentity>

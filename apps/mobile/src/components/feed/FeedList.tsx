@@ -30,6 +30,7 @@ export function FeedList({
   contentTopPad,
   onRefresh,
   centerLoading,
+  onScrollY,
 }: {
   userId?: number;
   header: React.ReactElement;
@@ -42,6 +43,8 @@ export function FeedList({
   // First load as a centred spinner with no header (the Feed tab's look);
   // otherwise the header renders and the spinner sits under it.
   centerLoading?: boolean;
+  // The list's vertical offset, per scroll frame (the profile's bar title).
+  onScrollY?: (y: number) => void;
 }) {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
@@ -296,6 +299,8 @@ export function FeedList({
         ListHeaderComponent={header}
         contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
         showsVerticalScrollIndicator={false}
+        onScroll={onScrollY ? (e) => onScrollY(e.nativeEvent.contentOffset.y) : undefined}
+        scrollEventThrottle={onScrollY ? 16 : undefined}
         refreshControl={
           <RefreshControl
             refreshing={pulling}

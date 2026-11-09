@@ -1,11 +1,12 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FeedList } from '@/components/feed/FeedList';
 import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName } from '@/components/profile/ProfileHeader';
 import { AnchorButton, AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
+import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
 import { VBar } from '@/components/VBar';
@@ -14,7 +15,7 @@ import { profileKey, profileQueryOptions, setBlocked, setFollowing, setMuted, ty
 import { authClient } from '@/lib/authClient';
 import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
 import { viewerCacheEpoch } from '@/lib/query';
-import { GUTTER, usePhoneTokens } from '@/lib/layout';
+import { GUTTER } from '@/lib/layout';
 import { useTheme } from '@/theme';
 
 // A person's profile (handoff 04 "You", step 1 — no bio, cover or editing):
@@ -40,6 +41,34 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
 
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const [busy, setBusy] = useState(false);
+
+  // Bar title (04·R5c .ir-floathead): once the header's name has scrolled
+  // under the bar, the bar shows the photo + name. `nameBottom` = the name's
+  // bottom edge in list-content coordinates (FeedList pads the top by
+  // LIST_TOP_PAD, and the identity row is the header's first child).
+  // Recomputed from BOTH inputs — a scroll AND a re-measure (a header relayout
+  // moves the name without any scroll event).
+  const nameBottom = useRef(Number.POSITIVE_INFINITY);
+  const scrollY = useRef(0);
+  const [titled, setTitled] = useState(false);
+  const syncTitle = useCallback(() => {
+    const on = scrollY.current >= nameBottom.current;
+    setTitled((cur) => (cur === on ? cur : on));
+  }, []);
+  const onScrollY = useCallback(
+    (y: number) => {
+      scrollY.current = y;
+      syncTitle();
+    },
+    [syncTitle],
+  );
+  const onNameBottom = useCallback(
+    (y: number) => {
+      nameBottom.current = LIST_TOP_PAD + y;
+      syncTitle();
+    },
+    [syncTitle],
+  );
 
   // Relationship writes. Afterwards the profile header AND the network feed
   // (['feed'], exact — whose authors follow / mute / block change) refetch IN
@@ -213,7 +242,27 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : null;
 
-  const bar = root ? <RootBar right={menuButton} /> : <VBar title="" right={menuButton} />;
+  // 04·R5c .ir-floathead: once the header name has scrolled under the bar,
+  // the bar shows the 26pt photo + name (the shared VBar scroll title).
+  const ok = profile?.state === 'ok';
+  // The post list only exists in the 'ok' state; leaving it (block, private,
+  // gone) unmounts the list, and coming back remounts it at the top — reset
+  // so the bar doesn't keep a title for a header that is in view (Codex).
+  useEffect(() => {
+    if (ok) return;
+    scrollY.current = 0;
+    nameBottom.current = Number.POSITIVE_INFINITY;
+    setTitled(false);
+  }, [ok]);
+  const bar = (
+    <VBar
+      back={!root}
+      title={ok ? profile.name : ''}
+      titleShown={ok && titled}
+      titleLeading={ok && profile.imageUrl ? <Avatar imageUrl={profile.imageUrl} name={profile.name} size={26} /> : undefined}
+      right={menuButton}
+    />
+  );
 
   let body: React.ReactNode;
   if (!profile) {
@@ -256,11 +305,18 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     body = (
       <FeedList
         userId={userId}
-        contentTopPad={4}
+        contentTopPad={LIST_TOP_PAD}
         onRefresh={() => profileQ.refetch()}
+        onScrollY={onScrollY}
         header={
           <View style={{ paddingHorizontal: GUTTER, paddingBottom: 20 }}>
-            <ProfileHeader profile={profile} own={own} followBusy={busy} onFollowPress={() => onFollowPress(profile)} />
+            <ProfileHeader
+              profile={profile}
+              own={own}
+              followBusy={busy}
+              onFollowPress={() => onFollowPress(profile)}
+              onNameBottom={onNameBottom}
+            />
           </View>
         }
         empty={
@@ -285,10 +341,4 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   );
 }
 
-// The root tab's bar: no back (it IS the tab), the ⋯ on the right. Same
-// height as VBar so the header sits where a pushed profile's does.
-function RootBar({ right }: { right: React.ReactNode }) {
-  const phone = usePhoneTokens();
-  const height = phone.surface('topBar').height(phone.size('topBar'));
-  return <View style={{ height, marginBottom: 2, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end' }}>{right}</View>;
-}
+const LIST_TOP_PAD = 4;
