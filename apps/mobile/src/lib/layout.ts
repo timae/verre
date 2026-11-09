@@ -208,3 +208,8 @@ export const WELCOME_SCRIM_STOPS = [0, 0.26, 0.56, 1] as const;
 // Distinct from HERO_SCRIM (a 3-stop full-height scrim) — the feed card only
 // darkens the bottom edge. Same literal family, one home (the token gate).
 export const FEED_PANEL_SCRIM = ['rgba(15,12,10,0)', 'rgba(15,12,10,0.55)'] as const;
+
+// Profile photo-tile scrim (.yo-ptile-scrim): clear for the top third, then
+// darkening to the bottom edge so the white count + label read on any photo.
+export const TILE_SCRIM = ['rgba(15,12,10,0)', 'rgba(15,12,10,0.7)'] as const;
+export const TILE_SCRIM_STOPS = [0.35, 1] as const;

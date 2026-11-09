@@ -31,6 +31,12 @@ Per `proposals/rewire.md` §3: anonymous ratings never create feed_items (schema
 
 Visibility / mute / block filtering composes multiplicatively per author: block-pair authors are dropped first (strictest), then muted authors, then the author's profile-visibility tier is gated via `canViewProfile`. The viewer always sees their own content (self-block and self-mute are rejected at the API + DB level).
 
+### Author filter (`?user=<id>`, the app's profile feed)
+
+`/api/feed?user=<id>` returns one person's posts through the SAME projection (likes, tags, session wines with blind redaction, cursor). Only the author set changes: the route gates `resolveProfileViewer(user, viewer)` and must get `ok` (self always is), then uses `[user]` in place of the network. Every other gate result (`gone`, `shell`, `blocked-by-me`) is a 404 — `GET /api/users/:id` is what tells the client which state it is. The network query and the mute filter are skipped: mute is a network-feed filter (`docs/dev/mute.md`), and opening someone's profile is an explicit choice to look at them.
+
+The native app keys it `['feed', 'user', id]` beside the network feed's `['feed']`, so the same post can sit in both caches; every post mutation writes all `['feed', …]` caches (`apps/mobile/src/lib/feedCache.ts`).
+
 ## Discriminated payload (response shape)
 
 The feed response carries items tagged by `type`:

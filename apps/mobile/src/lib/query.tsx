@@ -37,6 +37,24 @@ export const queryClient = new QueryClient({
   },
 });
 
+// 🔒 Identity boundary. Nearly every key in this singleton is VIEWER-dependent
+// (feeds, profiles, moments) without carrying the viewer, so RootNavigator
+// (app/_layout.tsx) drops the whole cache when the signed-in user changes.
+// The epoch counts those drops: a write that STARTED under an older epoch
+// belongs to the previous viewer and must not land (a mutation's late
+// rollback would otherwise recreate the previous viewer's data in the cleared
+// cache — Codex, 2026-11-09). Any setQueryData that can run after an await
+// checks it; setQueriesData can't recreate a removed entry, so it needn't.
+let viewerEpoch = 0;
+export function viewerCacheEpoch(): number {
+  return viewerEpoch;
+}
+export function clearViewerCache(): void {
+  viewerEpoch++;
+  void queryClient.cancelQueries();
+  queryClient.clear();
+}
+
 export function QueryProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const focusSub = wireFocusManager();

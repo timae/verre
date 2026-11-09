@@ -93,6 +93,22 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 12, cy: 8.5, r: 3.5, sw: 1.5 },
     { d: 'M5.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6', sw: 1.5, cap: true },
   ],
+  // person + plus — Add Friends (design i-user-plus)
+  'user-plus': [
+    { cx: 10, cy: 8.5, r: 3.5, sw: 1.6 },
+    { d: 'M4 19.5c0-3.3 2.7-5.5 6-5.5 1 0 2 .2 2.8.6', sw: 1.6, cap: true },
+    { d: 'M17.5 14v6M14.5 17h6', sw: 1.6, cap: true },
+  ],
+  // circle + slash — Block (design i-block)
+  block: [
+    { cx: 12, cy: 12, r: 8, sw: 1.6 },
+    { d: 'M6.5 6.5l11 11', sw: 1.6, cap: true },
+  ],
+  // door + arrow out — Sign Out (design i-logout)
+  logout: [
+    { d: 'M14 4.5H7a2 2 0 00-2 2v11a2 2 0 002 2h7', sw: 1.6, cap: true },
+    { d: 'M11 12h9.5M17 8.5l3.5 3.5-3.5 3.5', sw: 1.6, cap: true, join: true },
+  ],
   edit: [{ d: 'M5 19h3l9-9-3-3-9 9v3ZM14 6l3 3', sw: 1.6, cap: true, join: true }],
   trash: [{ d: 'M5 7h14M10 7V5.5h4V7M6.5 7l.9 12.5h9.2L17.5 7', sw: 1.5, cap: true, join: true }],
   sparkles: [

@@ -76,9 +76,13 @@ interface Args {
   userId: number
   viewerId: number | null
   isFollowing: boolean
+  // false = header only: skip the recent check-ins + session posts (the native
+  // app reads posts from `/api/feed?user=` instead). Both arrays come back
+  // empty. Default true (the web profile).
+  recent?: boolean
 }
 
-export async function loadProfile({ userId, viewerId, isFollowing }: Args): Promise<LoadedProfile | null> {
+export async function loadProfile({ userId, viewerId, isFollowing, recent = true }: Args): Promise<LoadedProfile | null> {
   // After dropping checkins.is_public, every check-in is governed by
   // the author's profile-visibility tier — there's no per-row public/
   // private flag anymore. The count below now matches the author's
@@ -138,6 +142,25 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
   const flavor = isOwner
     ? flavorFull
     : { hasActiveRatings: flavorFull.hasActiveRatings, avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
+
+  const head = {
+    id: user.id,
+    name: user.name,
+    xp: user.xp,
+    imageUrl: user.imageUrl,
+    level: getLevel(user.xp),
+    stats: {
+      ratings: user.lifetimeRatings,
+      sessions: user.lifetimeSessionsJoined,
+      badges: user._count.earnedBadges,
+      checkins: tastingCount,
+      followers: adjustedFollowers,
+      following: adjustedFollowing,
+    },
+    flavor,
+    isFollowing,
+  }
+  if (!recent) return { ...head, recentCheckins: [], recentSessionPosts: [] }
 
   // Standalone feed_items — the post-rewire shape. Each has a rating + wine
   // + optional rating_image attached. The profile renders these as the
@@ -265,21 +288,7 @@ export async function loadProfile({ userId, viewerId, isFollowing }: Args): Prom
     : new Set<number>()
 
   return {
-    id: user.id,
-    name: user.name,
-    xp: user.xp,
-    imageUrl: user.imageUrl,
-    level: getLevel(user.xp),
-    stats: {
-      ratings: user.lifetimeRatings,
-      sessions: user.lifetimeSessionsJoined,
-      badges: user._count.earnedBadges,
-      checkins: tastingCount,
-      followers: adjustedFollowers,
-      following: adjustedFollowing,
-    },
-    flavor,
-    isFollowing,
+    ...head,
     recentCheckins: standaloneFeedItems.flatMap<LoadedCheckin>(f => {
       // Defensive: a standalone feed_item with no rating is a schema
       // violation; drop rather than crash.

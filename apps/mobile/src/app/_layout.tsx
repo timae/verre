@@ -13,14 +13,14 @@ import {
 } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
 import { retirePreviousInstall } from '@/lib/previousInstall';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
-import { QueryProvider } from '@/lib/query';
+import { QueryProvider, clearViewerCache } from '@/lib/query';
 import { markUpdateNavigationReady } from '@/lib/updateGate';
 import { ThemeProvider, useTheme } from '@/theme';
 
@@ -58,6 +58,21 @@ function RootNavigator() {
   const viewerOpen = useFullscreenViewerOpen();
   const { data: session, isPending } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
+  // 🔒 The query cache is a process singleton and nearly everything in it is
+  // VIEWER-dependent (feeds, profiles, moments). When the signed-in user
+  // changes (sign-out, a revoked session, another account) drop all of it, so
+  // the next account never paints the previous one's data, not even from a
+  // cached copy ahead of its refetch (Codex, 2026-11-09). This runs on the
+  // commit where the (tabs) group's Stack.Protected guard flips to its
+  // Redirect, so the signed-in screens (lists, pinned detail copies) have
+  // already unmounted; sign-in is only reachable from the signed-out group,
+  // so a user never changes X→Y without passing through null.
+  const userId = session?.user.id ?? null;
+  const lastUserId = useRef(userId);
+  useEffect(() => {
+    if (lastUserId.current !== null && lastUserId.current !== userId) clearViewerCache();
+    lastUserId.current = userId;
+  }, [userId]);
   // 🔒 `isPending` is NOT boot-only: Better Auth's session query sets it true
   // on ANY request made while `data` is null — and the SDK refetches
   // get-session 10ms after every sign-out (and sign-in). Gating the render on

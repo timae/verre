@@ -4,6 +4,7 @@ import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
 import { checkRate } from '@/lib/rateLimit'
 import { loadProfile } from '@/lib/profileLoad'
+import { loadProfileHeaderExtras } from '@/lib/profileHeader'
 import { isMuted } from '@/lib/userMute'
 import { prisma } from '@/lib/prisma'
 
@@ -62,7 +63,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     )
   }
 
-  const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile })
+  // `?view=header` (the native app): no recent posts — the app reads them
+  // from `/api/feed?user=`. The default (web) payload is unchanged.
+  const headerView = req.nextUrl.searchParams.get('view') === 'header'
+  const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile, recent: !headerView })
   if (!profile) return NextResponse.json(
     { error: 'not found' },
     { status: 404, headers: noStore },
@@ -70,14 +74,25 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // viewerMutes is included only in the full payload (not the shell).
   // Per product decision: the mute button only appears on the full
   // profile view, where the viewer has chosen to look at content.
-  const viewerMutes = viewerId !== null && viewerId !== userId
-    ? await isMuted(viewerId, userId)
-    : false
-  // Response varies by viewer (viewerMutes, isFollowing, viewer-dependent
-  // counts after block-pair adjustment). Force `private, no-store` so a
-  // CDN can't serve one viewer's payload to another.
+  const [viewerMutes, extras] = await Promise.all([
+    viewerId !== null && viewerId !== userId ? isMuted(viewerId, userId) : Promise.resolve(false),
+    // Additive app-header fields (friendsCount, inCommon, tiles) — full
+    // payload only, never the shell or blocked views. The web ignores them.
+    loadProfileHeaderExtras(userId, viewerId, profile.stats.checkins),
+  ])
+  const { recentCheckins, recentSessionPosts, ...head } = profile
+  // Response varies by viewer (viewerMutes, isFollowing, followsYou,
+  // inCommon, viewer-dependent counts after block-pair adjustment). Force
+  // `private, no-store` so a CDN can't serve one viewer's payload to another.
   return NextResponse.json(
-    { ...profile, viewerMutes },
+    {
+      ...head,
+      ...(headerView ? {} : { recentCheckins, recentSessionPosts }),
+      viewerMutes,
+      // The profile owner follows the viewer (drives "Follow Back").
+      followsYou: gate.viewer.profileFollowsViewer,
+      ...extras,
+    },
     { headers: noStore },
   )
 }
