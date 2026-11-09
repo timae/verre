@@ -1,10 +1,10 @@
 import { nanoid } from 'nanoid'
 import { WatchError } from 'redis'
-import { redis, k } from '@/lib/redis'
+import { redis, k, lifespanTTL, scanKeys } from '@/lib/redis'
 import { prisma } from '@/lib/prisma'
 import { Prisma } from '@prisma/client'
 import { sessionLockKey, LockLost } from '@/lib/sessionLock'
-import { withSessionMutation, ContractCold, ContractGone, type Fence } from '@/lib/sessionMutation'
+import { withSessionMutation, scopedInvalidate, ContractCold, ContractGone, type Fence } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { normalizeVintageText } from '@verre/core'
 import { uploadImage } from '@/lib/s3'
@@ -611,7 +611,13 @@ export async function addWineToSession(
 // INSIDE. Writes the row, the lineup (positions), the bans and a member row for
 // EVERY registered `u:` (G3 — roles from the fresh meta, the one moment Redis is
 // still the authority; kicked-set entries as removed_state 'kicked'; joined
-// counters on insert). Projection: meta rewritten from the record (promotedAt).
+// counters on insert). The row is 'unlimited' whatever the guest moment's
+// lifespan was: once Postgres-backed it is reopenable forever, so the lifespan
+// only sizes the cache (root CLAUDE.md § Freemium split). Projection: meta
+// rewritten from the record (promotedAt, lifespan), then every key re-stamped to
+// the new TTL, since the meta write is KEEPTTL and the guest TTL would otherwise
+// survive. A projection failure leaves the record right and the request served,
+// and invalidates the cache: the next open rebuilds it on 'unlimited'.
 // The trigger stays "a logged-in caller acted" (the callers decide that), and it
 // runs BEFORE the caller's own contract — the locks are not re-entrant.
 // Returns the live sessions.id.
@@ -630,7 +636,7 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
       const [bans, identities, kicked] = await Promise.all([
         redis.sMembers(k.bans(code)), redis.hGetAll(k.identities(code)), redis.sMembers(k.kicked(code)),
       ])
-      const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(fresh) }, select: { id: true } })
+      const row = await tx.session.create({ data: { code, ...sessionMetaToColumns(fresh), lifespan: 'unlimited' }, select: { id: true } })
       // Belt: member rows are only ever for codes with a live row (r1-2).
       await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${code}`
       await upsertLineup(tx, row.id, JSON.parse(winesRaw) as WineMeta[])
@@ -657,7 +663,29 @@ export async function ensurePromoted(code: string, meta: SessionMeta): Promise<n
       }
       return row.id
     },
-    async (ctx) => { await projectMetaFromRecord(ctx.fence!, ctx.meta) })
+    async (ctx) => {
+      // ctx.row is null here (this work created the row), so the contract's own
+      // failure path would not invalidate: a cache left on the guest lifespan
+      // would keep renewing it (touchWithMeta reads meta.lifespan). Invalidate
+      // the committed incarnation instead; the next open rebuilds every key from
+      // the record.
+      try {
+        const meta = await projectMetaFromRecord(ctx.fence!, ctx.meta)
+        if (meta) await expireSessionKeys(ctx.fence!, code, meta.lifespan)
+      } catch (err) {
+        await scopedInvalidate(code, ctx.meta!.createdAt).catch(e => console.error('[promote] invalidation failed', { code, e }))
+        throw err
+      }
+    })
+}
+
+// Re-stamps every `s:{CODE}:*` key to the lifespan's TTL, fenced. Every meta
+// write is XX KEEPTTL (mechanism 1), so a lifespan change needs this beside it:
+// the settings route and promotion.
+export async function expireSessionKeys(fence: Fence, code: string, lifespan?: string): Promise<void> {
+  const ttl = lifespanTTL(lifespan)
+  const keys = await scanKeys(`s:${code}:*`)
+  if (keys.length) await fence.exec(m => { for (const key of keys) m.expire(key, ttl) })
 }
 
 // Rewrite a Postgres-backed session's meta FROM THE RECORD (plan § 1.5 / D4) ⊕

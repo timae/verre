@@ -48,8 +48,8 @@ import { betterAuthServer } from '@/lib/betterAuth'
 // `authSource: 'native'` iff the Better Auth cookie validated — the
 // UNSPOOFABLE caller-class signal (set by which credential authenticated,
 // never by a client-controlled header like X-Verre-Client). Absent on the
-// web auth() pass-through. Used for native-only policy (e.g. app-created
-// sessions default to unlimited lifespan); never for authorization tiers.
+// web auth() pass-through. Reserved for native-only policy; never for
+// authorization tiers.
 export type ResolvedSession = Session & { authSource?: 'native' }
 
 export async function resolveUser(req: NextRequest): Promise<ResolvedSession | null> {

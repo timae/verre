@@ -400,6 +400,11 @@ ensurePromoted(code, expectedCreatedAt)       // replaces pgUpsertSession's crea
   roster, so pre-existing rows without a member row still rebuild.
 - `pgUpsertSession`'s update arm survives as `pgTouchSession` (name only, as today);
   settings changes keep their own mirror through `sessionMetaToColumns`.
+- **As built since (§ 11 item 2):** the INSERT writes `lifespan = 'unlimited'` whatever
+  the guest moment had, and the projection re-stamps every `s:{CODE}:*` key to that TTL
+  after the meta rewrite (the meta write is XX KEEPTTL, so the guest TTL would survive
+  it). A failed projection leaves the record right; the next record-sourced meta write
+  plus a touch, or the rebuild once the old TTL lapses, catches the cache up.
 
 ### 4.5 Host-less sessions: fix a display-name branch
 
@@ -1030,7 +1035,7 @@ reset is not portable to prod and the script never needs it.
 2. **The pro "extended lifespan" gate is vestigial for logged-in hosts** (ruling 2). It
    still sizes the cache TTL and the "expires in" display. Whether the web create keeps
    the picker is a product decision, not for this project; root `CLAUDE.md` § Freemium
-   split must say what lifespan now means.
+   split must say what lifespan now means. (Ruled and shipped since: § 11 item 2.)
 3. **Docs to update at the cutover**: root `CLAUDE.md` § Trust model gains "for a
    logged-in identity in a Postgres-backed session, authorization derives from committed
    Postgres state; the cache can deny, never grant" and § Two-tier persistence gets the
@@ -1223,13 +1228,23 @@ the behaviour change and is tested as the tree it is. Branch `feature/redis-rehy
 for each; the diffs touch auth-adjacent code (bans, roles, delete authorisation, account
 deletion) and schema, so each gets the reviewer rule.
 
-## 11. Open
+## 11. Open items (all RULED, owner, 2026-11-08)
 
-1. `/me/sessions` live definition (§ 8.1) — v1 keeps today's behaviour; needs a ruling
-   before the carousel is touched.
-2. Web lifespan picker after ruling 2 (§ 8.2) — product call, separate.
-3. Whether to give the anonymous-taster bounce a "moment restored, please rejoin" line
-   (§ 8.4) — UI copy, separate.
+1. `/me/sessions` live definition (§ 8.1). **RULED: no change.** `status` and `pinned`
+   stay on Redis presence (`ttlAlive`): wipes are rare, the operator script warms after
+   one, and item 2 removes natural expiry for every logged-in moment.
+2. Web lifespan picker after ruling 2 (§ 8.2). **RULED and SHIPPED** (branch
+   `feature/web-lifespan-unlimited`): every logged-in create, web and native, is
+   `unlimited` (a body `lifespan` is ignored); PROMOTION sets the row to `unlimited` and
+   re-stamps every key's TTL after COMMIT (`expireSessionKeys`, fenced, inside
+   `ensurePromoted`'s projection); anonymous (Redis-only) moments keep 48h and any other
+   value is a 403. The picker is gone from the web create, the web settings and the
+   anonymous lobby (replaced there by "Guest moments last 48 hours. Sign in to keep
+   yours."). Pro no longer includes a lifespan. Existing moments keep their stored
+   lifespan (no backfill); the settings PATCH `lifespan` path is vestigial, kept for API
+   stability.
+3. The anonymous-taster bounce after a wipe (§ 8.4). **RULED: no change** (no "moment
+   restored, please rejoin" copy).
 
 ## 12. Review findings and resolutions
 

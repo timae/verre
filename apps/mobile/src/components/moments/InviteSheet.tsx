@@ -126,7 +126,7 @@ export function InviteSheet({
             {/* DEVIATION (Simon): design specs a fixed WHITE 180×180 frame with
                 dark modules; we keep the theme-matched QrCode (contrast-clamped). */}
             <QrCode value={joinUrl} size={168} />
-            <VText variant="small" color="inkSoft">Scan to join — or use the code</VText>
+            <VText variant="small" color="inkSoft">Scan to join, or use the code</VText>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Copy invite link"

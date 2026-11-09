@@ -322,8 +322,8 @@ export type CreateMomentBody = {
   description?: string;
   link?: string;
   blind?: boolean; // pro-gated server-side
-  // No lifespan: native creates default to 'unlimited' server-side (keyed on
-  // the Better Auth session — the unspoofable caller class).
+  // No lifespan: every logged-in create is 'unlimited' server-side (a body
+  // lifespan is ignored; root CLAUDE.md § Freemium split).
 };
 
 export async function createMoment(body: CreateMomentBody): Promise<{ code: string }> {
@@ -473,10 +473,10 @@ export async function hideAllWines(code: string): Promise<void> {
 
 // 02f settings edit. Host-only PATCH; every field is optional — send only
 // what changed. The server (app/api/session/[code]/settings) shares the detail
-// validators with create via lib/sessionFields.ts, pro-gates blind + lifespan,
+// validators with create via lib/sessionFields.ts, pro-gates blind + showProvenance,
 // and runs the hardened image pipeline on coverPhoto. coverPhoto: null removes
 // the cover (reclaims the prior S3 bytes); a data URL replaces it. Mobile never
-// sends lifespan (native creates stay 'unlimited' — create parity).
+// sends lifespan (vestigial server-side: every logged-in moment is 'unlimited').
 export type MomentSettingsBody = {
   // name is required — an empty/whitespace value is rejected server-side
   // (lib/sessionFields.ts) and the client guards block it before send.

@@ -63,7 +63,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
         window.location.href = `${joinPath(code)}?removed=1`
         return
       }
-      setError(data.error || 'Could not join — session may have expired')
+      setError(data.error || 'Could not join. The session may have expired.')
       return
     }
     const data = await res.json()

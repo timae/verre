@@ -87,23 +87,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'blind tastings require a pro account' }, { status: 403 })
   }
 
-  // Lifespan beyond 48h requires pro ON WEB. Native callers are exempt and
-  // default to 'unlimited' — app-created moments are durable (amends the
-  // freemium split; see root CLAUDE.md). `authSource` is set by which
-  // credential VALIDATED in resolveUser (Better Auth cookie), never by a
-  // client-controlled header. Caveat (root CLAUDE.md): a BA session is
-  // self-issuable from any client until App Attest lands — accepted.
-  // Reject loudly rather than silently downgrading — a non-pro web caller
-  // asking for 72h is making an explicit choice we shouldn't honor and
-  // shouldn't quietly substitute.
-  const isNative = session?.authSource === 'native'
-  if (lifespan !== undefined && lifespan !== null && (typeof lifespan !== 'string' || !['48h', '72h', '1w', 'unlimited'].includes(lifespan))) {
-    return NextResponse.json({ error: 'unsupported lifespan' }, { status: 400 })
+  // Lifespan (root CLAUDE.md § Freemium split): a logged-in create — web or
+  // native — is Postgres-backed, so it is reopenable forever and its lifespan
+  // only sizes the cache TTL: always 'unlimited', and a `lifespan` in the body
+  // is IGNORED (a web client from before the picker was removed keeps working).
+  // An anonymous create is Redis-only, so its 48h is real: anything else is
+  // refused loudly rather than silently substituted.
+  if (!session?.user && lifespan !== undefined && lifespan !== null && lifespan !== '48h') {
+    return NextResponse.json({ error: 'longer lifespans need an account' }, { status: 403 })
   }
-  if (lifespan && lifespan !== '48h' && !isPro && !isNative) {
-    return NextResponse.json({ error: 'extended lifespan requires a pro account' }, { status: 403 })
-  }
-  const resolvedLifespan = typeof lifespan === 'string' && lifespan ? lifespan : isNative ? 'unlimited' : '48h'
+  const resolvedLifespan = session?.user ? 'unlimited' : '48h'
   const sessionTTL = lifespanTTL(resolvedLifespan)
 
   // Cover photo is logged-in only: an anonymous session has no Postgres row,

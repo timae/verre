@@ -5,7 +5,6 @@ import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
-import { LifespanSelector } from '@/components/session/LifespanSelector'
 import { authedFetch } from '@/lib/authedFetch'
 import { setAnonToken } from '@/lib/sessionFetch'
 import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE } from '@verre/core'
@@ -25,7 +24,6 @@ export function MeDashboard({ user }: { user: User }) {
   const [dateFromDate, setDateFromDate] = useState('')
   const [dateFromTime, setDateFromTime] = useState('')
   const [blind, setBlind] = useState(false)
-  const [lifespan, setLifespan] = useState('48h')
   const [joinCode, setJoinCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [createError, setCreateError] = useState('')
@@ -76,7 +74,7 @@ export function MeDashboard({ user }: { user: User }) {
       body: JSON.stringify({
         hostDisplayName: name.trim(), sessionName: sessionName.trim(),
         dateFrom: dateFromISO, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        blind: isPro && blind, lifespan,
+        blind: isPro && blind,
       }),
     })
     setLoading(false)
@@ -103,7 +101,7 @@ export function MeDashboard({ user }: { user: User }) {
       switch (v.error) {
         case 'empty':           setJoinError('Enter a code'); return
         case 'invalid-length':  setJoinError('Code must be 4 or 8 characters'); return
-        case 'invalid-char':    setJoinError('Your code contains invalid characters — check for typos'); return
+        case 'invalid-char':    setJoinError('Your code contains invalid characters. Check for typos.'); return
       }
     }
     const code = v.code
@@ -161,7 +159,6 @@ export function MeDashboard({ user }: { user: User }) {
               <input className={`fi${badFields.start ? ' error' : ''}`} aria-invalid={badFields.start || undefined} type="time" value={dateFromTime} onChange={e => { setDateFromTime(e.target.value); if (badFields.start && e.target.value && dateFromDate) fixField('start') }} style={{width:110,flexShrink:0}} />
             </div>
           </div>
-          <LifespanSelector value={lifespan} onChange={setLifespan} isPro={isPro} />
 
           {/* Blind tasting toggle */}
           <div
@@ -172,7 +169,7 @@ export function MeDashboard({ user }: { user: User }) {
                 🙈 Blind tasting
                 {!isPro && <span style={{fontSize:9,background:'var(--bg3)',border:'1px solid var(--border2)',borderRadius:3,padding:'1px 5px',letterSpacing:'0.08em',textTransform:'uppercase',color:'var(--fg-dim)'}}>pro</span>}
               </div>
-              <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only — you reveal after</div>
+              <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>Tasters see numbers only. You reveal after.</div>
               {blind && <div style={{fontSize:10,color:'var(--fg-dim)',opacity:0.8,marginTop:4,maxWidth:280}}>{BLIND_FEED_REVEAL_NOTE}</div>}
             </div>
             <div style={{width:36,height:20,borderRadius:10,background: blind ? 'var(--accent)' : 'var(--bg4)',border:'1px solid var(--border2)',position:'relative',transition:'background .2s',flexShrink:0}}>

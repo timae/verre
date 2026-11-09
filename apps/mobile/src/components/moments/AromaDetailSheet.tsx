@@ -495,7 +495,7 @@ function TasteStat({ label, value, score, ties, onPress }: { label: string; valu
 
 export type TasteDetailKind = 'alike' | 'different' | 'closest' | 'individual';
 const TASTE_DETAIL: Record<TasteDetailKind, { title: string; method: string }> = {
-  alike: { title: 'Most Alike', method: 'Every pair ranked by overlap — exact shared aromas count most, shared families least.' },
+  alike: { title: 'Most Alike', method: 'Every pair ranked by overlap: exact shared aromas count most, shared families least.' },
   different: { title: 'Most Different', method: 'Every pair ranked from the least overlap up.' },
   closest: { title: 'Closest to Group', method: 'Each person ranked by their average overlap with every other taster.' },
   individual: { title: 'Most Individual', method: 'Each person ranked from the lowest average overlap up.' },
@@ -540,7 +540,7 @@ function TasteEvidence({ a, b }: { a: AromaContributor; b: AromaContributor }) {
   if (!ev.exact.length && !ev.leaves.length && !ev.related.length) {
     return (
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_500Medium', color: theme.inkSoft }}>
-        No shared or related aromas — two completely different reads.
+        No shared or related aromas. Two completely different reads.
       </VText>
     );
   }

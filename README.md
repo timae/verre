@@ -12,7 +12,7 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Attach bottle photos for the session list, detail view, and export
 - Edit wines after creation and reorder the lineup during the tasting
 - Share a join link or QR code for fast session entry
-- Sessions auto-expire after their chosen lifespan (48h default)
+- Guest (anonymous) sessions last 48 hours; a session anyone signed in has touched is kept for good
 - Save wines you liked across sessions, with full ratings and notes preserved
 - Earn badges and XP across all your tastings
 - Hall of Fame for every 5★ rating
@@ -237,7 +237,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | /api/session | Create session (body: `{hostDisplayName, sessionName, dateFrom, blind?, lifespan?, category?, coverPhoto?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `sessionName` + `dateFrom` **required** for every caller; `coverPhoto` is a base64 data URL, logged-in only; native callers default to unlimited lifespan) → `{code, id, displayName, category, coverPhotoUrl?, anonToken?}` |
+| POST | /api/session | Create session (body: `{hostDisplayName, sessionName, dateFrom, blind?, lifespan?, category?, coverPhoto?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `sessionName` + `dateFrom` **required** for every caller; `coverPhoto` is a base64 data URL, logged-in only; lifespan: logged-in callers always get `unlimited` (a body `lifespan` is ignored), anonymous callers get `48h` and any other value is a 403) → `{code, id, displayName, lifespan, category, coverPhotoUrl?, anonToken?}` |
 | POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
@@ -245,7 +245,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
-| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/lifespan; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
+| PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/showProvenance; `lifespan` is vestigial, no client sends it; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
 | PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
 | GET | /api/session/:code/bans | List banned identities (host + cohost) |

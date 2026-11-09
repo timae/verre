@@ -156,7 +156,7 @@ export function SessionAnonMenu({ displayName, code, role, onRenamed }: Props) {
                 : 'var(--fg-dim)',
             }}>
               {flash === 'changed' ? '✓ changed'
-                : flash === 'unchanged' ? '— unchanged'
+                : flash === 'unchanged' ? '· unchanged'
                 : 'session-only name'}
             </div>
             {editing && (

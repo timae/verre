@@ -22,7 +22,8 @@ import { dirname, join as pjoin } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { NextRequest } from 'next/server'
 import { prisma } from '../../lib/prisma.ts'
-import { redis, k, scanKeys } from '../../lib/redis.ts'
+import { redis, k, scanKeys, lifespanTTL, touchHooks, touchWithMeta } from '../../lib/redis.ts'
+import type { SessionMeta } from '../../lib/session.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO = pjoin(HERE, '..', '..')
@@ -96,11 +97,12 @@ const unbanRoute = await import('../../app/api/session/[code]/bans/[identityId]/
 const leaveRoute = await import('../../app/api/session/[code]/leave/route.ts')
 const settingsRoute = await import('../../app/api/session/[code]/settings/route.ts')
 const checkinRoute = await import('../../app/api/checkins/[id]/route.ts')
+const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/bookmark/route.ts')
 const { ensureSessionLive, SESSION_META_FIELDS, WINE_META_FIELDS } = await import('../../lib/sessionRehydrate.ts')
 const { mutationHooks, scopedInvalidate, ContractCold } = await import('../../lib/sessionMutation.ts')
 const { acquireSessionLock, releaseSessionLock, sessionLockKey, fencedExec, lockTiming, LockLost } = await import('../../lib/sessionLock.ts')
 const { deleteAccountDurable } = await import('../../lib/accountDelete.ts')
-const { mutateWines } = await import('../../lib/session.ts')
+const { mutateWines, ensurePromoted } = await import('../../lib/session.ts')
 const { sessionIsOver } = await import('../../lib/sessionFeedWines.ts')
 
 // ── Harness ─────────────────────────────────────────────────────────────────
@@ -163,7 +165,7 @@ const editWine = (code: string, actor: Actor, wineId: string, body: Record<strin
 const liveRow = async (code: string) => (await prisma.$queryRaw<{ id: number; created_at: Date; host_user_id: number | null }[]>`
   SELECT id, created_at, host_user_id FROM sessions WHERE code = ${code} AND deleted_at IS NULL`)[0]
 const redisWines = async (code: string) => JSON.parse((await redis.get(k.wines(code))) ?? '[]') as { id: string; name: string; revealedAt?: string | null; addedByIdentityId?: string }[]
-const metaOf = async (code: string) => JSON.parse((await redis.get(k.meta(code))) ?? 'null') as Record<string, unknown> | null
+const metaOf = async (code: string) => JSON.parse((await redis.get(k.meta(code))) ?? 'null') as (SessionMeta & Record<string, unknown>) | null
 async function wipeCache(code: string) { const ks = await scanKeys(`s:${code}:*`); if (ks.length) await redis.del(ks) }
 function gate() { let open!: () => void; const p = new Promise<void>(r => { open = r }); return { p, open } }
 async function stillPending(p: Promise<unknown>, ms = 600): Promise<boolean> {
@@ -371,7 +373,7 @@ async function grants() {
   check('…settings PATCH by that user → 403', (await settings(s.code, { cookie: T.cookie }, { name: 'hijack' })).status === 403)
   check('…wine delete → 403', (await delWine(s.code, { cookie: T.cookie }, w)).status === 403 && (await redisWines(s.code)).some(x => x.id === w))
   const wg = await winesGet(s.code, { cookie: T.cookie })
-  check('…blind wines GET is redacted', (wg.json as unknown as { _blind?: boolean; name: string }[]).find(x => x.id === w)?._blind === true)
+  check('…blind wines GET is redacted', (wg.json as unknown as { id: string; _blind?: boolean; name: string }[]).find(x => x.id === w)?._blind === true)
   // (2) the same with the commit succeeding → 200
   const sr2 = await setRole(s.code, { cookie: H.cookie }, `u:${V.id}`, 'co_host')
   const st2 = await settings(s.code, { cookie: V.cookie }, { name: 'renamed by cohost' })
@@ -1979,7 +1981,106 @@ async function operatorScript() {
     && ok16.lines.slice(0, 2).every(l => typeof l.code === 'string') && !!ok16.summary && (ok16.summary.selected as number) === 2, ok16.out)
 }
 
-const SECTIONS: Record<string, () => Promise<unknown>> = { roundTrip, grants, idempotent, nxxx, b1, fencing, deletions, d1, b2, tombstones, belts, recycling, generation, moderation, checkConstraint, replan, round2, round3, round4, round5, round6, operatorScript }
+// ── Web lifespan → unlimited (root CLAUDE.md § Freemium split) ──────────────
+// The suite's logged-in actors hold Better Auth cookies (authSource 'native');
+// the NextAuth path is stubbed anonymous here, so a WEB cookie is not exercised.
+// The create rule is one expression for both login kinds (`session?.user`).
+async function lifespan() {
+  section('web lifespan → unlimited — logged-in create, anonymous create, promotion re-stamps every key')
+  const UNL = lifespanTTL('unlimited'), H48 = lifespanTTL('48h')
+  const lifespanCol = async (code: string) => (await prisma.$queryRaw<{ lifespan: string | null }[]>`
+    SELECT lifespan FROM sessions WHERE code = ${code} AND deleted_at IS NULL`)[0]?.lifespan
+  // Every s:{CODE}:* key at the lifespan's TTL (±30 s), and at least `min` keys.
+  const allAt = async (code: string, life: number, min: number) => {
+    const ts = await Promise.all((await scanKeys(`s:${code}:*`)).map(async key => [key, await redis.ttl(key)] as const))
+    const off = ts.filter(([, t]) => t < life - 30 || t > life)
+    return { ok: ts.length >= min && off.length === 0, n: ts.length, off }
+  }
+
+  // ── 1. logged-in create (a non-pro host) ──
+  const H = await mkUser('Host LS')
+  const a = await createSession({ cookie: H.cookie })
+  const ka = await allAt(a.code, UNL, 3)
+  check('(1) logged-in create: row + meta unlimited, every key TTL = unlimited', await lifespanCol(a.code) === 'unlimited' && (await metaOf(a.code))?.lifespan === 'unlimited' && ka.ok, ka)
+  for (const l of ['48h', 'bogus']) {
+    const b = await createSession({ cookie: H.cookie }, { lifespan: l })
+    const kb = await allAt(b.code, UNL, 3)
+    check(`(1b) a logged-in caller's lifespan ${JSON.stringify(l)} is ignored → unlimited`, await lifespanCol(b.code) === 'unlimited' && (await metaOf(b.code))?.lifespan === 'unlimited' && kb.ok, kb)
+  }
+
+  // ── 2. anonymous create ──
+  const g = await createSession({})
+  const kg = await allAt(g.code, H48, 4)
+  check('(2) anonymous create: Redis-only, meta 48h, every key TTL = 48h', !(await liveRow(g.code)) && (await metaOf(g.code))?.lifespan === '48h' && kg.ok, kg)
+  const g2 = await createSession({}, { lifespan: '48h' })
+  check('(2b) an anonymous caller may send 48h', (await metaOf(g2.code))?.lifespan === '48h')
+  for (const l of ['72h', '1w', 'unlimited', 'bogus', 7]) {
+    await resetLimits()
+    const r = await call(sessionRoute.POST, 'POST', '/api/session', {}, { hostDisplayName: 'Guest', sessionName: `${TAG} guest`, dateFrom, lifespan: l })
+    if (r.status === 200) created.push(r.json.code as string)
+    check(`(2c) anonymous lifespan ${JSON.stringify(l)} → 403, no pro wording`, r.status === 403 && !/pro/i.test(String(r.json?.error)), [r.status, r.json])
+  }
+
+  // ── 3. promotion alone (lib): nothing touches the keys after it ──
+  const p = await createSession({})
+  const pw = await addWine(p.code, { anon: p.anon }, 'Guest wine')
+  await rate(p.code, { anon: p.anon }, pw, 3)
+  const kp0 = await allAt(p.code, H48, 5)
+  check('setup: a guest moment with a lineup + a rating, every key at 48h', !(await liveRow(p.code)) && kp0.ok, kp0)
+  await ensurePromoted(p.code, (await metaOf(p.code))!)
+  check('(3) promotion: row + meta unlimited', await lifespanCol(p.code) === 'unlimited' && (await metaOf(p.code))?.lifespan === 'unlimited', { col: await lifespanCol(p.code), meta: (await metaOf(p.code))?.lifespan })
+  const kp = await allAt(p.code, UNL, 5)
+  check('(3) …and EVERY key re-stamped to unlimited (meta is XX KEEPTTL: without the fenced EXPIRE the guest TTL survives)', kp.ok, kp)
+
+  // ── 4. promotion through a route that never touches afterwards: a logged-in bookmark ──
+  const q = await createSession({})
+  const qw = await addWine(q.code, { anon: q.anon }, 'Guest wine')
+  const V = await mkUser('Visitor LS')
+  await join(q.code, { cookie: V.cookie }, 'Visitor LS')
+  check('setup: a logged-in /join does not promote', !(await liveRow(q.code)))
+  const bm = await call(bookmarkRoute.POST, 'POST', `/api/session/${q.code}/wines/${qw}/bookmark`, { cookie: V.cookie }, {}, { code: q.code, wineId: qw })
+  const kq = await allAt(q.code, UNL, 4)
+  check('(4) a logged-in bookmark promotes: row unlimited, every key re-stamped', bm.status === 200 && await lifespanCol(q.code) === 'unlimited' && kq.ok, { bm: [bm.status, bm.json], kq })
+
+  // ── 5. the ordinary entry: a logged-in visit ──
+  const v = await createSession({})
+  await addWine(v.code, { anon: v.anon }, 'Guest wine')
+  const W = await mkUser('Visitor LS2')
+  await enter(v.code, { cookie: W.cookie }, 'Visitor LS2')
+  const kv = await allAt(v.code, UNL, 4)
+  check('(5) a logged-in visit promotes: row + meta unlimited, every key TTL = unlimited', await lifespanCol(v.code) === 'unlimited' && (await metaOf(v.code))?.lifespan === 'unlimited' && kv.ok, kv)
+
+  // ── 6. a failed promotion projection invalidates (Codex r1-1): the work created
+  //       the row, so the contract's own failure path (keyed on ctx.row) does not ──
+  const f = await createSession({})
+  await addWine(f.code, { anon: f.anon }, 'Guest wine')
+  const prev = mutationHooks.at
+  mutationHooks.at = async (pt, c, l) => { if (pt === 'beforeProjection' && c === f.code && l === 'promote') await redis.set(sessionLockKey(f.code), 'stolen', { XX: true, KEEPTTL: true }) }
+  try { await ensurePromoted(f.code, (await metaOf(f.code))!) } finally { mutationHooks.at = prev }
+  await redis.del(sessionLockKey(f.code))
+  check('(6) promotion committed though its projection failed: row unlimited, the guest meta invalidated (nothing left to renew 48h)',
+    await lifespanCol(f.code) === 'unlimited' && !(await redis.exists(k.meta(f.code))), { col: await lifespanCol(f.code), meta: await metaOf(f.code) })
+  const opened6 = await ensureSessionLive(f.code)
+  const kf = await allAt(f.code, UNL, 4)
+  check('(6) …the next open rebuilds it: meta unlimited, every key re-stamped', opened6 === 'live' && (await metaOf(f.code))?.lifespan === 'unlimited' && kf.ok, { opened6, kf })
+
+  // ── 7. a touch that read the guest 48h before the promotion cannot put it back
+  //       (Codex r1-2): the touch's EXPIREs re-check meta atomically ──
+  const t = await createSession({})
+  await addWine(t.code, { anon: t.anon }, 'Guest wine')
+  const entered = gate(), release = gate()
+  touchHooks.afterRead = async (c) => { if (c !== t.code) return; touchHooks.afterRead = async () => {}; entered.open(); await release.p }
+  const touching = touchWithMeta(t.code)
+  await entered.p
+  await ensurePromoted(t.code, (await metaOf(t.code))!)
+  check('setup: the promotion stamped unlimited while the touch held its 48h read', (await allAt(t.code, UNL, 4)).ok)
+  release.open()
+  await touching
+  const kt = await allAt(t.code, UNL, 4)
+  check('(7) …the stale touch re-reads meta and stamps unlimited, never the 48h it read', kt.ok, kt)
+}
+
+const SECTIONS: Record<string, () => Promise<unknown>> = { roundTrip, grants, idempotent, nxxx, b1, fencing, deletions, d1, b2, tombstones, belts, recycling, generation, moderation, checkConstraint, replan, round2, round3, round4, round5, round6, operatorScript, lifespan }
 try {
   noHooks()
   for (const [name, fn] of Object.entries(SECTIONS)) {

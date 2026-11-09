@@ -83,7 +83,7 @@ function DetailsForm({
     const picked = await pickPhoto();
     if (!picked) return;
     if ('failed' in picked) {
-      setCoverError("Couldn't use that photo — try another.");
+      setCoverError("Couldn't use that photo. Try another.");
       return;
     }
     setCoverData(picked.dataUrl);

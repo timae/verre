@@ -246,7 +246,7 @@ export default function Attributions() {
               }}
             >
               <VText variant="caption" color="inkSoft" style={{ lineHeight: 17 }}>
-                Showing the version included with this app — these details couldn&rsquo;t be
+                Showing the version included with this app. These details couldn&rsquo;t be
                 refreshed just now. The latest version is published here:
               </VText>
               {/* 🔒 The link is what makes the offline contract honest (Simon,

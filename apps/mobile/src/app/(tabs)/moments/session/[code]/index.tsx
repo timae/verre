@@ -1645,7 +1645,7 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
       <Pressable
         ref={btnRef}
         accessibilityRole="button"
-        accessibilityLabel={`Reveal controls — ${countLabel}`}
+        accessibilityLabel={`Reveal controls, ${countLabel}`}
         onPress={openMenu}
         hitSlop={{ top: 4, bottom: 4 }}
         style={({ pressed }) => ({
@@ -1688,7 +1688,7 @@ function LineupToolbar({ toolbar }: { toolbar: LuToolbarProps }) {
       <Pressable
         ref={sortBtnRef}
         accessibilityRole="button"
-        accessibilityLabel={`Sort impressions — ${sortLabel}`}
+        accessibilityLabel={`Sort impressions, ${sortLabel}`}
         onPress={openSortMenu}
         hitSlop={{ top: 4, bottom: 4 }}
         style={({ pressed }) => ({
@@ -1985,7 +1985,7 @@ function EmptyLineup({ canAdd, onAdd }: { canAdd: boolean; onAdd: () => void }) 
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead') }}>Nothing in the line-up yet</VText>
       <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 260, marginTop: 6 }}>
         {canAdd
-          ? "Add the first thing you're tasting — a bottle, a cup, a plate."
+          ? "Add the first thing you're tasting: a bottle, a cup, a plate."
           : 'The host is still putting the line-up together.'}
       </VText>
       {canAdd ? (
@@ -2127,7 +2127,7 @@ function LuRow({
             accessibilityLabel={
               revealedToGuests ? `Hide impression ${index + 1} from guests`
               : armed ? `Tap again to reveal impression ${index + 1}`
-              : `Reveal impression ${index + 1} — tap twice`
+              : `Reveal impression ${index + 1}, tap twice`
             }
             disabled={revealBusy}
             onPress={() => (revealedToGuests ? reveal.onHideOne(wine.id) : reveal.onThumbTap(wine.id))}
@@ -2162,7 +2162,7 @@ function LuRow({
             // arm, tap again = reveal.
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={armed ? `Tap again to reveal ${wine.name}` : `Reveal ${wine.name} — tap twice`}
+              accessibilityLabel={armed ? `Tap again to reveal ${wine.name}` : `Reveal ${wine.name}, tap twice`}
               disabled={revealBusy}
               onPress={() => reveal.onThumbTap(wine.id)}
               style={{

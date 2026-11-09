@@ -101,17 +101,30 @@ export function lifespanTTL(lifespan?: string): number {
 }
 
 // Refresh the TTL on every key of a session so routine activity (a rating,
-// a wine edit) keeps the whole session alive for its full lifespan. SCAN +
-// pipelined EXPIRE keeps this off `redis.keys` — it's on the rate hot path.
+// a wine edit) keeps the whole session alive for its full lifespan. SCAN keeps
+// this off `redis.keys` — it's on the rate hot path. The EXPIREs run in one
+// script that first checks meta still reads what the TTL was computed from: a
+// touch that read a guest moment's 48h and lost the race to its promotion (meta
+// → 'unlimited', every key re-stamped) would otherwise put the 48h back. A
+// changed meta re-reads; after three tries the touch gives up (best-effort).
+const TOUCH_SCRIPT = `
+local cur = redis.call('GET', KEYS[1]) or ''
+if cur ~= ARGV[1] then return -1 end
+for i = 2, #KEYS do redis.call('EXPIRE', KEYS[i], ARGV[2]) end
+return #KEYS - 1`
+// Test seam (scripts/tests): runs between the meta read and the script.
+export const touchHooks: { afterRead: (code: string) => Promise<void> } = { afterRead: async () => {} }
+
 export async function touchWithMeta(code: string) {
-  const raw = await redis.get(k.meta(code))
-  const meta = raw ? JSON.parse(raw) : {}
-  const ttl = lifespanTTL(meta.lifespan)
-  const keys = await scanKeys(`s:${code}:*`)
-  if (keys.length === 0) return
-  const tx = redis.multi()
-  for (const key of keys) tx.expire(key, ttl)
-  await tx.exec()
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const raw = await redis.get(k.meta(code))
+    const ttl = lifespanTTL(raw ? JSON.parse(raw).lifespan : undefined)
+    const keys = await scanKeys(`s:${code}:*`)
+    if (keys.length === 0) return
+    await touchHooks.afterRead(code)
+    const res = Number(await redis.eval(TOUCH_SCRIPT, { keys: [k.meta(code), ...keys], arguments: [raw ?? '', String(ttl)] }))
+    if (res !== -1) return
+  }
 }
 
 // Record THIS user's last activity in a session (visit + in-moment actions).

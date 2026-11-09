@@ -7,7 +7,7 @@ interface Props {
   label: string
   // Label shown after the first click (e.g. "tap again to confirm"). Defaults to "tap again to confirm".
   confirmLabel?: string
-  // Label shown briefly when onConfirm rejects. Defaults to "failed — tap to retry".
+  // Label shown briefly when onConfirm rejects. Defaults to "failed, tap to retry".
   failedLabel?: string
   // Seconds before the armed (or failed) state reverts. Defaults to 3.
   armedSeconds?: number
@@ -22,11 +22,11 @@ interface Props {
 // actions stay inside the visual style of the app.
 //
 // If onConfirm rejects (network failure, server 5xx, etc.) the button
-// surfaces a transient "failed — tap to retry" state. The user can tap
+// surfaces a transient "failed, tap to retry" state. The user can tap
 // again to re-arm and try once more — no silent failure.
 export function ConfirmDeleteButton({
   onConfirm, label, confirmLabel = 'tap again to confirm',
-  failedLabel = 'failed — tap to retry',
+  failedLabel = 'failed, tap to retry',
   armedSeconds = 3, className = 'btn-del', disabled,
 }: Props) {
   const [state, setState] = useState<'idle' | 'armed' | 'pending' | 'failed'>('idle')

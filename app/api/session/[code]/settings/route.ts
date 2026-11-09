@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
-import { k, lifespanTTL, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, sessionSettingsColumns, type SessionMeta } from '@/lib/session'
+import { k } from '@/lib/redis'
+import { isHostByIdentity, sessionSettingsColumns, expireSessionKeys, type SessionMeta } from '@/lib/session'
 import { applySessionFields } from '@/lib/sessionFields'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
@@ -72,7 +72,10 @@ function applySettings(base: SessionMeta, body: Record<string, unknown>, isPro: 
     meta.showProvenance = newShow
   }
   if (body.lifespan !== undefined) {
-    // Same allow-list as create — a junk string would map to 48h silently.
+    // Vestigial: no client sends `lifespan` any more (logged-in creates and
+    // promotions are 'unlimited', and a guest moment's 48h is not editable).
+    // Kept unchanged for API stability. Allow-list: a junk string would map to
+    // 48h silently.
     if (typeof body.lifespan !== 'string' || !['48h', '72h', '1w', 'unlimited'].includes(body.lifespan)) {
       throw refuse(400, 'unsupported lifespan')
     }
@@ -173,12 +176,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
         return metaFromRecord((await readLiveRow(tx, c))!, await readRecordRoles(tx, c), ctx.meta)
       }
       await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(next), { XX: true, KEEPTTL: true }) })
-      if (next.lifespan !== base.lifespan) await expireAll(ctx.fence!, c, next.lifespan)
+      if (next.lifespan !== base.lifespan) await expireSessionKeys(ctx.fence!, c, next.lifespan)
       return next
     }, async (ctx, next) => {
       if (!ctx.row) return
       await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(next), { XX: true, KEEPTTL: true }) })
-      if (next.lifespan !== ctx.meta!.lifespan) await expireAll(ctx.fence!, c, next.lifespan)
+      if (next.lifespan !== ctx.meta!.lifespan) await expireSessionKeys(ctx.fence!, c, next.lifespan)
     })
   } catch (err) {
     if (newCoverUrl) reclaimImage(newCoverUrl).catch(() => {})
@@ -186,12 +189,4 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
   }
   if (newCoverUrl !== undefined && prior && prior !== newCoverUrl) reclaimImage(prior).catch(() => {})
   return NextResponse.json({ ok: true, meta: result })
-}
-
-// A lifespan change re-stamps every key of the session to the new TTL, fenced
-// (the meta writes themselves are XX KEEPTTL — mechanism 1).
-async function expireAll(fence: NonNullable<import('@/lib/sessionMutation').MutationCtx['fence']>, c: string, lifespan?: string) {
-  const ttl = lifespanTTL(lifespan)
-  const keys = await scanKeys(`s:${c}:*`)
-  if (keys.length) await fence.exec(m => { for (const key of keys) m.expire(key, ttl) })
 }

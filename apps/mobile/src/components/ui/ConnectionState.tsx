@@ -89,7 +89,7 @@ export function ConnectionBanner({
   // and a long string truncates on narrow devices. States the problem + the
   // action. NOTE: the default names "tap to retry", so callers that render this
   // WITHOUT an onRetry (none today) should pass their own label.
-  label = "Can't reach server — tap to retry",
+  label = "Can't reach server. Tap to retry.",
   onRetry,
 }: {
   label?: string;
@@ -147,7 +147,7 @@ export function connectionView(isError: boolean, hasData: boolean): 'error' | 'b
 // trade-off for a transient error state (recovers within a poll cycle).
 //
 // Usage: {showReconnecting ? <ReconnectingBar /> : null}
-export function ReconnectingBar({ label = "Can't reach server — reconnecting…" }: { label?: string }) {
+export function ReconnectingBar({ label = "Can't reach server. Reconnecting…" }: { label?: string }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   return (

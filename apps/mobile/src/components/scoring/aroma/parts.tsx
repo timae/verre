@@ -550,7 +550,7 @@ export function CapHint({ show }: { show: boolean }) {
   if (!show) return null;
   return (
     <VText variant="small" style={{ color: theme.accent }}>
-      Limit reached — an impression holds up to {AROMA_SELECTION_CAP} aromas.
+      Limit reached: an impression holds up to {AROMA_SELECTION_CAP} aromas.
     </VText>
   );
 }
@@ -908,7 +908,7 @@ export function ModifierSelectButton({
       <Pressable
         ref={btnRef}
         accessibilityRole="button"
-        accessibilityLabel={a && m ? `Modifier — ${aromaModifierDisplay(a, m)}` : 'Add a modifier'}
+        accessibilityLabel={a && m ? `Modifier: ${aromaModifierDisplay(a, m)}` : 'Add a modifier'}
         disabled={off}
         onPress={openMenu}
         hitSlop={{ top: 4, bottom: 4 }}

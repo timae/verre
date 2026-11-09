@@ -147,7 +147,7 @@ function RevealForm({
         <ToggleRow
           title="Blind for All"
           proBadge
-          subtitle="Even you cannot see them — you still control reveals"
+          subtitle="Even you cannot see them. You still control reveals."
           value={blind && blindForEveryone}
           onChange={setBlindForEveryone}
           disabled={!blind}

@@ -87,7 +87,7 @@ export default function CheckinDetails() {
     const picked = await pickPhoto(MAX_COVER_BYTES);
     if (!picked) return; // cancelled
     if ('failed' in picked) {
-      setPhotoError("Couldn't use that photo — try another.");
+      setPhotoError("Couldn't use that photo. Try another.");
       return;
     }
     setPhoto(picked);
@@ -150,7 +150,10 @@ export default function CheckinDetails() {
             <TextField
               ref={vintageRef}
               label="Vintage"
-              placeholder="Year / NV"
+              // "Year" is the handoff spec: "Year / NV" overflowed the 76-wide field.
+              // NV stays typeable; the hint carries it for VoiceOver.
+              placeholder="Year"
+              accessibilityHint="A year, or NV for non-vintage."
               value={vintage}
               onChangeText={(t) => setVintage(filterVintageInput(t))}
               autoCapitalize="characters"
@@ -312,7 +315,7 @@ function PhotoPicker({
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', marginTop: 4 }}>Add Photo</VText>
       {/* Warmer than add.tsx's "a label or pour" — Simon: the caption should
           feel connected to the moment, not like a spec of accepted subjects. */}
-      <VText variant="caption" color="inkSoft">optional — capture the moment</VText>
+      <VText variant="caption" color="inkSoft">Optional. Capture the moment.</VText>
     </Pressable>
   );
 }

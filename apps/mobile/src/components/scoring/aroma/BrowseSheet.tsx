@@ -37,10 +37,10 @@ type VariantKey = (typeof VARIANTS)[number]['key'];
 
 const HINTS: Record<VariantKey, string> = {
   map: 'Tap or pinch to zoom between families, groups and notes. Drag to roam the map.',
-  rings: 'Turn a ring to choose — the hub reads your pick, the row below adds it.',
-  rail: 'Swipe the rail, tap to drill in — the round mark adds a whole family or group.',
-  canvas: 'Tap a comb to dive into its family — pick a note, then add it.',
-  list: 'Tap a row to open it — the round mark picks a whole family or group.',
+  rings: 'Turn a ring to choose: the hub reads your pick, the row below adds it.',
+  rail: 'Swipe the rail, tap to drill in. The round mark adds a whole family or group.',
+  canvas: 'Tap a comb to dive into its family, pick a note, then add it.',
+  list: 'Tap a row to open it. The round mark picks a whole family or group.',
 };
 
 export function BrowseSheet({

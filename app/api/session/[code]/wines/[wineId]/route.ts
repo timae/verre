@@ -222,7 +222,7 @@ async function reassignBroughtBy({
   showProvenance: boolean
 }): Promise<NextResponse> {
   if (Object.keys(body).some(key => key !== 'broughtByIdentityId')) {
-    return NextResponse.json({ error: 'change who brought it on its own — save other edits separately' }, { status: 400 })
+    return NextResponse.json({ error: 'change who brought it on its own, then save other edits separately' }, { status: 400 })
   }
   if (!isHost) {
     return NextResponse.json({ error: 'only a host or co-host can change who brought an impression' }, { status: 403 })
@@ -252,7 +252,7 @@ async function reassignBroughtBy({
         : true
       if (!targetName || inBans || inKicked || !recordAdmits) throw refuse(400, 'that person is not in this moment')
       if (!ctx.row) {
-        throw refuse(409, 'this moment isn’t saved yet — a signed-in guest needs to rate or join before you can change who brought it')
+        throw refuse(409, 'this moment isn’t saved yet: a signed-in guest needs to rate or join before you can change who brought it')
       }
       const raw = await redis.get(k.wines(c))
       if (raw === null) throw new ContractCold(c)

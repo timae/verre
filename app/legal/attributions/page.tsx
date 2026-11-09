@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import { getAttributions } from '@/lib/attributions'
 
 export const metadata: Metadata = {
-  title: 'Attributions — Verre',
+  title: 'Attributions · Verre',
   description: 'Sources and licences for the wine catalog data used in Verre.',
 }
 

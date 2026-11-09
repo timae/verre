@@ -711,7 +711,7 @@ export function RingsPicker({ ops }: { ops: AromaOps }) {
       />
       {!selId ? (
         <VText variant="small" color="inkFaint" style={{ textAlign: 'center' }}>
-          Turn a ring to pick — stop at a family or group to add the whole thing.
+          Turn a ring to pick. Stop at a family or group to add the whole thing.
         </VText>
       ) : null}
       <CapHint show={pend.capHit} />

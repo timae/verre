@@ -23,6 +23,6 @@ export function openWheelLightbox(ref: RefObject<HTMLDivElement | null>, label: 
   const data = new XMLSerializer().serializeToString(clone)
   const blob = new Blob([data], { type: 'image/svg+xml' })
   const url = URL.createObjectURL(blob)
-  openLightbox(url, label + ' — flavour profile')
+  openLightbox(url, label + ': flavour profile')
   setTimeout(() => URL.revokeObjectURL(url), 60_000)
 }

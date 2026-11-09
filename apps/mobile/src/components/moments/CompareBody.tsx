@@ -292,7 +292,7 @@ export function CompareToolbar({
       {people.length > 1 ? (
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={filtered ? `Choose people — ${visibleCount} of ${people.length} selected` : 'Choose people'}
+          accessibilityLabel={filtered ? `Choose people, ${visibleCount} of ${people.length} selected` : 'Choose people'}
           onPress={onPick}
           hitSlop={{ top: 4, bottom: 4 }}
           style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
@@ -309,7 +309,7 @@ export function CompareToolbar({
       <Pressable
         ref={sortBtn}
         accessibilityRole="button"
-        accessibilityLabel={`Sort impressions — ${sortLabel}`}
+        accessibilityLabel={`Sort impressions, ${sortLabel}`}
         onPress={openSortMenu}
         hitSlop={{ top: 4, bottom: 4 }}
         style={({ pressed }) => ({ ...chip, opacity: pressed ? 0.6 : 1 })}
@@ -1390,7 +1390,7 @@ function ShowAllSheet({
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 }}>
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Showing ${view ? view.l : 'Scores'} — change`}
+            accessibilityLabel={`Showing ${view ? view.l : 'Scores'} , change`}
             hitSlop={{ top: 4, bottom: 4 }}
             onPress={() => setViewSheetOpen(true)}
             style={({ pressed }) => ({
