@@ -226,7 +226,9 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   ✅ **Extensibility confirmed, not asserted:** inserting `('spirit','Spirits')` into `categories` plus `('spirit','grappa',…)` into `category_styles` makes `spirit/grappa` insertable immediately, with no migration.
 
-  ### 📋 OPEN — sequencing: dessert / fortified need our vocabulary to grow FIRST
+  ### ✅ RESOLVED (2026-11-09) — sequencing: dessert / fortified need our vocabulary to grow FIRST
+
+  ✅ **Our half shipped in `20261109120000_catalog_colour_sparkling`**, together with the colour / sparkling / style split it needed (`catalog-colour-sparkling.md`): `wine/dessert` and `wine/fortified` are in `category_styles`, and the maintenance side releases its dessert/fortified products (about 6,570 by then) once we confirm the deploy. The history below is kept as written.
 
   🔒 **Raised by the maintenance side, 2026-08-11.** Our style vocabulary is exactly `wine × {red, white, rose, spark, nonalc}`. Theirs holds **6,455 rows we cannot store**: **2,409 `dessert`** and **4,046 `fortified`**. Their contract doc has these ingested, flagged, and excluded from export *"until the app style set grows — flip the export filter to release them, no re-ingest."*
 
@@ -288,7 +290,7 @@ Catalog reference data arrives through the app-owned, authenticated import contr
 
   Staged failures currently behind the gate: predicate changed; predicate function body swapped; fold body swapped; array-fold body swapped; generated column dropped; generated-column block absent; dependency record absent; structural constraint edited into a rejecting one; contract constraint changed; new unclassified constraint; unmigrated database. Each is verified to exit non-zero, and the baseline plus every restore is verified to exit zero — a gate that never passes is as useless as one that never fails.
 
-  ⚠️ **Nothing has shipped against this contract yet** — the first import has not run, so no consumer holds an earlier shape. The payload resulting from the migrations below is therefore declared **contract v1**; the table is *migration history explaining how v1 was reached*, not a series of version bumps. (The GiST/GIN index swap is not a wire-contract change at all — it is listed for completeness of the schema story.) The first real bump will be the first change made **after** an import has run.
+  ⚠️ **Nothing has shipped against this contract yet** — the first import has not run, so no consumer holds an earlier shape. The payload resulting from the migrations below is therefore declared **contract v1**; the table is *migration history explaining how v1 was reached*, not a series of version bumps. (The GiST/GIN index swap is not a wire-contract change at all — it is listed for completeness of the schema story.) The first real bump will be the first change made **after** an import has run. ⚠️ **Superseded 2026-11-09:** **contract v2** (`20261109120000`) is declared before any import has run, because the maintenance side builds against the declared shape and the narrowed `style` rejects payloads v1 accepted (`catalog-colour-sparkling.md` § Contract).
 
   **How v1 was reached:**
   | Migration | Change |
@@ -298,6 +300,11 @@ Catalog reference data arrives through the app-owned, authenticated import contr
   | `20260725220000` | fold becomes `catalog_fold_v1`; whitespace canonicalized; `f_unaccent_arr` dropped |
   | `20260725220000` § 3 | 4 blank-name CHECKs: `btrim` → `catalog_fold_v1` |
   | `20260726090000` | `wine_vintages.grapes` + `grapes_override` added |
+
+  **v2:**
+  | Migration | Change |
+  |---|---|
+  | `20261109120000` | `wine_products.colour` + `sparkling` added; `style` narrowed to dessert / fortified / NULL for `wine` (`wine_products_colour_check`, `wine_products_style_check`, both contract-scoped); `wine/dessert` + `wine/fortified` added to `category_styles` |
 
   ⚠️ **The § 3 row was added retroactively (2026-08-11).** It is the same migration as the row above it, listed separately because it is a *distinct* contract change that went unrecorded: the fold row describes matching, the § 3 row describes **rejection**. Both landed before the first import, so both are still v1 rather than bumps — but the omission is exactly the class of silence the rejection-surface test now closes.
 
@@ -326,7 +333,7 @@ Four catalog tables plus two link columns on the existing `wines`. All PKs are 2
 - `id`, `name` (display, accents preserved), `nameFolded` (generated — see naming), `country`, `region` + `regionFolded` (transitional, see region/grape), `website`, `status`, `linksTo` (nullable self-FK), `curatorLocked`, `addedBy` (nullable FK → users, `SetNull`), `curatedBy` (same), timestamps.
 
 **`wine_products`** — the product (groups vintages). The primary mergeable entity.
-- `id`, `name` + `nameFolded`, `category` (`wine` today; extensible), `style` (nullable; composite FK `(category, style)` → `category_styles`, like `wines`; values red/white/rosé/`spark`; `nonalc` is **transitional** — supported for v1 compatibility but not locked as permanent style identity, since ABV/alcohol attributes are the intended direction; dessert/fortified deferred), `abv` (nullable `Decimal` — every API response must coerce via `Number()` per the wire-format trap), `grapes` (**non-null** `text[]`, default `{}`) + `grapesFolded` (generated `text[]`, element-wise through the same fold helper), `region` + `regionFolded` (optional override of producer region; see region/grape), `scope`, `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
+- `id`, `name` + `nameFolded`, `category` (`wine` today; extensible), `colour` (nullable `varchar(16)`: `red` | `white` | `rose`, NULL = unknown; no orange, which is `white`), `sparkling` (`boolean NOT NULL DEFAULT false`, no unknown state), `style` (nullable; composite FK `(category, style)` → `category_styles`, like `wines`; for `wine` the values are `dessert` | `fortified` | NULL, bound by `wine_products_style_check` because the old `red`/`white`/`rose`/`spark`/`nonalc` pairs stay in `category_styles` while `wines` still uses them; other categories are governed by the FK alone), `abv` (alcohol-free is expressed here, as measured — not by a style) (nullable `Decimal` — every API response must coerce via `Number()` per the wire-format trap), `grapes` (**non-null** `text[]`, default `{}`) + `grapesFolded` (generated `text[]`, element-wise through the same fold helper), `region` + `regionFolded` (optional override of producer region; see region/grape), `scope`, `status`, `linksTo`, `curatorLocked`, `addedBy`/`curatedBy` (`SetNull`), timestamps.
 - **`grapes` is non-null and `{}` means "no grapes recorded".** Prisma cannot model an optional scalar list, so `{}` is the sole representation of unrecorded and is therefore **enrichable**; there is no known-empty state **on this table**, and a deliberate empty becomes authoritative only via `curatorLocked`. (`wine_vintages` DOES have one, via `grapes_override` — see the vintage grain.) See the implementation plan § Arrays are non-null.
 - **`scope`** (`shared` | `owned`) is reserved for the deferred ownership axis. **Every write boundary sets `scope` explicitly** — creation paths reject a missing scope rather than relying on the column default, so a future `owned` entry can never leak to public because a caller omitted the field.
 
@@ -388,7 +395,7 @@ The single-producer case is simply lead-with-no-collaborators. A collaboration i
 ### Field grain
 
 - **Producer**: brand name, country, base region, website.
-- **Product**: name, category, style, base ABV, grapes, optional region override.
+- **Product**: name, category, colour, sparkling, style (dessert / fortified), base ABV, grapes, optional region override.
 - **Vintage**: year, per-vintage ABV override, per-vintage **grape override** (`grapes` + `grapesOverride`).
 - **Product↔producer**: M:N with role.
 
@@ -482,6 +489,8 @@ Active session wines live in Redis (`s:{CODE}:wines`, 48h+ TTL) and archive to P
 - 🔒 **Blind redaction:** catalog IDs are label identity. `wineToWire`'s blind redaction strips `productId` and `vintageId` from every redacted payload, exactly like name/producer — a catalog ID in a blind payload is a lookup oracle for the label. (Whether an unrevealed blind wine's *provisional catalog row* is publicly searchable was a separate decision — **RESOLVED: the catalog stays open**, § Open decisions — RESOLVED ruling 3. 🔒 That ruling is contingent on catalog records being visually indistinguishable by state to end users; a surface exposing `status`, `createdAt`, or adder identity in public catalog search reopens it.)
 
 ## Legacy backfill (migration-only exception)
+
+⚠️ **SUPERSEDED for the conversion of existing wines (2026-11-09):** a human links each kept wine to a delivered catalog entry where one exists, otherwise mints a provisional entry, and nothing is linked or minted before the first catalog delivery. The automatic exact-match link below no longer links anything on its own. Rulings and reconciliation: `wine-catalog-model-change.md` § 6. The vintage-string cases below still describe how a kept wine's vintage text resolves.
 
 Existing `wines` rows predate the catalog. A one-time backfill links them — the **sole exception** to "links are never set by strings", and it is exact-match-only, never fuzzy:
 
@@ -627,4 +636,4 @@ All three are ruled; nothing in this doc is blocked. Implementation plan: `docs/
 - Merge unit — product primary; vintage additions lightweight, vintage merges a lighter case of the same machinery (matching year/NV + same effective product).
 - `year = null` — NV exclusively; unknown-year links at product grain (hence `wines.productId`).
 - Region/grape v1 — transitional strings; Verre-owned trees later, additively.
-- Dessert/Fortified styles — deferred; `nonalc` transitional.
+- ~~Dessert/Fortified styles — deferred; `nonalc` transitional.~~ → **Colour / sparkling / style split** (2026-11-09, `20261109120000`): catalog products carry `colour` + `sparkling` + `style` (dessert / fortified); alcohol-free is `abv`. `wines` keeps the old tokens until the model change.

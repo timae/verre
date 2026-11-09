@@ -256,11 +256,15 @@ export type NewProducerInput = {
   website?: unknown
 }
 
+// `style`, `colour` and `sparkling` are `unknown` on purpose: callers pass the
+// RAW body value and `createProduct` is the one place that validates them.
 export type NewProductInput = {
   name: string
   producerId: string
   category?: string
-  style?: string | null
+  style?: unknown
+  colour?: unknown
+  sparkling?: unknown
   abv?: number | null
   grapes?: unknown
   region?: unknown
@@ -320,7 +324,9 @@ export async function createProduct(
   const id = nanoid(21)
   const name = requiredName(input.name, 'product name')
   const category = input.category?.trim() || 'wine'
-  const style = optionalFact(input.style, 64)
+  const style = productStyle(input.style, category)
+  const colour = productColour(input.colour)
+  const sparkling = productSparkling(input.sparkling)
   const region = optionalFact(input.region)
   const grapes = normalizeGrapes(input.grapes)
   const abv = normalizeAbv(input.abv)
@@ -337,6 +343,8 @@ export async function createProduct(
         name,
         category,
         style,
+        colour,
+        sparkling,
         abv,
         grapes,
         region,
@@ -431,6 +439,48 @@ function normalizeAbv(raw: unknown): number | null {
     throw new CatalogValidationError('abv must be between 0 and 25')
   }
   return Math.round(n * 100) / 100
+}
+
+// The product kind, as three attributes (20261109120000). App-side mirrors of
+// `wine_products_colour_check` / `wine_products_style_check`, so a bad value is
+// a 400 rather than a constraint 500.
+//
+// 🔒 OMITTED IS NOT INVALID. `undefined` takes the column default (colour and
+// style NULL, sparkling false); a PRESENT value of the wrong type or outside
+// the vocabulary is rejected, never coerced. Coercing is how `style: 42` used
+// to store NULL with a 200.
+//
+// ⚠️ The old style tokens (red, white, rose, spark, nonalc) are REJECTED, not
+// mapped onto colour/sparkling: the endpoint has no client yet, so there is no
+// old caller to keep working, and a mapping would be untested translation code.
+const WINE_COLOURS = ['red', 'white', 'rose']
+const WINE_STYLES = ['dessert', 'fortified']
+
+function productColour(raw: unknown): string | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string' || !WINE_COLOURS.includes(raw)) {
+    throw new CatalogValidationError('colour must be red, white, rose or null')
+  }
+  return raw
+}
+
+function productSparkling(raw: unknown): boolean {
+  if (raw === undefined) return false
+  if (typeof raw !== 'boolean') throw new CatalogValidationError('sparkling must be true or false')
+  return raw
+}
+
+// Wine-scoped, exactly like the CHECK: another category's styles are governed by
+// the composite FK to category_styles alone, so adding a category stays an
+// INSERT and never needs a code or schema change here.
+function productStyle(raw: unknown, category: string): string | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'string') throw new CatalogValidationError('style must be a string or null')
+  if (category !== 'wine') return optionalFact(raw, 64)
+  if (!WINE_STYLES.includes(raw)) {
+    throw new CatalogValidationError('style must be dessert, fortified or null (colour and sparkling are separate fields)')
+  }
+  return raw
 }
 
 // ── Resolve a caller-supplied link to a real, linkable catalog target ──────

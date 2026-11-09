@@ -906,6 +906,61 @@ async function main() {
   const [cat] = await raw(`SELECT count(*)::int n FROM categories WHERE category='wine'`)
   ok(cat.n === 1, `the 'wine' category row exists (FKs reference a non-empty vocabulary)`)
 
+  console.log('\n21. Product kind: colour / sparkling / style (20261109120000)')
+  // 🔒 The style CHECK, not the composite FK, is what keeps the old tokens off
+  // catalog rows: `category_styles` still holds wine/red etc. because `wines`
+  // references them, so without the CHECK `style='red'` is FK-valid here.
+  // Every assertion UPDATEs a valid product (section 20's reason: a bare insert
+  // trips the deferred lead trigger first and masks the constraint).
+  await makeProduct('test_wpKind', 'test_pCat')
+  const [kindDefaults] = await raw(`SELECT colour, sparkling FROM wine_products WHERE id='test_wpKind'`)
+  ok(kindDefaults.colour === null && kindDefaults.sparkling === false,
+    'a product inserted without them gets colour NULL and sparkling false')
+  await rejects('colour orange (ruled: orange wine is white)',
+    `UPDATE wine_products SET colour='orange' WHERE id='test_wpKind'`, 'wine_products_colour_check')
+  for (const c of ['red', 'white', 'rose']) {
+    await accepts(`colour ${c}`, `UPDATE wine_products SET colour='${c}' WHERE id='test_wpKind'`)
+  }
+  await rejects('sparkling NULL (it has no unknown state)',
+    `UPDATE wine_products SET sparkling=NULL WHERE id='test_wpKind'`,
+    'null value in column "sparkling" of relation "wine_products" violates not-null')
+  await accepts('sparkling true', `UPDATE wine_products SET sparkling=true WHERE id='test_wpKind'`)
+  for (const s of ['red', 'spark', 'nonalc']) {
+    await rejects(`a wine product with the old style '${s}' (FK-valid, the CHECK must refuse it)`,
+      `UPDATE wine_products SET style='${s}' WHERE id='test_wpKind'`, 'wine_products_style_check')
+  }
+  for (const s of ['dessert', 'fortified']) {
+    await accepts(`a wine product with style ${s}`, `UPDATE wine_products SET style='${s}' WHERE id='test_wpKind'`)
+  }
+  await accepts('style NULL with colour NULL (an imported entry may know neither)',
+    `UPDATE wine_products SET style=NULL, colour=NULL WHERE id='test_wpKind'`)
+  // 🔒 WINE-SCOPED. A new category must stay "INSERT into categories, then its
+  // styles into category_styles", never a migration. An unscoped
+  // `style IN ('dessert','fortified')` fails this. Rolled back, so the test
+  // category never persists.
+  const ROLLBACK = 'test rollback sentinel'
+  try {
+    await prisma.$transaction(async tx => {
+      await tx.$executeRawUnsafe(`INSERT INTO categories (category,label) VALUES ('__test_category__','Test')`)
+      await tx.$executeRawUnsafe(
+        `INSERT INTO category_styles (category,style,label) VALUES ('__test_category__','__test_style__','Test')`)
+      await tx.$executeRawUnsafe(
+        `UPDATE wine_products SET category='__test_category__', style='__test_style__' WHERE id='test_wpKind'`)
+      throw new Error(ROLLBACK)
+    })
+  } catch (e) {
+    ok(String(e.message).includes(ROLLBACK),
+      `a declared non-wine (category, style) pair is accepted (the CHECK is wine-scoped)${
+        String(e.message).includes(ROLLBACK) ? '' : ` (was REJECTED: ${String(e.message).replace(/\s+/g, ' ').slice(0, 160)})`}`)
+  }
+  // 🔒 `wines` IS DELIBERATELY NOT NARROWED until the model change: every user
+  // surface, the Redis lineups and shipped native builds still use these tokens.
+  // A later edit that narrows `wines` by accident must fail here.
+  for (const s of ['red', 'white', 'rose', 'spark', 'nonalc']) {
+    await accepts(`wines still accepts the old style '${s}'`,
+      `INSERT INTO wines (id,name,category,style) VALUES ('test_wKind_${s}','X','wine','${s}')`)
+  }
+
   await reset()
   console.log(`\n${pass} passed, ${failures.length} failed`)
   if (failures.length) {

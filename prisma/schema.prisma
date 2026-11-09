@@ -683,11 +683,17 @@ model Category {
 
 // 🔒 ADDING A ROW HERE IS A CROSS-SIDE EVENT, not a local seed change.
 //
-// The catalog-maintenance side holds 6,455 rows we cannot store — 2,409
-// `dessert` and 4,046 `fortified` — ingested and excluded from export *until
-// this vocabulary grows*. They pin our style set, so adding `dessert` or
-// `fortified` here unblocks a release on their side that must then be
-// re-decided rather than inherited.
+// `wine/dessert` and `wine/fortified` were added in 20261109120000, which
+// unblocked the catalog-maintenance side's dessert/fortified products (about
+// 6,570 at the time; the earlier 6,455 count is stale). They pin our style
+// set, so every further row here unblocks a release on their side.
+//
+// ⚠️ The vocabulary is shared by two tables with different rules until the
+// model change: `wines` still uses the five old wine pairs (red, white, rose,
+// spark, nonalc), while a catalog wine product may only carry dessert,
+// fortified or NULL (`wine_products_style_check`; colour and sparkling are
+// columns). Retiring the old pairs is an announced vocabulary change, made
+// once nothing references them.
 //
 // ⚠️ So the ordering is OURS-THEN-THEIRS and must not be reversed: this table
 // grows first, then they flip the export filter. Reversed, a deliberate release
@@ -1050,12 +1056,23 @@ model WineProduct {
   name          String    @db.VarChar(255)
   category      String    @default("wine") @db.VarChar(32)
   // Composite FK (category, style) → category_styles, like wines. Nullable;
-  // the FK enforces only when both are non-null (MATCH SIMPLE). Values
-  // red/white/rosé/spark; 'nonalc' is TRANSITIONAL — supported for v1
-  // compatibility but not locked as permanent style identity, since
-  // ABV/alcohol attributes are the intended direction. dessert/fortified
-  // deferred.
+  // the FK enforces only when both are non-null (MATCH SIMPLE). For category
+  // 'wine' the values are dessert | fortified | NULL (20261109120000): colour
+  // and sparkling are their own columns below, and alcohol-free is `abv`.
+  // 🔒 `wine_products_style_check` is what binds that, NOT the FK: the old
+  // red/white/rose/spark/nonalc pairs stay in category_styles because `wines`
+  // still references them until the model change. TRANSITIONAL: once `wines`
+  // drops `style` and those pairs are deleted, the CHECK duplicates the FK and
+  // may be dropped. The CHECK is scoped to wine, so other categories stay
+  // governed by the FK alone (a new category is an INSERT, never a migration).
   style         String?   @db.VarChar(64)
+  // red | white | rose, NULL = unknown (`wine_products_colour_check`). No
+  // orange: orange/skin-contact wine is white. Named `colour` to match the
+  // import contract, despite the clash with presentation colour in TS.
+  colour        String?   @db.VarChar(16)
+  // No unknown state, by ruling: a wrong default is fixed by an edit, not by
+  // enrichment, so it needs no curatorLocked semantics.
+  sparkling     Boolean   @default(false)
   // ⚠️ Prisma Decimal serializes to a JSON STRING ("13.50"), not a number.
   // EVERY API response surfacing this must coerce via Number() — the
   // wire-format trap in root CLAUDE.md.

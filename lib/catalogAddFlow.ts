@@ -256,7 +256,13 @@ export async function mintEntries(body: Record<string, unknown>, userId: number)
         name: productName,
         producerId,
         category: typeof productFields.category === 'string' ? productFields.category : undefined,
-        style: typeof productFields.style === 'string' ? productFields.style : null,
+        // 🔒 RAW, like abv below: createProduct is the single validator and
+        // throws CatalogValidationError (→ 400). Narrowing here is how a
+        // non-string `style` once became NULL and bypassed it with a 200, and
+        // a missing key must stay `undefined` (default), not become null.
+        style: productFields.style,
+        colour: productFields.colour,
+        sparkling: productFields.sparkling,
         // Passed through unvalidated on purpose: normalizeAbv in catalogWrite
         // is the single place that decides what a valid ABV is, and it throws
         // CatalogValidationError (→ 400) for anything else.
