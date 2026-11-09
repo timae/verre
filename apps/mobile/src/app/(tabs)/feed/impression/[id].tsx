@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -43,11 +43,13 @@ import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { FEED_KEY, deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type FeedPage, type SessionFeedWine } from '@/lib/api/feed';
+import { deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
 import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
+import { invalidateProfileHeader, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
 import { consumeFeedTransitionSource, requestFeedLanding } from '@/lib/feedTransition';
+import { feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
 import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
@@ -130,17 +132,24 @@ export default function FeedImpression() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: screenW, height: windowH } = useWindowDimensions();
-  const { id, index } = useLocalSearchParams<{ id: string; index?: string }>();
+  const { id, index, user } = useLocalSearchParams<{ id: string; index?: string; user?: string }>();
   const feedItemId = Number(id);
+  // The list this post was opened from: the network feed (no `user`) or one
+  // person's profile feed. Mounted under Feed AND You (the You copy is a
+  // re-export mirror), so pushes are stack-relative.
+  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const tab = useSessionTab();
+  const meId = authClient.useSession().data?.user.id;
+  const myUserId = meId != null ? Number(meId) : null;
   const startIndex = Math.max(0, Number(index ?? 0) || 0);
 
-  // Read the feed cache (the list already delivered this). We attach to the
-  // SAME query — shared feedQueryOptions, so the two screens can't drift apart
+  // Read the originating list's cache (it already delivered this). We attach
+  // to the SAME query — shared feedQueryOptions, so the two screens can't drift apart
   // on key/options. refetchOnMount: false skips the pointless network round on
   // open; a cold deep-link (no cached data yet) still runs the INITIAL fetch —
   // refetchOnMount only suppresses refetching existing data — so the guard
   // below can resolve.
-  const feed = useInfiniteQuery({ ...feedQueryOptions(), refetchOnMount: false });
+  const feed = useInfiniteQuery({ ...feedQueryOptions(listUserId), refetchOnMount: false });
   const pages = feed.data?.pages;
   const found = Number.isFinite(feedItemId) ? findFeedItem(pages, feedItemId) : null;
   // Pin the last-found item (the house lastRef pattern — cf. the session
@@ -374,8 +383,8 @@ export default function FeedImpression() {
     if (closedRef.current) return;
     closedRef.current = true;
     if (router.canGoBack()) router.back();
-    else router.replace('/feed');
-  }, [router]);
+    else router.replace(feedListHref(tab, listUserId, myUserId));
+  }, [router, tab, listUserId, myUserId]);
   // The bar's back button: reverse the presentation, then pop. Without a
   // presentation (deep link) it's just the pop.
   const requestClose = useCallback(() => {
@@ -414,8 +423,7 @@ export default function FeedImpression() {
   // can't remember WHOSE impression you craved); Had it too needs the prefilled
   // ciSheet; Share needs a per-impression permalink (none exists yet). So the
   // menu is placeholders this pass — no live write from this screen.
-  const meId = authClient.useSession().data?.user.id;
-  const isOwner = !!meId && detail?.author.id === Number(meId);
+  const isOwner = myUserId != null && detail?.author.id === myUserId;
   const [menuAnchor, setMenuAnchor] = useState<MenuAnchor | null>(null);
 
   // Owner delete (Simon, 2026-07-18) — mirrors the feed list's ⋯ flow.
@@ -433,21 +441,14 @@ export default function FeedImpression() {
       try {
         const res = await op();
         const postGone = !res || res.feedItemDeleted;
-        // Reflect the delete in the cache IMMEDIATELY (like-flow pattern) —
-        // refetch alone leaves a window where the deleted target is still
-        // actionable and a second delete 404s (Codex). Cancel first so an
-        // in-flight refetch can't clobber the write.
-        await queryClient.cancelQueries({ queryKey: FEED_KEY });
-        queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
-          data
-            ? {
-                ...data,
-                pages: data.pages.map((p) => ({ ...p, items: p.items.map(applyToCache).filter((it): it is FeedItem => it !== null) })),
-              }
-            : data,
-        );
+        // Reflect the delete in EVERY feed cache IMMEDIATELY (like-flow
+        // pattern) — refetch alone leaves a window where the deleted target is
+        // still actionable and a second delete 404s (Codex). The helper
+        // cancels in-flight refetches first so they can't clobber the write.
+        await updateFeedCaches(queryClient, applyToCache);
+        invalidateProfileHeader(queryClient, myUserId); // owner-only: your header counts change
         if (postGone) closeDetail();
-        await queryClient.refetchQueries({ queryKey: FEED_KEY });
+        await refetchFeedCaches(queryClient);
       } catch (e) {
         const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
         Alert.alert('Could not delete', msg || 'Check your connection and try again.');
@@ -455,7 +456,7 @@ export default function FeedImpression() {
         deleteBusy.current = false;
       }
     },
-    [queryClient, closeDetail],
+    [queryClient, closeDetail, myUserId],
   );
   const confirmDelete = useCallback(() => {
     setMenuAnchor(null);
@@ -917,12 +918,13 @@ export default function FeedImpression() {
             accessibilityLabel="Edit Impression"
             onPress={() => {
               setMenuAnchor(null);
-              router.push({
-                pathname: '/feed/edit/[id]',
-                params: detail.isSession && activeWine
-                  ? { id: String(feedItemId), wine: activeWine.id }
-                  : { id: String(feedItemId) },
-              });
+              router.push(
+                feedHref(tab, 'edit/[id]', {
+                  id: String(feedItemId),
+                  wine: detail.isSession && activeWine ? activeWine.id : undefined,
+                  user: listUserId != null ? String(listUserId) : undefined,
+                }),
+              );
             }}
           />
         ) : null}

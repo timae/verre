@@ -51,6 +51,7 @@ export function SessionFeedCard({
   author,
   session,
   createdAt,
+  onPressAuthor,
   onOpenImpression,
   onToggleLike,
   onEdit,
@@ -60,6 +61,9 @@ export function SessionFeedCard({
   session: SessionFeedPayload;
   // The feed item's post time (lives on the FeedItem wrapper, not the payload).
   createdAt: string;
+  // Avatar + name open the author's profile (absent = not tappable, e.g. on
+  // that author's own profile list).
+  onPressAuthor?: () => void;
   // Open the full impression detail page for wine at `index` (glass-panel tap).
   onOpenImpression: (index: number) => void;
   // Optimistic like toggle — parent owns the cache write + server call.
@@ -240,10 +244,18 @@ export function SessionFeedCard({
     <View style={{ marginBottom: space.lg }}>
       {/* header — avatar · "<name> shared a moment" · place · time · ⋯ */}
       <View style={[styles.head, { paddingHorizontal: GUTTER }]}>
-        <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+        <Pressable
+          accessibilityRole={onPressAuthor ? 'button' : undefined}
+          accessibilityLabel={onPressAuthor ? author.name : undefined}
+          disabled={!onPressAuthor}
+          onPress={onPressAuthor}
+          hitSlop={4}
+        >
+          <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+        </Pressable>
         <View style={styles.who}>
           <VText variant="body" numberOfLines={1}>
-            <VText variant="body" style={styles.bold}>
+            <VText variant="body" style={styles.bold} onPress={onPressAuthor}>
               {author.name}
             </VText>
             <VText variant="body" color="inkSoft">

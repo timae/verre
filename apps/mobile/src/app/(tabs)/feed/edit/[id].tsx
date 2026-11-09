@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { useInfiniteQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
@@ -12,9 +12,12 @@ import { VText } from '@/components/ui/VText';
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import {
-  feedQueryOptions, findFeedItem, patchCheckin, patchSessionRating, FEED_KEY,
-  type CheckinPayload, type FeedItem, type FeedPage, type SessionFeedWine,
+  feedQueryOptions, findFeedItem, patchCheckin, patchSessionRating,
+  type CheckinPayload, type FeedItem, type SessionFeedWine,
 } from '@/lib/api/feed';
+import { authClient } from '@/lib/authClient';
+import { invalidateProfileHeader, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
+import { feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { ApiError } from '@/lib/api/sessions';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { clearCheckinEditMeta, getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
@@ -32,8 +35,10 @@ import { radius, useTheme } from '@/theme';
 //     tappable card (photo · name · producer) that pushes ./details for the
 //     wine-metadata edit; the square re-reads the shared edit store on focus.
 // Save PATCHes /api/checkins/:id (partial semantics; aromas present-replaces)
-// and maps the response into the ['feed'] cache IN PLACE (the like-flow
-// pattern — never invalidate, that resets the infinite query). An edit that
+// and maps the response into EVERY feed cache IN PLACE (the like-flow
+// pattern — never invalidate, that resets the infinite query). `?user=` names
+// the list the edit was opened from (network feed or a profile feed): the
+// screen reads that cache. Mounted under Feed AND You (re-export mirror). An edit that
 // EMPTIES a session rating reaps it server-side; if the post itself is gone
 // (`feedItemDeleted`) the feed refetches in place instead.
 
@@ -42,12 +47,15 @@ export default function EditFeedPost() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
-  const { id, wine: wineParam } = useLocalSearchParams<{ id: string; wine?: string }>();
+  const { id, wine: wineParam, user } = useLocalSearchParams<{ id: string; wine?: string; user?: string }>();
   const feedItemId = Number(id);
+  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const tab = useSessionTab();
+  const meId = authClient.useSession().data?.user.id;
 
   // Same cache-read + pin discipline as the detail screen: the poll can drop
   // a page-boundary item mid-edit; once seen, keep editing the pinned copy.
-  const feed = useInfiniteQuery({ ...feedQueryOptions(), refetchOnMount: false });
+  const feed = useInfiniteQuery({ ...feedQueryOptions(listUserId), refetchOnMount: false });
   const found = Number.isFinite(feedItemId) ? findFeedItem(feed.data?.pages, feedItemId) : null;
   const pinnedRef = useRef<FeedItem | null>(null);
   if (found) pinnedRef.current = found;
@@ -159,13 +167,14 @@ export default function EditFeedPost() {
             if (wines.length === 0 || res.feedItemDeleted) return null;
             return { ...it, session: { ...it.session, wines } };
           });
-          queryClient.refetchQueries({ queryKey: FEED_KEY });
+          refetchFeedCaches(queryClient);
+          invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
           if (res.feedItemDeleted) {
             // The POST is gone. When the edit was opened from the impression
             // detail, plain back() would land on it — and that screen pins its
             // copy by design (frozen read surface), so it would render the
-            // deleted post. Pop the whole way to the feed list instead.
-            router.dismissTo('/feed');
+            // deleted post. Pop the whole way to the list it came from.
+            router.dismissTo(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
             return;
           }
         } else {
@@ -234,6 +243,8 @@ export default function EditFeedPost() {
           };
         });
       }
+      // Your header (average, tile photo) can change with any save.
+      invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
       router.back();
     } catch (e) {
       // Friendly-copy gate (the delete flows' rule): surface the server's
@@ -246,17 +257,11 @@ export default function EditFeedPost() {
     }
   };
 
-  // Cancel-then-write (the like-flow rule): an in-flight refetch whose GET
-  // left before the PATCH committed would otherwise resolve after this write
-  // and revert the card until the next refetch. `null` drops the item.
-  const applyToFeedCache = async (map: (item: FeedItem) => FeedItem | null) => {
-    await queryClient.cancelQueries({ queryKey: FEED_KEY });
-    queryClient.setQueryData<InfiniteData<FeedPage>>(FEED_KEY, (data) =>
-      data
-        ? { ...data, pages: data.pages.map((p) => ({ ...p, items: p.items.map(map).filter((it): it is FeedItem => it !== null) })) }
-        : data,
-    );
-  };
+  // Cancel-then-write across every feed cache (lib/feedCache.ts): an
+  // in-flight refetch whose GET left before the PATCH committed would
+  // otherwise resolve after this write and revert the card until the next
+  // refetch. `null` drops the item.
+  const applyToFeedCache = (map: (item: FeedItem) => FeedItem | null) => updateFeedCaches(queryClient, map);
 
   if (!item || !wine) {
     return (
@@ -300,7 +305,7 @@ export default function EditFeedPost() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Edit Impression Details"
-            onPress={() => router.push(`/feed/edit/details`)}
+            onPress={() => router.push(feedHref(tab, 'edit/details', { user: listUserId != null ? String(listUserId) : undefined }))}
             style={({ pressed }) => ({
               flexDirection: 'row', alignItems: 'center', gap: 12,
               padding: 10, marginBottom: 16, borderRadius: radius.md,

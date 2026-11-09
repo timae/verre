@@ -104,10 +104,14 @@ export type FeedPage = {
 };
 
 // GET /api/feed?cursor=<ISO> — the caller's network feed, newest first,
-// cursor-paginated (PAGE=20 server-side). No cursor = from now.
-export async function getFeed(cursor?: string | null): Promise<FeedPage> {
-  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
-  const res = await apiFetch(`/api/feed${qs}`);
+// cursor-paginated (PAGE=20 server-side). No cursor = from now. `userId` =
+// ONE author's posts (the profile feed, `?user=`): same projection, gated like
+// the profile (404 unless the viewer may see it).
+export async function getFeed(cursor?: string | null, userId?: number | null): Promise<FeedPage> {
+  const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${userId}` : '']
+    .filter(Boolean)
+    .join('&');
+  const res = await apiFetch(`/api/feed${qs ? `?${qs}` : ''}`);
   if (!res.ok) await throwApiError(res);
   return (await res.json()) as FeedPage;
 }
@@ -278,12 +282,20 @@ export function feedItemId(item: FeedItem): number {
 // only holds while both observers attach with the identical key/options, so
 // the definition lives here (with the fetcher + wire types), not copy-pasted
 // per screen.
+//
+// Two families under ONE prefix: ['feed'] = the network feed, ['feed', 'user',
+// id] = one person's profile feed. The same post can sit in both, so every
+// post mutation writes EVERY ['feed', …] cache (lib/feedCache.ts) — and an
+// exact-key read/write must use feedKey(), never FEED_KEY plus a hope.
 export const FEED_KEY = ['feed'] as const;
 export const FEED_STALE_MS = 15_000;
-export function feedQueryOptions() {
+export function feedKey(userId?: number | null): readonly ['feed'] | readonly ['feed', 'user', number] {
+  return userId != null ? (['feed', 'user', userId] as const) : FEED_KEY;
+}
+export function feedQueryOptions(userId?: number | null) {
   return infiniteQueryOptions({
-    queryKey: FEED_KEY,
-    queryFn: ({ pageParam }) => getFeed(pageParam),
+    queryKey: feedKey(userId) as readonly unknown[],
+    queryFn: ({ pageParam }) => getFeed(pageParam, userId),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.nextCursor,
     staleTime: FEED_STALE_MS,
@@ -291,8 +303,8 @@ export function feedQueryOptions() {
 }
 
 // The impression detail screen (proposal 08 §3) is a PURE client render off the
-// data the feed already delivered — no new fetch. It reads the ['feed'] infinite
-// cache, finds the post by feed_item id, and normalises both variants into ONE
+// data the feed already delivered — no new fetch. It reads the originating
+// list's infinite cache (network or profile feed), finds the post by feed_item id, and normalises both variants into ONE
 // list of wines to page over: a session → its wines[]; a standalone check-in →
 // a single synthesized wine (so the pager/hero speak one shape). Returns null
 // when the post isn't in the cache (e.g. deep-linked before the feed loaded, or

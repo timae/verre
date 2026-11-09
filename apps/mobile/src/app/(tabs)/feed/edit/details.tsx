@@ -1,4 +1,4 @@
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,9 +12,11 @@ import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, MAX_COVER_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { type WineTypeCode } from '@/lib/api/sessions';
+import { authClient } from '@/lib/authClient';
 import { getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
+import { feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { radius, useTheme } from '@/theme';
 
 // Standalone check-in EDIT, the impression-details sub-screen (Simon,
@@ -32,6 +34,10 @@ export default function EditCheckinDetails() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const meta = getCheckinEditMeta();
+  const { user } = useLocalSearchParams<{ user?: string }>();
+  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const tab = useSessionTab();
+  const meId = authClient.useSession().data?.user.id;
 
   const [photo, setPhoto] = useState<PhotoEdit>(meta?.photo);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -63,9 +69,10 @@ export default function EditCheckinDetails() {
   const processRef = useRef<TextInputInstance>(null);
   const purchaseRef = useRef<TextInputInstance>(null);
 
-  // Cold deep link / stale store — nothing to edit; bounce to the feed.
+  // Cold deep link / stale store — nothing to edit; bounce to the list it
+  // came from (this screen is mounted under Feed AND You).
   useEffect(() => {
-    if (!meta) router.replace('/feed');
+    if (!meta) router.replace(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   if (!meta) return <View style={{ flex: 1 }} />;

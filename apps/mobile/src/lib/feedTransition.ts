@@ -47,15 +47,22 @@ export function consumeFeedTransitionSource(): FeedTransitionSource | null {
 // the mid-read churn is unseen and any close — pan, back button, Android
 // back — finds the card already on the right slide). Unregister on card
 // unmount; a request for an unregistered id is a no-op (windowed-out card).
-const landings = new Map<number, (wineIndex: number) => void>();
+// A SET per id: the same post can be mounted in two lists at once (the Feed
+// tab and a profile feed — every tab scene stays mounted), and both must land.
+const landings = new Map<number, Set<(wineIndex: number) => void>>();
 
 export function registerFeedLanding(feedItemId: number, sync: (wineIndex: number) => void): () => void {
-  landings.set(feedItemId, sync);
+  let set = landings.get(feedItemId);
+  if (!set) landings.set(feedItemId, (set = new Set()));
+  set.add(sync);
   return () => {
-    if (landings.get(feedItemId) === sync) landings.delete(feedItemId);
+    const cur = landings.get(feedItemId);
+    if (!cur) return;
+    cur.delete(sync);
+    if (cur.size === 0) landings.delete(feedItemId);
   };
 }
 
 export function requestFeedLanding(feedItemId: number, wineIndex: number) {
-  landings.get(feedItemId)?.(wineIndex);
+  landings.get(feedItemId)?.forEach((sync) => sync(wineIndex));
 }

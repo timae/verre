@@ -11,7 +11,9 @@ import { VText } from '@/components/ui/VText';
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchScroll';
 import { ApiError } from '@/lib/api/sessions';
-import { createCheckin, FEED_KEY } from '@/lib/api/feed';
+import { createCheckin } from '@/lib/api/feed';
+import { authClient } from '@/lib/authClient';
+import { dropUnmountedFeedCaches, invalidateProfileHeader, refetchFeedCaches } from '@/lib/feedCache';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
@@ -32,6 +34,7 @@ export default function CheckinRate() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const meId = authClient.useSession().data?.user.id;
 
   // Read once at mount — the draft is stable while this screen lives (stage 1
   // only rewrites it on a fresh "Rate It" push, which re-mounts this screen).
@@ -116,11 +119,16 @@ export default function CheckinRate() {
       });
       // Surface the new post via refetch()-in-place — NEVER invalidate the
       // feed key (resets the infinite query toward page 1: the scroll-creep
-      // bug — see feed/index.tsx). Fire-and-forget; the list updates behind
-      // the pop. Clear the draft BEFORE dismissing so the unmount write-back
-      // no-ops. dismiss(2) pops both stages back to the feed.
+      // bug — see lib/feedCache.ts). Fire-and-forget; the mounted lists
+      // (the feed, and your profile on the You tab) update behind the pop.
+      // Clear the draft BEFORE dismissing so the unmount write-back no-ops.
+      // dismiss(2) pops both stages back to the feed.
       clearCheckinDraft();
-      queryClient.refetchQueries({ queryKey: FEED_KEY });
+      refetchFeedCaches(queryClient);
+      // A popped profile list can't show the new post; drop it so it reloads.
+      dropUnmountedFeedCaches(queryClient);
+      // Your header's counts (impressions, tile photo, average) changed too.
+      invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
       router.dismiss(2);
     } catch (e) {
       setSaving(false);

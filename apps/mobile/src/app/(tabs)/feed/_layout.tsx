@@ -1,4 +1,5 @@
 import { Stack } from 'expo-router';
+import { SessionTabProvider } from '@/lib/sessionStack';
 import { useTheme } from '@/theme';
 
 // ⚠️ Load-bearing: declaring a <Stack.Screen> below hoists that route to the
@@ -16,7 +17,10 @@ export const unstable_settings = { anchor: 'index' };
 // screens draw their own chrome (collapsing hero), not the native header.
 export default function FeedStack() {
   const { theme } = useTheme();
+  // The owning tab for every screen in this stack (lib/sessionStack.ts
+  // useSessionTab): mount location, not the globally focused route.
   return (
+    <SessionTabProvider value="feed">
     <Stack
       screenOptions={{
         headerShown: false,
@@ -51,5 +55,6 @@ export default function FeedStack() {
       <Stack.Screen name="edit/[id]" options={{ presentation: 'fullScreenModal' }} />
       <Stack.Screen name="edit/details" options={{ presentation: 'fullScreenModal' }} />
     </Stack>
+    </SessionTabProvider>
   );
 }

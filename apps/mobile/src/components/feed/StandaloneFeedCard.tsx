@@ -44,6 +44,7 @@ export function StandaloneFeedCard({
   author,
   checkin,
   createdAt,
+  onPressAuthor,
   onOpen,
   onToggleLike,
   onEdit,
@@ -52,6 +53,9 @@ export function StandaloneFeedCard({
   author: FeedAuthor;
   checkin: CheckinPayload;
   createdAt: string;
+  // Avatar + name open the author's profile (absent = not tappable, e.g. on
+  // that author's own profile list).
+  onPressAuthor?: () => void;
   onOpen: () => void;
   onToggleLike: (nextLiked: boolean) => void;
   // Owner-only (the list passes them only for the viewer's own posts) —
@@ -82,10 +86,18 @@ export function StandaloneFeedCard({
     <View style={{ marginBottom: space.lg }}>
       {/* header — avatar · "<name> had a wine" · place · time */}
       <View style={[styles.head, { paddingHorizontal: GUTTER }]}>
-        <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+        <Pressable
+          accessibilityRole={onPressAuthor ? 'button' : undefined}
+          accessibilityLabel={onPressAuthor ? author.name : undefined}
+          disabled={!onPressAuthor}
+          onPress={onPressAuthor}
+          hitSlop={4}
+        >
+          <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
+        </Pressable>
         <View style={styles.who}>
           <VText variant="body" numberOfLines={1}>
-            <VText variant="body" style={styles.bold}>
+            <VText variant="body" style={styles.bold} onPress={onPressAuthor}>
               {author.name}
             </VText>
             <VText variant="body" color="inkSoft">

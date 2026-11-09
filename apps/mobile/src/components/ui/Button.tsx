@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Pressable, type PressableProps, type ViewStyle } from 'react-native';
+import { Icon, type IconName } from '@/components/ui/Icon';
 import { usePhoneTokens } from '@/lib/layout';
 import { control, radius, useTheme, type TextVariant } from '@/theme';
 import { alpha, mix } from '@/theme/color';
@@ -26,6 +27,8 @@ interface Props extends Omit<PressableProps, 'children' | 'style'> {
   // Cap for long DYNAMIC titles ("Add Green bell pepper") — past the cap the
   // label ellipsizes instead of growing the button further.
   titleLines?: number;
+  // Leading glyph in the label colour (e.g. the profile's ✓ Friends).
+  icon?: IconName;
   style?: ViewStyle;
 }
 
@@ -40,7 +43,7 @@ const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
 // .btn label scale: small / body / bodyLg.
 const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 'bodyLg' };
 
-export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, disabled, style, ...rest }: Props) {
+export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, icon, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('button');
@@ -114,6 +117,8 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
       {({ pressed }) => {
         const c = colors(pressed);
         return (
+          <>
+          {icon ? <Icon name={icon} size={size === 'sm' ? 16 : 18} color={c.text} /> : null}
           <VText
             numberOfLines={titleLines}
             variant={LABEL_VARIANT[size]}
@@ -128,6 +133,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
           >
             {loading && slow && loadingTitle ? loadingTitle : title}
           </VText>
+          </>
         );
       }}
     </Pressable>

@@ -4,16 +4,19 @@ import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
 import {
   batchLoadVisibilities,
+  resolveProfileViewer,
   resolveProfileViewerBulk,
   viewerFofAuthorSet,
   canViewProfile,
 } from '@/lib/profileVisibility'
+import { parsePathId } from '@/lib/parsePathId'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds } from '@/lib/userBlock'
 import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
+const NO_STORE = { 'Cache-Control': 'private, no-store' }
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -39,72 +42,25 @@ export async function GET(req: NextRequest) {
     cursor = new Date()
   }
 
-  // My network: explicit follows + tasting buddies (shared sessions). The
-  // ${userId} interpolations below are parameterized by Prisma's tagged
-  // template handling, not concatenated into the SQL string.
-  const network = await prisma.$queryRaw<{ user_id: number }[]>`
-    SELECT DISTINCT user_id FROM (
-      SELECT ${userId}::integer AS user_id
-      UNION
-      SELECT following_id AS user_id FROM follows WHERE follower_id = ${userId}
-      UNION
-      SELECT sm2.user_id
-      FROM session_members sm1
-      JOIN session_members sm2 ON sm2.session_code = sm1.session_code
-      WHERE sm1.user_id = ${userId} AND sm2.user_id <> ${userId}
-    ) n
-  `
-  const networkIds = network.map(r => r.user_id)
-  if (!networkIds.length) return NextResponse.json({ items: [], nextCursor: null })
-
-  // Visibility pre-filter: trim networkIds down to authors the viewer can
-  // actually see per their profile-visibility tier. Done up front so the
-  // cursor reflects visible count, not raw count — otherwise a page of 20
-  // could collapse to a handful of rows after post-filtering.
-  // Batched: one query for visibilities, one for follows-out, one for
-  // follows-in, optionally one for FoF reachability. Cost is O(networkSize)
-  // not O(rowsPerPage), and constant in number of roundtrips.
-  //
-  // Mute filter: applied in the same pass. The viewer's mute set is
-  // independent of tier — a `public-internet` user the viewer muted
-  // gets filtered out the same as a `public-mutual` user they aren't
-  // allowed to see. Composed multiplicatively: both checks must pass.
-  //
-  // Block filter: composed in the same pass. Block-pair authors (either
-  // direction — viewer blocked author OR author blocked viewer) are
-  // dropped before the visibility tier even runs. Block is the strictest
-  // primitive.
-  const [visMap, viewerMap, muteSet, blockPairs] = await Promise.all([
-    batchLoadVisibilities(networkIds),
-    resolveProfileViewerBulk(networkIds, userId),
-    mutedUserIds(userId),
-    blockPairIds(userId),
-  ])
-  const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
-  const fofSet = fofCandidates.length > 0
-    ? await viewerFofAuthorSet(userId, fofCandidates)
-    : new Set<number>()
-  const allowedNetworkIds = networkIds.filter(authorId => {
-    // Self-visibility: viewer always sees their own content. (Self-mute
-    // and self-block are both rejected at the API + DB level, so the
-    // viewer can't appear in their own mute/block sets.)
-    if (authorId === userId) return true
-    if (blockPairs.blockedByMe.has(authorId) || blockPairs.blockingMe.has(authorId)) return false
-    if (muteSet.has(authorId)) return false
-    const settings = visMap.get(authorId)
-    if (!settings) return false
-    const base = viewerMap.get(authorId) ?? { id: userId, followsProfile: false, profileFollowsViewer: false }
-    // Clone so we never mutate the shared map values; isFofOfProfile is
-    // a per-call hint, not state to carry on the underlying ProfileViewer.
-    const viewer = {
-      id: base.id ?? userId,
-      followsProfile: base.followsProfile,
-      profileFollowsViewer: base.profileFollowsViewer,
-      isFofOfProfile: settings.fofEnabled ? fofSet.has(authorId) : undefined,
-    }
-    return canViewProfile(settings.visibility, viewer, settings.fofEnabled)
-  })
-  if (!allowedNetworkIds.length) return NextResponse.json({ items: [], nextCursor: null })
+  // `?user=<id>` = ONE author's posts (the native profile feed), through the
+  // same projection as the network feed below. Gated exactly like the
+  // profile: anything but 'ok' (self is always 'ok') is 404 — 'gone',
+  // 'shell' and 'blocked-by-me' alike; the profile endpoint is what tells the
+  // client which of those it is. The MUTE filter does not apply here: mute is
+  // a network-feed filter only (docs/dev/mute.md), and opening someone's
+  // profile is an explicit choice to look at them.
+  const userParam = req.nextUrl.searchParams.get('user')
+  let allowedNetworkIds: number[]
+  if (userParam !== null) {
+    const authorId = parsePathId(userParam)
+    if (authorId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
+    const gate = await resolveProfileViewer(authorId, userId)
+    if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+    allowedNetworkIds = [authorId]
+  } else {
+    allowedNetworkIds = await networkAuthorIds(userId)
+  }
+  if (!allowedNetworkIds.length) return NextResponse.json({ items: [], nextCursor: null }, { headers: NO_STORE })
 
   // Feed items — both kind='standalone' and kind='session' in one query.
   // Standalone renders via the existing CheckinCard; session renders as a
@@ -367,8 +323,75 @@ export async function GET(req: NextRequest) {
   // Response varies by viewer (myLikes, viewerFollowsAuthor, tag filter,
   // like-count adjustment all depend on the calling user). Force
   // private no-store so a CDN can't serve one viewer's feed to another.
-  return NextResponse.json(
-    { items, nextCursor },
-    { headers: { 'Cache-Control': 'private, no-store' } },
-  )
+  return NextResponse.json({ items, nextCursor }, { headers: NO_STORE })
+}
+
+// The caller's network feed authors: self + follows + tasting buddies (shared
+// sessions), trimmed to the authors they may see (block pair, mute, tier).
+async function networkAuthorIds(userId: number): Promise<number[]> {
+  // My network: explicit follows + tasting buddies (shared sessions). The
+  // ${userId} interpolations below are parameterized by Prisma's tagged
+  // template handling, not concatenated into the SQL string.
+  const network = await prisma.$queryRaw<{ user_id: number }[]>`
+    SELECT DISTINCT user_id FROM (
+      SELECT ${userId}::integer AS user_id
+      UNION
+      SELECT following_id AS user_id FROM follows WHERE follower_id = ${userId}
+      UNION
+      SELECT sm2.user_id
+      FROM session_members sm1
+      JOIN session_members sm2 ON sm2.session_code = sm1.session_code
+      WHERE sm1.user_id = ${userId} AND sm2.user_id <> ${userId}
+    ) n
+  `
+  const networkIds = network.map(r => r.user_id)
+  if (!networkIds.length) return []
+
+  // Visibility pre-filter: trim networkIds down to authors the viewer can
+  // actually see per their profile-visibility tier. Done up front so the
+  // cursor reflects visible count, not raw count — otherwise a page of 20
+  // could collapse to a handful of rows after post-filtering.
+  // Batched: one query for visibilities, one for follows-out, one for
+  // follows-in, optionally one for FoF reachability. Cost is O(networkSize)
+  // not O(rowsPerPage), and constant in number of roundtrips.
+  //
+  // Mute filter: applied in the same pass. The viewer's mute set is
+  // independent of tier — a `public-internet` user the viewer muted
+  // gets filtered out the same as a `public-mutual` user they aren't
+  // allowed to see. Composed multiplicatively: both checks must pass.
+  //
+  // Block filter: composed in the same pass. Block-pair authors (either
+  // direction — viewer blocked author OR author blocked viewer) are
+  // dropped before the visibility tier even runs. Block is the strictest
+  // primitive.
+  const [visMap, viewerMap, muteSet, blockPairs] = await Promise.all([
+    batchLoadVisibilities(networkIds),
+    resolveProfileViewerBulk(networkIds, userId),
+    mutedUserIds(userId),
+    blockPairIds(userId),
+  ])
+  const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
+  const fofSet = fofCandidates.length > 0
+    ? await viewerFofAuthorSet(userId, fofCandidates)
+    : new Set<number>()
+  return networkIds.filter(authorId => {
+    // Self-visibility: viewer always sees their own content. (Self-mute
+    // and self-block are both rejected at the API + DB level, so the
+    // viewer can't appear in their own mute/block sets.)
+    if (authorId === userId) return true
+    if (blockPairs.blockedByMe.has(authorId) || blockPairs.blockingMe.has(authorId)) return false
+    if (muteSet.has(authorId)) return false
+    const settings = visMap.get(authorId)
+    if (!settings) return false
+    const base = viewerMap.get(authorId) ?? { id: userId, followsProfile: false, profileFollowsViewer: false }
+    // Clone so we never mutate the shared map values; isFofOfProfile is
+    // a per-call hint, not state to carry on the underlying ProfileViewer.
+    const viewer = {
+      id: base.id ?? userId,
+      followsProfile: base.followsProfile,
+      profileFollowsViewer: base.profileFollowsViewer,
+      isFofOfProfile: settings.fofEnabled ? fofSet.has(authorId) : undefined,
+    }
+    return canViewProfile(settings.visibility, viewer, settings.fofEnabled)
+  })
 }

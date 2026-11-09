@@ -1,0 +1,336 @@
+import * as Haptics from 'expo-haptics';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, FlatList, RefreshControl, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
+import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
+import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
+import { FEED_STALE_MS, deleteCheckin, feedItemId, feedKey, feedQueryOptions, patchSessionRating, type FeedAuthor, type FeedItem } from '@/lib/api/feed';
+import { ApiError } from '@/lib/api/sessions';
+import { authClient } from '@/lib/authClient';
+import { invalidateProfileHeader, refetchFeedCaches, toggleFeedLike, updateFeedCaches } from '@/lib/feedCache';
+import { TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { feedHref, useSessionTab } from '@/lib/sessionStack';
+import { space, useTheme } from '@/theme';
+
+// THE post list (proposal 08), shared by the Feed tab (the caller's network,
+// `userId` absent) and the profile screens (one person's posts, `userId`).
+// One implementation: paging, empty-page drain, focus refresh, pull-to-refresh,
+// the cards, like, owner edit/delete. The caller supplies the header above the
+// posts and the empty state. Post routes (detail, edit, profile) are pushed
+// stack-relative (lib/sessionStack.ts feedHref) and carry `user` so the detail
+// and edit screens read THIS list's cache.
+
+export function FeedList({
+  userId,
+  header,
+  empty,
+  contentTopPad,
+  onRefresh,
+  centerLoading,
+}: {
+  userId?: number;
+  header: React.ReactElement;
+  empty: React.ReactElement;
+  // Top padding of the scroll content (status bar, or the screen's fixed bar).
+  contentTopPad: number;
+  // Runs with every pull-to-refresh and stale-focus refetch (the profile
+  // header refreshes with its posts).
+  onRefresh?: () => unknown;
+  // First load as a centred spinner with no header (the Feed tab's look);
+  // otherwise the header renders and the spinner sits under it.
+  centerLoading?: boolean;
+}) {
+  const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
+  const router = useRouter();
+  const tab = useSessionTab();
+  const queryClient = useQueryClient();
+  // Tapping the tab while on its root scrolls the list to top (Simon) — the
+  // standard tabPress→scrollToTop behavior via react-navigation's hook.
+  const listRef = useRef<FlatList<FeedItem>>(null);
+  useScrollToTop(listRef);
+
+  // The query definition is shared with the detail + edit screens
+  // (feedQueryOptions) — they are pure renders off this same cache.
+  const feed = useInfiniteQuery(feedQueryOptions(userId));
+  const userParam = userId != null ? String(userId) : undefined;
+
+  // NO focus invalidate. `invalidateQueries` on an infinite query resets it
+  // toward the first page and re-identifies every item, which (a) shrinks the
+  // list mid-refetch so the scroll offset clamps UPWARD — the "feed creeps up a
+  // bit every time I nav away and back" bug — and (b) reloads content already
+  // on screen. `feed.refetch()` is the safe path: it refetches the LOADED
+  // pages IN PLACE (content updates, count preserved, scroll holds) — "update
+  // without reloading what's already there." Freshness therefore comes from
+  // three refetch()-based triggers: the re-focus effect below, the
+  // app-foreground `focusManager` refetch (lib/query.tsx), and pull-to-refresh.
+
+  // Re-focus: focusManager only fires on app foreground, and tab screens stay
+  // mounted, so switching tabs triggers no refetch by itself — without this,
+  // the list would sit stale until a manual pull. In-place refetch, gated on
+  // real staleness so quick hops stay silent. The initial mount is skipped (no
+  // data yet — the query's own fetch owns it).
+  useFocusEffect(
+    useCallback(() => {
+      const state = queryClient.getQueryState(feedKey(userId));
+      if (!state?.data || state.fetchStatus === 'fetching') return;
+      if (Date.now() - state.dataUpdatedAt < FEED_STALE_MS) return;
+      feed.refetch();
+      onRefresh?.();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [userId]),
+  );
+
+  const items = useMemo(() => (feed.data?.pages ?? []).flatMap((p) => p.items), [feed.data]);
+
+  // Drain empty pages: /api/feed may legally return items:[] with a cursor
+  // (render filters drop rows server-side; the cursor keys on the RAW page —
+  // see the route's nextCursor comment). An appended empty page doesn't grow
+  // the content height, so onEndReached never re-fires — advance explicitly
+  // until a page carries items or paging ends.
+  const pages = feed.data?.pages;
+  useEffect(() => {
+    if (!pages?.length || pages[pages.length - 1].items.length > 0) return;
+    if (feed.hasNextPage && !feed.isFetching) feed.fetchNextPage();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pages, feed.hasNextPage, feed.isFetching]);
+
+  // Pull-to-refresh (mirrors the moments home pattern): an explicit `pulling`
+  // state drives the spinner — NOT feed.isRefetching, which also fires for the
+  // app-foreground refetch AND can go true→false within a frame on a fast/cached
+  // refetch (spinner never paints). A 600ms min-visible floor guarantees the
+  // spinner reads as "it refreshed". feed.refetch() refetches the loaded pages
+  // in place, so content updates without dropping what's on screen or moving
+  // the scroll.
+  const [pulling, setPulling] = useState(false);
+  const onPullRefresh = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setPulling(true);
+    const minVisible = new Promise<void>((r) => setTimeout(r, 600));
+    Promise.allSettled([feed.refetch(), onRefresh?.(), minVisible]).then(() => setPulling(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRefresh]);
+
+  const toggleLike = useCallback((id: number, next: boolean) => toggleFeedLike(queryClient, id, next), [queryClient]);
+
+  const openImpression = useCallback(
+    (id: number, wineIndex: number) => {
+      router.push(feedHref(tab, 'impression/[id]', { id: String(id), index: String(wineIndex), user: userParam }), {
+        dangerouslySingular: true,
+      });
+    },
+    [router, tab, userParam],
+  );
+
+  // A post's author → their profile, pushed on this stack. On that person's
+  // own profile list the tap is a no-op (it IS the screen underneath).
+  const openAuthor = useCallback(
+    (author: FeedAuthor) => {
+      if (author.id === userId) return;
+      router.push(feedHref(tab, 'u/[id]', { id: String(author.id) }));
+    },
+    [router, tab, userId],
+  );
+
+  // Owner gate for the cards' ⋯ Edit (the detail screen's meId/isOwner
+  // pattern) — Better Auth user ids are strings, feed author ids numbers.
+  const meId = authClient.useSession().data?.user.id;
+  const myUserId = meId != null ? Number(meId) : null;
+
+  // Owner delete flows (Simon, 2026-07-18) — both confirm via the house
+  // native alert. Standalone = DELETE the whole check-in (post + rating +
+  // photo). Session = "Delete Rating": clear the active impression's rating
+  // via the empty-PATCH reap path; the post itself only disappears when that
+  // was its last content. Either way every feed cache drops it and the lists
+  // refetch IN PLACE (never invalidate — the scroll-creep rule above).
+  const deleteBusy = useRef(false);
+  const runDelete = useCallback(
+    async (op: () => Promise<unknown>, applyToCache: (item: FeedItem) => FeedItem | null) => {
+      if (deleteBusy.current) return;
+      deleteBusy.current = true;
+      try {
+        await op();
+        // Reflect the delete in the caches IMMEDIATELY (like-flow pattern) —
+        // waiting for the refetch alone leaves the deleted card actionable,
+        // and a second delete would 404 (Codex). The awaited refetch then
+        // reconciles with the server (and holds the busy flag meanwhile).
+        await updateFeedCaches(queryClient, applyToCache);
+        // Owner-only flows: the author is you — your header counts change too.
+        invalidateProfileHeader(queryClient, myUserId);
+        await refetchFeedCaches(queryClient);
+      } catch (e) {
+        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+        Alert.alert('Could not delete', msg || 'Check your connection and try again.');
+      } finally {
+        deleteBusy.current = false;
+      }
+    },
+    [queryClient, myUserId],
+  );
+  // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).
+  const confirmDeleteCheckin = useCallback(
+    (id: number, name: string) => {
+      Alert.alert(
+        name ? `Delete “${name}”?` : 'Delete this check-in?',
+        'This removes the post, its rating, and its photo. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => deleteCheckin(id),
+                (it) => (feedItemId(it) === id ? null : it),
+              ),
+          },
+        ],
+      );
+    },
+    [runDelete],
+  );
+  const confirmDeleteRating = useCallback(
+    (id: number, wineId: string, name: string) => {
+      Alert.alert(
+        name ? `Delete your rating of “${name}”?` : 'Delete your rating?',
+        'This resets your rating for this impression. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: () =>
+              runDelete(
+                () => patchSessionRating(id, { wineId, score: 0, flavors: {}, aromas: [], notes: '' }),
+                // Drop the cleared wine from the post; drop the whole post
+                // when that was its last impression (the server reaps it).
+                (it) => {
+                  if (it.type !== 'session' || it.session.id !== id) return it;
+                  const wines = it.session.wines.filter((w) => w.id !== wineId);
+                  if (wines.length === 0) return null;
+                  return { ...it, session: { ...it.session, wines } };
+                },
+              ),
+          },
+        ],
+      );
+    },
+    [runDelete],
+  );
+
+  const conn = connectionView(feed.isError, items.length > 0);
+
+  const renderItem = useCallback(
+    ({ item }: { item: FeedItem }) => {
+      const id = feedItemId(item);
+      const isOwner = myUserId != null && item.author.id === myUserId;
+      const onPressAuthor = item.author.id === userId ? undefined : () => openAuthor(item.author);
+      if (item.type === 'session') {
+        return (
+          <SessionFeedCard
+            author={item.author}
+            session={item.session}
+            createdAt={item.createdAt}
+            onPressAuthor={onPressAuthor}
+            onOpenImpression={(wineIndex) => openImpression(id, wineIndex)}
+            onToggleLike={(next) => toggleLike(id, next)}
+            onEdit={isOwner ? (wineId) => router.push(feedHref(tab, 'edit/[id]', { id: String(id), wine: wineId, user: userParam })) : undefined}
+            onDeleteRating={
+              isOwner
+                ? (wineId) => {
+                    // Blind wines carry a redacted empty name — use the card's
+                    // own alias ("Wine N") so the confirm still names its target.
+                    const idx = item.session.wines.findIndex((w) => w.id === wineId);
+                    const w = idx >= 0 ? item.session.wines[idx] : undefined;
+                    confirmDeleteRating(id, wineId, w ? (w._blind ? `Wine ${idx + 1}` : w.name) : '');
+                  }
+                : undefined
+            }
+          />
+        );
+      }
+      return (
+        <StandaloneFeedCard
+          author={item.author}
+          checkin={item.checkin}
+          createdAt={item.createdAt}
+          onPressAuthor={onPressAuthor}
+          onOpen={() => openImpression(id, 0)}
+          onToggleLike={(next) => toggleLike(id, next)}
+          onEdit={isOwner ? () => router.push(feedHref(tab, 'edit/[id]', { id: String(id), user: userParam })) : undefined}
+          onDelete={isOwner ? () => confirmDeleteCheckin(id, item.checkin.wineName) : undefined}
+        />
+      );
+    },
+    [openImpression, openAuthor, toggleLike, myUserId, userId, userParam, router, tab, confirmDeleteCheckin, confirmDeleteRating],
+  );
+
+  if (feed.isLoading && centerLoading) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+        <ActivityIndicator color={theme.inkSoft} />
+      </View>
+    );
+  }
+
+  if (conn === 'error') {
+    return (
+      <View style={{ flex: 1, paddingTop: contentTopPad }}>
+        {header}
+        <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1 }}>
+      {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
+      <FlatList
+        ref={listRef}
+        data={items}
+        keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
+        renderItem={renderItem}
+        ListHeaderComponent={header}
+        contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={pulling}
+            onRefresh={onPullRefresh}
+            tintColor={theme.inkSoft}
+            // The list has a top content pad (status bar / fixed bar). Without
+            // this the spinner draws ABOVE the visible area — "the list moves
+            // but no spinner shows". Offset it down into view by the same pad.
+            progressViewOffset={contentTopPad}
+          />
+        }
+        onEndReachedThreshold={0.6}
+        onEndReached={() => {
+          if (feed.hasNextPage && !feed.isFetchingNextPage) feed.fetchNextPage();
+        }}
+        ListFooterComponent={
+          feed.isFetchingNextPage ? (
+            <View style={{ paddingVertical: space.lg }}>
+              <ActivityIndicator color={theme.inkSoft} />
+            </View>
+          ) : undefined
+        }
+        ListEmptyComponent={
+          feed.hasNextPage || feed.isFetching ? (
+            // Nothing rendered yet but loading/paging/refetching is still in
+            // motion (e.g. draining an empty page) — keep a spinner, not the
+            // terminal empty copy.
+            <View style={{ paddingVertical: space.lg }}>
+              <ActivityIndicator color={theme.inkSoft} />
+            </View>
+          ) : (
+            empty
+          )
+        }
+      />
+    </View>
+  );
+}

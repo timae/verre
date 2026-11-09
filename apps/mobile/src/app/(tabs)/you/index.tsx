@@ -1,46 +1,11 @@
-import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { TAB_BAR_CLEARANCE } from '@/lib/layout';
-import { Button } from '@/components/ui/Button';
-import { VText } from '@/components/ui/VText';
+import { View } from 'react-native';
+import { ProfileScreen } from '@/components/profile/ProfileScreen';
 import { authClient } from '@/lib/authClient';
-import { space } from '@/theme';
 
+// The You tab's root: your own profile (handoff 04·R5c, step 1). Sign out,
+// About and the dev gallery moved to ⋯ → Settings.
 export default function You() {
-  const insets = useSafeAreaInsets();
-  const router = useRouter();
-  const { data: session } = authClient.useSession();
-  const [busy, setBusy] = useState(false);
-
-  const signOut = async () => {
-    setBusy(true);
-    // Must go through BA so the Redis-first session actually revokes.
-    await authClient.signOut();
-    setBusy(false);
-  };
-  const confirmSignOut = () => {
-    const who = session?.user.email || session?.user.name || '';
-    Alert.alert('Sign out?', `${who ? `You're signed in as ${who}. ` : ''}You can sign back in anytime.`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => void signOut() },
-    ]);
-  };
-
-  return (
-    <View style={{ flex: 1, paddingTop: insets.top + space.md, paddingHorizontal: space.lg, gap: space.md }}>
-      <VText variant="title">You</VText>
-      <View style={{ gap: space['2xs'] }}>
-        <VText variant="subhead">{session?.user.name ?? ''}</VText>
-        <VText variant="body" color="inkSoft">{session?.user.email ?? ''}</VText>
-      </View>
-      <View style={{ flex: 1 }} />
-      <Button title="About" variant="tertiary" onPress={() => router.push('/about')} />
-      {/* Testing phase (Simon, 2026-07-16): visible in release builds too —
-          re-gate on __DEV__ before a public launch. */}
-      <Button title="Dev Gallery" variant="tertiary" onPress={() => router.push('/you/dev-gallery')} />
-      <Button title="Sign Out" loadingTitle="Signing out…" variant="secondary" block loading={busy} onPress={confirmSignOut} style={{ marginBottom: insets.bottom + TAB_BAR_CLEARANCE }} />
-    </View>
-  );
+  const meId = authClient.useSession().data?.user.id;
+  if (meId == null) return <View style={{ flex: 1 }} />;
+  return <ProfileScreen userId={Number(meId)} root />;
 }
