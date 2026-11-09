@@ -193,9 +193,9 @@ Curator-gated, per the phase-1 permission map. Merge is pointer + lifecycle only
 
 ## Phase 4 — Integration-schema migration
 
-### 🔒 OPEN DEFECT: the fold functions have no `search_path` pin (found 2026-08-11)
+### ✅ OPEN DEFECT, RESOLVED 2026-08-11: the fold functions had no `search_path` pin
 
-**Reported by the catalog-maintenance side while staging the `search_path` handover note, and reproduced here. Not fixed — the fix is a coordinated change, see below.**
+**Reported by the catalog-maintenance side while staging the `search_path` handover note, and reproduced here.** ✅ **Fixed** by `20260811213521_catalog_fold_search_path_pin` (merged as `72647f0`), a coordinated change applied on both sides and measured on prod (`fold1:48ee6fc9…`, see below). The investigation below is kept as written.
 
 ⚠️ **Qualifying the probe CALL is not enough when the CALLEE'S BODY is unqualified.** The handshake query below schema-qualifies both the definitions and the probe invocation, each for a measured reason. But `catalog_fold_v1`'s own body calls `f_unaccent(...)` unqualified and carries no `proconfig` pin, so *executing* it still depends on the caller's `search_path`. Measured on PG 16:
 
