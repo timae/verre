@@ -72,7 +72,11 @@ export default function EditCheckinDetails() {
   // Cold deep link / stale store — nothing to edit; bounce to the list it
   // came from (this screen is mounted under Feed AND You).
   useEffect(() => {
-    if (!meta) router.replace(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
+    if (!meta) {
+      // On an opened post's stack a replace would land on the outer stack.
+      if (tab.post != null && router.canGoBack()) router.back();
+      else router.replace(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   if (!meta) return <View style={{ flex: 1 }} />;

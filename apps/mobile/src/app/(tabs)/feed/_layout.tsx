@@ -1,12 +1,12 @@
 import { Stack } from 'expo-router';
-import { SessionTabProvider } from '@/lib/sessionStack';
+import { SessionTabProvider, TAB_MOUNTS } from '@/lib/sessionStack';
 import { useTheme } from '@/theme';
 
 // ⚠️ Load-bearing: declaring a <Stack.Screen> below hoists that route to the
 // FRONT of the stack's route order, and react-navigation's default initial
 // route is the first one — without this anchor, a fresh mount of the Feed tab
-// (app reload → tab press) would cold-mount impression/[id] with no params →
-// the "This impression is gone" screen. Also anchors deep links so the list
+// (app reload → tab press) would cold-mount the post route `[id]` with no
+// params → the "This impression is gone" screen. Also anchors deep links so the list
 // sits beneath a cold-opened detail (back has somewhere to go).
 export const unstable_settings = { anchor: 'index' };
 
@@ -20,7 +20,7 @@ export default function FeedStack() {
   // The owning tab for every screen in this stack (lib/sessionStack.ts
   // useSessionTab): mount location, not the globally focused route.
   return (
-    <SessionTabProvider value="feed">
+    <SessionTabProvider value={TAB_MOUNTS.feed}>
     <Stack
       screenOptions={{
         headerShown: false,
@@ -31,16 +31,26 @@ export default function FeedStack() {
       }}
     >
       <Stack.Screen name="index" />
-      {/* The detail is a TRANSPARENT modal with no native animation: the
-          screen itself draws the shared-element open (hero clone grows out of
-          the tapped card's photo) and the pull-down dismiss (proposal 09),
+      {/* The opened post (`[id]/`, its own nested Stack — see
+          [id]/_layout.tsx) is a TRANSPARENT modal with no native animation:
+          the detail itself draws the shared-element open (hero clone grows out
+          of the tapped card's photo) and the pull-down dismiss (proposal 09),
           with the feed showing through underneath. gestureEnabled off — the
           pull-down IS the dismiss gesture; a native edge-swipe would pop the
-          route without reversing the presentation. */}
+          route without reversing the presentation. The route NAME must stay
+          wholly dynamic (`[id]`): expo-router only compares params for such
+          names when it resolves a push into an already-open stack
+          (resolveNavigationDestination routesMatch), so under a name like
+          `impression/[id]` post B resolved INTO post A's open stack. */}
       <Stack.Screen
-        name="impression/[id]"
+        name="[id]"
         options={{
-          presentation: 'transparentModal',
+          // CONTAINED (UIModalPresentationOverCurrentContext): the post covers
+          // this tab's stack, not the whole window, so the bottom nav (an
+          // overlay in the tabs layout) can still draw over the moment or
+          // profile pushed on the post's own stack (Simon, 2026-11-10). The
+          // tabs layout hides it on the post itself.
+          presentation: 'containedTransparentModal',
           animation: 'none',
           gestureEnabled: false,
           contentStyle: { backgroundColor: 'transparent' },

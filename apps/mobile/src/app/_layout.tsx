@@ -18,6 +18,7 @@ import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
 import { retirePreviousInstall } from '@/lib/previousInstall';
+import { useForwardedStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider, clearViewerCache } from '@/lib/query';
@@ -56,6 +57,9 @@ function RootNavigator() {
   // (lib/fullscreenViewer; the viewers' Modal is overFullScreen, so only the
   // root screen's trait reaches UIKit).
   const viewerOpen = useFullscreenViewerOpen();
+  // A photo-hero screen on an opened post's stack (a modal: its own trait is
+  // never asked) forwards its style here (lib/forwardedStatusBar).
+  const forwardedBarStyle = useForwardedStatusBarStyle();
   const { data: session, isPending } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
   // 🔒 The query cache is a process singleton and nearly everything in it is
@@ -162,7 +166,7 @@ function RootNavigator() {
           without their own style inherit the nearest ancestor's.
           statusBarHidden: same mechanism for the fullscreen photo viewers —
           their overFullScreen Modal is never asked, this root trait is. */}
-      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg }, fullScreenGestureEnabled: false, statusBarStyle: theme.scheme === 'dark' ? 'light' : 'dark', statusBarHidden: viewerOpen, statusBarAnimation: 'fade' }}>
+      <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: theme.bg }, fullScreenGestureEnabled: false, statusBarStyle: forwardedBarStyle ?? (theme.scheme === 'dark' ? 'light' : 'dark'), statusBarHidden: viewerOpen, statusBarAnimation: 'fade' }}>
         {/* 🔒 BOTH guards key on `sessionResolved`, so while the session is
             still pending past the splash deadline NEITHER group is mounted and
             no navigation decision is made. That is what preserves a protected

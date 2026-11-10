@@ -1,4 +1,4 @@
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,8 +16,8 @@ import {
   type CheckinPayload, type FeedItem, type SessionFeedWine,
 } from '@/lib/api/feed';
 import { authClient } from '@/lib/authClient';
-import { invalidateProfileHeader, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
-import { feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
+import { invalidateProfileHeader, markFeedPostDeleted, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
+import { closeOpenedPost, feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { ApiError } from '@/lib/api/sessions';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { clearCheckinEditMeta, getCheckinEditMeta, setCheckinEditMeta } from '@/lib/checkinEdit';
@@ -45,10 +45,14 @@ import { radius, useTheme } from '@/theme';
 export default function EditFeedPost() {
   const { theme } = useTheme();
   const router = useRouter();
+  const navigation = useNavigation();
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
-  const { id, wine: wineParam, user } = useLocalSearchParams<{ id: string; wine?: string; user?: string }>();
-  const feedItemId = Number(id);
+  const { id, postId, wine: wineParam, user } = useLocalSearchParams<{ id: string; postId?: string; wine?: string; user?: string }>();
+  // Mounted on a tab stack (`edit/[id]`) or on an opened post's own stack
+  // (`[id]/edit/[postId]`, where `id` is the opened post): the edited post is
+  // `postId` there.
+  const feedItemId = Number(postId ?? id);
   const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
   const tab = useSessionTab();
   const meId = authClient.useSession().data?.user.id;
@@ -170,10 +174,15 @@ export default function EditFeedPost() {
           refetchFeedCaches(queryClient);
           invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
           if (res.feedItemDeleted) {
+            markFeedPostDeleted(feedItemId);
             // The POST is gone. When the edit was opened from the impression
             // detail, plain back() would land on it — and that screen pins its
             // copy by design (frozen read surface), so it would render the
             // deleted post. Pop the whole way to the list it came from.
+            // On an opened post's stack: the opened post ITSELF went → close
+            // it whole (one modal; lib/sessionStack.ts closeOpenedPost);
+            // another post (a card) → back to the list on that stack.
+            if (tab.post === String(feedItemId) && closeOpenedPost(navigation, tab.post)) return;
             router.dismissTo(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
             return;
           }

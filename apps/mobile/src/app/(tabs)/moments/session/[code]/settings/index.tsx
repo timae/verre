@@ -1,4 +1,4 @@
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, ScrollView, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,6 +26,7 @@ export default function SettingsHub() {
   const code = String(raw ?? '');
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const navigation = useNavigation();
   const sessionTab = useSessionTab();
   const { data: auth } = authClient.useSession();
   const myIdentityId = auth ? `u:${auth.user.id}` : '';
@@ -68,7 +69,35 @@ export default function SettingsHub() {
           onPress: async () => {
             try {
               await deleteMoment(code);
-              router.replace(tabHomeHref(sessionTab));
+              if (sessionTab.post != null) {
+                // Opened from inside an opened post: back to the screen that
+                // OPENED the moment (Simon, 2026-11-09), usually the post, or
+                // a profile on the post's stack. Pop the moment's screens and
+                // everything above them; a replace would leave the dead moment
+                // underneath. No line-up below (a link straight to settings):
+                // just this screen.
+                // TARGETED at this screen's own stack and counted from its
+                // state NOW: the delete awaited the network, and an untargeted
+                // pop would hit whichever tab is in front by then (Codex).
+                const st = navigation.getState();
+                if (!st) return;
+                const routes = st.routes;
+                const lastAt = (name: string) => {
+                  for (let i = routes.length - 1; i >= 0; i--) {
+                    const p = routes[i].params as { code?: string } | undefined;
+                    if (routes[i].name === name && p?.code === code) return i;
+                  }
+                  return -1;
+                };
+                const lineup = lastAt('session/[code]/index');
+                const from = lineup > 0 ? lineup : lastAt('session/[code]/settings/index');
+                // Already backed out of the deleted moment while the request
+                // ran: nothing of it is left to pop (Codex).
+                if (from < 1) return;
+                navigation.dispatch({ type: 'POP', payload: { count: routes.length - from }, target: st.key, source: undefined });
+              } else {
+                router.replace(tabHomeHref(sessionTab.tab));
+              }
             } catch (e) {
               const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
               Alert.alert('Could not delete', msg || 'Check your connection and try again.');

@@ -17,6 +17,7 @@ import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
 import { viewerCacheEpoch } from '@/lib/query';
 import { GUTTER } from '@/lib/layout';
 import { useTheme } from '@/theme';
+import { settingsHref, useSessionTab } from '@/lib/sessionStack';
 
 // A person's profile (handoff 04 "You", step 1 — no bio, cover or editing):
 // the You tab's root for yourself (`root`), and a screen pushed on the Feed /
@@ -32,6 +33,9 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
+  // Where this profile is mounted (a tab stack or an opened post's stack):
+  // the Settings push follows it (lib/sessionStack.ts settingsHref).
+  const mount = useSessionTab();
   const queryClient = useQueryClient();
   const meId = authClient.useSession().data?.user.id;
   const own = meId != null && Number(meId) === userId;
@@ -166,7 +170,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         label="Settings"
         onPress={() => {
           close();
-          router.push('/you/settings');
+          router.push(settingsHref(mount));
         }}
       />
     </>

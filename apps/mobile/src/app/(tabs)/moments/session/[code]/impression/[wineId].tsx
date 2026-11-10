@@ -45,6 +45,7 @@ import {
 } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
@@ -389,6 +390,13 @@ export default function ImpressionDetail() {
   // in when the on-screen name scrolls under the header — mock measures
   // heroName.bottom <= header.bottom on every scroll tick.
   const [titleShown, setTitleShown] = useState(false);
+  // Same value as the screen option below; forwarded to the root while this
+  // screen sits on an opened post's stack, where its own option is never asked
+  // (lib/forwardedStatusBar). Computed here: a hook can't follow the early
+  // return.
+  useForwardStatusBarStyle(
+    wine && !wine._blind && !!wine.imageUrl && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark',
+  );
   // Top-overscroll flag: while the hero detaches with the rubber band its
   // square top corners get a soft radius (flush full-bleed at rest).
   const [pulled, setPulled] = useState(false);

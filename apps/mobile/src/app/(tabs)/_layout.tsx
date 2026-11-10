@@ -18,6 +18,14 @@ import { useTheme } from '@/theme';
 // pill is the design's own .tabbar-float anyway; classic JS tabs render it
 // deterministically. NativeTabs' baseline quirks (SF-symbol optical boxes)
 // went with it.
+// The opened post itself (`[id]` under Feed / You, numeric feed-item ids), a
+// post opened as a card on its stack, and the post edit there (its sticky
+// Save / Done bars, like /feed/edit): no bottom nav. The rest of the post's
+// stack (a moment, a profile, settings) follows the normal rules below.
+// About / Attributions mirrored there too: they are designed without the pill
+// (no TAB_BAR_CLEARANCE), as at the app root.
+const OPENED_POST_PATH = /^\/(feed|you)\/\d+(\/(post|edit)\/[^/]+|\/about|\/attributions)?\/?$/;
+
 export default function TabsLayout() {
   const { theme } = useTheme();
   const router = useRouter();
@@ -67,11 +75,13 @@ export default function TabsLayout() {
   const hidden =
     overlayHidesBar ||
     keyboardShown ||
-    // Matches BOTH impression surfaces: 02e (/moments/…/impression/, footer
-    // bar replaces the nav) AND the read-only feed detail (/feed/impression/,
-    // no footer — Simon's ruling 2026-07-08: immersive, no bottom nav; the
-    // floating back button is the only chrome).
+    // 02e, the moment impression (/…/impression/<wineId>, its footer bar
+    // replaces the nav), on every mount.
     pathname.includes('/impression/') ||
+    // The opened post (/feed/<id>, a card /feed/<id>/post/<postId>): immersive,
+    // no bottom nav (Simon, 2026-07-08). A moment or profile pushed on the
+    // post's stack shows it like anywhere else (Simon, 2026-11-10).
+    OPENED_POST_PATH.test(pathname) ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
     pathname.includes('/feed/check-in') || // both check-in create stages (sticky Rate It / Check In bars)
