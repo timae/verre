@@ -84,8 +84,9 @@ function dayEndISO(d: Date | null): string | null {
 // surfaced in the home carousel). Sorted by effective date (set date, else
 // created) newest-first — NOT by the server's activity order, so a recent
 // visit doesn't jump the date sort. Rows push back into the session: a
-// date-past session is often still Redis-alive and opens normally; a truly
-// expired one lands on the session screen's "This moment has ended" state.
+// date-past moment opens normally (a Postgres-backed one is reopenable
+// whatever its age); one deleted since the list loaded lands on the session
+// screen's "This moment isn't available" state.
 export default function AllMoments() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
@@ -356,7 +357,7 @@ export default function AllMoments() {
             contentContainerStyle={{
               paddingHorizontal: GUTTER,
               paddingTop: phone.lerp(4, 8),
-              paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
+              paddingBottom: TAB_BAR_CLEARANCE,
             }}
             ItemSeparatorComponent={() => <View style={{ height: 1, backgroundColor: theme.ruleSoft }} />}
             keyboardShouldPersistTaps="handled"

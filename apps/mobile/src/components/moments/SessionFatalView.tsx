@@ -24,12 +24,15 @@ export function SessionFatalView({
   let title = 'Something went wrong';
   let body = 'Try again in a moment.';
   if (fatal.kind === 'not-found') {
-    title = 'This moment has ended';
-    body = 'The session is no longer live.';
+    // One neutral text whether or not this screen ever showed the moment
+    // (Simon, 2026-11-10). App users are signed in, so every moment they open
+    // is reopenable whatever its age: "ended" never applies to them.
+    title = "This moment isn't available";
+    body = 'It may have been deleted.';
   } else if (fatal.kind === 'removed') {
     if (removedKind === 'banned') {
-      title = 'You have been banned from this session';
-      body = `The host${sessionLabel ? ` of ${sessionLabel}` : ''} banned you. Your ratings and notes from this session have been removed.`;
+      title = 'You have been banned from this moment';
+      body = `The host${sessionLabel ? ` of ${sessionLabel}` : ''} banned you. Your ratings and notes from this moment have been removed.`;
     } else {
       title = 'You were removed';
       body = 'The host removed you from this moment. You can rejoin with the code.';
@@ -43,7 +46,9 @@ export function SessionFatalView({
       <VText style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('subhead'), textAlign: 'center' }}>{title}</VText>
       <VText color="inkSoft" style={{ textAlign: 'center', ...phone.text('small'), maxWidth: 280 }}>{body}</VText>
       {fatal.kind === 'http' ? <Button title="Try Again" onPress={onRetry} style={{ marginTop: 10 }} /> : null}
-      <Button title="Back to Moments" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
+      {/* Plain "Back": this view is mounted on Moments, Feed, You and an
+          opened post's stack, so it can't name where back lands. */}
+      <Button title="Back" variant="secondary" onPress={onBack} style={{ marginTop: fatal.kind === 'http' ? 0 : 10 }} />
     </View>
   );
 }

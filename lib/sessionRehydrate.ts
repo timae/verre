@@ -19,7 +19,7 @@ import type { SessionMeta, WineMeta, RatingMeta } from '@/lib/session'
 // RECONCILED both ways against the record), and never writes Postgres.
 //
 // 🔒 'restoring' is a 503 + Retry-After, never a 404: mobile maps 404 to the
-// terminal "This moment has ended". A live Postgres row never produces a 404.
+// terminal "This moment isn't available". A live Postgres row never produces a 404.
 // 🔒 List and enrichment reads (/api/me/sessions, lib/sessionFeedWines.ts) never
 // rebuild — only opening one moment does.
 

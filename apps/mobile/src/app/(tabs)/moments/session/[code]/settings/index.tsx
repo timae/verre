@@ -144,7 +144,7 @@ export default function SettingsHub() {
             />
             <ScrollView
               style={{ flex: 1 }}
-              contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+              contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: TAB_BAR_CLEARANCE }}
               showsVerticalScrollIndicator={false}
             >
               <ReadCard

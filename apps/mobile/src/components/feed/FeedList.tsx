@@ -3,7 +3,6 @@ import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useNavigation, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, RefreshControl, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
 import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
@@ -50,7 +49,6 @@ export function FeedList({
   // The list's vertical offset, per scroll frame (the profile's bar title).
   onScrollY?: (y: number) => void;
 }) {
-  const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
   const tab = useSessionTab();
@@ -325,7 +323,7 @@ export function FeedList({
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
         renderItem={renderItem}
         ListHeaderComponent={header}
-        contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+        contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: TAB_BAR_CLEARANCE }}
         showsVerticalScrollIndicator={false}
         onScroll={onScrollY ? (e) => onScrollY(e.nativeEvent.contentOffset.y) : undefined}
         scrollEventThrottle={onScrollY ? 16 : undefined}

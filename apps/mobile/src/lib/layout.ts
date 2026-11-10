@@ -161,14 +161,20 @@ export function usePhoneTokens() {
 // break the control: score numerals, invite/join codes, compact badges/counters,
 // constrained carousel labels, countdown cells, and numeric picker fields.
 
-// Bottom padding for scroll content above the floating pill tab bar
-// (PillTabBar, ADR-0006). The pill is an absolute overlay — nothing insets
-// content for it — so this is REAL clearance now (it was 16px breathing room
-// in the NativeTabs era, when the RNS tab host auto-inset for the bar):
-// bar ≈ 60 (icon 24 + gap 3 + label 13 + 2×2 item pad + 2×8 bar pad)
-// + 14 bottom margin + ~24 breathing. Consumers add their own insets.bottom
-// (`insets.bottom + TAB_BAR_CLEARANCE`), matching the bar's own offset.
-export const TAB_BAR_CLEARANCE = 96;
+// The floating pill tab bar's bottom edge (PillTabBar, ADR-0006): 21pt above
+// the PHYSICAL screen edge on every phone, home-button ones included. It
+// ignores the bottom safe area on purpose and sits over the home indicator,
+// like the iOS 26 floating tab bar (21pt inset). Sides are unchanged.
+export const TAB_BAR_BOTTOM = 21;
+
+// Bottom padding for scroll content above the pill. The pill is an absolute
+// overlay (nothing insets content for it), so this is real clearance: its
+// bottom offset + bar ≈ 60 (icon 24 + gap 3 + label 13 + 2×2 item pad + 2×8
+// bar pad) + ~22 breathing, the same 82pt above the pill's bottom edge it had
+// at 14 + insets.bottom. Use it ALONE, never `insets.bottom + …`: the pill no
+// longer moves with the safe area, so neither does its clearance (gated by
+// scripts/check-mobile-design-tokens.mjs).
+export const TAB_BAR_CLEARANCE = TAB_BAR_BOTTOM + 82;
 
 // Horizontal screen gutter. 22 nearly everywhere; the impression detail (02e)
 // deliberately uses 20 (a per-screen override — pass it locally, don't change

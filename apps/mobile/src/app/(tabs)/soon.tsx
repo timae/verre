@@ -10,7 +10,7 @@ import { space } from '@/theme';
 export default function Soon() {
   const insets = useSafeAreaInsets();
   return (
-    <View style={{ flex: 1, paddingTop: insets.top + space.md, paddingHorizontal: space.lg, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
+    <View style={{ flex: 1, paddingTop: insets.top + space.md, paddingHorizontal: space.lg, paddingBottom: TAB_BAR_CLEARANCE }}>
       <VText variant="title">Soon</VText>
       <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.xs }}>
         <VText variant="subhead">Something is brewing</VText>

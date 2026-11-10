@@ -102,7 +102,7 @@ export default function Moments() {
         // flex:1 keeps the gesture surface full-height, so pull-to-refresh
         // still engages on a short list.
         paddingTop: insets.top + 8,
-        paddingBottom: insets.bottom + TAB_BAR_CLEARANCE,
+        paddingBottom: TAB_BAR_CLEARANCE,
       }}
       refreshControl={
         // Pull-to-refresh re-pulls the whole list: live/past status, taster +

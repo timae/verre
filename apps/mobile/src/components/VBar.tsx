@@ -21,12 +21,15 @@ export function VBar({
   titleShown,
   titleLeading,
   back = true,
+  onBack,
 }: {
   title: string;
   right?: React.ReactNode;
   titleShown?: boolean;
   titleLeading?: React.ReactNode;
   back?: boolean;
+  /** Replaces the default router.back() (e.g. a stack-root fallback). */
+  onBack?: () => void;
 }) {
   const { theme } = useTheme();
   const router = useRouter();
@@ -42,7 +45,7 @@ export function VBar({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Back"
-          onPress={() => router.back()}
+          onPress={onBack ?? (() => router.back())}
           hitSlop={8}
           style={({ pressed }) => ({ width: controlSize, height: controlSize, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
         >

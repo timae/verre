@@ -41,7 +41,7 @@ export default function Settings() {
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title="Settings" />
       </View>
-      <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
+      <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: TAB_BAR_CLEARANCE }}>
         <SetGroup>
           <SetNav icon="link" label="Help & About" onPress={() => router.push(legalHref(mount, 'about'))} />
         </SetGroup>
