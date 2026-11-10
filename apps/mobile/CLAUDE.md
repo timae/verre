@@ -477,7 +477,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - ✅ **DONE — `ClampText`** promoted to `components/ui/ClampText.tsx` (the feed impression detail became its second consumer; 02e now imports it). `OvcAbout`'s description block is still a copy — migrate when next touched.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
-- **Feed post detail bar title → `BarTitle`** — `feed/impression/[id].tsx` still renders its own title (same type, but it POPS in on `solid` instead of fading, and it is tappable → About). Adopting `BarTitle` (with a press slot) changes that behaviour: a design call, not a refactor.
+- **Feed post detail bar title → `BarTitle`** — `feed/[id]/index.tsx` still renders its own title (same type, but it POPS in on `solid` instead of fading, and it is tappable → About). Adopting `BarTitle` (with a press slot) changes that behaviour: a design call, not a refactor.
 - ✅ **DONE (partial) — `<CenteredMessage>`** built in `ui/ConnectionState.tsx` and adopted in the edit-impression screen (in the primitives list above). **The FatalView copy is now SHARED but still un-migrated**: `SessionFatalView` (`moments/SessionFatalView.tsx`, extracted from index.tsx for Compare) still hand-rolls the flex-center layout because `<CenteredMessage>` has no button/footer slot — extend CenteredMessage with a footer slot, then adopt it there. Still open: decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
 - **Shared layout constants** — `GUTTER` (`=22`, the intentional `20` in `impression/[wineId].tsx` is a documented override), `FOOT_CLEARANCE`, are re-declared per-file ~8× / ~5×. Move to `lib/layout.ts` (alongside `TAB_BAR_CLEARANCE`) so the one intentional override is visible.
 - Also noted: `DateField` (`momentForm.tsx`) hand-rolls its OWN `Modal`+scrim bottom-sheet (not `ui/Sheet`) to host the OS date picker — justified, but reuse IT if you need a native-picker-in-a-sheet rather than rolling a third.
@@ -703,16 +703,19 @@ The session screens (`moments/session/[code]/…`) are mounted under THREE tab
 stacks: Moments owns the source files; `app/(tabs)/feed/session/[code]/…` and
 `app/(tabs)/you/session/[code]/…` mirror them as thin re-exports, so entering
 a moment from a post (feed or profile) keeps back-nav on that tab. Likewise
-the POST sub-tree (`feed/impression/[id]`, `feed/edit/[id]`,
-`feed/edit/details`, `feed/u/[id]`) is owned by Feed and mirrored under You.
-Two rules follow:
+the POST sub-tree (`feed/[id]/…`, `feed/edit/[id]`, `feed/edit/details`,
+`feed/u/[id]`) is owned by Feed and mirrored under You. The OPENED POST
+(`feed/[id]/`) has its OWN nested Stack (see the next section), so the
+sub-trees mount there too. Two rules follow:
 
 - ⚠️ **Never hardcode `/(tabs)/moments/session/...` in a push/replace inside
   the sub-tree** (or in a hook the sub-tree calls) — it would silently hop a
   feed-stack visitor over to the Moments tab. Use `useSessionTab()` +
   `sessionHref()` / `tabHomeHref()` from `lib/sessionStack.ts` (the one place
   allowed to cast a computed pathname to a typed `Href`); the post sub-tree
-  uses `feedHref()` / `feedListHref()` from the same file. Post routes carry
+  uses `feedHref()` / `feedListHref()` from the same file. `useSessionTab()`
+  returns a MOUNT (`{ tab, post? }`): every builder takes it, so a caller
+  never decides between the tab stack and an opened post's stack itself. Post routes carry
   `?user=<id>` when opened from a profile list: the detail + edit screens read
   THAT list's cache (`feedQueryOptions(user)`), and the "post is gone" exits
   land back on that list. 🔒 `useSessionTab()` reads the owning tab from
@@ -723,8 +726,10 @@ Two rules follow:
   focused tab and push onto the wrong stack. A new tab stack must provide it. Entry points that
   genuinely live on one tab (moments home/recents/join/create) keep their
   absolute paths.
-- **A new session screen needs its mirror files** under `feed/session/` AND
-  `you/session/` (a new post-sub-tree screen: under `you/`), and a
+- **A new session screen needs its mirror files** under `feed/session/`,
+  `you/session/`, `feed/[id]/session/` AND `you/[id]/session/` (four
+  one-line re-exports; a new post-sub-tree screen: under `you/`, and on the
+  post's stack if it can be opened from a post), and a
   suffix-friendly entry in the tabs layout's bar-hide matcher if it hides the
   pill — the matchers are suffix-based on purpose so they cover every mount;
   `/feed/edit` is the exception, so `/you/edit` sits beside it).
@@ -735,11 +740,116 @@ Two rules follow:
   Router patches and was rejected as too much maintenance (Simon, 2026-07-13).
   Revisit only when the upstream stack exposes a distinct backdrop event.
 
-The feed impression detail (`feed/impression/[id]`) is a TRANSPARENT modal
-that draws its own shared-element open / pull-down close (proposal 09; source
-frame handed off via `lib/feedTransition.ts`). Don't give it a native
+The feed impression detail (`feed/[id]`, the opened post) is a CONTAINED
+TRANSPARENT modal (`containedTransparentModal` = OverCurrentContext since
+2026-11-10, so the bottom nav can draw over the screens pushed on its own
+stack) that draws its own shared-element open / pull-down close (proposal 09;
+source frame handed off via `lib/feedTransition.ts`). Don't give it a native
 animation or re-enable its native back gesture — both would pop the route
 without reversing the presentation.
+
+### The opened post's own stack (2026-11-09)
+
+`feed/[id]/_layout.tsx` (mirrored `you/[id]/_layout.tsx`, which re-exports
+`default` AND `unstable_settings`) is a nested Stack inside that modal:
+`index` = the detail; `session/[code]/…` (7 mirrors), `u/[personId]` (its own
+wrapper: `id` is taken by the post) and `post/[postId]` (the SAME detail in
+CARD MODE) are its children. Anything opened FROM the post (the place line's
+moment, the author's avatar + name, a post on a profile opened from there)
+pushes onto THIS stack as a real card: swipe-back, no page sheet, no modal on
+modal. All of them are siblings, so no route tree nests inside itself.
+react-native-screens draws no container background for a stack inside a
+transparent presentation, so the feed still shows through while `index` opens.
+
+- 🔒 **The outer route name must stay wholly dynamic (`[id]`, URL
+  `/feed/<id>`).** expo-router compares params only for names that are a
+  single dynamic segment when it resolves a push into an already-open stack
+  (`resolveNavigationDestination` `routesMatch`): under the old
+  `impression/[id]`, pushing post B while post A's child was open resolved
+  INTO A's stack (and the singular filter even dropped A's index). Verified
+  with the in-memory router driver `.local/opened-post-stack/router-sim/`
+  (the real expo-router 58 reducer over the real `src/app` tree; rerun it
+  after any route-tree change).
+- **The mount descriptor** (`lib/sessionStack.ts`): the post's layout
+  re-provides `SessionTabProvider` as `{ tab: <enclosing>, post: <id> }`,
+  pinned at first render. Every builder takes the mount: `sessionHref`,
+  `feedHref('post' | 'profile' | 'edit' | 'edit/details')` and `settingsHref`
+  go onto the post's stack when called from inside it (`[id]/edit/[postId]`,
+  `[id]/edit/details` and `[id]/settings` are mirrors there; the edit slides
+  up with no swipe-back so it reads like the outer full-screen edit);
+  `feedListHref` with a post mount = the profile on that stack; `tabHomeHref`
+  is the TAB root only (a "mount home" would be the post).
+- 🔒 **Nothing may be presented on the OUTER tab stack while a post is open.**
+  A native modal (the outer `fullScreenModal` edit) over the contained post
+  hung the app (device pass 2026-11-10), and react-native-screens' own
+  current-context fallback dismisses only the topmost of two modals removed
+  together (Codex). So every screen reachable from inside a post lives on the
+  post's stack (Settings hides its Dev Gallery row there, an outer-You push),
+  and the post's "post is gone" exits are plain pops on it.
+- **The post id comes from the stack, not the detail's params.** An anchored
+  `index` (a cold link to a child, or `withAnchor`) gets no params of its own
+  (cold anchors copy dynamic params only, so `user` stays on the child), so
+  the detail reads `useSessionTab().post`. Such an index reads the network
+  feed's cache (no `user`), like a cold link to the post itself: a post that
+  isn't in a loaded page shows the existing "This impression is gone" state.
+- **Card mode** (`postId` present): the card's one-shot transition source is
+  CONSUMED and discarded (left in the store it would animate the next modal
+  detail within 1.5 s), no pull-down (`dismissible`), the back ARROW (the
+  modal keeps its down chevron), its list is the profile on the post's stack.
+  Card visits are FRESH pushes (`FeedList` drops `dangerouslySingular` inside
+  a post: singular MOVES an earlier visit to the top, so A → P → B → Q → B
+  would lose history); a 700 ms debounce swallows a double tap instead.
+- **Deleting the post the stack hangs off closes the whole opened post.**
+  The only post that can sit on one stack twice is the owning one (your own
+  post A → your profile → A as a card); deleting or emptying it from the
+  card, its edit, or the profile list's ⋯ would otherwise uncover the modal's
+  pinned copy. `closeOpenedPost` (`lib/sessionStack.ts`) pops the outer `[id]`
+  route (one modal, its whole stack with it); any other post-gone exit pops
+  just the card (or `dismissTo`s the nested list). 🔒 Every explicit
+  deletion also calls `markFeedPostDeleted` (`lib/feedCache.ts`): with the
+  bar visible inside a post you can switch tabs and delete the same post
+  elsewhere, so every mounted detail of a deleted post drops its pinned copy
+  (renders "gone") and closes itself when it regains focus.
+- **Landing: the FOCUSED detail owns it.** Landing callbacks are global per
+  post, so a card of the same post moves the card under the modal too; the
+  modal re-asserts its active slide on every refocus and before a close.
+- **Status bar**: under the old OverFullScreen modal nothing on the post's
+  stack was asked (the RNS trait walk stops at a presented screen), so a
+  photo-hero screen there forwards its style to the ROOT Stack through
+  `lib/forwardedStatusBar.ts` (focus-scoped, latest wins, a no-op outside a
+  post). The contained modal may be asked by UIKit itself, so every screen
+  there ALSO carries the same value as its own option (the post's Stack sets
+  the themed default; a screen without one would report `auto`): two
+  channels, one value. The line-up and the moment impression
+  call `useForwardStatusBarStyle` with the same value as their screen option,
+  and the post detail itself forwards white glyphs while its active photo is
+  under the bar (fully open, not collapsed, not mid-dismiss; device pass
+  2026-11-10: they were dark on the light theme). A NEW photo-hero screen that
+  can open from a post must forward too.
+- **Android back** on the detail is focus-scoped (`useFocusEffect`): with a
+  card on top, back pops that card. Card mode registers none.
+- **Delete-moment bounce**: from a moment on a post's stack, back to the
+  screen that OPENED the moment (pop the moment and everything above it,
+  ruled 2026-11-09); elsewhere the tab root, as before. The pop is TARGETED
+  at the settings screen's own stack and counted after the delete resolves:
+  an untargeted pop hit whichever tab was in front by then (Codex).
+- **Bottom nav**: hidden on the post itself and on a card-mode post
+  (`OPENED_POST_PATH` in the tabs layout); a moment or profile pushed on the
+  post's stack shows it under the normal rules (ruled 2026-11-10: hiding it
+  there confused). It can only draw there because the post is a CONTAINED
+  modal: a plain `transparentModal` (OverFullScreen) covers the whole window,
+  pill included. The highlighted tab stays the one whose history you are in
+  (Feed / You), not Moments.
+- **Author tap** on the post: pushes the author's profile on the post's
+  stack, or, when the post was opened from that person's own list, CLOSES the
+  post back onto it (ruled 2026-11-10: an inert tap read as dead).
+- Settings from your own profile opened inside a post is the mirror on the
+  post's stack (`settingsHref`), and so are its Help & About + Attributions
+  (`legalHref`; the pill is hidden on them, as at the root). A root push from
+  inside a post landed behind the presented post (device pass 2026-11-10:
+  back came out on You). 🔒 The ROOT `/about` + `/attributions` stay the
+  canonical, signed-out-reachable routes (§ About / Attributions); the
+  mirrors are extra entry points only.
 
 ## Theme / design
 
@@ -835,9 +945,9 @@ without reversing the presentation.
 
 As-built 2026-11-09 (plan `.local/you-profile/step1-plan.md`). Your own profile
 is the You tab's root; someone else's is `feed/u/[id]` (mirrored `you/u/[id]`),
-pushed from a post's author (avatar + name on the feed CARDS only — the opened
-post stays non-tappable until its own nested stack exists, a planned
-follow-up). Tapping yourself on a card pushes the own variant with back; on
+pushed from a post's author (avatar + name on the feed cards, and on the
+opened post, where it pushes `[id]/u/[personId]` on the post's own stack; inert
+when the post was opened from that person's list). Tapping yourself on a card pushes the own variant with back; on
 that person's own list the tap is a no-op. Step 2 adds bio, cover, long-press
 editing and the cover hero (04·R5i·b).
 
@@ -887,7 +997,8 @@ editing and the cover hero (04·R5i·b).
 - **Deviations (flagged):** name = `heading` bold (mock 26/700, no 26 token);
   the average numeral is StarScore's accent (mock: ink); empty tiles drop the
   mock's 1px outline (no-borders ruling); the own-variant Settings row pushes
-  `/you/settings` even from the Feed stack.
+  `/you/settings` even from the Feed stack (inside an opened post: the mirror
+  on the post's stack, `settingsHref`).
 - `you/settings.tsx` is INTERIM (Help & About, Dev Gallery, Sign Out).
   `Button` gained `icon` (leading glyph); `VBar` gained `back` /
   `titleShown` / `titleLeading`; `Avatar` gained `tint` (the

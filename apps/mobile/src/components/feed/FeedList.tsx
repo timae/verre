@@ -1,6 +1,6 @@
 import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { useFocusEffect, useRouter, useScrollToTop } from 'expo-router';
+import { useFocusEffect, useNavigation, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,10 +10,14 @@ import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/Co
 import { FEED_STALE_MS, deleteCheckin, feedItemId, feedKey, feedQueryOptions, patchSessionRating, type FeedAuthor, type FeedItem } from '@/lib/api/feed';
 import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
-import { invalidateProfileHeader, refetchFeedCaches, toggleFeedLike, updateFeedCaches } from '@/lib/feedCache';
+import { invalidateProfileHeader, markFeedPostDeleted, refetchFeedCaches, toggleFeedLike, updateFeedCaches } from '@/lib/feedCache';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
-import { feedHref, useSessionTab } from '@/lib/sessionStack';
+import { closeOpenedPost, feedHref, useSessionTab } from '@/lib/sessionStack';
 import { space, useTheme } from '@/theme';
+
+// A second tap on a card inside an opened post's stack within this window is
+// the same tap, not a new visit (card pushes there are not singular).
+const CARD_OPEN_DEBOUNCE_MS = 700;
 
 // THE post list (proposal 08), shared by the Feed tab (the caller's network,
 // `userId` absent) and the profile screens (one person's posts, `userId`).
@@ -119,21 +123,35 @@ export function FeedList({
 
   const toggleLike = useCallback((id: number, next: boolean) => toggleFeedLike(queryClient, id, next), [queryClient]);
 
+  // Open a post. On a tab stack it is the transparent-modal detail, pushed
+  // singular (a double tap can't stack two). Inside an opened post's own stack
+  // (this list is a profile pushed there) it is a CARD push of the detail, and
+  // a FRESH visit every time: singular would MOVE an earlier visit of the same
+  // post to the top (A → P → B → Q → B, back from Q would skip the B that
+  // opened it), so only a quick second tap is swallowed (Codex r2).
+  const lastCardOpen = useRef(0);
   const openImpression = useCallback(
     (id: number, wineIndex: number) => {
-      router.push(feedHref(tab, 'impression/[id]', { id: String(id), index: String(wineIndex), user: userParam }), {
-        dangerouslySingular: true,
-      });
+      const href = feedHref(tab, 'post', { id: String(id), index: String(wineIndex), user: userParam });
+      if (tab.post == null) {
+        router.push(href, { dangerouslySingular: true });
+        return;
+      }
+      const now = Date.now();
+      if (now - lastCardOpen.current < CARD_OPEN_DEBOUNCE_MS) return;
+      lastCardOpen.current = now;
+      router.push(href);
     },
     [router, tab, userParam],
   );
 
-  // A post's author → their profile, pushed on this stack. On that person's
-  // own profile list the tap is a no-op (it IS the screen underneath).
+  // A post's author → their profile, pushed on this stack (or on the opened
+  // post's stack). On that person's own profile list the tap is a no-op (it
+  // IS the screen underneath).
   const openAuthor = useCallback(
     (author: FeedAuthor) => {
       if (author.id === userId) return;
-      router.push(feedHref(tab, 'u/[id]', { id: String(author.id) }));
+      router.push(feedHref(tab, 'profile', { id: String(author.id) }));
     },
     [router, tab, userId],
   );
@@ -149,13 +167,21 @@ export function FeedList({
   // via the empty-PATCH reap path; the post itself only disappears when that
   // was its last content. Either way every feed cache drops it and the lists
   // refetch IN PLACE (never invalidate — the scroll-creep rule above).
+  const navigation = useNavigation();
   const deleteBusy = useRef(false);
   const runDelete = useCallback(
-    async (op: () => Promise<unknown>, applyToCache: (item: FeedItem) => FeedItem | null) => {
+    async (postId: number, op: () => Promise<{ feedItemDeleted: boolean } | void>, applyToCache: (item: FeedItem) => FeedItem | null) => {
       if (deleteBusy.current) return;
       deleteBusy.current = true;
       try {
-        await op();
+        const res = await op();
+        // This list sits on an opened post's stack and the post that went is
+        // THAT post (your own post A → your profile → delete A here): close
+        // the whole opened post, its modal pins a copy of the deleted post.
+        const postGone = !res || res.feedItemDeleted;
+        // Every mounted detail of it, on any tab, drops its pinned copy.
+        if (postGone) markFeedPostDeleted(postId);
+        if (postGone && tab.post === String(postId)) closeOpenedPost(navigation, tab.post);
         // Reflect the delete in the caches IMMEDIATELY (like-flow pattern) —
         // waiting for the refetch alone leaves the deleted card actionable,
         // and a second delete would 404 (Codex). The awaited refetch then
@@ -171,7 +197,7 @@ export function FeedList({
         deleteBusy.current = false;
       }
     },
-    [queryClient, myUserId],
+    [queryClient, myUserId, tab, navigation],
   );
   // Destructive confirms always NAME what's being deleted (Simon, 2026-07-18).
   const confirmDeleteCheckin = useCallback(
@@ -186,6 +212,7 @@ export function FeedList({
             style: 'destructive',
             onPress: () =>
               runDelete(
+                id,
                 () => deleteCheckin(id),
                 (it) => (feedItemId(it) === id ? null : it),
               ),
@@ -207,6 +234,7 @@ export function FeedList({
             style: 'destructive',
             onPress: () =>
               runDelete(
+                id,
                 () => patchSessionRating(id, { wineId, score: 0, flavors: {}, aromas: [], notes: '' }),
                 // Drop the cleared wine from the post; drop the whole post
                 // when that was its last impression (the server reaps it).
@@ -240,7 +268,7 @@ export function FeedList({
             onPressAuthor={onPressAuthor}
             onOpenImpression={(wineIndex) => openImpression(id, wineIndex)}
             onToggleLike={(next) => toggleLike(id, next)}
-            onEdit={isOwner ? (wineId) => router.push(feedHref(tab, 'edit/[id]', { id: String(id), wine: wineId, user: userParam })) : undefined}
+            onEdit={isOwner ? (wineId) => router.push(feedHref(tab, 'edit', { id: String(id), wine: wineId, user: userParam })) : undefined}
             onDeleteRating={
               isOwner
                 ? (wineId) => {
@@ -263,7 +291,7 @@ export function FeedList({
           onPressAuthor={onPressAuthor}
           onOpen={() => openImpression(id, 0)}
           onToggleLike={(next) => toggleLike(id, next)}
-          onEdit={isOwner ? () => router.push(feedHref(tab, 'edit/[id]', { id: String(id), user: userParam })) : undefined}
+          onEdit={isOwner ? () => router.push(feedHref(tab, 'edit', { id: String(id), user: userParam })) : undefined}
           onDelete={isOwner ? () => confirmDeleteCheckin(id, item.checkin.wineName) : undefined}
         />
       );

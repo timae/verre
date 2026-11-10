@@ -2,6 +2,36 @@ import type { InfiniteData, QueryClient } from '@tanstack/react-query';
 import { FEED_KEY, feedItemId, setFeedItemLike, type FeedItem, type FeedPage } from '@/lib/api/feed';
 import { profileKey } from '@/lib/api/users';
 import { viewerCacheEpoch } from '@/lib/query';
+import { useSyncExternalStore } from 'react';
+
+// Posts this process saw deleted (a check-in DELETE, or the reap of a
+// session post's last rating). A post detail PINS its copy (it must never flip
+// to "gone" just because a refetch dropped a page-boundary item), so an
+// explicit deletion has to reach every mounted detail of that post, including
+// one on another tab's stack (Feed: your post → your profile → switch to You →
+// delete it there; Codex, 2026-11-10): those render "gone" instead of the
+// pinned copy and close themselves when they regain focus. Ids are never
+// reused, so the set is never pruned.
+const deletedPosts = new Set<number>();
+const deletedListeners = new Set<() => void>();
+export function markFeedPostDeleted(id: number) {
+  if (deletedPosts.has(id)) return;
+  deletedPosts.add(id);
+  deletedListeners.forEach((l) => l());
+}
+export function isFeedPostDeleted(id: number): boolean {
+  return deletedPosts.has(id);
+}
+export function useIsFeedPostDeleted(id: number): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      deletedListeners.add(l);
+      return () => deletedListeners.delete(l);
+    },
+    () => deletedPosts.has(id),
+    () => false,
+  );
+}
 
 // Post mutations against EVERY feed cache. The network feed (['feed']) and the
 // profile feeds (['feed', 'user', id]) share the FEED_KEY prefix, and the same

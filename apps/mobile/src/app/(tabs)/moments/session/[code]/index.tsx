@@ -47,6 +47,7 @@ import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
 import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { motion, radius, useTheme } from '@/theme';
 
 // HERO_RATIO/GUTTER now in lib/layout.ts (the cover hero is .hero-bleed-top, a
@@ -588,6 +589,9 @@ export default function SessionLineup() {
   // reconnecting strip covers the notch with surfaceSunk, so glyphs revert to
   // the theme default (light glyphs would vanish on it).
   const statusBarStyle = heroShown && !heroCollapsed && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  // On an opened post's stack the screen option below is never consulted
+  // (the post is a modal): forward it to the root (lib/forwardedStatusBar).
+  useForwardStatusBarStyle(statusBarStyle);
 
   // Prototype order (tListEmpty/tHiddenCountdown): vbar → tabs → scroll body
   // (ovc → rows). Tabs sit OUTSIDE the scroll area; the lock variant has none.

@@ -6,6 +6,7 @@ import { SetGroup, SetNav } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { authClient } from '@/lib/authClient';
 import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
+import { legalHref, useSessionTab } from '@/lib/sessionStack';
 
 // Interim Settings (handoff 04·4 anatomy, step 1): only what the old You
 // screen carried. The real two-level Settings (account, privacy, blocked
@@ -13,6 +14,11 @@ import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 export default function Settings() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  // Also mounted on an opened post's stack (your own profile opened from a
+  // post, feed/[id]/settings.tsx): the Dev Gallery lives on the outer You
+  // stack, which must not present over an open post, so it's left out there.
+  const mount = useSessionTab();
+  const inPost = mount.post != null;
   const { data: session } = authClient.useSession();
   const [busy, setBusy] = useState(false);
 
@@ -37,13 +43,15 @@ export default function Settings() {
       </View>
       <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: 8, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
         <SetGroup>
-          <SetNav icon="link" label="Help & About" onPress={() => router.push('/about')} />
+          <SetNav icon="link" label="Help & About" onPress={() => router.push(legalHref(mount, 'about'))} />
         </SetGroup>
         {/* Testing phase (Simon, 2026-07-16): visible in release builds too —
             re-gate on __DEV__ before a public launch. */}
-        <SetGroup>
-          <SetNav icon="grid" label="Dev Gallery" onPress={() => router.push('/you/dev-gallery')} />
-        </SetGroup>
+        {!inPost ? (
+          <SetGroup>
+            <SetNav icon="grid" label="Dev Gallery" onPress={() => router.push('/you/dev-gallery')} />
+          </SetGroup>
+        ) : null}
         <SetGroup>
           <SetNav icon="logout" label="Sign Out" action disabled={busy} onPress={confirmSignOut} />
         </SetGroup>

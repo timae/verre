@@ -1,7 +1,7 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
@@ -47,10 +47,11 @@ import { deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSes
 import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
-import { invalidateProfileHeader, refetchFeedCaches, updateFeedCaches } from '@/lib/feedCache';
+import { invalidateProfileHeader, isFeedPostDeleted, markFeedPostDeleted, refetchFeedCaches, updateFeedCaches, useIsFeedPostDeleted } from '@/lib/feedCache';
 import { consumeFeedTransitionSource, requestFeedLanding } from '@/lib/feedTransition';
-import { feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
+import { TAB_MOUNTS, closeOpenedPost, feedHref, feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { useEnterableMoment } from '@/lib/useEnterableMoment';
+import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { FEED_PANEL_SCRIM, FOOT_CLEARANCE_IR, GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, usePhoneTokens } from '@/lib/layout';
 import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
@@ -89,6 +90,14 @@ import { countryName } from '@verre/core';
 // active page into the card as you swipe — so the close shrinks the active
 // photo into a card already showing that same slide, and the feed sits on the
 // impression you dismissed, not the one you opened from.
+//
+// ROUTES (the opened post's own stack, ./_layout.tsx): `index` is the post
+// itself (the modal above); `post/[postId]` re-exports this same screen in
+// CARD MODE for a post opened from inside that stack (a profile pushed there
+// lists posts): a plain card push with edge-swipe back, so no shared-element
+// open, no pull-down, a back arrow instead of the close chevron. The owning
+// post's id comes from the stack (useSessionTab().post), never from this
+// route's params: an anchored index (cold link to a child) gets none.
 
 // The title row's collision edge (used for collapse + scroll targets). A
 // paged detail paints a taller bar below this edge to host its docked dots.
@@ -132,13 +141,18 @@ export default function FeedImpression() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: screenW, height: windowH } = useWindowDimensions();
-  const { id, index, user } = useLocalSearchParams<{ id: string; index?: string; user?: string }>();
-  const feedItemId = Number(id);
+  const { id, postId, index, user } = useLocalSearchParams<{ id?: string; postId?: string; index?: string; user?: string }>();
+  // Where this detail is mounted (lib/sessionStack.ts): the opened post's own
+  // stack, on Feed or You. `mount` is what everything opened FROM here pushes
+  // onto. Card mode = a post opened inside that stack (`postId`).
+  const mount = useSessionTab();
+  const cardMode = postId != null;
+  const feedItemId = Number(cardMode ? postId : mount.post ?? id);
   // The list this post was opened from: the network feed (no `user`) or one
-  // person's profile feed. Mounted under Feed AND You (the You copy is a
-  // re-export mirror), so pushes are stack-relative.
+  // person's profile feed. A card's list is a profile on the post's stack; the
+  // modal's is on the outer tab stack (its edit + "gone" exits go there).
   const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
-  const tab = useSessionTab();
+  const listMount = cardMode ? mount : TAB_MOUNTS[mount.tab];
   const meId = authClient.useSession().data?.user.id;
   const myUserId = meId != null ? Number(meId) : null;
   const startIndex = Math.max(0, Number(index ?? 0) || 0);
@@ -162,9 +176,25 @@ export default function FeedImpression() {
   // while the item remains in the cache, fresh copies keep flowing through.
   const pinnedRef = useRef<FeedItem | null>(null);
   if (found) pinnedRef.current = found;
-  const item = found ?? pinnedRef.current;
+  // ...unless the post was explicitly DELETED (anywhere, any tab): then the
+  // pinned copy would be an actionable ghost (lib/feedCache.ts).
+  const deleted = useIsFeedPostDeleted(feedItemId);
+  const item = deleted ? null : found ?? pinnedRef.current;
   const detail = item ? detailFromItem(item) : null;
   const { code: momentCode, enter: enterMoment } = useEnterableMoment(detail?.sessionId);
+  // The author → their profile, pushed on this post's own stack (a card, back
+  // returns here). When the post was opened FROM that person's list, the
+  // profile is the screen underneath: the tap closes the post and lands there
+  // (Simon, device pass 2026-11-10: an inert tap read as dead), the modal with
+  // its reversed presentation, a card by popping.
+  const authorId = detail?.author.id;
+  const requestCloseRef = useRef<() => void>(() => {});
+  const openAuthor = useCallback(() => {
+    if (authorId == null) return;
+    if (authorId === listUserId) requestCloseRef.current();
+    else router.push(feedHref(mount, 'profile', { id: String(authorId) }));
+  }, [router, mount, authorId, listUserId]);
+  const onAuthorPress = authorId != null ? openAuthor : undefined;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an
   // overscroll bounce — both clamp against the real page count.
@@ -197,6 +227,24 @@ export default function FeedImpression() {
     },
     [feedItemId],
   );
+  // The FOCUSED detail owns landing (Codex r2): landing callbacks are global
+  // per post, so a card-mode visit of this same post (A → profile → A as a
+  // card → page it) moves the card under THIS modal too, and the dedupe above
+  // would never re-send. Re-assert the active slide whenever this detail
+  // regains focus (and before a close, see requestClose). The first focus is
+  // the open itself: the card already shows the entry slide.
+  const activeRef = useRef(startIndex);
+  const reassertLanding = useCallback(() => {
+    lastLandRef.current = null;
+    landCard(activeRef.current);
+  }, [landCard]);
+  const focusedOnce = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (focusedOnce.current) reassertLanding();
+      focusedOnce.current = true;
+    }, [reassertLanding]),
+  );
   const landPager = useCallback(
     (wineIndex: number) => {
       setGalleryAt(null);
@@ -214,7 +262,13 @@ export default function FeedImpression() {
   // The one-shot source the tapped card measured for us; null on a deep link.
   // Lazy useState, not a useRef initializer: consume() clears the store, and a
   // ref initializer's argument re-executes (and re-clears) on every render.
-  const [source] = useState(() => consumeFeedTransitionSource());
+  // Card mode CONSUMES and discards it: the card published it before the push
+  // (it doesn't know where it is mounted), and a frame left in the store would
+  // animate the next modal detail that mounts within its freshness window.
+  const [source] = useState(() => {
+    const s = consumeFeedTransitionSource();
+    return cardMode ? null : s;
+  });
   const sourceFrame = source?.kind === 'photo' ? source : null;
   // 0 = at the feed card, 1 = fully open. Seeds 0 only when a card handed us a
   // presentation to run; a cold mount renders open, exactly as before.
@@ -297,8 +351,24 @@ export default function FeedImpression() {
   // whatever page you're on at pull-down. A photoless active page (blind /
   // NonPhotoHero) has no clone → the dismiss is the plain fade.
   const clampedActive = detail ? Math.min(active, maxPage) : 0;
+  activeRef.current = clampedActive;
   const activeWine = detail ? detail.wines[clampedActive] : null;
   const activeUri = activeWine && !activeWine._blind && activeWine.imageUrl ? activeWine.imageUrl : null;
+  // Status bar: white glyphs while the active page's PHOTO sits under it (the
+  // house rule for photo heroes, cf. 02e), the theme's otherwise. This screen
+  // is on the opened post's stack, a modal, so its own screen option would
+  // never be asked: forward it (lib/forwardedStatusBar). Only once fully open
+  // and not mid-dismiss (`presentationInteractive`): during the flight the
+  // feed is what sits under the bar.
+  // The same value is also set as this screen's own option: the post is a
+  // CONTAINED transparent modal (feed/_layout.tsx), which UIKit may ask
+  // directly; whichever channel answers, it says the same thing.
+  const statusBarStyle = activeUri && !collapsed[activeWine!.id] && presentationInteractive ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark';
+  useForwardStatusBarStyle(statusBarStyle);
+  const navigation = useNavigation();
+  useEffect(() => {
+    navigation.setOptions({ statusBarStyle });
+  }, [navigation, statusBarStyle]);
   const hasClone = !!(sourceFrame && activeUri);
   const heroCloneH = Math.round(windowH * HERO_RATIO) + radius.xl;
   // Natural aspect per photo uri — ⚠️ HEIGHT/WIDTH, the feed's house
@@ -383,8 +453,8 @@ export default function FeedImpression() {
     if (closedRef.current) return;
     closedRef.current = true;
     if (router.canGoBack()) router.back();
-    else router.replace(feedListHref(tab, listUserId, myUserId));
-  }, [router, tab, listUserId, myUserId]);
+    else router.replace(feedListHref(listMount, listUserId, myUserId));
+  }, [router, listMount, listUserId, myUserId]);
   // The bar's back button: reverse the presentation, then pop. Without a
   // presentation (deep link) it's just the pop.
   const requestClose = useCallback(() => {
@@ -392,6 +462,9 @@ export default function FeedImpression() {
       closeDetail();
       return;
     }
+    // The card beneath must show the slide being dismissed (landing sync):
+    // re-assert it, a detail of the same post elsewhere may have moved it.
+    reassertLanding();
     commitPresentationClose();
     dismissing.value = true; // bg follows progress on the way out (see bgStyle)
     // Plain self-write first: it cancels any running animation, so this spring
@@ -402,19 +475,37 @@ export default function FeedImpression() {
     progress.value = withSpring(0, springs.release, (finished) => {
       if (finished) runOnJS(closeDetail)();
     });
-  }, [source, progress, dismissing, closeDetail, commitPresentationClose]);
+  }, [source, progress, dismissing, closeDetail, commitPresentationClose, reassertLanding]);
+  requestCloseRef.current = requestClose;
   // Android hardware back must take the same reversed presentation — without
   // this it pops the transparent modal natively (instant vanish, no close
   // animation). Claiming the event (return true) suppresses the default pop;
-  // requestClose pops after the animation. No-op on iOS.
-  useEffect(() => {
-    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (closedRef.current) return false;
-      requestClose();
-      return true;
-    });
-    return () => sub.remove();
-  }, [requestClose]);
+  // requestClose pops after the animation. No-op on iOS. FOCUS-scoped: with a
+  // card pushed on the post's stack, back belongs to that card (native pop),
+  // not to the post underneath. Card mode itself is a plain card: the native
+  // back pops it.
+  useFocusEffect(
+    useCallback(() => {
+      if (cardMode) return;
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        if (closedRef.current) return false;
+        requestClose();
+        return true;
+      });
+      return () => sub.remove();
+    }, [cardMode, requestClose]),
+  );
+  // A post DELETED while this detail sat unfocused (on another tab, or under a
+  // card on this stack): close it on regaining focus, so back never lands on a
+  // dead post. Read at focus time through refs, never as a dependency: the
+  // screen that ran the delete is already closing itself.
+  const closeDetailRef = useRef(closeDetail);
+  closeDetailRef.current = closeDetail;
+  useFocusEffect(
+    useCallback(() => {
+      if (isFeedPostDeleted(feedItemId)) closeDetailRef.current();
+    }, [feedItemId]),
+  );
 
   // ── Header actions (overflow menu) ───────────────────────────────────────
   // Crave, Had it too, Share, and owner Edit ALL land in the deferred column
@@ -433,6 +524,10 @@ export default function FeedImpression() {
   // reversed presentation: the card underneath is about to vanish, animating
   // into it would land on a hole.
   const queryClient = useQueryClient();
+  // A card of the post this stack hangs off (your own post A → your profile →
+  // A as a card): when IT goes, the modal beneath would show the deleted post
+  // (it pins its copy), so the whole opened post closes instead.
+  const isOwningPost = cardMode && mount.post === String(feedItemId);
   const deleteBusy = useRef(false);
   const runDelete = useCallback(
     async (op: () => Promise<{ feedItemDeleted: boolean } | void>, applyToCache: (item: FeedItem) => FeedItem | null) => {
@@ -441,13 +536,19 @@ export default function FeedImpression() {
       try {
         const res = await op();
         const postGone = !res || res.feedItemDeleted;
+        if (postGone) markFeedPostDeleted(feedItemId);
         // Reflect the delete in EVERY feed cache IMMEDIATELY (like-flow
         // pattern) — refetch alone leaves a window where the deleted target is
         // still actionable and a second delete 404s (Codex). The helper
         // cancels in-flight refetches first so they can't clobber the write.
         await updateFeedCaches(queryClient, applyToCache);
         invalidateProfileHeader(queryClient, myUserId); // owner-only: your header counts change
-        if (postGone) closeDetail();
+        if (postGone) {
+          // The owning post closes whole; mark this detail closed too so no
+          // later close (back handler, focus) pops a second time.
+          if (isOwningPost && mount.post != null && closeOpenedPost(navigation, mount.post)) closedRef.current = true;
+          else closeDetail();
+        }
         await refetchFeedCaches(queryClient);
       } catch (e) {
         const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
@@ -456,7 +557,7 @@ export default function FeedImpression() {
         deleteBusy.current = false;
       }
     },
-    [queryClient, closeDetail, myUserId],
+    [queryClient, closeDetail, myUserId, isOwningPost, mount.post, navigation],
   );
   const confirmDelete = useCallback(() => {
     setMenuAnchor(null);
@@ -647,7 +748,7 @@ export default function FeedImpression() {
     // out). Solid + un-animated — there's no source frame worth honoring.
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg }}>
-        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={feed.isPending} />
+        <FloatBar solid title="" onBack={closeDetail} insetTop={insets.top} pending={feed.isPending} card={cardMode} />
         <CenteredMessage
           title="This impression is gone"
           body="It may have been removed, or the feed hasn't loaded it yet."
@@ -748,6 +849,8 @@ export default function FeedImpression() {
             createdAt={createdAt}
             place={place}
             onPlacePress={momentCode ? enterMoment : undefined}
+            onAuthorPress={onAuthorPress}
+            dismissible={!cardMode}
             onCollapse={(c) => reportCollapse(wines[0].id, c)}
             onTitle={(t) => reportTitle(wines[0].id, t)}
             onRegisterScrollToAbout={(fn) => registerScrollToAbout(0, fn)}
@@ -806,6 +909,8 @@ export default function FeedImpression() {
                     createdAt={createdAt}
                     place={place}
                     onPlacePress={momentCode ? enterMoment : undefined}
+                    onAuthorPress={onAuthorPress}
+                    dismissible={!cardMode}
                     onCollapse={(c) => reportCollapse(w.id, c)}
                     onTitle={(t) => reportTitle(w.id, t)}
                     onRegisterScrollToAbout={(fn) => registerScrollToAbout(i, fn)}
@@ -877,6 +982,7 @@ export default function FeedImpression() {
           solid={barSolid}
           title={barSolid ? titles[pageWineId] ?? '' : ''}
           onBack={requestClose}
+          card={cardMode}
           onTitlePress={scrollActiveToAbout}
           insetTop={insets.top}
           photoless={activeWine ? !!activeWine._blind || !activeWine.imageUrl : false}
@@ -919,7 +1025,7 @@ export default function FeedImpression() {
             onPress={() => {
               setMenuAnchor(null);
               router.push(
-                feedHref(tab, 'edit/[id]', {
+                feedHref(mount, 'edit', {
                   id: String(feedItemId),
                   wine: detail.isSession && activeWine ? activeWine.id : undefined,
                   user: listUserId != null ? String(listUserId) : undefined,
@@ -1009,10 +1115,14 @@ function FloatBar({
   photoless,
   hasDots,
   onMenu,
+  card,
 }: {
   solid: boolean;
   title: string;
   onBack: () => void;
+  // Card mode (a post pushed on the opened post's stack): a back ARROW, it
+  // pops like any pushed screen. Otherwise the close chevron (below).
+  card?: boolean;
   onTitlePress?: () => void;
   insetTop: number;
   pending?: boolean;
@@ -1054,15 +1164,16 @@ function FloatBar({
         <Pressable
           onPress={onBack}
           accessibilityRole="button"
-          accessibilityLabel="Close"
+          accessibilityLabel={card ? 'Back' : 'Close'}
           hitSlop={8}
           style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
         >
           {/* Points DOWN: this detail is a modal dismissed by pull-down (no
               edge-swipe pop), and the pager already owns left/right. The back
               glyph rotated keeps its stroke and size identical to the sibling
-              Moments detail bar, which is a real push and keeps the left arrow. */}
-          <View style={{ transform: [{ rotate: '-90deg' }] }}>
+              Moments detail bar, which is a real push and keeps the left arrow
+              (as does card mode here: it IS a push). */}
+          <View style={card ? undefined : { transform: [{ rotate: '-90deg' }] }}>
             <Icon name="back" size={phone.size('topBarBackIcon')} color={iconColor} />
           </View>
         </Pressable>
@@ -1122,12 +1233,16 @@ function CaptionByline({
   place,
   createdAt,
   onPlacePress,
+  onAuthorPress,
 }: {
   author: FeedAuthor;
   note: string | null;
   place: string | null;
   createdAt: string;
   onPlacePress?: () => void;
+  // Avatar + name → the author's profile (the feed cards' pattern: a pressable
+  // avatar and a pressable name span inside the caption copy).
+  onAuthorPress?: () => void;
 }) {
   const cleanNote = note?.trim() ?? '';
   const full = cleanNote ? `${author.name} ${cleanNote}` : author.name;
@@ -1140,7 +1255,9 @@ function CaptionByline({
   const copySlice = (start: number, end: number) => (
     <>
       {start < author.name.length ? (
-        <VText style={styles.captionAuthor}>{full.slice(start, Math.min(end, author.name.length))}</VText>
+        <VText style={styles.captionAuthor} onPress={onAuthorPress}>
+          {full.slice(start, Math.min(end, author.name.length))}
+        </VText>
       ) : null}
       {end > author.name.length ? full.slice(Math.max(start, author.name.length), end) : null}
     </>
@@ -1164,9 +1281,16 @@ function CaptionByline({
 
   return (
     <View style={styles.captionByline}>
-      <View style={styles.captionAvatar}>
+      <Pressable
+        style={styles.captionAvatar}
+        accessibilityRole={onAuthorPress ? 'button' : undefined}
+        accessibilityLabel={onAuthorPress ? author.name : undefined}
+        disabled={!onAuthorPress}
+        onPress={onAuthorPress}
+        hitSlop={4}
+      >
         <Avatar imageUrl={author.imageUrl} name={author.name} size={38} />
-      </View>
+      </Pressable>
       {/* Measure at the avatar-constrained width, with the real nested weight. */}
       <VText
         accessibilityElementsHidden
@@ -1208,6 +1332,8 @@ function DetailPage({
   createdAt,
   place,
   onPlacePress,
+  onAuthorPress,
+  dismissible,
   onCollapse,
   onTitle,
   insetTop,
@@ -1233,6 +1359,10 @@ function DetailPage({
   createdAt: string;
   place: string | null;
   onPlacePress?: () => void;
+  onAuthorPress?: () => void;
+  // false in card mode: no pull-down dismiss (the edge-swipe pops the card),
+  // and the top keeps its rubber-band.
+  dismissible: boolean;
   onCollapse: (collapsed: boolean) => void;
   onTitle: (title: string) => void;
   // Register this page's "scroll to About" imperative up to the parent (so the
@@ -1394,6 +1524,7 @@ function DetailPage({
     .failOffsetY(-8)
     .failOffsetX([-16, 16])
     .simultaneousWithExternalGesture(nativeScroll)
+    .enabled(dismissible)
     .onBegin(() => {
       dismissArmed.value = scrollY.value <= 1;
       dismissBuzzed.value = false;
@@ -1506,7 +1637,7 @@ function DetailPage({
           showsVerticalScrollIndicator={false}
           scrollEventThrottle={16}
           onScroll={onScroll}
-          bounces={!atTop}
+          bounces={!dismissible || !atTop}
           contentContainerStyle={{ paddingBottom: bottomPad }}
         >
       {/* HERO — photo impressions keep the full-bleed photo under the status
@@ -1629,6 +1760,7 @@ function DetailPage({
           place={place}
           createdAt={createdAt}
           onPlacePress={onPlacePress}
+          onAuthorPress={onAuthorPress}
         />
 
         {/* divider before the structure/aroma profile */}

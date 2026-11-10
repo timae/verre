@@ -6,6 +6,7 @@ import { SetGroup, SetNav } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { GUTTER } from '@/lib/layout';
+import { legalHref, useSessionTab } from '@/lib/sessionStack';
 import { space } from '@/theme';
 
 // About hub — version + the legal surfaces. Deliberately a hub rather than a
@@ -20,6 +21,9 @@ import { space } from '@/theme';
 export default function About() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  // The root route, or its mirror on an opened post's stack (lib/sessionStack.ts
+  // legalHref): Attributions follows where this hub is mounted.
+  const mount = useSessionTab();
   const version = Constants.expoConfig?.version ?? '—';
 
   return (
@@ -34,7 +38,7 @@ export default function About() {
       <VBar title="About" />
 
       <SetGroup>
-        <SetNav icon="info" label="Attributions" onPress={() => router.push('/attributions')} />
+        <SetNav icon="info" label="Attributions" onPress={() => router.push(legalHref(mount, 'attributions'))} />
       </SetGroup>
 
       <VText variant="caption" color="inkFaint" style={{ textAlign: 'center', marginTop: space.xs }}>

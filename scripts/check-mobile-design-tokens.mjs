@@ -52,7 +52,7 @@ const ALLOW_FONTSIZE = new Set([
   'apps/mobile/src/app/(tabs)/moments/index.tsx', // carousel constrained labels (surface="carousel")
   'apps/mobile/src/app/(tabs)/moments/session/[code]/index.tsx', // map pill + uppercase micro-label (chrome; migrate when touched)
   'apps/mobile/src/app/(tabs)/moments/session/[code]/add.tsx', // form-control metric (migrate when touched)
-  'apps/mobile/src/app/(tabs)/feed/impression/[id].tsx', // hero block = mock pixel spec (brand-custom)
+  'apps/mobile/src/app/(tabs)/feed/[id]/index.tsx', // hero block = mock pixel spec (brand-custom)
 ])
 
 // Scan js/jsx too, not just ts/tsx: the elevation.menu canonical home is a

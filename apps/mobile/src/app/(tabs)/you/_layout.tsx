@@ -1,11 +1,11 @@
 import { Stack } from 'expo-router';
-import { SessionTabProvider } from '@/lib/sessionStack';
+import { SessionTabProvider, TAB_MOUNTS } from '@/lib/sessionStack';
 import { textStyle, useTheme } from '@/theme';
 
 // ⚠️ Load-bearing (same as the Feed stack): declaring a <Stack.Screen> below
 // hoists that route to the FRONT of the stack's route order, and the default
 // initial route is the first one — without this anchor a fresh mount of the
-// You tab would cold-mount impression/[id] with no params.
+// You tab would cold-mount the post route `[id]` with no params.
 export const unstable_settings = { anchor: 'index' };
 
 // The You tab: your profile (handoff 04, step 1) and everything a profile can
@@ -19,7 +19,7 @@ export default function YouStack() {
   // The owning tab for every screen in this stack (lib/sessionStack.ts
   // useSessionTab): mount location, not the globally focused route.
   return (
-    <SessionTabProvider value="you">
+    <SessionTabProvider value={TAB_MOUNTS.you}>
     <Stack
       screenOptions={{
         headerShown: false,
@@ -30,13 +30,19 @@ export default function YouStack() {
       }}
     >
       <Stack.Screen name="index" />
-      {/* See feed/_layout.tsx: transparent modal, no native animation, no
-          native back gesture — the screen draws the shared-element open and
-          the pull-down dismiss itself. */}
+      {/* See feed/_layout.tsx: the opened post's own stack, a transparent
+          modal with no native animation and no native back gesture — the
+          detail draws the shared-element open and the pull-down dismiss
+          itself. The name must stay wholly dynamic (post identity). */}
       <Stack.Screen
-        name="impression/[id]"
+        name="[id]"
         options={{
-          presentation: 'transparentModal',
+          // CONTAINED (UIModalPresentationOverCurrentContext): the post covers
+          // this tab's stack, not the whole window, so the bottom nav (an
+          // overlay in the tabs layout) can still draw over the moment or
+          // profile pushed on the post's own stack (Simon, 2026-11-10). The
+          // tabs layout hides it on the post itself.
+          presentation: 'containedTransparentModal',
           animation: 'none',
           gestureEnabled: false,
           contentStyle: { backgroundColor: 'transparent' },
