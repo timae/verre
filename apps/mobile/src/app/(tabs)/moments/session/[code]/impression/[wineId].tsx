@@ -27,9 +27,10 @@ import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
-import { BarTitle, useBarTitleProgress } from '@/components/VBar';
+import { BarTitle, useBarTitleProgress, VBar } from '@/components/VBar';
 import { ClampText } from '@/components/ui/ClampText';
 import { CenteredMessage, ReconnectingBar } from '@/components/ui/ConnectionState';
+import { SessionFatalView } from '@/components/moments/SessionFatalView';
 import {
   ApiError,
   deleteWine,
@@ -52,6 +53,7 @@ import { useIsOnline } from '@/lib/query';
 import { radius, useTheme } from '@/theme';
 
 const POLL_MS = 5000;
+const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'not-found';
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
 // Direction of the last sibling-wine replace — read by the incoming screen
 // to pick the replace animation (push for next, pop for previous).
@@ -92,12 +94,23 @@ export default function ImpressionDetail() {
       return () => setScreenFocused(false);
     }, []),
   );
+  // A gone moment (404) is terminal, as on the line-up: LATCHED (keyed on
+  // code) and the query disabled, so no poll, focus or reconnect refetch can
+  // swap the 404 for a network error and bring the stale impression back.
+  const [goneLatch, setGoneLatch] = useState<{ code: string; error: ApiError } | null>(null);
+  const latched = goneLatch?.code === code ? goneLatch.error : null;
   const state = useQuery({
     queryKey: ['session-state', code, myIdentityId],
     queryFn: () => getSessionState(code),
+    enabled: latched === null,
     subscribed: screenFocused,
     refetchInterval: POLL_MS,
+    // The app default (retry 1, lib/query.tsx) minus the 404, like useSessionPoll.
+    retry: (failureCount, error) => !isGone(error) && failureCount < 1,
   });
+  useEffect(() => {
+    if (isGone(state.error)) setGoneLatch({ code, error: state.error });
+  }, [state.error, code]);
   // Per-section graceful degradation (the line-up's lastRef merge): /state
   // isolates a failed section to null + 200, so a degraded poll is a SUCCESS
   // with a hole in it. Reading state.data directly turned that hole into the
@@ -141,7 +154,14 @@ export default function ImpressionDetail() {
   // shared session-state cache). Show when offline, or errored while we still
   // have a wine to display (stale-but-usable). Overlaid on top of either layout.
   const online = useIsOnline();
-  const showReconnecting = !online || (state.isError && wine !== null);
+  // A gone moment renders the shared fatal view (below), never the stale
+  // impression under a reconnecting bar: lastRef still holds the wine, so the
+  // bar would claim a reconnect forever. Removed / invalid (kick, ban) still
+  // fall through to the stale view: their banned-vs-kicked copy lives in
+  // useSessionPoll, which this screen's pre-hook poll has yet to adopt.
+  const goneError = latched ?? (isGone(state.error) ? state.error : null);
+  const gone = goneError !== null;
+  const showReconnecting = !gone && (!online || (state.isError && wine !== null));
 
   // Local-until-commit (web Rate-pane parity): edits live here, the POST
   // fires on Save. Re-seed when the route param swaps to a sibling wine.
@@ -395,7 +415,7 @@ export default function ImpressionDetail() {
   // (lib/forwardedStatusBar). Computed here: a hook can't follow the early
   // return.
   useForwardStatusBarStyle(
-    wine && !wine._blind && !!wine.imageUrl && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark',
+    wine && !gone && !wine._blind && !!wine.imageUrl && !titleShown && !showReconnecting ? 'light' : theme.scheme === 'dark' ? 'light' : 'dark',
   );
   // Top-overscroll flag: while the hero detaches with the rubber band its
   // square top corners get a soft radius (flush full-bleed at rest).
@@ -416,6 +436,19 @@ export default function ImpressionDetail() {
   // check-in rate stage; see useAromaSearchScroll). blockBelow is AromaInput's
   // MEASURED rendered height (onLayout), not a constant — see the prop doc.
   const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, FOOT_CLEARANCE);
+
+  if (goneError) {
+    const glyphs = theme.scheme === 'dark' ? 'light' : 'dark';
+    return (
+      <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
+        <Stack.Screen options={{ statusBarStyle: glyphs }} />
+        <StatusBar style={glyphs} />
+        <VBar title="" />
+        {/* No Try Again on a 404 (the view shows it for 'http' only). */}
+        <SessionFatalView fatal={goneError} removedKind={null} sessionLabel={null} onRetry={() => {}} onBack={() => router.back()} />
+      </View>
+    );
+  }
 
   if (!wine) {
     return (

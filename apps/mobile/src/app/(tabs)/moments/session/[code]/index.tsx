@@ -2,7 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import * as WebBrowser from 'expo-web-browser';
-import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
+import { Stack, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Animated, Easing, Image, Keyboard, Linking, Pressable, ScrollView, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import Reanimated, { clamp, Easing as ReEasing, interpolate, ReduceMotion, runOnJS, type SharedValue, SlideInLeft, SlideInRight, SlideOutLeft, SlideOutRight, useAnimatedProps, useAnimatedRef, useAnimatedScrollHandler, useAnimatedStyle, useDerivedValue, useScrollOffset, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -46,7 +46,7 @@ import { DATE_LOCALE } from '@/lib/locale';
 import { sessionWhen, wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { lockState, useSessionPoll } from '@/lib/useSessionPoll';
-import { sessionHref, useSessionTab } from '@/lib/sessionStack';
+import { sessionHref, tabHomeHref, useSessionTab } from '@/lib/sessionStack';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -266,6 +266,7 @@ export default function SessionLineup() {
   const { height: windowH, width: windowW } = useWindowDimensions();
   const router = useRouter();
   const sessionTab = useSessionTab();
+  const navigation = useNavigation();
   const online = useIsOnline();
   const queryClient = useQueryClient();
 
@@ -457,7 +458,18 @@ export default function SessionLineup() {
   const lock = !isHostViewer && wines !== null && wines.length === 0 ? lockState(meta) : null;
   // Passive reconnecting strip (this screen polls every 5s and recovers on its
   // own). Covers both !online (device) and isError-with-stale-data (server).
-  const showReconnecting = !online || (state.isError && (wines !== null || meta !== null));
+  // Never over a fatal view: the poll has stopped, and a gone moment still
+  // holds its last data (lastRef), which would claim a reconnect.
+  const showReconnecting = !fatal && (!online || (state.isError && (wines !== null || meta !== null)));
+  // Every back control on this screen (bar chevron, cover-hero back, the fatal
+  // view's Back). With nothing below the moment on its own stack (a cold link
+  // opened it as the Moments tab's first screen) router.back() falls through
+  // to the tab navigator, whose default goes to the FIRST tab (Feed): land on
+  // this tab's home instead.
+  const goBack = () => {
+    if ((navigation.getState()?.index ?? 0) > 0) router.back();
+    else router.replace(tabHomeHref(sessionTab.tab));
+  };
 
   // heroShown + hasCover are computed above (before the transition hook, so
   // `paired` flows into it synchronously).
@@ -619,8 +631,9 @@ export default function SessionLineup() {
         <View style={{ paddingHorizontal: GUTTER }}>
           <VBar
             title={meta?.name ?? ''}
+            onBack={goBack}
             right={
-              meta ? (
+              meta && !fatal ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   {/* Plain bar: the full accent "+ Add" pill (no scroll-collapse
                       here), left of the ⋯. Host/cohost/provider only — and
@@ -702,7 +715,7 @@ export default function SessionLineup() {
       {showReconnecting ? <ReconnectingBar /> : null}
       {fatal ? (
         <SessionFatalView fatal={fatal} removedKind={removedKind} sessionLabel={meta?.name ?? null}
-          onRetry={retryVisit} onBack={() => router.back()} />
+          onRetry={retryVisit} onBack={goBack} />
       ) : wines === null && (!visited || state.isPending) ? (
         // Spinner only when there's nothing to render — re-entering the
         // screen finds the shared query cache warm, and the re-visit runs in
@@ -742,7 +755,7 @@ export default function SessionLineup() {
           onAdd={openAdd}
         />
       ) : lock ? (
-        <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}>
           <LockCard revealAt={lock} />
           {ovc}
         </ScrollView>
@@ -761,7 +774,7 @@ export default function SessionLineup() {
                 stickyHeaderIndices={cmpRail ? [0] : undefined}
                 keyboardShouldPersistTaps="handled"
                 keyboardDismissMode="on-drag"
-                contentContainerStyle={{ flexGrow: 1, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+                contentContainerStyle={{ flexGrow: 1, paddingBottom: TAB_BAR_CLEARANCE }}
               >
                 {cmpRail ? <View style={{ backgroundColor: theme.bg }}>{cmpRail}</View> : null}
                 <CompareBody wines={wines} ratings={ratings} meta={meta} locked={!!lock} hidden={cmpHidden} sort={cmpSort} query={cmpQuery} />
@@ -791,7 +804,7 @@ export default function SessionLineup() {
               plainContentH.current = h;
               plainMaxScroll.value = Math.max(0, h - plainViewportH.current);
             }}
-            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+            contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingBottom: TAB_BAR_CLEARANCE }}
           >
             {ovc}
             {/* Solid bg so rows scrolling under the pinned toolbar don't
@@ -857,7 +870,7 @@ export default function SessionLineup() {
           canAdd={canAdd}
           showAdd={tab === 'lineup'}
           onAdd={openAdd}
-          onBack={() => router.back()}
+          onBack={goBack}
           onMenu={(top) => setSessMenuTop(top)}
         />
       ) : null}
@@ -1219,7 +1232,7 @@ function CoverHeroLineup({
           heroMaxScroll.value = Math.max(0, h - heroViewportH.current);
         }}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: insets.bottom + TAB_BAR_CLEARANCE }}
+        contentContainerStyle={{ paddingBottom: TAB_BAR_CLEARANCE }}
       >
         {/* .hero-bleed-top: full-bleed photo at content-y 0 (bleeds under the
             status bar via the dead-end + never). Soft top corners while pulled. */}

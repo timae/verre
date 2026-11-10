@@ -9,7 +9,6 @@ import { aromaIris, bubbleColumns, radialTreemap, ringChain, voronoiContinents, 
 import { additiveMentionFamilies, aromaVizShortLabel, irisMentionFamilies, LONG_TAIL_120_PEOPLE_1440_MENTIONS, MIXED_GRAIN_20_PEOPLE_200_MENTIONS } from '@/components/moments/aromaVizFixtures';
 import { Segmented } from '@/components/ui/Segmented';
 import { alpha, inkOn, mix } from '@/theme/color';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AROMA_FAMILIES, resolveAxes, perRatingAxes } from '@verre/core';
 import { StructureWheel, type WheelAxis } from '@/components/scoring/StructureWheel';
 import { StructureInput } from '@/components/scoring/StructureInput';
@@ -959,7 +958,6 @@ function AromaVizCards({ set }: { set: AromaSetKey }) {
 }
 
 export default function DevGallery() {
-  const insets = useSafeAreaInsets();
   const { theme, choice, setChoice } = useTheme();
   const axisColor = useFlavourColors();
   const [levels, setLevels] = useState<Record<string, number>>(SAMPLE_LEVELS);
@@ -1016,7 +1014,7 @@ export default function DevGallery() {
       </View>
       <ScrollView
         style={{ flex: 1 }}
-        contentContainerStyle={{ padding: space.lg, paddingTop: space.xs, paddingBottom: insets.bottom + TAB_BAR_CLEARANCE, gap: space.lg }}
+        contentContainerStyle={{ padding: space.lg, paddingTop: space.xs, paddingBottom: TAB_BAR_CLEARANCE, gap: space.lg }}
         // The aroma data-set selector docks right under the pinned theme bar
         // (the line-up toolbar pattern). ⚠️ Index = the sticky View's position
         // among the DIRECT children below — keep in sync when adding sections.

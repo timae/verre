@@ -105,3 +105,20 @@ scroll-edge behaviors, per-OS iconography, and free future iOS restyles.
 `apps/mobile/src/components/PillTabBar.tsx` (the bar),
 `apps/mobile/src/app/(tabs)/_layout.tsx` (js-tabs wiring + hide logic),
 `apps/mobile/src/lib/layout.ts` (`TAB_BAR_CLEARANCE`).
+
+## Addendum (2026-11-10): position from the physical screen edge
+
+The pill moved from `insets.bottom + 14` (about 48pt above the physical edge
+on a Face ID phone) to a fixed `TAB_BAR_BOTTOM` = 21pt above the PHYSICAL
+screen edge, on every phone (home-button ones too), sitting over the home
+indicator. Sides unchanged; glass physics untouched. Source: the HIG gives no
+number; 21pt is the iOS 26 floating tab bar's inset per learnui.design, and
+the FabBar recreation uses the same (bottom padding 21 with the bottom safe
+area ignored).
+
+Consequence: `TAB_BAR_CLEARANCE` (`lib/layout.ts`) is now the WHOLE content
+padding, derived from `TAB_BAR_BOTTOM` (21 + 82 = 103, the same 82pt above the
+pill's bottom edge as before), and consumers use it alone. The earlier
+consequence "consumers (`insets.bottom + TAB_BAR_CLEARANCE`) need no change"
+no longer holds; adding `insets.bottom` is CI-gated
+(`scripts/check-mobile-design-tokens.mjs`).

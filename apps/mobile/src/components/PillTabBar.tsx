@@ -5,8 +5,8 @@
 // its themed colors (expo#44029 labelStyle ignored, expo#40389 glass
 // recompute) — this bar is deterministic: theme tokens, our icon set, no OS
 // appearance machinery. Content scrolls UNDER it (absolute overlay): screens
-// clear it with `insets.bottom + TAB_BAR_CLEARANCE` (lib/layout.ts — the
-// constant carries the bar's real height now, not breathing room).
+// clear it with `TAB_BAR_CLEARANCE` alone (lib/layout.ts, derived from the
+// bar's own `TAB_BAR_BOTTOM`, so the two can't drift).
 import type { BottomTabBarProps } from 'expo-router/js-tabs';
 import * as Haptics from 'expo-haptics';
 import { useEffect, useRef, useState } from 'react';
@@ -14,9 +14,9 @@ import { Pressable, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Reanimated, { ReduceMotion, runOnJS, type SharedValue, useAnimatedProps, useAnimatedStyle, useSharedValue, withDelay, withSequence, withSpring, withTiming } from 'react-native-reanimated';
 import Svg, { Defs, Path, RadialGradient, Rect, Stop } from 'react-native-svg';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
+import { TAB_BAR_BOTTOM } from '@/lib/layout';
 import { useTheme } from '@/theme';
 import { alpha } from '@/theme/color';
 
@@ -122,7 +122,6 @@ const REST_ALPHA = 0.07;
 
 export function PillTabBar({ state, emitter, navigateToTab }: BottomTabBarProps) {
   const { theme } = useTheme();
-  const insets = useSafeAreaInsets();
   // Measured height → an EXACT capsule radius (height/2). The Liquid Glass
   // material derives its lens shape from the corner radius — the shorthand
   // radius.pill (999) far exceeds half-height and degraded the effect to
@@ -427,14 +426,15 @@ export function PillTabBar({ state, emitter, navigateToTab }: BottomTabBarProps)
     </GestureDetector>
   );
 
-  // .tabbar-float position: detached pill, 14px side/bottom margins (above
-  // the home indicator). NO overflow hidden anywhere — the held lens must
-  // poke past the bar's edges.
+  // .tabbar-float position: detached pill, TAB_BAR_BOTTOM (21pt) above the
+  // PHYSICAL screen edge, over the home indicator (iOS 26 floating-bar inset,
+  // every phone). NO overflow hidden anywhere — the held lens must poke past
+  // the bar's edges.
   const outerPos = {
     position: 'absolute' as const,
     left: 0,
     right: 0,
-    bottom: insets.bottom + 14,
+    bottom: TAB_BAR_BOTTOM,
   };
 
   // Pseudo-glass body (lab 3C, codex-ratified): a translucent token capsule

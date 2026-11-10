@@ -100,6 +100,13 @@ for (const file of files) {
       errors.push(`${file}: ${m.length}x inline fontSize literal (${[...new Set(m)].slice(0, 3).join(', ')}…) — use a VText variant (type-scale token); see apps/mobile/CLAUDE.md "Text".`)
     }
   }
+  // 5. Tab-bar clearance — the pill sits at a fixed TAB_BAR_BOTTOM above the
+  //    physical screen edge (not the safe area), so TAB_BAR_CLEARANCE is the
+  //    whole padding. Adding insets.bottom (the pre-2026-11-10 pattern)
+  //    over-pads by the home-indicator inset.
+  if (/insets\.bottom\s*\+\s*TAB_BAR_CLEARANCE|TAB_BAR_CLEARANCE\s*\+\s*insets\.bottom/.test(src)) {
+    errors.push(`${file}: insets.bottom + TAB_BAR_CLEARANCE — the clearance already counts from the physical screen edge; use TAB_BAR_CLEARANCE alone (lib/layout.ts).`)
+  }
 }
 
 if (errors.length) {
@@ -109,4 +116,4 @@ if (errors.length) {
   process.exit(1)
 }
 
-console.log(`check-mobile-design-tokens: OK — ${files.length} files clean (glass fill, hero scrim, menu shadow, type-scale font sizes all centralized).`)
+console.log(`check-mobile-design-tokens: OK — ${files.length} files clean (glass fill, hero scrim, menu shadow, type-scale font sizes, tab-bar clearance all centralized).`)
