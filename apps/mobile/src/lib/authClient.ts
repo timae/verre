@@ -10,14 +10,17 @@ import 'expo-web-browser';
 import { expoClient } from '@better-auth/expo/client';
 import type { BetterAuthClientPlugin } from 'better-auth/client';
 import { createAuthClient } from 'better-auth/react';
-import { CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
+import { AUTH_USER_AGENT, CLIENT_VERSION, CLIENT_VERSION_HEADER } from './clientVersion';
 import { acceptAuthResponse, authGeneration, gateAuthRequest, signOutStarted } from './authGate';
 import { API_BASE, APP_SCHEME } from './config';
 import { secureStorage } from './secureStorage';
 import { routeToUpdateRequired } from './updateGate';
 
-const versionHeaders: Record<string, string> = {};
-if (CLIENT_VERSION) versionHeaders[CLIENT_VERSION_HEADER] = CLIENT_VERSION;
+const authHeaders: Record<string, string> = {};
+if (CLIENT_VERSION) authHeaders[CLIENT_VERSION_HEADER] = CLIENT_VERSION;
+// The sign-in's User-Agent is what the server's device label reads (Settings →
+// Account, and the web's Connected devices). Expo's fetch sends it verbatim.
+if (AUTH_USER_AGENT) authHeaders['User-Agent'] = AUTH_USER_AGENT;
 
 // 🔒 Two fetch plugins bracket the Expo client's (better-fetch runs init and
 // success hooks in plugin order; lib/authGate.ts, "auth generation").
@@ -72,7 +75,7 @@ export const authClient = createAuthClient({
     lateGenerationCheck,
   ],
   fetchOptions: {
-    headers: versionHeaders,
+    headers: authHeaders,
     // ⚠️ RN fetch has NO DEFAULT TIMEOUT. apiFetch.ts guards every Verre API
     // call with an AbortController for exactly this reason, but the Better Auth
     // client does not route through it — so without this, a request against an

@@ -2,7 +2,7 @@ import type { QueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../apiFetch';
 import { dropUnmountedFeedCaches, refetchFeedCaches } from '../feedCache';
 import { viewerCacheEpoch } from '../query';
-import { getMyAccount, type MyAccount } from './me';
+import { MY_ACCOUNT_KEY, getMyAccount, type MyAccount } from './me';
 import { throwApiError } from './sessions';
 import { profileKey, type FullProfile, type Profile, type ProfileTile } from './users';
 
@@ -93,10 +93,10 @@ export async function applyOwnProfileChange(queryClient: QueryClient, userId: nu
     return next;
   });
   if (change.name !== undefined) {
-    queryClient.setQueryData<MyAccount>(['my-account'], (a) => (a ? { ...a, name: change.name ?? a.name } : a));
+    queryClient.setQueryData<MyAccount>(MY_ACCOUNT_KEY, (a) => (a ? { ...a, name: change.name ?? a.name } : a));
   }
   const jobs: Promise<unknown>[] = [queryClient.refetchQueries({ queryKey: key, exact: true })];
-  if (change.name !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: ['my-account'], exact: true }));
+  if (change.name !== undefined) jobs.push(queryClient.refetchQueries({ queryKey: MY_ACCOUNT_KEY, exact: true }));
   if (change.name !== undefined || change.imageUrl !== undefined) {
     dropUnmountedFeedCaches(queryClient);
     jobs.push(refetchFeedCaches(queryClient));
@@ -110,7 +110,7 @@ export async function applyOwnProfileChange(queryClient: QueryClient, userId: nu
 // our routes never refreshes. Falls back to that copy only when offline.
 export async function freshOwnName(queryClient: QueryClient, fallback: string | null | undefined): Promise<string | null> {
   const acct = await queryClient
-    .fetchQuery({ queryKey: ['my-account'], queryFn: getMyAccount, staleTime: 0 })
+    .fetchQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount, staleTime: 0 })
     .catch(() => null);
   return acct?.name ?? fallback ?? null;
 }

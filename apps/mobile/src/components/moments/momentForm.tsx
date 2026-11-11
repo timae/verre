@@ -1,6 +1,6 @@
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import { ActionSheetIOS, Keyboard, type LayoutChangeEvent, Modal, Platform, Pressable, TextInput, View, type TextInputInstance } from 'react-native';
 import Animated, { Easing, runOnJS, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -234,6 +234,17 @@ export async function pickPhotoOrRemove(removeLabel: string | null, maxBytes = M
   return choice === 'camera' ? pickFromCamera(maxBytes) : pickCover(maxBytes);
 }
 
+// .field-group — a field label over its control (the controls without their
+// own label: SelectField, the create category trigger, the bringer field).
+export function FieldGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <View style={{ gap: 7, marginBottom: 14 }}>
+      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{label}</VText>
+      {children}
+    </View>
+  );
+}
+
 // From/To — brand .field box, EMPTY by default (our own field can render
 // empty; the OS compact pills couldn't, and allowed no format control). Set
 // .field + .select-wrap — a tappable field box that reads like a dropdown
@@ -241,12 +252,13 @@ export async function pickPhotoOrRemove(removeLabel: string | null, maxBytes = M
 // as a brand trigger; the actual choosing happens in a sheet. (Extracted from
 // add.tsx per the catalog's pending-extraction list.)
 export function SelectField({
-  value, placeholder, onPress, accessibilityLabel,
+  value, placeholder, onPress, accessibilityLabel, disabled,
 }: {
   value: string;
   placeholder: string;
   onPress: () => void;
   accessibilityLabel: string;
+  disabled?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -255,11 +267,14 @@ export function SelectField({
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={disabled}
       // Dismiss first so a tap coming FROM a focused text field opens the sheet
       // on the first tap — otherwise keyboardShouldPersistTaps can spend that tap
       // dismissing the keyboard and the open needs a second tap.
       onPress={() => { Keyboard.dismiss(); onPress(); }}
       style={({ pressed }) => ({
+        opacity: disabled ? 0.55 : 1,
         minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
         paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
         borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,

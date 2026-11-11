@@ -31,6 +31,23 @@ export async function mutedUserIds(muterId: number): Promise<Set<number>> {
   return new Set(rows.map(r => r.mutedId))
 }
 
+// The muter's own list (Settings → Privacy → Muted), newest first, capped like
+// the block list. 🔒 A muted user who has BLOCKED the muter is left out: their
+// profile is 'gone' to the muter, so listing them would tell "blocked me" apart
+// from "deleted". One the muter blocked stays (that's the muter's own choice,
+// already visible in their Blocked list). No imageUrl: the rows render initials,
+// which sidesteps the avatar tier gate.
+const MUTE_LIST_CAP = 1000
+export async function listMutedUsers(muterId: number): Promise<Array<{ id: number; name: string; createdAt: Date }>> {
+  const rows = await prisma.userMute.findMany({
+    where: { muterId, muted: { blocks: { none: { blockedId: muterId } } } },
+    select: { createdAt: true, muted: { select: { id: true, name: true } } },
+    orderBy: { createdAt: 'desc' },
+    take: MUTE_LIST_CAP,
+  })
+  return rows.map(r => ({ id: r.muted.id, name: r.muted.name, createdAt: r.createdAt }))
+}
+
 export type SetMuteResult =
   | { ok: true }
   | { ok: false; reason: 'rate-limited'; retryAfter: number }

@@ -104,6 +104,25 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 12, cy: 12, r: 8, sw: 1.6 },
     { d: 'M6.5 6.5l11 11', sw: 1.6, cap: true },
   ],
+  // Signed-in devices (Settings → Account): phone, laptop (design i-phone,
+  // i-laptop). The app is iPhone-only and the label names the model, so the
+  // design's i-tablet isn't needed yet.
+  phone: [
+    { d: 'M9.5 3h5A2.5 2.5 0 0 1 17 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 7 18.5v-13A2.5 2.5 0 0 1 9.5 3Z', sw: 1.6 },
+    { d: 'M11 18h2', sw: 1.6, cap: true },
+  ],
+  laptop: [
+    { d: 'M6.5 5h11A1.5 1.5 0 0 1 19 6.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 13.5v-7A1.5 1.5 0 0 1 6.5 5Z', sw: 1.6 },
+    { d: 'M3 18.5h18', sw: 1.6, cap: true },
+  ],
+  // Settings hub: Appearance (design i-palette), Notifications (i-bell).
+  palette: [
+    { d: 'M12 3.5a8.5 8.5 0 100 17c1.2 0 1.8-.8 1.8-1.7 0-1.1-.9-1.4-.9-2.4 0-.9.7-1.6 1.7-1.6h1.9a3.9 3.9 0 003.9-3.9C20.4 6.9 16.6 3.5 12 3.5z', sw: 1.6, join: true },
+    { cx: 7.8, cy: 11, r: 1.2, fill: true },
+    { cx: 10.5, cy: 7.4, r: 1.2, fill: true },
+    { cx: 14.8, cy: 7.6, r: 1.2, fill: true },
+  ],
+  bell: [{ d: 'M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6M10 20a2 2 0 0 0 4 0', sw: 1.5, cap: true, join: true }],
   // door + arrow out — Sign Out (design i-logout)
   logout: [
     { d: 'M14 4.5H7a2 2 0 00-2 2v11a2 2 0 002 2h7', sw: 1.6, cap: true },

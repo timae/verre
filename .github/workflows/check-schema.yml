@@ -217,9 +217,13 @@ jobs:
       # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
       # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9
       # wine-photo retention on moment and account deletion (incl. a rolled-back
-      # attempt), and the profile image replace protocol. S3 is an in-process
-      # fake endpoint that records the SDK's PUT / DELETE requests.
-      - name: You profile (tiles, retention, profile images)
+      # attempt), and the profile image replace protocol; step 3: the mute
+      # list (blocked-me scrub, cap), the devices routes for an app caller
+      # (This Device, own-row revoke, revoke-all keeps the caller) and the
+      # Delete Account failure premise (a refused deletion has already signed
+      # the phones out). S3 is an in-process fake endpoint that records the
+      # SDK's PUT / DELETE requests.
+      - name: You profile (tiles, retention, profile images, settings)
         run: npx tsx scripts/tests/you-profile-integration.mts
         timeout-minutes: 5
         env:

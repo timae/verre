@@ -42,15 +42,18 @@ import { betterAuthServer } from '@/lib/betterAuth'
 //
 // `userSessionId` is web-only (the per-device user_sessions row): the BA branch
 // leaves it undefined — native sessions are revoked through the auth_sessions
-// store, not user_sessions. Routes that operate on the CALLER'S OWN device row
-// (devices revoke-all, per-device logout) already 401/skip on a missing
-// userSessionId.
+// store, not user_sessions. Its native counterpart is `nativeSessionId`, the
+// caller's own auth_sessions row id (the `ba:<id>` the devices GET lists; BA
+// copies the created row into Redis, so a Redis-served session carries the same
+// id). The devices routes use it for This Device, the password-free own-row
+// revoke and the revoke-all keep. 🔒 Server-only: no route serializes `session`,
+// keep it so, and never add the session TOKEN here.
 // `authSource: 'native'` iff the Better Auth cookie validated — the
 // UNSPOOFABLE caller-class signal (set by which credential authenticated,
 // never by a client-controlled header like X-Verre-Client). Absent on the
 // web auth() pass-through. Reserved for native-only policy; never for
 // authorization tiers.
-export type ResolvedSession = Session & { authSource?: 'native' }
+export type ResolvedSession = Session & { authSource?: 'native'; nativeSessionId?: number }
 
 export async function resolveUser(req: NextRequest): Promise<ResolvedSession | null> {
   // Availability isolation, NOT an auth decision: a thrown BA branch (Redis
@@ -75,6 +78,7 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
         select: { id: true, name: true, email: true, role: true, pro: true },
       })
       if (!dbUser) return null
+      const sid = Number(ba.session.id)
       return {
         user: {
           id: String(dbUser.id),
@@ -87,6 +91,7 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
         // (JSON round-trip) — normalize.
         expires: new Date(ba.session.expiresAt).toISOString(),
         authSource: 'native',
+        nativeSessionId: Number.isInteger(sid) && sid > 0 ? sid : undefined,
       }
     }
   } catch (e) {

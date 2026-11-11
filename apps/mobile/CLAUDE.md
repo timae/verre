@@ -70,12 +70,16 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   SDK template + config plugins (`--no-clean` keeps the existing project).
   Regeneration is the sanctioned way to take an SDK's native-template changes;
   afterwards re-apply the ONE hand edit (`Verre.xcscheme` LaunchAction
-  `buildConfiguration = "Release"`), then grep `project.pbxproj` for an EMPTY
-  `DEVELOPMENT_TEAM` before committing (device builds write the Apple Team
-  ID into it; `project.pbxproj` + `Podfile.lock` are kept
-  `git update-index --skip-worktree` on dev machines for that reason — lift
-  it before a prebuild so the regenerated files are reviewable, re-set it
-  after committing), and diff the regenerated `Info.plist` / `.xcscheme`
+  `buildConfiguration = "Release"`) and keep the Apple Team ID in
+  `DEVELOPMENT_TEAM`. The Team ID is TRACKED on purpose (ruled 2026-11-11:
+  it isn't a secret, it ships in every signed app and was already public),
+  so `project.pbxproj` and `Podfile.lock` are committed as `pod install` and
+  Xcode write them; no skip-worktree, no scrubbing. If a second developer
+  with another Apple team ever builds, switch to a placeholder
+  (`DEVELOPMENT_TEAM = "$(VERRE_DEVELOPMENT_TEAM)"` + a gitignored xcconfig
+  outside `ios/`, re-applied by a config plugin): don't just empty it, since
+  Expo CLI's signing check reads the raw project value and an empty one
+  makes `expo run:ios --device` write a team back. Then diff the regenerated `Info.plist` / `.xcscheme`
   against the template rather than trusting them: a prebuild over an
   existing project has duplicated `CFBundleURLSchemes` entries, and the
   template ships a `TestableReference` to a test target this project does
@@ -427,10 +431,10 @@ dead ends):**
 are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 `apps/mobile/src/components/ui/VText.tsx`); `lib/` paths are `apps/mobile/src/lib/`.
 - **Text**: `VText` (`ui/VText.tsx`) — themed Text w/ `variant` + `color` token. Every label starts here. For capped/fixed-format or compact surfaces, pass `surface="compactList" | "carousel" | "badge" | "score" | "code" | ...`; do not write inline `maxFontSizeMultiplier`. ⛔ **Inline `fontSize`/`lineHeight` on text is a VIOLATION, not a tweak** — sizes come from the `variant` type-scale tokens (weight/`fontFamily` and color overrides are fine; `letterSpacing` where a ruled look needs it). The rule was guidance-only and drifted (2026-07 audit: the aroma sheet family accumulated 26 literals at 10–12.5, every one on a VText, each copied from its neighbor — AND `surface="badge"` on prose froze it under Dynamic Type). Mapping: content/prose → `small` (or `body`); metadata sublines → `caption`; mini section labels → `label` when the source text is uppercase, else `caption`+semibold; counters/numerals may keep `surface="badge"`. Sanctioned exceptions (SVG canvases, badge/pill anatomy, `code`/`carousel`/score surfaces, chrome with load-bearing metrics, mock-pixel hero blocks) are NAMED in `scripts/check-mobile-design-tokens.mjs` `ALLOW_FONTSIZE` — the gate FAILS on any literal outside that list; adding a file = claiming one of those categories, in a comment, expecting challenge.
-- **Button**: `Button` (`ui/Button.tsx`) — `primary/positive/secondary/tertiary/danger`, `sm/md/lg`, `bar`, `block`, `loading`+`loadingTitle`. Any real button. It owns the Dynamic Type `button` surface; don't recreate fixed-height text buttons.
+- **Button**: `Button` (`ui/Button.tsx`) — `primary/positive/secondary/tertiary/danger`, `sm/md/lg`, `bar`, `block`, `loading`+`loadingTitle`, `critical` (tertiary only: a red text action; `danger` is the FILLED red one). Any real button. It owns the Dynamic Type `button` surface; don't recreate fixed-height text buttons.
 - **Icon**: `Icon` (`ui/Icon.tsx`) — the vendored 24×24 SVG set (`IconName` union). All iconography. Add new glyphs here, never inline an SVG.
 - **Text input**: `TextField` (`ui/TextField.tsx`) single-line; `NotesField` (`moments/momentForm.tsx`) multiline; `SheetSearchField` (`ui/SheetSearchField.tsx`) is the ONE compact search pill used by compare, People/Invite, recents, AromaInput, and Aroma Details — never import a generic search control from a feature component. `TextField` owns the `formControl` Dynamic Type surface and deliberately omits `lineHeight` on single-line `TextInput` so iOS centers entered glyphs correctly. A single-line `TextField` always sends an explicit paragraph style (`lineBreakModeIOS="tail"`; not the paragraph default, word wrapping, which likely caused the July wrap-on-blur bug) and `letterSpacing: 0`: a DEFENSIVE workaround for a placeholder seen ~14pt low and clipped, intermittently, gone after a relaunch (2026-11-09). Hypothesis, UNVERIFIED on device: Fabric recycles native text fields on iOS and UIKit keeps an attribute RN leaves unset from the previous field (e.g. `ScoreInput`'s lineHeight 48 would give that offset). Keep the two defaults; drop the hypothesis if a repro ever shows otherwise. Pass `surface="code"` for fixed-format codes. **Error state**: `error="msg"` = red border + inline message; `invalid` (boolean) = red border ONLY (for a form-level summary that carries the copy). Both set `aria-invalid`. `DateField` (`moments/momentForm.tsx`) mirrors this with an `error?: boolean` border flag + a `placeholder` prop (a REQUIRED date field passes e.g. "Tap to set" so the empty state doesn't read "Optional"). (A shared `<TextArea>` is a pending extraction — see below.)
-- **Bottom sheet**: `Sheet` (`ui/Sheet.tsx`) — the gorhom shell (themed bg/handle/backdrop + tab-bar-hide). All sheets. ⚠️ Two load-bearing gorhom facts baked into the shell + consumers: (1) the BACKDROP renders as a no-zIndex sibling BEFORE the sheet container, so the shell z-indexes backdrop (99) + container (100) — without that, a screen's zIndexed absolute overlays (hero bar, sticky tab/rail overlays, reconnecting bar) paint OVER the dim layer (`containerStyle` alone does NOT reach the backdrop — a fix that "looks right" but isn't); (2) sizing is two-mode: dynamic fit-to-content (`maxDynamicContentSize`, plain-View rows — a `BottomSheetScrollView` measures 0 under dynamic sizing) while content fits, or fixed-snap + `BottomSheetScrollView` when it can't (rows past the cap CLIP unreachably under dynamic sizing). The compare sheets (`CompareBody.tsx`) show the cap-aware mode switch + the search height-lock recipe; (3) 🔒 **sheet-scroll invariant: NEVER wrap a `BottomSheetScrollView` in a `BottomSheetView`** — BottomSheetView's mount effect re-registers the sheet's scrollable as `type: VIEW` (child effects run first, so it always wins), which sends content drags into the sheet's over-drag branch and pins the list to offset 0: the sheet "isn't scrollable" on device (found via the 100-taster stress seed, 2026-07-17 — latent in EVERY scroll-mode sheet; only surfaces with content long enough to scroll). In fixed-snap scroll mode wrap with a plain `View` (dual-mode sheets: `const Wrap = scrolls ? View : BottomSheetView` — dynamic fit-to-content still needs BottomSheetView's measurement).
+- **Bottom sheet**: `Sheet` (`ui/Sheet.tsx`) — the gorhom shell (themed bg/handle/backdrop + tab-bar-hide). All sheets. 🔒 Every SCREEN that renders one (incl. `OptionSheet` / `CountrySheet`) wraps itself in `BottomSheetModalProvider`: there is no root provider (`app/_layout.tsx`), and a screen without one crashes the moment it mounts ("'BottomSheetModalInternalContext' cannot be null", Settings → Privacy, device pass 2026-11-11). tsc and `expo export` can't catch it. ⚠️ Two load-bearing gorhom facts baked into the shell + consumers: (1) the BACKDROP renders as a no-zIndex sibling BEFORE the sheet container, so the shell z-indexes backdrop (99) + container (100) — without that, a screen's zIndexed absolute overlays (hero bar, sticky tab/rail overlays, reconnecting bar) paint OVER the dim layer (`containerStyle` alone does NOT reach the backdrop — a fix that "looks right" but isn't); (2) sizing is two-mode: dynamic fit-to-content (`maxDynamicContentSize`, plain-View rows — a `BottomSheetScrollView` measures 0 under dynamic sizing) while content fits, or fixed-snap + `BottomSheetScrollView` when it can't (rows past the cap CLIP unreachably under dynamic sizing). The compare sheets (`CompareBody.tsx`) show the cap-aware mode switch + the search height-lock recipe; (3) 🔒 **sheet-scroll invariant: NEVER wrap a `BottomSheetScrollView` in a `BottomSheetView`** — BottomSheetView's mount effect re-registers the sheet's scrollable as `type: VIEW` (child effects run first, so it always wins), which sends content drags into the sheet's over-drag branch and pins the list to offset 0: the sheet "isn't scrollable" on device (found via the 100-taster stress seed, 2026-07-17 — latent in EVERY scroll-mode sheet; only surfaces with content long enough to scroll). In fixed-snap scroll mode wrap with a plain `View` (dual-mode sheets: `const Wrap = scrolls ? View : BottomSheetView` — dynamic fit-to-content still needs BottomSheetView's measurement).
 - **Segmented pill switcher**: `Segmented` (`ui/Segmented.tsx`) — the rounded `theme.bg` track with a `theme.surface` pill on the active segment. Two metric sets: default (full-width flex-1 segments — the BrowseSheet picker switcher + the aroma detail sheet's 3d tabs) and `compact` (content-sized mini twin — the ListPicker look switcher). ALL pill-track tab switching routes through this; the dev gallery's knobPill copies are lab code and stay local. Screen-level chrome stays `SessionTabs` (underline) / `PillTabBar` (bottom nav) — this is the IN-SHEET / in-panel pattern.
 - **Anchored dropdown menu**: `ui/AnchoredMenu.tsx` — `AnchoredMenu` (the `.ir-menu` panel: Modal shell + surface card + `elevation.menu` shadow + dur1 fade/4px-rise + flip-up-near-bottom, `{top,bottom}` anchor), `MenuItem` (icon/label row, `tone`/`disabled`/`active`), `MenuSeparator`, `AnchorButton` (measure-self ⋯ trigger). ALL ⋯ dropdowns route through this. (Anchor to a ROW not the button → keep a manual `rowRef.measureInWindow` like PeopleSheet's PersonRow.)
 - **Query-failure UI**: `ui/ConnectionState.tsx` — `ErrorState` (full-screen + retry), `ConnectionBanner`, `ReconnectingBar`, `connectionView()`. All poll/error affordances.
@@ -449,8 +453,11 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Aroma READ**: `AromaReadChips` (`scoring/aroma/AromaReadChips.tsx`) — read-only grouped chips (displayOrder + AromaChip) for someone's stored selections; feed impression detail now, further native read surfaces reuse it. The `lead` word prop was REMOVED (fixes round 2026-07-13 — the feed detail carries a section title instead). Pass `collapse` for the rating page's overflow behaviour: two lines via the shared width packer (`packChips`/`ChipMeasurePass`/`MoreChipsPill` in `parts.tsx`, also used by `SelectedChipsRow`), tail behind the SAME "+N more" pill that opens a read-only bottom sheet — pass `overflowSheetStack="push"` when hosted inside another sheet, and `overflowPillOnSurface` when the row itself sits on a sheet's `surface` so the pill swaps only its fill to `bg` instead of disappearing surface-on-surface. Optional `onPressAroma(selection, rect)` adds anchored read-side inspection without changing the canonical badge. ⭐Read badges are COMPACT: `AromaReadChips` passes `vPad 0` (inner padding 0 + the inherited 23pt label line via `badgeVMetrics`; Simon 2026-07-13) to every chip + pill it renders — write surfaces keep the 4.5 default; don't override per call site. The WEB has its own twin (`components/ui/AromaReadChips.tsx`, PR D — no shared RN/web layer). No input, no refine — mutations only through AromaInput.
 - **Aroma input (descriptor layer, PR B)**: `scoring/aroma/` — `AromaInput` (the 02e·11 search-first section on the impression screen: chips + search field + the INLINE CanvasPicker right under it — a live query swaps the canvas for the suggestions + refine row, an empty query brings it back (Simon 2026-07-17 — supersedes the browse button + BrowseSheet entry point); controlled `AromaSelection[]`, local-until-commit), `parts.tsx` (`AromaChip` — THE aroma badge everywhere: the design's `.badge` anatomy per Simon's 2026-07-10 ruling — family-tint fill + `readableSolid` words (the 100% palette colour where it clears 3:1 on the fill, pulled toward ink ONLY past that — supersedes the earlier bare-solid-words + tintedInk iterations); `focused`/'solid'-bumped fills = SOLID family fill + `inkOn`-picked label — ⚠️ but an ARMED SEARCH RESULT no longer uses it (Simon 2026-07-12, ADR-0008 addendum): armed keeps its RESTING colours and the OTHER results mute (`muted`) — contextual focus, chips never self-recolour; `focused` remains the picker-cell/solid vocabulary; Pronounced border = `readableBorder` (readable, floored at 45% colour share so clay never reads white), the label ink on solid fills; fills route through `aromaTint.ts` `aromaFillRatio` + words/borders through `readableSolid`/`readableBorder` — keep all three on any new family-tinted surface; genuinely weak palette values are still the PALETTE's to fix (punch-list printed by aroma-pickers-units.ts); `ModifierRail`, `PronouncedRow`, `ModifierPopup` anchored refine, `useAromaOps` — every mutation re-gated + pair-precise, `canonicalPair` — re-target after promoted rewrites, `useTapOrDouble`, `usePendingAdd` — the pickers' armed modifier+Pronounced pair committed as one add, `RefineAddRow`/`ModifierSelectButton`/`PronouncedToggle` — THE shared refine row (search block + Map/Canvas/Rings inline + List via the sheet footer), `CapHint`, `AromaCrumbs` — the drill breadcrumb shared by Rail/Canvas/List), `SelectionSheet` ("+N more" overflow, cap-aware sizing), `BrowseSheet` (NO production entry point since the inline-canvas ruling — kept as the five-picker lab: segmented control, Map/Rings/Rail/Canvas/List; added-badges strip w/ refine popup; ONE always-enabled scroll (gorhom latches scrollEnabled from first render — no per-variant toggle), content-pan on so pull-down works, stage pans win by activating first), `RailPicker`, `RingsPicker` (W4, the mock's OVERSIZED-CROP geometry — the crop IS the design; NO fisheye: even wedges always, ONE static layout per commit for wedges+labels so turning is pure rotation; full pick name reads in the passive HUB as plain wrapped text, never TextPath; Add/refine = the shared RefineAddRow below the stage; every gesture end snaps synchronously to a detent, taps = real Gesture.Tap raced with the pan; labels fit-or-hide inside the visible window. ⚠️ rnsvg TextPath + animatedProps on its referenced Path is BROKEN on device — text draws along mount-time geometry and end-clips; never reintroduce), `MapPicker` (3-level zoom; territories = recursive balanced cuts — families + groups guaranteed CONNECTED and compact; live pinch-between-levels w/ focal-point scale + re-base; momentum pan) + `CanvasPicker` over `hexStage.tsx` (shared axial-hex SVG stage: pannable clamped translate w/ withDecay momentum — pan DISABLED when the cluster fits so the sheet keeps its drags (edge-fade affordance was tried and REJECTED on device — don't reintroduce); per-cell a11y button+selected state; strict flat family fills; armed cell = search-focus treatment: grow + others mute; Canvas sizes its stage TO the cluster (capped) so small combs don't float in empty bands; the PURE lattice/syllable-wrap/clamp math lives in `hexMath.ts` and the Map's territory cuts in `mapLayout.ts` — both node-importable, regression-driven by `.local/test-env/scripts/aroma-pickers-units.ts`; per-theme fill strength in `aromaTint.ts` — clay boosts the family-colour share, see the badge note below), `ListPicker` (drill list with a Tinted/Plain/Cards look switcher — Tinted = badge anatomy rows, Plain = People-sheet rows w/ hairline separators, Cards = the SetGroup/SetNav settings anatomy; family colour stays as dot/mark + armed tint on the non-tinted looks; round mark = any-tier arm; its refine row is PINNED to the sheet bottom via the Sheet's gorhom `footerComponent`). **Design spec-of-record: `docs/design/decisions/0008-aroma-input-search-first.md`** (variant pick, chip anatomy, Pronounced glyph/border split, ordering, add feedback, keyboard scroll) + `docs/dev/proposals/aroma/aroma-layer.md` (data semantics). Icons: `grid`, `pronounced` (reusable "standout" mark). `Button` gained `titleLines`; `SheetSearchField` gained `onFocus`/`onBlur`.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
-- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass; `bottom` anchors it bottom-right), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
-- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto` (+ `pickPhotoOrRemove(label)`: the same iOS ActionSheet with a destructive Remove row), `NotesField` `maxLength`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
+- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup` (`flush` = no bottom margin, for the You settings pages; it draws the hairline BETWEEN its rows, `.setnav + .setnav`, and rows draw none: a line on the first row doubled the card's border, fixed 2026-11-11), `SetNav` (+ `subtitle`, `value`, `leading` node in the icon's place, `accent` = label + icon in the accent (beside `critical` red), `trailing` node or `'none'` in the chevron's place (a row with a trailing NODE is not one accessible element, so its button stays reachable), `busy` = a spinner there while the row stays one busy button; `icon` optional), `GlassButton` (over-cover round glass; `bottom` anchors it bottom-right), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason; the moment settings' `.trow`), `SettingsScreenFallback` (bar + spinner or retryable `ErrorState`; `errorTitle`). You settings pages (04·4): `SetPage` (`.yo-setbody`: bar + sections 26 apart, pill clearance, keyboard-aware; a sticky-footer page passes `footer` + `bottomPad`, like Change Password), `SetSection` (`.yo-sgrp`: uppercase label + content), `SetSwitch` (`.yo-stog`: a switch row inside a group; `soon` locks it), `MeCard` (`.yo-mecard`). `SelectField` gained `disabled`; give it an `accessibilityLabel` that carries the value (`Type: Wine`), since the label replaces the field's text for VoiceOver.
+- **Theme preview**: `ThemePreviewProvider` (`theme/index.tsx`) re-themes a subtree (`theme` AND `themeKey`; the real `choice`/`setChoice` pass through). `ThemeSwipePicker` (`settings/ThemeSwipePicker.tsx`) is the design's 01 swipe-to-theme, reusable for onboarding (caller supplies the header + `onUse` / `onUseInSystem`; `ThemeProvider` keeps the light/dark `systemThemes` pair).
+- **Sign-out confirm**: `lib/signOutConfirm.ts` `confirmSignOut(who, setBusy)` — THE sign-out (Settings → Sign Out, Account → This Device): names the account, goes through Better Auth. Don't hand-roll another.
+- **Error copy**: `lib/errorCopy.ts` `errorText` (a failed write's alert body: a 401 → `SIGNED_OUT_TEXT` "You’re signed out. Sign in again." (ruled 2026-11-11), any other 4xx → the server's copy, else the connection line) + `sentence`. Don't re-declare them per screen.
+- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `FieldGroup` (`.field-group`: the 600 small label over a control that has none of its own: SelectField, the create category trigger, the bringer field), `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto` (+ `pickPhotoOrRemove(label)`: the same iOS ActionSheet with a destructive Remove row), `NotesField` `maxLength`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
 - **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile. Header-screen props: `fullBleed` (never-inset + the RNS dead-end; key the list on it), `refreshOffset` / `refreshTint`, `inert` (rows + footer at 0.35, no touches, scroll stays), `bottomInset` (≥ `TAB_BAR_CLEARANCE`), `scrollHandle` (`scrollToOffset`, in the list AND the error layout); its error state renders the header inside a scroll view.
 - **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` / `TileCoverSheet` / `ProfileEditParts` (`LongPressable`, `InlineField`, `EditBar`) / `coverGeometry` (`profile/`) — see § You profile.
 - **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens; `back={false}` for a tab root; `titleShown` turns the title into a SCROLL title (fades in once content scrolls under the bar), `titleLeading` puts a node before it.
@@ -480,6 +487,7 @@ Ordered by drift-risk (active divergence + likelihood of a next copy):**
 - **`<ChoiceChips>`** — the hide-lineup timing pills are verbatim in `create.tsx` + `reveal.tsx`.
 - ✅ **DONE — `ClampText`** promoted to `components/ui/ClampText.tsx` (the feed impression detail became its second consumer; 02e now imports it). `OvcAbout`'s description block is still a copy — migrate when next touched.
 - **Generalize `SettingsFooter` → `<StickyFooter error>`** — create/add re-inline the same absolute bottom bar.
+- **`elevationStyle(level)`** — the `elevation.<lvl>.ios` / `.android` shadow spread (shadowColor/Opacity/Radius/Offset + elevation) is written out in 6+ places (AnchoredMenu, the add position picker, MeCard, the theme demo card, …). A helper returning the style object removes it; mechanical.
 - **Feed post detail bar title → `BarTitle`** — `feed/[id]/index.tsx` still renders its own title (same type, but it POPS in on `solid` instead of fading, and it is tappable → About). Adopting `BarTitle` (with a press slot) changes that behaviour: a design call, not a refactor.
 - ✅ **DONE (partial) — `<CenteredMessage>`** built in `ui/ConnectionState.tsx` and adopted in the edit-impression screen (in the primitives list above). **The FatalView copy is now SHARED but still un-migrated**: `SessionFatalView` (`moments/SessionFatalView.tsx`, extracted from index.tsx for Compare) still hand-rolls the flex-center layout because `<CenteredMessage>` has no button/footer slot — extend CenteredMessage with a footer slot, then adopt it there. Still open: decide whether it also covers the icon-circle empty-state family (`EmptyLineup`); `LockCard` is a distinct designed surface, exclude it.
 - **Shared layout constants** — `GUTTER` (`=22`, the intentional `20` in `impression/[wineId].tsx` is a documented override), `FOOT_CLEARANCE`, are re-declared per-file ~8× / ~5×. Move to `lib/layout.ts` (alongside `TAB_BAR_CLEARANCE`) so the one intentional override is visible.
@@ -778,7 +786,8 @@ transparent presentation, so the feed still shows through while `index` opens.
   pinned at first render. Every builder takes the mount: `sessionHref`,
   `feedHref('post' | 'profile' | 'edit' | 'edit/details')` and `settingsHref`
   go onto the post's stack when called from inside it (`[id]/edit/[postId]`,
-  `[id]/edit/details` and `[id]/settings` are mirrors there; the edit slides
+  `[id]/edit/details` and `[id]/settings/…` (the hub + every page) are
+  mirrors there; the edit slides
   up with no swipe-back so it reads like the outer full-screen edit);
   `feedListHref` with a post mount = the profile on that stack; `tabHomeHref`
   is the TAB root only (a "mount home" would be the post).
@@ -944,7 +953,7 @@ transparent presentation, so the feed still shows through while `index` opens.
   answers, export-compliance confirmation, and TestFlight beta review details.
   `ITSAppUsesNonExemptEncryption=false` is already set in `app.json`.
 
-## You profile (handoff 04, steps 1 + 2)
+## You profile (handoff 04, steps 1 to 3)
 
 As-built 2026-11-09 (plan `.local/you-profile/step1-plan.md`). Your own profile
 is the You tab's root; someone else's is `feed/u/[id]` (mirrored `you/u/[id]`),
@@ -976,8 +985,8 @@ is the next subsection.
   (`GET /api/users/:id?view=header`, key `['user-profile', id]`).
 - **Inactive** (visible, not tappable): status line, counts, tiles (a tap;
   the own long-press is step 2), in-common row; menu rows Add Friends, Share
-  Profile, Invite to a Moment (MenuItem `disabled` → "Soon"). Edit Profile is
-  live since step 2.
+  Profile, Invite to a Moment (MenuItem `disabled` → "Soon"). Your own ⋯
+  has no Edit Profile row since step 3 (see the step-3 deviations).
 - **Relationship writes** (follow / unfollow / mute / block / unblock): an
   optimistic header patch, then the profile AND the network `['feed']` (exact)
   refetch in place. Mute never touches the profile's own post list (mute is a
@@ -986,11 +995,10 @@ is the next subsection.
   Out) renders even while your profile fails to load. Unfollow and Block
   confirm via the house native alert
   (Block uses the design's BLOCKSHEET copy); Follow and Mute act at once.
-- **No Blocked list yet** (ruled 2026-11-09): after leaving a blocked
-  profile there is no in-app unblock path until the real Settings. Same
-  accepted gap for MUTE: a profile is reachable only from a feed card, so a
-  muted person you don't follow has no way back to their profile (to
-  unmute) until People / Search / Settings exist.
+- **Blocked / Muted lists** live in Settings → Privacy since step 3 (the
+  only unblock path for a mutual block, and the way back to a muted person
+  you don't follow). A block / unblock / mute on a profile invalidates the
+  matching list (`act`'s `list` option).
 - **Bar title**: once the header name scrolls under the bar, the bar shows
   the 26pt photo + name — plain `VBar` with `titleShown` / `titleLeading`
   (`back={false}` on the tab root); trigger = the measured name bottom via
@@ -1003,15 +1011,18 @@ is the next subsection.
   mock's 1px outline (no-borders ruling); the own-variant Settings row pushes
   `/you/settings` even from the Feed stack (inside an opened post: the mirror
   on the post's stack, `settingsHref`).
-- `you/settings.tsx` is INTERIM (Help & About, Dev Gallery, Sign Out).
 
 ### Step 2 (bio, cover + hero 04·R5i·b, editing), as built 2026-11-10
 
 Plan `.local/you-profile/step2-plan.md` (rulings D1–D9). Server side: root
 CLAUDE.md § Session deletion (D8), `docs/dev/avatars.md`, README.
 
-- **Cover hero** (`ProfileHeader` `CoverHero`, cover set): the cover is 3:2 of
-  the SCREEN WIDTH (not `HERO_RATIO`), full-bleed under the status bar
+- **Cover hero** (`ProfileHeader` `CoverHero`, cover set): from the screen
+  top to the SHEET EDGE (the card's top line) the cover is `HERO_RATIO` of
+  the screen HEIGHT, like the moment, impression and opened-post heroes
+  (ruled 2026-11-11 on device: the mock's 3:2 of the width sat low under the
+  Dynamic Island); the photo runs `SHEET_RISE` further under the sheet (as
+  theirs run `radius.xl`), full-bleed under the status bar
   (`FeedList fullBleed`, keyed on cover / no cover so the scroll setup
   remounts). `coverGeometry.ts` ports `notchSvg` (variant b) parametrized by
   width AND photo size: the sheet edge sits `SHEET_RISE` (26) above the cover's
@@ -1063,7 +1074,9 @@ CLAUDE.md § Session deletion (D8), `docs/dev/avatars.md`, README.
   blind-safe picks, the dead-pin clear) live in `lib/profileTiles.ts`.
 - **Edit Profile page** (D1, `you/edit-profile.tsx` + mirrors
   `feed/[id]/edit-profile`, `you/[id]/edit-profile`, via
-  `profileEditHref(mount)`): cover 3:1 + 96pt photo with glass edit buttons,
+  `profileEditHref(mount)`, reached from Settings → your card): the cover at
+  the profile's height and crop (`HERO_RATIO`, ruled 2026-11-11; it was 3:1,
+  the mock 3:2) + 96pt photo with glass edit buttons,
   Display Name, Profile Text (`NotesField maxLength 200`), `SettingsFooter`.
   Everything is a DRAFT until Save; Save runs photo → cover → text and stops
   at the first failure (finished steps stay saved). Bar-hide matches
@@ -1092,6 +1105,142 @@ CLAUDE.md § Session deletion (D8), `docs/dev/avatars.md`, README.
   `Button` gained `icon` (leading glyph); `VBar` gained `back` /
   `titleShown` / `titleLeading`; `Avatar` gained `tint` (the
   `.yo-rav-ini` initials disc); icons `user-plus`, `block`, `logout`.
+
+### Step 3 (Settings), as built 2026-11-11
+
+Plan `.local/you-profile/step3-plan.md` (rulings P1–P5, Q-A…Q-F, T1–T5).
+Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
+(native This Device / revoke-all / device label), `docs/dev/mute.md`.
+
+- **Routes**: `you/settings/index.tsx` (hub) + `privacy`, `blocked`, `muted`,
+  `account`, `change-email`, `change-password`, `appearance`; every one
+  mirrored under `feed/[id]/settings/` and `you/[id]/settings/` (one-line
+  re-exports), via `settingsHref(mount, page?)`. The pill hides on
+  `change-email` / `change-password` (sticky footer) and `appearance` (own
+  buttons); the others keep it. No page may be
+  named `details` / `reveal` (the moment settings' pill-hide suffixes).
+  Router-sim case: `.local/opened-post-stack/router-sim/t13.cjs`.
+- **Hub**: `MeCard` (name from `['my-account']`, photo from your own header)
+  → Edit Profile; Account / Privacy / Tasting (Soon); Notifications (Soon) /
+  Appearance (value = theme name or "Match System"); Help & About; Dev
+  Gallery (not inside a post); Sign Out; `Verre <version> · Build <n>`
+  (`APP_VERSION` / `APP_BUILD`, `lib/clientVersion.ts`, from expo-application:
+  `app.json`'s buildNumber is stale under EAS remote versioning).
+- **Privacy**: Profile Visible To (`SelectField` + `OptionSheet`, the four
+  tiers, ruling P1) + Friends of Friends (Followers / Friends only).
+  🔒 Every PATCH sends BOTH fields (the server replaces them; the stored FoF
+  rides along while its switch is hidden), optimistic, one at a time
+  APP-WIDE (two PATCHes can commit in either order, and Privacy can be
+  mounted twice, on the You stack and on an opened post's in another tab: a
+  mutation `scope` queues saves in tap order and `useIsMutating` disables
+  every mounted editor), alerted on failure: a REFUSAL (4xx) reverts, any
+  other failure (no answer, a timeout, a 5xx) may have committed, so the
+  value is dropped (`resetQueries`) and every editor waits on the server's
+  own read before another save. After each PATCH a
+  read still in flight is CANCELLED and the cache set to what the server now
+  holds before the re-read (a focus refetch that started mid-PATCH carries
+  the old tier, and a save made from it would send it back). ⚠️ Known limit,
+  DEFERRED TO STEP 4 (ruled 2026-11-11; step 4 adds fields to the same
+  PATCH): a PATCH the phone gave up on (12 s) can still be running on the
+  server, and the re-read can return the old value before it commits, so a
+  second save may land in either order. It needs a multi-second stall
+  before the write (the interactive transaction itself is capped near 7 s by
+  Prisma's defaults). The fix is a server compare-and-set: the PATCH names
+  the value it replaces and is refused (409) when that is stale. Check-Ins Visible To and the two On My
+  Profile switches are locked "Soon" (step 4). Blocked / Muted rows: count +
+  chevron; "No one" (inert) only after a successful empty fetch; inert while
+  loading; tappable on error. Queries `['me', 'visibility' | 'blocks' |
+  'mutes']` (`lib/api/settings.ts`).
+- **Blocked / Muted** (`components/settings/PeopleListPage.tsx`): initials
+  disc + name + tertiary Unblock / Unmute; Unblock confirms, Unmute acts; the
+  row leaves on success, then the person's header, the network feed (and,
+  for an unblock, YOUR header) refetch in place.
+- **Account**: Email (→ Change Email: New Email + Current Password,
+  ruled 2026-11-11; the same PATCH as the web, but from an app caller the
+  server requires the password and a `z.email()`-valid address (Better
+  Auth's sign-in rule); no confirmation mail, there is no email pipeline; a
+  save that lands after you left doesn't pop the screen under you, same in
+  Change Password), Change Password, the devices in TWO groups
+  (ruled 2026-11-11): THIS DEVICE (the server's `isCurrent`, now set for the
+  app's own row; "Active now"; its Sign Out, in red (`Button critical`), is the hub's plain logout, the
+  same confirm via `lib/signOutConfirm.ts`, no password: ruled 2026-11-11,
+  replacing T3's button-less row), then OTHER DEVICES: Disconnect All Other
+  Devices, an accent (orange) action row like the per-device Disconnect
+  buttons (`SetNav accent`), in its OWN fully rounded card TOUCHING the
+  list's card (separate but connected), the list overlapping it by 1 pt so
+  the shared edge is one border, not two (ruled, after Telegram's style). Another device's action is
+  DISCONNECT (the web panel's word, ruled 2026-11-11); only your own is
+  Sign Out (server order, most recently
+  active first; Disconnect each). Every row: last active, the country when
+  known, and a second line "Signed in <date>" (the web panel's facts; the
+  country comes from the sign-in IP, so local LAN sign-ins have none),
+  Delete Account. The three password-gated actions prompt with
+  `Alert.prompt` (`secure-text`; 🔒 the password goes straight into the JSON
+  DELETE body, never logged or kept; an empty one counts as Cancel, so it
+  can't spend a `rl:account` attempt). 403 → "That password isn't right.",
+  429 → server copy, 404 → already gone (refetch).
+  🔒 **Delete Account** (`deleteAccount`, `lib/api/settings.ts`): the server
+  revokes the phone's native sessions BEFORE the step that can fail, so any
+  failure past the password check ends signed out: 409 / 503 / 500 with our
+  JSON body (and a 401: already signed out) → "wasn't deleted" copy (409:
+  too many empty moments) +
+  `authClient.signOut()`; a timeout, a network error or a status without our
+  body → "couldn't confirm" + sign out. 🔒 Both are dropped (no alert, no
+  sign-out) if the viewer changed while it ran: a heartbeat can sign the
+  phone out mid-delete and someone else sign in, whose session that sign-out
+  would revoke. ONE 120 s deadline covers request AND
+  body (`apiFetch`'s timer clears at the headers). No in-place retry.
+- **Change Password**: Better Auth `changePassword` (keeps THIS device,
+  signs out the rest, charges `rl:account`). 🔒 A transport failure / the
+  client's abort REJECTS (never `{ error }`) and the change may have landed:
+  unknown-outcome copy.
+- **Appearance**: `ThemeSwipePicker` over `ThemePreviewProvider`; the page
+  paints its own background (the stack's is the APP theme) and sets the
+  status bar per previewed theme on both channels (screen option +
+  `useForwardStatusBarStyle`) + expo-status-bar. Two buttons per theme
+  (ruled 2026-11-11, replacing the mock's Match System button): "Use
+  <Theme>" (always this one, pops) and "Use <Theme> When Phone Is in Light /
+  Dark Mode" (STAYS on the page so you can set the other kind too; Match
+  System with this theme for its kind: the theme context keeps a
+  `systemThemes` pair, `verre.theme.system` in AsyncStorage, defaults until
+  chosen; `setSystemTheme`). The one in use turns into "✓ In Use" / "✓ Used
+  When Phone Is in Light Mode". Back changes nothing. It opens on
+  the active theme, scrolled there once laid out (`contentOffset` alone
+  wasn't reliable). The transition is a COLOUR WAVE (ruled 2026-11-11):
+  nothing moves; every theme is a full layer stacked in page order and
+  clipped to the right of its page edge on screen (transforms only, UI
+  thread), so a straight vertical edge rides the page boundary under the
+  finger and recolours everything it passes; React re-renders only when the
+  nearest page changes (status bar, which layer takes touches), never per
+  frame (the worm dots animate left/width, off the fast path, smooth on
+  device). The caption is
+  centred, 34 below the title; the theme's name + dots sit under the demo
+  card (centred with it), the foot holds only the two buttons, 12 apart, a
+  wrapped label keeping a one-line inset (`LABEL_INSET`) and growing
+  upward; every layer centres its demo over the TALLEST foot (one shared,
+  measured height), so a wrapped label never shifts the panel between
+  themes; the dots are a scroll-driven WORM over the mock's layout (18pt
+  pill, 6pt dots, 6 apart everywhere at rest): the slots morph between
+  pages (row width constant), the pill's front end runs over the first 65%
+  of the swipe and its back end over the last 65%, so it eats the next dot
+  but peaks near 25pt, not double (all ruled 2026-11-11). VoiceOver: the theme name is an
+  `adjustable` control (swipe up / down pages the themes), the demo card is
+  hidden. Demo photo: `assets/images/theme-demo-petnat.jpg`.
+- **Device label**: the Better Auth client sends `User-Agent: Verre/<version>
+  (<model>; iOS <version>)` (`AUTH_USER_AGENT`, expo-device); the server
+  stores "<model> · Verre App" at SIGN-IN only, so older rows read "Unknown
+  device" until that phone signs in again. Native modules added: expo-device,
+  expo-application (a new dev build: `pod install` on the Mac).
+- **Deviations (flagged):** the Privacy switch rows are `SetNav`-based
+  (`.yo-stog` inside a group, per the mock) rather than `ToggleRow`; the theme
+  demo card + chip drop the mock's 1px border (no-borders ruling); Blocked / Muted are two
+  rows (Q-B) where the mock lists people inline; the devices are two groups
+  (This Device / Other Devices) where the mock has one list. Your own ⋯ menu drops the
+  mock's "Edit profile" row (ruled 2026-11-11): editing lives in Settings →
+  your card, the way a moment's does (⋯ → Settings → Moment Details), and
+  the two ⋯ menus line up (Add Friends / Share Profile / Settings vs People
+  / Share / Settings). Long-press editing on the profile stays (long-press
+  comes to moments later).
 
 ## About / Attributions (You tab)
 
@@ -1208,6 +1357,16 @@ place to look before doing Android work:
 - **Moments-home "Remove from home" context menu.** Uses `@expo/ui/swift-ui`
   `ContextMenu` (iOS-only, see the `@expo/ui` note above). Android needs the
   `@expo/ui/jetpack-compose` equivalent or a fallback long-press affordance.
+
+- **Password re-auth prompts (Settings → Account).** Disconnecting another
+  device, Disconnect All Other Devices and Delete Account ask for the
+  password through iOS's secure **`Alert.prompt`**, which Android lacks: there
+  the per-device Disconnect buttons render disabled, and Disconnect All Other
+  Devices and Delete Account are "Soon" rows
+  (`CAN_PROMPT` in `app/(tabs)/you/settings/account.tsx`). Change Password is
+  a full page and works. To close: a small secure-text sheet (a `TextField`
+  with `secureTextEntry` in the house `Sheet`) that resolves the same
+  `promptPassword` promise.
 
 - **Bottom nav offset.** The pill sits a fixed 21pt above the physical screen
   edge, ignoring the safe area (`TAB_BAR_BOTTOM`, the iOS 26 floating-bar

@@ -17,12 +17,12 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { VText } from '@/components/ui/VText';
 import type { TileKey } from '@/lib/api/profile';
 import type { FullProfile, ProfileFace } from '@/lib/api/users';
-import { GLASS_FILL, GUTTER, PROFILE_SCRIM, PROFILE_SCRIM_STOPS, phoneTextToken, usePhoneTokens } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, PROFILE_SCRIM, PROFILE_SCRIM_STOPS, phoneTextToken, usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 import { mix } from '@/theme/color';
 
 // The profile header (handoff 04). Two layouts, chosen by whether a cover is set:
-//   - COVER (04·R5i·b, Mara = someone else): the 3:2 cover full-bleed under the
+//   - COVER (04·R5i·b, Mara = someone else): the cover (HERO_RATIO) full-bleed under the
 //     status bar, the rounded sheet rising over it with its left corner flowing
 //     into the photo's ring (the notch), the name in white ON the cover beside
 //     the photo, status ★ + friends · followers on the sheet beside it.
@@ -369,8 +369,13 @@ export function ProfileHeader({
   );
 }
 
-// The 3:2 cover (`.yo-rhero`): photo + scrim, the notch (the sheet's top edge,
-// bg-filled), the white name bottom-anchored beside the photo. A TAP opens
+// The cover (`.yo-rhero`): from the screen top to the SHEET EDGE (the card's
+// top line) it is `HERO_RATIO` of the screen height, the same as the moment,
+// impression and opened-post heroes (ruled 2026-11-11, replacing the mock's
+// 3:2 of the width, which sat low under the Dynamic Island); the photo runs
+// SHEET_RISE further under the sheet, as theirs run radius.xl. Photo + scrim,
+// the notch (the sheet's top edge, bg-filled), the white name
+// bottom-anchored beside the photo. A TAP opens
 // the cover full screen; on your own profile a LONG-PRESS changes it (and a
 // long-press on the name edits in place). Soft top corners while pulled.
 function CoverHero({
@@ -384,8 +389,8 @@ function CoverHero({
   onNameBottom?: (y: number) => void;
 }) {
   const { theme } = useTheme();
-  const { width } = useWindowDimensions();
-  const heroH = Math.round((width * 2) / 3);
+  const { width, height: windowH } = useWindowDimensions();
+  const heroH = Math.round(windowH * HERO_RATIO) + SHEET_RISE;
   const box = notchBox(photo);
   const photoLeft = GUTTER - 8;
   const photoCx = photoLeft + photo / 2;

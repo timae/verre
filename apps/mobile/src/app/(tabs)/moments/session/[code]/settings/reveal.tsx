@@ -7,7 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { SettingsFooter, SettingsScreenFallback, ToggleRow } from '@/components/moments/settingsParts';
-import { getMyAccount } from '@/lib/api/me';
+import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import {
   ApiError,
   updateMomentSettings,
@@ -28,7 +28,7 @@ export default function MomentSetup() {
   const code = String(raw ?? '');
   const router = useRouter();
   const queryClient = useQueryClient();
-  const account = useQuery({ queryKey: ['my-account'], queryFn: getMyAccount });
+  const account = useQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount });
   const pro = account.data?.pro ?? false;
   const { meta, isError, isFetching, refetch } = useSettingsSession(code);
 

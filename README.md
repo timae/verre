@@ -218,11 +218,11 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | GET | /api/me/bookmarks | Saved wines |
 | GET | /api/me/ratings | This user's rating history |
 | GET / POST / PATCH | /api/me/badges | Earned badges, XP, manual recheck, mark-as-seen |
-| PATCH | /api/me/account | Edit own name / email / password (pw change revokes other devices) |
+| PATCH | /api/me/account | Edit own name / email / password (pw change revokes other devices; an email change from the app needs `currentPassword`) |
 | DELETE | /api/me/account | Delete own account (password re-auth required) |
-| GET | /api/me/devices | List own active device sessions; 60/min |
-| DELETE | /api/me/devices/:id | Revoke one device; cross-device needs password; 30/h |
-| DELETE | /api/me/devices | Revoke all other devices; password re-auth; 10/h |
+| GET | /api/me/devices | List own active device sessions, web and native (`ba:<id>`); `isCurrent` marks the caller's own row (web or app); 60/min |
+| DELETE | /api/me/devices/:id | Revoke one device; body `{ password }` for any device but your own current one; 30/h |
+| DELETE | /api/me/devices | Revoke all other devices, web and native, keeping the caller's own (web or app); body `{ password }`; 10/h |
 | POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
 | POST | /api/me/cover | Upload / replace own profile cover (body: `{imageData}`, returns `{coverPhotoUrl}`); reclaims old S3 |
@@ -231,6 +231,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | GET | /api/me/profile/photos?pool=impressions\|moments\|cravings | A tile's pickable photos (yours, never an unrevealed blind wine): `{photos: string[] (≤ 60, latest first, the current pin first), pin: string \| null}` |
 | GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |
 | PATCH | /api/me/visibility | Update own profile-visibility (body: `{visibility, fofEnabled}`); 30/h |
+| GET | /api/me/mutes | Users I've muted (the app's Settings → Privacy → Muted): `{ mutes: [{ id, name, createdAt }] }`, newest first, max 1000; someone who blocked me is left out; 60/min |
 | POST | /api/me/mutes/:id | Mute user `:id`; 60/h shared with DELETE |
 | DELETE | /api/me/mutes/:id | Unmute user `:id`; idempotent |
 | GET | /api/me/blocks | List of users I've blocked (for the settings UI); newest-first |

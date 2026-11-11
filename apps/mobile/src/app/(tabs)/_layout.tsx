@@ -93,7 +93,13 @@ export default function TabsLayout() {
     pathname.endsWith('/edit-profile') ||
     pathname.endsWith('/add') ||
     pathname.endsWith('/settings/details') ||
-    pathname.endsWith('/settings/reveal');
+    pathname.endsWith('/settings/reveal') ||
+    // You → Settings: Change Email + Change Password (sticky Discard / Save) and Appearance
+    // (its own buttons over a full-screen theme preview), incl. their mirrors
+    // on an opened post's stack. The hub and its list pages keep the pill.
+    pathname.endsWith('/settings/change-email') ||
+    pathname.endsWith('/settings/change-password') ||
+    pathname.endsWith('/settings/appearance');
 
   return (
     <Tabs
