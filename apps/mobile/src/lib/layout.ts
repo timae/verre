@@ -219,3 +219,16 @@ export const FEED_PANEL_SCRIM = ['rgba(15,12,10,0)', 'rgba(15,12,10,0.55)'] as c
 // darkening to the bottom edge so the white count + label read on any photo.
 export const TILE_SCRIM = ['rgba(15,12,10,0)', 'rgba(15,12,10,0.7)'] as const;
 export const TILE_SCRIM_STOPS = [0.35, 1] as const;
+
+// Profile cover scrim (04·R5i·b, `.yo-cover-cn .yo-hero-scrim`): dark at the top
+// (status bar + the glass back / ⋯), clear through the middle, darkening again
+// at the bottom where the white name sits beside the photo. Same literal family
+// as the other scrims.
+export const PROFILE_SCRIM = ['rgba(15,12,10,0.42)', 'rgba(15,12,10,0)', 'rgba(15,12,10,0)', 'rgba(15,12,10,0.62)'] as const;
+export const PROFILE_SCRIM_STOPS = [0, 0.28, 0.5, 1] as const;
+
+// A photo hero's collapsed top bar: safe-area top + the control row + 6pt
+// bottom pad (no bottom rule: the collapsed bar is a flat opaque fill,
+// ADR-0003). Shared by the moment's cover bar (its sticky pin offset derives
+// from it) and the profile's cover bar, so the two can't drift.
+export const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + controlSize + 6;

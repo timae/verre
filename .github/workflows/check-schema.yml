@@ -213,6 +213,20 @@ jobs:
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-redis-rehydration-suite-secret-0123456789
 
+      # You profile step 2 (.local plan § Verification): bio normalisation +
+      # PATCH /api/me/profile, the tile pools and pins (D3 re-hide, D7, the
+      # dead-pin clear vs a same-URL re-pick on the locked row), the D8 / D9
+      # wine-photo retention on moment and account deletion (incl. a rolled-back
+      # attempt), and the profile image replace protocol. S3 is an in-process
+      # fake endpoint that records the SDK's PUT / DELETE requests.
+      - name: You profile (tiles, retention, profile images)
+        run: npx tsx scripts/tests/you-profile-integration.mts
+        timeout-minutes: 5
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-you-profile-suite-secret-0123456789
+
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine
       # writers (mirrorLineup / reassignProvenance) and addWineToSession.

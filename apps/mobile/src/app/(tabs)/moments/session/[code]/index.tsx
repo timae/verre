@@ -17,7 +17,7 @@ import { Thumb } from '@/components/ui/Thumb';
 import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import { InviteSheet } from '@/components/moments/InviteSheet';
 import { PeopleSheet } from '@/components/moments/PeopleSheet';
-import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, HERO_RATIO, HERO_SCRIM, TAB_BAR_CLEARANCE, heroBarHeight, usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
 import { alpha } from '@/theme/color';
 import { StarScore } from '@/components/scoring/StarScore';
@@ -104,13 +104,10 @@ type RevealProps = {
   onToggleBlindForEveryone: (next: boolean) => void;
 };
 
-// Collapsed HeroTopBar's painted height = safe-area top + the control row +
-// 6pt bottom pad. No bottom rule to account for (the collapsed bar is a flat
-// opaque fill, no border — ADR-0003). The cover-hero sticky pin offset derives
-// from this so the tabs/strip pin flush under the bar; overlays then pin at
-// PIN_Y = this − 1 (1px overlap) against sub-pixel rounding. Shared with
-// HeroTopBar so the two can't drift.
-const heroBarHeight = (insetTop: number, controlSize: number) => insetTop + controlSize + 6;
+// The collapsed HeroTopBar's painted height is `heroBarHeight` (lib/layout.ts,
+// shared with the profile's cover bar). The cover-hero sticky pin offset
+// derives from it so the tabs/strip pin flush under the bar; overlays then pin
+// at PIN_Y = it − 1 (1px overlap) against sub-pixel rounding.
 
 // In-screen tab-swap motion (Simon's ask): the panes swap as one horizontal
 // push — the incoming pane slides in from the side it lives on (Compare from

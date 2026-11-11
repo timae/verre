@@ -1,40 +1,60 @@
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useRouter } from 'expo-router';
+import { Stack, useFocusEffect, useRouter } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, View } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Keyboard, Platform, Pressable, View, useWindowDimensions, type TextInputInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { FeedList } from '@/components/feed/FeedList';
-import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName } from '@/components/profile/ProfileHeader';
+import { normalizeBio, validateDisplayName } from '@verre/core';
+import { FeedList, type FeedScrollHandle } from '@/components/feed/FeedList';
+import { pickPhotoOrRemove } from '@/components/moments/momentForm';
+import { EditBar } from '@/components/profile/ProfileEditParts';
+import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type ProfileEdit } from '@/components/profile/ProfileHeader';
+import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
 import { AnchorButton, AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
-import { VBar } from '@/components/VBar';
+import { Icon } from '@/components/ui/Icon';
+import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
+import {
+  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, type TileKey,
+} from '@/lib/api/profile';
 import { ApiError } from '@/lib/api/sessions';
 import { profileKey, profileQueryOptions, setBlocked, setFollowing, setMuted, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
+import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { viewerCacheEpoch } from '@/lib/query';
-import { GUTTER } from '@/lib/layout';
+import { GLASS_FILL, GUTTER, heroBarHeight, usePhoneTokens } from '@/lib/layout';
+import { profileEditHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
+import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
-import { settingsHref, useSessionTab } from '@/lib/sessionStack';
 
-// A person's profile (handoff 04 "You", step 1 — no bio, cover or editing):
-// the You tab's root for yourself (`root`), and a screen pushed on the Feed /
-// You stacks for anyone (including yourself from a feed card, with back).
-// Below the header, that person's posts through the SAME FeedList as the Feed
-// tab (`/api/feed?user=`, cache ['feed', 'user', id]) — no second feed.
+// A person's profile (handoff 04 "You"): the You tab's root for yourself
+// (`root`), and a screen pushed on the Feed / You stacks for anyone (including
+// yourself from a feed card, with back). Below the header, that person's posts
+// through the SAME FeedList as the Feed tab (`/api/feed?user=`, cache
+// ['feed', 'user', id]) — no second feed.
 //
 // States off GET /api/users/:id?view=header: ok (own / someone else),
 // private (tier-gated "shell"), blocked by you, gone (no such user, or they
 // blocked you — indistinguishable by design), plus loading / error.
+//
+// With a cover (step 2, 04·R5i·b) the header runs full-bleed under the status
+// bar and the bar floats over it: glass back / ⋯ over the photo, collapsing to
+// the solid bar + photo · name once the name on the cover passes under it (the
+// moment cover bar's look). Your own profile is editable in place (R5g2–R5g4):
+// this screen owns the edit session; ProfileHeader renders it.
 
 export function ProfileScreen({ userId, root }: { userId: number; root?: boolean }) {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
+  const phone = usePhoneTokens();
+  const { height: windowH } = useWindowDimensions();
   // Where this profile is mounted (a tab stack or an opened post's stack):
-  // the Settings push follows it (lib/sessionStack.ts settingsHref).
+  // the Settings / Edit Profile pushes follow it (lib/sessionStack.ts).
   const mount = useSessionTab();
   const queryClient = useQueryClient();
   const meId = authClient.useSession().data?.user.id;
@@ -42,37 +62,64 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
 
   const profileQ = useQuery(profileQueryOptions(userId));
   const profile = profileQ.data;
+  const ok = profile?.state === 'ok';
+  const hero = ok && !!profile.coverPhotoUrl;
 
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
   const [busy, setBusy] = useState(false);
+  const barControl = phone.size('heroAction');
+  const BAR_H = heroBarHeight(insets.top, barControl);
 
   // Bar title (04·R5c .ir-floathead): once the header's name has scrolled
   // under the bar, the bar shows the photo + name. `nameBottom` = the name's
-  // bottom edge in list-content coordinates (FeedList pads the top by
-  // LIST_TOP_PAD, and the identity row is the header's first child).
-  // Recomputed from BOTH inputs — a scroll AND a re-measure (a header relayout
-  // moves the name without any scroll event).
+  // bottom edge in list-content coordinates. Plain: the bar sits ABOVE the
+  // list (LIST_TOP_PAD of content padding), so the trigger is the name
+  // reaching the list's top. Cover: the bar floats over the list, so it is the
+  // name passing under the bar's bottom. Recomputed from BOTH inputs — a
+  // scroll AND a re-measure (a relayout moves the name without any scroll).
   const nameBottom = useRef(Number.POSITIVE_INFINITY);
   const scrollY = useRef(0);
   const [titled, setTitled] = useState(false);
+  const heroRef = useRef(hero);
+  heroRef.current = hero;
   const syncTitle = useCallback(() => {
-    const on = scrollY.current >= nameBottom.current;
+    const on = scrollY.current >= nameBottom.current - (heroRef.current ? BAR_H : 0);
     setTitled((cur) => (cur === on ? cur : on));
-  }, []);
+  }, [BAR_H]);
+  // Pulled past the top: the cover's corners round (the moment hero's rule).
+  const [pulled, setPulled] = useState(false);
   const onScrollY = useCallback(
     (y: number) => {
       scrollY.current = y;
       syncTitle();
+      const p = y < -1;
+      setPulled((cur) => (cur === p ? cur : p));
     },
     [syncTitle],
   );
   const onNameBottom = useCallback(
     (y: number) => {
-      nameBottom.current = LIST_TOP_PAD + y;
+      nameBottom.current = (heroRef.current ? 0 : LIST_TOP_PAD) + y;
       syncTitle();
     },
     [syncTitle],
   );
+  // The post list only exists in the 'ok' state, and it REMOUNTS when the
+  // layout switches between cover and no cover: reset so the bar doesn't keep
+  // a title for a header that is in view (Codex).
+  useEffect(() => {
+    scrollY.current = 0;
+    nameBottom.current = Number.POSITIVE_INFINITY;
+    setTitled(false);
+  }, [ok, hero]);
+
+  // Status bar: light glyphs while the cover is under it, the theme's once the
+  // bar is solid. A screen option (iOS asks screen traits) AND forwarded to
+  // the root when this profile sits on an opened post's stack
+  // (lib/forwardedStatusBar.ts); expo-status-bar for Android.
+  const themed = theme.scheme === 'dark' ? 'light' : 'dark';
+  const statusBarStyle = hero && !titled ? 'light' : themed;
+  useForwardStatusBarStyle(statusBarStyle);
 
   // Relationship writes. Afterwards the profile header AND the network feed
   // (['feed'], exact — whose authors follow / mute / block change) refetch IN
@@ -101,8 +148,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         // must not be recreated; neither the rollback nor the refetch runs.
         if (viewerCacheEpoch() !== epoch) return;
         if (optimistic && before) queryClient.setQueryData<Profile>(key, before);
-        const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-        Alert.alert('Something went wrong', msg || 'Check your connection and try again.');
+        Alert.alert('Something went wrong', errorText(e));
       } finally {
         if (viewerCacheEpoch() === epoch) {
           await Promise.allSettled([refetchProfileHeader(queryClient, userId), refetchNetworkFeed(queryClient)]);
@@ -150,18 +196,213 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   };
   const unblock = () => act(() => setBlocked(userId, false));
 
+  // ── Own profile: the in-place edit session (R5g3) ──────────────────────────
+  // Long-press the name or the bio: BOTH become inputs, the pressed one
+  // focused; the rest of the header dims and the posts go inert. Done = ONE
+  // PATCH of the changed fields (pre-checked with the server's own rules);
+  // errors alert and keep you editing. Losing focus (a push, a tab switch —
+  // tab screens stay mounted) cancels.
+  const [draft, setDraft] = useState<{ name: string; bio: string } | null>(null);
+  const [focus, setFocus] = useState<'name' | 'bio' | null>(null);
+  const [focusedField, setFocusedField] = useState<'name' | 'bio' | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [imageBusy, setImageBusy] = useState<'avatar' | 'cover' | null>(null);
+  const [tileSheet, setTileSheet] = useState<TileKey | null>(null);
+  const nameRef = useRef<TextInputInstance | null>(null);
+  const bioRef = useRef<TextInputInstance | null>(null);
+  const scrollHandle = useRef<FeedScrollHandle | null>(null);
+  const editing = draft != null;
+
+  const cancelEdit = useCallback(() => {
+    Keyboard.dismiss();
+    setDraft(null);
+    setFocus(null);
+    setFocusedField(null);
+  }, []);
+  // The pill stays hidden for the WHOLE session, not just while the keyboard
+  // is up (the tabs layout shows it again on keyboard hide): one ref-counted
+  // hold, released in this one cleanup (Cancel, Done, blur, unmount).
+  useEffect(() => {
+    if (!editing) return;
+    pushSheet();
+    return popSheet;
+  }, [editing]);
+  const editingRef = useRef(false);
+  editingRef.current = editing;
+  useFocusEffect(
+    useCallback(
+      () => () => {
+        if (editingRef.current) cancelEdit();
+      },
+      [cancelEdit],
+    ),
+  );
+
+  const startEdit = (field: 'name' | 'bio') => {
+    if (profile?.state !== 'ok' || imageBusy) return;
+    if (draft) {
+      (field === 'name' ? nameRef : bioRef).current?.focus();
+      return;
+    }
+    setDraft({ name: profile.name, bio: profile.bio ?? '' });
+    setFocus(field);
+  };
+
+  const doneEdit = async () => {
+    if (!draft || saving || profile?.state !== 'ok') return;
+    // The name is validated (and sent) only when it CHANGED: an untouched
+    // grandfathered name (from before today's rules) must not block a bio save.
+    let name = profile.name;
+    let bio: string | null;
+    if (draft.name !== profile.name) {
+      try {
+        name = validateDisplayName(draft.name);
+      } catch (e) {
+        Alert.alert('Check Your Name', sentence((e as Error).message));
+        return;
+      }
+    }
+    try {
+      bio = normalizeBio(draft.bio);
+    } catch (e) {
+      Alert.alert('Check Your Profile Text', sentence((e as Error).message));
+      return;
+    }
+    const body: { name?: string; bio?: string | null } = {};
+    if (name !== profile.name) body.name = name;
+    if (bio !== (profile.bio ?? null)) body.bio = bio;
+    if (Object.keys(body).length === 0) {
+      cancelEdit();
+      return;
+    }
+    setSaving(true);
+    const epoch = viewerCacheEpoch();
+    try {
+      const r = await patchProfile(body);
+      await applyOwnProfileChange(queryClient, userId, {
+        ...(r.name !== undefined ? { name: r.name } : {}),
+        ...(r.bio !== undefined ? { bio: r.bio } : {}),
+      }, epoch);
+      cancelEdit();
+    } catch (e) {
+      Alert.alert('Couldn’t Save', errorText(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Keyboard + edit-bar clearance: the list's bottom padding grows by both
+  // while editing, and the focused field is scrolled above them (measured) on
+  // focus, on a field switch and as the bio grows.
+  const [kbH, setKbH] = useState(0);
+  const [editBarH, setEditBarH] = useState(0);
+  useEffect(() => {
+    if (!editing) return;
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const s = Keyboard.addListener(showEvt, (e) => setKbH(e.endCoordinates.height));
+    const h = Keyboard.addListener(hideEvt, () => setKbH(0));
+    return () => {
+      s.remove();
+      h.remove();
+      setKbH(0);
+    };
+  }, [editing]);
+  const bioLen = draft?.bio.length ?? 0;
+  useEffect(() => {
+    if (!editing || !focusedField || kbH === 0) return;
+    const input = (focusedField === 'name' ? nameRef : bioRef).current;
+    const t = setTimeout(() => {
+      input?.measureInWindow((_x, y, _w, h) => {
+        const visibleBottom = windowH - kbH - editBarH - 12;
+        const over = y + h - visibleBottom;
+        if (over > 0) scrollHandle.current?.scrollToOffset(scrollY.current + over);
+      });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [editing, focusedField, kbH, editBarH, bioLen, windowH]);
+
+  // Long-press the photo / the cover (R5g4 → the iPhone's own menu, D5): it
+  // uploads at once (the Edit Profile page holds a draft instead).
+  const changeImage = async (kind: 'avatar' | 'cover') => {
+    if (profile?.state !== 'ok' || imageBusy || draft) return;
+    const has = kind === 'avatar' ? !!profile.imageUrl : !!profile.coverPhotoUrl;
+    const picked = await pickPhotoOrRemove(has ? (kind === 'avatar' ? 'Remove Photo' : 'Remove Cover') : null);
+    if (!picked) return;
+    if (picked !== 'remove' && 'failed' in picked) {
+      Alert.alert('Couldn’t Use That Photo', 'Try another photo.');
+      return;
+    }
+    setImageBusy(kind);
+    const epoch = viewerCacheEpoch();
+    try {
+      if (kind === 'avatar') {
+        const imageUrl = picked === 'remove' ? (await removeAvatar(), null) : await uploadAvatar(picked.dataUrl);
+        await applyOwnProfileChange(queryClient, userId, { imageUrl }, epoch);
+      } else {
+        const coverPhotoUrl = picked === 'remove' ? (await removeCover(), null) : await uploadCover(picked.dataUrl);
+        await applyOwnProfileChange(queryClient, userId, { coverPhotoUrl }, epoch);
+      }
+    } catch (e) {
+      Alert.alert(kind === 'avatar' ? 'Couldn’t Update Your Photo' : 'Couldn’t Update Your Cover', errorText(e));
+    } finally {
+      setImageBusy(null);
+    }
+  };
+
+  // R5g2: a tile's cover. Throws to keep the sheet open (after alerting).
+  const pinTilePhoto = useCallback(
+    async (tile: TileKey, url: string) => {
+      const epoch = viewerCacheEpoch();
+      try {
+        const r = await patchProfile({ tiles: { [tile]: url } });
+        if (r.tiles) await applyOwnProfileChange(queryClient, userId, { tiles: r.tiles }, epoch);
+        setTileSheet(null);
+      } catch (e) {
+        Alert.alert('Couldn’t Save', errorText(e));
+        throw e;
+      }
+    },
+    [queryClient, userId],
+  );
+
+  const edit: ProfileEdit | undefined =
+    own && ok
+      ? {
+          draft,
+          focus,
+          setDraft: (field, value) => setDraft((d) => (d ? { ...d, [field]: value } : d)),
+          start: startEdit,
+          done: doneEdit,
+          onFieldFocus: setFocusedField,
+          nameRef,
+          bioRef,
+          busy: imageBusy,
+          onPhoto: () => changeImage('avatar'),
+          onCover: () => changeImage('cover'),
+          onTile: (key) => !draft && setTileSheet(key),
+        }
+      : undefined;
+
   const close = () => setMenu(null);
   // Your own ⋯ never depends on the profile query: Settings holds the only
   // signed-in Sign Out, so it must survive a failed or slow profile load.
-  const menuButton = own || (profile && profile.state !== 'gone') ? (
-    <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" />
-  ) : null;
+  const showMenuButton = own || (profile && profile.state !== 'gone');
 
-  // ⋯ menus (MY_MENU / HER_MENU). Rows marked "Soon" are inactive in step 1
-  // (their screens come later); MenuItem `disabled` renders that tag.
+  // ⋯ menus (MY_MENU / HER_MENU). Rows marked "Soon" are inactive (their
+  // screens come later); MenuItem `disabled` renders that tag.
   const menuItems = own ? (
     <>
-      <MenuItem icon="edit" label="Edit Profile" disabled />
+      <MenuItem
+        icon="edit"
+        label="Edit Profile"
+        disabled={!ok}
+        onPress={() => {
+          close();
+          if (editing) cancelEdit();
+          router.push(profileEditHref(mount));
+        }}
+      />
       <MenuItem icon="user-plus" label="Add Friends" disabled />
       <MenuItem icon="share" label="Share Profile" disabled />
       <MenuSeparator />
@@ -246,27 +487,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : null;
 
-  // 04·R5c .ir-floathead: once the header name has scrolled under the bar,
-  // the bar shows the 26pt photo + name (the shared VBar scroll title).
-  const ok = profile?.state === 'ok';
-  // The post list only exists in the 'ok' state; leaving it (block, private,
-  // gone) unmounts the list, and coming back remounts it at the top — reset
-  // so the bar doesn't keep a title for a header that is in view (Codex).
-  useEffect(() => {
-    if (ok) return;
-    scrollY.current = 0;
-    nameBottom.current = Number.POSITIVE_INFINITY;
-    setTitled(false);
-  }, [ok]);
-  const bar = (
-    <VBar
-      back={!root}
-      title={ok ? profile.name : ''}
-      titleShown={ok && titled}
-      titleLeading={ok && profile.imageUrl ? <Avatar imageUrl={profile.imageUrl} name={profile.name} size={26} /> : undefined}
-      right={menuButton}
-    />
-  );
+  const barAvatar = ok && profile.imageUrl ? <Avatar imageUrl={profile.imageUrl} name={profile.name} size={26} /> : undefined;
 
   let body: React.ReactNode;
   if (!profile) {
@@ -308,20 +529,29 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   } else {
     body = (
       <FeedList
+        // The cover and plain layouts are different scroll setups (full-bleed
+        // vs under a bar): a fresh list when the cover comes or goes.
+        key={hero ? 'cover' : 'plain'}
         userId={userId}
-        contentTopPad={LIST_TOP_PAD}
+        scrollHandle={scrollHandle}
+        fullBleed={hero}
+        contentTopPad={hero ? 0 : LIST_TOP_PAD}
+        refreshOffset={hero ? BAR_H : undefined}
+        refreshTint={hero ? '#fff' : undefined}
+        inert={editing}
+        bottomInset={editing ? kbH + editBarH + (kbH > 0 ? 0 : insets.bottom) + 24 : undefined}
         onRefresh={() => profileQ.refetch()}
         onScrollY={onScrollY}
         header={
-          <View style={{ paddingHorizontal: GUTTER, paddingBottom: 20 }}>
-            <ProfileHeader
-              profile={profile}
-              own={own}
-              followBusy={busy}
-              onFollowPress={() => onFollowPress(profile)}
-              onNameBottom={onNameBottom}
-            />
-          </View>
+          <ProfileHeader
+            profile={profile}
+            own={own}
+            followBusy={busy}
+            onFollowPress={() => onFollowPress(profile)}
+            onNameBottom={onNameBottom}
+            edit={edit}
+            pulled={pulled}
+          />
         }
         empty={
           own ? (
@@ -335,14 +565,127 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   }
 
   return (
-    <View style={{ flex: 1, paddingTop: insets.top }}>
-      <View style={{ paddingHorizontal: GUTTER }}>{bar}</View>
-      {body}
-      <AnchoredMenu anchor={menu} onClose={close} right={16} minWidth={220}>
-        {menuItems}
-      </AnchoredMenu>
+    // A SCREEN-LOCAL provider for the tile sheet: a root provider's gorhom
+    // host gets zero height across the Stack boundary (the line-up's note).
+    <BottomSheetModalProvider>
+      <View style={{ flex: 1, paddingTop: hero ? 0 : insets.top }}>
+        <Stack.Screen options={{ statusBarStyle }} />
+        <StatusBar style={statusBarStyle} />
+        {hero ? null : (
+          <View style={{ paddingHorizontal: GUTTER }}>
+            <VBar
+              back={!root}
+              title={ok ? profile.name : ''}
+              titleShown={ok && titled}
+              titleLeading={barAvatar}
+              right={showMenuButton ? <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" /> : null}
+            />
+          </View>
+        )}
+        {body}
+        {hero ? (
+          <ProfileHeroBar
+            title={profile.name}
+            leading={barAvatar}
+            collapsed={titled}
+            back={!root}
+            onBack={() => router.back()}
+            onMenu={showMenuButton ? setMenu : undefined}
+          />
+        ) : null}
+        {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} /> : null}
+        <AnchoredMenu anchor={menu} onClose={close} right={16} minWidth={220}>
+          {menuItems}
+        </AnchoredMenu>
+        {own && ok ? (
+          <TileCoverSheet
+            tile={tileSheet}
+            shown={tileSheet ? profile.tiles[tileSheet].imageUrl : null}
+            onClose={() => setTileSheet(null)}
+            onUse={pinTilePhoto}
+          />
+        ) : null}
+      </View>
+    </BottomSheetModalProvider>
+  );
+}
+
+// The cover bar (04·R5i·b `.ir-floathead`): glass back + glass ⋯ over the
+// photo; once collapsed, a solid theme.bg fill with the shared BarTitle (26pt
+// photo + name), both off ONE useBarTitleProgress value, like the moment's
+// HeroTopBar. Height = heroBarHeight (lib/layout.ts).
+function ProfileHeroBar({
+  title, leading, collapsed, back, onBack, onMenu,
+}: {
+  title: string;
+  leading?: React.ReactNode;
+  collapsed: boolean;
+  back: boolean;
+  onBack: () => void;
+  onMenu?: (anchor: MenuAnchor) => void;
+}) {
+  const { theme } = useTheme();
+  const insets = useSafeAreaInsets();
+  const phone = usePhoneTokens();
+  const anim = useBarTitleProgress(collapsed);
+  const controlSize = phone.size('heroAction');
+  const iconSize = phone.size('heroActionIcon');
+  const iconColor = collapsed ? theme.ink : '#fff';
+  const circle = {
+    width: controlSize,
+    height: controlSize,
+    borderRadius: controlSize / 2,
+    backgroundColor: collapsed ? undefined : GLASS_FILL,
+    alignItems: 'center' as const,
+    justifyContent: 'center' as const,
+  };
+  return (
+    <View pointerEvents="box-none" style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 8 }}>
+      <Animated.View pointerEvents="none" style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, opacity: anim, backgroundColor: theme.bg }} />
+      <View style={{ paddingTop: insets.top, paddingHorizontal: 14, paddingBottom: 6 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', height: controlSize }}>
+          {back ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              onPress={onBack}
+              hitSlop={8}
+              style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
+            >
+              <Icon name="back" size={iconSize} color={iconColor} />
+            </Pressable>
+          ) : null}
+          {/* Without a back circle (your own profile, the tab root) the photo
+              lines up with the screen gutter like every avatar below it:
+              GUTTER − the bar's 14 padding. */}
+          <BarTitle title={title} leading={leading} progress={anim} inset={back ? 10 : GUTTER - 14} hidden={!collapsed} />
+          {onMenu ? (
+            <View style={circle}>
+              <AnchorButton onOpen={onMenu} accessibilityLabel="Profile Options" size={controlSize}>
+                <Icon name="more" size={iconSize} color={iconColor} />
+              </AnchorButton>
+            </View>
+          ) : null}
+        </View>
+      </View>
     </View>
   );
 }
 
 const LIST_TOP_PAD = 4;
+
+// A failed write's copy: the server's own message for a 4xx (validation,
+// "Try again in …"), else the connection line.
+function errorText(e: unknown): string {
+  const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
+  return msg && msg !== 'http' ? sentence(msg) : 'Check your connection and try again.';
+}
+
+// The shared validators speak lower case ("name must be at least 2
+// characters"); an alert body reads as a sentence.
+function sentence(s: string): string {
+  const t = s.trim();
+  if (!t) return t;
+  const c = t[0].toUpperCase() + t.slice(1);
+  return /[.!?]$/.test(c) ? c : `${c}.`;
+}

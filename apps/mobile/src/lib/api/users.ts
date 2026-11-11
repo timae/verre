@@ -7,7 +7,9 @@ import { throwApiError } from './sessions';
 // Wire types MIRROR app/api/users/[id]/route.ts (+ lib/profileLoad.ts and
 // lib/profileHeader.ts) for `?view=header` — keep in sync by hand.
 
-export type ProfileTile = { count: number; imageUrl: string | null };
+// `pinned` (your own profile only): the photo is your chosen tile cover
+// (lib/profileTiles.ts on the server); absent / false = the automatic latest.
+export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean };
 export type ProfileFace = { id: number; name: string; imageUrl: string | null };
 
 // The full (`ok`) payload: the viewer may see this person's content.
@@ -16,6 +18,10 @@ export type FullProfile = {
   id: number;
   name: string;
   imageUrl: string | null;
+  // Step 2: one-paragraph profile text (≤ 200, normalised server-side) and
+  // the profile cover (the user's own upload). Full payload only.
+  bio: string | null;
+  coverPhotoUrl: string | null;
   // Our level names (lib/badges.ts LEVELS: Novice, Enthusiast, …) — the
   // status pill (Simon's ruling: the design's names were placeholders).
   level: { name: string };

@@ -222,7 +222,7 @@ async function main() {
     `all ${UNICODE_WS.length} enumerated Unicode whitespace codepoints fold to a plain space`)
   // Paired negative for the class itself: a ZERO-WIDTH char is NOT whitespace
   // and must NOT become a space — folding it would SPLIT a word.
-  // 🔒 The DELETE set — matches `SCRUB_RE` in lib/textSafe.ts. These are removed,
+  // 🔒 The DELETE set — matches `SCRUB_RE` in packages/core/src/textScrub.ts (re-exported by lib/textSafe.ts). These are removed,
   // NOT mapped to a space: mapping would split a word, and leaving them would
   // give an imported name a different key from the same name typed in the app.
   // ⚠️ The COMPLETE set (44 codepoints), not a sample: an earlier version listed

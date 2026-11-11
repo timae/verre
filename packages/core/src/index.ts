@@ -65,6 +65,7 @@ export {
   validateDisplayName,
   stripDisambiguationEmoji,
 } from './displayName'
+export { scrub, normalizeBio, BIO_MAX } from './textScrub'
 export {
   COUNTRIES,
   COUNTRY_CODES,

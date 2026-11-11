@@ -449,18 +449,18 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Aroma READ**: `AromaReadChips` (`scoring/aroma/AromaReadChips.tsx`) — read-only grouped chips (displayOrder + AromaChip) for someone's stored selections; feed impression detail now, further native read surfaces reuse it. The `lead` word prop was REMOVED (fixes round 2026-07-13 — the feed detail carries a section title instead). Pass `collapse` for the rating page's overflow behaviour: two lines via the shared width packer (`packChips`/`ChipMeasurePass`/`MoreChipsPill` in `parts.tsx`, also used by `SelectedChipsRow`), tail behind the SAME "+N more" pill that opens a read-only bottom sheet — pass `overflowSheetStack="push"` when hosted inside another sheet, and `overflowPillOnSurface` when the row itself sits on a sheet's `surface` so the pill swaps only its fill to `bg` instead of disappearing surface-on-surface. Optional `onPressAroma(selection, rect)` adds anchored read-side inspection without changing the canonical badge. ⭐Read badges are COMPACT: `AromaReadChips` passes `vPad 0` (inner padding 0 + the inherited 23pt label line via `badgeVMetrics`; Simon 2026-07-13) to every chip + pill it renders — write surfaces keep the 4.5 default; don't override per call site. The WEB has its own twin (`components/ui/AromaReadChips.tsx`, PR D — no shared RN/web layer). No input, no refine — mutations only through AromaInput.
 - **Aroma input (descriptor layer, PR B)**: `scoring/aroma/` — `AromaInput` (the 02e·11 search-first section on the impression screen: chips + search field + the INLINE CanvasPicker right under it — a live query swaps the canvas for the suggestions + refine row, an empty query brings it back (Simon 2026-07-17 — supersedes the browse button + BrowseSheet entry point); controlled `AromaSelection[]`, local-until-commit), `parts.tsx` (`AromaChip` — THE aroma badge everywhere: the design's `.badge` anatomy per Simon's 2026-07-10 ruling — family-tint fill + `readableSolid` words (the 100% palette colour where it clears 3:1 on the fill, pulled toward ink ONLY past that — supersedes the earlier bare-solid-words + tintedInk iterations); `focused`/'solid'-bumped fills = SOLID family fill + `inkOn`-picked label — ⚠️ but an ARMED SEARCH RESULT no longer uses it (Simon 2026-07-12, ADR-0008 addendum): armed keeps its RESTING colours and the OTHER results mute (`muted`) — contextual focus, chips never self-recolour; `focused` remains the picker-cell/solid vocabulary; Pronounced border = `readableBorder` (readable, floored at 45% colour share so clay never reads white), the label ink on solid fills; fills route through `aromaTint.ts` `aromaFillRatio` + words/borders through `readableSolid`/`readableBorder` — keep all three on any new family-tinted surface; genuinely weak palette values are still the PALETTE's to fix (punch-list printed by aroma-pickers-units.ts); `ModifierRail`, `PronouncedRow`, `ModifierPopup` anchored refine, `useAromaOps` — every mutation re-gated + pair-precise, `canonicalPair` — re-target after promoted rewrites, `useTapOrDouble`, `usePendingAdd` — the pickers' armed modifier+Pronounced pair committed as one add, `RefineAddRow`/`ModifierSelectButton`/`PronouncedToggle` — THE shared refine row (search block + Map/Canvas/Rings inline + List via the sheet footer), `CapHint`, `AromaCrumbs` — the drill breadcrumb shared by Rail/Canvas/List), `SelectionSheet` ("+N more" overflow, cap-aware sizing), `BrowseSheet` (NO production entry point since the inline-canvas ruling — kept as the five-picker lab: segmented control, Map/Rings/Rail/Canvas/List; added-badges strip w/ refine popup; ONE always-enabled scroll (gorhom latches scrollEnabled from first render — no per-variant toggle), content-pan on so pull-down works, stage pans win by activating first), `RailPicker`, `RingsPicker` (W4, the mock's OVERSIZED-CROP geometry — the crop IS the design; NO fisheye: even wedges always, ONE static layout per commit for wedges+labels so turning is pure rotation; full pick name reads in the passive HUB as plain wrapped text, never TextPath; Add/refine = the shared RefineAddRow below the stage; every gesture end snaps synchronously to a detent, taps = real Gesture.Tap raced with the pan; labels fit-or-hide inside the visible window. ⚠️ rnsvg TextPath + animatedProps on its referenced Path is BROKEN on device — text draws along mount-time geometry and end-clips; never reintroduce), `MapPicker` (3-level zoom; territories = recursive balanced cuts — families + groups guaranteed CONNECTED and compact; live pinch-between-levels w/ focal-point scale + re-base; momentum pan) + `CanvasPicker` over `hexStage.tsx` (shared axial-hex SVG stage: pannable clamped translate w/ withDecay momentum — pan DISABLED when the cluster fits so the sheet keeps its drags (edge-fade affordance was tried and REJECTED on device — don't reintroduce); per-cell a11y button+selected state; strict flat family fills; armed cell = search-focus treatment: grow + others mute; Canvas sizes its stage TO the cluster (capped) so small combs don't float in empty bands; the PURE lattice/syllable-wrap/clamp math lives in `hexMath.ts` and the Map's territory cuts in `mapLayout.ts` — both node-importable, regression-driven by `.local/test-env/scripts/aroma-pickers-units.ts`; per-theme fill strength in `aromaTint.ts` — clay boosts the family-colour share, see the badge note below), `ListPicker` (drill list with a Tinted/Plain/Cards look switcher — Tinted = badge anatomy rows, Plain = People-sheet rows w/ hairline separators, Cards = the SetGroup/SetNav settings anatomy; family colour stays as dot/mark + armed tint on the non-tinted looks; round mark = any-tier arm; its refine row is PINNED to the sheet bottom via the Sheet's gorhom `footerComponent`). **Design spec-of-record: `docs/design/decisions/0008-aroma-input-search-first.md`** (variant pick, chip anatomy, Pronounced glyph/border split, ordering, add feedback, keyboard scroll) + `docs/dev/proposals/aroma/aroma-layer.md` (data semantics). Icons: `grid`, `pronounced` (reusable "standout" mark). `Button` gained `titleLines`; `SheetSearchField` gained `onFocus`/`onBlur`.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
-- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
-- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
-- **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile.
-- **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` (`profile/`) — see § You profile.
+- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup`, `SetNav`, `GlassButton` (over-cover round glass; `bottom` anchors it bottom-right), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason).
+- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto` (+ `pickPhotoOrRemove(label)`: the same iOS ActionSheet with a destructive Remove row), `NotesField` `maxLength`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
+- **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile. Header-screen props: `fullBleed` (never-inset + the RNS dead-end; key the list on it), `refreshOffset` / `refreshTint`, `inert` (rows + footer at 0.35, no touches, scroll stays), `bottomInset` (≥ `TAB_BAR_CLEARANCE`), `scrollHandle` (`scrollToOffset`, in the list AND the error layout); its error state renders the header inside a scroll view.
+- **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` / `TileCoverSheet` / `ProfileEditParts` (`LongPressable`, `InlineField`, `EditBar`) / `coverGeometry` (`profile/`) — see § You profile.
 - **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens; `back={false}` for a tab root; `titleShown` turns the title into a SCROLL title (fades in once content scrolls under the bar), `titleLeading` puts a node before it.
 - **Bar title**: `BarTitle` + `useBarTitleProgress` (`VBar.tsx`) — THE bar title (subhead 600, `topBar` surface, ink or white on a photo; fade + 4pt rise over dur-2 off a 0→1 `Animated.Value`). VBar, the moment cover bar and the rate-impression bar all render through it; a bar whose background fades with the title (the moment cover bar) drives both from the same `useBarTitleProgress` value. Never restate the title style or the fade in a new bar.
 - **Bottom nav**: `PillTabBar` (`PillTabBar.tsx`) — the floating-pill tab bar (`.tabbar-float`, ADR-0006) with the drag-lens (hold ≈180ms → a real Liquid Glass lens rides the bar; release commits; landing on the current tab is NOT input). Rendered via the tabs layout's `tabBar` prop; absolute overlay at `TAB_BAR_BOTTOM` (21pt from the physical screen edge): content clears it with `TAB_BAR_CLEARANCE` alone, never `+ insets.bottom`. ⚠️ The glass layering in that file is LOAD-BEARING physics learned over a day of device checks — read the in-file header + ADR-0006 and re-run the dev-gallery GLASS LABS (`/you/dev-gallery`) before touching any glass property. Don't add per-screen nav bars.
-- **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
+- **Avatar**: `ui/Avatar.tsx` — person circle (image→initials→`anon` user-glyph cascade; a photo that fails, or hasn't loaded within 1.2s (an unreachable host only errors after iOS's ~60s timeout), shows the initials drawn UNDER it; keyed on the URL); props `size`, `host` (accent tint), `anon`, `ring` (the overlap-stack 2px bg border + image inset), `badge` (overlay node, e.g. the "+" invite badge), `initialsSize`. ALL person circles.
 - **Thumb**: `ui/Thumb.tsx` — square cover/wine thumbnail with the glass-glyph placeholder; props `uri`, `size`, `radius`. ALL cover/wine thumbs (wrap + overlay for the line-up hidden-from-guests badge).
 - **Sheets (domain)**: `PeopleSheet`, `InviteSheet` (`moments/`).
 - **Drag-to-reorder rows**: `DraggableRows` (`moments/DraggableRows.tsx`) — long-press lift + sibling springs + edge auto-scroll + haptics over NON-virtualized mapped rows in a `Reanimated.ScrollView` (hand-rolled: reorder libs need to own a FlatList or can't be device-verified on reanimated 4). Used by both line-up layouts; needs the host scroll's `AnimatedRef` + offset + a maxScroll SharedValue. `enabled` gates drag, `denied` answers a hold with a warning haptic (sort/search active). ⚠️ Worklet closure-capture ordering is load-bearing (consts before gesture builders — the PillTabBar crash class).
-- **Shared screen constants + Dynamic Type surfaces (`lib/layout.ts`)**: `GUTTER`(22), `FOOT_CLEARANCE`/`FOOT_CLEARANCE_IR`, `TAB_BAR_BOTTOM`/`TAB_BAR_CLEARANCE` (pill offset + the content padding derived from it; the clearance is used alone), `HERO_RATIO` (shared by BOTH heroes — same height), `GLASS_FILL` (the over-photo glass fill), `HERO_SCRIM` (the hero-photo gradient), and `FONT_SURFACES` / `phone.surface(...)`. Import constants; don't re-declare. Use `phone.surface(name)` for scalable container math and `VText surface="..."` / `{...surface.textProps}` for matching text caps. `formControl` intentionally stays uncapped because field height math tracks editable text scale. **Comfort scaling (list rows breathe on big phones)**: `phone.grow(base)` grows a structural dimension by `ROW_COMFORT_RATIO` (56/46 ≈ 1.22 — the `recentThumb` ratio) with device comfort; `phone.lerp(a,b)` for the paired gap/padding. EVERY list row (wine, moment, person) uses this so they scale the SAME way — thumbs/avatars via `grow`, gap/padding via `lerp` — don't hardcode a flat size on a new list row. Chart canvases, sheet-snap math, borders, and icon-in-control sizes stay FLAT (load-bearing). ⛔ **CI-ENFORCED**: `scripts/check-mobile-design-tokens.mjs` (workflow `check-mobile-design-tokens`) FAILS if converged design constants are re-inlined OR an inline `fontSize:` literal appears outside its named-exception allowlist (the Text rule above); `scripts/check-mobile-dynamic-type.mjs` (workflow `check-mobile-dynamic-type`) is a partial static backstop for inline caps, common fixed-height text controls, and TextInput surface props. Device checks still own clipping/overlap truth.
+- **Shared screen constants + Dynamic Type surfaces (`lib/layout.ts`)**: `GUTTER`(22), `FOOT_CLEARANCE`/`FOOT_CLEARANCE_IR`, `TAB_BAR_BOTTOM`/`TAB_BAR_CLEARANCE` (pill offset + the content padding derived from it; the clearance is used alone), `HERO_RATIO` (shared by BOTH heroes — same height), `GLASS_FILL` (the over-photo glass fill), `HERO_SCRIM` (the hero-photo gradient), `PROFILE_SCRIM` (+ stops, the profile cover), `heroBarHeight` (a photo hero's collapsed bar: the moment's and the profile's), and `FONT_SURFACES` / `phone.surface(...)`. Import constants; don't re-declare. Use `phone.surface(name)` for scalable container math and `VText surface="..."` / `{...surface.textProps}` for matching text caps. `formControl` intentionally stays uncapped because field height math tracks editable text scale. **Comfort scaling (list rows breathe on big phones)**: `phone.grow(base)` grows a structural dimension by `ROW_COMFORT_RATIO` (56/46 ≈ 1.22 — the `recentThumb` ratio) with device comfort; `phone.lerp(a,b)` for the paired gap/padding. EVERY list row (wine, moment, person) uses this so they scale the SAME way — thumbs/avatars via `grow`, gap/padding via `lerp` — don't hardcode a flat size on a new list row. Chart canvases, sheet-snap math, borders, and icon-in-control sizes stay FLAT (load-bearing). ⛔ **CI-ENFORCED**: `scripts/check-mobile-design-tokens.mjs` (workflow `check-mobile-design-tokens`) FAILS if converged design constants are re-inlined OR an inline `fontSize:` literal appears outside its named-exception allowlist (the Text rule above); `scripts/check-mobile-dynamic-type.mjs` (workflow `check-mobile-dynamic-type`) is a partial static backstop for inline caps, common fixed-height text controls, and TextInput surface props. Device checks still own clipping/overlap truth.
 - **Label helpers (`lib/`)**: `initials.ts` (code-point-aware avatar initials — used by `Avatar`), `momentFormat.ts`, `scoreWords.ts`, `locale.ts`, `contrast.ts`. `theme/color.ts` `mix()`/`alpha()` for press-state/tint math (use instead of raw rgba) + `inkOn()` (contrast-picked label ink for a coloured fill — hex cells + solid-fill badges) + `readableSolid()` (family-tinted words: the 100% palette colour where it clears 3:1 on the fill, ink-pulled in 5% steps only past that) + `readableBorder()` (same, floored at 45% colour share so a hairline keeps its hue — clay borders went white without the floor). (An earlier `readableTint` — always ink-tinged — was REMOVED; `readableSolid` supersedes it, byte-identical to the raw palette colour wherever that already reads.)
 
 **⚠️ Pending extractions — KNOWN drift the audit found (2026-06-16, refined by a
@@ -944,15 +944,15 @@ transparent presentation, so the feed still shows through while `index` opens.
   answers, export-compliance confirmation, and TestFlight beta review details.
   `ITSAppUsesNonExemptEncryption=false` is already set in `app.json`.
 
-## You profile (handoff 04, step 1)
+## You profile (handoff 04, steps 1 + 2)
 
 As-built 2026-11-09 (plan `.local/you-profile/step1-plan.md`). Your own profile
 is the You tab's root; someone else's is `feed/u/[id]` (mirrored `you/u/[id]`),
 pushed from a post's author (avatar + name on the feed cards, and on the
 opened post, where it pushes `[id]/u/[personId]` on the post's own stack; inert
 when the post was opened from that person's list). Tapping yourself on a card pushes the own variant with back; on
-that person's own list the tap is a no-op. Step 2 adds bio, cover, long-press
-editing and the cover hero (04·R5i·b).
+that person's own list the tap is a no-op. Step 2 (bio, cover + hero, editing)
+is the next subsection.
 
 - **No second feed.** `components/feed/FeedList.tsx` IS the post list for the
   Feed tab and every profile (`userId` → `/api/feed?user=`, cache
@@ -974,9 +974,10 @@ editing and the cover hero (04·R5i·b).
   in-common row, `FollowButton`, `NoticeBox`, `EmptyPosts`) · `PhotoTiles`
   (the `.yo-ptiles` primitive, `TILE_SCRIM`). Data: `lib/api/users.ts`
   (`GET /api/users/:id?view=header`, key `['user-profile', id]`).
-- **Inactive in step 1** (visible, not tappable): status line, counts, tiles,
-  in-common row; menu rows Edit Profile, Add Friends, Share Profile, Invite to
-  a Moment (MenuItem `disabled` → "Soon").
+- **Inactive** (visible, not tappable): status line, counts, tiles (a tap;
+  the own long-press is step 2), in-common row; menu rows Add Friends, Share
+  Profile, Invite to a Moment (MenuItem `disabled` → "Soon"). Edit Profile is
+  live since step 2.
 - **Relationship writes** (follow / unfollow / mute / block / unblock): an
   optimistic header patch, then the profile AND the network `['feed']` (exact)
   refetch in place. Mute never touches the profile's own post list (mute is a
@@ -1003,6 +1004,91 @@ editing and the cover hero (04·R5i·b).
   `/you/settings` even from the Feed stack (inside an opened post: the mirror
   on the post's stack, `settingsHref`).
 - `you/settings.tsx` is INTERIM (Help & About, Dev Gallery, Sign Out).
+
+### Step 2 (bio, cover + hero 04·R5i·b, editing), as built 2026-11-10
+
+Plan `.local/you-profile/step2-plan.md` (rulings D1–D9). Server side: root
+CLAUDE.md § Session deletion (D8), `docs/dev/avatars.md`, README.
+
+- **Cover hero** (`ProfileHeader` `CoverHero`, cover set): the cover is 3:2 of
+  the SCREEN WIDTH (not `HERO_RATIO`), full-bleed under the status bar
+  (`FeedList fullBleed`, keyed on cover / no cover so the scroll setup
+  remounts). `coverGeometry.ts` ports `notchSvg` (variant b) parametrized by
+  width AND photo size: the sheet edge sits `SHEET_RISE` (26) above the cover's
+  bottom, the photo's centre ON it (the notch assumes it), the sheet's left
+  corner flowing into the photo's 4pt ring. The photo BREATHES:
+  `useProfilePhotoSize` = 104 × the title type's comfort growth (30 → 34pt),
+  so photo and name stay in proportion (ruled 2026-11-10). The white name
+  sits on the cover beside the photo, `fitCoverName` = the mock's `fitName`
+  (measured at the base size in a hidden pass, Dynamic Type included):
+  keep, else shrink ≤ 4pt, else two lines with line 1 indented to hug the
+  ring. Deviation from the mock (ruled 2026-11-11): at each size the break
+  points are tried in order (after word 1, 2, …), so a long name moves words
+  up to line 1 before shrinking (to 22pt) or truncating. The hidden
+  measuring texts are keyed on name + size: a string shared by an old and a
+  new name must re-measure, or the name stays invisible after a rename. Soft top corners while the list is pulled
+  past its top (the moment cover hero's rule). A TAP on the cover or the
+  photo opens it in the house `FullscreenImage` viewer on every profile; on
+  your own profile only a LONG-PRESS edits (ruled 2026-11-11).
+- **Bar** (`ProfileHeroBar`): glass back (others) + glass ⋯ over the photo →
+  solid `theme.bg` + `BarTitle` (26pt photo + name) once the cover name
+  passes under the bar (measured, `scrollY ≥ nameBottom − heroBarHeight`),
+  both off one `useBarTitleProgress`. Status bar: light over the cover,
+  themed once collapsed; `Stack.Screen` option + `useForwardStatusBarStyle`
+  (the profile opens on a post's stack too) + expo-status-bar for Android.
+  No cover = the step-1 `VBar` layout unchanged.
+- **Own-profile editing** (`ProfileScreen` owns the session, `ProfileHeader`
+  renders it): long-press (`LongPressable`, 480ms, dur-2 press scale +
+  haptic) the name or the bio → BOTH become `InlineField`s in place
+  (registered with the outside-tap keyboard dismissal), the pressed one
+  focused; the status line + tiles dim (0.35) and the posts go `inert`.
+  `EditBar` (Cancel / "Editing Profile" / Done) RIDES the keyboard
+  (`useAnimatedKeyboard`, transform only) and drops to the bottom when an
+  outside tap closes it (D6). The pill is held hidden for the WHOLE session
+  (`pushSheet` / `popSheet` in one effect cleanup: Cancel, Done, blur,
+  unmount). The list's bottom padding grows by keyboard + bar and the focused
+  field is scrolled above both (measured). Done = ONE `PATCH /api/me/profile`
+  of the changed fields, pre-checked with `validateDisplayName` +
+  `normalizeBio` (`@verre/core`); errors alert and keep you editing. Losing
+  focus cancels. The "Add a profile text" hint starts editing on a TAP too.
+- **Photo + cover** (D2, D4, D5): long-press → `pickPhotoOrRemove` (Take
+  Photo / Choose from Library / Remove Photo|Cover / Cancel), uploaded at
+  once (`POST|DELETE /api/me/avatar`, `/api/me/cover`). Device photos only:
+  the design's "From your tastings" grid is dropped.
+- **Tile covers** (R5g2, D3): long-press a tile with a photo →
+  `TileCoverSheet` (screen-local `BottomSheetModalProvider`, fixed snap,
+  `BottomSheetScrollView` grid, footer pinned through gorhom's footer).
+  Pre-selected = the shown photo when offered; Use Photo is live only when
+  the selection differs from the current pin. Server rules (pin liveness,
+  blind-safe picks, the dead-pin clear) live in `lib/profileTiles.ts`.
+- **Edit Profile page** (D1, `you/edit-profile.tsx` + mirrors
+  `feed/[id]/edit-profile`, `you/[id]/edit-profile`, via
+  `profileEditHref(mount)`): cover 3:1 + 96pt photo with glass edit buttons,
+  Display Name, Profile Text (`NotesField maxLength 200`), `SettingsFooter`.
+  Everything is a DRAFT until Save; Save runs photo → cover → text and stops
+  at the first failure (finished steps stay saved). Bar-hide matches
+  `/edit-profile` (the mirrors match neither `OPENED_POST_PATH` nor
+  `/you/edit`). Router-sim case: `.local/opened-post-stack/router-sim/t12.cjs`.
+- **Caches** (`lib/api/profile.ts` `applyOwnProfileChange`): cancel the
+  profile read, typed MERGE into the `ok` entry (viewer epoch checked after
+  every await), refetch in place; a rename also updates `['my-account']`; a
+  name or photo change refetches the mounted feeds IN PLACE and drops the
+  unmounted ones (never invalidate a feed cache).
+- 🔒 **Your own name is read from `GET /api/me/account`, never Better Auth's
+  session copy**, where the app SENDS it (moment create, join:
+  `freshOwnName`). BA serves `useSession().data.user.name` from its Redis
+  session copy, which only BA's own `updateUser` refreshes; a rename through
+  our routes left it stale.
+- **Deviations (flagged):** the cover name uses the `title` token at the
+  mock's 600 / 1.05 line height; the edit bar uses `surfaceSunk` (not the
+  mock's literal keyboard greys) and no top rule; the tile sheet's selected
+  ring stays (a selection state, not a card border); the Edit Profile page
+  without a cover shows the add affordance on the sunk fill in the cover's
+  footprint (the mock always has a cover); the photo breathes (the mock is
+  flat 104). Device checks pending: hero + notch + collapse + status bar
+  (incl. inside a post), long-press + the keyboard bar (incl. outside-tap
+  dismissal), pickers over a post, the name fit at large Dynamic Type, CJK
+  composition near the 200 cap.
   `Button` gained `icon` (leading glyph); `VBar` gained `back` /
   `titleShown` / `titleLeading`; `Avatar` gained `tint` (the
   `.yo-rav-ini` initials disc); icons `user-plus`, `block`, `logout`.

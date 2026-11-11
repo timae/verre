@@ -7,7 +7,7 @@ import { checkRate, formatWait } from '@/lib/rateLimit'
 import { executeAccountDelete, AccountDeleteRetryableError, AccountDeleteTooManyWipesError } from '@/lib/accountDelete'
 import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential, revokeAllSessions, revokeAllForNativeCaller } from '@/lib/identityStore'
-import { propagateDisplayNameToSessions } from '@/lib/displayName.server'
+import { propagateRename } from '@/lib/displayName.server'
 
 // Minimal self profile for clients that can't read the web session shape —
 // the native app uses `pro` to render pro-gated affordances (02a blind
@@ -104,23 +104,9 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: 'update failed' }, { status: 500 })
   }
 
-  // After commit: push the new name into the session name snapshots — live
-  // Redis (identities roster + meta.host) AND the Postgres sessions.host_name
-  // mirror that feed/profile session cards read. Best-effort — a propagation
-  // failure must not fail the rename itself.
-  if (updates.name !== undefined) {
-    const newName = updates.name as string
-    // host_name first: the propagation rewrites a Postgres-backed session's
-    // meta from the record (redis-rehydration D4).
-    try {
-      await prisma.session.updateMany({
-        where: { hostUserId: userId, deletedAt: null },
-        data: { hostName: newName },
-      })
-    } catch (e) { console.error('rename host_name mirror failed:', e) }
-    try { await propagateDisplayNameToSessions(userId, newName) }
-    catch (e) { console.error('rename propagation failed:', e) }
-  }
+  // After commit: the shared rename tail (host_name mirror + live session
+  // snapshots, best-effort).
+  if (updates.name !== undefined) await propagateRename(userId, updates.name as string)
 
   // After a password change, revoke every OTHER device's session so a stolen
   // session can't outlive the rotation — the load-bearing invariant. This

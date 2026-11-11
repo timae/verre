@@ -59,6 +59,17 @@ model User {
   lifetimeConsecutiveMonths Int                    @default(0) @map("lifetime_consecutive_months")
   firstRatedAt              DateTime?              @map("first_rated_at") @db.Timestamp(6)
   imageUrl                  String?                @map("image_url") @db.VarChar(512)
+  // Native profile (You, step 2). bio: one paragraph, normalised by
+  // `normalizeBio` (@verre/core), ≤ 200 UTF-16 units, empty → NULL.
+  // coverPhotoUrl: the user's own upload (avatars/ prefix, replaced through
+  // `replaceProfileImage`, reclaimed on account delete). tile*Url: a chosen
+  // tile cover, a REFERENCE to a photo the user's own content still shows
+  // (no bytes owned; lib/profileTiles.ts drops it once its source is gone).
+  bio                       String?                @db.VarChar(200)
+  coverPhotoUrl             String?                @map("cover_photo_url") @db.VarChar(512)
+  tileImpressionsUrl        String?                @map("tile_impressions_url") @db.VarChar(512)
+  tileMomentsUrl            String?                @map("tile_moments_url") @db.VarChar(512)
+  tileCravingsUrl           String?                @map("tile_cravings_url") @db.VarChar(512)
   // Profile visibility — see lib/profileVisibility.ts. Stored as VARCHAR(32)
   // (not a Postgres enum) so a future tier ('private', etc.) is a code-only
   // change. A CHECK constraint is hand-added in the migration; the lib-side

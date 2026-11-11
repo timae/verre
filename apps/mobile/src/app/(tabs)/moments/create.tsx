@@ -17,6 +17,7 @@ import { ToggleRow } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { getMyAccount } from '@/lib/api/me';
+import { freshOwnName } from '@/lib/api/profile';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
@@ -112,8 +113,11 @@ export default function CreateMoment() {
     }
     setCreating(true);
     try {
+      // Your name fresh from the users row: Better Auth's session copy
+      // (auth.user.name) stays stale after a rename (lib/api/profile.ts).
+      const hostName = (await freshOwnName(queryClient, auth?.user.name)) ?? 'Host';
       const { code } = await createMoment({
-        hostDisplayName: auth?.user.name ?? 'Host',
+        hostDisplayName: hostName,
         sessionName: name.trim(),
         category: 'wine',
         ...(cover ? { coverPhoto: cover.dataUrl } : {}),

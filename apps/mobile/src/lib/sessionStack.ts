@@ -163,6 +163,13 @@ export function settingsHref(mount: SessionMount): Href {
   return '/you/settings' as Href;
 }
 
+// Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like
+// Settings, mirrored onto an opened post's stack when called from inside it.
+export function profileEditHref(mount: SessionMount): Href {
+  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/edit-profile`, params: { id: mount.post } } as Href;
+  return '/you/edit-profile' as Href;
+}
+
 // The legal screens (About hub, Attributions). They live at the app ROOT so
 // they render signed out (a licence obligation, root _layout.tsx); inside an
 // opened post they are ALSO mirrored onto the post's stack, because a root
