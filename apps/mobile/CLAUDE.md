@@ -1171,7 +1171,9 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   the shared edge is one border, not two (ruled, after Telegram's style). Another device's action is
   DISCONNECT (the web panel's word, ruled 2026-11-11); only your own is
   Sign Out (server order, most recently
-  active first; Disconnect each). Every row: last active, the country when
+  active first; Disconnect each). Every row: last active (the web panel's
+  scale for web AND app rows, both 5-minute precise: Active recently, 5-minute
+  steps, hours, days, then the date), the country when
   known, and a second line "Signed in <date>" (the web panel's facts; the
   country comes from the sign-in IP, so local LAN sign-ins have none),
   Delete Account. The three password-gated actions prompt with

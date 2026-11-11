@@ -5,12 +5,14 @@
 // "active sometime in the 00:05–00:10 window", never "request happened at
 // 00:07:43". See proposal §5.
 //
-// Two consumers must agree on the same edges:
-//   - auth.ts writes user_sessions.lastSeenAt bucketed at write time.
-//   - app/api/me/devices surfaces NATIVE auth_sessions.updatedAt bucketed at
-//     READ time (Better Auth owns that column and stores a precise instant, so
-//     the coarsening happens on the way out — the web and native rows in the
-//     devices union then expose the same precision).
+// Every consumer must agree on the same edges:
+//   - auth.ts bumps user_sessions.lastSeenAt once per bucket, bucketed at
+//     write time.
+//   - lib/resolveUser.ts bumps NATIVE auth_sessions.updatedAt once per bucket
+//     through Better Auth, whose session hooks (lib/betterAuth.ts) floor it at
+//     write time.
+//   - app/api/me/devices re-buckets the native value on the way out (belt), so
+//     the web and native rows in the devices union expose the same precision.
 // Lives in its own module (not auth.ts) so the devices route can reuse it
 // without pulling NextAuth/bcrypt into its import graph.
 export const LAST_SEEN_BUCKET_MS = 5 * 60 * 1000

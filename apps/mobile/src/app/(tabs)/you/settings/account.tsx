@@ -38,27 +38,30 @@ function promptPassword(title: string, message: string, confirm: string): Promis
   });
 }
 
-// "Last active 2 days ago". Native rows move about once a day (the heartbeat
-// slide), web rows on 5-minute buckets, so a day is the finest grain worth
-// naming.
-function lastActive(iso: string): string {
-  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
-  if (!Number.isFinite(days)) return 'Last active a while ago';
-  if (days < 1) return 'Last active today';
-  if (days < 2) return 'Last active yesterday';
-  if (days < 14) return `Last active ${days} days ago`;
-  if (days < 60) return `Last active ${Math.floor(days / 7)} weeks ago`;
-  return `Last active ${Math.floor(days / 30)} months ago`;
-}
-const deviceIcon = (label: string) => (/MacBook|Windows|Linux|Chromebook/.test(label) ? 'laptop' : 'phone');
-// "Signed in 11 Nov" ("Nov 11" in the US), with the year when it isn't this
-// one: two logins from the same kind of device stay tellable apart (the web
-// panel shows it for the same reason).
-function signedIn(iso: string): string {
+// "11 Nov" ("Nov 11" in the US), with the year when it isn't this one.
+function shortDate(iso: string): string {
   const d = new Date(iso);
   const year = d.getFullYear() === new Date().getFullYear() ? {} : { year: 'numeric' as const };
-  return `Signed in ${d.toLocaleDateString(DATE_LOCALE, { day: 'numeric', month: 'short', ...year })}`;
+  return d.toLocaleDateString(DATE_LOCALE, { day: 'numeric', month: 'short', ...year });
 }
+// The web panel's scale (lastSeenLabel in the repo root's
+// components/me/AccountSettings.tsx): every row, web or app, is stored on
+// 5-minute buckets (the root's lib/lastSeen.ts), so
+// under 10 minutes is "recently", then 5-minute steps, hours, days, the date.
+function lastActive(iso: string): string {
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (!Number.isFinite(secs)) return 'Last active a while ago';
+  if (secs < 600) return 'Active recently';
+  if (secs < 3600) return `Last active ${Math.floor(secs / 300) * 5} min ago`;
+  const ago = (n: number, unit: string) => `Last active ${n} ${unit}${n === 1 ? '' : 's'} ago`;
+  if (secs < 86_400) return ago(Math.floor(secs / 3600), 'hour');
+  if (secs < 604_800) return ago(Math.floor(secs / 86_400), 'day');
+  return `Last active ${shortDate(iso)}`;
+}
+const deviceIcon = (label: string) => (/MacBook|Windows|Linux|Chromebook/.test(label) ? 'laptop' : 'phone');
+// "Signed in 11 Nov": two logins from the same kind of device stay tellable
+// apart (the web panel shows it for the same reason).
+const signedIn = (iso: string) => `Signed in ${shortDate(iso)}`;
 
 // One signed-in device: icon, label, "Active now" (this one) or when it was
 // last active, the country when known, then when it signed in (the web

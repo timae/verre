@@ -49,6 +49,14 @@
 //        Postgres-served
 //   § 9  the native device label: the app's User-Agent on a BA sign-in →
 //        "<model> · Verre App"; anything off-shape falls back to the web parser
+//   § 10 the app's last-seen: resolveUser bumps auth_sessions.updatedAt once
+//        per 5-minute bucket through Better Auth (both stores, updatedAt only,
+//        expiresAt untouched); nothing within a bucket, one write for a
+//        parallel burst, none while a heartbeat slide is due or past the
+//        per-user budget, no re-created Redis copy; a failing write is logged
+//        and not retried within the bucket, a hanging one delays nothing; a
+//        revoke racing the bump leaves no copy behind (the bump removes its own
+//        write-back), and in the residual window the orphan cannot authenticate
 //
 // Run against a DISPOSABLE database + Redis — it writes and deletes rows, and
 // it RESETS the Better Auth IP-floor rate-limit counters for the `unknown` IP
@@ -59,9 +67,10 @@
 //
 // Run via tsx (not node): it imports the real TypeScript modules under lib/.
 import { betterAuthServer } from '../../lib/betterAuth.ts'
-import { resolveUser } from '../../lib/resolveUser.ts'
+import { nativeLastSeenHooks, resolveUser } from '../../lib/resolveUser.ts'
 import { deleteAllNativeSessions, pruneExpiredNativeSessions, revokeAllForNativeCaller, revokeAllSessions } from '../../lib/identityStore.ts'
 import { parseNativeUserAgent, parseUserAgent } from '../../lib/userAgent.ts'
+import { LAST_SEEN_BUCKET_MS, bucketStart } from '../../lib/lastSeen.ts'
 import { prisma } from '../../lib/prisma.ts'
 import { redis } from '../../lib/redis.ts'
 import { NextRequest } from 'next/server'
@@ -599,6 +608,253 @@ async function main() {
   check('sign-in with a browser UA keeps the web label', (await labelOf(SAFARI_UA)) === 'iPhone · Safari')
   check('sign-in with a too-long app model falls back to the web parser', (await labelOf(`Verre/1.0.0 (iPhone ${'X'.repeat(40)}; iOS 26.1)`)) === 'iPhone')
   await deleteAllNativeSessions(userC)
+
+  await lastSeenSection(origin, password)
+}
+
+// § 10 the app's last-seen bump (lib/resolveUser.ts). It is fire-and-forget:
+// nativeLastSeenHooks hands the suite each bump promise to await, and Better
+// Auth's updateSession is wrapped to count the writes, hold them at a barrier
+// or fail them; fixture writes use the unwrapped original. The bump makes ONE
+// attempt per session per 5-minute bucket, so every sub-case signs in its own
+// session.
+async function lastSeenSection(origin, password) {
+  console.log('\n§ 10 resolveUser bumps the app\'s last-seen once per 5-minute bucket (updatedAt only, through Better Auth)')
+  const ctx = await betterAuthServer.$context
+  const origUpdate = ctx.internalAdapter.updateSession
+  let bumps = []
+  let bumpImpl = origUpdate
+  ctx.internalAdapter.updateSession = (token, data) => {
+    const p = Promise.resolve().then(() => bumpImpl(token, data))
+    bumps.push({ token, data, p })
+    return p
+  }
+  let started = []
+  nativeLastSeenHooks.started = (p) => { started.push(p) }
+  // Bounded waits: a regression that awaits the bump, or never reaches a
+  // barrier, must fail the check, not hang CI.
+  const TIMED_OUT = Symbol('timed out')
+  const within = (p, ms = 3000) => Promise.race([p, new Promise((r) => setTimeout(() => r(TIMED_OUT), ms))])
+  const settle = () => within(Promise.allSettled(started.splice(0)), 5000)
+  const gate = () => { let open; const p = new Promise((r) => { open = r }); return { p, open } }
+  // Each same-bucket claim must not straddle a 5-minute edge.
+  const inOneBucket = async () => {
+    const left = LAST_SEEN_BUCKET_MS - (Date.now() % LAST_SEEN_BUCKET_MS)
+    if (left < 15_000) await new Promise((r) => setTimeout(r, left + 100))
+  }
+  const seen = async (token) => {
+    const row = await prisma.authSession.findFirst({ where: { token }, select: { updatedAt: true, expiresAt: true } })
+    const raw = await redis.get(token)
+    const copy = raw ? JSON.parse(raw).session : null
+    return {
+      pg: row ? row.updatedAt.getTime() : null,
+      redis: copy ? new Date(copy.updatedAt).getTime() : null,
+      pgExp: row ? row.expiresAt.getTime() : null,
+      redisExp: copy ? new Date(copy.expiresAt).getTime() : null,
+      ttl: await redis.ttl(token),
+    }
+  }
+  const backdate = (token) => origUpdate(token, { updatedAt: new Date(Date.now() - 2 * LAST_SEEN_BUCKET_MS) })
+  // An expiresAt-only fixture write: Better Auth's adapter then stamps the ROW's
+  // updatedAt itself (onUpdate, unfloored), so always backdate AFTER it.
+  const stampAt = (token, expiresAt) => origUpdate(token, { expiresAt })
+  const resolveAs = (cookiePair) => resolveUser(new NextRequest(`${origin}/api/me/devices`, { headers: { cookie: cookiePair } }))
+  const fresh = async () => { const s = await signIn(emailD, password); await backdate(s.token); return s }
+  await resetAuthFloors()
+  const emailD = `${TAG}-d@example.test`
+  const userD = Number((await betterAuthServer.api.signUpEmail({ body: { name: 'Lifetime D', email: emailD, password } }))?.user?.id)
+  const budgetKey = `rl:native-lastseen:user:${userD}:5m`
+  check('fixture: user D signed up', Number.isInteger(userD))
+  try {
+    // (a) a stale bucket → one write, both stores, updatedAt only. The stamp is
+    //     12 h old (not due for a slide), so a bump that slid it would show.
+    await inOneBucket()
+    const sA = await signIn(emailD, password)
+    bumps = []
+    await resolveAs(sA.cookiePair)
+    await settle()
+    check('(a) a session already on the current bucket (a fresh sign-in) → no write', bumps.length === 0, String(bumps.length))
+    await stampAt(sA.token, stampAgedBy(DAY_S / 2))
+    await backdate(sA.token)
+    const a0 = await seen(sA.token)
+    check('(a) fixture: updatedAt sits in an older bucket in both stores', a0.pg !== null && a0.pg === a0.redis && a0.pg < bucketStart(Date.now()), `${a0.pg}/${a0.redis}`)
+    bumps = []
+    const tA = Date.now()
+    const aRes = await resolveAs(sA.cookiePair)
+    await settle()
+    const a1 = await seen(sA.token)
+    check('(a) resolveUser still resolves the caller', Number(aRes?.user?.id) === userD)
+    check('(a) exactly one write, through Better Auth\'s updateSession', bumps.length === 1 && bumps[0].token === sA.token, String(bumps.length))
+    check('(a) 🔒 the write sends updatedAt ONLY (never expiresAt)', bumps.length === 1 && JSON.stringify(Object.keys(bumps[0].data)) === '["updatedAt"]', JSON.stringify(bumps[0]?.data))
+    check('(a) Postgres updatedAt = the bucket START (the update hook floors the exact time the bump sends)', a1.pg === bucketStart(tA), `${a1.pg} vs ${bucketStart(tA)}`)
+    check('(a) the Redis copy agrees', a1.redis === a1.pg, `${a1.redis} vs ${a1.pg}`)
+    check('(a) 🔒 expiresAt unchanged in both stores', a1.pgExp === a0.pgExp && a1.redisExp === a0.redisExp, `${a1.pgExp}/${a1.redisExp} vs ${a0.pgExp}/${a0.redisExp}`)
+    check('(a) the Redis TTL still follows the unchanged expiresAt', near(a1.ttl, (a0.redisExp - Date.now()) / 1000, 5), `${a1.ttl} vs ${(a0.redisExp - Date.now()) / 1000}`)
+    bumps = []
+    await resolveAs(sA.cookiePair)
+    await settle()
+    const a2 = await seen(sA.token)
+    check('(a) a second resolve in the same bucket writes nothing', bumps.length === 0 && a2.pg === a1.pg && a2.redis === a1.redis, `${bumps.length} ${a2.pg}`)
+
+    // (b) five parallel requests while the first write is held → one write,
+    //     and none of the requests waits for it.
+    await inOneBucket()
+    const sB = await fresh()
+    bumps = []
+    const atB = gate(), heldB = gate()
+    bumpImpl = async (token, data) => { atB.open(); await heldB.p; return origUpdate(token, data) }
+    const burst = await Promise.all(Array.from({ length: 5 }, () => within(resolveAs(sB.cookiePair))))
+    const reachedB = (await within(atB.p)) !== TIMED_OUT
+    const heldCalls = bumps.length
+    heldB.open()
+    await settle()
+    bumpImpl = origUpdate
+    check('(b) five parallel requests → one write, none waits for it', burst.every((r) => r !== TIMED_OUT && Number(r?.user?.id) === userD) && reachedB && heldCalls === 1 && bumps.length === 1, `${burst.filter((r) => r === TIMED_OUT).length} timed out, reached ${reachedB}, ${heldCalls}/${bumps.length}`)
+    check('(b) …and that write landed', (await seen(sB.token)).pg === bucketStart(Date.now()))
+
+    // (c) due for the heartbeat slide → no write (the heartbeat writes updatedAt).
+    await inOneBucket()
+    const sC = await signIn(emailD, password)
+    await stampAt(sC.token, stampAgedBy(DAY_S + EDGE_S))
+    await backdate(sC.token)
+    const c0 = await seen(sC.token)
+    check('(c) fixture: due, both stores on the same older bucket', c0.pg !== null && c0.pg === c0.redis && c0.pg < bucketStart(Date.now()), `${c0.pg}/${c0.redis}`)
+    bumps = []
+    check('(c) a due session still resolves', Number((await resolveAs(sC.cookiePair))?.user?.id) === userD)
+    await settle()
+    const c1 = await seen(sC.token)
+    check('(c) due for the slide → no write', bumps.length === 0 && c1.pg === c0.pg && c1.redis === c0.redis, `${bumps.length} ${c1.pg} vs ${c0.pg}`)
+    // 30 s short of due: a bump started now could still be in flight when the
+    // heartbeat slides, so the margin skips it too ((a)'s 12 h stamp writes).
+    const sC2 = await signIn(emailD, password)
+    await stampAt(sC2.token, stampAgedBy(DAY_S - 30))
+    await backdate(sC2.token)
+    const c20 = await seen(sC2.token)
+    bumps = []
+    await resolveAs(sC2.cookiePair)
+    await settle()
+    check('(c) 30 s short of due (inside the margin) → no write', bumps.length === 0 && (await seen(sC2.token)).pg === c20.pg, String(bumps.length))
+
+    // (d) Redis copy evicted → Postgres-served; the write updates the row and
+    //     does NOT re-create the copy.
+    await inOneBucket()
+    const sD = await signIn(emailD, password)
+    await redis.del(sD.token)
+    await backdate(sD.token)
+    bumps = []
+    const tD = Date.now()
+    check('(d) a Postgres-served session resolves', Number((await resolveAs(sD.cookiePair))?.user?.id) === userD)
+    await settle()
+    const d1 = await seen(sD.token)
+    check('(d) Postgres updatedAt bumped to the current bucket', bumps.length === 1 && d1.pg === bucketStart(tD), `${bumps.length} ${d1.pg} vs ${bucketStart(tD)}`)
+    check('(d) the evicted Redis copy is not re-created', d1.redis === null && (await redis.get(sD.token)) === null)
+
+    // (e) a failing write never fails the request, is logged, and is not
+    //     retried within the bucket; a hanging one never delays the request.
+    await inOneBucket()
+    const sE = await fresh()
+    const origErr = console.error
+    const logged = []
+    console.error = (...args) => { logged.push(String(args[0])) }
+    bumpImpl = () => { throw new Error('injected: bump failure') }
+    bumps = []
+    const eRes = await resolveAs(sE.cookiePair).catch(() => 'threw')
+    await settle()
+    console.error = origErr
+    bumpImpl = origUpdate
+    check('(e) an injected updateSession failure does not fail the resolve', Number(eRes?.user?.id) === userD, String(eRes))
+    check('(e) …the failure is logged, not swallowed', logged.some((m) => m.includes('native last-seen bump failed')), JSON.stringify(logged))
+    bumps = []
+    await resolveAs(sE.cookiePair)
+    await settle()
+    check('(e) …and not retried in the same bucket (one attempt per session per bucket)', bumps.length === 0, String(bumps.length))
+    const sE2 = await fresh()
+    const atHang = gate(), hang = gate()
+    bumpImpl = async (token, data) => { atHang.open(); await hang.p; return origUpdate(token, data) }
+    bumps = []
+    const hRes = await within(resolveAs(sE2.cookiePair))
+    const reachedHang = (await within(atHang.p)) !== TIMED_OUT
+    check('(e) a hanging write does not delay the resolve', hRes !== TIMED_OUT && Number(hRes?.user?.id) === userD && reachedHang, `${String(hRes?.user?.id ?? 'timed out')} reached ${reachedHang}`)
+    hang.open()
+    await settle()
+    bumpImpl = origUpdate
+    check('(e) …and it lands once released', (await seen(sE2.token)).pg === bucketStart(Date.now()))
+
+    // (f) a revoke between the bump's read and its Redis write-back: hold the
+    //     write-back, revoke, release. The row update then finds no row, so the
+    //     bump deletes the copy it put back: nothing is left.
+    await resetAuthFloors()
+    await inOneBucket()
+    const sF = await fresh()
+    const origSet = redis.set.bind(redis)
+    const atF = gate(), releaseF = gate()
+    let heldF = false, landedF = false
+    redis.set = async (key, value, opts) => {
+      if (key !== sF.token || heldF) return origSet(key, value, opts)
+      heldF = true; atF.open(); await releaseF.p
+      const r = await origSet(key, value, opts); landedF = true; return r
+    }
+    try {
+      const fRes = await within(resolveAs(sF.cookiePair))
+      check('(f) fixture: the bump reached its Redis write-back (held there)', (await within(atF.p)) !== TIMED_OUT)
+      await revokeAllSessions(userD, randomUUID(), 'revoke_all')
+      check('(f) revoke completed while the bump was held: both stores empty', (await prisma.authSession.count({ where: { userId: userD } })) === 0 && (await redis.get(sF.token)) === null)
+      releaseF.open()
+      await settle()
+      check('(f) the request itself resolved, before the revoke', Number(fRes?.user?.id) === userD)
+      check('(f) fixture: the write-back DID land after the revoke', landedF)
+      check('(f) 🔒 …and the bump removed it: no copy, no row', (await redis.get(sF.token)) === null && (await prisma.authSession.count({ where: { token: sF.token } })) === 0)
+      check('(f) 🔒 the revoked session stays dead', (await betterAuthServer.api.getSession({ headers: new Headers({ cookie: sF.cookiePair }), query: { disableRefresh: true } })) === null)
+    } finally { redis.set = origSet }
+
+    // (g) the narrower window: the bump's write-back AND row update both land
+    //     between the revoke's Redis delete and its row delete. The copy then
+    //     outlives the row; secondaryStorage.get must keep it unauthenticated.
+    await inOneBucket()
+    const sG = await fresh()
+    const origDeleteMany = prisma.authSession.deleteMany
+    const atWriteG = gate(), releaseWriteG = gate(), atRowDeleteG = gate(), releaseRowDeleteG = gate()
+    let heldWriteG = false, heldRowDeleteG = false
+    redis.set = async (key, value, opts) => {
+      if (key === sG.token && !heldWriteG) { heldWriteG = true; atWriteG.open(); await releaseWriteG.p }
+      return origSet(key, value, opts)
+    }
+    prisma.authSession.deleteMany = async (args) => {
+      if (JSON.stringify(args ?? {}).includes(sG.token) && !heldRowDeleteG) { heldRowDeleteG = true; atRowDeleteG.open(); await releaseRowDeleteG.p }
+      return origDeleteMany.call(prisma.authSession, args)
+    }
+    try {
+      await within(resolveAs(sG.cookiePair))
+      const gAtWrite = (await within(atWriteG.p)) !== TIMED_OUT
+      const pRevoke = revokeAllSessions(userD, randomUUID(), 'revoke_all')
+      const gAtRowDelete = (await within(atRowDeleteG.p)) !== TIMED_OUT
+      check('(g) fixture: bump held at its write-back, revoke held between its Redis and row deletes', gAtWrite && gAtRowDelete && (await redis.get(sG.token)) === null)
+      releaseWriteG.open()
+      await settle()
+      releaseRowDeleteG.open()
+      await within(pRevoke)
+      check('(g) fixture: the copy outlived the row (the residual window)', (await redis.get(sG.token)) !== null && (await prisma.authSession.count({ where: { token: sG.token } })) === 0)
+      const gLookup = await betterAuthServer.api.getSession({ headers: new Headers({ cookie: sG.cookiePair }), query: { disableRefresh: true } })
+      check('(g) 🔒 the revoked session stays dead (no resurrection)', gLookup === null, JSON.stringify(gLookup?.user?.id ?? null))
+      check('(g) the lookup removed the orphan', (await redis.get(sG.token)) === null)
+    } finally { redis.set = origSet; prisma.authSession.deleteMany = origDeleteMany }
+
+    // (h) the per-user budget: once spent, a stale session is not written, and
+    //     the request still resolves.
+    await inOneBucket()
+    const sH = await fresh()
+    await redis.set(budgetKey, '30', { EX: 300 })
+    const h0 = await seen(sH.token)
+    bumps = []
+    check('(h) over the budget, the request still resolves', Number((await resolveAs(sH.cookiePair))?.user?.id) === userD)
+    await settle()
+    check('(h) 🔒 over the per-user budget → no write', bumps.length === 0 && (await seen(sH.token)).pg === h0.pg, String(bumps.length))
+  } finally {
+    ctx.internalAdapter.updateSession = origUpdate
+    nativeLastSeenHooks.started = () => {}
+    await redis.del(budgetKey)
+    await deleteAllNativeSessions(userD)
+  }
 }
 
 main()
