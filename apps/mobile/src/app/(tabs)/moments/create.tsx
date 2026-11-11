@@ -242,34 +242,39 @@ export default function CreateMoment() {
         <SpawnedRow show={!!dateFrom}>
           <ToggleRow
             title="Hide Line-up"
-            subtitle="Keep what's being tasted a surprise until before the start"
+            subtitle="Guests see the line-up at reveal time"
             value={hideLineup}
             onChange={setHideLineup}
           />
           {hideLineup ? (
-            <View style={{ flexDirection: 'row', gap: 7, marginTop: 10, flexWrap: 'wrap' }}>
-              {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
-                const on = hideMinutes === mins;
-                return (
-                  <Pressable
-                    key={label}
-                    onPress={() => setHideMinutes(mins)}
-                    style={{
-                      paddingVertical: 7,
-                      paddingHorizontal: 13,
-                      borderRadius: radius.pill,
-                      borderWidth: 1,
-                      borderColor: on ? 'transparent' : theme.rule,
-                      backgroundColor: on ? theme.accent : theme.bg,
-                    }}
-                  >
-                    <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>
-                      {label}
-                    </VText>
-                  </Pressable>
-                );
-              })}
-            </View>
+            <>
+              {/* The chips are how long BEFORE the start the line-up appears
+                  (revealAt = dateFrom − minutes); ruled 2026-11-11. */}
+              <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>Reveal before the start</VText>
+              <View style={{ flexDirection: 'row', gap: 7, marginTop: 6, flexWrap: 'wrap' }}>
+                {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
+                  const on = hideMinutes === mins;
+                  return (
+                    <Pressable
+                      key={label}
+                      onPress={() => setHideMinutes(mins)}
+                      style={{
+                        paddingVertical: 7,
+                        paddingHorizontal: 13,
+                        borderRadius: radius.pill,
+                        borderWidth: 1,
+                        borderColor: on ? 'transparent' : theme.rule,
+                        backgroundColor: on ? theme.accent : theme.bg,
+                      }}
+                    >
+                      <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>
+                        {label}
+                      </VText>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </>
           ) : null}
         </SpawnedRow>
 
@@ -282,7 +287,7 @@ export default function CreateMoment() {
         <ToggleRow
           title="Blind Tasting"
           proBadge
-          subtitle="Hide what you're tasting until it's revealed"
+          subtitle="Hides what's tasted until you reveal it"
           note={blind ? BLIND_FEED_REVEAL_NOTE : undefined}
           value={blind}
           onChange={setBlind}

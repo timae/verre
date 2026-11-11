@@ -946,7 +946,7 @@ async function misc() {
     // today's (pre-release-A) account-delete SQL, verbatim in shape
     await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${L.id} AND session_id IS NULL`
     await tx.$executeRaw`UPDATE ratings SET user_id = NULL, rater_name = '[deleted]' WHERE user_id = ${L.id} AND session_id IS NOT NULL`
-    await tx.$executeRaw`UPDATE hall_of_fame SET user_id = NULL, rater_name = '[deleted]' WHERE user_id = ${L.id}`
+    // (its hall_of_fame tombstone UPDATE is gone with the table, 20261111200100)
     await tx.$executeRaw`UPDATE sessions SET host_user_id = NULL, host_name = '[deleted]' WHERE host_user_id = ${L.id}`
     await tx.$executeRaw`DELETE FROM users WHERE id = ${L.id}`
     outcome.oldWriter = true

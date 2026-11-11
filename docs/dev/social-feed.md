@@ -29,11 +29,13 @@ Per `proposals/rewire.md` §3: anonymous ratings never create feed_items (schema
 
 `/api/feed` resolves the caller's "network" as the union of: the caller themselves, everyone they follow, and everyone they share a session with (via `session_members` self-join). The query returns feed_items ordered by createdAt, paginated by cursor.
 
-Visibility / mute / block filtering composes multiplicatively per author: block-pair authors are dropped first (strictest), then muted authors, then the author's profile-visibility tier is gated via `canViewProfile`. The viewer always sees their own content (self-block and self-mute are rejected at the API + DB level).
+Visibility / mute / block filtering composes multiplicatively per author: block-pair authors are dropped first (strictest), then muted authors, then the author's POST audience is gated via `canViewPosts` (profile tier AND Check-Ins Visible To, the stricter wins: `docs/dev/profile-visibility.md`). The viewer always sees their own content (self-block and self-mute are rejected at the API + DB level).
+
+**Places on read (Show My Locations).** A standalone post's place line (`venueName`, `city`, `country` = the VENUE) is nulled by `postPlace` unless the author shows locations or the viewer is the author; the wine's origin (`wineRegion` / `wineCountry`) is never touched. 🔒 The author's flag comes from `batchLoadVisibilities` (network) or the gate's `settings` (`?user=`), never from the post's `user` include: `author: f.user` ships that select verbatim, so a column added there lands on every post. `feed_items.location_public` is written but read nowhere (it only means "has a place"). lat / lng ship only in the author's own POST / PATCH responses.
 
 ### Author filter (`?user=<id>`, the app's profile feed)
 
-`/api/feed?user=<id>` returns one person's posts through the SAME projection (likes, tags, session wines with blind redaction, cursor). Only the author set changes: the route gates `resolveProfileViewer(user, viewer)` and must get `ok` (self always is), then uses `[user]` in place of the network. Every other gate result (`gone`, `shell`, `blocked-by-me`) is a 404 — `GET /api/users/:id` is what tells the client which state it is. The network query and the mute filter are skipped: mute is a network-feed filter (`docs/dev/mute.md`), and opening someone's profile is an explicit choice to look at them.
+`/api/feed?user=<id>` returns one person's posts through the SAME projection (likes, tags, session wines with blind redaction, cursor). Only the author set changes: the route gates `resolveProfileViewer(user, viewer)` and must get `ok` (self always is), then uses `[user]` in place of the network. Every other gate result (`gone`, `shell`, `blocked-by-me`) is a 404 — `GET /api/users/:id` is what tells the client which state it is. An `ok` profile whose posts are hidden from this viewer (`gate.sees.posts` false: Check-Ins Visible To) is **200 `{ items: [], nextCursor: null }`**, never 404 (404 means gone to the app); the profile header's `checkinsAudience` carries the why. The network query and the mute filter are skipped: mute is a network-feed filter (`docs/dev/mute.md`), and opening someone's profile is an explicit choice to look at them.
 
 The native app keys it `['feed', 'user', id]` beside the network feed's `['feed']`, so the same post can sit in both caches; every post mutation writes all `['feed', …]` caches (`apps/mobile/src/lib/feedCache.ts`).
 
@@ -66,7 +68,7 @@ Block-pair-adjusted like counts: a like by user X on a feed_item by user Y is in
 
 ## S3 reclaim on edit/delete
 
-Rating images live at `wines/ci_<userId>_<keyId>.<ext>` keyed by `Date.now()` at POST and at PATCH (so a PATCH that replaces an image always uses a different key). PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
+Rating images live at `wines/ci_<userId>_<ts>_<nanoid(12)>.<ext>` (`Date.now()` + a random suffix since 2026-11-11: the bucket is public, so a key must not be guessable; older photos keep the guessable shape, and any URL already seen stays fetchable) at POST and at PATCH (so a PATCH that replaces an image always uses a different key). "Had a sip" copies to the same shape. PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
 **The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — ban-tx wipe, account deletion, and the engagement-deletion cascade (`lib/engagementCascade.ts`) — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes. ("Had a sip" COPIES bytes via S3 `CopyObjectCommand`; it doesn't reclaim, and the new check-in owns its own copy outright.)
 
@@ -76,7 +78,7 @@ Rating images live at `wines/ci_<userId>_<keyId>.<ext>` keyed by `Date.now()` at
 
 A logged-in viewer who follows the source author can clone a standalone feed_item (`+ had a sip` button on feed cards and `/u/<id>`). Wire field is `copyFromCheckinId` (name preserved for client/URL compatibility; semantics shifted to a `feed_items.id` of `kind='standalone'`).
 
-Server resolves the source feed_item, rejects unless: `kind === 'standalone'` AND source has a rating AND `viewerCanSeeAuthor(viewerId, source.userId)` returns true AND the viewer follows the author AND `source.userId !== viewerId`. All failure branches collapse to a single generic `400` to avoid enumeration of per-id existence / ownership / follow state.
+Server resolves the source feed_item, rejects unless: `kind === 'standalone'` AND source has a rating AND `viewerCanSeePosts(viewerId, source.userId)` returns true (the post gate: profile tier + Check-Ins Visible To) AND the viewer follows the author AND `source.userId !== viewerId`. All failure branches collapse to a single generic `400` to avoid enumeration of per-id existence / ownership / follow state.
 
 On success, mints a FRESH wine + rating + feed_item + rating_image row in the new model (Path B per `proposals/rewire.md` §5). No shared wine identity — the no-dedup non-goal applies here too. Source image priority: the rating's first attached image (the user's tasting photo) falling back to the wine's canonical bottle shot. Bytes are S3-copied server-side into a fresh user-owned key; the image URL itself is never trusted from the client.
 

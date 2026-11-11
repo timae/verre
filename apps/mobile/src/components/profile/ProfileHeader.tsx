@@ -290,14 +290,19 @@ export function ProfileHeader({
     </>
   );
   const editing = !!edit?.draft;
-  const t = profile.tiles;
-  const tile = (key: TileKey, label: string) => ({
-    label,
-    count: compactCount(t[key].count),
-    imageUrl: t[key].imageUrl,
-    // Inert without a photo to choose from (the automatic photo is the latest
-    // pickable one, so none shown = none pickable).
-    onLongPress: edit && t[key].imageUrl ? () => edit.onTile(key) : undefined,
+  // Only the tiles the owner shows this viewer (step 4: an absent key is a
+  // hidden tile, never a zero); the rest share the row.
+  const tiles = TILE_LABELS.flatMap(([key, label]) => {
+    const t = profile.tiles[key];
+    if (!t) return [];
+    return [{
+      label,
+      count: compactCount(t.count),
+      imageUrl: t.imageUrl,
+      // Inert without a photo to choose from (the automatic photo is the
+      // latest pickable one, so none shown = none pickable).
+      onLongPress: edit && t.imageUrl ? () => edit.onTile(key) : undefined,
+    }];
   });
   const stat = (
     <View pointerEvents={editing ? 'none' : 'auto'} style={editing ? { opacity: 0.35 } : null}>
@@ -307,10 +312,7 @@ export function ProfileHeader({
   const below = (
     <>
       <Bio profile={profile} own={own} edit={edit} />
-      <PhotoTiles
-        dimmed={editing}
-        tiles={[tile('impressions', 'Impressions'), tile('moments', 'Moments'), tile('cravings', 'Cravings')]}
-      />
+      <PhotoTiles dimmed={editing} tiles={tiles} />
       {own ? null : (
         // .yo-frow — "N in common" faces + names, the follow button right.
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
@@ -700,6 +702,10 @@ export function NoticeBox({ text, action }: { text: string; action: React.ReactN
     </View>
   );
 }
+
+const TILE_LABELS: ReadonlyArray<readonly [TileKey, string]> = [
+  ['impressions', 'Impressions'], ['moments', 'Moments'], ['cravings', 'Cravings'],
+];
 
 // .yo-emptyfeed — quiet block under the tiles when there are no posts.
 export function EmptyPosts({ title, body }: { title: string; body?: string }) {

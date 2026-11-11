@@ -123,12 +123,14 @@ export async function getFeed(cursor?: string | null, userId?: number | null): P
 export async function setFeedItemLike(
   feedItemId: number,
   liked: boolean,
-): Promise<{ liked: boolean; count: number }> {
+): Promise<{ liked: boolean; count?: number }> {
   const res = await apiFetch(`/api/feed-items/${feedItemId}/like`, {
     method: liked ? 'POST' : 'DELETE',
   });
   if (!res.ok) await throwApiError(res);
-  return (await res.json()) as { liked: boolean; count: number };
+  // `count` is absent when you take your like off a post now hidden from you
+  // (the server's open unlike path): keep the optimistic count.
+  return (await res.json()) as { liked: boolean; count?: number };
 }
 
 // POST /api/checkins — create a standalone check-in (the mobile create form;

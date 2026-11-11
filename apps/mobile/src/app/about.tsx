@@ -38,7 +38,7 @@ export default function About() {
       <VBar title="About" />
 
       <SetGroup>
-        <SetNav icon="info" label="Attributions" onPress={() => router.push(legalHref(mount, 'attributions'))} />
+        <SetNav icon="info" label="Attributions" onPress={() => router.push(legalHref(mount, 'attributions'), { dangerouslySingular: true })} />
       </SetGroup>
 
       <VText variant="caption" color="inkFaint" style={{ textAlign: 'center', marginTop: space.xs }}>

@@ -18,7 +18,19 @@ export const DEVICES_KEY = ['me', 'devices'] as const;
 // Profile Visible To: the server's four tiers (lib/profileVisibility.ts).
 // Friends = mutual follows. `fofEnabled` only applies to the two strict tiers.
 export type ProfileVisibility = 'public-internet' | 'public-users' | 'public-followers' | 'public-mutual';
-export type VisibilitySettings = { visibility: ProfileVisibility; fofEnabled: boolean };
+// Check-Ins Visible To (step 4): null = Same as Profile, else a stricter
+// audience for your posts; the stricter of the two always wins, and an
+// explicit choice never uses Friends of Friends. Only Me = a private diary.
+export type CheckinVisibility = 'public-users' | 'public-followers' | 'public-mutual' | 'only-me';
+export type VisibilitySettings = {
+  visibility: ProfileVisibility;
+  fofEnabled: boolean;
+  checkinVisibility: CheckinVisibility | null;
+  showCravings: boolean;
+  showMoments: boolean;
+  showLocations: boolean;
+};
+export type VisibilityChanges = Partial<VisibilitySettings>;
 
 export async function getVisibility(): Promise<VisibilitySettings> {
   const res = await apiFetch('/api/me/visibility');
@@ -26,11 +38,26 @@ export async function getVisibility(): Promise<VisibilitySettings> {
   return res.json();
 }
 
-// 🔒 The PATCH REPLACES both fields (a missing fofEnabled is stored false), so
-// every caller sends both.
-export async function patchVisibility(body: VisibilitySettings): Promise<void> {
-  const res = await apiFetch('/api/me/visibility', { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify(body) });
+// 🔒 A COMPARE-AND-SET: `expected` = the six as last read, `changes` = only
+// what this save changes. 200 → `{ ok: true, current }` (also when the change
+// was already there: a retry whose first attempt committed); 409 → `{ ok:
+// false, current }`, the server's settings moved since `expected` and nothing
+// was written. Anything else throws (ApiError carries no body, so the 409's
+// `current` is read here). `current` is null only from a server that predates
+// the shape: re-read.
+export async function patchVisibility(
+  expected: VisibilitySettings,
+  changes: VisibilityChanges,
+): Promise<{ ok: boolean; current: VisibilitySettings | null }> {
+  const res = await apiFetch('/api/me/visibility', { method: 'PATCH', headers: JSON_HEADERS, body: JSON.stringify({ expected, ...changes }) });
+  if (res.status === 409) {
+    const body = await res.json().catch(() => null);
+    if (body?.current) return { ok: false, current: body.current as VisibilitySettings };
+    await throwApiError(res);
+  }
   if (!res.ok) await throwApiError(res);
+  const body = await res.json().catch(() => null);
+  return { ok: true, current: (body?.current as VisibilitySettings | undefined) ?? null };
 }
 
 // Your own lists, newest first. A muted user who blocked you is left out

@@ -44,25 +44,6 @@ export async function authorBlocksViewer(viewerId: number, authorId: number): Pr
   return row !== null
 }
 
-// Either direction. The fast-path primitive used by viewerCanSeeAuthor
-// to short-circuit visibility resolution. The function name suggests
-// order-independence — the implementation MUST OR both directions; a
-// refactor that "optimises" to a single composite-PK lookup silently
-// drops one direction.
-export async function anyBlockBetween(a: number, b: number): Promise<boolean> {
-  if (a === b) return false
-  const row = await prisma.userBlock.findFirst({
-    where: {
-      OR: [
-        { blockerId: a, blockedId: b },
-        { blockerId: b, blockedId: a },
-      ],
-    },
-    select: { blockerId: true },
-  })
-  return row !== null
-}
-
 // Block-pair sets for the viewer, both directions. Used by feed,
 // search, profile list filters to drop pair-edges in one pass.
 // `blockedByMe`: users the viewer has blocked (viewer is blocker).

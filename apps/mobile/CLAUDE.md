@@ -453,13 +453,13 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Aroma READ**: `AromaReadChips` (`scoring/aroma/AromaReadChips.tsx`) — read-only grouped chips (displayOrder + AromaChip) for someone's stored selections; feed impression detail now, further native read surfaces reuse it. The `lead` word prop was REMOVED (fixes round 2026-07-13 — the feed detail carries a section title instead). Pass `collapse` for the rating page's overflow behaviour: two lines via the shared width packer (`packChips`/`ChipMeasurePass`/`MoreChipsPill` in `parts.tsx`, also used by `SelectedChipsRow`), tail behind the SAME "+N more" pill that opens a read-only bottom sheet — pass `overflowSheetStack="push"` when hosted inside another sheet, and `overflowPillOnSurface` when the row itself sits on a sheet's `surface` so the pill swaps only its fill to `bg` instead of disappearing surface-on-surface. Optional `onPressAroma(selection, rect)` adds anchored read-side inspection without changing the canonical badge. ⭐Read badges are COMPACT: `AromaReadChips` passes `vPad 0` (inner padding 0 + the inherited 23pt label line via `badgeVMetrics`; Simon 2026-07-13) to every chip + pill it renders — write surfaces keep the 4.5 default; don't override per call site. The WEB has its own twin (`components/ui/AromaReadChips.tsx`, PR D — no shared RN/web layer). No input, no refine — mutations only through AromaInput.
 - **Aroma input (descriptor layer, PR B)**: `scoring/aroma/` — `AromaInput` (the 02e·11 search-first section on the impression screen: chips + search field + the INLINE CanvasPicker right under it — a live query swaps the canvas for the suggestions + refine row, an empty query brings it back (Simon 2026-07-17 — supersedes the browse button + BrowseSheet entry point); controlled `AromaSelection[]`, local-until-commit), `parts.tsx` (`AromaChip` — THE aroma badge everywhere: the design's `.badge` anatomy per Simon's 2026-07-10 ruling — family-tint fill + `readableSolid` words (the 100% palette colour where it clears 3:1 on the fill, pulled toward ink ONLY past that — supersedes the earlier bare-solid-words + tintedInk iterations); `focused`/'solid'-bumped fills = SOLID family fill + `inkOn`-picked label — ⚠️ but an ARMED SEARCH RESULT no longer uses it (Simon 2026-07-12, ADR-0008 addendum): armed keeps its RESTING colours and the OTHER results mute (`muted`) — contextual focus, chips never self-recolour; `focused` remains the picker-cell/solid vocabulary; Pronounced border = `readableBorder` (readable, floored at 45% colour share so clay never reads white), the label ink on solid fills; fills route through `aromaTint.ts` `aromaFillRatio` + words/borders through `readableSolid`/`readableBorder` — keep all three on any new family-tinted surface; genuinely weak palette values are still the PALETTE's to fix (punch-list printed by aroma-pickers-units.ts); `ModifierRail`, `PronouncedRow`, `ModifierPopup` anchored refine, `useAromaOps` — every mutation re-gated + pair-precise, `canonicalPair` — re-target after promoted rewrites, `useTapOrDouble`, `usePendingAdd` — the pickers' armed modifier+Pronounced pair committed as one add, `RefineAddRow`/`ModifierSelectButton`/`PronouncedToggle` — THE shared refine row (search block + Map/Canvas/Rings inline + List via the sheet footer), `CapHint`, `AromaCrumbs` — the drill breadcrumb shared by Rail/Canvas/List), `SelectionSheet` ("+N more" overflow, cap-aware sizing), `BrowseSheet` (NO production entry point since the inline-canvas ruling — kept as the five-picker lab: segmented control, Map/Rings/Rail/Canvas/List; added-badges strip w/ refine popup; ONE always-enabled scroll (gorhom latches scrollEnabled from first render — no per-variant toggle), content-pan on so pull-down works, stage pans win by activating first), `RailPicker`, `RingsPicker` (W4, the mock's OVERSIZED-CROP geometry — the crop IS the design; NO fisheye: even wedges always, ONE static layout per commit for wedges+labels so turning is pure rotation; full pick name reads in the passive HUB as plain wrapped text, never TextPath; Add/refine = the shared RefineAddRow below the stage; every gesture end snaps synchronously to a detent, taps = real Gesture.Tap raced with the pan; labels fit-or-hide inside the visible window. ⚠️ rnsvg TextPath + animatedProps on its referenced Path is BROKEN on device — text draws along mount-time geometry and end-clips; never reintroduce), `MapPicker` (3-level zoom; territories = recursive balanced cuts — families + groups guaranteed CONNECTED and compact; live pinch-between-levels w/ focal-point scale + re-base; momentum pan) + `CanvasPicker` over `hexStage.tsx` (shared axial-hex SVG stage: pannable clamped translate w/ withDecay momentum — pan DISABLED when the cluster fits so the sheet keeps its drags (edge-fade affordance was tried and REJECTED on device — don't reintroduce); per-cell a11y button+selected state; strict flat family fills; armed cell = search-focus treatment: grow + others mute; Canvas sizes its stage TO the cluster (capped) so small combs don't float in empty bands; the PURE lattice/syllable-wrap/clamp math lives in `hexMath.ts` and the Map's territory cuts in `mapLayout.ts` — both node-importable, regression-driven by `.local/test-env/scripts/aroma-pickers-units.ts`; per-theme fill strength in `aromaTint.ts` — clay boosts the family-colour share, see the badge note below), `ListPicker` (drill list with a Tinted/Plain/Cards look switcher — Tinted = badge anatomy rows, Plain = People-sheet rows w/ hairline separators, Cards = the SetGroup/SetNav settings anatomy; family colour stays as dot/mark + armed tint on the non-tinted looks; round mark = any-tier arm; its refine row is PINNED to the sheet bottom via the Sheet's gorhom `footerComponent`). **Design spec-of-record: `docs/design/decisions/0008-aroma-input-search-first.md`** (variant pick, chip anatomy, Pronounced glyph/border split, ordering, add feedback, keyboard scroll) + `docs/dev/proposals/aroma/aroma-layer.md` (data semantics). Icons: `grid`, `pronounced` (reusable "standout" mark). `Button` gained `titleLines`; `SheetSearchField` gained `onFocus`/`onBlur`.
 - **Role chip / badges**: `RoleChip` + `BadgePill` (`moments/RoleChip.tsx`) — host/cohost/provider text pill and the shared small badge primitive. Use `BadgePill` for People/settings role tags instead of reimplementing badge centering, line-height, or tone math.
-- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup` (`flush` = no bottom margin, for the You settings pages; it draws the hairline BETWEEN its rows, `.setnav + .setnav`, and rows draw none: a line on the first row doubled the card's border, fixed 2026-11-11), `SetNav` (+ `subtitle`, `value`, `leading` node in the icon's place, `accent` = label + icon in the accent (beside `critical` red), `trailing` node or `'none'` in the chevron's place (a row with a trailing NODE is not one accessible element, so its button stays reachable), `busy` = a spinner there while the row stays one busy button; `icon` optional), `GlassButton` (over-cover round glass; `bottom` anchors it bottom-right), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (switch + PRO badge + reason; the moment settings' `.trow`), `SettingsScreenFallback` (bar + spinner or retryable `ErrorState`; `errorTitle`). You settings pages (04·4): `SetPage` (`.yo-setbody`: bar + sections 26 apart, pill clearance, keyboard-aware; a sticky-footer page passes `footer` + `bottomPad`, like Change Password), `SetSection` (`.yo-sgrp`: uppercase label + content), `SetSwitch` (`.yo-stog`: a switch row inside a group; `soon` locks it), `MeCard` (`.yo-mecard`). `SelectField` gained `disabled`; give it an `accessibilityLabel` that carries the value (`Type: Wine`), since the label replaces the field's text for VoiceOver.
+- **Settings kit**: `settingsParts.tsx` — `ReadCard`, `SetGroup` (`flush` = no bottom margin, for the You settings pages; it draws the hairline BETWEEN its rows, `.setnav + .setnav`, and rows draw none: a line on the first row doubled the card's border, fixed 2026-11-11), `SetNav` (+ `bare` = the cardless settings standard: no card padding / press fill (a dim), label `body` regular (an `action` row MEDIUM, like the rows' trailing `rowAction` buttons: Remove All Other Devices, Delete Account), value `body`, ~12 between rows, `flush` = none above (Privacy-style pages, Account since 2026-11-11), `subtitle` (the helper size, `small`, since 2026-11-11), `value`, `leading` node in the icon's place, `accent` = label + icon in the accent (beside `critical` red), `trailing` node or `'none'` in the chevron's place (a row with a trailing NODE is not one accessible element, so its button stays reachable), `busy` = a spinner there while the row stays one busy button; `icon` optional), `GlassButton` (over-cover round glass; `bottom` anchors it bottom-right), `SettingsFooter` (sticky Discard|Save), `ToggleRow` (THE switch row, moment settings + You Privacy: ruled 2026-11-11, label `body` REGULAR, helper `small` (13) ink-soft right under it (no margin), reason = `SetNote`, rows ~12 apart (`ROW_GAP`), the OFF track a NEUTRAL ink at 18% (`alpha(theme.ink, 0.18)` as `trackColor.false` + `ios_backgroundColor`; iOS's default grey vanished on Apricot, an accent-tinted one read as "half on"), the helper pulled up (`HELPER_PULL` -4: ~18 baseline to baseline), the switch inset `CHEVRON_TIP_INSET` (6) so it ends where a chevron's visible tip ends (ruled 2026-11-11); `subtitle` optional, `flush` = no top padding (first row under a `SetTitle`), `busy` = only the switch is inert while a save is in flight, `disabled` also fades the text), `SetTitle` (a settings section title: `bodyLg` 600, -0.01em, 6 above its first row; not the uppercase label), `ChoiceRow` (a cardless choice row: label `body` regular, value `body` ink-soft, chevron 18 ink-faint; opens a sheet or a page; no `onPress` = an inert value row, no chevron; `helper` = a line under the label; `dropdown` = it opens a choices sheet, chevron DOWN (a page: right); `icon` = a leading glyph), `PersonRow` (a cardless person row: 36 initials disc + name + a trailing button; Blocked / Muted), `SetNote` (`small` 500 accent: a locked reason, "Limited by …"), `SettingsScreenFallback` (bar + spinner or retryable `ErrorState`; `errorTitle`). You settings pages (04·4): `SetPage` (`.yo-setbody`: bar + sections 26 apart (`gap`; a page of `SetTitle` sections passes 32, the design's space above a section title), pill clearance, keyboard-aware; a sticky-footer page passes `footer` + `bottomPad`, like Change Password), `SetSection` (`.yo-sgrp`: uppercase label + content), `MeCard` (`.yo-mecard`). `SelectField` gained `disabled`; give it an `accessibilityLabel` that carries the value (`Type: Wine`), since the label replaces the field's text for VoiceOver.
 - **Theme preview**: `ThemePreviewProvider` (`theme/index.tsx`) re-themes a subtree (`theme` AND `themeKey`; the real `choice`/`setChoice` pass through). `ThemeSwipePicker` (`settings/ThemeSwipePicker.tsx`) is the design's 01 swipe-to-theme, reusable for onboarding (caller supplies the header + `onUse` / `onUseInSystem`; `ThemeProvider` keeps the light/dark `systemThemes` pair).
 - **Sign-out confirm**: `lib/signOutConfirm.ts` `confirmSignOut(who, setBusy)` — THE sign-out (Settings → Sign Out, Account → This Device): names the account, goes through Better Auth. Don't hand-roll another.
 - **Error copy**: `lib/errorCopy.ts` `errorText` (a failed write's alert body: a 401 → `SIGNED_OUT_TEXT` "You’re signed out. Sign in again." (ruled 2026-11-11), any other 4xx → the server's copy, else the connection line) + `sentence`. Don't re-declare them per screen.
-- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `FieldGroup` (`.field-group`: the 600 small label over a control that has none of its own: SelectField, the create category trigger, the bringer field), `OptionSheet` (the short check-list picker sheet), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto` (+ `pickPhotoOrRemove(label)`: the same iOS ActionSheet with a destructive Remove row), `NotesField` `maxLength`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
-- **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile. Header-screen props: `fullBleed` (never-inset + the RNS dead-end; key the list on it), `refreshOffset` / `refreshTint`, `inert` (rows + footer at 0.35, no touches, scroll stays), `bottomInset` (≥ `TAB_BAR_CLEARANCE`), `scrollHandle` (`scrollToOffset`, in the list AND the error layout); its error state renders the header inside a scroll view.
-- **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` / `TileCoverSheet` / `ProfileEditParts` (`LongPressable`, `InlineField`, `EditBar`) / `coverGeometry` (`profile/`) — see § You profile.
+- **Form widgets + image pipeline**: `momentForm.tsx` — `Disclosure`, `DateField`, `NotesField`, `SelectField`, `FieldGroup` (`.field-group`: the 600 small label over a control that has none of its own: SelectField, the create category trigger, the bringer field), `OptionSheet` (the short check-list picker sheet; an option may be `disabled`: faint label, announced disabled, no press, with an optional per-option `hint` (`small`) saying why, kept readable), `CountrySheet` (fixed-snap searchable country picker — deliberately NOT an OptionSheet, see its comment), `fitCover`/`pickCover`/`pickPhoto` (+ `pickPhotoOrRemove(label)`: the same iOS ActionSheet with a destructive Remove row), `NotesField` `maxLength`, `MAX_COVER_BYTES`/`MAX_WINE_IMAGE_BYTES` (⚠️ per-SURFACE caps: session wine images cap LOWER than covers via sanitizeImage 1.5MB — but the standalone check-in photo goes through the lib/s3 pipeline and uses `MAX_COVER_BYTES`; see the notes in add.tsx + feed/check-in/).
+- **Post list**: `FeedList` (`feed/FeedList.tsx`) — THE list of posts (paging, drain, focus/pull refresh, cards, like, owner edit/delete) for the Feed tab AND every profile. Never build a second one; see § You profile. Header-screen props: `fullBleed` (never-inset + the RNS dead-end; key the list on it), `refreshOffset` / `refreshTint`, `inert` (rows + footer at 0.35, no touches, scroll stays), `bottomInset` (≥ `TAB_BAR_CLEARANCE`), `scrollHandle` (`scrollToOffset`, in the list AND the error layout), `postsHidden` (a node that REPLACES the posts under the header whatever the cache holds: no spinner, error state or paging; the list stays mounted so the header + hero scroll stay); its error state renders the header inside a scroll view.
+- **Profile**: `ProfileScreen` / `ProfileHeader` / `PhotoTiles` / `TileCoverSheet` / `ProfileEditParts` (`LongPressable` (`fill`: the child fills a box sized by its parent), `InlineField`, `EditBar`) / `coverGeometry` (`profile/`) — see § You profile. `PhotoTiles` takes 0–3 tiles: the ones shown share the row at the three-up 4:5 height (a hidden sizer row, no measuring), none → no row.
 - **Header**: `VBar` (`VBar.tsx`) — the in-flow variant-B bar (back + left title + right slot). All pushed in-flow screens; `back={false}` for a tab root; `titleShown` turns the title into a SCROLL title (fades in once content scrolls under the bar), `titleLeading` puts a node before it.
 - **Bar title**: `BarTitle` + `useBarTitleProgress` (`VBar.tsx`) — THE bar title (subhead 600, `topBar` surface, ink or white on a photo; fade + 4pt rise over dur-2 off a 0→1 `Animated.Value`). VBar, the moment cover bar and the rate-impression bar all render through it; a bar whose background fades with the title (the moment cover bar) drives both from the same `useBarTitleProgress` value. Never restate the title style or the fade in a new bar.
 - **Bottom nav**: `PillTabBar` (`PillTabBar.tsx`) — the floating-pill tab bar (`.tabbar-float`, ADR-0006) with the drag-lens (hold ≈180ms → a real Liquid Glass lens rides the bar; release commits; landing on the current tab is NOT input). Rendered via the tabs layout's `tabBar` prop; absolute overlay at `TAB_BAR_BOTTOM` (21pt from the physical screen edge): content clears it with `TAB_BAR_CLEARANCE` alone, never `+ insets.bottom`. ⚠️ The glass layering in that file is LOAD-BEARING physics learned over a day of device checks — read the in-file header + ADR-0006 and re-run the dev-gallery GLASS LABS (`/you/dev-gallery`) before touching any glass property. Don't add per-screen nav bars.
@@ -953,7 +953,7 @@ transparent presentation, so the feed still shows through while `index` opens.
   answers, export-compliance confirmation, and TestFlight beta review details.
   `ITSAppUsesNonExemptEncryption=false` is already set in `app.json`.
 
-## You profile (handoff 04, steps 1 to 3)
+## You profile (handoff 04, steps 1 to 4)
 
 As-built 2026-11-09 (plan `.local/you-profile/step1-plan.md`). Your own profile
 is the You tab's root; someone else's is `feed/u/[id]` (mirrored `you/u/[id]`),
@@ -1112,6 +1112,15 @@ Plan `.local/you-profile/step3-plan.md` (rulings P1–P5, Q-A…Q-F, T1–T5).
 Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
 (native This Device / revoke-all / device label), `docs/dev/mute.md`.
 
+- 🔒 **Every settings push is `dangerouslySingular`** (hub rows, Account,
+  Privacy → Blocked / Muted, Help & About → Attributions, Edit Profile):
+  react-native-screens 4.30 no longer sinks touches during a push on iOS 26,
+  so a double tap opened the page twice (device pass 2026-11-11; the same
+  fix as the moments list). EXCEPT the profile ⋯ → Settings entry: a plain
+  push (the menu closes on the first tap, so it can't double-push), because
+  from the Feed tab it lands on the You stack (`/you/settings`), where
+  singular would pull an open Settings forward over a deeper page (review
+  2026-11-11).
 - **Routes**: `you/settings/index.tsx` (hub) + `privacy`, `blocked`, `muted`,
   `account`, `change-email`, `change-password`, `appearance`; every one
   mirrored under `feed/[id]/settings/` and `you/[id]/settings/` (one-line
@@ -1128,8 +1137,8 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   `app.json`'s buildNumber is stale under EAS remote versioning).
 - **Privacy**: Profile Visible To (`SelectField` + `OptionSheet`, the four
   tiers, ruling P1) + Friends of Friends (Followers / Friends only).
-  🔒 Every PATCH sends BOTH fields (the server replaces them; the stored FoF
-  rides along while its switch is hidden), optimistic, one at a time
+  (Step 4 replaced the "every PATCH sends BOTH fields" rule with the
+  compare-and-set below.) Optimistic, one at a time
   APP-WIDE (two PATCHes can commit in either order, and Privacy can be
   mounted twice, on the You stack and on an opened post's in another tab: a
   mutation `scope` queues saves in tap order and `useIsMutating` disables
@@ -1139,23 +1148,31 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   own read before another save. After each PATCH a
   read still in flight is CANCELLED and the cache set to what the server now
   holds before the re-read (a focus refetch that started mid-PATCH carries
-  the old tier, and a save made from it would send it back). ⚠️ Known limit,
-  DEFERRED TO STEP 4 (ruled 2026-11-11; step 4 adds fields to the same
-  PATCH): a PATCH the phone gave up on (12 s) can still be running on the
-  server, and the re-read can return the old value before it commits, so a
-  second save may land in either order. It needs a multi-second stall
-  before the write (the interactive transaction itself is capped near 7 s by
-  Prisma's defaults). The fix is a server compare-and-set: the PATCH names
-  the value it replaces and is refused (409) when that is stale. Check-Ins Visible To and the two On My
-  Profile switches are locked "Soon" (step 4). Blocked / Muted rows: count +
-  chevron; "No one" (inert) only after a successful empty fetch; inert while
-  loading; tappable on error. Queries `['me', 'visibility' | 'blocks' |
+  the old tier, and a save made from it would send it back). The step-3
+  known limit (a PATCH the phone gave up on, still running on the server,
+  landing after the re-read) is CLOSED by step 4's compare-and-set: that
+  PATCH's `expected` no longer matches, so it is refused (409) instead of
+  overwriting. Blocked / Muted rows: count +
+  chevron; "No one" + chevron after a successful empty fetch (it opens the
+  empty list, ruled 2026-11-11); inert while loading; tappable on error. Queries `['me', 'visibility' | 'blocks' |
   'mutes']` (`lib/api/settings.ts`).
 - **Blocked / Muted** (`components/settings/PeopleListPage.tsx`): initials
   disc + name + tertiary Unblock / Unmute; Unblock confirms, Unmute acts; the
   row leaves on success, then the person's header, the network feed (and,
   for an unblock, YOUR header) refetch in place.
-- **Account**: Email (→ Change Email: New Email + Current Password,
+- **Account** (since 2026-11-11 on the cardless settings standard, as
+  Privacy: `SetTitle` sections "Email and Password" / "This Device" / "Other
+  Devices", `SetNav bare` rows; per the 2026-11-11 design proposition
+  (`.local/Screenshot 2026-11-11 at 21-15-50 Vero handoff files.png`):
+  glyphs mail / key / phone · tablet · laptop; ONE detail line ("Active now";
+  others "Switzerland · 15 min ago", "< 5 min ago" when fresh; the sign-in date dropped, ruled
+  2026-11-11); other devices' action is REMOVE (ruled,
+  replacing "Disconnect" below), this device's Sign Out stays red; buttons
+  15pt MEDIUM (`Button size md rowAction`: a row's trailing action, calmer
+  than the semibold default; the Blocked / Muted lists' Unblock / Unmute
+  too); a long value (the email) truncates in the MIDDLE with max 55% width; "Remove All Other Devices" is the LAST accent row
+  of Other Devices (the touching-cards layout below is superseded); Delete
+  Account alone at the end): Email (→ Change Email: New Email + Current Password,
   ruled 2026-11-11; the same PATCH as the web, but from an app caller the
   server requires the password and a `z.email()`-valid address (Better
   Auth's sign-in rule); no confirmation mail, there is no email pipeline; a
@@ -1164,19 +1181,14 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   (ruled 2026-11-11): THIS DEVICE (the server's `isCurrent`, now set for the
   app's own row; "Active now"; its Sign Out, in red (`Button critical`), is the hub's plain logout, the
   same confirm via `lib/signOutConfirm.ts`, no password: ruled 2026-11-11,
-  replacing T3's button-less row), then OTHER DEVICES: Disconnect All Other
-  Devices, an accent (orange) action row like the per-device Disconnect
-  buttons (`SetNav accent`), in its OWN fully rounded card TOUCHING the
-  list's card (separate but connected), the list overlapping it by 1 pt so
-  the shared edge is one border, not two (ruled, after Telegram's style). Another device's action is
-  DISCONNECT (the web panel's word, ruled 2026-11-11); only your own is
-  Sign Out (server order, most recently
-  active first; Disconnect each). Every row: last active (the web panel's
-  scale for web AND app rows, both 5-minute precise: Active recently, 5-minute
-  steps, hours, days, then the date), the country when
-  known, and a second line "Signed in <date>" (the web panel's facts; the
-  country comes from the sign-in IP, so local LAN sign-ins have none),
-  Delete Account. The three password-gated actions prompt with
+  replacing T3's button-less row), then OTHER DEVICES (server order, most
+  recently active first; each with REMOVE, then Remove All Other Devices
+  last: see the step-4 restyle at the top of this bullet, which superseded
+  the step-3 touching cards, the "Disconnect" wording and the second
+  "Signed in" line). The detail line: the country when known (from the
+  sign-in IP, so local LAN sign-ins have none) and last active on the web
+  panel's 5-minute scale ("< 5 min ago", 5-minute steps, hours, days, the
+  date), then Delete Account. The three password-gated actions prompt with
   `Alert.prompt` (`secure-text`; 🔒 the password goes straight into the JSON
   DELETE body, never logged or kept; an empty one counts as Cancel, so it
   can't spend a `rl:account` attempt). 403 → "That password isn't right.",
@@ -1233,8 +1245,9 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   stores "<model> · Verre App" at SIGN-IN only, so older rows read "Unknown
   device" until that phone signs in again. Native modules added: expo-device,
   expo-application (a new dev build: `pod install` on the Mac).
-- **Deviations (flagged):** the Privacy switch rows are `SetNav`-based
-  (`.yo-stog` inside a group, per the mock) rather than `ToggleRow`; the theme
+- **Deviations (flagged):** the Privacy switch rows are `ToggleRow`s (the
+  moment settings' style, no card) since step 4, ruled on device 2026-11-11
+  over the mock's `.yo-stog` group; the theme
   demo card + chip drop the mock's 1px border (no-borders ruling); Blocked / Muted are two
   rows (Q-B) where the mock lists people inline; the devices are two groups
   (This Device / Other Devices) where the mock has one list. Your own ⋯ menu drops the
@@ -1243,6 +1256,94 @@ Server side: README (mutes GET, devices for the app), `app/api/auth/CLAUDE.md`
   the two ⋯ menus line up (Add Friends / Share Profile / Settings vs People
   / Share / Settings). Long-press editing on the profile stays (long-press
   comes to moments later).
+
+### Step 4 (privacy that changes what others see), as built 2026-11-11
+
+Plan `.local/you-profile/step4-plan.md` (rulings Q1–Q10, D1–D13). Server
+side: `docs/dev/profile-visibility.md` (post audience, the switches, the
+compare-and-set, the census gate), README.
+
+- **Privacy layout** (ruled on device 2026-11-11, from the design
+  screenshot `.local/Screenshot 2026-11-11 at 19-44-32 Vero handoff files.png`):
+  four `SetTitle` sections (`bodyLg` 600, NOT the uppercase label), rows
+  without cards. **Account Visibility**: `ChoiceRow` "Visible To" (value +
+  chevron → the tier sheet "Account Visible To"), then for Followers /
+  Friends the extended-circle switch, named by the tier: "Include Followers
+  of Followers" ("Also people who follow your followers") / "Include Friends
+  of Friends" ("Also people your friends are friends with") (ruled; ⚠️ the
+  server still admits followers of followers under Friends until the FoF
+  change, `.local/you-profile/fof-tier-build-prompt.md`). **Post Visibility** ("posts" in
+  every copy line of this feature, never "check-ins"; the wire name stays
+  `checkinVisibility`): switch "Same as Account" ("Turn off to
+  share posts with fewer people"; on = the server's null). Turning it off
+  OPENS the sheet "Posts Visible To"; nothing saves until a pick, closing
+  leaves it on. Then `ChoiceRow` "Visible To" (Verre Users / Followers /
+  Friends / Only Me). In the sheet: a choice BROADER than the account is
+  greyed "Change your account visibility first"; the SAME tier is greyed
+  "Same as account visibility", unless the extended circle is on, then it is
+  choosable with "Without friends of friends" (also the row's helper); Only
+  Me never is greyed. 🔒 No contradiction and never wider (design flagged a
+  contradiction; the review found the first rule could WIDEN, both ruled /
+  fixed 2026-11-11; `lib/postAudience.ts`): a choice whose audience EQUALS
+  the account's IS Same as Account (null). Without the extended circle that
+  is any choice as wide as the account or wider; WITH the circle on only
+  Verre Users (an explicit tier never includes the circle, so Followers under
+  Friends + circle is narrower, NOT the same). That exact collapse runs on
+  every save and on display. On an ACCOUNT change, a choice still wider than
+  the account while the circle is on CLAMPS to the account's tier (only
+  narrows); an unrelated save (a Show switch) never touches the choice.
+  Every save starts from what the page SHOWS (`canonical(expected)`), so a
+  stored value displayed as Same as Account stays on when another field
+  changes; the raw `expected` stays the compare-and-set base (review
+  2026-11-11).
+  Pinned against the server's `canViewPosts` for every state × viewer by
+  `.local/you-profile/check-post-audience.mts` (with a negative control).
+  The server gets the same rule on write next (build prompt above). Copy rule (ruled): plain English in sentences ("your account
+  visibility"), never a setting's label mid-sentence. **On My Profile**:
+  Show Cravings ("Others can see what you crave"), Show Moments ("Others can
+  see the moments you joined", NEW, Q5), Show My Locations ("Places on your
+  posts"). Title Case everywhere (the screenshot's sentence case lost to the
+  app rule, ruled). **People** (ruled): two `ChoiceRow`s WITH their glyphs (block, eye-off;
+  re-added by the owner over the design note that they break the label edge),
+  the count or "No one" with a right chevron (both open their list); the
+  Visible To rows are dropdowns (chevron down); their pages are cardless `PersonRow` lists. Spacing (the
+  design): 32 above a section title (`SetPage gap`), 6 under it, ~12 between
+  rows; ~100 extra bottom padding so the last row scrolls clear of the pill.
+- 🔒 **Every save is a compare-and-set** (`patchVisibility(expected,
+  changes)`, `lib/api/settings.ts`): `expected` = the visibility cache READ
+  AT TAP TIME (`queryClient.getQueryData`, never the render closure),
+  `changes` = only the field tapped (a tier change also carries the stored
+  `fofEnabled`, for a pre-compare-and-set server mid-deploy). A synchronous
+  `queryClient.isMutating({ mutationKey: SAVE_KEY }) > 0` guard first
+  (query-core marks the mutation pending before its first await, so a
+  second tap in the same frame is dropped; the render-time `saving` can't
+  see it). 200 → the cache = `current`; 409 → the cache = the server's
+  `current` + "Settings Changed" / "Your privacy settings changed while
+  saving. This is what’s saved now." (copy to confirm at the device pass).
+  Refusals and failures as step 3 (4xx revert; non-4xx `resetQueries` +
+  lock). The queue, the `useIsMutating` lock and the epoch checks stay.
+- **Someone else's profile**: a tile the owner hides is ABSENT from
+  `tiles` (types: every key optional); `PhotoTiles` shares the row among
+  the tiles left at the three-up height (two → halves, one → a wide
+  banner, none → no row; Q6 / Q10). When `checkinsAudience` is present
+  (their Check-Ins Visible To hides the posts from you), the Q3 line
+  ("Follow Lena to see posts" / "Become friends with Lena to see posts";
+  Only Me, and Verre Users (web only), "No posts found", the SAME line a
+  profile with no posts shows, so Only Me isn't named (the missing
+  Impressions tile still shows posts are hidden); no pronouns; ruled
+  2026-11-11) is
+  `FeedList`'s `postsHidden` (`EmptyPosts`), REPLACING the posts whatever
+  the cache holds. Follow / unfollow (`act`'s `posts`) also refetch
+  `['feed', 'user', id]` IN PLACE (`refetchUserFeed`, never invalidate):
+  they can flip what the list shows while the profile stays visible. Your
+  own profile never changes.
+- **Like**: an unlike of a post now hidden from you answers without a
+  count; `toggleFeedLike` keeps the optimistic count then (`count?`).
+- ⚠️ A step-3 dev build crashes on an absent tile key: install the step-4
+  build before opening a profile with a hidden tile.
+- **Deviations (flagged):** Show Moments is new (not in the mock); the
+  "Appear in “in common”" row stays dropped (step 3); hidden tiles
+  disappear and the rest share the row (the mock always shows three).
 
 ## About / Attributions (You tab)
 
@@ -1360,10 +1461,10 @@ place to look before doing Android work:
   `ContextMenu` (iOS-only, see the `@expo/ui` note above). Android needs the
   `@expo/ui/jetpack-compose` equivalent or a fallback long-press affordance.
 
-- **Password re-auth prompts (Settings → Account).** Disconnecting another
-  device, Disconnect All Other Devices and Delete Account ask for the
+- **Password re-auth prompts (Settings → Account).** Removing another
+  device, Remove All Other Devices and Delete Account ask for the
   password through iOS's secure **`Alert.prompt`**, which Android lacks: there
-  the per-device Disconnect buttons render disabled, and Disconnect All Other
+  the per-device Remove buttons render disabled, and Remove All Other
   Devices and Delete Account are "Soon" rows
   (`CAN_PROMPT` in `app/(tabs)/you/settings/account.tsx`). Change Password is
   a full page and works. To close: a small secure-text sheet (a `TextField`

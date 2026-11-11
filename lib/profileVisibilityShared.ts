@@ -39,3 +39,44 @@ export const TIER_LABELS: Record<ProfileVisibility, { title: string; sub: string
   'public-followers': { title: 'My followers',     sub: 'only people who follow me' },
   'public-mutual':    { title: 'Mutual follows',   sub: 'only people I follow back' },
 }
+
+// Check-Ins Visible To (You, step 4): the audience for the owner's POSTS,
+// stored independently of the profile tier and never clamped to it; the
+// stricter of the two wins on read (`canViewPosts`, lib/profileVisibility.ts).
+// NULL (not a member of this union) = Same as Profile. 'public-internet' is
+// never stored (it would equal NULL), and an explicit tier never uses FoF.
+// 'only-me' = a private diary: nobody but the owner sees the posts.
+export type CheckinVisibility = Exclude<ProfileVisibility, 'public-internet'> | 'only-me'
+
+export const CHECKIN_TIER_ORDER: CheckinVisibility[] = [
+  'public-users',
+  'public-followers',
+  'public-mutual',
+  'only-me',
+]
+
+export function isCheckinVisibility(v: unknown): v is CheckinVisibility {
+  return typeof v === 'string' && (CHECKIN_TIER_ORDER as string[]).includes(v)
+}
+
+// The owner's six visibility settings (GET /api/me/visibility, the PATCH's
+// `expected` + `current`, the gate's `settings`). Client-safe: the web form
+// keeps them as its compare-and-set snapshot.
+export interface VisibilitySettings {
+  visibility: ProfileVisibility
+  fofEnabled: boolean
+  checkinVisibility: CheckinVisibility | null  // null = Same as Profile
+  showCravings: boolean
+  showMoments: boolean
+  showLocations: boolean
+}
+
+// Every field, exhaustively (a Record over the keys: a new setting that isn't
+// listed here fails tsc, so the PATCH's compare can't skip it). ⚠️ A NEW
+// field must be optional in the PATCH's `expected` and compared only when
+// sent, or every client built before it (open web tabs, installed apps) 400s
+// on every save.
+const FIELDS: Record<keyof VisibilitySettings, true> = {
+  visibility: true, fofEnabled: true, checkinVisibility: true, showCravings: true, showMoments: true, showLocations: true,
+}
+export const VISIBILITY_FIELDS = Object.keys(FIELDS) as (keyof VisibilitySettings)[]

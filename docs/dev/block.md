@@ -10,8 +10,7 @@ Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invis
 
 ## Authorization chokepoints (`lib/userBlock.ts`)
 
-- `anyBlockBetween(a, b)` — OR'd both directions. Fast-path primitive used by `viewerCanSeeAuthor` to short-circuit visibility resolution.
-- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked).
+- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked). `resolveProfileViewer` runs them before the tier, so every per-pair gate built on it (`viewerCanSeePosts`: like POST, had a sip) inherits the block.
 - `blockPairIds(userId)` — `{ blockedByMe, blockingMe }` Sets, capped at 1000 per direction. Hot-path filter set for feed, search, in-session participant matrix.
 - `setBlock(blockerId, blockedId, mute)` — single sanctioned write path. POST rate-limited 30/h/user; DELETE intentionally uncapped (recovery from a stolen-cookie burst must always work). FK violation swallowed.
 

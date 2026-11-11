@@ -106,37 +106,42 @@ function RevealForm({
       >
         <ToggleRow
           title="Hide Line-up"
-          subtitle="Guests can only see it from the reveal time"
+          subtitle="Guests see the line-up at reveal time"
           value={hasStart && hideLineup}
           onChange={setHideLineup}
           disabled={!hasStart}
-          reason={!hasStart ? 'Set a start time to enable' : undefined}
+          reason={!hasStart ? 'Needs a start time' : undefined}
         />
         {hasStart && hideLineup ? (
-          <View style={{ flexDirection: 'row', gap: 7, marginTop: 10, flexWrap: 'wrap' }}>
-            {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
-              const on = hideMinutes === mins;
-              return (
-                <Pressable
-                  key={label}
-                  onPress={() => setHideMinutes(mins)}
-                  style={{ paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: on ? 'transparent' : theme.rule, backgroundColor: on ? theme.accent : theme.bg }}
-                >
-                  <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>{label}</VText>
-                </Pressable>
-              );
-            })}
-          </View>
+          <>
+            {/* The chips are how long BEFORE the start the line-up appears
+                (revealAt = dateFrom − minutes); ruled 2026-11-11. */}
+            <VText variant="small" color="inkSoft" style={{ marginTop: 10 }}>Reveal before the start</VText>
+            <View style={{ flexDirection: 'row', gap: 7, marginTop: 6, flexWrap: 'wrap' }}>
+              {([['At start', 0], ['15 min', 15], ['30 min', 30], ['60 min', 60]] as const).map(([label, mins]) => {
+                const on = hideMinutes === mins;
+                return (
+                  <Pressable
+                    key={label}
+                    onPress={() => setHideMinutes(mins)}
+                    style={{ paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: on ? 'transparent' : theme.rule, backgroundColor: on ? theme.accent : theme.bg }}
+                  >
+                    <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: on ? theme.accentInk : theme.inkSoft }}>{label}</VText>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
         ) : null}
         <ToggleRow
           title="Blind Tasting"
           proBadge
-          subtitle="Hide each impression until revealed"
+          subtitle="Hides what's tasted until you reveal it"
           note={blind ? BLIND_FEED_REVEAL_NOTE : undefined}
           value={blind}
           onChange={(v) => { setBlind(v); if (!v) setBlindForEveryone(false); }}
           disabled={!pro}
-          reason={!pro ? 'Upgrade to PRO to enable' : undefined}
+          reason={!pro ? 'Needs PRO' : undefined}
         />
         {/* Blind-for-all composes on blind and is NOT pro-gated server-side
             (settings/route.ts; root freemium note) — only flipping a session TO
@@ -144,34 +149,32 @@ function RevealForm({
             already-pro-blind session must be able to toggle this. Keep the PRO
             badge (the mock shows it — it's a premium feature at the session
             level), but never block on `!pro` here. */}
-        <ToggleRow
-          title="Blind for All"
-          proBadge
-          subtitle="Even you cannot see them. You still control reveals."
-          value={blind && blindForEveryone}
-          onChange={setBlindForEveryone}
-          disabled={!blind}
-          reason={!blind ? 'Turn on blind tasting first' : undefined}
-        />
+        {/* Only while Blind Tasting is on (ruled 2026-11-11): it composes on
+            blind, and turning blind off clears it. */}
+        {blind ? (
+          <ToggleRow
+            title="Blind for All"
+            proBadge
+            subtitle="Also hidden from hosts and cohosts. You still choose when to reveal."
+            value={blindForEveryone}
+            onChange={setBlindForEveryone}
+          />
+        ) : null}
         {/* Show who brought each impression — DEFAULT ON. PRO is needed to
             CHANGE it (symmetric gate, mirrors the server). A non-pro caller
             (host OR free cohost) sees it locked at whatever the host set — which
             can be OFF (a pro host hid it, a free cohost now views it). So the
-            locked reason must be STATE-AWARE: "…to hide it" only reads right
-            when it's currently shown; when it's already hidden, a "hide" prompt
-            is nonsense. Neutral "Only PRO hosts can change this" covers both. */}
+            locked reason must read right in EITHER state (a "hide it" prompt is
+            nonsense when it's already hidden): "Needs PRO" covers both, like
+            Blind Tasting's (ruled 2026-11-11). No helper: the title says it. */}
         <ToggleRow
           title="Show Who Brought Each Impression"
           proBadge
-          subtitle="Off keeps who added each impression private"
           value={showProvenance}
           onChange={setShowProvenance}
           disabled={!pro}
-          reason={!pro ? (showProvenance ? 'Upgrade to PRO to hide it' : 'Only PRO hosts can change this') : undefined}
+          reason={!pro ? 'Needs PRO' : undefined}
         />
-        <VText variant="caption" color="inkSoft" style={{ marginTop: 18 }}>
-          Some options need a start time, or a PRO plan. They unlock automatically once they apply.
-        </VText>
       </ScrollView>
 
       <SettingsFooter saving={saving} error={error} onDiscard={onDiscard} onSave={onSave} bottomInset={insets.bottom} />

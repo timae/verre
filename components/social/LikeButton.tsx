@@ -19,7 +19,8 @@ export function LikeButton({ feedItemId, initialLiked, initialCount }: Props) {
     if (res.ok) {
       const data = await res.json()
       setLiked(data.liked)
-      setCount(data.count)
+      // An unlike of a post now hidden from you answers without a count.
+      if (typeof data.count === 'number') setCount(data.count)
     } else {
       // Revert on error
       setLiked(liked)

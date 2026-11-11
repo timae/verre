@@ -237,6 +237,10 @@ So a maintenance file MUST be idempotent and safe to re-run any number of times 
 
 `prisma/migrations/20260515011038_rewire_phase2_data/migration.sql` backfilled the new `feed_items` model from the (then-existing) `checkins` tables. Idempotency was guarded via a `_migration_checkpoints` scratch table — both that table and the source `checkins*` tables were dropped in phase 4 (`20260516125827_rewire_phase4_drop_checkins`). The migration file remains in history for audit; do not re-run it. Re-run / partial-failure recovery within its deploy window: `prisma migrate resolve --rolled-back <migration_name>` was the documented escape hatch. Full deploy story (scale to 0 replicas, push merge commit, Deploio runs `prisma migrate deploy`, scale back up): `docs/dev/proposals/rewire.md` §5 + §6 phase 2.
 
+## Hand-added CHECKs on `users` (visibility)
+
+`profile_visibility_chk` (`20260511120000`) and `checkin_visibility_chk` (`20261111200000_you_profile_step4`: NULL or `public-users` / `public-followers` / `public-mutual` / `only-me`, never `public-internet`) are written by hand: `migrate diff` can't see a CHECK, and `users` is in neither CHECK-snapshot gate (`prisma/session-record-checks.json` is the session tables, the catalog snapshot the catalog's). A change to either union (`lib/profileVisibilityShared.ts`) needs a new migration that replaces the CHECK; the predicate is pinned by `scripts/tests/you-profile-integration.mts` § 14. The app also normalises a corrupt stored check-in value to `only-me` (fail closed), so a CHECK drift hides posts rather than leaking them.
+
 ## Schema notes for future features
 
 Columns that exist in the schema but are not yet wired to UI:

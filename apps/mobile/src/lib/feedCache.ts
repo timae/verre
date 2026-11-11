@@ -1,5 +1,5 @@
 import type { InfiniteData, QueryClient } from '@tanstack/react-query';
-import { FEED_KEY, feedItemId, setFeedItemLike, type FeedItem, type FeedPage } from '@/lib/api/feed';
+import { FEED_KEY, feedItemId, feedKey, setFeedItemLike, type FeedItem, type FeedPage } from '@/lib/api/feed';
 import { profileKey } from '@/lib/api/users';
 import { viewerCacheEpoch } from '@/lib/query';
 import { useSyncExternalStore } from 'react';
@@ -75,6 +75,13 @@ export function refetchFeedCaches(queryClient: QueryClient) {
 // (follow / mute / block) its author set moves; profile lists don't.
 export function refetchNetworkFeed(queryClient: QueryClient) {
   return cancelThenRefetch(queryClient, { queryKey: FEED_KEY, exact: true });
+}
+
+// One person's post list (['feed', 'user', id]) — after a follow / unfollow,
+// which can flip whether their Check-Ins Visible To shows you their posts
+// while the profile itself stays visible.
+export function refetchUserFeed(queryClient: QueryClient, userId: number) {
+  return cancelThenRefetch(queryClient, { queryKey: feedKey(userId), exact: true });
 }
 
 // After a post CREATE: a popped (unmounted) profile list can't show the new

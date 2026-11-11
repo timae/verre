@@ -13,7 +13,7 @@
 export const MOMENT_DEFAULT_SPAN_MS = 48 * 60 * 60 * 1000
 
 export const BLIND_FEED_REVEAL_NOTE =
-  'Feeds and profiles show the names once the moment ends (or 48 h after the start), unless revealed sooner.'
+  'Feeds and profiles show what was tasted once the moment ends (or 48 hours after it starts), unless you reveal it sooner.'
 
 export function momentIsOver(
   dates: { dateFrom: Date | null; dateTo: Date | null; createdAt: Date | null },

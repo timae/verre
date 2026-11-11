@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { nanoid } from 'nanoid'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
@@ -103,10 +104,10 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (feedItem.userId !== userId) return NextResponse.json({ error: 'not found' }, { status: 404 })
     return patchSessionRating(req, feedItem.id, feedItem.sessionId, userId)
   }
-  if (feedItem.kind !== 'standalone' || !feedItem.rating) {
+  // Wrong owner = 404, like a missing id (no post-id existence oracle).
+  if (feedItem.kind !== 'standalone' || !feedItem.rating || feedItem.userId !== userId) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
-  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
   const rating = feedItem.rating
   const wine = rating.wine
@@ -187,8 +188,9 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    // Same key scheme as POST (wines/ci_<userId>_<timestamp>).
-    const keyBase = `wines/ci_${userId}_${Date.now()}`
+    // Same key scheme as POST (wines/ci_<userId>_<timestamp>_<random>): the
+    // bucket is public, so a key must not be guessable.
+    const keyBase = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}`
     const uploaded = await uploadImage(keyBase, imageData).catch(() => null)
     if (!uploaded) {
       // FAIL LOUDLY (2026-07-17): the caller explicitly sent a photo; a 200
@@ -638,10 +640,10 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
       },
     },
   })
-  if (!feedItem || feedItem.kind !== 'standalone' || !feedItem.rating) {
+  // Wrong owner = 404, like a missing id (no post-id existence oracle).
+  if (!feedItem || feedItem.kind !== 'standalone' || !feedItem.rating || feedItem.userId !== userId) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
-  if (feedItem.userId !== userId) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
 
   // Capture URLs BEFORE the cascade fires. Reclaim AFTER commit.
   const urlsToReclaim = feedItem.rating.images

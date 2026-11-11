@@ -14,7 +14,7 @@ import { cleanCountry, cleanUrl } from '@/lib/textSafe'
 import { validateScore, decimalToNumber, normalizeVintageText } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
 import { scrub } from '@/lib/textSafe'
-import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
+import { viewerCanSeePosts } from '@/lib/profileVisibility'
 import { resolveCatalogLink, CatalogValidationError } from '@/lib/catalogWrite'
 
 // Inlined S3 copy — adding a third named export to lib/s3.ts trips a Next
@@ -64,7 +64,8 @@ async function copyImageFromCheckin(sourceUrl: string, userId: number): Promise<
   // anything unusual is rejected before we hand it to S3.
   if (!/^wines\/[A-Za-z0-9_.\-]+$/.test(sourceKey)) return null
   const ext = sourceKey.split('.').pop() || 'jpg'
-  const newKey = `wines/ci_${userId}_${Date.now()}.${ext}`
+  // Random suffix: the bucket is public, so a key must not be guessable.
+  const newKey = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}.${ext}`
   try {
     await _s3.send(new CopyObjectCommand({
       Bucket: _S3_BUCKET,
@@ -138,7 +139,8 @@ export async function POST(req: NextRequest) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    const keyBase = `wines/ci_${userId}_${Date.now()}`
+    // Random suffix: the bucket is public, so a key must not be guessable.
+    const keyBase = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}`
     imageUrl = await uploadImage(keyBase, imageData).catch(() => null)
   } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
     // "had a sip" flow: resolve the source server-side, verify the caller
@@ -181,7 +183,8 @@ export async function POST(req: NextRequest) {
     if (source.userId === userId) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
-    if (!(await viewerCanSeeAuthor(userId, source.userId))) {
+    // The POST gate (profile tier + Check-Ins Visible To), like the like POST.
+    if (!(await viewerCanSeePosts(userId, source.userId))) {
       return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
     const follows = await prisma.follow.findUnique({

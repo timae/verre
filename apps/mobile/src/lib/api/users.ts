@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query';
 import { apiFetch } from '../apiFetch';
 import { throwApiError } from './sessions';
+import type { CheckinVisibility } from './settings';
 
 // Typed fetchers + wire types for a person's profile header (the You profile,
 // 04 step 1) and the relationship writes behind its buttons and ⋯ menu.
@@ -35,7 +36,13 @@ export type FullProfile = {
   viewerMutes: boolean;
   // Absent on your own profile.
   inCommon?: { count: number; faces: ProfileFace[] };
-  tiles: { impressions: ProfileTile; moments: ProfileTile; cravings: ProfileTile };
+  // Step 4: only the tiles this viewer may see. An absent key = hidden by the
+  // owner (Impressions follows Check-Ins Visible To, Moments / Cravings their
+  // Show switches): no count, no photo. Your own profile always has all three.
+  tiles: Partial<Record<'impressions' | 'moments' | 'cravings', ProfileTile>>;
+  // Present only when the owner's Check-Ins Visible To hides their posts from
+  // you (never on your own profile): the "Follow Lena to see posts" line.
+  checkinsAudience?: CheckinVisibility;
 };
 
 export type Profile =

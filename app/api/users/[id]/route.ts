@@ -66,7 +66,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // `?view=header` (the native app): no recent posts — the app reads them
   // from `/api/feed?user=`. The default (web) payload is unchanged.
   const headerView = req.nextUrl.searchParams.get('view') === 'header'
-  const profile = await loadProfile({ userId, viewerId, isFollowing: gate.viewer.followsProfile, recent: !headerView })
+  const profile = await loadProfile({ userId, gate, recent: !headerView })
   if (!profile) return NextResponse.json(
     { error: 'not found' },
     { status: 404, headers: noStore },
@@ -76,9 +76,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // profile view, where the viewer has chosen to look at content.
   const [viewerMutes, extras] = await Promise.all([
     viewerId !== null && viewerId !== userId ? isMuted(viewerId, userId) : Promise.resolve(false),
-    // Additive app-header fields (friendsCount, inCommon, tiles) — full
-    // payload only, never the shell or blocked views. The web ignores them.
-    loadProfileHeaderExtras(userId, viewerId, profile.stats.checkins),
+    // Additive app-header fields (friendsCount, inCommon, tiles,
+    // checkinsAudience) — full payload only, never the shell or blocked
+    // views. The web ignores them. 🔒 `gate` itself is never serialized
+    // (it carries the owner's settings).
+    loadProfileHeaderExtras(userId, gate, profile.stats.checkins ?? 0),
   ])
   const { recentCheckins, recentSessionPosts, ...head } = profile
   // Response varies by viewer (viewerMutes, isFollowing, followsYou,

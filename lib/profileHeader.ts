@@ -1,11 +1,14 @@
 // Native profile header extras (the app's "You" profile, step 1) — additive
 // fields on the FULL (`ok`) GET /api/users/[id] payload. The web ignores them.
 //
-// Visibility gating is the caller's responsibility, exactly like loadProfile:
-// only a `gate.status === 'ok'` viewer may reach this loader.
+// Takes the `ok` gate (REQUIRED, no default — tsc fails a caller that
+// forgets), exactly like loadProfile. 🔒 A tile hidden from the viewer is
+// ABSENT: no count, no photo, no pin, and its queries never run (Impressions
+// follows `sees.posts`, Moments / Cravings the owner's Show switches).
 
 import { prisma } from '@/lib/prisma'
-import { resolveTilePhotos } from '@/lib/profileTiles'
+import { resolveTilePhotos, TILE_KEYS, type TileKey } from '@/lib/profileTiles'
+import type { CheckinVisibility, ProfileGateOk } from '@/lib/profileVisibility'
 
 // `pinned` (own profile only): the photo is the owner's chosen tile cover.
 export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean }
@@ -20,18 +23,26 @@ export type ProfileHeaderExtras = {
   // an anonymous viewer. Scrubbed against block pairs with BOTH the viewer and
   // the profile owner, so nobody either side blocked can surface here.
   inCommon?: { count: number; faces: ProfileFace[] }
-  tiles: { impressions: ProfileTile; moments: ProfileTile; cravings: ProfileTile }
+  // Only the tiles this viewer may see (an absent key = hidden).
+  tiles: Partial<Record<TileKey, ProfileTile>>
+  // The owner's Check-Ins Visible To, present ONLY when it hides the posts
+  // from this viewer (never on your own profile): the app's "Follow Lena to
+  // see posts" line. The one sanctioned output of the gate's settings.
+  checkinsAudience?: CheckinVisibility
 }
 
 const FACES = 3
 
+// `impressionsCount` is only read when the Impressions tile is shown.
 export async function loadProfileHeaderExtras(
   profileId: number,
-  viewerId: number | null,
+  gate: ProfileGateOk,
   impressionsCount: number,
 ): Promise<ProfileHeaderExtras> {
+  const viewerId = gate.viewer.id
   const withInCommon = viewerId !== null && viewerId !== profileId
   const own = viewerId !== null && viewerId === profileId
+  const shown = TILE_KEYS.filter(k => (k === 'impressions' ? gate.sees.posts : gate.sees[k]))
   const tile = (count: number, p: { imageUrl: string | null; pinned: boolean }): ProfileTile =>
     own ? { count, imageUrl: p.imageUrl, pinned: p.pinned } : { count, imageUrl: p.imageUrl }
   const [friends, inCommonRows, moments, cravings, photos] = await Promise.all([
@@ -72,18 +83,25 @@ export async function loadProfileHeaderExtras(
       : Promise.resolve(null),
     // Current memberships (the Moments-tab predicate: live moment, not
     // kicked), NOT the monotonic lifetime counter.
-    prisma.$queryRaw<{ n: number }[]>`
-      SELECT COUNT(*)::int AS n
-      FROM session_members sm
-      JOIN sessions s ON s.code = sm.session_code
-      WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
-        AND sm.removed_state IS DISTINCT FROM 'kicked'
-    `,
-    prisma.bookmark.count({ where: { userId: profileId } }),
+    gate.sees.moments
+      ? prisma.$queryRaw<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n
+          FROM session_members sm
+          JOIN sessions s ON s.code = sm.session_code
+          WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
+            AND sm.removed_state IS DISTINCT FROM 'kicked'
+        `
+      : Promise.resolve(null),
+    gate.sees.cravings ? prisma.bookmark.count({ where: { userId: profileId } }) : Promise.resolve(null),
     // Photos only (pins + the automatic latest): lib/profileTiles.ts. The
     // counts above never depend on photo eligibility.
-    resolveTilePhotos(profileId),
+    resolveTilePhotos(profileId, shown),
   ])
+  const count: Record<TileKey, number> = { impressions: impressionsCount, moments: moments?.[0]?.n ?? 0, cravings: cravings ?? 0 }
+  const tiles: ProfileHeaderExtras['tiles'] = Object.fromEntries(shown.flatMap(k => {
+    const p = photos[k]
+    return p ? [[k, tile(count[k], p)]] : []
+  }))
 
   return {
     friendsCount: friends[0]?.n ?? 0,
@@ -95,10 +113,7 @@ export async function loadProfileHeaderExtras(
           },
         }
       : {}),
-    tiles: {
-      impressions: tile(impressionsCount, photos.impressions),
-      moments: tile(moments[0]?.n ?? 0, photos.moments),
-      cravings: tile(cravings, photos.cravings),
-    },
+    tiles,
+    ...(gate.sees.posts ? {} : { checkinsAudience: gate.settings.checkinVisibility ?? 'only-me' }),
   }
 }

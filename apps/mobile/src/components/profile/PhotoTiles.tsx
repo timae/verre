@@ -17,27 +17,43 @@ import { radius, useTheme } from '@/theme';
 // The tiles don't open anything yet (their list pages are a later step). On
 // your own profile a LONG-PRESS opens the tile's cover picker (R5g2, scale
 // 0.95 while held); a tile with no photo to choose from stays inert.
+//
+// Fewer than three (step 4: a tile the owner hides is absent, Q6 / Q10): the
+// rest SHARE THE ROW (two → halves, one → full width) at the SAME HEIGHT as
+// the three-up tile, so a lone tile is a wide banner (its photo cropped
+// wider). The height comes from a hidden three-column sizer row in the flow,
+// with the tiles laid over it: no measuring, no first-frame jump. None → no
+// row at all.
 export type PhotoTile = { label: string; count: string; imageUrl: string | null; onLongPress?: () => void };
 
 export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boolean }) {
+  if (tiles.length === 0) return null;
   return (
-    <View pointerEvents={dimmed ? 'none' : 'auto'} style={[styles.grid, dimmed ? { opacity: 0.35 } : null]}>
-      {tiles.map((t) =>
-        t.onLongPress ? (
-          <LongPressable
-            key={t.label}
-            onLongPress={t.onLongPress}
-            pressedScale={0.95}
-            dim={false}
-            accessibilityHint={`Double-tap and hold to choose the ${t.label.toLowerCase()} cover.`}
-            style={{ flex: 1 }}
-          >
-            <Tile tile={t} />
-          </LongPressable>
-        ) : (
-          <Tile key={t.label} tile={t} />
-        ),
-      )}
+    <View pointerEvents={dimmed ? 'none' : 'auto'} style={[{ marginTop: 4 }, dimmed ? { opacity: 0.35 } : null]}>
+      <View style={styles.grid} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <View style={styles.sizer} />
+        <View style={styles.sizer} />
+        <View style={styles.sizer} />
+      </View>
+      <View style={[styles.grid, StyleSheet.absoluteFill]}>
+        {tiles.map((t) =>
+          t.onLongPress ? (
+            <LongPressable
+              key={t.label}
+              onLongPress={t.onLongPress}
+              pressedScale={0.95}
+              dim={false}
+              fill
+              accessibilityHint={`Double-tap and hold to choose the ${t.label.toLowerCase()} cover.`}
+              style={{ flex: 1 }}
+            >
+              <Tile tile={t} />
+            </LongPressable>
+          ) : (
+            <Tile key={t.label} tile={t} />
+          ),
+        )}
+      </View>
     </View>
   );
 }
@@ -52,7 +68,7 @@ function Tile({ tile }: { tile: PhotoTile }) {
     <View
       accessible
       accessibilityLabel={`${tile.count} ${tile.label}`}
-      style={[styles.tile, { backgroundColor: theme.surfaceSunk }, tile.onLongPress ? { flex: 0, width: '100%' } : null]}
+      style={[styles.tile, { backgroundColor: theme.surfaceSunk }]}
     >
       {photo ? (
         <>
@@ -90,7 +106,9 @@ function Tile({ tile }: { tile: PhotoTile }) {
 }
 
 const styles = StyleSheet.create({
-  grid: { flexDirection: 'row', gap: 8, marginTop: 4 },
-  tile: { flex: 1, aspectRatio: 4 / 5, borderRadius: radius.lg, overflow: 'hidden' },
+  grid: { flexDirection: 'row', gap: 8 },
+  // The three-up tile: 4:5. Every shown tile takes this row's height.
+  sizer: { flex: 1, aspectRatio: 4 / 5 },
+  tile: { flex: 1, borderRadius: radius.lg, overflow: 'hidden' },
   txt: { position: 'absolute', left: 11, right: 8, bottom: 10, gap: 1 },
 });

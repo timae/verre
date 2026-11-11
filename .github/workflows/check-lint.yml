@@ -41,3 +41,11 @@ jobs:
       # ESLint config, so this TS-AST twin covers it (same exemptions, own pins).
       - name: No em dash in mobile copy
         run: node scripts/check-no-em-dash-copy.mjs
+
+      # Post-read census (You profile step 4): every read of feed_items /
+      # feed_item_likes / feed_item_tags in app/ + lib/ sits in an allow-listed
+      # file with a pinned count, so a new read path (a possible post leak past
+      # Check-Ins Visible To) needs a reviewed pin change. Blind spots in the
+      # script header.
+      - name: Post-read census
+        run: node scripts/check-post-reads.mjs
