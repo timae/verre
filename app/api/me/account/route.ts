@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { z } from 'zod'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import bcrypt from 'bcrypt'
@@ -66,6 +67,10 @@ export async function PATCH(req: NextRequest) {
     }
     if (!e.includes('@')) return NextResponse.json({ error: 'invalid email' }, { status: 400 })
     if (e.length > 320) return NextResponse.json({ error: 'invalid email' }, { status: 400 })
+    // 🔒 From the app, the address must also pass Better Auth's own sign-in
+    // check (z.email(), better-auth api/routes/sign-in): `alice@` would save
+    // here and then lock the app out at the next sign-in. Web unchanged.
+    if (session.authSource === 'native' && !z.email().safeParse(e).success) return NextResponse.json({ error: 'invalid email' }, { status: 400 })
     updates.email = e
   }
 
@@ -73,25 +78,30 @@ export async function PATCH(req: NextRequest) {
   // the credential write goes through syncCredential (the chokepoint — the only
   // code allowed to write password_hash; CI-enforced), not the batched
   // prisma.user.update below.
+  // 🔒 An email change from the APP re-confirms the current password (ruled
+  // 2026-11-11): the email is the sign-in name and there is no reset mail, so
+  // a stolen phone must not be able to move it. Web callers stay as they were
+  // (the web form sends no password for it; slated for redesign).
+  const emailNeedsPassword = updates.email !== undefined && session.authSource === 'native'
   let newPasswordHash: string | undefined
-  if (newPassword !== undefined) {
+  if (newPassword !== undefined || emailNeedsPassword) {
     if (!currentPassword) return NextResponse.json({ error: 'current password required' }, { status: 400 })
-    if (String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
+    if (newPassword !== undefined && String(newPassword).length < 8) return NextResponse.json({ error: 'password must be at least 8 characters' }, { status: 400 })
     const user = await prisma.user.findUnique({ where: { id: userId } })
     if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
-    // A NATIVE-registered OR social-only (Better Auth) user has a NULL
-    // users.password_hash — their credential (if any) lives in auth_accounts.
-    // This web endpoint re-auths only against the WEB hash and rejects when it's
-    // NULL: a shipped asymmetry (verifyPassword has the auth_accounts fallback
-    // for device-revoke, this route deliberately does not). So a native-only user
-    // can't change their password or delete their account via the WEB routes —
-    // native account-management is a step-6+ surface (a deferred decision, not an
-    // oversight; unifying would mean routing through verifyPassword + minding the
-    // shared rl:account charge). Reject rather than fall through to allow.
+    // Re-auth runs against users.password_hash only (verifyPassword has the
+    // auth_accounts fallback for the device revokes, this route deliberately does
+    // not). A native sign-up MIRRORS its hash here (lib/betterAuth.ts
+    // account.create.after, fill-NULL-only; a crashed mirror heals on the next
+    // native sign-in via backfillNativeCredential), so NULL means a social-only
+    // user (none yet) or a crashed, unhealed mirror. Reject rather than fall
+    // through to allow. The app changes passwords through Better Auth's
+    // /change-password, not this PATCH.
     if (!user.passwordHash) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
     const valid = await bcrypt.compare(String(currentPassword), user.passwordHash)
+    // (The app's Change Email maps this exact text, and 'invalid email' above.)
     if (!valid) return NextResponse.json({ error: 'current password incorrect' }, { status: 400 })
-    newPasswordHash = await bcrypt.hash(String(newPassword), 12)
+    if (newPassword !== undefined) newPasswordHash = await bcrypt.hash(String(newPassword), 12)
   }
 
   if (Object.keys(updates).length === 0 && newPasswordHash === undefined) return NextResponse.json({ ok: true })
@@ -158,14 +168,16 @@ export async function DELETE(req: NextRequest) {
 
   const user = await prisma.user.findUnique({ where: { id: userId } })
   if (!user) return NextResponse.json({ error: 'user not found' }, { status: 404 })
-  // A NATIVE-registered OR social-only (Better Auth) user has a NULL
-  // users.password_hash — no WEB password to confirm deletion against, so this
-  // route rejects (same asymmetry as the PATCH above: it does NOT fall back to
-  // the auth_accounts credential the way verifyPassword does). A native-only user
-  // therefore has no web deletion path, and BA's /delete-user is config-gated off
-  // (not registered — user.deleteUser.enabled is unset, distinct from the
-  // disabledPaths deny-list) — account deletion for native-only users is a
-  // step-6+ native surface (deferred, not wired today). Reject, don't allow.
+  // The ONE account-deletion path for web AND the app (Settings → Account →
+  // Delete Account); BA's /delete-user is config-gated off (not registered —
+  // user.deleteUser.enabled is unset, distinct from the disabledPaths deny-
+  // list). Same re-auth as the PATCH above: users.password_hash only, which a
+  // native sign-up mirrors; NULL (social-only, or a crashed, unhealed mirror)
+  // reads as "password incorrect". Reject, don't allow.
+  // ⚠️ For a native caller, executeAccountDelete revokes its native sessions
+  // BEFORE the step that can fail (409 / 503 / 500), so the app treats any
+  // failure after this check as "signed out, account intact" (see
+  // lib/accountDelete.ts; pinned in scripts/tests/you-profile-integration.mts).
   if (!user.passwordHash) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })
   const valid = await bcrypt.compare(String(password), user.passwordHash)
   if (!valid) return NextResponse.json({ error: 'password incorrect' }, { status: 400 })

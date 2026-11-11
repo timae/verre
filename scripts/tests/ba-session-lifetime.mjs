@@ -41,6 +41,14 @@
 //        and under INJECTED failures (snapshot throws / one token's Redis
 //        delete throws / the password change fails after commit) leave a
 //        durable retry target instead of a ghost — then the retry finishes
+//   § 8  the app's "Sign Out of All Other Devices" helper
+//        (revokeAllForNativeCaller keep-by-id): keeps exactly the caller's row,
+//        both stores, every web row revoked; legs independent under injected
+//        failures; no options = the account-PATCH behaviour (nothing kept);
+//        resolveUser names the caller's row (nativeSessionId), Redis- or
+//        Postgres-served
+//   § 9  the native device label: the app's User-Agent on a BA sign-in →
+//        "<model> · Verre App"; anything off-shape falls back to the web parser
 //
 // Run against a DISPOSABLE database + Redis — it writes and deletes rows, and
 // it RESETS the Better Auth IP-floor rate-limit counters for the `unknown` IP
@@ -52,7 +60,8 @@
 // Run via tsx (not node): it imports the real TypeScript modules under lib/.
 import { betterAuthServer } from '../../lib/betterAuth.ts'
 import { resolveUser } from '../../lib/resolveUser.ts'
-import { deleteAllNativeSessions, pruneExpiredNativeSessions, revokeAllSessions } from '../../lib/identityStore.ts'
+import { deleteAllNativeSessions, pruneExpiredNativeSessions, revokeAllForNativeCaller, revokeAllSessions } from '../../lib/identityStore.ts'
+import { parseNativeUserAgent, parseUserAgent } from '../../lib/userAgent.ts'
 import { prisma } from '../../lib/prisma.ts'
 import { redis } from '../../lib/redis.ts'
 import { NextRequest } from 'next/server'
@@ -95,9 +104,10 @@ async function storeExpiry(token) {
   }
 }
 
-async function signIn(email, password) {
+async function signIn(email, password, userAgent) {
   const { headers, response } = await betterAuthServer.api.signInEmail({
     body: { email, password },
+    ...(userAgent ? { headers: new Headers({ 'user-agent': userAgent }) } : {}),
     returnHeaders: true,
   })
   const setCookie = headers.get('set-cookie') ?? ''
@@ -179,6 +189,8 @@ async function main() {
   const resolved = await resolveUser(new NextRequest(`${origin}/api/me/devices`, { headers: { cookie: a.cookiePair } }))
   check('resolveUser resolves the cookie to the user (accept half)', Number(resolved?.user?.id) === userA, JSON.stringify(resolved?.user?.id ?? null))
   check('resolveUser marks the caller native', resolved?.authSource === 'native', String(resolved?.authSource))
+  const aRow = await prisma.authSession.findFirst({ where: { token: a.token }, select: { id: true } })
+  check('resolveUser names the caller\'s own auth_sessions row (nativeSessionId, Redis-served)', aRow !== null && resolved?.nativeSessionId === aRow.id, `${resolved?.nativeSessionId} vs ${aRow?.id}`)
   check('resolveUser reports the CURRENT stamp, not a re-stamped one', resolved?.expires === dueStamp.toISOString(), `${resolved?.expires} vs ${dueStamp.toISOString()}`)
   const s3b = await storeExpiry(a.token)
   check('🔒 resolveUser did NOT slide Postgres', s3b.pg === dueStamp.getTime(), `${s3b.pg} vs ${dueStamp.getTime()}`)
@@ -500,6 +512,93 @@ async function main() {
   const reissued = /session_token=[^;]+/.test(hbAfterCookie) && !/max-age=0/i.test(hbAfterCookie)
   check('(g) a later heartbeat with the revoked cookie sees no session and re-issues no cookie', hbAfter.status === 200 && hbAfterBody === null && !reissued, `${hbAfter.status} ${JSON.stringify(hbAfterBody)} ${hbAfterCookie.slice(0, 80)}`)
   check('(g) the session is absent from the Postgres-driven views (devices list / revoke / prune)', (await prisma.authSession.count({ where: { userId: userC } })) === 0)
+
+  console.log('\n§ 8 revokeAllForNativeCaller keeps the caller by id (the app\'s "Sign Out of All Other Devices")')
+  const rowId = async (token) => (await prisma.authSession.findFirst({ where: { token }, select: { id: true } }))?.id ?? null
+  const gone = async (token) => (await storeExpiry(token)).pg === null && (await redis.get(token)) === null
+  const alive = async (token) => { const st = await storeExpiry(token); return st.pg !== null && st.redis !== null }
+  const webRows = async (n) => {
+    const ids = []
+    for (let i = 0; i < n; i++) ids.push((await prisma.userSession.create({ data: { userId: userC, deviceLabel: 'MacBook · Safari' }, select: { id: true } })).id)
+    return ids
+  }
+  const webState = async (ids) => prisma.userSession.findMany({ where: { id: { in: ids } }, select: { revokedAt: true, revocationReason: true } })
+  await resetAuthFloors()
+  const k1 = await signIn(emailC, pwC); const k2 = await signIn(emailC, pwC); const k3 = await signIn(emailC, pwC)
+  const kWeb = await webRows(2)
+  await redis.del(`active-sessions-${userC}`)
+  const kId = await rowId(k1.token)
+  // Postgres-served resolve: drop the caller's Redis copy (BA reads the row and
+  // does not re-populate Redis).
+  await redis.del(k1.token)
+  const kResolved = await resolveUser(new NextRequest(`${origin}/api/me/devices`, { headers: { cookie: k1.cookiePair } }))
+  check('(a) resolveUser names the row when Postgres-served too', kId !== null && kResolved?.nativeSessionId === kId, `${kResolved?.nativeSessionId} vs ${kId}`)
+  const kCount = await revokeAllForNativeCaller(userC, { keepNativeSessionId: kId, reason: 'revoke_all' })
+  check('(a) the caller\'s row is kept', (await storeExpiry(k1.token)).pg !== null)
+  check('(a) every OTHER native session is gone in both stores (list evicted)', (await gone(k2.token)) && (await gone(k3.token)))
+  const kw = await webState(kWeb)
+  check('(a) every web session revoked, reason revoke_all, count returned', kCount === 2 && kw.length === 2 && kw.every(r => r.revokedAt && r.revocationReason === 'revoke_all'), JSON.stringify({ kCount, kw }))
+  await deleteAllNativeSessions(userC)
+
+  // (b) no options = the account PATCH behaviour, unchanged: nothing kept.
+  await resetAuthFloors()
+  const p1 = await signIn(emailC, pwC); const p2 = await signIn(emailC, pwC)
+  const pWeb = await webRows(1)
+  await revokeAllForNativeCaller(userC)
+  const pw = await webState(pWeb)
+  check('(b) no options: EVERY native session dies, the caller\'s included', (await gone(p1.token)) && (await gone(p2.token)))
+  check('(b) no options: web rows revoked with reason password_change', pw[0]?.revokedAt && pw[0]?.revocationReason === 'password_change', JSON.stringify(pw))
+
+  // (c) legs independent: the web leg throws → the native leg still ran.
+  await resetAuthFloors()
+  const c1n = await signIn(emailC, pwC); const c2n = await signIn(emailC, pwC)
+  const c1Id = await rowId(c1n.token)
+  const origUM = prisma.userSession.updateMany
+  prisma.userSession.updateMany = async () => { throw new Error('injected: web leg failure') }
+  const threwWeb = await revokeAllForNativeCaller(userC, { keepNativeSessionId: c1Id, reason: 'revoke_all' }).then(() => false, () => true)
+  prisma.userSession.updateMany = origUM
+  check('(c) web-leg failure THROWS (not swallowed)', threwWeb)
+  check('(c) …and the native leg still ran: other gone, caller kept', (await gone(c2n.token)) && (await alive(c1n.token)))
+  await deleteAllNativeSessions(userC)
+
+  // (d) …and the other way: one native token fails → web leg still ran, the
+  //     failed token keeps its row (retry target), the retry finishes it.
+  await resetAuthFloors()
+  const d1n = await signIn(emailC, pwC); const d2n = await signIn(emailC, pwC); const d3n = await signIn(emailC, pwC)
+  const d1Id = await rowId(d1n.token)
+  const dWeb = await webRows(1)
+  await redis.del(`active-sessions-${userC}`)
+  const origDelD = redis.del.bind(redis)
+  redis.del = async (key) => { if (key === d3n.token) throw new Error('injected: redis delete failure'); return origDelD(key) }
+  const threwNative = await revokeAllForNativeCaller(userC, { keepNativeSessionId: d1Id, reason: 'revoke_all' }).then(() => false, () => true)
+  redis.del = origDelD
+  const dw = await webState(dWeb)
+  check('(d) native per-token failure THROWS', threwNative)
+  check('(d) …the web leg still ran', !!dw[0]?.revokedAt, JSON.stringify(dw))
+  check('(d) …the other token is gone, the failed one keeps its row + copy, the caller is kept', (await gone(d2n.token)) && (await alive(d3n.token)) && (await alive(d1n.token)))
+  const dRetry = await revokeAllForNativeCaller(userC, { keepNativeSessionId: d1Id, reason: 'revoke_all' }).then(() => true, () => false)
+  check('(d) retry: succeeds, the failed token gone, the caller still kept', dRetry && (await gone(d3n.token)) && (await alive(d1n.token)))
+  await deleteAllNativeSessions(userC)
+  await prisma.userSession.deleteMany({ where: { userId: userC } })
+
+  console.log('\n§ 9 the native device label (session.create.before)')
+  const APP_UA = 'Verre/1.0.0 (iPhone 15 Pro; iOS 26.1)'
+  const SAFARI_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1'
+  check('parser: the app shape → "<model> · Verre App"', parseNativeUserAgent(APP_UA) === 'iPhone 15 Pro · Verre App', String(parseNativeUserAgent(APP_UA)))
+  check('parser: a model with parentheses', parseNativeUserAgent('Verre/1.2.3 (iPhone SE (3rd generation); iOS 26.0.1)') === 'iPhone SE (3rd generation) · Verre App')
+  check('parser: a browser UA is not the app', parseNativeUserAgent(SAFARI_UA) === null)
+  check('parser: a 41-character model is rejected (falls back)', parseNativeUserAgent(`Verre/1.0.0 (${'i'.repeat(41)}; iOS 26.1)`) === null)
+  check('parser: a control / bidi character in the model is rejected', parseNativeUserAgent('Verre/1.0.0 (iPhone\u202e 15; iOS 26.1)') === null && parseNativeUserAgent('Verre/1.0.0 (iPhone\n15; iOS 26.1)') === null)
+  check('🔒 the WEB parser never says "Verre App" for the app UA (a browser can\'t claim it)', !parseUserAgent(APP_UA).includes('Verre App'), parseUserAgent(APP_UA))
+  await resetAuthFloors()
+  const labelOf = async (ua) => {
+    const t = (await signIn(emailC, pwC, ua)).token
+    return (await prisma.authSession.findFirst({ where: { token: t }, select: { userAgent: true } }))?.userAgent
+  }
+  check('sign-in with the app UA stores "iPhone 15 Pro · Verre App"', (await labelOf(APP_UA)) === 'iPhone 15 Pro · Verre App')
+  check('sign-in with a browser UA keeps the web label', (await labelOf(SAFARI_UA)) === 'iPhone · Safari')
+  check('sign-in with a too-long app model falls back to the web parser', (await labelOf(`Verre/1.0.0 (iPhone ${'X'.repeat(40)}; iOS 26.1)`)) === 'iPhone')
+  await deleteAllNativeSessions(userC)
 }
 
 main()

@@ -155,12 +155,16 @@ export function feedHref(
   return { pathname, params: clean(out) } as Href;
 }
 
-// Settings (the interim You settings). Inside an opened post it is mirrored
-// onto the post's stack: pushing /you/settings there would present on the
-// outer You stack, over the post (see 'edit' above).
-export function settingsHref(mount: SessionMount): Href {
-  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/settings`, params: { id: mount.post } } as Href;
-  return '/you/settings' as Href;
+// Settings: the hub (no page) and its pages. Inside an opened post every one
+// is mirrored onto the post's stack: pushing /you/settings/… there would
+// present on the outer You stack, over the post (see 'edit' above). No page
+// may be named `details` / `reveal`: the tabs layout hides the pill on those
+// suffixes for the moment settings.
+export type SettingsPage = 'privacy' | 'blocked' | 'muted' | 'account' | 'change-email' | 'change-password' | 'appearance';
+export function settingsHref(mount: SessionMount, page?: SettingsPage): Href {
+  const tail = page ? `settings/${page}` : 'settings';
+  if (mount.post != null) return { pathname: `/(tabs)/${feedTab(mount.tab)}/[id]/${tail}`, params: { id: mount.post } } as Href;
+  return `/you/${tail}` as Href;
 }
 
 // Edit Profile (your own profile's ⋯ → Edit Profile, ruling D1): like

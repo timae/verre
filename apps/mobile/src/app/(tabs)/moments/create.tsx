@@ -12,11 +12,11 @@ import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
 import { Sheet } from '@/components/ui/Sheet';
 import { TextField } from '@/components/ui/TextField';
-import { DateField, Disclosure, NotesField, nextFullHour, pickPhoto } from '@/components/moments/momentForm';
+import { DateField, Disclosure, FieldGroup, NotesField, nextFullHour, pickPhoto } from '@/components/moments/momentForm';
 import { ToggleRow } from '@/components/moments/settingsParts';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { getMyAccount } from '@/lib/api/me';
+import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { freshOwnName } from '@/lib/api/profile';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
@@ -47,7 +47,7 @@ export default function CreateMoment() {
   const queryClient = useQueryClient();
   const { data: auth } = authClient.useSession();
   // `pro` gates the blind toggle (disabled + PRO badge); server 403 backstop.
-  const account = useQuery({ queryKey: ['my-account'], queryFn: getMyAccount });
+  const account = useQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount });
   const pro = account.data?.pro ?? false;
 
   const [cover, setCover] = useState<{ dataUrl: string; previewUri: string } | null>(null);
@@ -180,10 +180,7 @@ export default function CreateMoment() {
         {/* "What are you tasting?" — wine-only v1, field per spec but
             Wine is preselected; the others sit in the sheet disabled
             ("soon") and aren't choosable. */}
-        <View style={{ gap: 7, marginBottom: 14 }}>
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>
-            What are you tasting?
-          </VText>
+        <FieldGroup label="What are you tasting?">
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="What are you tasting? Wine"
@@ -205,7 +202,7 @@ export default function CreateMoment() {
             <VText variant="body" surface="formControl">Wine</VText>
             <Icon name="chevron-down" size={18} color={theme.inkSoft} />
           </Pressable>
-        </View>
+        </FieldGroup>
 
         {/* .trow2-even From–To per the mock — empty brand fields, picker
             sheet on tap. */}

@@ -8,7 +8,7 @@ import { prisma } from '@/lib/prisma'
 import { redis } from '@/lib/redis'
 import { validateDisplayName } from '@verre/core'
 import { resolveGeoLabel } from '@/lib/geo'
-import { parseUserAgent } from '@/lib/userAgent'
+import { parseNativeUserAgent, parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, revokeNativeSessionsExcept, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { bucketStart } from '@/lib/lastSeen'
@@ -408,7 +408,10 @@ export const betterAuthServer = betterAuth({
     // store the raw XFF IP + UA in auth_sessions AND the Redis session copy;
     // this hook replaces both with the same write-time labels the web login
     // path stores (resolveGeoLabel is in-process and never throws; the devices
-    // union GET reads these fields as ready-made labels). Hook-transformed data
+    // union GET reads these fields as ready-made labels), except that the app's
+    // own User-Agent gets its model label first ("iPhone 15 Pro · Verre App",
+    // parseNativeUserAgent: only this hook calls it, so a web login can't claim
+    // it; only /sign-in/email creates native sessions). Hook-transformed data
     // feeds BOTH stores (with-hooks.mjs: the secondaryStorage fn receives the
     // created row).
     //
@@ -442,7 +445,7 @@ export const betterAuthServer = betterAuth({
         before: async (session) => ({
           data: {
             ipAddress: (await resolveGeoLabel(session.ipAddress).catch(() => null)) ?? '',
-            userAgent: parseUserAgent(session.userAgent),
+            userAgent: parseNativeUserAgent(session.userAgent) ?? parseUserAgent(session.userAgent),
             updatedAt: new Date(bucketStart(new Date(session.updatedAt ?? Date.now()).getTime())),
           },
         }),

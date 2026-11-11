@@ -13,11 +13,14 @@ type Ctx = { params: Promise<{ id: string }> }
 // the devices GET) targets a native Better Auth session.
 //
 // Revoking your OWN current session needs no password (it's just logging
-// yourself out). Revoking a DIFFERENT device — including every ba: row —
-// requires password re-auth, same shape as /api/me/account — prevents a
-// cookie-thief from locking the real owner out before they notice. targetId
-// always comes from the path; userId + currentSessionId come from the signed
-// JWT, never the body.
+// yourself out): the web caller's user_sessions row, or the native caller's own
+// ba: row (the same as Better Auth's password-free /sign-out). Revoking a
+// DIFFERENT device requires password re-auth, same shape as /api/me/account —
+// prevents a cookie-thief from locking the real owner out before they notice.
+// targetId always comes from the path; userId + the caller's own session id
+// come from the validated credential (signed JWT / BA cookie), never the body.
+// ⚠️ An own-ba: revoke kills the session server-side but leaves the app's
+// stored cookie: a client UI for it must sign out through authClient.signOut().
 //
 // 404 on missing-or-wrong-owner (not 403). For web rows, uuid keys already
 // block enumeration; ba: ids are sequential Ints, but the revoke is owner-
@@ -46,10 +49,12 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   }
 
   // Cross-device revoke requires password re-auth. Revoking the caller's own
-  // current session is frictionless (just a logout). A ba: target is never the
-  // caller's own current row here (web callers' current is a uuid; native
-  // callers carry no userSessionId), so it always takes the password path.
-  const isOwnCurrent = targetId !== null && targetId === currentSessionId
+  // current session is frictionless (just a logout): a uuid equal to the web
+  // caller's userSessionId, or a ba: id equal to the native caller's
+  // nativeSessionId. At most one of the two is set, so a web caller's ba:
+  // target and a native caller's uuid target always take the password path.
+  const isOwnCurrent = (targetId !== null && targetId === currentSessionId)
+    || (baTargetId !== null && baTargetId === session.nativeSessionId)
   if (!isOwnCurrent) {
     const body = await req.json().catch(() => ({}))
     const password = typeof body?.password === 'string' ? body.password : ''

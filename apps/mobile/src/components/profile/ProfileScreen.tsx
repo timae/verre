@@ -20,14 +20,15 @@ import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import {
   applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, type TileKey,
 } from '@/lib/api/profile';
-import { ApiError } from '@/lib/api/sessions';
+import { BLOCKS_KEY, MUTES_KEY } from '@/lib/api/settings';
 import { profileKey, profileQueryOptions, setBlocked, setFollowing, setMuted, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
+import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { GLASS_FILL, GUTTER, heroBarHeight, usePhoneTokens } from '@/lib/layout';
-import { profileEditHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
+import { settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
@@ -131,8 +132,10 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // claiming a write that failed). Every cache write after an await checks the
   // viewer epoch (lib/query.tsx): a sign-out meanwhile cleared this viewer's
   // cache, and nothing of theirs may be written back into it.
+  // `list`: the Settings list this write changes (Privacy → Blocked / Muted),
+  // a plain query, so it is invalidated.
   const act = useCallback(
-    async (op: () => Promise<void>, optimistic?: (p: Profile) => Profile) => {
+    async (op: () => Promise<void>, { optimistic, list }: { optimistic?: (p: Profile) => Profile; list?: 'blocks' | 'mutes' } = {}) => {
       if (busy) return;
       setBusy(true);
       const epoch = viewerCacheEpoch();
@@ -151,7 +154,11 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         Alert.alert('Something went wrong', errorText(e));
       } finally {
         if (viewerCacheEpoch() === epoch) {
-          await Promise.allSettled([refetchProfileHeader(queryClient, userId), refetchNetworkFeed(queryClient)]);
+          await Promise.allSettled([
+            refetchProfileHeader(queryClient, userId),
+            refetchNetworkFeed(queryClient),
+            list ? queryClient.invalidateQueries({ queryKey: list === 'blocks' ? BLOCKS_KEY : MUTES_KEY, exact: true }) : null,
+          ]);
         }
         setBusy(false);
       }
@@ -160,10 +167,9 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   );
 
   const follow = () =>
-    act(
-      () => setFollowing(userId, true),
-      (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: true } : p),
-    );
+    act(() => setFollowing(userId, true), {
+      optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: true } : p),
+    });
   // Unfollow asks first (it can end a friendship); following acts immediately.
   const confirmUnfollow = (name: string) =>
     Alert.alert(`Unfollow ${firstName(name)}?`, undefined, [
@@ -172,15 +178,14 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         text: 'Unfollow',
         style: 'destructive',
         onPress: () =>
-          act(
-            () => setFollowing(userId, false),
-            (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: false } : p),
-          ),
+          act(() => setFollowing(userId, false), {
+            optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: false } : p),
+          }),
       },
     ]);
   const onFollowPress = (p: { name: string; isFollowing: boolean }) => (p.isFollowing ? confirmUnfollow(p.name) : follow());
   // Mute doesn't ask (design 04·5a note); it only filters YOUR network feed.
-  const setMute = (on: boolean) => act(() => setMuted(userId, on), (p) => (p.state === 'ok' ? { ...p, viewerMutes: on } : p));
+  const setMute = (on: boolean) => act(() => setMuted(userId, on), { optimistic: (p) => (p.state === 'ok' ? { ...p, viewerMutes: on } : p), list: 'mutes' });
   // Block asks once more — the house native destructive alert naming the
   // person, with the design's BLOCKSHEET copy (docs/dev/block.md semantics).
   const confirmBlock = (name: string) => {
@@ -190,11 +195,11 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       `${first} won’t see your profile, impressions, moments or cravings, and can’t find you in search. You won’t see theirs either. They aren’t told.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Block', style: 'destructive', onPress: () => act(() => setBlocked(userId, true)) },
+        { text: 'Block', style: 'destructive', onPress: () => act(() => setBlocked(userId, true), { list: 'blocks' }) },
       ],
     );
   };
-  const unblock = () => act(() => setBlocked(userId, false));
+  const unblock = () => act(() => setBlocked(userId, false), { list: 'blocks' });
 
   // ── Own profile: the in-place edit session (R5g3) ──────────────────────────
   // Long-press the name or the bio: BOTH become inputs, the pressed one
@@ -390,19 +395,11 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const showMenuButton = own || (profile && profile.state !== 'gone');
 
   // ⋯ menus (MY_MENU / HER_MENU). Rows marked "Soon" are inactive (their
-  // screens come later); MenuItem `disabled` renders that tag.
+  // screens come later); MenuItem `disabled` renders that tag. Your own has
+  // no Edit Profile row (ruled 2026-11-11, a deviation from MY_MENU): editing
+  // lives in Settings (→ your card), as a moment's does (⋯ → Settings).
   const menuItems = own ? (
     <>
-      <MenuItem
-        icon="edit"
-        label="Edit Profile"
-        disabled={!ok}
-        onPress={() => {
-          close();
-          if (editing) cancelEdit();
-          router.push(profileEditHref(mount));
-        }}
-      />
       <MenuItem icon="user-plus" label="Add Friends" disabled />
       <MenuItem icon="share" label="Share Profile" disabled />
       <MenuSeparator />
@@ -673,19 +670,3 @@ function ProfileHeroBar({
 }
 
 const LIST_TOP_PAD = 4;
-
-// A failed write's copy: the server's own message for a 4xx (validation,
-// "Try again in …"), else the connection line.
-function errorText(e: unknown): string {
-  const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-  return msg && msg !== 'http' ? sentence(msg) : 'Check your connection and try again.';
-}
-
-// The shared validators speak lower case ("name must be at least 2
-// characters"); an alert body reads as a sentence.
-function sentence(s: string): string {
-  const t = s.trim();
-  if (!t) return t;
-  const c = t[0].toUpperCase() + t.slice(1);
-  return /[.!?]$/.test(c) ? c : `${c}.`;
-}

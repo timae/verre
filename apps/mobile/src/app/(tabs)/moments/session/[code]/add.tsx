@@ -16,7 +16,7 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { CountrySheet, Disclosure, MAX_WINE_IMAGE_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
+import { CountrySheet, Disclosure, FieldGroup, MAX_WINE_IMAGE_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { buildImpressionPayload } from '@/lib/impressionPayload';
 import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { ApiError, addWine, getSessionState, reassignBroughtBy, reorderWines, updateWine, type SessionParticipant, type WineTypeCode, type WireWine } from '@/lib/api/sessions';
@@ -396,15 +396,14 @@ export function ImpressionForm({
 
         {/* Type — required. Native-chrome dropdown → brand picker sheet (the
             create.tsx CategorySheet pattern). */}
-        <View style={{ gap: 7, marginBottom: 14 }}>
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Type</VText>
+        <FieldGroup label="Type">
           <SelectField
             value={typeLabel}
             placeholder="Choose a type"
             onPress={() => setTypeOpen(true)}
             accessibilityLabel={`Type${typeLabel ? `: ${typeLabel}` : ''}`}
           />
-        </View>
+        </FieldGroup>
 
         <View style={{ marginBottom: 4 }}>
           {/* Last always-visible field — Region lives behind the disclosure fold,
@@ -412,8 +411,7 @@ export function ImpressionForm({
           <TextField ref={varietyRef} label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} returnKeyType="done" />
         </View>
         {showBringer ? (
-          <View style={{ gap: 7, marginBottom: 14 }}>
-            <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Brought By</VText>
+          <FieldGroup label="Brought By">
             <BringerField
               name={shownBringerName}
               imageUrl={shownBringer?.imageUrl ?? null}
@@ -430,7 +428,7 @@ export function ImpressionForm({
                 {bringer.displayName} won’t be able to edit it. Give them at least provider role in People.
               </VText>
             ) : null}
-          </View>
+          </FieldGroup>
         ) : null}
 
         {/* .disclosure Add more details — body expands DOWN from the bar

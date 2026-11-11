@@ -1,6 +1,7 @@
 import { apiFetch } from '../apiFetch';
 
 export type MyAccount = { name: string | null; email: string | null; pro: boolean };
+export const MY_ACCOUNT_KEY = ['my-account'] as const;
 
 // Minimal self profile — `pro` gates pro-only affordances in the UI (02a
 // blind toggle renders disabled + PRO badge for non-pro; the server 403 is

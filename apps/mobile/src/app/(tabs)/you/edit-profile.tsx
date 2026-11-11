@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BIO_MAX, normalizeBio, validateDisplayName } from '@verre/core';
 import { NotesField, pickPhotoOrRemove } from '@/components/moments/momentForm';
 import { GlassButton, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { SHEET_RISE } from '@/components/profile/coverGeometry';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
@@ -15,11 +16,11 @@ import { VBar } from '@/components/VBar';
 import {
   applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover,
 } from '@/lib/api/profile';
-import { ApiError } from '@/lib/api/sessions';
 import { profileKey, profileQueryOptions, type FullProfile, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
+import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
-import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
+import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
 import { useTheme } from '@/theme';
 
 // Edit Profile (04 `setProfile`, ruling D1): your own profile's ⋯ → Edit
@@ -55,7 +56,11 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { width } = useWindowDimensions();
+  // The cover as the profile shows it above its card line (HERO_RATIO of
+  // the screen height, the photo cropped as there: its box runs SHEET_RISE
+  // further, hidden here as under the profile's card).
+  const { height: windowH } = useWindowDimensions();
+  const coverH = Math.round(windowH * HERO_RATIO);
   const [name, setName] = useState(profile.name);
   const [bio, setBio] = useState(profile.bio ?? '');
   const [avatar, setAvatar] = useState<ImageDraft>({ kind: 'keep' });
@@ -169,13 +174,14 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
         automaticallyAdjustKeyboardInsets
         showsVerticalScrollIndicator={false}
       >
-        {/* .yo-epcover — full-bleed 3:1, the edit button bottom-right. No
+        {/* .yo-epcover — full-bleed, the profile's cover height (ruled
+            2026-11-11; the mock's is 3:2), the edit button bottom-right. No
             cover yet: the same footprint on the sunk fill with the add
             affordance (flagged: the mock always shows a cover). */}
-        <View style={{ marginHorizontal: -GUTTER, height: Math.round(width / 3) }}>
+        <View style={{ marginHorizontal: -GUTTER, height: coverH, overflow: 'hidden' }}>
           {coverUrl ? (
             <>
-              <Image source={{ uri: coverUrl }} style={{ width: '100%', height: '100%' }} contentFit="cover" />
+              <Image source={{ uri: coverUrl }} style={{ width: '100%', height: coverH + SHEET_RISE }} contentFit="cover" />
               <GlassButton label="Change Cover" icon="edit" right={12} bottom={12} onPress={() => pick('cover')} />
             </>
           ) : (
@@ -190,7 +196,7 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
                   caption side by side (one line, robust to larger text). */}
               <View
                 style={{
-                  height: Math.max(0, Math.round(width / 3) - AVATAR_OVERLAP),
+                  height: Math.max(0, coverH - AVATAR_OVERLAP),
                   flexDirection: 'row',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -236,16 +242,4 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
       <SettingsFooter saving={saving} error={error} onDiscard={() => router.back()} onSave={onSave} bottomInset={insets.bottom} />
     </View>
   );
-}
-
-function errorText(e: unknown): string {
-  const msg = e instanceof ApiError && e.status > 0 && e.status < 500 ? e.message : null;
-  return msg && msg !== 'http' ? sentence(msg) : 'Check your connection and try again.';
-}
-
-function sentence(s: string): string {
-  const t = s.trim();
-  if (!t) return t;
-  const c = t[0].toUpperCase() + t.slice(1);
-  return /[.!?]$/.test(c) ? c : `${c}.`;
 }

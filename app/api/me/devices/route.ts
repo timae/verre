@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { verifyPassword } from '@/lib/verifyPassword'
-import { revokeAllSessions } from '@/lib/identityStore'
+import { revokeAllForNativeCaller, revokeAllSessions } from '@/lib/identityStore'
 import { bucketStart } from '@/lib/lastSeen'
 
 // GET — list the caller's active per-device sessions ("Connected devices"),
@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
   const currentSessionId = session.user.userSessionId
+  const currentNativeId = session.nativeSessionId
 
   const rl = await checkRate(`rl:devices:user:${userId}:1m`, 60, 60)
   if (!rl.allowed) {
@@ -50,17 +51,16 @@ export async function GET(req: NextRequest) {
   // at-rest precision as web user_sessions.lastSeenAt. We re-bucket here on the
   // way out too (belt: the at-rest value is already on an edge, but re-flooring
   // is cheap and keeps this surface correct even if a future BA write path bumps
-  // updatedAt without the hook). isCurrent is always false for BA rows in step 5:
-  // the panel is web-only and a web viewer's current session is by definition a
-  // user_sessions row. (A native viewer would see no row flagged current —
-  // revisit with the native UI.)
+  // updatedAt without the hook). isCurrent: a web viewer's current session is a
+  // user_sessions row, a native viewer's the BA row resolveUser names
+  // (nativeSessionId); at most one of the two is ever set.
   const baDevices = baRows.map(r => ({
     id: `ba:${r.id}`,
     deviceLabel: r.userAgent || 'Unknown device',
     geoLabel: r.ipAddress || null,
     createdAt: r.createdAt.toISOString(),
     lastSeenAt: new Date(bucketStart(r.updatedAt.getTime())).toISOString(),
-    isCurrent: false,
+    isCurrent: r.id === currentNativeId,
   }))
 
   const devices = [
@@ -81,20 +81,28 @@ export async function GET(req: NextRequest) {
   )
 }
 
-// DELETE (no id) — "Sign out of all other devices." One password re-auth, one
-// UPDATE. Keeps the caller's own current session alive. Separate, lower limit
-// (10/h) than per-id DELETE because this is a single panic-button action, not
-// list-clicking. Password comes from the body; userSessionId comes ONLY from
-// the signed JWT (never body/header).
+// DELETE (no id) — "Sign out of all other devices." One password re-auth.
+// Keeps the caller's own current session alive, web (userSessionId, from the
+// signed JWT) or native (nativeSessionId, from the validated BA cookie) — never
+// from the body or a header. Separate, lower limit (10/h) than per-id DELETE
+// because this is a single panic-button action, not list-clicking. Password
+// comes from the body.
+//
+// A native caller also has Better Auth's own /revoke-other-sessions (password-
+// free, answered by the hook in lib/betterAuth.ts), but that one reaches native
+// sessions only. This route is the one that signs out the WEB sessions too, so
+// it keeps the password gate the web panel has (rate-limits.md).
 export async function DELETE(req: NextRequest) {
   if (!isSameOrigin(req)) return NextResponse.json({ error: 'forbidden' }, { status: 403 })
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const userId = Number(session.user.id)
-  // A valid session always carries a userSessionId (the auth gate strips any
-  // token without one). The type is still optional, so guard the boundary.
+  // A valid web session always carries a userSessionId (the auth gate strips any
+  // token without one), a native one its nativeSessionId. The types are still
+  // optional, so guard the boundary.
   const currentSessionId = session.user.userSessionId
-  if (!currentSessionId) return NextResponse.json({ error: 'auth required' }, { status: 401 })
+  const currentNativeId = session.nativeSessionId
+  if (!currentSessionId && !currentNativeId) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
   const rl = await checkRate(`rl:devices-all:user:${userId}:1h`, 10, 3600)
   if (!rl.allowed) {
@@ -115,13 +123,13 @@ export async function DELETE(req: NextRequest) {
   }
   if (!check.ok) return NextResponse.json({ error: 'password incorrect' }, { status: 403 })
 
-  // Revoke everything except the current session, through revokeAllSessions
-  // (the chokepoint — the only code allowed to write user_sessions.revokedAt in
-  // bulk; CI-enforced; it also fans out to ALL Better Auth sessions, both
-  // stores). currentSessionId is always present for web callers: a valid web
-  // session always carries a userSessionId (the auth gate strips any token
-  // without one). A NATIVE caller has none and 401s above — native
-  // "sign out everywhere" is a step-6+ surface.
-  const revokedCount = await revokeAllSessions(userId, currentSessionId, 'revoke_all')
+  // Revoke everything except the current session, through the chokepoint (the
+  // only code allowed to write user_sessions.revokedAt in bulk; CI-enforced),
+  // both stores, legs independent: a web caller keeps its user_sessions row and
+  // every native session dies (revokeAllSessions); a native caller keeps its BA
+  // row and every web session dies (revokeAllForNativeCaller).
+  const revokedCount = currentSessionId
+    ? await revokeAllSessions(userId, currentSessionId, 'revoke_all')
+    : await revokeAllForNativeCaller(userId, { keepNativeSessionId: currentNativeId, reason: 'revoke_all' })
   return NextResponse.json({ revoked: revokedCount })
 }

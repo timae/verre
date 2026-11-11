@@ -10,7 +10,7 @@ import { Icon } from '@/components/ui/Icon';
 import { TextField } from '@/components/ui/TextField';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
-import { CountrySheet, Disclosure, MAX_COVER_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
+import { CountrySheet, Disclosure, FieldGroup, MAX_COVER_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { type WineTypeCode } from '@/lib/api/sessions';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
@@ -169,15 +169,14 @@ export default function CheckinDetails() {
         {/* Type — optional here (unlike 02b·add): the server coerces unknown/
             absent to null and a typeless check-in renders fine. It drives the
             structure axes on the rate stage when set. */}
-        <View style={{ gap: 7, marginBottom: 14 }}>
-          <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>Type</VText>
+        <FieldGroup label="Type">
           <SelectField
             value={typeLabel}
             placeholder="Choose a type"
             onPress={() => setTypeOpen(true)}
             accessibilityLabel={`Type${typeLabel ? `: ${typeLabel}` : ''}`}
           />
-        </View>
+        </FieldGroup>
 
         <View style={{ marginBottom: 14 }}>
           <TextField ref={varietyRef} label="Variety" placeholder="Grape, bean, hops…" value={grape} onChangeText={setGrape} autoCorrect={false} returnKeyType="next" submitBehavior="submit" onSubmitEditing={() => venueRef.current?.focus()} />

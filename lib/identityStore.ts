@@ -196,10 +196,11 @@ export async function backfillNativeCredential(email: string): Promise<void> {
 // always attempted, and the first error rethrows after both ran — one store
 // failing must not leave the other un-revoked (§3; the partial-failure test
 // pins this).
+export type BulkRevokeReason = 'password_change' | 'revoke_all'
 export async function revokeAllSessions(
   userId: number,
   exceptSessionId: string,
-  reason: 'password_change' | 'revoke_all',
+  reason: BulkRevokeReason,
 ): Promise<number> {
   let count = 0
   let webErr: unknown
@@ -261,14 +262,17 @@ export async function deleteAllNativeSessions(userId: number): Promise<void> {
 //    is still attempted, then the first error rethrows so the caller surfaces
 //    the partial failure instead of reporting success.
 //  - deleteSession is a no-op for an already-gone token → idempotent.
+// The kept session is named by its token (BA's own hooks have it) OR by its row
+// id (`keepId`: the devices revoke-all, whose caller is known by id only —
+// resolveUser never carries the token). Either match spares the row.
 // Pinned in scripts/tests/ba-session-lifetime.mjs § 7 (incl. injected failures).
-export async function revokeNativeSessionsExcept(userId: number, keepToken: string | null): Promise<number> {
-  const rows = await prisma.authSession.findMany({ where: { userId }, select: { token: true } })
+export async function revokeNativeSessionsExcept(userId: number, keepToken: string | null, keepId: number | null = null): Promise<number> {
+  const rows = await prisma.authSession.findMany({ where: { userId }, select: { id: true, token: true } })
   const adapter = await baInternalAdapter()
   let revoked = 0
   let firstErr: unknown
-  for (const { token } of rows) {
-    if (token === keepToken) continue
+  for (const { id, token } of rows) {
+    if (token === keepToken || id === keepId) continue
     try {
       await adapter.deleteSession(token)
       revoked++
@@ -322,14 +326,19 @@ export async function revokeAllWebSessions(
   return revoked.count
 }
 
-// Revoke EVERY session of a user across both stores, with no exception — the
-// fan-out for a password change initiated by a NATIVE caller on a web endpoint
-// (account PATCH via resolveUser: the caller's own session is a BA session, and
-// there's no user_sessions row of theirs to spare). Distinct from
-// revokeAllSessions (which spares the web caller's own user_sessions row): here
-// EVERY web AND every native session dies, including the caller's own native one
-// — they just re-authed with their password, so a single native re-login is the
-// only cost, and it's strictly safer than leaving any session alive.
+// Revoke a NATIVE caller's sessions across both stores: every web session, and
+// every native one except `keepNativeSessionId` when given. Two callers:
+//  - account PATCH password change via resolveUser (no options): EVERY web AND
+//    every native session dies, the caller's own native one included — they
+//    just re-authed with their password, so a single native re-login is the
+//    only cost, and it's strictly safer than leaving any session alive.
+//  - devices revoke-all ("Sign Out of All Other Devices") from the app:
+//    `keepNativeSessionId` = the caller's own row (resolveUser's
+//    nativeSessionId), reason 'revoke_all'.
+// Distinct from revokeAllSessions, which spares the WEB caller's own
+// user_sessions row and has no native exception. The native leg is the one
+// loop, revokeNativeSessionsExcept (keep by id), so its failure semantics stay
+// a single implementation.
 //
 // 🔒 Same INDEPENDENCE rule as revokeAllSessions: each leg runs in its own
 // try/catch, both are always attempted, the first error rethrows after logging
@@ -344,21 +353,24 @@ export async function revokeAllWebSessions(
 // but extracting it means passing the web leg as a closure, which reads worse
 // than the inline form and each site's surrounding comment is load-bearing.
 // Deliberate, not yet-to-be-refactored.
-export async function revokeAllForNativeCaller(userId: number): Promise<number> {
+export async function revokeAllForNativeCaller(
+  userId: number,
+  { keepNativeSessionId = null, reason = 'password_change' }: { keepNativeSessionId?: number | null; reason?: BulkRevokeReason } = {},
+): Promise<number> {
   let count = 0
   let webErr: unknown
   let baErr: unknown
   try {
     const revoked = await prisma.userSession.updateMany({
       where: { userId, revokedAt: null },
-      data: { revokedAt: new Date(), revocationReason: 'password_change' },
+      data: { revokedAt: new Date(), revocationReason: reason },
     })
     count = revoked.count
   } catch (e) {
     webErr = e
   }
   try {
-    await revokeNativeSessionsExcept(userId, null)
+    await revokeNativeSessionsExcept(userId, null, keepNativeSessionId)
   } catch (e) {
     baErr = e
   }

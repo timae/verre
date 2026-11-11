@@ -1,6 +1,6 @@
-// You profile, step 2 — integration suite (.local/you-profile/step2-plan.md
-// § Verification). Drives the REAL route handlers and lib functions (tsx)
-// against a throwaway Postgres + Redis:
+// You profile, steps 2 + 3 — integration suite (.local/you-profile/step2-plan.md
+// + step3-plan.md § Verification). Drives the REAL route handlers and lib
+// functions (tsx) against a throwaway Postgres + Redis:
 //   § 1 bio normalisation + PATCH /api/me/profile (rename tail, validation)
 //   § 2 tile pools + pins (PICK vs LIVE, D3 re-hide, D7 deleted moment, the
 //       dead-pin clear, the clear vs a same-URL re-pick on the locked row)
@@ -9,6 +9,13 @@
 //       every photo, rolled-back attempt reclaims nothing, avatar + cover)
 //   § 5 the profile image replace protocol (no orphan under concurrency, a
 //       replace blocked on an account deletion reclaims its own upload)
+//   § 6 GET /api/me/mutes (shape, newest first, the blocked-me scrub both ways,
+//       the cap, 401)
+//   § 7 the devices routes for a NATIVE caller (This Device, the password-free
+//       own-row revoke, the password gates, revoke-all keeps the caller)
+//   § 8 Delete Account's failure premise: a refused deletion (409) leaves the
+//       account intact with its native sessions ALREADY gone, so the app
+//       signs itself out (step-3 plan T4)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
 // SDK actually sends, so "reclaimed" / "survives" is observed on the wire,
@@ -75,9 +82,16 @@ const photosRoute = await import('../../app/api/me/profile/photos/route.ts')
 const avatarRoute = await import('../../app/api/me/avatar/route.ts')
 const coverRoute = await import('../../app/api/me/cover/route.ts')
 const usersRoute = await import('../../app/api/users/[id]/route.ts')
+const mutesRoute = await import('../../app/api/me/mutes/route.ts')
+const muteRoute = await import('../../app/api/me/mutes/[id]/route.ts')
+const blockRoute = await import('../../app/api/me/blocks/[id]/route.ts')
+const devicesRoute = await import('../../app/api/me/devices/route.ts')
+const deviceRoute = await import('../../app/api/me/devices/[id]/route.ts')
+const accountRoute = await import('../../app/api/me/account/route.ts')
+const { resolveUser } = await import('../../lib/resolveUser.ts')
 const { listPickable, resolveTilePhotos } = await import('../../lib/profileTiles.ts')
 const { replaceProfileImage } = await import('../../lib/profileImage.ts')
-const { deleteAccountDurable } = await import('../../lib/accountDelete.ts')
+const { deleteAccountDurable, executeAccountDelete, AccountDeleteTooManyWipesError } = await import('../../lib/accountDelete.ts')
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 let pass = 0
@@ -91,7 +105,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 const TAG = `yp-${Date.now()}`
 const resetLimits = async () => { const ks = await scanKeys('rl:*'); if (ks.length) await redis.del(ks) }
 type Actor = { cookie?: string }
-type User = { id: number; cookie: string }
+type User = { id: number; cookie: string; email: string; password: string }
 const BASE = 'http://localhost:3000'
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
@@ -111,8 +125,16 @@ async function mkUser(name: string): Promise<User> {
   await betterAuthServer.api.signUpEmail({ body: { name, email, password } })
   const { headers } = await betterAuthServer.api.signInEmail({ body: { email, password }, returnHeaders: true })
   const row = await prisma.user.findUniqueOrThrow({ where: { email }, select: { id: true } })
-  return { id: row.id, cookie: (headers.get('set-cookie') ?? '').split(';')[0] }
+  return { id: row.id, cookie: (headers.get('set-cookie') ?? '').split(';')[0], email, password }
 }
+// Another native session for the same user (a second phone).
+async function signInAgain(u: User): Promise<User> {
+  await resetLimits()
+  const { headers } = await betterAuthServer.api.signInEmail({ body: { email: u.email, password: u.password }, returnHeaders: true })
+  return { ...u, cookie: (headers.get('set-cookie') ?? '').split(';')[0] }
+}
+const tokenOf = (u: User) => decodeURIComponent(u.cookie.split('=')[1] ?? '').split('.')[0]
+const authenticates = async (u: User) => (await resolveUser(new NextRequest(`${BASE}/api/me/devices`, { headers: { cookie: u.cookie } })))?.user?.id === String(u.id)
 const dateFrom = new Date(Date.now() + 3600_000).toISOString()
 async function createSession(u: User, name = 'Hana Host') {
   await resetLimits()
@@ -375,7 +397,116 @@ try {
   const lr = await late
   const lateKeys = puts.filter(p => p.startsWith(`avatars/cover_u_${Q2.id}_`))
   check('…finds no row and reclaims its OWN upload', !lr.ok && lr.reason === 'gone' && lateKeys.length === 1 && !store.has(lateKeys[0]), { lr, lateKeys })
+
+  // ── § 6 GET /api/me/mutes ─────────────────────────────────────────────────
+  section('§ 6 GET /api/me/mutes')
+  const M = await mkUser('Mia Muter')
+  const m1 = await mkUser('Mo First')
+  const m2 = await mkUser('Max Second')
+  const m3 = await mkUser('Mel BlocksMe')
+  const m4 = await mkUser('Moe IBlocked')
+  for (const t of [m1, m2, m3, m4]) {
+    await resetLimits()
+    const r = await call(muteRoute.POST, 'POST', `/api/me/mutes/${t.id}`, M, undefined, { id: String(t.id) })
+    if (r.status !== 200) throw new Error(`mute ${r.status}`)
+    await sleep(5)
+  }
+  const blockedMe = await call(blockRoute.POST, 'POST', `/api/me/blocks/${M.id}`, m3, undefined, { id: String(M.id) })
+  const iBlocked = await call(blockRoute.POST, 'POST', `/api/me/blocks/${m4.id}`, M, undefined, { id: String(m4.id) })
+  check('fixture: both blocks land', blockedMe.status === 200 && iBlocked.status === 200, [blockedMe.status, iBlocked.status])
+  await resetLimits()
+  const ml = await call(mutesRoute.GET, 'GET', '/api/me/mutes', M)
+  const ids = (ml.json?.mutes ?? []).map((m: { id: number }) => m.id)
+  check('200 with { mutes: [{ id, name, createdAt }] }, no imageUrl', ml.status === 200 && ml.json.mutes.every((m: Record<string, unknown>) => typeof m.id === 'number' && typeof m.name === 'string' && typeof m.createdAt === 'string' && !('imageUrl' in m)), ml.json)
+  check('🔒 a muted user who BLOCKED me is left out', !ids.includes(m3.id), ids)
+  check('one I blocked stays', ids.includes(m4.id), ids)
+  check('newest first', JSON.stringify(ids) === JSON.stringify([m4.id, m2.id, m1.id]), ids)
+  check('names come through', ml.json.mutes.find((m: { id: number }) => m.id === m1.id)?.name === 'Mo First')
+  const anon = await call(mutesRoute.GET, 'GET', '/api/me/mutes', {})
+  check('401 without a session', anon.status === 401)
+  // The cap: 1001 muted users, seeded in SQL.
+  await prisma.$executeRaw`INSERT INTO users (name, email) SELECT 'Cap ' || g, ${TAG} || '-cap-' || g || '@example.test' FROM generate_series(1, 1001) g`
+  await prisma.$executeRaw`INSERT INTO user_mutes (muter_id, muted_id) SELECT ${M.id}, id FROM users WHERE email LIKE ${`${TAG}-cap-%`}`
+  await resetLimits()
+  const capped = await call(mutesRoute.GET, 'GET', '/api/me/mutes', M)
+  check('capped at 1000 rows', capped.status === 200 && capped.json.mutes.length === 1000, capped.json?.mutes?.length)
+
+  // ── § 7 devices, native caller ────────────────────────────────────────────
+  section('§ 7 devices routes for a native caller')
+  const D1 = await mkUser('Dee Devices')
+  const D2 = await signInAgain(D1)
+  const D3 = await signInAgain(D1)
+  const rowOf = async (u: User) => (await prisma.authSession.findFirstOrThrow({ where: { token: tokenOf(u) }, select: { id: true } })).id
+  const [d1Id, d2Id, d3Id] = [await rowOf(D1), await rowOf(D2), await rowOf(D3)]
+  await resetLimits()
+  const dl = await call(devicesRoute.GET, 'GET', '/api/me/devices', D1)
+  const flagged = (dl.json?.devices ?? []).filter((d: { isCurrent: boolean }) => d.isCurrent).map((d: { id: string }) => d.id)
+  check('GET flags exactly the caller\'s own ba: row as This Device', dl.status === 200 && JSON.stringify(flagged) === JSON.stringify([`ba:${d1Id}`]), flagged)
+  await resetLimits()
+  const noPw = await call(deviceRoute.DELETE, 'DELETE', `/api/me/devices/ba:${d2Id}`, D1, {}, { id: `ba:${d2Id}` })
+  check('another device without a password → 403', noPw.status === 403 && (await authenticates(D2)), noPw)
+  await resetLimits()
+  const foreign = await call(deviceRoute.DELETE, 'DELETE', `/api/me/devices/ba:${await rowOf(M)}`, D1, { password: D1.password }, { id: `ba:${await rowOf(M)}` })
+  check('someone else\'s ba: row (with my password) → 404, untouched', foreign.status === 404 && (await authenticates(M)), foreign)
+  await resetLimits()
+  const ownRow = await call(deviceRoute.DELETE, 'DELETE', `/api/me/devices/ba:${d3Id}`, D3, undefined, { id: `ba:${d3Id}` })
+  check('my OWN ba: row needs no password → 200, and the session is dead', ownRow.status === 200 && !(await authenticates(D3)), ownRow)
+  const D4 = await signInAgain(D1)
+  await prisma.userSession.create({ data: { userId: D1.id, deviceLabel: 'MacBook · Safari' } })
+  const webRow = await prisma.userSession.create({ data: { userId: D1.id, deviceLabel: 'Windows · Edge' }, select: { id: true } })
+  await resetLimits()
+  const webNoPw = await call(deviceRoute.DELETE, 'DELETE', `/api/me/devices/${webRow.id}`, D1, {}, { id: webRow.id })
+  check('🔒 a web row without a password from the app → 403 (no web row is ever the app\'s own)', webNoPw.status === 403 && !(await prisma.userSession.findUniqueOrThrow({ where: { id: webRow.id } })).revokedAt, webNoPw)
+  await resetLimits()
+  const allNoPw = await call(devicesRoute.DELETE, 'DELETE', '/api/me/devices', D1, {})
+  check('revoke-all without a password → 403 (not the old native 401)', allNoPw.status === 403 && (await authenticates(D2)), allNoPw)
+  await resetLimits()
+  const all = await call(devicesRoute.DELETE, 'DELETE', '/api/me/devices', D1, { password: D1.password })
+  const web = await prisma.userSession.findMany({ where: { userId: D1.id }, select: { revokedAt: true, revocationReason: true } })
+  check('revoke-all with the password → 200, `revoked` = the web rows', all.status === 200 && all.json?.revoked === 2, all)
+  check('…keeps the caller', await authenticates(D1))
+  check('…signs out every other phone', !(await authenticates(D2)) && !(await authenticates(D4)) && (await prisma.authSession.count({ where: { userId: D1.id } })) === 1)
+  check('…revokes every web session (reason revoke_all)', web.length === 2 && web.every(w => w.revokedAt && w.revocationReason === 'revoke_all'), web)
+  await resetLimits()
+  const left = await call(devicesRoute.GET, 'GET', '/api/me/devices', D1)
+  check('…and the list is just This Device', left.json?.devices?.length === 1 && left.json.devices[0].id === `ba:${d1Id}` && left.json.devices[0].isCurrent === true, left.json)
+
+  // ── § 8 Delete Account failure premise ────────────────────────────────────
+  section('§ 8 a refused account deletion leaves the account intact, its phones signed out')
+  const X1 = await mkUser('Xan Refused')
+  const X2 = await signInAgain(X1)
+  const XS = await createSession(X1, 'Xan Refused')
+  const refused = await executeAccountDelete(X1.id, { maxWipes: 0 }).then(() => 'deleted', (e: unknown) => e)
+  check('fixture: the hosted empty moment makes the deletion refuse (409 class)', refused instanceof AccountDeleteTooManyWipesError, String(refused))
+  check('the account survives', !!(await prisma.user.findUnique({ where: { id: X1.id } })))
+  check('its moment survives', (await prisma.session.count({ where: { code: XS, deletedAt: null } })) === 1)
+  check('🔒 its native sessions are ALREADY gone, both stores (so the app must sign out)', (await prisma.authSession.count({ where: { userId: X1.id } })) === 0 && (await redis.get(tokenOf(X1))) === null && (await redis.get(tokenOf(X2))) === null && !(await authenticates(X1)) && !(await authenticates(X2)))
+
+  // ── § 9 the app's email change re-confirms the password ───────────────────
+  // (A web caller still changes it without one: that branch is untouched.)
+  section('§ 9 PATCH /api/me/account email from the app needs the current password')
+  const E1 = await mkUser('Eve Email')
+  const moved = `${TAG}-moved@example.test`
+  const emailOf = async () => (await prisma.user.findUniqueOrThrow({ where: { id: E1.id }, select: { email: true } })).email
+  await resetLimits()
+  const emailNoPw = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { email: moved })
+  check('🔒 no password → 400, the email stays', emailNoPw.status === 400 && emailNoPw.json?.error === 'current password required' && (await emailOf()) === E1.email, emailNoPw)
+  const wrongPw = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { email: moved, currentPassword: 'wrong-password' })
+  check('a wrong password → 400, the email stays', wrongPw.status === 400 && wrongPw.json?.error === 'current password incorrect' && (await emailOf()) === E1.email, wrongPw)
+  const okPw = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { email: moved.toUpperCase(), currentPassword: E1.password })
+  check('the right password → 200, the email moves (lower-cased)', okPw.status === 200 && (await emailOf()) === moved, okPw)
+  const halfEmail = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { email: 'alice@', currentPassword: E1.password })
+  check('🔒 an address Better Auth can\'t sign in with (alice@) → 400 from the app', halfEmail.status === 400 && halfEmail.json?.error === 'invalid email' && (await emailOf()) === moved, halfEmail)
+  const nameOnly = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { name: 'Eve Renamed' })
+  check('a name-only PATCH from the app still needs no password (the rule is email only)', nameOnly.status === 200 && (await prisma.user.findUniqueOrThrow({ where: { id: E1.id } })).name === 'Eve Renamed', nameOnly)
+  const E2 = await mkUser('Eli Taken')
+  const taken = await call(accountRoute.PATCH, 'PATCH', '/api/me/account', E1, { email: E2.email, currentPassword: E1.password })
+  check('another account\'s email (right password) → 409, nothing moves', taken.status === 409 && (await emailOf()) === moved, taken)
+  const signsIn = await betterAuthServer.api.signInEmail({ body: { email: moved, password: E1.password } }).then(() => true, () => false)
+  const oldGone = await betterAuthServer.api.signInEmail({ body: { email: E1.email, password: E1.password } }).then(() => false, () => true)
+  check('…the new email signs in, the old one no longer does', signsIn && oldGone)
 } finally {
+  await prisma.$executeRaw`DELETE FROM users WHERE email LIKE ${`${TAG}-cap-%`}`.catch(() => {})
   console.log(`\n${pass} passed, ${failed} failed`)
   await prisma.$disconnect().catch(() => {})
   await redis.quit().catch(() => {})
