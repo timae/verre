@@ -6,7 +6,7 @@ Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invis
 
 ## Schema
 
-`user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair. Unblock restores visibility everywhere.
+`user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair (so a read that walks `follows` must filter block pairs itself; e.g. the extended circle never links through a block pair, `lib/profileVisibility.ts` `bridgeUnblocked`). Unblock restores visibility everywhere.
 
 ## Authorization chokepoints (`lib/userBlock.ts`)
 

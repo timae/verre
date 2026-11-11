@@ -6,13 +6,18 @@
 //   public-followers — only people who follow the profile owner (asymmetric)
 //   public-mutual    — only mutual follows (both directions of `follows`)
 //
-// FoF (`visibility_fof`, depth 1) extends `public-followers` and `public-mutual`
-// to also admit a viewer reachable as viewer→intermediary→profile (one hop).
-// Has no effect on `public-internet` / `public-users` — those tiers are
-// already broader than any FoF set.
+// The extended circle (`visibility_fof`, depth 1) FOLLOWS THE TIER (ruled
+// 2026-11-11): `public-followers` + it = Followers of Followers (viewer→X→
+// profile); `public-mutual` + it = Friends of Friends (viewer↔X↔profile, both
+// links mutual). No effect on `public-internet` / `public-users`, which are
+// already broader. A block either way between the person in the middle and
+// either end breaks the link (ruled 2026-11-11). See
+// `viewerCanReachAuthorViaFof` / `viewerFofAuthorSet`.
 //
 // Posts (Check-Ins Visible To, `users.checkin_visibility`): the stricter of
-// the profile tier and the check-in audience wins, see `canViewPosts`.
+// the profile tier and the check-in audience wins, see `canViewPosts`. A
+// choice whose audience equals the account's reads and saves as Same as
+// Profile (`canonicalPostAudience`, @verre/core).
 //
 // Session compare views are NOT gated by visibility (trust model: session participation > profile tier).
 // Tag display follows the post *author's* post gate — being tagged is a
@@ -23,6 +28,7 @@
 // authoritative source of truth and `isProfileVisibility` is the
 // belt-and-suspenders write-side validator.
 
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { checkRate, peekRate } from '@/lib/rateLimit'
 import {
@@ -34,6 +40,7 @@ import {
   VISIBILITY_FIELDS,
 } from '@/lib/profileVisibilityShared'
 import { viewerBlocksAuthor, authorBlocksViewer } from '@/lib/userBlock'
+import { applyVisibilityChanges, canonicalPostAudience, extendedCircleApplies, type StrictTier } from '@verre/core'
 
 // Re-export client-safe primitives so server callers keep importing from
 // one place. The actual definitions live in `lib/profileVisibilityShared.ts`
@@ -53,7 +60,7 @@ export interface ProfileViewer {
   id: number | null
   followsProfile: boolean       // viewer follows the profile owner
   profileFollowsViewer: boolean // profile owner follows viewer
-  isFofOfProfile?: boolean      // viewer reachable as viewer→X→profile (depth 1)
+  isFofOfProfile?: boolean      // viewer in the profile's extended circle (depth 1, by tier)
 }
 
 // 🔒 Another user's VisibilitySettings never leave the server: the gate
@@ -87,25 +94,34 @@ function normalizeCheckinVisibility(raw: string | null, userId: number): Checkin
 // `tierOk` false = a corrupt PROFILE tier (unreachable under the CHECK);
 // callers decide (the gate shells, the bulk loader drops the author, the
 // owner's GET 404s), and `settings` then reads it as the strictest tier.
-function readSettings(row: SettingsRow, userId: number): { settings: VisibilitySettings; tierOk: boolean } {
+// The exact collapse only (the same audience, so no gate can change): a
+// stored posts choice equal to the account reads as Same as Profile in the
+// gate, the bulk loader, the owner's GET and the PATCH's compare alike.
+// `canonicalPostAudience` can't clamp: a read never narrows a stored row.
+// `storedPosts` = the row's own choice (normalized, before the collapse).
+function readSettings(row: SettingsRow, userId: number): { settings: VisibilitySettings; tierOk: boolean; storedPosts: CheckinVisibility | null } {
   const tierOk = isProfileVisibility(row.profileVisibility)
   if (!tierOk) console.error('[profileVisibility] corrupt enum value', { userId, value: row.profileVisibility })
+  const storedPosts = normalizeCheckinVisibility(row.checkinVisibility, userId)
   return {
     tierOk,
-    settings: {
+    storedPosts,
+    settings: canonicalPostAudience({
       visibility: tierOk ? row.profileVisibility as ProfileVisibility : 'public-mutual',
       fofEnabled: tierOk && row.visibilityFof,
-      checkinVisibility: normalizeCheckinVisibility(row.checkinVisibility, userId),
+      checkinVisibility: storedPosts,
       showCravings: row.showCravings,
       showMoments: row.showMoments,
       showLocations: row.showLocations,
-    },
+    }),
   }
 }
 
 // Pure predicate. Callers must short-circuit on `viewer.id === profileId`
 // before calling — same-id check needs the profileId we don't have here.
-// resolveProfileViewer handles the self-check upstream.
+// resolveProfileViewer handles the self-check upstream. `isFofOfProfile`
+// already means the circle of THIS tier (followers of followers, or friends
+// of friends): the queries below decide it, never this predicate.
 export function canViewProfile(
   visibility: ProfileVisibility,
   viewer: ProfileViewer,
@@ -114,14 +130,15 @@ export function canViewProfile(
   if (visibility === 'public-internet') return true
   if (viewer.id === null) return false
   if (visibility === 'public-users') return true
-  const direct =
-    visibility === 'public-followers'
-      ? viewer.followsProfile
-      : viewer.followsProfile && viewer.profileFollowsViewer
-  if (direct) return true
+  if (directlyAdmitted(visibility, viewer)) return true
   if (!fofEnabled) return false
   return viewer.isFofOfProfile === true
 }
+
+// A strict tier's own edges: a follower (Followers), a mutual follow (Friends).
+// The circle lookup is skipped for a viewer this already admits.
+const directlyAdmitted = (tier: StrictTier, v: Pick<ProfileViewer, 'followsProfile' | 'profileFollowsViewer'>) =>
+  tier === 'public-followers' ? v.followsProfile : v.followsProfile && v.profileFollowsViewer
 
 // The post predicate (Check-Ins Visible To): the profile gate AND the
 // check-in audience. The stricter always wins: Same as Profile (null) adds
@@ -256,15 +273,13 @@ export async function resolveProfileViewer(
     return ok({ id: viewerId, followsProfile, profileFollowsViewer })
   }
 
-  // FoF rescue: only worth a query when the direct edges don't already
-  // qualify the viewer under the tier. For `public-followers` direct =
-  // followsOut; for `public-mutual` direct = followsOut && followsIn.
+  // The circle rescue: only worth a query on a strict tier (a stored switch
+  // rides along hidden under `public-users`, which admits every viewer here)
+  // when the viewer's own edges don't already admit them.
   let isFofOfProfile: boolean | undefined
-  const directQualifies = settings.visibility === 'public-followers'
-    ? followsProfile
-    : followsProfile && profileFollowsViewer
-  if (settings.fofEnabled && !directQualifies) {
-    isFofOfProfile = await viewerCanReachAuthorViaFof(viewerId, profileId)
+  const tier = settings.visibility
+  if (extendedCircleApplies(tier) && settings.fofEnabled && !directlyAdmitted(tier, { followsProfile, profileFollowsViewer })) {
+    isFofOfProfile = await viewerCanReachAuthorViaFof(viewerId, profileId, tier)
   }
 
   const viewer: ProfileViewer = { id: viewerId, followsProfile, profileFollowsViewer, isFofOfProfile }
@@ -285,18 +300,40 @@ export async function viewerCanSeePosts(viewerId: number | null, authorId: numbe
   return gate.status === 'ok' && gate.sees.posts
 }
 
-// Single-author existence check for FoF (depth 1): does any X exist where
-// viewer→X→author? One indexed query, used by the per-row gate path. Feed
-// uses the bulk variant `viewerFofAuthorSet`.
-async function viewerCanReachAuthorViaFof(viewerId: number, authorId: number): Promise<boolean> {
+// 🔒 The person in the middle (`x`) links nobody while a block stands either
+// way between them and the viewer or the owner (block = bilateral
+// invisibility, docs/dev/block.md; the follow rows survive a block). The
+// viewer ↔ owner pair itself is the callers' block check.
+const bridgeUnblocked = (x: 'a1.following_id' | 'f1.following_id', viewer: Prisma.Sql, owner: Prisma.Sql) => Prisma.sql`NOT EXISTS (
+  SELECT 1 FROM user_blocks ub
+  WHERE (ub.blocker_id = ${Prisma.raw(x)} AND ub.blocked_id IN (${viewer}, ${owner}))
+     OR (ub.blocked_id = ${Prisma.raw(x)} AND ub.blocker_id IN (${viewer}, ${owner})))`
+
+// Single-author extended-circle check (depth 1), by the author's tier:
+//   public-followers → Followers of Followers: some X with viewer→X→author;
+//   public-mutual    → Friends of Friends: some X with viewer↔X AND X↔author;
+// X never blocked either way with either end. Every join a PK lookup. Used
+// by the per-row gate path; feed / search / session avatars use the bulk
+// `viewerFofAuthorSet`.
+async function viewerCanReachAuthorViaFof(viewerId: number, authorId: number, tier: StrictTier): Promise<boolean> {
   if (viewerId === authorId) return true
-  const rows = await prisma.$queryRaw<{ exists: boolean }[]>`
-    SELECT EXISTS (
-      SELECT 1 FROM follows f1
-      JOIN follows f2 ON f2.follower_id = f1.following_id
-      WHERE f1.follower_id = ${viewerId} AND f2.following_id = ${authorId}
-    ) AS exists
-  `
+  const [v, a] = [Prisma.sql`${viewerId}`, Prisma.sql`${authorId}`]
+  const rows = tier === 'public-mutual'
+    ? await prisma.$queryRaw<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM follows a1
+        JOIN follows a2 ON a2.follower_id = a1.following_id AND a2.following_id = a1.follower_id
+        JOIN follows b1 ON b1.follower_id = a1.following_id AND b1.following_id = ${authorId}
+        JOIN follows b2 ON b2.follower_id = b1.following_id AND b2.following_id = b1.follower_id
+        WHERE a1.follower_id = ${viewerId} AND ${bridgeUnblocked('a1.following_id', v, a)}
+      ) AS exists`
+    : await prisma.$queryRaw<{ exists: boolean }[]>`
+      SELECT EXISTS (
+        SELECT 1 FROM follows f1
+        JOIN follows f2 ON f2.follower_id = f1.following_id
+        WHERE f1.follower_id = ${viewerId} AND f2.following_id = ${authorId}
+          AND ${bridgeUnblocked('f1.following_id', v, a)}
+      ) AS exists`
   return rows[0]?.exists ?? false
 }
 
@@ -363,12 +400,15 @@ export async function resolveProfileViewerBulk(
   return out
 }
 
-// Resolve which authors in `authorIds` are reachable from `viewerId` as
-// viewer→X→author (depth 1). Single SQL roundtrip; used by the feed when
-// any author has fof enabled and the viewer doesn't already qualify by
-// direct follow.
+// Which of `authorIds` have the viewer in their extended circle (depth 1),
+// each by its own tier (the rule of `viewerCanReachAuthorViaFof`). Only the
+// authors that need it are looked up: the switch on, a strict tier, and a
+// viewer their own edges don't already admit (`settings` =
+// batchLoadVisibilities, `viewers` = resolveProfileViewerBulk; an author
+// missing from `settings` is skipped). One roundtrip: the
+// Followers-of-Followers set UNION the Friends-of-Friends set.
 //
-// Bounded at FOF_AUTHOR_CAP authorIds: the JOIN can fan out to
+// Bounded at FOF_AUTHOR_CAP authors in total: the JOIN can fan out to
 // (viewer.outdegree × intermediaries.outdegree) and a viewer following
 // thousands could otherwise trigger a multi-second query. Callers should
 // already be passing at most a page-size of candidates; this is the
@@ -377,24 +417,44 @@ const FOF_AUTHOR_CAP = 200
 export async function viewerFofAuthorSet(
   viewerId: number,
   authorIds: number[],
+  settings: Map<number, VisibilitySettings>,
+  viewers: Map<number, ProfileViewer>,
 ): Promise<Set<number>> {
-  if (authorIds.length === 0) return new Set()
-  const capped = authorIds.length > FOF_AUTHOR_CAP ? authorIds.slice(0, FOF_AUTHOR_CAP) : authorIds
-  const rows = await prisma.$queryRaw<{ following_id: number }[]>`
-    SELECT DISTINCT f2.following_id
+  const followers: number[] = [], mutual: number[] = []
+  for (const id of authorIds) {
+    if (followers.length + mutual.length >= FOF_AUTHOR_CAP) break
+    const s = settings.get(id), v = viewers.get(id)
+    if (!s?.fofEnabled || !extendedCircleApplies(s.visibility) || (v && directlyAdmitted(s.visibility, v))) continue
+    ;(s.visibility === 'public-mutual' ? mutual : followers).push(id)
+  }
+  if (followers.length + mutual.length === 0) return new Set()
+  const v = Prisma.sql`${viewerId}`
+  const rows = await prisma.$queryRaw<{ id: number }[]>`
+    SELECT f2.following_id AS id
     FROM follows f1
     JOIN follows f2 ON f2.follower_id = f1.following_id
-    WHERE f1.follower_id = ${viewerId}
-      AND f2.following_id = ANY(${capped}::int[])
+    WHERE f1.follower_id = ${viewerId} AND f2.following_id = ANY(${followers}::int[])
+      AND ${bridgeUnblocked('f1.following_id', v, Prisma.raw('f2.following_id'))}
+    UNION
+    SELECT b1.following_id AS id
+    FROM follows a1
+    JOIN follows a2 ON a2.follower_id = a1.following_id AND a2.following_id = a1.follower_id
+    JOIN follows b1 ON b1.follower_id = a1.following_id
+    JOIN follows b2 ON b2.follower_id = b1.following_id AND b2.following_id = b1.follower_id
+    WHERE a1.follower_id = ${viewerId} AND b1.following_id = ANY(${mutual}::int[])
+      AND ${bridgeUnblocked('a1.following_id', v, Prisma.raw('b1.following_id'))}
   `
-  return new Set(rows.map(r => r.following_id))
+  return new Set(rows.map(r => r.id))
 }
 
 // Update the owner's visibility settings: a COMPARE-AND-SET (You, step 4).
 // `expected` = the six as the client last read them; `changes` = the fields
-// to set (partial, at least one). Inside one transaction the users row is
-// locked (`FOR UPDATE`) and compared against THAT row:
-//   - stored == expected ⊕ changes already → no-op 'ok' (a retry whose first
+// to set (partial, at least one). The target is `applyVisibilityChanges`
+// (@verre/core, the app's own rule): Same as Profile for a posts choice equal
+// to the account, and on an actual tier / circle change a posts choice still
+// wider than the account is narrowed to its tier. Inside one transaction the
+// users row is locked (`FOR UPDATE`) and compared against THAT row:
+//   - stored == that target already → no-op 'ok' (a retry whose first
 //     attempt committed, or someone else made the same change);
 //   - any expected field ≠ stored → 'conflict' with `current`;
 //   - else update + one full before/after audit row → 'ok' with `current`.
@@ -438,8 +498,9 @@ export async function setProfileVisibility(
     if (!rows[0]) return { kind: 'not-found' as const }
     // The same reading as the owner's GET (normalized), so the owner can
     // always overwrite a bad stored value.
-    const { settings: stored } = readSettings(rows[0], userId)
-    const target: VisibilitySettings = { ...expected, ...changes }
+    // The audit's `from` is what the row held (`storedPosts`), not its collapsed reading.
+    const { settings: stored, storedPosts } = readSettings(rows[0], userId)
+    const target = applyVisibilityChanges(expected, changes)
     if (sameSettings(stored, target)) return { kind: 'ok' as const, current: stored, changed: false }
     if (!sameSettings(stored, expected)) return { kind: 'conflict' as const, current: stored }
     await tx.user.update({
@@ -458,7 +519,7 @@ export async function setProfileVisibility(
         userId,
         fromTier: stored.visibility, toTier: target.visibility,
         fromFof: stored.fofEnabled, toFof: target.fofEnabled,
-        fromCheckinTier: auditTier(stored.checkinVisibility), toCheckinTier: auditTier(target.checkinVisibility),
+        fromCheckinTier: auditTier(storedPosts), toCheckinTier: auditTier(target.checkinVisibility),
         fromShowCravings: stored.showCravings, toShowCravings: target.showCravings,
         fromShowMoments: stored.showMoments, toShowMoments: target.showMoments,
         fromShowLocations: stored.showLocations, toShowLocations: target.showLocations,

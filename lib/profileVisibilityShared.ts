@@ -41,8 +41,9 @@ export const TIER_LABELS: Record<ProfileVisibility, { title: string; sub: string
 }
 
 // Check-Ins Visible To (You, step 4): the audience for the owner's POSTS,
-// stored independently of the profile tier and never clamped to it; the
-// stricter of the two wins on read (`canViewPosts`, lib/profileVisibility.ts).
+// stored beside the profile tier; the stricter of the two wins on read
+// (`canViewPosts`, lib/profileVisibility.ts), and a save keeps it canonical
+// (`applyVisibilityChanges`, @verre/core: equal to the account = NULL).
 // NULL (not a member of this union) = Same as Profile. 'public-internet' is
 // never stored (it would equal NULL), and an explicit tier never uses FoF.
 // 'only-me' = a private diary: nobody but the owner sees the posts.

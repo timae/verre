@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { clearSessionNames } from '@/lib/clientStorage'
 import { TIER_LABELS, TIER_ORDER, type ProfileVisibility, type VisibilitySettings } from '@/lib/profileVisibilityShared'
+import { extendedCircleApplies } from '@verre/core'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -547,7 +548,7 @@ function ProfileVisibilitySection() {
 
   // FoF only meaningful for follower/mutual tiers — broader tiers already
   // admit anyone who'd qualify via the indirect chain.
-  const fofRelevant = tier === 'public-followers' || tier === 'public-mutual'
+  const fofRelevant = tier !== null && extendedCircleApplies(tier)
 
   return (
     <div style={{marginTop:32,paddingTop:20,borderTop:'1px solid var(--border)'}}>
@@ -584,8 +585,8 @@ function ProfileVisibilitySection() {
             <div style={{marginTop:14,padding:'10px 12px',borderRadius:6,border:'1px solid var(--border)',background:'var(--bg3)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,cursor:saving?'wait':'pointer'}}
               onClick={() => !saving && save(tier, !fofEnabled)}>
               <div>
-                <div style={{fontSize:11,fontWeight:700}}>Friends of friends</div>
-                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>also let people one connection away through someone I trust</div>
+                <div style={{fontSize:11,fontWeight:700}}>{tier === 'public-mutual' ? 'Friends of friends' : 'Followers of followers'}</div>
+                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{tier === 'public-mutual' ? 'also friends of your friends' : 'also people who follow your followers'}</div>
               </div>
               <div style={{ width: 36, height: 20, borderRadius: 10, background: fofEnabled ? 'var(--accent)' : 'var(--bg4)', border: '1px solid var(--border2)', position: 'relative', flexShrink: 0 }}>
                 <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: fofEnabled ? 18 : 2, transition: 'left .2s' }} />

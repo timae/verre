@@ -11,7 +11,12 @@ In **Settings → Profile visibility**, pick one:
 - **My followers** — only people who follow you. They don't need to follow back.
 - **Mutual follows** — only people you follow back.
 
-Underneath those, there's a **Friends of friends** toggle for the two strictest options. Flip it on if you also want to let in someone one hop away — a friend of a follower, or a friend of a mutual.
+Underneath the two strictest options there's a switch that widens them by one step. What it adds depends on the option you picked:
+
+- With **My followers**: **Followers of followers**. Also people who follow one of your followers.
+- With **Mutual follows**: **Friends of friends**. Also people your friends are friends with (here a friend is a mutual follow: you follow each other).
+
+In the app these are **Include Followers of Followers** and **Include Friends of Friends**. Someone you've blocked, or who blocked you, never brings anyone in this way.
 
 ## Who sees your posts
 
@@ -20,7 +25,7 @@ In the app, **Settings → Privacy → Post Visibility** decides who sees your p
 - **Verre Users**, **Followers** or **Friends**: a smaller audience for your posts only. Followers of followers or friends of friends never apply here.
 - **Only Me**: a private diary. Your posts show only to you.
 
-The stricter setting always wins, so a choice wider than your account visibility is greyed out until you change your account visibility, and the same choice as your account visibility is simply **Same as Account** (unless you include friends of friends or followers of followers there: then picking the same choice for posts leaves them out). If you narrow your account visibility past your posts choice, **Same as Account** turns back on.
+The stricter setting always wins, so a choice wider than your account visibility is greyed out until you change your account visibility, and the same choice as your account visibility is simply **Same as Account** (unless you include friends of friends or followers of followers there: then picking the same choice for posts leaves them out). If you narrow your account visibility past your posts choice, **Same as Account** turns back on, on the website too, and stays on if you widen it again. Turning off friends of friends (or followers of followers) while your posts match your account visibility does the same. One exception: if your posts are set to **Followers** and you change your account to **Friends** with friends of friends included, your posts become **Friends** (without friends of friends).
 
 When your posts are hidden from someone who can see your profile, the app shows them a short line instead, for example "Follow Lena to see posts" (the website shows no posts).
 

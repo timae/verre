@@ -14,7 +14,9 @@ import { errorText } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
-import { broader, canonical, extendedApplies, extendedOn, sameTier } from '@/lib/postAudience';
+import {
+  applyVisibilityChanges, canonicalPostAudience, extendedCircleApplies, extendedCircleOn, postsBroaderThanAccount, postsSameTierAsAccount,
+} from '@verre/core';
 
 // Ruling P1: the server's four tiers, Friends = mutual follows.
 const TIERS: ReadonlyArray<{ code: ProfileVisibility; label: string }> = [
@@ -35,10 +37,10 @@ const POST_CHOICES: ReadonlyArray<{ code: CheckinVisibility; label: string }> = 
   { code: 'public-mutual', label: 'Friends' },
   { code: 'only-me', label: 'Only Me' },
 ];
-// The extended circle follows the tier (ruled 2026-11-11): followers of your
-// followers, or friends of your friends. ⚠️ The server's rule for Friends still
-// admits followers of followers until the FoF change lands. The audience rules
-// (canonical, sameAudience, …) live in lib/postAudience.ts.
+// The extended circle follows the tier (ruled 2026-11-11, the server's rule
+// too): followers of your followers, or friends of your friends. The audience
+// rules (canonicalPostAudience, applyVisibilityChanges, …) live in
+// @verre/core (postAudience.ts), shared with the server's write.
 const extendedLabel = (p: ProfileVisibility) => (p === 'public-mutual' ? 'Friends of Friends' : 'Followers of Followers');
 const extendedHelper = (p: ProfileVisibility) =>
   p === 'public-mutual' ? 'Also people your friends are friends with' : 'Also people who follow your followers';
@@ -87,11 +89,9 @@ export default function Privacy() {
     if (queryClient.isMutating({ mutationKey: SAVE_KEY }) > 0) return;
     const expected = queryClient.getQueryData<VisibilitySettings>(VISIBILITY_KEY);
     if (!expected) return;
-    // From what the page SHOWS (canonical), not the raw stored row: a stored
-    // value that displays as Same as Account must stay that way when another
-    // field changes (review 2026-11-11). The raw `expected` stays the
-    // compare-and-set base and the diff below.
-    const next = canonical({ ...canonical(expected), ...changes }, 'visibility' in changes || 'fofEnabled' in changes);
+    // The server's own rule (@verre/core), from what the page shows; the raw
+    // `expected` stays the compare-and-set base and the diff below.
+    const next = applyVisibilityChanges(expected, changes);
     if (sameSettings(expected, next)) return;
     // A collapse (or clamp) of the posts choice rides in the same PATCH, and
     // a tier change carries the stored FoF too (unchanged, so harmless here:
@@ -136,17 +136,17 @@ export default function Privacy() {
     Alert.alert('Something went wrong', errorText(outcome.e));
   };
 
-  const v = vis.data ? canonical(vis.data) : undefined;
+  const v = vis.data ? canonicalPostAudience(vis.data) : undefined;
   const tier = v ? TIERS.find((t) => t.code === v.visibility)?.label ?? '' : '';
   const posts = v?.checkinVisibility ?? null;
   const postsLabel = posts ? POST_CHOICES.find((c) => c.code === posts)?.label ?? '' : '';
   // The same tier as the account with the extended circle on: say what it means.
-  const postsHelper = v && posts && sameTier(posts, v.visibility) ? `Without ${extendedLabel(v.visibility).toLowerCase()}` : undefined;
+  const postsHelper = v && posts && postsSameTierAsAccount(posts, v.visibility) ? `Without ${extendedLabel(v.visibility).toLowerCase()}` : undefined;
   const postOptions = POST_CHOICES.map((c) => {
     if (!v) return c;
-    if (broader(c.code, v.visibility)) return { ...c, disabled: true, hint: 'Change your account visibility first' };
-    if (!sameTier(c.code, v.visibility)) return c;
-    return extendedOn(v)
+    if (postsBroaderThanAccount(c.code, v.visibility)) return { ...c, disabled: true, hint: 'Change your account visibility first' };
+    if (!postsSameTierAsAccount(c.code, v.visibility)) return c;
+    return extendedCircleOn(v)
       ? { ...c, hint: `Without ${extendedLabel(v.visibility).toLowerCase()}` }
       : { ...c, disabled: true, hint: 'Same as account visibility' };
   });
@@ -169,7 +169,7 @@ export default function Privacy() {
           busy={saving}
           onPress={() => (v ? setSheet('profile') : void vis.refetch())}
         />
-        {v && extendedApplies(v.visibility) ? (
+        {v && extendedCircleApplies(v.visibility) ? (
           <ToggleRow
             title={`Include ${extendedLabel(v.visibility)}`}
             subtitle={extendedHelper(v.visibility)}

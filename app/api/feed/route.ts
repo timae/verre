@@ -383,10 +383,7 @@ async function networkAuthors(userId: number): Promise<{ ids: number[]; settings
     mutedUserIds(userId),
     blockPairIds(userId),
   ])
-  const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
-  const fofSet = fofCandidates.length > 0
-    ? await viewerFofAuthorSet(userId, fofCandidates)
-    : new Set<number>()
+  const fofSet = await viewerFofAuthorSet(userId, networkIds, visMap, viewerMap)
   const ids = networkIds.filter(authorId => {
     // Self-visibility: viewer always sees their own content. (Self-mute
     // and self-block are both rejected at the API + DB level, so the

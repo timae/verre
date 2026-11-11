@@ -25,6 +25,11 @@
 //   § 13 (c) PATCH /api/me/visibility compare-and-set (409 + current, no-op
 //        retry, 400s, charges, audit snapshot, the row LOCK)
 //   § 14 (d) the checkin_visibility CHECK
+//   § 15 the extended circle follows the tier (Followers of Followers /
+//        Friends of Friends: four single-edge negatives + a one-way chain,
+//        blocks break a link, single + bulk paths) and the shared
+//        post-audience rule (@verre/core) against canViewPosts + on the
+//        server's write
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
 // SDK actually sends, so "reclaimed" / "survives" is observed on the wire,
@@ -107,7 +112,9 @@ const likeRoute = await import('../../app/api/feed-items/[id]/like/route.ts')
 const checkinsRoute = await import('../../app/api/checkins/route.ts')
 const visibilityRoute = await import('../../app/api/me/visibility/route.ts')
 const badgesRoute = await import('../../app/api/users/[id]/badges/route.ts')
+const searchRoute = await import('../../app/api/users/search/route.ts')
 const { canViewPosts } = await import('../../lib/profileVisibility.ts')
+const { canonicalPostAudience, applyVisibilityChanges } = await import('../../packages/core/src/index.ts')
 const { ensureBadgesSeedOnce } = await import('../../lib/badgeService.ts')
 const { ALL_BADGES } = await import('../../lib/badges.ts')
 const { resolveUser } = await import('../../lib/resolveUser.ts')
@@ -699,7 +706,8 @@ try {
   check('🔒 D11: author blocks you → unlike is 404 even though your like existed', (await like(Gb, 'DELETE')).status === 404)
   check('…and the like is still removed (an unblock must not bring it back)', (await prisma.feedItemLike.count({ where: { userId: Gb.id, feedItemId: postId } })) === 0)
 
-  // Tighten the profile, then loosen it: the check-in choice is never clamped.
+  // Tighten the profile, then loosen it with RAW writes: a READ never clamps
+  // a stored choice (the PATCH path collapses it, § 15).
   await setVis({ checkinVisibility: 'public-followers', profileVisibility: 'public-mutual' })
   check('tighten: the follower now gets the shell and a 404 on ?user=', (await webProfile(O.id, Fl)).json.gated === true && (await feedOf(Fl, O.id)).status === 404)
   check('…the stored check-in choice is untouched', (await prisma.user.findUniqueOrThrow({ where: { id: O.id } })).checkinVisibility === 'public-followers')
@@ -830,6 +838,167 @@ try {
   check("a raw write of 'public-internet' is rejected", await rejects('public-internet'))
   check('a raw write of a bogus value is rejected', await rejects('everyone'))
   check('every union member is accepted', (await Promise.all(['public-users', 'public-followers', 'public-mutual', 'only-me'].map(rejects))).every(x => !x))
+
+  // ── § 15 the extended circle follows the tier + the shared rule ───────────
+  section('§ 15 the extended circle follows the tier; Same as Account is canonical')
+  // (a) The shared rule against the server's predicate, every state × viewer.
+  type Tier = 'public-internet' | 'public-users' | 'public-followers' | 'public-mutual'
+  type Posts = null | 'public-users' | 'public-followers' | 'public-mutual' | 'only-me'
+  type AState = { visibility: Tier; fofEnabled: boolean; checkinVisibility: Posts; showCravings: boolean; showMoments: boolean; showLocations: boolean }
+  const TIERS: Tier[] = ['public-internet', 'public-users', 'public-followers', 'public-mutual']
+  const POSTS: Posts[] = [null, 'public-users', 'public-followers', 'public-mutual', 'only-me']
+  const rels: { id: number | null; followsProfile: boolean; profileFollowsViewer: boolean; isFofOfProfile: boolean }[] = [{ id: null, followsProfile: false, profileFollowsViewer: false, isFofOfProfile: false }]
+  for (const f of [false, true]) for (const b of [false, true]) for (const x of [false, true]) rels.push({ id: 2, followsProfile: f, profileFollowsViewer: b, isFofOfProfile: x })
+  const aud = (s: AState) => rels.map(r => canViewPosts(s, r))
+  const same = (a: boolean[], b: boolean[]) => a.every((x, i) => x === b[i])
+  const within = (a: boolean[], b: boolean[]) => a.every((x, i) => !x || b[i])
+  const states: AState[] = TIERS.flatMap(visibility => [false, true].flatMap(fofEnabled => POSTS.map(checkinVisibility => ({ visibility, fofEnabled, checkinVisibility, showCravings: true, showMoments: true, showLocations: true }))))
+  const CHANGES: Partial<AState>[] = [
+    ...TIERS.map(visibility => ({ visibility })), { fofEnabled: true }, { fofEnabled: false },
+    ...POSTS.map(checkinVisibility => ({ checkinVisibility })), { showCravings: false },
+  ]
+  const ruleBad: string[] = []
+  for (const s of states) {
+    if (!same(aud(canonicalPostAudience(s)), aud(s))) ruleBad.push(`collapse changed ${JSON.stringify(s)}`)
+    for (const ch of CHANGES) {
+      const next = applyVisibilityChanges(s, ch), plain = { ...canonicalPostAudience(s), ...ch }
+      const ok = 'visibility' in ch || 'fofEnabled' in ch ? within(aud(next), aud(plain)) : same(aud(next), aud(plain))
+      if (!ok) ruleBad.push(`${JSON.stringify(ch)} on ${JSON.stringify(s)} → ${JSON.stringify(next)}`)
+    }
+  }
+  check(`the shared rule: ${states.length} states × ${rels.length} viewers × ${CHANGES.length} changes, never wider, exact where it must be`, ruleBad.length === 0, ruleBad.slice(0, 5))
+  const BR: Record<string, number> = { 'public-internet': 0, 'public-users': 1, 'public-followers': 2, 'public-mutual': 3, 'only-me': 4 }
+  const round1 = (s: AState): AState => s.checkinVisibility && s.checkinVisibility !== 'only-me' && BR[s.checkinVisibility] < BR[s.visibility] ? { ...s, checkinVisibility: null } : s
+  check('negative control: the round-1 rule (collapse anything broader) WIDENS somewhere, so the oracle can see it', states.some(s => !within(aud(round1(s)), aud(s))))
+  const trap: AState = { visibility: 'public-mutual', fofEnabled: true, checkinVisibility: 'public-followers', showCravings: true, showMoments: true, showLocations: true }
+  const fofNonFollower = rels.find(r => r.id !== null && !r.followsProfile && !r.profileFollowsViewer && r.isFofOfProfile)!
+  check('🔒 trap: Friends + circle + posts Followers stays Followers (on read and on an unrelated save)',
+    canonicalPostAudience(trap).checkinVisibility === 'public-followers' && applyVisibilityChanges(trap, { showCravings: false }).checkinVisibility === 'public-followers')
+  check('🔒 trap: …so a friend of a friend who doesn\'t follow stays out of the posts (Same as Account would let them in)',
+    !canViewPosts(canonicalPostAudience(trap), fofNonFollower) && canViewPosts({ ...trap, checkinVisibility: null }, fofNonFollower))
+  const offOn = applyVisibilityChanges(applyVisibilityChanges({ ...trap, checkinVisibility: 'public-mutual' }, { fofEnabled: false }), { fofEnabled: true })
+  check('ruled 2026-11-11: posts Friends (without the circle), circle off then on → Same as Account, for good', offOn.checkinVisibility === null, offOn)
+
+  // (b) The real queries. One graph: four negatives each missing exactly ONE
+  // edge of viewer↔X↔owner (a1 viewer→X, a2 X→viewer, b1 X→owner, b2
+  // owner→X: V5, V3, V6, V4), plus V2, a one-way follower of a follower.
+  const OWNER_NAME = `Ottilie ${TAG}` // unique per run: search lists the first 10 by name
+  const Ow = await mkUser(OWNER_NAME)
+  const [Xf, Yf, Zf] = [await mkUser('Xaver Friend'), await mkUser('Yara Follower'), await mkUser('Zeno Followed')]
+  const circle: User[] = []
+  for (const n of ['Vera Fof', 'Vince Chain', 'Vito NoA2', 'Vala NoB2', 'Vreni NoA1', 'Vik NoB1']) circle.push(await mkUser(n))
+  const [V1, V2, V3, V4, V5, V6] = circle
+  const e = (a: User, b: User) => ({ followerId: a.id, followingId: b.id })
+  await prisma.follow.createMany({ data: [
+    e(Xf, Ow), e(Ow, Xf),            // X ↔ owner (a friend)
+    e(Yf, Ow),                       // Y → owner (a follower only)
+    e(Ow, Zf), e(Zf, V6), e(V6, Zf), // owner → Z only; Z ↔ V6
+    e(V1, Xf), e(Xf, V1),            // V1 ↔ X: a friend of a friend
+    e(V2, Yf),                       // V2 → Y → owner: a follower of a follower
+    e(V3, Xf),                       // V3 → X, not back (no a2)
+    e(V4, Yf), e(Yf, V4),            // V4 ↔ Y, owner doesn't follow Y (no b2)
+    e(Xf, V5),                       // X → V5, not back (no a1)
+  ] })
+  const setOw = (data: Vis) => prisma.user.update({ where: { id: Ow.id }, data })
+  const singleSees = async (v: User) => (await webProfile(Ow.id, v)).json.gated !== true
+  const bulkSees = async (v: User) => {
+    await resetLimits()
+    const r = await call(searchRoute.GET, 'GET', `/api/users/search?q=${encodeURIComponent(OWNER_NAME)}`, v)
+    const hit = (r.json as unknown as { id: number; gated?: boolean }[]).find(x => x.id === Ow.id)
+    if (!hit) throw new Error(`search did not list the owner for ${v.id}`)
+    return hit.gated !== true
+  }
+  // Who is admitted, by the single gate and by the bulk set, separately.
+  const admitted = async () => {
+    const single: string[] = [], bulk: string[] = []
+    for (const [i, v] of circle.entries()) {
+      if (await singleSees(v)) single.push(`V${i + 1}`)
+      if (await bulkSees(v)) bulk.push(`V${i + 1}`)
+    }
+    return { single: single.join(), bulk: bulk.join() }
+  }
+  const both = (g: { single: string; bulk: string }, want: string) => g.single === want && g.bulk === want
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: true })
+  let got = await admitted()
+  check('🔒 Friends + Friends of Friends: only the friend of a friend (single + bulk); not V2 (follower of a follower), V3 (follows the friend, not back), V4 (friend of a mere follower), V5, V6', both(got, 'V1'), got)
+  await setOw({ profileVisibility: 'public-followers', visibilityFof: true })
+  got = await admitted()
+  check('Followers + Followers of Followers: anyone following someone who follows the owner (V1–V4; not V5, V6)', both(got, 'V1,V2,V3,V4'), got)
+  await setOw({ visibilityFof: false })
+  got = await admitted()
+  check('Followers, switch off: none', both(got, ''), got)
+  await setOw({ profileVisibility: 'public-mutual' })
+  got = await admitted()
+  check('Friends, switch off: none', both(got, ''), got)
+
+  // A block either way between the person in the middle and either end breaks
+  // the link (ruled 2026-11-11); the follow rows stay.
+  const v1Sees = async () => ({ single: await singleSees(V1), bulk: await bulkSees(V1) })
+  const blockedOut = async (blocker: User, blocked: User) => {
+    await prisma.userBlock.create({ data: { blockerId: blocker.id, blockedId: blocked.id } })
+    try { return await v1Sees() } finally { await prisma.userBlock.deleteMany({ where: { blockerId: blocker.id, blockedId: blocked.id } }) }
+  }
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: true })
+  for (const [label, a, b] of [['the owner blocks X', Ow, Xf], ['X blocks the owner', Xf, Ow], ['X blocks the viewer', Xf, V1], ['the viewer blocks X', V1, Xf]] as const) {
+    const r = await blockedOut(a, b)
+    check(`🔒 Friends of Friends: ${label} → the friend of a friend is out (single + bulk)`, !r.single && !r.bulk, r)
+  }
+  const unblocked = await v1Sees()
+  check('…and with no block they are in again', unblocked.single && unblocked.bulk, unblocked)
+  await setOw({ profileVisibility: 'public-followers' })
+  for (const [label, a, b] of [['the owner blocks X', Ow, Xf], ['X blocks the owner', Xf, Ow], ['X blocks the viewer', Xf, V1], ['the viewer blocks X', V1, Xf]] as const) {
+    const r = await blockedOut(a, b)
+    check(`🔒 Followers of Followers: ${label} → out (single + bulk)`, !r.single && !r.bulk, r)
+  }
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: false })
+
+  // The network feed (bulk, the posts gate): viewers who follow the owner
+  // one-way, so the owner is in their network and only the circle can admit.
+  const [W1, W3] = [await mkUser('Walt Fof'), await mkUser('Wim NoA2')]
+  await prisma.follow.createMany({ data: [e(W1, Ow), e(W1, Xf), e(Xf, W1), e(W3, Ow), e(W3, Xf)] })
+  await resetLimits()
+  const owPost = await call(checkinsRoute.POST, 'POST', '/api/checkins', Ow, { wineName: `${TAG} circle`, score: 4, flavors: {} })
+  if (owPost.status !== 201) throw new Error(`owner check-in ${owPost.status}`)
+  const owIn = async (v: User) => ((await feedOf(v)).json.items as { author: { id: number } }[]).some(i => i.author.id === Ow.id)
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: true })
+  check('🔒 network feed, Friends of Friends: the friend of a friend sees the post, a follower of the friend (not followed back) does not', (await owIn(W1)) && !(await owIn(W3)))
+  await setOw({ visibilityFof: false })
+  check('network feed, switch off: neither', !(await owIn(W1)) && !(await owIn(W3)))
+
+  // (c) The server's write applies the shared rule; a READ only collapses.
+  const owVis = async () => { await resetLimits(); return (await call(visibilityRoute.GET, 'GET', '/api/me/visibility', Ow)).json as unknown as AState }
+  const owPatch = async (changes: Partial<AState>) => { const expected = await owVis(); await resetLimits(); return call(visibilityRoute.PATCH, 'PATCH', '/api/me/visibility', Ow, { expected, ...changes }) }
+  const storedPosts = async () => (await prisma.user.findUniqueOrThrow({ where: { id: Ow.id } })).checkinVisibility
+  await setOw({ profileVisibility: 'public-users', visibilityFof: false, checkinVisibility: 'public-followers' })
+  let w = await owPatch({ visibility: 'public-mutual' })
+  check('narrowing the account past the posts choice turns Same as Account back on (stored NULL)', w.status === 200 && w.json.current.checkinVisibility === null && (await storedPosts()) === null, w.json)
+  w = await owPatch({ visibility: 'public-users' })
+  check('…and loosening it again keeps Same as Account (the old choice doesn\'t come back)', w.json.current.checkinVisibility === null && (await storedPosts()) === null)
+  await setOw({ profileVisibility: 'public-followers', visibilityFof: true, checkinVisibility: 'public-followers' })
+  w = await owPatch({ visibility: 'public-mutual' })
+  check('🔒 clamp: Followers + circle + posts Followers → account Friends: posts become Friends (only narrows)', w.json.current.checkinVisibility === 'public-mutual' && (await storedPosts()) === 'public-mutual', w.json)
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: true, checkinVisibility: 'public-followers' })
+  const auditBefore = await prisma.profileVisibilityLog.count({ where: { userId: Ow.id } })
+  check('🔒 a READ never clamps: the owner\'s GET keeps Friends + circle + posts Followers', (await owVis()).checkinVisibility === 'public-followers')
+  const v1Posts = await feedOf(V1, Ow.id)
+  check('🔒 …the gate: a friend of a friend who doesn\'t follow sees the profile, not the posts (?user= → 200 empty)',
+    (await singleSees(V1)) && v1Posts.status === 200 && v1Posts.json.items.length === 0, v1Posts.json)
+  const w1Posts = await feedOf(W1, Ow.id)
+  check('…one who also follows sees them (?user= and the network feed), and so does the friend', w1Posts.json.items.length > 0 && (await owIn(W1)) && (await owIn(Xf)), w1Posts.json)
+  w = await owPatch({ visibility: 'public-mutual', fofEnabled: true })
+  check('the same tier + circle sent again (the web sends both) is a no-op: no clamp, no audit row', w.status === 200 && w.json.current.checkinVisibility === 'public-followers' && (await prisma.profileVisibilityLog.count({ where: { userId: Ow.id } })) === auditBefore, w.json)
+  w = await owPatch({ showCravings: false })
+  check('an unrelated change (Show Cravings) never touches the posts choice', w.json.current.checkinVisibility === 'public-followers' && (await storedPosts()) === 'public-followers', w.json)
+  await setOw({ profileVisibility: 'public-mutual', visibilityFof: false, checkinVisibility: 'public-users', showCravings: true })
+  check('a READ applies the exact collapse: a stored choice equal to the account reads as Same as Account (the row is untouched)', (await owVis()).checkinVisibility === null && (await storedPosts()) === 'public-users')
+  w = await owPatch({ showMoments: false })
+  check('…and the next save stores it canonically', w.json.current.checkinVisibility === null && (await storedPosts()) === null, w.json)
+  const lastAudit = await prisma.profileVisibilityLog.findFirst({ where: { userId: Ow.id }, orderBy: { id: 'desc' } })
+  check('…the audit logs what the row held (public-users), not its collapsed reading', lastAudit?.fromCheckinTier === 'public-users' && lastAudit?.toCheckinTier === 'profile', lastAudit)
+} catch (err) {
+  // A fixture throw must fail the run: `finally` exits with the check count.
+  failed++
+  console.log(`  ❌ the suite crashed: ${err instanceof Error ? err.stack : String(err)}`)
 } finally {
   await prisma.$executeRaw`DELETE FROM users WHERE email LIKE ${`${TAG}-cap-%`}`.catch(() => {})
   console.log(`\n${pass} passed, ${failed} failed`)

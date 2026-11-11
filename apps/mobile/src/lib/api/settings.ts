@@ -20,7 +20,7 @@ export const DEVICES_KEY = ['me', 'devices'] as const;
 export type ProfileVisibility = 'public-internet' | 'public-users' | 'public-followers' | 'public-mutual';
 // Check-Ins Visible To (step 4): null = Same as Profile, else a stricter
 // audience for your posts; the stricter of the two always wins, and an
-// explicit choice never uses Friends of Friends. Only Me = a private diary.
+// explicit choice never includes the extended circle. Only Me = a private diary.
 export type CheckinVisibility = 'public-users' | 'public-followers' | 'public-mutual' | 'only-me';
 export type VisibilitySettings = {
   visibility: ProfileVisibility;

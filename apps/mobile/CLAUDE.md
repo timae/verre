@@ -1270,9 +1270,9 @@ compare-and-set, the census gate), README.
   chevron → the tier sheet "Account Visible To"), then for Followers /
   Friends the extended-circle switch, named by the tier: "Include Followers
   of Followers" ("Also people who follow your followers") / "Include Friends
-  of Friends" ("Also people your friends are friends with") (ruled; ⚠️ the
-  server still admits followers of followers under Friends until the FoF
-  change, `.local/you-profile/fof-tier-build-prompt.md`). **Post Visibility** ("posts" in
+  of Friends" ("Also people your friends are friends with") (ruled; the
+  server's circle follows the tier too, `docs/dev/profile-visibility.md`).
+  **Post Visibility** ("posts" in
   every copy line of this feature, never "check-ins"; the wire name stays
   `checkinVisibility`): switch "Same as Account" ("Turn off to
   share posts with fewer people"; on = the server's null). Turning it off
@@ -1281,24 +1281,27 @@ compare-and-set, the census gate), README.
   Friends / Only Me). In the sheet: a choice BROADER than the account is
   greyed "Change your account visibility first"; the SAME tier is greyed
   "Same as account visibility", unless the extended circle is on, then it is
-  choosable with "Without friends of friends" (also the row's helper); Only
+  choosable with "Without friends of friends" / "Without followers of
+  followers" by tier (also the row's helper); Only
   Me never is greyed. 🔒 No contradiction and never wider (design flagged a
   contradiction; the review found the first rule could WIDEN, both ruled /
-  fixed 2026-11-11; `lib/postAudience.ts`): a choice whose audience EQUALS
+  fixed 2026-11-11; `@verre/core` `postAudience.ts`, the SERVER's write
+  applies the same rule): a choice whose audience EQUALS
   the account's IS Same as Account (null). Without the extended circle that
   is any choice as wide as the account or wider; WITH the circle on only
   Verre Users (an explicit tier never includes the circle, so Followers under
   Friends + circle is narrower, NOT the same). That exact collapse runs on
-  every save and on display. On an ACCOUNT change, a choice still wider than
-  the account while the circle is on CLAMPS to the account's tier (only
-  narrows); an unrelated save (a Show switch) never touches the choice.
-  Every save starts from what the page SHOWS (`canonical(expected)`), so a
-  stored value displayed as Same as Account stays on when another field
-  changes; the raw `expected` stays the compare-and-set base (review
-  2026-11-11).
-  Pinned against the server's `canViewPosts` for every state × viewer by
-  `.local/you-profile/check-post-audience.mts` (with a negative control).
-  The server gets the same rule on write next (build prompt above). Copy rule (ruled): plain English in sentences ("your account
+  every save and on display. On an ACCOUNT change (the tier or the circle
+  actually changes), a choice still wider than the account while the circle
+  is on CLAMPS to the account's tier (only narrows); an unrelated save (a
+  Show switch, the same tier picked again) never touches the choice. Every
+  save is `applyVisibilityChanges(expected, changes)`: it starts from what
+  the page SHOWS (`canonicalPostAudience(expected)`), so a stored value
+  displayed as Same as Account stays on when another field changes; the raw
+  `expected` stays the compare-and-set base (review 2026-11-11). Pinned
+  against the server's `canViewPosts` for every state × viewer × change in
+  `scripts/tests/you-profile-integration.mts` § 15 (with a negative
+  control). Copy rule (ruled): plain English in sentences ("your account
   visibility"), never a setting's label mid-sentence. **On My Profile**:
   Show Cravings ("Others can see what you crave"), Show Moments ("Others can
   see the moments you joined", NEW, Q5), Show My Locations ("Places on your
