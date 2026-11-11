@@ -46,8 +46,9 @@ export async function GET(req: NextRequest) {
   // BA rows: ipAddress/userAgent hold READY-MADE labels, not raw values — the
   // session.create.before hook in lib/betterAuth.ts derives them at write time
   // (same privacy posture as user_sessions: no raw IP/UA at rest in either
-  // store). lastSeenAt maps to BA's updatedAt, which the session create/update
-  // hooks now FLOOR to the 5-min bucket AT WRITE TIME (lib/lastSeen.ts) — same
+  // store). lastSeenAt maps to BA's updatedAt, which resolveUser bumps once per
+  // 5-min bucket (through Better Auth) and the session create/update hooks
+  // FLOOR to the bucket AT WRITE TIME (lib/lastSeen.ts): the same grain and
   // at-rest precision as web user_sessions.lastSeenAt. We re-bucket here on the
   // way out too (belt: the at-rest value is already on an edge, but re-flooring
   // is cheap and keeps this surface correct even if a future BA write path bumps

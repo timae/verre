@@ -9,6 +9,8 @@ import { prisma } from '@/lib/prisma'
 // request (the eslint.config.mjs allowlists catch it). A dynamic import would
 // only hide the dependency (see app/CLAUDE.md).
 import { betterAuthServer } from '@/lib/betterAuth'
+import { bucketStart } from '@/lib/lastSeen'
+import { checkRate } from '@/lib/rateLimit'
 
 // The single auth seam every API handler resolves its caller through. Returns
 // the NextAuth `Session` shape (or null) regardless of branch, so the trust
@@ -55,6 +57,55 @@ import { betterAuthServer } from '@/lib/betterAuth'
 // authorization tiers.
 export type ResolvedSession = Session & { authSource?: 'native'; nativeSessionId?: number }
 
+// The app's "last active" (auth_sessions.updatedAt, the devices list's
+// lastSeenAt for `ba:` rows) on the web's grain: once per 5-minute bucket
+// (lib/lastSeen.ts), like auth.ts bumps user_sessions.lastSeenAt.
+//  - 🔒 Through Better Auth's internalAdapter.updateSession, never a raw row
+//    write: it rewrites the Redis copy (only if one exists; an evicted copy is
+//    not re-created), then the row; the session.update.before hook in
+//    lib/betterAuth.ts floors the value to the bucket edge.
+//  - 🔒 updatedAt ONLY, never expiresAt: only the HTTP heartbeat slides (the
+//    disableRefresh rule below).
+//  - Skipped while the session is due for that slide, or within SLIDE_MARGIN_MS
+//    of it (Better Auth's own condition, on its resolved sessionConfig): the
+//    heartbeat writes updatedAt itself, and both writers read-modify-write the
+//    Redis copy, so a bump in flight across a slide could put the old
+//    expiresAt back (the margin covers a bump that becomes due mid-flight).
+//    Cost: an app kept open past that point shows its last slide until the
+//    next launch or foreground.
+//  - A revoke between the bump's read and its Redis write-back: the row
+//    update then finds no row, and the bump deletes the copy it may have put
+//    back (through Better Auth), so no name/email copy outlives the session.
+//    If both writes land inside the revoke's own Redis-then-row gap, the copy
+//    stays, unauthenticated (secondaryStorage.get). Pinned in § 10 (f), (g).
+//  - Bounded: one attempt per session per bucket per instance (`attempted`,
+//    claimed before the first await, so a parallel burst writes once and a
+//    failure waits for the next bucket), and BUMP_BUDGET per user per 5 min
+//    fleet-wide, because every updateSession also rewrites the user's whole
+//    active-sessions list and native sessions per user are uncapped.
+//  - Fire-and-forget, `async` like auth.ts's bump: a synchronous throw becomes
+//    a rejection for the caller's .catch, so it never fails or delays the
+//    request, or drops a native caller to the web branch.
+const BUMP_BUDGET = 30
+const SLIDE_MARGIN_MS = 60_000
+// Test seam (scripts/tests/ba-session-lifetime.mjs § 10): sees every bump it
+// starts, so the suite can await a fire-and-forget write. A no-op otherwise.
+export const nativeLastSeenHooks: { started: (bump: Promise<void>) => void } = { started: () => {} }
+let attemptedBucket = 0
+const attempted = new Set<string>()
+async function bumpNativeLastSeen(userId: number, session: { id: string; token: string; updatedAt: Date | string; expiresAt: Date | string }) {
+  const now = Date.now()
+  const bucket = bucketStart(now)
+  if (new Date(session.updatedAt).getTime() >= bucket) return
+  if (bucket !== attemptedBucket) { attempted.clear(); attemptedBucket = bucket }
+  if (attempted.has(session.id)) return
+  attempted.add(session.id)
+  const { sessionConfig, internalAdapter } = await betterAuthServer.$context
+  if (new Date(session.expiresAt).getTime() - (sessionConfig.expiresIn - sessionConfig.updateAge) * 1000 <= now + SLIDE_MARGIN_MS) return
+  if (!(await checkRate(`rl:native-lastseen:user:${userId}:5m`, BUMP_BUDGET, 300)).allowed) return
+  if (!(await internalAdapter.updateSession(session.token, { updatedAt: new Date(now) }))) await internalAdapter.deleteSession(session.token)
+}
+
 export async function resolveUser(req: NextRequest): Promise<ResolvedSession | null> {
   // Availability isolation, NOT an auth decision: a thrown BA branch (Redis
   // down, BA internal error) falls through to auth() so a valid NextAuth
@@ -78,6 +129,7 @@ export async function resolveUser(req: NextRequest): Promise<ResolvedSession | n
         select: { id: true, name: true, email: true, role: true, pro: true },
       })
       if (!dbUser) return null
+      nativeLastSeenHooks.started(bumpNativeLastSeen(dbUser.id, ba.session).catch((e) => console.error('resolveUser: native last-seen bump failed', e)))
       const sid = Number(ba.session.id)
       return {
         user: {

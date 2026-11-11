@@ -153,11 +153,14 @@ jobs:
       # native revokes (/revoke-sessions, /revoke-other-sessions,
       # /change-password) reach both stores even with BA's active-sessions
       # list evicted — including under injected snapshot / per-token / post-
-      # commit failures. Mutation-tested: reverting any of the fixes fails the
-      # matching section. AUTH_SECRET is any string — BA signs the cookie with
-      # it and verifies in-process.
+      # commit failures; resolveUser bumps the app's last-seen once per 5-min
+      # bucket (updatedAt only, both stores, no resurrection on a racing
+      # revoke, never failing or delaying the request). Mutation-tested:
+      # reverting any of the fixes fails the matching section. AUTH_SECRET is
+      # any string — BA signs the cookie with it and verifies in-process.
       - name: Native session lifetime
         run: npx tsx scripts/tests/ba-session-lifetime.mjs
+        timeout-minutes: 5
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379

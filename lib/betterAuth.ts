@@ -419,6 +419,7 @@ export const betterAuthServer = betterAuth({
     // fields (verified vs 1.6.15 dist — not just "no path does", "no path CAN"):
     //   - sliding-refresh updateSession sends only { expiresAt, updatedAt }
     //     (routes/session.mjs) — never ipAddress/userAgent.
+    //   - the last-seen bump in lib/resolveUser.ts sends only { updatedAt }.
     //   - the /update-session HTTP endpoint takes an arbitrary body but routes
     //     it through parseSessionInput → getFields(.,"session","input"), and in
     //     any NON-output mode getFields returns coreSchema = {} (db/schema.mjs
@@ -432,8 +433,8 @@ export const betterAuthServer = betterAuth({
     // Precise createdAt stays (so does user_sessions' — it's a one-shot value).
     //
     // 🔒 updatedAt is FLOORED to the 5-min bucket at WRITE time (lib/lastSeen.ts
-    // bucketStart) — at create here AND on every sliding-refresh via the
-    // update.before hook below. auth_sessions.updatedAt is the native "last seen"
+    // bucketStart) — at create here AND on every sliding-refresh and every
+    // resolveUser last-seen bump via the update.before hook below. auth_sessions.updatedAt is the native "last seen"
     // (the devices union surfaces it as lastSeenAt), so this gives it the SAME
     // at-rest precision as web user_sessions.lastSeenAt, which auth.ts buckets at
     // write time. Without this the column + its Redis copy held a precise instant
@@ -451,10 +452,11 @@ export const betterAuthServer = betterAuth({
         }),
       },
       update: {
-        // Sliding-refresh updateSession writes { expiresAt, updatedAt: new Date() }
-        // (routes/session.mjs) — floor the updatedAt so the bumped value stays on
-        // the 5-min edge. Only touches updatedAt when the refresh sets it; other
-        // updates pass through unchanged.
+        // Two writers send updatedAt as an exact instant: the sliding refresh
+        // ({ expiresAt, updatedAt: new Date() }, routes/session.mjs) and the
+        // last-seen bump in lib/resolveUser.ts ({ updatedAt } only). Floor it
+        // so the stored value stays on the 5-min edge; other updates pass
+        // through unchanged.
         before: async (data) => {
           if (!('updatedAt' in data) || data.updatedAt == null) return
           return { data: { updatedAt: new Date(bucketStart(new Date(data.updatedAt).getTime())) } }
