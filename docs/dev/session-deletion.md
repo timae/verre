@@ -72,7 +72,7 @@ Two different lifecycles, no overlap. The `deleted_at` column is for explicit ho
 
 Only the final `DELETE FROM sessions` becomes an `UPDATE sessions SET deleted_at = now(), <every-other-col> = NULL`. Everything else stays the same:
 
-- **Hall of Fame cleanup** — unchanged; the existing rule applies (kept when bookmarked, dropped otherwise). Tim is reworking HoF separately; the rewire does not touch it.
+- **Hall of Fame cleanup** — gone: the Hall of Fame was retired 2026-11-11 (`docs/dev/score-system.md`).
 - **S3 reclaim** of a wine's photo only when NO rating and no bookmark references the wine (ruling D8, 2026-11-10; `orphanImages` in `app/api/session/[code]/route.ts`). The surviving ratings, feed posts and profile tiles keep showing the photo (and it will feed the catalog's pictures); before this, unbookmarked RATED wines lost their bytes while the rows kept the URL, so the feed showed broken images for deleted moments. Photos reclaimed before the rule shipped stay broken (the client's failed-load placeholder). A future moderator removal must null / replace `wines.image_url`, not only reclaim the bytes. Pinned by `scripts/tests/you-profile-integration.mts` § 3.
 - **`session_members` wipe** — cleared so future re-join flows don't pre-populate from a deleted session's roster.
 - **Redis purge** of `s:{CODE}:*` keys — the live session bus is gone immediately.

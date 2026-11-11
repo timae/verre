@@ -11,9 +11,7 @@
 // Has no effect on `public-internet` / `public-users` — those tiers are
 // already broader than any FoF set.
 //
-// HoF leaderboard stays public regardless of tier (decision: deliberately
-// public surface, name only, no link). Session compare views are NOT gated
-// by visibility (trust model: session participation > profile tier).
+// Session compare views are NOT gated by visibility (trust model: session participation > profile tier).
 // Tag display is governed by the check-in *author's* tier — being tagged
 // is a presentation surface the tagged user consented to via mutual-follow.
 //

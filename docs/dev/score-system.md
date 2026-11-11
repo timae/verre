@@ -22,6 +22,6 @@ Always go through `<StarRating>` or `formatScore(v)` (see `components/CLAUDE.md`
 
 Always go through `<ScoreSlider>` for write surfaces. Don't reintroduce a 5-button row, a native `<input type="range">`, or any other control — the slider is the single source of touch + keyboard + ARIA correctness.
 
-## Hall of Fame trigger
+## Hall of Fame (retired 2026-11-11)
 
-A row is created when `score >= 5` on commit (the only way to hit it post-decimal is exactly `5`, since the snap caps there). The check is on the canonical numeric value, not on a string compare — relevant if you touch the rate POST handler.
+The rate POST used to upsert a `hall_of_fame` row on a 5★. Retired: the public feed handed out moment codes (a code lets anyone join) and rows were written from the raw lineup, so a blind wine's name went public before its reveal. Nothing reads or writes the table now, and its user FK is dropped (`20261111190000_retire_hall_of_fame_fk`), so account deletion needs no tombstone UPDATE; the table itself is dropped by a later migration once this is live (an instance still serving the previous release must never meet it missing). Its three badges (`first_hof`, `hof_3`, `hof_10`) are unearnable; earned ones still show (the badge revamp decides, like the descriptor badges).

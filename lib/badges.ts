@@ -19,7 +19,6 @@ export interface UserStats {
   notesWritten: number         // ratings with notes
   photosAdded: number          // wines with image_url
   bookmarkCount: number
-  hofEntries: number
   redCount: number
   whiteCount: number
   sparkCount: number
@@ -47,6 +46,8 @@ export const ALL_BADGES: Badge[] = [
   { id: 'first_notes', name: 'The Wordsmith', description: 'Write your first tasting note.', icon: '📝', category: 'first_steps', rarity: 'common', xp_reward: 20 },
   { id: 'first_bookmark', name: 'Saved for Later', description: 'Bookmark your first wine.', icon: '🔖', category: 'first_steps', rarity: 'common', xp_reward: 15 },
   { id: 'first_photo', name: 'Shoot the Label', description: 'Add a bottle photo to a wine.', icon: '📷', category: 'first_steps', rarity: 'common', xp_reward: 20 },
+  // first_hof / hof_3 / hof_10: retired with the Hall of Fame (2026-11-11). Unearnable;
+  // kept so earned ones still show. The badge revamp decides.
   { id: 'first_hof', name: 'Hall Bound', description: 'Get a wine into the Hall of Fame.', icon: '🏛️', category: 'first_steps', rarity: 'uncommon', xp_reward: 75 },
 
   // ── QUANTITY ────────────────────────────────────────────────
@@ -160,7 +161,6 @@ export function evaluateBadges(stats: UserStats, alreadyEarned: Set<string>): st
   check('first_notes',    stats.notesWritten >= 1)
   check('first_bookmark', stats.bookmarkCount >= 1)
   check('first_photo',    stats.photosAdded >= 1)
-  check('first_hof',      stats.hofEntries >= 1)
 
   // Quantity
   check('rated_10',    stats.totalRatings >= 10)
@@ -196,8 +196,6 @@ export function evaluateBadges(stats: UserStats, alreadyEarned: Set<string>): st
   check('perfect_20',  stats.fiveStarCount >= 20)
   check('perfect_50',  stats.fiveStarCount >= 50)
   check('harsh_critic', stats.oneStarCount >= 1)
-  check('hof_3',       stats.hofEntries >= 3)
-  check('hof_10',      stats.hofEntries >= 10)
   check('high_avg',    stats.totalRatings >= 20 && stats.avgScore >= 4.0)
 
   // Flavour

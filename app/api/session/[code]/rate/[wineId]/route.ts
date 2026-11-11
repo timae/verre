@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, touchWithMeta } from '@/lib/redis'
+import { k, touchWithMeta } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import type { WineMeta } from '@/lib/session'
 import { engagementCascadeIn, reclaimImages } from '@/lib/engagementCascade'
 import { withSessionMutation, admitted, ratingKeyWrite } from '@/lib/sessionMutation'
 import { contractFailure } from '@/lib/sessionRehydrate'
@@ -13,8 +12,7 @@ import { openAsParticipant } from '@/lib/sessionRoute'
 // caller's rating of one wine: the rating key, and for a logged-in rater of a
 // Postgres-backed session the archived row (force-mode engagement cascade:
 // the rating, then the session feed item if it was their last rating there;
-// photos reclaimed after COMMIT) and the HoF entry (wineName + userId +
-// sessionCode).
+// photos reclaimed after COMMIT).
 //
 // 🔒 Inside the session mutation contract, holding the Redis lease (r3-3: a
 // path that deletes a rating key must hold it — otherwise a rebuild whose
@@ -45,8 +43,6 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
         const rating = await tx.$queryRaw<{ id: number }[]>`
           SELECT id FROM ratings WHERE wine_id = ${wineId} AND user_id = ${userId} AND session_id = ${ctx.row.id} LIMIT 1`
         if (rating[0]) reclaim = (await engagementCascadeIn(tx, rating[0].id, 'force')) ?? []
-        const wine = (JSON.parse((await redis.get(k.wines(c))) ?? '[]') as WineMeta[]).find(w => w.id === wineId)
-        if (wine) await tx.hallOfFame.deleteMany({ where: { wineName: wine.name, userId, sessionCode: c } })
       }
       await ratingKeyWrite(ctx, k.rating(c, caller.id, wineId), null)
     })

@@ -15,7 +15,6 @@ Mobile-first shared wine tasting sessions with a live bottle list, per-person ra
 - Guest (anonymous) sessions last 48 hours; a session anyone signed in has touched is kept for good
 - Save wines you liked across sessions, with full ratings and notes preserved
 - Earn badges and XP across all your tastings
-- Hall of Fame for every 5★ rating
 - Blind tasting mode for hosts (pro)
 - Co-host roles to delegate wine management; Provider role for someone bringing their own bottles without full host powers
 - Hide the wine lineup before the tasting starts
@@ -38,7 +37,7 @@ Optional label scan:
 
 ```
 Browser ──→ Next.js 16 (Node 24) ──→ Redis     (live session state, 48h+ TTL)
-                                  ─→ Postgres  (accounts, history, bookmarks, HoF)
+                                  ─→ Postgres  (accounts, history, bookmarks)
                                   ─→ S3        (bottle photos)
 ```
 
@@ -249,7 +248,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | PATCH | /api/session/:code | Role assignment via `action: 'set-role'` (host or cohost, with strict-host required for transitions touching `co_host`) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
 | POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
-| POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/hof/bookmarks) |
+| POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/bookmarks) |
 | PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/showProvenance; `lifespan` is vestigial, no client sends it; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
 | PATCH | /api/session/:code/me/name | Anon participant renames themselves in this session (body: `{name}`) → `{name: <possibly-emoji-suffixed>}`. Logged-in users use profile settings instead. 10/min/identity |
@@ -313,5 +312,4 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | /api/hof | Hall of Fame leaderboard |
 | GET | /api/legal/attributions | Corpus-level sources + licences for the wine catalog. Unauthenticated by design — the native app fetches it, and a legal surface must render before an account exists. Returns `{entries, servedAt}`; entries are `{id, source, sourceUrl, licence:{spdx,url,text}, attribution, verified, notes, dataPeriod?}` |

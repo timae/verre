@@ -18,7 +18,7 @@ const noStore = { 'Cache-Control': 'private, no-store' }
 // Endpoint the kicked-user-side bounce screen calls when the user picks
 // "Delete my ratings". `cleanup=keep` is the default no-op (data stays;
 // session remains in /me/sessions). `cleanup=full` wipes ratings +
-// hall_of_fame + bookmarks + session_members for the (user, session)
+// bookmarks + session_members for the (user, session)
 // pair — same scope as the host-side kick-with-delete branch.
 //
 // Caller must resolve to an identity that is currently banned OR no

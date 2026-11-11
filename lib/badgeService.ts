@@ -102,10 +102,7 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     LEFT JOIN (SELECT session_code, COUNT(*) AS cnt FROM session_members GROUP BY session_code) mc ON mc.session_code=sm.session_code
     WHERE sm.user_id=${userId}`
 
-  const [bookmarkCount, hofEntries] = await Promise.all([
-    prisma.bookmark.count({ where: { userId } }),
-    prisma.hallOfFame.count({ where: { userId } }),
-  ])
+  const bookmarkCount = await prisma.bookmark.count({ where: { userId } })
 
   // daysSinceFirst is derived from the snapshotted firstRatedAt — never
   // shrinks, even if the original first rating gets deleted later.
@@ -135,7 +132,6 @@ export async function getUserStats(userId: number): Promise<UserStats> {
     sessionsHosted:      snap?.lifetimeSessionsHosted ?? 0,
     sessionParticipants: Number(soc.max_participants),
     bookmarkCount,
-    hofEntries,
     photosAdded:         snap?.lifetimePhotosAdded ?? 0,
     aiScansUsed:         0,
   }

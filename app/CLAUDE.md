@@ -16,7 +16,6 @@ Next.js 16 App Router (Turbopack builds). UI lives under `app/` (route segments)
 - `/session/<code>/compare` — overlay/per-rater comparison view
 - `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
 - `/u/<id>` — public user profile + recent check-ins
-- `/hof` — public Hall of Fame leaderboard
 
 ## State management
 
