@@ -70,12 +70,16 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   SDK template + config plugins (`--no-clean` keeps the existing project).
   Regeneration is the sanctioned way to take an SDK's native-template changes;
   afterwards re-apply the ONE hand edit (`Verre.xcscheme` LaunchAction
-  `buildConfiguration = "Release"`), then grep `project.pbxproj` for an EMPTY
-  `DEVELOPMENT_TEAM` before committing (device builds write the Apple Team
-  ID into it; `project.pbxproj` + `Podfile.lock` are kept
-  `git update-index --skip-worktree` on dev machines for that reason — lift
-  it before a prebuild so the regenerated files are reviewable, re-set it
-  after committing), and diff the regenerated `Info.plist` / `.xcscheme`
+  `buildConfiguration = "Release"`) and keep the Apple Team ID in
+  `DEVELOPMENT_TEAM`. The Team ID is TRACKED on purpose (ruled 2026-11-11:
+  it isn't a secret, it ships in every signed app and was already public),
+  so `project.pbxproj` and `Podfile.lock` are committed as `pod install` and
+  Xcode write them; no skip-worktree, no scrubbing. If a second developer
+  with another Apple team ever builds, switch to a placeholder
+  (`DEVELOPMENT_TEAM = "$(VERRE_DEVELOPMENT_TEAM)"` + a gitignored xcconfig
+  outside `ios/`, re-applied by a config plugin): don't just empty it, since
+  Expo CLI's signing check reads the raw project value and an empty one
+  makes `expo run:ios --device` write a team back. Then diff the regenerated `Info.plist` / `.xcscheme`
   against the template rather than trusting them: a prebuild over an
   existing project has duplicated `CFBundleURLSchemes` entries, and the
   template ships a `TestableReference` to a test target this project does
