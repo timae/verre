@@ -10,6 +10,10 @@ Two valid lengths coexist: **4-char** (legacy bare form, e.g. `B369`) and **8-ch
 
 Server entry points run `normalizeCode()` which strips hyphens and uppercases, so non-hyphenated URLs (old shared links) still resolve. Same with form input: pasting `xyzw-1234`, `XYZW1234`, or `xyzw 1234` all normalize to the same canonical key.
 
+## A code is a credential
+
+🔒 Joining refuses only banned callers (`app/api/session/join/route.ts`), so knowing a code is enough to get in and read the lineup, ratings and address. Never put a code into anything served OUTSIDE the moment: a storage key in a public URL, a feed or profile payload, a public list. Two leaks of this kind were closed on 2026-11-11: the Hall of Fame feed (retired) and cover photos keyed `sessions/<code>_<ts>` (the create path until 2026-11-08, the settings path until 2026-11-11; new covers use a random key, and `lib/profileTiles.ts` never serves a code-bearing cover as a Moments tile). Codes already exposed stay valid: there is no code rotation.
+
 ## Helpers
 
 The framework-neutral helpers live in **`@verre/core`** (`packages/core/src/sessionCode.ts`) so the native app shares them; the server-only carve-outs stay in **`lib/sessionCode.ts`**.

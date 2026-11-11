@@ -197,8 +197,6 @@ export function LobbyClient({ user }: { user: User }) {
           <button className="btn-g" onClick={joinSession} disabled={loading}>→ join session</button>
 
           {joinError && <p style={{color:'var(--danger)',fontSize:11,marginTop:8}}>{joinError}</p>}
-
-          <button className="btn-g" onClick={() => router.push('/hof')} style={{marginTop:20}}>★ hall of fame</button>
         </div>
 
         {/* Account card */}
@@ -223,7 +221,7 @@ function AccountPromo() {
         Taste anonymously or create a free account to save your history, bookmark wines, and build your flavour profile over time.
       </p>
       <div style={{display:'flex',flexDirection:'column',gap:7,marginBottom:22,paddingTop:14,borderTop:'1px solid var(--border)'}}>
-        {['Save and revisit any tasting session','Bookmark wines across sessions','Hall of Fame entries credited to your name','Flavour radar profile over time'].map(p => (
+        {['Save and revisit any tasting session','Bookmark wines across sessions','Flavour radar profile over time'].map(p => (
           <div key={p} style={{display:'flex',alignItems:'center',gap:8,fontSize:11,color:'var(--fg-dim)'}}>
             <div style={{width:5,height:5,borderRadius:'50%',background:'var(--accent)',flexShrink:0}} />
             {p}
@@ -250,7 +248,6 @@ const FREE_FEATURES = [
   { icon: '🙈', title: 'Blind tastings',           copy: 'Tasters see Wine #1, #2… Host reveals after everyone has scored.',      pro: true  },
   { icon: '👑', title: 'Co-host roles',            copy: 'Delegate wine management to trusted co-hosts mid-session.',             pro: true  },
   { icon: '🔖', title: 'AI label scanning',        copy: 'Point your camera at a label: fields fill themselves.',                pro: false },
-  { icon: '🎯', title: 'Hall of Fame',             copy: 'Every 5-star rating is permanent. Your name on the board.',            pro: false },
 ]
 
 function FeatureShowcase() {

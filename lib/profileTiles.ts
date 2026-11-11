@@ -11,6 +11,10 @@
 //     included (D7: the moment's ratings and feed posts survive its deletion,
 //     and D8 keeps a rated wine's photo, so the reference stays valid).
 //   - moments: a live, non-kicked membership whose moment has that cover.
+//     🔒 Never a cover whose URL carries the moment's code (`sessions/<code>_…`,
+//     the create path until 2026-11-08 and the settings path until 2026-11-11):
+//     the tile is served outside the moment and a code joins. A pin on one
+//     reads as dead and is cleared, like any removed source.
 //   - cravings: a bookmark whose wine has that image.
 // - PICK = what may be newly chosen, and what the automatic photo draws from:
 //   impressions + cravings = LIVE + SAFE_PHOTO (never an unrevealed blind
@@ -67,7 +71,8 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
     JOIN sessions s ON s.code = sm.session_code
     WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
       AND sm.removed_state IS DISTINCT FROM 'kicked'
-      AND s.cover_photo_url IS NOT NULL`
+      AND s.cover_photo_url IS NOT NULL
+      AND strpos(s.cover_photo_url, 'sessions/' || s.code || '_') = 0`
   return Prisma.sql`
     SELECT w.image_url AS url, b.saved_at AS at
     FROM bookmarks b

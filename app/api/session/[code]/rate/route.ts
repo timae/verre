@@ -89,8 +89,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // normalisation against the wine's CURRENT style; then, for a logged-in
   // rater of a Postgres-backed session, the member row, the wine's FK row
   // (the lineup mirror), the rating upsert (mirror_at = the token, § 4.3), the
-  // feed item or the engagement-deletion cascade, the lifetime counters and the
-  // HoF entry — all in this one transaction. The rating key is written last,
+  // feed item or the engagement-deletion cascade, and the lifetime counters, all in
+  // this one transaction. The rating key is written last,
   // with the committed row's own token: under the advisory lock every writer of
   // the row is serialized, so the last committer also wrote the key last (the
   // old provisional-0 + post-commit re-assert dance existed only because the
@@ -211,16 +211,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
           lifetime_consecutive_months = lifetime_consecutive_months + ${newMonth ? 1 : 0},
           first_rated_at = COALESCE(first_rated_at, NOW())
         WHERE id = ${userId}`
-      if (ratingScore === 5) {
-        await tx.hallOfFame.upsert({
-          where: { wineName_userId: { wineName: wine.name, userId } },
-          create: {
-            wineName: wine.name, producer: wine.producer || null, vintage: wine.vintage || null,
-            style: wine.type || null, score: 5, raterName: caller.displayName, userId, sessionCode: c, ratedAt: new Date(),
-          },
-          update: { raterName: caller.displayName, score: 5, ratedAt: new Date() },
-        })
-      }
       await ratingKeyWrite(ctx, key, value(committedAromas, new Date(ts).getTime()), { pxMs: ttlMs })
     })
   } catch (err) {

@@ -47,7 +47,7 @@ async function reclaimImage(url: string | null | undefined) {
 //                     historical rating author with no member row is recorded
 //                     as kicked too (r1-4). Ratings stay for their own history.
 //   - 'kick-delete' → kick + delete the user's session-scoped data (ratings,
-//                     hof, feed item, bookmarks-of-wines-in-this-session,
+//                     feed item, bookmarks-of-wines-in-this-session,
 //                     session_members).
 //   - 'ban'         → kick-delete + the ban (session_bans row = the record for
 //                     a Postgres-backed session; the Redis set is its cache).
@@ -141,7 +141,6 @@ export async function sessionWipe(opts: WipeOptions): Promise<void> {
         reclaim.push(...await ratingImages(tx, Prisma.sql`r.user_id = ${userId} AND r.session_id = ${row.id}`))
         await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id = ${row.id}`
         await tx.$executeRaw`DELETE FROM feed_items WHERE user_id = ${userId} AND session_id = ${row.id}`
-        await tx.$executeRaw`DELETE FROM hall_of_fame WHERE user_id = ${userId} AND session_code = ${code}`
         await tx.$executeRaw`
           DELETE FROM bookmarks b USING wines w WHERE b.wine_id = w.id AND w.session_id = ${row.id} AND b.user_id = ${userId}`
         await tx.$executeRaw`DELETE FROM session_members WHERE user_id = ${userId} AND session_code = ${code}`

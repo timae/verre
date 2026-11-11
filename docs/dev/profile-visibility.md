@@ -25,9 +25,9 @@ The privacy-tiers migration `UPDATE`s pre-existing rows to `public-internet` to 
 - `batchLoadVisibilities(ids)` + `resolveProfileViewerBulk(ids, viewerId)` + `viewerFofAuthorSet(viewerId, ids)` — batch path used by feed and search to avoid N+1 lookups.
 - `setProfileVisibility(userId, tier, fof)` — the only sanctioned write path. Validates the union, enforces a 30/hour/user rate limit, writes user row + `profile_visibility_log` audit row in one transaction. Bypassing this and writing the column directly skips the audit trail.
 
-## Hall of Fame stays public regardless of tier (deliberate decision)
+## Hall of Fame: retired (2026-11-11)
 
-`/hof` displays rater display names with no clickable user link; the leaderboard (Hall of Fame, HoF for short) is treated as a deliberately public surface. This means a `public-mutual` user with a 5★ rating still has their name visible on `/hof`. If product later wants HoF to honour the tier, that's a localized change — see `app/hof/page.tsx`. The leak is documented and accepted, not an oversight.
+`/hof` and `GET /api/hof` were a public surface outside every tier. Both are gone (see `docs/dev/score-system.md`). A future leaderboard must gate through the profile-visibility chokepoints like any other user-scoped surface.
 
 ## Session compare views are NOT gated by profile visibility
 

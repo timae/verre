@@ -77,7 +77,6 @@ model User {
   profileVisibility         String                 @default("public-users") @map("profile_visibility") @db.VarChar(32)
   visibilityFof             Boolean                @default(false) @map("visibility_fof")
   bookmarks                 Bookmark[]
-  hofEntries                HallOfFame[]
   ratings                   Rating[]
   members                   SessionMember[]
   hostedSessions            Session[]
@@ -585,6 +584,10 @@ model Bookmark {
   @@map("bookmarks")
 }
 
+// RETIRED 2026-11-11: nothing reads or writes this table (the /hof page, its
+// feed and the 5★ write are gone, and its user FK is dropped so account
+// deletion needs no tombstone UPDATE). The table drop is a later migration:
+// an instance still serving the previous release must never meet it missing.
 model HallOfFame {
   id          Int      @id @default(autoincrement())
   wineName    String   @map("wine_name") @db.VarChar(255)
@@ -600,7 +603,6 @@ model HallOfFame {
   userId      Int?     @map("user_id")
   sessionCode String?  @map("session_code") @db.VarChar(16)
   ratedAt     DateTime @map("rated_at") @db.Timestamptz(6)
-  user        User?    @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([wineName, userId])
   @@map("hall_of_fame")

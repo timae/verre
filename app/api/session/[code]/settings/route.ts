@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { nanoid } from 'nanoid'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { k } from '@/lib/redis'
@@ -149,7 +150,9 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
           { status: 429, headers: { 'Retry-After': String(rl.retryAfter) } },
         )
       }
-      newCoverUrl = await uploadImage(`sessions/${c}_${Date.now()}`, body.coverPhoto).catch(() => '')
+      // 🔒 Never put the code in the key: the cover URL is served outside the
+      // moment (the Moments tile on a member's profile), and a code joins.
+      newCoverUrl = await uploadImage(`sessions/${nanoid(16)}`, body.coverPhoto).catch(() => '')
       if (!newCoverUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
     }
   }

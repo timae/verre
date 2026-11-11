@@ -197,9 +197,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
 // per the Q3 plan decision). The wishlist tombstone-label resolver reads
 // session context via a wine's own ratings, not via `wines.session_id`.
 //
-// Pre-existing side effects still fire: HoF cleanup (legacy table is still
-// load-bearing while Tim's HoF v2 hasn't shipped); S3 reclaim of orphan
-// wine images; session_members wipe; Redis purge.
+// Pre-existing side effects still fire: S3 reclaim of orphan wine images; session_members wipe; Redis purge.
 //
 // Lifetime counters on users do NOT decrement — that's the whole point of
 // the snapshot column design.
@@ -261,15 +259,7 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
                AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = wines.id)`
           for (const r of orphanImages) if (r.image_url) urls.add(r.image_url)
           // Ratings + feed_items SURVIVE (rewire § 8): their session_id still
-          // points at the tombstoned row. HoF (legacy, still load-bearing):
-          // keep an entry if the rater also bookmarked the wine. The JOIN uses
-          // wines.session_id, still set at this point.
-          await tx.$executeRaw`
-            DELETE FROM hall_of_fame h
-             WHERE h.session_code = ${c} AND h.user_id IS NOT NULL
-               AND NOT EXISTS (
-                 SELECT 1 FROM bookmarks b JOIN wines w ON w.id = b.wine_id
-                  WHERE w.session_id = ${row.id} AND b.user_id = h.user_id AND w.name = h.wine_name)`
+          // points at the tombstoned row.
           // Wines orphan (session_id NULL); member + ban rows go — both are
           // keyed by code, and codes are recycled after the scrub.
           await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`

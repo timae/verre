@@ -5,7 +5,7 @@ Guidance for working in the Verre codebase. **Verre** is a wine-tasting web app 
 - **Sessions** — people scan into a tasting via short code, rate wines on stars + flavour radar + notes, see each other's ratings in real time. Anonymous join supported.
 - **Social feed** (logged-in) — post standalone check-ins of bottles you've had, follow other users, see what friends are drinking. Public profiles at `/u/<id>`.
 
-Logged-in users also get persistent history, bookmarks, Hall of Fame entries, badges + XP, and a flavour profile.
+Logged-in users also get persistent history, bookmarks, badges + XP, and a flavour profile.
 
 This file is the always-loaded map: cross-cutting invariants, the destination-routing rule, and pointers to area-specific guides.
 
@@ -79,7 +79,7 @@ Schema migration workflow (`prisma migrate dev`, destructive-change rule, deploy
 | Layer | Tech | Responsibility |
 |---|---|---|
 | Active sessions | Redis (48h TTL) | Live wines, ratings, participants |
-| Accounts & history | Postgres | Users, archived sessions, bookmarks, Hall of Fame (public leaderboard of 5★ ratings) |
+| Accounts & history | Postgres | Users, archived sessions, bookmarks |
 | Images | S3 (Nine Object Storage) | Bottle photos, avatars |
 
 **Postgres archival is incremental**: a session is promoted to Postgres on a logged-in act (visit, rate, wine add, bookmark). Anonymous-only sessions stay Redis-only.
@@ -100,7 +100,7 @@ Scores are decimal `0..5` in `0.25` steps. `0` means "not rated".
 - **Wire-format trap**: Prisma's `Decimal` serializes to a JSON **string** (`"4.25"`), not a number. Every API response that surfaces a score must coerce via `Number()` before sending. Forgetting this ships strings where number arithmetic silently breaks.
 - **Read**: `<StarRating>` or `formatScore(v)`. **Write**: `<ScoreSlider>`. Never inline `★ ${v}` or roll your own input.
 
-Full pipeline (HoF trigger, flavour integration): see `docs/dev/score-system.md`.
+Full pipeline (flavour integration): see `docs/dev/score-system.md`.
 
 ### Trust model
 
@@ -134,7 +134,7 @@ Glossary used in code and PRs throughout. Implementation lives in `app/api/CLAUD
 When adding a table that references `users.id`, pick one:
 
 - **Cascade hard-delete** (FK `onDelete: Cascade`) — data is purely the user's own with no other-user references. Examples: `feed_items`, `feed_item_likes`, `feed_item_tags`, `follows`, `bookmarks`, `user_badges`, `session_members`. **Downstream**: `rating_images` cascades via `ratings.id` (not directly via user); a standalone rating's deletion takes its rating_images with it.
-- **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings` where `session_id IS NOT NULL`, `hall_of_fame`, `sessions.host_user_id`.
+- **Tombstone** (FK `SetNull` + `UPDATE … SET rater_name='[deleted]'` in the delete path) — another user's view references the row. Examples: `ratings` where `session_id IS NOT NULL`, `sessions.host_user_id`.
 - **Split rule on `ratings`** — standalone ratings (`session_id IS NULL`) hard-cascade in the account-delete path (their feed_items go with them via downstream cascade); session ratings tombstone (other tasters' compare views need them). See `lib/accountDelete.ts` for the implementation.
 
 The test: does another user's view (own history, compare screen, leaderboard, ongoing session they're in) reference this row in a way where deletion would leave their experience broken? Yes → tombstone. No → cascade. (Or **both ways within one table, keyed on a column** — see `ratings`, which splits on `session_id IS NULL`.) **S3 image reclaim is independent of cascade**: cascade does NOT trigger S3 cleanup; any table with an `imageUrl` field needs explicit `reclaimImage()` calls in every deletion path.
@@ -152,12 +152,12 @@ Any route serving user-scoped content (`/api/users/<id>/*`, `/u/<id>` reads, fee
 
 Bulk variants for feed / search: `batchLoadVisibilities` + `resolveProfileViewerBulk` + `viewerFofAuthorSet`. Block-pair check (`anyBlockBetween` in `lib/userBlock.ts`) runs BEFORE the tier check.
 
-Tier semantics, audit log, HoF/compare exceptions: see `docs/dev/profile-visibility.md` and `docs/dev/block.md`.
+Tier semantics, audit log, compare exception: see `docs/dev/profile-visibility.md` and `docs/dev/block.md`.
 
 ### Freemium split
 
 - **Anonymous / free**: session-based, Redis only, 48h lifespan (the only real one: no record, so expiry ends it). No account. The create refuses any other lifespan (403); the lobby says "Guest moments last 48 hours. Sign in to keep yours."
-- **Logged-in (free account)**: same live session + visits/ratings archived to Postgres. History, bookmarks, Hall of Fame, flavour profile persist indefinitely. 🔒 **Every logged-in moment is `unlimited`**, web and native alike: a logged-in create ignores any `lifespan` in the body, and PROMOTION (a guest moment's first logged-in act) sets the row to `unlimited` and re-stamps every key's TTL. A Postgres-backed moment is reopenable whatever its age, so its lifespan only sizes the cache TTL; `unlimited` keeps a far-future moment's cache warm, so it stays in Upcoming (`/api/me/sessions` live/pin is Redis presence, ruled to stay). No client offers a lifespan picker; the settings PATCH `lifespan` path is vestigial. Moments created before 2026-11-09 keep their stored lifespan (no backfill).
+- **Logged-in (free account)**: same live session + visits/ratings archived to Postgres. History, bookmarks, flavour profile persist indefinitely. 🔒 **Every logged-in moment is `unlimited`**, web and native alike: a logged-in create ignores any `lifespan` in the body, and PROMOTION (a guest moment's first logged-in act) sets the row to `unlimited` and re-stamps every key's TTL. A Postgres-backed moment is reopenable whatever its age, so its lifespan only sizes the cache TTL; `unlimited` keeps a far-future moment's cache warm, so it stays in Upcoming (`/api/me/sessions` live/pin is Redis presence, ruled to stay). No client offers a lifespan picker; the settings PATCH `lifespan` path is vestigial. Moments created before 2026-11-09 keep their stored lifespan (no backfill).
 - **Pro** (`users.pro = true`): paid tier. Gates **blind tastings** (host pre-rates while wine identities are hidden from tasters until reveal) for every caller class. Lifespan is not a pro feature any more. The blind-tasting "host bypass" — the host/cohost/provider/wine-adder see un-redacted wines while tasters see "Wine N" — can be disabled per session via the **Blind-for-everyone** toggle (`meta.blindForEveryone`, mirrored to `sessions.blindForEveryone`). When on, every viewer of every surface (live wine GET, feed, profile session-card) gates uniformly; only per-wine reveal un-redacts. NOT pro-gated on its own — only flipping a session TO blind needs pro; cohosts on a pro-blind session can flip the toggle without being pro themselves. Disabling `meta.blind` cascades to clear `blindForEveryone` so a stale flag can't resurrect on re-enable. **Also pro-gated: hiding who-brought-each-impression** (`meta.showProvenance`, default ON — a host can turn attribution OFF, which server-side nulls `addedByDisplayName`/`addedByUserId` in `wineToWire` so no VIEWER-FACING surface renders "Brought by"; moderation tools like the ban preview are a named carve-out — a host must still see whose impressions a ban deletes). Symmetric pro-gate (a change either way needs pro); a non-pro caller (host OR free cohost) sees the toggle locked at whatever the host set — which can be OFF, so the locked copy is state-aware, not a fixed "upgrade to hide". Details: `docs/dev/session-features.md`.
 
 ### Moment required fields (name + start date)
@@ -210,7 +210,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Kick & ban](docs/dev/kick-ban.md) — host moderation primitive, `X-Vr-Auth: removed` bounce protocol, lock + wipe ordering
 - [Block](docs/dev/block.md) — bilateral invisibility, in-session render matrix, globally-subtracted counts, mutual-block resolver
 - [Mute](docs/dev/mute.md) — feed-only filter, composes with the profile-visibility tier filter
-- [Profile visibility](docs/dev/profile-visibility.md) — four tiers + FoF, chokepoint API, HoF exception, audit log
+- [Profile visibility](docs/dev/profile-visibility.md) — four tiers + FoF, chokepoint API, audit log
 - [Session features](docs/dev/session-features.md) — blind tasting, blind-for-everyone toggle, hide-lineup, roles, lifespan, disambiguation, enumeration-oracle posture
 - [Session codes](docs/dev/session-codes.md) — Crockford alphabet, 4/8-char canonical forms, three-forms rule, collision check
 - [Session deletion](docs/dev/session-deletion.md) — retention rule implementation, the soft-delete protocol inside the mutation contract (fenced wipe, `session_tombstones` registry, crash table), participant bounce
@@ -219,7 +219,7 @@ Limiter helpers (`peekRate`, `checkRate`, `checkRates`, `formatWait`), bot defen
 - [Account deletion](docs/dev/account-deletion.md) — Postgres transaction + Redis SCAN+decide+act loop, host tombstoning
 - [Per-device sessions](docs/dev/proposals/auth-sessions.md) — `user_sessions` revocation gate (never-cache-`auth()`), Connected-devices panel, password-change + signOut revoke, revocation-reason login notices. Cross-cutting invariants in `lib/CLAUDE.md`. (Doc is the shipped proposal w/ as-built deviations noted.)
 - [Native auth (Better Auth)](docs/dev/proposals/mobile-app/01-identity-and-auth.md) — **SHIPPED** (PR #39): native iOS/Android credential + session layer in-process beside NextAuth, over one `users` table. The `identityStore` dual-store chokepoint, `resolveUser` seam, `disabledPaths` clamp, two CI gates (`check-identity-writes`, `check-better-auth-config`). Dormant in prod (no native client yet). Cross-cutting invariants above + in `app/api/auth/CLAUDE.md`. (Doc is the as-built rationale-of-record.)
-- [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap, HoF trigger
+- [Score system](docs/dev/score-system.md) — full validation pipeline, Decimal wire-format trap
 - [Social feed](docs/dev/social-feed.md) — unified `feed_items` model, follow graph, engagement trigger + auto-deletion cascade, mutual-follow tag gating, "had a sip" S3 copy flow, `<SessionFeedCard>` aggregate render with server-side blind redaction
 - [Avatars](docs/dev/avatars.md) — upload pipeline, MIME allow-list + magic-byte signatures, JPEG EXIF strip, account-delete reclaim
 - [Flavour charts](docs/dev/flavour-charts.md) — polar vs radar, structure intensity axes (resolveAxes/perRatingAxes; legacy FL_* descriptor sets removed in the Contract PR)

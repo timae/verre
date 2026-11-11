@@ -92,9 +92,6 @@ async function reclaimImage(url: string | null | undefined) {
 // every single-session writer takes its advisory lock first, so a writer on a
 // touched session waits at the advisory lock (no cycle) and a writer on an
 // untouched session waits only on the users row, which we never wait behind.
-//
-// HoF is excluded from the tombstone contract (deprecated surface, R3-10): its
-// rows are tombstoned as before.
 
 export const ACCOUNT_DELETE_MAX_WIPES = 25
 const MAX_ATTEMPTS = 3
@@ -421,7 +418,6 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // Account-level work. Standalone ratings hard-cascade (their feed_items and
       // rating_images go with them — images captured before the transaction).
       await tx.$executeRaw`DELETE FROM ratings WHERE user_id = ${userId} AND session_id IS NULL`
-      await tx.$executeRaw`UPDATE hall_of_fame SET user_id = NULL, rater_name = ${TOMBSTONE_NAME} WHERE user_id = ${userId}`
       // Session-less (orphaned) wines the user added: no session, no key — the
       // snapshot is the only place the name would survive.
       await tx.$executeRaw`
@@ -513,7 +509,6 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
   const wines = await tx.$queryRaw<{ id: string; image_url: string }[]>`
     SELECT id, image_url FROM wines WHERE session_id = ${row.id} AND image_url IS NOT NULL`
   await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND user_id = ${userId}`
-  await tx.$executeRaw`DELETE FROM hall_of_fame WHERE session_code = ${row.code}`
   await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`
   await tx.$executeRaw`DELETE FROM session_members WHERE session_code = ${row.code}`
   await tx.$executeRaw`DELETE FROM session_bans WHERE session_code = ${row.code}`

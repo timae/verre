@@ -243,6 +243,17 @@ try {
   check('cravings PICK excludes it too', JSON.stringify(await listPickable('cravings', P.id, 60)) === JSON.stringify([vis.url]))
   const mPick = await listPickable('moments', P.id, 60)
   check('moments PICK = every cover, the blind moment included (no wine predicate)', mPick.length === 2 && mPick[0] === cover2 && mPick.includes(cover1), mPick)
+  // A code joins, and the tile is served outside the moment: a cover keyed by
+  // the code (the old create + settings key shape) is never a tile photo.
+  const coded = urlOf(`sessions/${M1}_${Date.now()}`)
+  await prisma.$executeRaw`UPDATE sessions SET cover_photo_url = ${coded} WHERE code = ${M1}`
+  check('moments PICK never offers a cover whose URL carries the code', !(await listPickable('moments', P.id, 60)).includes(coded))
+  check('pinning a code-bearing cover → 400', (await patchProfile(P, { tiles: { moments: coded } })).status === 400)
+  await prisma.$executeRaw`UPDATE users SET tile_moments_url = ${coded} WHERE id = ${P.id}`
+  const viaPin = await getProfile(P.id, V)
+  const pinLeft = (await prisma.$queryRaw<{ u: string | null }[]>`SELECT tile_moments_url AS u FROM users WHERE id = ${P.id}`)[0].u
+  check('an EXISTING pin on a code-bearing cover is never served, and is cleared', viaPin.tiles.moments.imageUrl !== coded && pinLeft === null, { tile: viaPin.tiles.moments, pinLeft })
+  await prisma.$executeRaw`UPDATE sessions SET cover_photo_url = ${cover1} WHERE code = ${M1}`
   let own = await getProfile(P.id, P)
   check('own GET: counts are every impression / bookmark / membership', own.tiles.impressions.count === 2 && own.tiles.cravings.count === 2 && own.tiles.moments.count === 2, own.tiles)
   check('own GET: automatic photos = latest pickable, pinned false', own.tiles.impressions.imageUrl === vis.url && own.tiles.impressions.pinned === false && own.tiles.moments.imageUrl === cover2, own.tiles)

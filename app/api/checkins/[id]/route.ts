@@ -453,7 +453,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
 // was the user's last engaged rating in that session), and a live-Redis mirror
 // (same JSON shape as the rate route) when the session is still alive —
 // PG-only once expired or soft-deleted. Deliberately NOT touched: lifetime
-// counters + HoF (an edit is not new activity), rater_name (frozen snapshot),
+// counters (an edit is not new activity), rater_name (frozen snapshot),
 // ratedAt (an edit must not reorder history/bookmark recency). Kick/ban posture
 // (ruling, 2026-07-18): the rating is the user's own data, so a kick-keep'd
 // user KEEPS editing it here — admission is OWNERSHIP of the row, not
