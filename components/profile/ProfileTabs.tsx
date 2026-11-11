@@ -84,6 +84,9 @@ export function ProfileTabs({
     if (tab === TABS[0].key) params.delete('tab')
     else params.set('tab', tab)
     const qs = params.toString()
+    // Each replace returns a NEW searchParams object and re-runs this effect:
+    // skip a no-op replace or it loops (dev's double-run defeats firstRunRef).
+    if (qs === searchParams.toString()) return
     router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
   }, [tab, pathname, router, searchParams, syncToUrl])
   const containerRef = useRef<HTMLDivElement>(null)
