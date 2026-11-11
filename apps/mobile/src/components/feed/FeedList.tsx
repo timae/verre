@@ -2,7 +2,7 @@ import * as Haptics from 'expo-haptics';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useNavigation, useRouter, useScrollToTop } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, RefreshControl, ScrollView, View, type ScrollViewInstance } from 'react-native';
 import { SessionFeedCard } from '@/components/feed/SessionFeedCard';
 import { StandaloneFeedCard } from '@/components/feed/StandaloneFeedCard';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
@@ -13,6 +13,10 @@ import { invalidateProfileHeader, markFeedPostDeleted, refetchFeedCaches, toggle
 import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { closeOpenedPost, feedHref, useSessionTab } from '@/lib/sessionStack';
 import { space, useTheme } from '@/theme';
+
+// The caller's handle on the list's scroll position, whichever layout is
+// showing (the list, or the error state's scroll view).
+export type FeedScrollHandle = { scrollToOffset: (offset: number) => void };
 
 // A second tap on a card inside an opened post's stack within this window is
 // the same tap, not a new visit (card pushes there are not singular).
@@ -34,6 +38,12 @@ export function FeedList({
   onRefresh,
   centerLoading,
   onScrollY,
+  fullBleed,
+  refreshOffset,
+  refreshTint,
+  inert,
+  bottomInset,
+  scrollHandle,
 }: {
   userId?: number;
   header: React.ReactElement;
@@ -48,6 +58,25 @@ export function FeedList({
   centerLoading?: boolean;
   // The list's vertical offset, per scroll frame (the profile's bar title).
   onScrollY?: (y: number) => void;
+  // A header that runs UNDER the status bar (the profile cover hero):
+  // contentInsetAdjustmentBehavior never, behind the zero-size dead-end that
+  // stops react-native-screens from flipping it back to automatic
+  // (apps/mobile/CLAUDE.md "Full-bleed scroll content"). Key the list on it if
+  // it can change while mounted.
+  fullBleed?: boolean;
+  // The pull-to-refresh spinner's offset (default: contentTopPad) and tint
+  // (default: inkSoft) — below a floating bar, white over a photo.
+  refreshOffset?: number;
+  refreshTint?: string;
+  // Edit mode on the header: the posts (and the paging footer) dim to 0.35 and
+  // ignore touches; the list still scrolls.
+  inert?: boolean;
+  // Bottom content padding when it must clear more than the tab bar (the
+  // keyboard + the profile's edit bar). Never below TAB_BAR_CLEARANCE.
+  bottomInset?: number;
+  // Set to a handle on the scroll position (measured scroll-into-view while
+  // editing), in both the list and the error layout.
+  scrollHandle?: React.RefObject<FeedScrollHandle | null>;
 }) {
   const { theme } = useTheme();
   const router = useRouter();
@@ -56,7 +85,20 @@ export function FeedList({
   // Tapping the tab while on its root scrolls the list to top (Simon) — the
   // standard tabPress→scrollToTop behavior via react-navigation's hook.
   const listRef = useRef<FlatList<FeedItem>>(null);
+  const errorScrollRef = useRef<ScrollViewInstance>(null);
   useScrollToTop(listRef);
+  useEffect(() => {
+    if (!scrollHandle) return;
+    scrollHandle.current = {
+      scrollToOffset: (offset) => {
+        if (errorScrollRef.current) errorScrollRef.current.scrollTo({ y: offset, animated: true });
+        else listRef.current?.scrollToOffset({ offset, animated: true });
+      },
+    };
+    return () => {
+      scrollHandle.current = null;
+    };
+  }, [scrollHandle]);
 
   // The query definition is shared with the detail + edit screens
   // (feedQueryOptions) — they are pure renders off this same cache.
@@ -252,10 +294,8 @@ export function FeedList({
 
   const conn = connectionView(feed.isError, items.length > 0);
 
-  const renderItem = useCallback(
-    ({ item }: { item: FeedItem }) => {
-      const id = feedItemId(item);
-      const isOwner = myUserId != null && item.author.id === myUserId;
+  const renderCard = useCallback(
+    (item: FeedItem, id: number, isOwner: boolean) => {
       const onPressAuthor = item.author.id === userId ? undefined : () => openAuthor(item.author);
       if (item.type === 'session') {
         return (
@@ -296,6 +336,15 @@ export function FeedList({
     },
     [openImpression, openAuthor, toggleLike, myUserId, userId, userParam, router, tab, confirmDeleteCheckin, confirmDeleteRating],
   );
+  const renderItem = useCallback(
+    ({ item }: { item: FeedItem }) => {
+      const id = feedItemId(item);
+      const isOwner = myUserId != null && item.author.id === myUserId;
+      const card = renderCard(item, id, isOwner);
+      return inert ? <View pointerEvents="none" style={{ opacity: 0.35 }}>{card}</View> : card;
+    },
+    [inert, myUserId, renderCard],
+  );
 
   if (feed.isLoading && centerLoading) {
     return (
@@ -305,17 +354,36 @@ export function FeedList({
     );
   }
 
+  const padBottom = Math.max(TAB_BAR_CLEARANCE, bottomInset ?? 0);
+  const deadEnd = fullBleed ? <View collapsable={false} style={{ width: 0, height: 0 }} /> : null;
+
+  // A scroll view, not a flex column: a tall header (the cover hero) would
+  // otherwise squeeze the retry state off screen.
   if (conn === 'error') {
     return (
-      <View style={{ flex: 1, paddingTop: contentTopPad }}>
-        {header}
-        <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
+      <View style={{ flex: 1 }}>
+        {deadEnd}
+        <ScrollView
+          ref={errorScrollRef}
+          contentInsetAdjustmentBehavior={fullBleed ? 'never' : undefined}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          onScroll={onScrollY ? (e) => onScrollY(e.nativeEvent.contentOffset.y) : undefined}
+          scrollEventThrottle={onScrollY ? 16 : undefined}
+          contentContainerStyle={{ flexGrow: 1, paddingTop: contentTopPad, paddingBottom: padBottom }}
+        >
+          {header}
+          <View style={{ flexGrow: 1, minHeight: 220 }}>
+            <ErrorState onRetry={() => feed.refetch()} retrying={feed.isFetching} />
+          </View>
+        </ScrollView>
       </View>
     );
   }
 
   return (
     <View style={{ flex: 1 }}>
+      {deadEnd}
       {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
       <FlatList
         ref={listRef}
@@ -323,7 +391,11 @@ export function FeedList({
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
         renderItem={renderItem}
         ListHeaderComponent={header}
-        contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: TAB_BAR_CLEARANCE }}
+        contentContainerStyle={{ paddingTop: contentTopPad, paddingBottom: padBottom }}
+        contentInsetAdjustmentBehavior={fullBleed ? 'never' : undefined}
+        // Taps land while a header text field has the keyboard up (the
+        // profile's in-place edit: hopping from the name to the bio).
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         onScroll={onScrollY ? (e) => onScrollY(e.nativeEvent.contentOffset.y) : undefined}
         scrollEventThrottle={onScrollY ? 16 : undefined}
@@ -331,11 +403,12 @@ export function FeedList({
           <RefreshControl
             refreshing={pulling}
             onRefresh={onPullRefresh}
-            tintColor={theme.inkSoft}
+            tintColor={refreshTint ?? theme.inkSoft}
             // The list has a top content pad (status bar / fixed bar). Without
             // this the spinner draws ABOVE the visible area — "the list moves
-            // but no spinner shows". Offset it down into view by the same pad.
-            progressViewOffset={contentTopPad}
+            // but no spinner shows". Offset it down into view by the same pad
+            // (or below a floating bar: `refreshOffset`).
+            progressViewOffset={refreshOffset ?? contentTopPad}
           />
         }
         onEndReachedThreshold={0.6}
@@ -344,7 +417,7 @@ export function FeedList({
         }}
         ListFooterComponent={
           feed.isFetchingNextPage ? (
-            <View style={{ paddingVertical: space.lg }}>
+            <View style={{ paddingVertical: space.lg, opacity: inert ? 0.35 : 1 }}>
               <ActivityIndicator color={theme.inkSoft} />
             </View>
           ) : undefined

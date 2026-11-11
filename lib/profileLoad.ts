@@ -54,6 +54,10 @@ export type LoadedProfile = {
   name: string
   xp: number
   imageUrl: string | null
+  // Native profile (You, step 2). Full (`ok`) payload only: loadProfile is
+  // never reached for a shell / blocked view. The web ignores both.
+  bio: string | null
+  coverPhotoUrl: string | null
   level: ReturnType<typeof getLevel>
   stats: {
     ratings: number
@@ -91,7 +95,7 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      id: true, name: true, xp: true, imageUrl: true,
+      id: true, name: true, xp: true, imageUrl: true, bio: true, coverPhotoUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
       _count: { select: { earnedBadges: true, followers: true, following: true } },
     },
@@ -148,6 +152,8 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
     name: user.name,
     xp: user.xp,
     imageUrl: user.imageUrl,
+    bio: user.bio,
+    coverPhotoUrl: user.coverPhotoUrl,
     level: getLevel(user.xp),
     stats: {
       ratings: user.lifetimeRatings,

@@ -1,4 +1,5 @@
 import { redis, k, scanKeys } from '@/lib/redis'
+import { prisma } from '@/lib/prisma'
 import { withSessionMutation } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 
@@ -84,4 +85,18 @@ export async function propagateDisplayNameToSessions(userId: number, newName: st
       console.warn('[rename] propagation skipped a session', { code, err: (err as Error).message })
     }
   }
+}
+
+// The rename tail, AFTER the users row committed the new name (account PATCH,
+// profile PATCH): push it into the session name snapshots, the Postgres
+// sessions.host_name mirror that feed / profile session cards read AND live
+// Redis (identities roster + meta.host). host_name first: the propagation
+// rewrites a Postgres-backed session's meta from the record (redis-rehydration
+// D4). Best-effort: a propagation failure must not fail the rename itself.
+export async function propagateRename(userId: number, newName: string): Promise<void> {
+  try {
+    await prisma.session.updateMany({ where: { hostUserId: userId, deletedAt: null }, data: { hostName: newName } })
+  } catch (e) { console.error('rename host_name mirror failed:', e) }
+  try { await propagateDisplayNameToSessions(userId, newName) }
+  catch (e) { console.error('rename propagation failed:', e) }
 }

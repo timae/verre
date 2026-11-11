@@ -87,6 +87,10 @@ export default function TabsLayout() {
     pathname.includes('/feed/check-in') || // both check-in create stages (sticky Rate It / Check In bars)
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
+    // Edit Profile (sticky Discard / Save) incl. its mirrors on an opened
+    // post's stack (/feed/<id>/edit-profile, /you/<id>/edit-profile), which
+    // match neither OPENED_POST_PATH nor the two prefixes above.
+    pathname.endsWith('/edit-profile') ||
     pathname.endsWith('/add') ||
     pathname.endsWith('/settings/details') ||
     pathname.endsWith('/settings/reveal');

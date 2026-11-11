@@ -100,13 +100,16 @@ export function SetNav({
 }
 
 // .set-photo-btn — glass round button over the cover (edit / remove).
-export function GlassButton({ label, icon, right, onPress }: { label: string; icon: IconName; right: number; onPress: () => void }) {
+// `bottom` anchors it to the bottom edge instead of 10 from the top (the Edit
+// Profile page's `.yo-ep-btn`, bottom-right).
+export function GlassButton({ label, icon, right, bottom, onPress }: { label: string; icon: IconName; right: number; bottom?: number; onPress: () => void }) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
       onPress={onPress}
-      style={{ position: 'absolute', top: 10, right, width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center' }}
+      hitSlop={6}
+      style={{ position: 'absolute', ...(bottom != null ? { bottom } : { top: 10 }), right, width: 34, height: 34, borderRadius: 17, backgroundColor: GLASS_FILL, alignItems: 'center', justifyContent: 'center' }}
     >
       <Icon name={icon} size={17} color="#fff" />
     </Pressable>

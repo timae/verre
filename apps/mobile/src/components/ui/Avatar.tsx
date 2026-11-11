@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { Image, View } from 'react-native';
 import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -20,6 +21,8 @@ import { mix } from '@/theme/color';
 //    badge) — pass the node; it's rendered over the circle.
 // `initialsSize` overrides the initials font size (call sites use 12–16 at
 // 30–52px; there's no clean ratio, so the size is explicit where it matters).
+const INITIALS_AFTER_MS = 1200;
+
 export function Avatar({
   imageUrl, name, size, anon, host, tint, ring, badge, initialsSize,
 }: {
@@ -35,6 +38,23 @@ export function Avatar({
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
+  // A photo that fails (gone from the store) or HANGS (stored under a host
+  // this device can't reach: iOS only errors after its ~60s network timeout)
+  // shows the initials, never an empty circle. The initials sit UNDER the
+  // image and appear once it has failed or hasn't loaded within
+  // INITIALS_AFTER_MS; a normal (or cached) load lands first and covers them,
+  // so lists don't flicker. All keyed on the URL: a new photo gets a fresh try.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  const [slowUrl, setSlowUrl] = useState<string | null>(null);
+  const photo = !anon && imageUrl && imageUrl !== failedUrl ? imageUrl : null;
+  const loaded = photo != null && loadedUrl === photo;
+  useEffect(() => {
+    if (!photo || loaded) return;
+    const t = setTimeout(() => setSlowUrl(photo), INITIALS_AFTER_MS);
+    return () => clearTimeout(t);
+  }, [photo, loaded]);
+  const showInitials = !anon && (!photo || (!loaded && slowUrl === photo));
   const r = size / 2;
   const border = ring ? 2 : 0;
   const inner = size - border * 2; // image/content box inside the ring
@@ -56,25 +76,36 @@ export function Avatar({
     ...(ring ? { borderWidth: 2, borderColor: theme.bg } : null),
   };
 
-  let inside: React.ReactNode;
-  if (anon) {
-    inside = <Icon name="user" size={Math.round(size * 0.5)} color={theme.inkFaint} />;
-  } else if (imageUrl) {
-    inside = <Image source={{ uri: imageUrl }} style={{ width: inner, height: inner, borderRadius: inner / 2 }} />;
-  } else {
-    inside = (
-      <VText
-        style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize, lineHeight, letterSpacing: tint ? -0.02 * fontSize : undefined }}
-        color={host ? theme.accentInk : tint ? mix(theme.accent, theme.ink, 0.6) : 'inkSoft'}
-      >
-        {initials(name)}
-      </VText>
-    );
-  }
+  const inside = (
+    <>
+      {anon ? <Icon name="user" size={Math.round(size * 0.5)} color={theme.inkFaint} /> : null}
+      {showInitials ? (
+        <VText
+          style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize, lineHeight, letterSpacing: tint ? -0.02 * fontSize : undefined }}
+          color={host ? theme.accentInk : tint ? mix(theme.accent, theme.ink, 0.6) : 'inkSoft'}
+        >
+          {initials(name)}
+        </VText>
+      ) : null}
+      {photo ? (
+        <Image
+          // A fresh native view per URL: iOS keeps the previous bitmap while a
+          // new source loads, which would hide the initials under the OLD
+          // photo while the new one hangs (Codex).
+          key={photo}
+          source={{ uri: photo }}
+          onLoad={() => setLoadedUrl(photo)}
+          onError={() => setFailedUrl(photo)}
+          style={{ position: 'absolute', width: inner, height: inner, borderRadius: inner / 2 }}
+        />
+      ) : null}
+    </>
+  );
 
-  // Background: image circles + anon use surfaceSunk; an initials fallback uses
-  // accent when host, else surfaceSunk.
-  const bg = anon ? theme.surfaceSunk : imageUrl ? theme.surfaceSunk : host ? theme.accent : tint ? theme.accentTint : theme.surfaceSunk;
+  // Background: image circles + anon use surfaceSunk; the initials (none, or a
+  // photo that failed / is hanging) use accent when host, else the tint /
+  // surfaceSunk.
+  const bg = anon || (photo && !showInitials) ? theme.surfaceSunk : host ? theme.accent : tint ? theme.accentTint : theme.surfaceSunk;
 
   const circle = <View style={[circleBase, { backgroundColor: bg }]}>{inside}</View>;
   if (!badge) return circle;

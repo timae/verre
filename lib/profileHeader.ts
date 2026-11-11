@@ -4,10 +4,11 @@
 // Visibility gating is the caller's responsibility, exactly like loadProfile:
 // only a `gate.status === 'ok'` viewer may reach this loader.
 
-import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { resolveTilePhotos } from '@/lib/profileTiles'
 
-export type ProfileTile = { count: number; imageUrl: string | null }
+// `pinned` (own profile only): the photo is the owner's chosen tile cover.
+export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean }
 
 export type ProfileFace = { id: number; name: string; imageUrl: string | null }
 
@@ -24,22 +25,16 @@ export type ProfileHeaderExtras = {
 
 const FACES = 3
 
-// 🔒 A tile photo must never leak an unrevealed blind wine. This is the SAFE
-// SUBSET of the feed's redaction rule (lib/sessionFeedWines.ts): standalone,
-// not blind, revealed, or a tombstoned moment. It deliberately skips the
-// feed's host / wine-adder bypasses and the over-by-its-dates auto-reveal —
-// over-redacting a tile photo costs nothing, a leaked label costs the tasting.
-// Aliases: `w` = wines, `s` = sessions (LEFT JOINed on the wine's or rating's
-// session).
-const SAFE_PHOTO = Prisma.sql`(s.id IS NULL OR s.deleted_at IS NOT NULL OR s.blind IS NOT TRUE OR w.revealed_at IS NOT NULL)`
-
 export async function loadProfileHeaderExtras(
   profileId: number,
   viewerId: number | null,
   impressionsCount: number,
 ): Promise<ProfileHeaderExtras> {
   const withInCommon = viewerId !== null && viewerId !== profileId
-  const [friends, inCommonRows, impressionPhoto, moments, cravings] = await Promise.all([
+  const own = viewerId !== null && viewerId === profileId
+  const tile = (count: number, p: { imageUrl: string | null; pinned: boolean }): ProfileTile =>
+    own ? { count, imageUrl: p.imageUrl, pinned: p.pinned } : { count, imageUrl: p.imageUrl }
+  const [friends, inCommonRows, moments, cravings, photos] = await Promise.all([
     prisma.$queryRaw<{ n: number }[]>`
       SELECT COUNT(*)::int AS n
       FROM follows f1
@@ -75,46 +70,19 @@ export async function loadProfileHeaderExtras(
           LIMIT ${FACES}
         `
       : Promise.resolve(null),
-    // Latest impression photo: the rating's own first photo, else the wine's
-    // (the feed card's image priority).
-    prisma.$queryRaw<{ image_url: string }[]>`
-      SELECT COALESCE(ri.image_url, w.image_url) AS image_url
-      FROM ratings r
-      JOIN wines w ON w.id = r.wine_id
-      LEFT JOIN sessions s ON s.id = r.session_id
-      LEFT JOIN LATERAL (
-        SELECT image_url FROM rating_images WHERE rating_id = r.id ORDER BY sort_order ASC LIMIT 1
-      ) ri ON true
-      WHERE r.user_id = ${profileId}
-        AND COALESCE(ri.image_url, w.image_url) IS NOT NULL
-        AND ${SAFE_PHOTO}
-      ORDER BY r.rated_at DESC
-      LIMIT 1
-    `,
     // Current memberships (the Moments-tab predicate: live moment, not
-    // kicked), NOT the monotonic lifetime counter. Photo = the latest joined
-    // moment that has a cover (a cover brands the moment; it is never
-    // blind-redacted — schema note on sessions.cover_photo_url).
-    prisma.$queryRaw<{ total: number; cover_photo_url: string | null }[]>`
-      SELECT COUNT(*) OVER ()::int AS total, s.cover_photo_url
+    // kicked), NOT the monotonic lifetime counter.
+    prisma.$queryRaw<{ n: number }[]>`
+      SELECT COUNT(*)::int AS n
       FROM session_members sm
       JOIN sessions s ON s.code = sm.session_code
       WHERE sm.user_id = ${profileId} AND s.deleted_at IS NULL
         AND sm.removed_state IS DISTINCT FROM 'kicked'
-      ORDER BY (s.cover_photo_url IS NULL), sm.joined_at DESC
-      LIMIT 1
     `,
-    // Bookmarks. Photo = the latest bookmarked wine whose photo is safe.
-    prisma.$queryRaw<{ total: number; image_url: string | null }[]>`
-      SELECT COUNT(*) OVER ()::int AS total,
-             CASE WHEN ${SAFE_PHOTO} THEN w.image_url END AS image_url
-      FROM bookmarks b
-      JOIN wines w ON w.id = b.wine_id
-      LEFT JOIN sessions s ON s.id = w.session_id
-      WHERE b.user_id = ${profileId}
-      ORDER BY (CASE WHEN ${SAFE_PHOTO} THEN w.image_url END) IS NULL, b.saved_at DESC
-      LIMIT 1
-    `,
+    prisma.bookmark.count({ where: { userId: profileId } }),
+    // Photos only (pins + the automatic latest): lib/profileTiles.ts. The
+    // counts above never depend on photo eligibility.
+    resolveTilePhotos(profileId),
   ])
 
   return {
@@ -128,9 +96,9 @@ export async function loadProfileHeaderExtras(
         }
       : {}),
     tiles: {
-      impressions: { count: impressionsCount, imageUrl: impressionPhoto[0]?.image_url ?? null },
-      moments: { count: moments[0]?.total ?? 0, imageUrl: moments[0]?.cover_photo_url ?? null },
-      cravings: { count: cravings[0]?.total ?? 0, imageUrl: cravings[0]?.image_url ?? null },
+      impressions: tile(impressionsCount, photos.impressions),
+      moments: tile(moments[0]?.n ?? 0, photos.moments),
+      cravings: tile(cravings, photos.cravings),
     },
   }
 }

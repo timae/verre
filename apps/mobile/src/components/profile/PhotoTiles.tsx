@@ -2,6 +2,7 @@ import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
+import { LongPressable } from '@/components/profile/ProfileEditParts';
 import { VText } from '@/components/ui/VText';
 import { TILE_SCRIM, TILE_SCRIM_STOPS } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
@@ -13,16 +14,30 @@ import { radius, useTheme } from '@/theme';
 // outlines the empty tile with a 1px rule — dropped per the no-borders ruling
 // (surfaces elevate by tone).
 //
-// Step 1: the tiles are INACTIVE (their list pages are a later step), so they
-// render as plain views, not buttons.
-export type PhotoTile = { label: string; count: string; imageUrl: string | null };
+// The tiles don't open anything yet (their list pages are a later step). On
+// your own profile a LONG-PRESS opens the tile's cover picker (R5g2, scale
+// 0.95 while held); a tile with no photo to choose from stays inert.
+export type PhotoTile = { label: string; count: string; imageUrl: string | null; onLongPress?: () => void };
 
-export function PhotoTiles({ tiles }: { tiles: PhotoTile[] }) {
+export function PhotoTiles({ tiles, dimmed }: { tiles: PhotoTile[]; dimmed?: boolean }) {
   return (
-    <View style={styles.grid}>
-      {tiles.map((t) => (
-        <Tile key={t.label} tile={t} />
-      ))}
+    <View pointerEvents={dimmed ? 'none' : 'auto'} style={[styles.grid, dimmed ? { opacity: 0.35 } : null]}>
+      {tiles.map((t) =>
+        t.onLongPress ? (
+          <LongPressable
+            key={t.label}
+            onLongPress={t.onLongPress}
+            pressedScale={0.95}
+            dim={false}
+            accessibilityHint={`Double-tap and hold to choose the ${t.label.toLowerCase()} cover.`}
+            style={{ flex: 1 }}
+          >
+            <Tile tile={t} />
+          </LongPressable>
+        ) : (
+          <Tile key={t.label} tile={t} />
+        ),
+      )}
     </View>
   );
 }
@@ -37,7 +52,7 @@ function Tile({ tile }: { tile: PhotoTile }) {
     <View
       accessible
       accessibilityLabel={`${tile.count} ${tile.label}`}
-      style={[styles.tile, { backgroundColor: theme.surfaceSunk }]}
+      style={[styles.tile, { backgroundColor: theme.surfaceSunk }, tile.onLongPress ? { flex: 0, width: '100%' } : null]}
     >
       {photo ? (
         <>

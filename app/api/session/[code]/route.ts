@@ -249,12 +249,16 @@ export async function DELETE(req: NextRequest, { params }: { params: Promise<{ c
             INSERT INTO session_tombstones (code, created_at) VALUES (${c}, ${new Date(meta.createdAt)}) ON CONFLICT DO NOTHING`
         } else {
           if (row.coverPhotoUrl) urls.add(row.coverPhotoUrl)
-          // Images of wines nobody bookmarked: bookmarked wines stay reachable
-          // from /me/saved, orphans lose their last reader with this session.
+          // 🔒 Wine-photo retention (D8): reclaim only the photo of a wine NO
+          // rating and no bookmark references. Bookmarked wines stay reachable
+          // from /me/saved; rated ones still show in the surviving ratings,
+          // feed posts and profile tiles (and will feed the catalog's
+          // pictures). Only a moderator removes such a photo.
           const orphanImages = await tx.$queryRaw<{ image_url: string }[]>`
             SELECT image_url FROM wines
              WHERE session_id = ${row.id} AND image_url IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)`
+               AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = wines.id)
+               AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = wines.id)`
           for (const r of orphanImages) if (r.image_url) urls.add(r.image_url)
           // Ratings + feed_items SURVIVE (rewire § 8): their session_id still
           // points at the tombstoned row. HoF (legacy, still load-bearing):

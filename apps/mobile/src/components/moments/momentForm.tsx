@@ -211,14 +211,26 @@ export async function pickFromCamera(maxBytes = MAX_COVER_BYTES): Promise<PickRe
 // until an Android source-chooser is built. Callers use this instead of
 // pickCover so the source choice is centralised.
 export async function pickPhoto(maxBytes = MAX_COVER_BYTES): Promise<PickResult> {
+  const r = await pickPhotoOrRemove(null, maxBytes);
+  return r === 'remove' ? null : r;
+}
+
+// The same chooser with a destructive Remove row (the profile photo + cover,
+// ruling D5): `removeLabel` (e.g. "Remove Cover") adds it when an image is set;
+// null leaves it out. Off iOS (no ActionSheetIOS) the library opens directly,
+// so removal there is the Edit Profile page's job until the Android chooser
+// exists (apps/mobile/CLAUDE.md "Deferred Android work").
+export async function pickPhotoOrRemove(removeLabel: string | null, maxBytes = MAX_COVER_BYTES): Promise<PickResult | 'remove'> {
   if (Platform.OS !== 'ios') return pickCover(maxBytes);
-  const choice = await new Promise<'camera' | 'library' | 'cancel'>((resolve) => {
+  const options = ['Take Photo', 'Choose from Library', ...(removeLabel ? [removeLabel] : []), 'Cancel'];
+  const choice = await new Promise<'camera' | 'library' | 'remove' | 'cancel'>((resolve) => {
     ActionSheetIOS.showActionSheetWithOptions(
-      { options: ['Take Photo', 'Choose from Library', 'Cancel'], cancelButtonIndex: 2 },
-      (i) => resolve(i === 0 ? 'camera' : i === 1 ? 'library' : 'cancel'),
+      { options, cancelButtonIndex: options.length - 1, ...(removeLabel ? { destructiveButtonIndex: 2 } : {}) },
+      (i) => resolve(i === 0 ? 'camera' : i === 1 ? 'library' : removeLabel && i === 2 ? 'remove' : 'cancel'),
     );
   });
   if (choice === 'cancel') return null;
+  if (choice === 'remove') return 'remove';
   return choice === 'camera' ? pickFromCamera(maxBytes) : pickCover(maxBytes);
 }
 
@@ -555,7 +567,7 @@ export function DateField({
 
 // Description textarea (.field, 2 rows) — same focus convention as TextField.
 export function NotesField({
-  label, placeholder, value, onChange,
+  label, placeholder, value, onChange, maxLength,
 }: {
   // Optional since the rating block dropped its "Your Note" title (Simon,
   // 2026-07-12) — the placeholder carries the affordance there.
@@ -563,6 +575,8 @@ export function NotesField({
   placeholder: string;
   value: string;
   onChange: (s: string) => void;
+  // A hard cap in UTF-16 units (RN's own unit), e.g. the profile text's 200.
+  maxLength?: number;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -580,6 +594,7 @@ export function NotesField({
         value={value}
         onChangeText={onChange}
         multiline
+        maxLength={maxLength}
         placeholder={placeholder}
         placeholderTextColor={theme.inkFaint}
         onFocus={() => setFocused(true)}

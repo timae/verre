@@ -1,12 +1,16 @@
 # Avatars — implementation
 
-Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/u_<userId>_<timestamp>.<ext>`; the URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
+Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/u_<userId>_<timestamp>_<rand>.<ext>` (a random suffix since 2026-11-10: `Date.now()` alone collided under concurrent replaces); the URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
 
 > Session **cover photos** (milestone 4) reuse this exact pipeline: same `uploadImage` hardening, same data-URL JSON shape, same replace-then-reclaim ordering. Key shape `sessions/<code>_<timestamp>.<ext>`; see `POST /api/session` + the settings PATCH.
 
 ## Edit endpoint
 
-`POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth. POST also rate-limited 10/h per user; DELETE is currently uncapped (see `app/api/rate-limits.md` rationale). POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. On replace, the prior URL is reclaimed from S3 fire-and-forget after the new upload + DB update succeed. On account-delete, `lib/accountDelete.ts` reclaims the avatar alongside check-in and wine images.
+`POST /api/me/avatar` (replace) and `DELETE /api/me/avatar` (remove). Both gated by `isSameOrigin` + cookie auth. POST also rate-limited 10/h per user; DELETE is currently uncapped (see `app/api/rate-limits.md` rationale). POST takes `{imageData: dataURL}` JSON; the validation pipeline in `uploadImage` enforces MIME allow-list (`image/jpeg|png|webp|gif`), magic-byte signatures (SVG is explicitly excluded — XML can carry `<script>`), and a 2MB decoded-byte cap. Both routes run the shared **replace protocol** (`lib/profileImage.ts` `replaceProfileImage`): upload under a fresh unique key → transaction { `SELECT` the current URL `FOR UPDATE`, `UPDATE` } → COMMIT → reclaim the captured prior; zero rows (account deleted) or a failed update → reclaim the fresh upload. The prior URL is read UNDER the row lock, never before the upload, so concurrent replaces serialize and each reclaims exactly what it overwrote (the old route read the prior first and never cleaned up a failed update). On account-delete, `lib/accountDelete.ts` reads the avatar + cover under the same users-row lock and reclaims them after COMMIT; a replace blocked on that lock reclaims its own upload.
+
+## Profile cover (native You profile, step 2)
+
+`users.cover_photo_url` (nullable VARCHAR(512)), the user's own upload (camera / library only, ruling D2). `POST /api/me/cover` `{imageData}` → `{coverPhotoUrl}`, `DELETE /api/me/cover` → `{ok}`; the same `uploadImage` hardening and the same replace protocol. Key `avatars/cover_u_<userId>_<timestamp>_<rand>.<ext>` (the proven public-read prefix). POST is limited by its own `rl:profile-cover` 10/h (cover and photo uploads don't starve each other); DELETE is uncapped (it reclaims). Reclaimed on account delete. Pinned by `scripts/tests/you-profile-integration.mts` § 4–5.
 
 ## JPEG metadata strip
 

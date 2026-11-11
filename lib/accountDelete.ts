@@ -187,9 +187,13 @@ export async function executeAccountDelete(userId: number, opts: AccountDeleteOp
 export async function deleteAccountDurable(userId: number, opts: AccountDeleteOptions = {}): Promise<AccountDeleteResult> {
   // Images of rows that go unconditionally, captured before the transaction
   // (capture / commit / reclaim-after): standalone rating images (they cascade
-  // with the ratings), hosted-session wine photos (today's behaviour, kept), the
-  // avatar. Rows decided under the locks capture their images in the
-  // transaction. Reclaim fires only after COMMIT.
+  // with the ratings). Everything decided under the locks captures its images
+  // in the transaction: the user's own profile photo + cover (under the users
+  // row lock), and the wine photos of a moment wiped with the account (D8 / D9,
+  // kept while another rating or bookmark references the wine). A moment that
+  // SURVIVES the deletion (anonymised) keeps every wine photo: its line-up
+  // still shows them. Reclaim fires only after COMMIT, and only the committed
+  // attempt's set.
   const standaloneRatingImages = await prisma.$queryRaw<{ image_url: string }[]>`
     SELECT ri.image_url
     FROM rating_images ri
@@ -197,11 +201,6 @@ export async function deleteAccountDurable(userId: number, opts: AccountDeleteOp
     WHERE r.user_id = ${userId}
       AND r.session_id IS NULL
       AND ri.image_url IS NOT NULL`
-  const hostedWineImages = await prisma.wine.findMany({
-    where: { imageUrl: { not: null }, session: { hostUserId: userId } },
-    select: { imageUrl: true },
-  })
-  const userRow = await prisma.user.findUnique({ where: { id: userId }, select: { imageUrl: true } })
 
   let committed: Committed | null = null
   const reserved = new Set<string>()
@@ -225,8 +224,6 @@ export async function deleteAccountDurable(userId: number, opts: AccountDeleteOp
 
   const reclaim = [
     ...standaloneRatingImages.map(r => r.image_url),
-    ...hostedWineImages.map(w => w.imageUrl),
-    userRow?.imageUrl,
     ...committed.reclaimUrls,
   ]
   for (const url of reclaim) {
@@ -317,8 +314,11 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // The users row, AFTER the session locks (module header: lock order). From
       // here no new rating, member row or brought-by reassignment can reference
       // this user (their FK/existence checks take KEY SHARE on it), so the
-      // touched-set re-read below is final.
-      const me = await tx.$queryRaw<{ id: number }[]>`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`
+      // touched-set re-read below is final. The profile photo + cover are read
+      // under this lock (lib/profileImage.ts): a replace that waited on it finds
+      // no row and reclaims its own upload, so nothing is orphaned.
+      const me = await tx.$queryRaw<{ id: number; image_url: string | null; cover_photo_url: string | null }[]>`
+        SELECT id, image_url, cover_photo_url FROM users WHERE id = ${userId} FOR UPDATE`
       if (!me[0]) throw new AccountDeleteRetryableError('user row is gone')
       const now = await touchedLiveCodes(tx, userId)
       if (now.some(code => !locked.has(code))) throw new TouchedSetGrewError('a session was touched after discovery')
@@ -326,6 +326,9 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       const plan: DeletePlan = { toDelete: [], toPseudonymize: [], scrubOnly: [] }
       const sessions: SessionOutcome[] = []
       const reclaimUrls: string[] = []
+      // D8 / D9 phase 1: (wine id, url) of every wiped moment's wines, captured
+      // before the wipe orphans them. Filtered after the users cascade below.
+      const wineCandidates: { id: string; image_url: string }[] = []
       const liveCodes = new Set<string>()
 
       // DECIDE every branch first, from state read under the locks, with no
@@ -366,7 +369,9 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
           })
         }
         if (wipe) {
-          reclaimUrls.push(...await wipeEmptySession(tx, row, userId, durable, leases.get(code)!, hooks))
+          const wiped = await wipeEmptySession(tx, row, userId, durable, leases.get(code)!, hooks)
+          reclaimUrls.push(...wiped.urls)
+          wineCandidates.push(...wiped.wines)
           plan.toDelete.push(code)
         } else {
           const key = `d:${randomUUID()}`
@@ -430,6 +435,19 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // auth_sessions. ratings.user_id and sessions.host_user_id are NO ACTION:
       // a session rating or hosted session missed above makes this refuse.
       await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
+      for (const u of [me[0].image_url, me[0].cover_photo_url]) if (u) reclaimUrls.push(u)
+      // 🔒 D8 / D9 phase 2, AFTER the rating deletes / tombstones (the wipe
+      // deletes the host's own ratings) AND the users cascade (the host's own
+      // bookmarks): keep a wiped moment's wine photo while any rating or
+      // bookmark still references the wine.
+      if (wineCandidates.length > 0) {
+        const unused = await tx.$queryRaw<{ image_url: string }[]>`
+          SELECT w.image_url FROM wines w
+           WHERE w.id = ANY(${wineCandidates.map(c => c.id)}::text[]) AND w.image_url IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.wine_id = w.id)
+             AND NOT EXISTS (SELECT 1 FROM bookmarks b WHERE b.wine_id = w.id)`
+        reclaimUrls.push(...unused.map(u => u.image_url))
+      }
       return { plan, sessions, liveCodes, reclaimUrls, leases }
     }, { timeout: opts.txTimeoutMs ?? 60_000, maxWait: 10_000 })
     committed = true
@@ -485,11 +503,15 @@ async function engagedInRedis(row: LockedSession, userId: number, durable: Durab
 // Same scrub contract as DELETE /api/session/:code (rewire § 8) plus the
 // registry row; the host's own ratings go with it (there are no others). The
 // Redis keys are deleted HERE, before COMMIT (§ 5.4): if that fails, the throw
-// rolls the whole account deletion back. Returns the URLs to reclaim.
-async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession, userId: number, durable: DurableRedis, token: string, hooks: AccountDeleteHooks): Promise<string[]> {
+// rolls the whole account deletion back. Returns the URLs to reclaim, and the
+// moment's wine photos as CANDIDATES (D8 / D9: the caller keeps the ones a
+// rating or bookmark still references once the users cascade has run).
+async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession, userId: number, durable: DurableRedis, token: string, hooks: AccountDeleteHooks): Promise<{ urls: string[]; wines: { id: string; image_url: string }[] }> {
   const imgs = await tx.$queryRaw<{ image_url: string }[]>`
     SELECT ri.image_url FROM rating_images ri JOIN ratings r ON r.id = ri.rating_id
      WHERE r.session_id = ${row.id} AND r.user_id = ${userId} AND ri.image_url IS NOT NULL`
+  const wines = await tx.$queryRaw<{ id: string; image_url: string }[]>`
+    SELECT id, image_url FROM wines WHERE session_id = ${row.id} AND image_url IS NOT NULL`
   await tx.$executeRaw`DELETE FROM ratings WHERE session_id = ${row.id} AND user_id = ${userId}`
   await tx.$executeRaw`DELETE FROM hall_of_fame WHERE session_code = ${row.code}`
   await tx.$executeRaw`UPDATE wines SET session_id = NULL WHERE session_id = ${row.id}`
@@ -538,7 +560,7 @@ async function wipeEmptySession(tx: Prisma.TransactionClient, row: LockedSession
     for (let i = 0; i < keys.length; i += 500) await fencedDel(row.code, token, keys.slice(i, i + 500), c)
     if (keys.length === 0 && !(await sessionLockHeld(row.code, token, c))) throw new AccountDeleteRetryableError(`lease on ${row.code} was lost`)
   })
-  return [...imgs.map(i => i.image_url), row.coverPhotoUrl].filter((u): u is string => !!u)
+  return { urls: [...imgs.map(i => i.image_url), row.coverPhotoUrl].filter((u): u is string => !!u), wines }
 }
 
 // Bounded Redis access for the durable path, on a dedicated fail-fast client

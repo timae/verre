@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
+import { freshOwnName } from '@/lib/api/profile';
 import { ApiError, isPinnedSession, joinMoment, mySessionsQueryOptions, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
@@ -535,7 +536,9 @@ function JoinBlock() {
     setBusy(true);
     setError(null);
     try {
-      const joined = await joinMoment(code, auth?.user.name ?? '');
+      // Your name fresh from the users row, not Better Auth's (stale after a
+      // rename) session copy (lib/api/profile.ts freshOwnName).
+      const joined = await joinMoment(code, (await freshOwnName(queryClient, auth?.user.name)) ?? '');
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
       setInput('');
       router.push({ pathname: '/moments/session/[code]', params: { code: joined.code } }, { dangerouslySingular: true });

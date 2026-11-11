@@ -225,6 +225,10 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | DELETE | /api/me/devices | Revoke all other devices; password re-auth; 10/h |
 | POST | /api/me/avatar | Upload / replace own profile picture (body: `{imageData}`); reclaims old S3 |
 | DELETE | /api/me/avatar | Remove own profile picture; reclaims S3 |
+| POST | /api/me/cover | Upload / replace own profile cover (body: `{imageData}`, returns `{coverPhotoUrl}`); reclaims old S3 |
+| DELETE | /api/me/cover | Remove own profile cover; reclaims S3 |
+| PATCH | /api/me/profile | Edit own profile without a password: `{name?, bio?, tiles?: {impressions?, moments?, cravings?: url \| null}}` (bio ≤ 200, one paragraph; a tile url must be one of your pickable photos, `null` = back to the latest). Returns only the changed fields (tiles as `{imageUrl, pinned}`) |
+| GET | /api/me/profile/photos?pool=impressions\|moments\|cravings | A tile's pickable photos (yours, never an unrevealed blind wine): `{photos: string[] (≤ 60, latest first, the current pin first), pin: string \| null}` |
 | GET | /api/me/visibility | Read own profile-visibility settings → `{visibility, fofEnabled}` |
 | PATCH | /api/me/visibility | Update own profile-visibility (body: `{visibility, fofEnabled}`); 30/h |
 | POST | /api/me/mutes/:id | Mute user `:id`; 60/h shared with DELETE |
@@ -286,7 +290,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | DELETE | /api/checkins/:id | Delete own standalone check-in. Cascades rating + feed_item + rating_images. |
 | POST/DELETE | /api/feed-items/:id/like | Like / unlike a feed item (check-in or session post). The `:id` value matches the legacy `/api/checkins/:id/like` shape for migrated rows — id-equality preserved by the rewire phase 2 data migration. |
 | POST/DELETE | /api/users/:id/follow | Follow / unfollow a user (no self-follow) |
-| GET | /api/users/:id | Public profile + stats; viewer's `isFollowing` flag when authed. The full profile also carries `followsYou`, `friendsCount` (mutual follows), `inCommon` (`{count, faces: [{id, name, imageUrl}]}`, friends you share; absent on your own profile) and `tiles` (`{impressions, moments, cravings}`, each `{count, imageUrl}`; a photo is never one from an unrevealed blind wine). `?view=header` drops `recentCheckins`/`recentSessionPosts`. |
+| GET | /api/users/:id | Public profile + stats; viewer's `isFollowing` flag when authed. The full profile also carries `followsYou`, `friendsCount` (mutual follows), `inCommon` (`{count, faces: [{id, name, imageUrl}]}`, friends you share; absent on your own profile) and `tiles` (`{impressions, moments, cravings}`, each `{count, imageUrl}`; the automatic photo is never one from an unrevealed blind wine; a chosen tile cover shows while its source exists, and your own profile adds `pinned`), plus `bio` and `coverPhotoUrl`. `?view=header` drops `recentCheckins`/`recentSessionPosts`. |
 | GET | /api/me/friends | Mutual follows of the calling user |
 | DELETE | /api/me/bookmarks/:wineId | Unbookmark; works on orphaned wines too |
 
