@@ -8,7 +8,8 @@ import { profileKey, type FullProfile, type Profile, type ProfileTile } from './
 
 // Own-profile writes (the You profile, step 2) + the cache merges after them.
 // Wire shapes MIRROR app/api/me/profile/route.ts, app/api/me/profile/photos,
-// app/api/me/avatar and app/api/me/cover — keep in sync by hand.
+// app/api/me/avatar, app/api/me/cover and app/api/me/profile/tiles — keep in
+// sync by hand.
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -51,8 +52,18 @@ export async function removeCover(): Promise<void> {
   if (!res.ok) await throwApiError(res);
 }
 
+// Your own photo on a tile (Take Photo / Choose from Library in the cover
+// sheet): uploaded and pinned at once; the tile's previous own upload is
+// reclaimed server-side. Answers the PATCH's `tiles` shape.
+export async function uploadTilePhoto(tile: TileKey, dataUrl: string): Promise<Partial<Record<TileKey, TilePhoto>>> {
+  const res = await apiFetch(`/api/me/profile/tiles/${tile}`, { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ imageData: dataUrl }) });
+  if (!res.ok) await throwApiError(res);
+  return (await res.json()).tiles;
+}
+
 // The tile cover picker: the latest ≤ 60 pickable photos of one tile, the
-// current pin first while it is still pickable (`pin`, else null).
+// current pin first while it is still pickable or is the tile's own upload
+// (`pin`, else null).
 export async function getTilePhotos(pool: TileKey): Promise<{ photos: string[]; pin: string | null }> {
   const res = await apiFetch(`/api/me/profile/photos?pool=${pool}`);
   if (!res.ok) await throwApiError(res);

@@ -99,6 +99,11 @@ const ICONS: Record<string, Seg[]> = {
     { d: 'M4 19.5c0-3.3 2.7-5.5 6-5.5 1 0 2 .2 2.8.6', sw: 1.6, cap: true },
     { d: 'M17.5 14v6M14.5 17h6', sw: 1.6, cap: true },
   ],
+  // three finder squares + modules — your code / Scan (design i-qr)
+  qr: [
+    { d: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z', sw: 1.6, join: true },
+    { d: 'M14 14h2.5v2.5H14zM17.5 17.5H20V20h-2.5zM14 20v-1M20 14h-1', sw: 1.6, cap: true },
+  ],
   // circle + slash — Block (design i-block)
   block: [
     { cx: 12, cy: 12, r: 8, sw: 1.6 },

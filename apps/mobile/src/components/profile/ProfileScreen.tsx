@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { normalizeBio, validateDisplayName } from '@verre/core';
 import { FeedList, type FeedScrollHandle } from '@/components/feed/FeedList';
 import { pickPhotoOrRemove } from '@/components/moments/momentForm';
+import { AddFriendsSheet } from '@/components/people/AddFriendsSheet';
 import { EditBar } from '@/components/profile/ProfileEditParts';
 import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type ProfileEdit } from '@/components/profile/ProfileHeader';
 import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
@@ -18,17 +19,20 @@ import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
 import { Icon } from '@/components/ui/Icon';
 import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import {
-  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, type TileKey,
+  applyOwnProfileChange, freshOwnName, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey,
 } from '@/lib/api/profile';
-import { BLOCKS_KEY, MUTES_KEY, type CheckinVisibility } from '@/lib/api/settings';
-import { profileKey, profileQueryOptions, setBlocked, setFollowing, setMuted, type Profile } from '@/lib/api/users';
+import type { PeopleTab } from '@/lib/api/people';
+import { type CheckinVisibility } from '@/lib/api/settings';
+import { profileQueryOptions } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
-import { refetchNetworkFeed, refetchProfileHeader, refetchUserFeed } from '@/lib/feedCache';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { errorText, sentence } from '@/lib/errorCopy';
+import { confirmUnfollow, relate, usePersonBusy, type RelOp } from '@/lib/relationship';
+import { shareProfile } from '@/lib/shareProfile';
+import { usePushGuard } from '@/lib/usePushGuard';
 import { viewerCacheEpoch } from '@/lib/query';
 import { GLASS_FILL, GUTTER, heroBarHeight, usePhoneTokens } from '@/lib/layout';
-import { settingsHref, useSessionTab } from '@/lib/sessionStack';
+import { feedHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
 
@@ -58,7 +62,8 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // the Settings / Edit Profile pushes follow it (lib/sessionStack.ts).
   const mount = useSessionTab();
   const queryClient = useQueryClient();
-  const meId = authClient.useSession().data?.user.id;
+  const authSession = authClient.useSession().data;
+  const meId = authSession?.user.id;
   const own = meId != null && Number(meId) === userId;
 
   const profileQ = useQuery(profileQueryOptions(userId));
@@ -67,7 +72,6 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const hero = ok && !!profile.coverPhotoUrl;
 
   const [menu, setMenu] = useState<MenuAnchor | null>(null);
-  const [busy, setBusy] = useState(false);
   const barControl = phone.size('heroAction');
   const BAR_H = heroBarHeight(insets.top, barControl);
 
@@ -122,78 +126,22 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const statusBarStyle = hero && !titled ? 'light' : themed;
   useForwardStatusBarStyle(statusBarStyle);
 
-  // Relationship writes. Afterwards the profile header AND the network feed
-  // (['feed'], exact — whose authors follow / mute / block change) refetch IN
-  // PLACE, cancel-first (lib/feedCache.ts; never invalidate a feed cache).
-  // This person's own post list is untouched: mute never filters it, and
-  // block / private states unmount it. An optimistic patch makes the header
-  // answer at once. On failure the pre-action header is put back FIRST (the
-  // refetch below can fail too, e.g. offline, and must not leave the button
-  // claiming a write that failed). Every cache write after an await checks the
-  // viewer epoch (lib/query.tsx): a sign-out meanwhile cleared this viewer's
-  // cache, and nothing of theirs may be written back into it.
-  // `list`: the Settings list this write changes (Privacy → Blocked / Muted),
-  // a plain query, so it is invalidated. `posts`: a follow / unfollow can
-  // flip whether this person's Check-Ins Visible To shows you their posts
-  // while the profile stays visible, so their list refetches in place too.
-  const act = useCallback(
-    async (
-      op: () => Promise<void>,
-      { optimistic, list, posts }: { optimistic?: (p: Profile) => Profile; list?: 'blocks' | 'mutes'; posts?: boolean } = {},
-    ) => {
-      if (busy) return;
-      setBusy(true);
-      const epoch = viewerCacheEpoch();
-      const key = profileKey(userId);
-      // An in-flight read must not land over the optimistic patch.
-      await queryClient.cancelQueries({ queryKey: key, exact: true });
-      const before = queryClient.getQueryData<Profile>(key);
-      if (optimistic && before && viewerCacheEpoch() === epoch) queryClient.setQueryData<Profile>(key, optimistic(before));
-      try {
-        await op();
-      } catch (e) {
-        // Signed out (or switched) meanwhile: this viewer's cache is gone and
-        // must not be recreated; neither the rollback nor the refetch runs.
-        if (viewerCacheEpoch() !== epoch) return;
-        if (optimistic && before) queryClient.setQueryData<Profile>(key, before);
-        Alert.alert('Something went wrong', errorText(e));
-      } finally {
-        if (viewerCacheEpoch() === epoch) {
-          await Promise.allSettled([
-            refetchProfileHeader(queryClient, userId),
-            refetchNetworkFeed(queryClient),
-            posts ? refetchUserFeed(queryClient, userId) : null,
-            list ? queryClient.invalidateQueries({ queryKey: list === 'blocks' ? BLOCKS_KEY : MUTES_KEY, exact: true }) : null,
-          ]);
-        }
-        setBusy(false);
-      }
-    },
-    [busy, queryClient, userId],
-  );
-
-  const follow = () =>
-    act(() => setFollowing(userId, true), {
-      optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: true } : p),
-      posts: true,
-    });
-  // Unfollow asks first (it can end a friendship); following acts immediately.
-  const confirmUnfollow = (name: string) =>
-    Alert.alert(`Unfollow ${firstName(name)}?`, undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Unfollow',
-        style: 'destructive',
-        onPress: () =>
-          act(() => setFollowing(userId, false), {
-            optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: false } : p),
-            posts: true,
-          }),
-      },
-    ]);
-  const onFollowPress = (p: { name: string; isFollowing: boolean }) => (p.isFollowing ? confirmUnfollow(p.name) : follow());
+  // Relationship writes: lib/relationship.ts (`relate`), shared with People
+  // and Add Friends. It patches this header (and every list row of this
+  // person) at once, refetches the header, the network feed and (a follow
+  // change) this person's post list IN PLACE afterwards (your own header in
+  // the trailing refresh ~1 s later), and
+  // puts back only this person's fields on failure. One write per person at
+  // a time across the app (`usePersonBusy`), so a mute can't race a follow.
+  // The Settings lists (Blocked / Muted) are invalidated there too.
+  const busy = usePersonBusy(userId);
+  const act = (op: RelOp) => void relate(queryClient, userId, op, meId != null ? Number(meId) : null);
+  // D7: unfollow asks first ("Remove Mara as Friend?" when you are friends);
+  // following acts immediately.
+  const askUnfollow = (p: { name: string; followsYou: boolean }) => confirmUnfollow(p, () => act('unfollow'));
+  const onFollowPress = (p: { name: string; isFollowing: boolean; followsYou: boolean }) => (p.isFollowing ? askUnfollow(p) : act('follow'));
   // Mute doesn't ask (design 04·5a note); it only filters YOUR network feed.
-  const setMute = (on: boolean) => act(() => setMuted(userId, on), { optimistic: (p) => (p.state === 'ok' ? { ...p, viewerMutes: on } : p), list: 'mutes' });
+  const setMute = (on: boolean) => act(on ? 'mute' : 'unmute');
   // Block asks once more — the house native destructive alert naming the
   // person, with the design's BLOCKSHEET copy (docs/dev/block.md semantics).
   const confirmBlock = (name: string) => {
@@ -203,11 +151,18 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       `${first} won’t see your profile, impressions, moments or cravings, and can’t find you in search. You won’t see theirs either. They aren’t told.`,
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Block', style: 'destructive', onPress: () => act(() => setBlocked(userId, true), { list: 'blocks' }) },
+        { text: 'Block', style: 'destructive', onPress: () => act('block') },
       ],
     );
   };
-  const unblock = () => act(() => setBlocked(userId, false), { list: 'blocks' });
+  const unblock = () => act('unblock');
+
+  // People (D10): the counts and the in-common row. A plain push (A → B → A
+  // must keep its history), double taps swallowed.
+  const guard = usePushGuard();
+  const openPeople = (tab: PeopleTab, known?: boolean) =>
+    guard(() => router.push(feedHref(mount, 'people', { id: String(userId), tab, known: known ? '1' : undefined })));
+  const [addOpen, setAddOpen] = useState(false);
 
   // ── Own profile: the in-place edit session (R5g3) ──────────────────────────
   // Long-press the name or the bio: BOTH become inputs, the pressed one
@@ -278,7 +233,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     try {
       bio = normalizeBio(draft.bio);
     } catch (e) {
-      Alert.alert('Check Your Profile Text', sentence((e as Error).message));
+      Alert.alert('Check Your Bio', sentence((e as Error).message));
       return;
     }
     const body: { name?: string; bio?: string | null } = {};
@@ -379,6 +334,22 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     [queryClient, userId],
   );
 
+  // Your own photo on a tile (Take Photo / Choose from Library in the sheet).
+  const uploadTileCover = useCallback(
+    async (tile: TileKey, dataUrl: string) => {
+      const epoch = viewerCacheEpoch();
+      try {
+        const tiles = await uploadTilePhoto(tile, dataUrl);
+        await applyOwnProfileChange(queryClient, userId, { tiles }, epoch);
+        setTileSheet(null);
+      } catch (e) {
+        Alert.alert('Couldn’t Save', errorText(e));
+        throw e;
+      }
+    },
+    [queryClient, userId],
+  );
+
   const edit: ProfileEdit | undefined =
     own && ok
       ? {
@@ -398,6 +369,26 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       : undefined;
 
   const close = () => setMenu(null);
+  // Share Profile presents the OS share sheet, which must wait until the
+  // menu's Modal has gone (it presents from the top view controller): the row
+  // only records the action, AnchoredMenu's `onClosed` runs it (every close
+  // fires that, so the ref is cleared there).
+  const pending = useRef<(() => void) | null>(null);
+  const afterClose = (run: () => void) => {
+    pending.current = run;
+    close();
+  };
+  const onMenuClosed = useCallback(() => {
+    const run = pending.current;
+    pending.current = null;
+    run?.();
+  }, []);
+  const shareOwn = () =>
+    afterClose(async () => {
+      const name = ok ? profile.name : await freshOwnName(queryClient, authSession?.user.name);
+      await shareProfile(name ?? '', userId);
+    });
+  const shareTheirs = (name: string) => afterClose(() => void shareProfile(name, userId));
   // Your own ⋯ never depends on the profile query: Settings holds the only
   // signed-in Sign Out, so it must survive a failed or slow profile load.
   const showMenuButton = own || (profile && profile.state !== 'gone');
@@ -408,8 +399,15 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // lives in Settings (→ your card), as a moment's does (⋯ → Settings).
   const menuItems = own ? (
     <>
-      <MenuItem icon="user-plus" label="Add Friends" disabled />
-      <MenuItem icon="share" label="Share Profile" disabled />
+      <MenuItem
+        icon="user-plus"
+        label="Add Friends"
+        onPress={() => {
+          close();
+          setAddOpen(true);
+        }}
+      />
+      <MenuItem icon="share" label="Share Profile" onPress={shareOwn} />
       <MenuSeparator />
       <MenuItem
         icon="settings"
@@ -426,7 +424,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : !profile ? null : profile.state === 'ok' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" disabled />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
       <MenuItem icon="glass" label="Invite to a Moment" disabled />
       <MenuSeparator />
       <MenuItem
@@ -443,7 +441,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
           label="Unfollow"
           onPress={() => {
             close();
-            confirmUnfollow(profile.name);
+            askUnfollow(profile);
           }}
         />
       ) : null}
@@ -459,7 +457,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     </>
   ) : profile.state === 'shell' ? (
     <>
-      <MenuItem icon="share" label="Share Profile" disabled />
+      <MenuItem icon="share" label="Share Profile" onPress={() => shareTheirs(profile.name)} />
       <MenuSeparator />
       {profile.isFollowing ? (
         <MenuItem
@@ -467,7 +465,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
           label="Unfollow"
           onPress={() => {
             close();
-            confirmUnfollow(profile.name);
+            askUnfollow(profile);
           }}
         />
       ) : null}
@@ -482,9 +480,8 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
       />
     </>
   ) : profile.state === 'blocked' ? (
+    // No Share Profile here (you blocked them): only Unblock.
     <>
-      <MenuItem icon="share" label="Share Profile" disabled />
-      <MenuSeparator />
       <MenuItem
         icon="block"
         label="Unblock"
@@ -523,14 +520,14 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
     );
   } else if (profile.state === 'shell') {
     // Private (their tier doesn't admit you): the blocked layout + Follow and
-    // one sentence (Simon's ruling).
+    // one plain sentence (ruled 2026-11-12; the shell never says the tier).
     body = (
       <View style={{ paddingHorizontal: GUTTER, paddingTop: 4 }}>
         <ProfileIdentity name={profile.name} imageUrl={null} />
         <NoticeBox
-          text={`Only people ${firstName(profile.name)} shares with can see this profile.`}
+          text={`${firstName(profile.name)}’s profile is private.`}
           action={
-            <FollowButton isFollowing={profile.isFollowing} followsYou={false} busy={busy} onPress={() => onFollowPress(profile)} />
+            <FollowButton isFollowing={profile.isFollowing} followsYou={profile.followsYou} busy={busy} onPress={() => onFollowPress(profile)} />
           }
         />
       </View>
@@ -560,6 +557,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
             onNameBottom={onNameBottom}
             edit={edit}
             pulled={pulled}
+            onPeople={openPeople}
           />
         }
         empty={
@@ -609,15 +607,17 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
           />
         ) : null}
         {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} /> : null}
-        <AnchoredMenu anchor={menu} onClose={close} right={16} minWidth={220}>
+        <AnchoredMenu anchor={menu} onClose={close} onClosed={onMenuClosed} right={16} minWidth={220}>
           {menuItems}
         </AnchoredMenu>
+        {own ? <AddFriendsSheet open={addOpen} onClose={() => setAddOpen(false)} meId={userId} /> : null}
         {own && ok ? (
           <TileCoverSheet
             tile={tileSheet}
             shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
             onClose={() => setTileSheet(null)}
             onUse={pinTilePhoto}
+            onUpload={uploadTileCover}
           />
         ) : null}
       </View>

@@ -9,6 +9,8 @@
 //       every photo, rolled-back attempt reclaims nothing, avatar + cover)
 //   § 5 the profile image replace protocol (no orphan under concurrency, a
 //       replace blocked on an account deletion reclaims its own upload)
+//   § 5b a tile's own photo (upload + pin, always live, reclaimed on replace /
+//       re-pin / null / account deletion, a referenced photo never)
 //   § 6 GET /api/me/mutes (shape, newest first, the blocked-me scrub both ways,
 //       the cap, 401)
 //   § 7 the devices routes for a NATIVE caller (This Device, the password-free
@@ -30,6 +32,16 @@
 //        blocks break a link, single + bulk paths) and the shared
 //        post-audience rule (@verre/core) against canViewPosts + on the
 //        server's write
+//   People + Add Friends (.local/you-profile/people-plan.md § Verification):
+//   § 16 the people lists (block pairs both ways, never a count above its
+//        rows, known + q + cursor, in common == knownCount, photo / xp /
+//        friends in common by each person's own tier incl. the circle + self,
+//        own-row nulls, the together predicate), tasted-with (exclusions
+//        before the limit, both sort keys, a nameless moment), search (block
+//        before the limit, the new fields, never yourself), the shell's followsYou, the
+//        limiter keys
+//   § 17 a moment's preview (guest / host / signed out / unknown, its own
+//        budget never reset by a hit, a block pair hides the host id, 429)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
 // SDK actually sends, so "reclaimed" / "survives" is observed on the wire,
@@ -100,6 +112,8 @@ const profileRoute = await import('../../app/api/me/profile/route.ts')
 const photosRoute = await import('../../app/api/me/profile/photos/route.ts')
 const avatarRoute = await import('../../app/api/me/avatar/route.ts')
 const coverRoute = await import('../../app/api/me/cover/route.ts')
+const tilesRoute = await import('../../app/api/me/profile/tiles/[tile]/route.ts')
+const previewRoute = await import('../../app/api/session/[code]/preview/route.ts')
 const usersRoute = await import('../../app/api/users/[id]/route.ts')
 const mutesRoute = await import('../../app/api/me/mutes/route.ts')
 const muteRoute = await import('../../app/api/me/mutes/[id]/route.ts')
@@ -113,12 +127,15 @@ const checkinsRoute = await import('../../app/api/checkins/route.ts')
 const visibilityRoute = await import('../../app/api/me/visibility/route.ts')
 const badgesRoute = await import('../../app/api/users/[id]/badges/route.ts')
 const searchRoute = await import('../../app/api/users/search/route.ts')
-const { canViewPosts } = await import('../../lib/profileVisibility.ts')
+const followersRoute = await import('../../app/api/users/[id]/followers/route.ts')
+const followingRoute = await import('../../app/api/users/[id]/following/route.ts')
+const tastedWithRoute = await import('../../app/api/me/tasted-with/route.ts')
+const { canViewPosts, viewableProfiles } = await import('../../lib/profileVisibility.ts')
 const { canonicalPostAudience, applyVisibilityChanges } = await import('../../packages/core/src/index.ts')
 const { ensureBadgesSeedOnce } = await import('../../lib/badgeService.ts')
 const { ALL_BADGES } = await import('../../lib/badges.ts')
 const { resolveUser } = await import('../../lib/resolveUser.ts')
-const { listPickable, resolveTilePhotos } = await import('../../lib/profileTiles.ts')
+const { listPickable, resolveTilePhotos, isOwnTileUpload } = await import('../../lib/profileTiles.ts')
 const { replaceProfileImage } = await import('../../lib/profileImage.ts')
 const { deleteAccountDurable, executeAccountDelete, AccountDeleteTooManyWipesError } = await import('../../lib/accountDelete.ts')
 
@@ -450,6 +467,51 @@ try {
   const lr = await late
   const lateKeys = puts.filter(p => p.startsWith(`avatars/cover_u_${Q2.id}_`))
   check('…finds no row and reclaims its OWN upload', !lr.ok && lr.reason === 'gone' && lateKeys.length === 1 && !store.has(lateKeys[0]), { lr, lateKeys })
+
+  // ── § 5b a tile's own photo ───────────────────────────────────────────────
+  section('§ 5b a tile\'s own photo: upload, always live, reclaimed only when owned')
+  const T = await mkUser('Tilda Tiles')
+  const ownKey = (k: string) => isOwnTileUpload(urlOf(k), 'impressions', T.id)
+  check('isOwnTileUpload: this tile + this user, the last path segment only', ownKey(`avatars/tile_impressions_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}5_1_ab.png`) && !ownKey(`avatars/tile_moments_u_${T.id}_1_ab.png`) && !ownKey(`avatars/tile_impressions_u_${T.id}_/x.png`) && !isOwnTileUpload(null, 'impressions', T.id))
+  const postTile = async (u: User, tile: string, imageData = PNG) => { await resetLimits(); return call(tilesRoute.POST, 'POST', `/api/me/profile/tiles/${tile}`, u, { imageData }, { tile }) }
+  let tr = await postTile(T, 'impressions')
+  const own1 = tr.json.tiles?.impressions?.imageUrl as string
+  check('upload → 200, pinned, keyed avatars/tile_impressions_u_<id>_', tr.status === 200 && tr.json.tiles.impressions.pinned === true && keyOf(own1).startsWith(`avatars/tile_impressions_u_${T.id}_`) && store.has(keyOf(own1)) && (await pins(T.id)).i === own1, tr.json)
+  const tp = await getProfile(T.id, T)
+  check('shown with an EMPTY pool: always live, never cleared as dead', tp.tiles.impressions.imageUrl === own1 && tp.tiles.impressions.pinned === true && (await pins(T.id)).i === own1, tp.tiles.impressions)
+  check('another viewer sees it too', (await getProfile(T.id, V)).tiles.impressions.imageUrl === own1)
+  await resetLimits()
+  const pk = await call(photosRoute.GET, 'GET', '/api/me/profile/photos?pool=impressions', T)
+  check('picker: the own photo is the pin, listed first', pk.json.pin === own1 && pk.json.photos[0] === own1, pk.json)
+  tr = await postTile(T, 'impressions')
+  const own2 = tr.json.tiles?.impressions?.imageUrl as string
+  check('a second upload replaces it; the first is reclaimed', tr.status === 200 && own2 !== own1 && !store.has(keyOf(own1)) && store.has(keyOf(own2)))
+  const Mt = await createSession(T, 'Tilda night')
+  const wt = await addWine(Mt, T, 'Tile Bottle')
+  await rate(Mt, T, wt.id)
+  r = await patchProfile(T, { tiles: { impressions: wt.url } })
+  check('pinning one of your photos over it → 200, the own upload reclaimed', r.status === 200 && !store.has(keyOf(own2)) && (await pins(T.id)).i === wt.url, r.json)
+  tr = await postTile(T, 'impressions')
+  const own3 = tr.json.tiles?.impressions?.imageUrl as string
+  check('🔒 uploading over a REFERENCE pin never reclaims the referenced photo', tr.status === 200 && store.has(keyOf(wt.url)) && (await pins(T.id)).i === own3)
+  tr = await postTile(T, 'moments')
+  const ownM = tr.json.tiles?.moments?.imageUrl as string
+  r = await patchProfile(T, { tiles: { moments: null } })
+  check('back to automatic (null) reclaims the own upload', r.status === 200 && !store.has(keyOf(ownM)) && (await pins(T.id)).m === null && r.json.tiles?.moments?.pinned === false, r.json)
+  check('🔒 nobody can pin another person\'s own upload (not in their pool) → 400', (await patchProfile(V, { tiles: { impressions: own3 } })).status === 400)
+  check('an unknown tile → 404', (await postTile(T, 'friends')).status === 404)
+  tr = await postTile(T, 'impressions', 'data:text/plain;base64,aGk=')
+  check('a rejected (non-image) upload → 500, the pin unchanged', tr.status === 500 && (await pins(T.id)).i === own3)
+  await patchProfile(T, { tiles: { impressions: wt.url } })
+  r = await patchProfile(T, { tiles: { impressions: null } })
+  check('🔒 a REFERENCE pin cleared by the PATCH keeps its photo', r.status === 200 && store.has(keyOf(wt.url)) && !store.has(keyOf(own3)) && (await pins(T.id)).i === null)
+  tr = await postTile(T, 'impressions')
+  const own4 = tr.json.tiles?.impressions?.imageUrl as string
+  tr = await postTile(T, 'cravings')
+  const ownC = tr.json.tiles?.cravings?.imageUrl as string
+  const reclaimedT: string[] = []
+  await deleteAccountDurable(T.id, { hooks: { onReclaim: u => reclaimedT.push(u) } })
+  check('account deletion reclaims every own tile upload', reclaimedT.includes(own4) && reclaimedT.includes(ownC) && !store.has(keyOf(own4)) && !store.has(keyOf(ownC)), reclaimedT)
 
   // ── § 6 GET /api/me/mutes ─────────────────────────────────────────────────
   section('§ 6 GET /api/me/mutes')
@@ -995,6 +1057,189 @@ try {
   check('…and the next save stores it canonically', w.json.current.checkinVisibility === null && (await storedPosts()) === null, w.json)
   const lastAudit = await prisma.profileVisibilityLog.findFirst({ where: { userId: Ow.id }, orderBy: { id: 'desc' } })
   check('…the audit logs what the row held (public-users), not its collapsed reading', lastAudit?.fromCheckinTier === 'public-users' && lastAudit?.toCheckinTier === 'profile', lastAudit)
+
+  // ── § 16 People + Add Friends ─────────────────────────────────────────────
+  section('§ 16 people lists, in common, search, tasted-with, the shell')
+  const PS = `${TAG}-p`
+  let bare = 0
+  const mkBare = async (name: string, data: Vis & { xp?: number; imageUrl?: string } = {}) =>
+    (await prisma.user.create({ data: { name, email: `${PS}-${++bare}@example.test`, ...data }, select: { id: true } })).id
+  const mutual = (a: number, b: number) => [{ followerId: a, followingId: b }, { followerId: b, followingId: a }]
+  const follow = (a: number, b: number) => ({ followerId: a, followingId: b })
+  type Row = { id: number; name: string; xp: number | null; imageUrl: string | null; isFollowing: boolean; followsViewer: boolean; momentsTogether: number | null; friendsInCommon: number | null }
+  const list = async (v: User, id: number, dir: 'followers' | 'following', qs = '') => {
+    await resetLimits()
+    const r = await call(dir === 'followers' ? followersRoute.GET : followingRoute.GET, 'GET', `/api/users/${id}/${dir}${qs}`, v, undefined, { id: String(id) })
+    return r as { status: number; json: { users: Row[]; nextCursor: string | null; knownCount?: number } }
+  }
+  const idsOf = (rows: { id: number }[]) => rows.map(r => r.id).sort((a, b) => a - b).join()
+  const want = (...xs: number[]) => [...xs].sort((a, b) => a - b).join()
+
+  const Vic = await mkUser(`Vic ${PS}`)
+  await prisma.user.update({ where: { id: Vic.id }, data: { imageUrl: 'https://img.test/vic.jpg', xp: 7 } })
+  const Ola = await mkBare(`Ola ${PS}`)
+  const F1 = await mkBare(`Fia ${PS}`, { profileVisibility: 'public-internet', imageUrl: 'https://img.test/f1.jpg', xp: 11 })
+  const F2 = await mkBare(`Fred ${PS}`, { profileVisibility: 'public-mutual', imageUrl: 'https://img.test/f2.jpg', xp: 22 })
+  const F3 = await mkBare(`Finn ${PS}`, { imageUrl: 'https://img.test/f3.jpg' })
+  const F4 = await mkBare(`Flo ${PS}`, { imageUrl: 'https://img.test/f4.jpg' })
+  const F5 = await mkBare(`Fynn ${PS}`, { profileVisibility: 'public-mutual', visibilityFof: true, imageUrl: 'https://img.test/f5.jpg', xp: 55 })
+  await prisma.follow.createMany({ data: [
+    ...mutual(Ola, F1), ...mutual(Ola, F2), ...mutual(Ola, F3), ...mutual(Ola, F4), ...mutual(Ola, F5), ...mutual(Ola, Vic.id),
+    follow(Vic.id, F1), follow(Vic.id, F2), follow(Vic.id, F3), follow(Vic.id, F4),
+    ...mutual(F1, F2), ...mutual(F1, F3),
+    follow(F1, Vic.id),
+  ] })
+  // Block pairs with the VIEWER, both directions: F3 blocks Vic, Vic blocks F4.
+  await prisma.userBlock.createMany({ data: [{ blockerId: F3, blockedId: Vic.id }, { blockerId: Vic.id, blockedId: F4 }] })
+
+  const friends = await list(Vic, Ola, 'followers', '?mutual=mutual')
+  const byId = new Map(friends.json.users.map(r => [r.id, r]))
+  check('🔒 Ola\'s Friends as Vic: no row for a block pair with the viewer, either way (F3 blocked Vic, Vic blocked F4)', friends.status === 200 && idsOf(friends.json.users) === want(F1, F2, F5, Vic.id), friends.json)
+  const olaHeader = await getProfile(Ola, Vic)
+  check('…the tab count stays global (the header counts both; rows can be fewer, block.md)', olaHeader.friendsCount === 6, olaHeader.friendsCount)
+  check('🔒 knownCount uses the rows\' block rule: 2 (F1, F2), never the blocked F3 / F4', friends.json.knownCount === 2, friends.json.knownCount)
+  check('🔒 header inCommon.count == the Friends knownCount, faces only from those rows', olaHeader.inCommon?.count === 2 && idsOf(olaHeader.inCommon.faces) === want(F1, F2), olaHeader.inCommon)
+  const faces = new Map((olaHeader.inCommon?.faces ?? []).map((f: { id: number; imageUrl: string | null }) => [f.id, f.imageUrl]))
+  check('🔒 each face\'s photo follows that person\'s tier (F2 is Friends-only: null), photo faces first', faces.get(F1) === 'https://img.test/f1.jpg' && faces.get(F2) === null && olaHeader.inCommon.faces[0].id === F1, olaHeader.inCommon.faces)
+  const known = await list(Vic, Ola, 'followers', '?mutual=mutual&known=1')
+  check('?known=1: only people Vic follows, as many rows as knownCount', idsOf(known.json.users) === want(F1, F2) && known.json.knownCount === 2, known.json)
+  const knownQ = await list(Vic, Ola, 'followers', `?mutual=mutual&known=1&q=${encodeURIComponent('Fia')}`)
+  check('?known=1 composes with q (and a q page carries no knownCount)', idsOf(knownQ.json.users) === want(F1) && knownQ.json.knownCount === undefined, knownQ.json)
+  const f1 = byId.get(F1)!, f2 = byId.get(F2)!, f5 = byId.get(F5)!, me = byId.get(Vic.id)!
+  check('Everyone-tier row: photo + xp shown', f1.imageUrl === 'https://img.test/f1.jpg' && f1.xp === 11)
+  check('🔒 a Friends-only person Vic only follows one way: photo, xp and friends in common are null', f2.imageUrl === null && f2.xp === null && f2.friendsInCommon === null, f2)
+  check('🔒 Friends + Friends of Friends, Vic a friend of their friend (Ola): admitted, photo + xp', f5.imageUrl === 'https://img.test/f5.jpg' && f5.xp === 55, f5)
+  const direct = await viewableProfiles(Vic.id, [F3, F4, F1, Vic.id])
+  check('🔒 viewableProfiles on its own: a block pair either way is denied before the tier (F3, F4 are Verre Users); self + F1 admitted', idsOf([...direct.admitted].map(id => ({ id }))) === want(F1, Vic.id), [...direct.admitted])
+  check('your own row: your photo + xp, no lines (momentsTogether / friendsInCommon null)', me.imageUrl === 'https://img.test/vic.jpg' && me.xp === 7 && me.momentsTogether === null && me.friendsInCommon === null, me)
+  check('followsViewer + isFollowing per row (F1 follows Vic, F2 doesn\'t; Vic follows both, not F5)', f1.followsViewer && !f2.followsViewer && f1.isFollowing && f2.isFollowing && !f5.isFollowing)
+  check('🔒 friendsInCommon for F1 = Ola + F2 (F3, who blocked Vic, is not counted)', f1.friendsInCommon === 2, f1.friendsInCommon)
+  const f1Friends = await list(Vic, F1, 'followers', '?mutual=mutual&known=1')
+  check('🔒 …and F1\'s own known Friends list has exactly those rows (a count never exceeds its rows)', idsOf(f1Friends.json.users) === want(Ola, F2), f1Friends.json)
+  check('…the same number as F1\'s header in common', (await getProfile(F1, Vic)).inCommon?.count === 2)
+  const ownList = await list(Vic, Vic.id, 'following')
+  check('your own list: no knownCount, ?known ignored', ownList.json.knownCount === undefined && idsOf((await list(Vic, Vic.id, 'following', '?known=1')).json.users) === idsOf(ownList.json.users))
+  check('your own Following hides the person you blocked (F4) and the one who blocked you (F3)', idsOf(ownList.json.users) === want(Ola, F1, F2), ownList.json)
+
+  // Cursor + known: 31 followers of Ola that Vic follows, 3 he doesn't.
+  const crowd: number[] = []
+  for (let i = 0; i < 34; i++) crowd.push(await mkBare(`Crowd ${i} ${PS}`))
+  await prisma.follow.createMany({ data: [...crowd.map(c => follow(c, Ola)), ...crowd.slice(0, 31).map(c => follow(Vic.id, c))] })
+  const k1 = await list(Vic, Ola, 'followers', '?known=1')
+  const k2 = await list(Vic, Ola, 'followers', `?known=1&cursor=${k1.json.nextCursor}`)
+  const known34 = [...crowd.slice(0, 31), F1, F2]
+  check('?known=1 pages with the cursor: 30 + the rest, no repeats, only known people', k1.json.users.length === 30 && k1.json.nextCursor !== null && idsOf([...k1.json.users, ...k2.json.users]) === want(...known34) && k2.json.nextCursor === null && k2.json.knownCount === undefined, { n1: k1.json.users.length, n2: k2.json.users.length })
+  check('…the first page\'s knownCount covers every page', k1.json.knownCount === known34.length, k1.json.knownCount)
+
+  // The together predicate.
+  const past = new Date(Date.now() - 86400_000), future = new Date(Date.now() + 86400_000)
+  let mseq = 0
+  const moment = async (members: number[], o: { dateFrom?: Date | null; name?: string | null; createdAt?: Date; deleted?: boolean; kicked?: number[] } = {}) => {
+    const code = `PS${TAG.slice(-6)}${++mseq}`.toUpperCase().slice(0, 16)
+    const [{ id }] = await prisma.$queryRaw<{ id: number }[]>`
+      INSERT INTO sessions (code, name, created_at, date_from, deleted_at)
+      VALUES (${code}, ${o.name === undefined ? `Moment ${mseq}` : o.name}, ${o.createdAt ?? past}, ${o.dateFrom === undefined ? past : o.dateFrom}, ${o.deleted ? new Date() : null})
+      RETURNING id`
+    await prisma.sessionMember.createMany({ data: members.map(u => ({ userId: u, sessionCode: code, removedState: o.kicked?.includes(u) ? 'kicked' : null })) })
+    return id
+  }
+  await moment([Vic.id, F1])                                  // started: counts
+  await moment([Vic.id, F1], { dateFrom: null })              // dateless: counts
+  await moment([Vic.id, F1], { dateFrom: future })            // upcoming: no
+  await moment([Vic.id, F1], { kicked: [Vic.id] })            // viewer kicked: no
+  await moment([Vic.id, F1], { kicked: [F1] })                // they were kicked: no
+  await moment([Vic.id, F1], { deleted: true })               // deleted row (synthetic: code + members kept): no
+  const f1Again = (await list(Vic, Ola, 'followers', '?mutual=mutual')).json.users.find(r => r.id === F1)!
+  check('🔒 momentsTogether: started + dateless count; upcoming, kicked (either side) and deleted don\'t', f1Again.momentsTogether === 2, f1Again.momentsTogether)
+
+  // Tasted with: six excluded people share the NEWEST moment, so a filter
+  // applied after the limit would drop T2.
+  // Tim is created before Toni, so an id tie-break alone would put Toni first.
+  const T1 = await mkBare(`Tess ${PS}`, { imageUrl: 'https://img.test/t1.jpg', profileVisibility: 'public-internet' })
+  const T3 = await mkBare(`Tim ${PS}`, { profileVisibility: 'public-mutual', imageUrl: 'https://img.test/t3.jpg' })
+  const T2 = await mkBare(`Toni ${PS}`)
+  const X = [] as number[]
+  for (let i = 0; i < 6; i++) X.push(await mkBare(`Excluded ${i} ${PS}`))
+  await prisma.follow.createMany({ data: [follow(Vic.id, X[0]), follow(Vic.id, X[1]), follow(T2, Vic.id)] })
+  await prisma.userMute.createMany({ data: [{ muterId: Vic.id, mutedId: X[2] }, { muterId: Vic.id, mutedId: X[3] }] })
+  await prisma.userBlock.createMany({ data: [{ blockerId: X[4], blockedId: Vic.id }, { blockerId: Vic.id, blockedId: X[5] }] })
+  const t = (h: number) => new Date(Date.now() - h * 3600_000)
+  await moment([Vic.id, ...X], { dateFrom: t(1) })
+  await moment([Vic.id, T1], { dateFrom: t(2), name: null })
+  await moment([Vic.id, T2, T3], { dateFrom: t(5), name: 'Friday natural wines' })
+  await moment([Vic.id, T3], { dateFrom: t(9) })
+  await moment([Vic.id, T2], { dateFrom: future, name: 'Later' }) // upcoming: never a "latest"
+  await resetLimits()
+  const tw = await call(tastedWithRoute.GET, 'GET', '/api/me/tasted-with', Vic)
+  const people = (tw.json.people ?? []) as { id: number; name: string; imageUrl: string | null; followsViewer: boolean; lastMoment: { name: string | null; at: string } }[]
+  check('🔒 tasted-with: every exclusion (followed, muted, blocked either way, self) runs before the limit', tw.status === 200 && people.length === 3, people.map(p => p.name))
+  check('tasted-with order: latest shared moment first, then most moments together (Tim before Toni on the tie)', people.map(p => p.id).join() === [T1, T3, T2].join(), people.map(p => p.name))
+  check('a nameless moment → lastMoment.name null; at = that moment\'s date', people[0]?.lastMoment.name === null && Math.abs(new Date(people[0]?.lastMoment.at).getTime() - t(2).getTime()) < 1000, people[0])
+  check('lastMoment = the latest STARTED moment (the upcoming one never counts)', people[2]?.lastMoment.name === 'Friday natural wines', people[2])
+  check('🔒 photos by each person\'s own tier (Tim is Friends-only: null), followsViewer', people[0]?.imageUrl === 'https://img.test/t1.jpg' && people[1]?.imageUrl === null && people[2]?.followsViewer === true && people[0]?.followsViewer === false, people)
+  check('🔒 no moment code anywhere in the answer', !JSON.stringify(tw.json).includes(`PS${TAG.slice(-6)}`.toUpperCase()))
+  check('tasted-with: 401 without a session', (await call(tastedWithRoute.GET, 'GET', '/api/me/tasted-with', {})).status === 401)
+
+  // Search: ten blocked people sort first; the eleventh match must survive.
+  const SQ = `Srch${TAG.slice(-5)}`
+  const blockedHits: number[] = []
+  for (let i = 0; i < 10; i++) blockedHits.push(await mkBare(`${SQ} A${i}`))
+  await prisma.userBlock.createMany({ data: blockedHits.map((b, i) => (i % 2 ? { blockerId: b, blockedId: Vic.id } : { blockerId: Vic.id, blockedId: b })) })
+  const Z = await mkBare(`${SQ} Zed`, { profileVisibility: 'public-mutual', imageUrl: 'https://img.test/z.jpg', xp: 3 })
+  const Y = await mkBare(`${SQ} Yan`, { imageUrl: 'https://img.test/y.jpg' })
+  await prisma.follow.createMany({ data: [...mutual(Y, F1), follow(Y, Vic.id)] })
+  await moment([Vic.id, Y])
+  const searchQ = async (q: string) => { await resetLimits(); return (await call(searchRoute.GET, 'GET', `/api/users/search?q=${encodeURIComponent(q)}`, Vic)).json as unknown as (Row & { gated?: true })[] }
+  const hits = await searchQ(SQ)
+  check('🔒 search drops block pairs (both ways) BEFORE the limit of ten', idsOf(hits) === want(Y, Z), hits.map(h => h.name))
+  const y = hits.find(h => h.id === Y)!, z = hits.find(h => h.id === Z)!
+  check('search row fields: photo, followsViewer, momentsTogether, friendsInCommon (Y ↔ F1, Vic follows F1)', y.imageUrl === 'https://img.test/y.jpg' && y.followsViewer && y.momentsTogether === 1 && y.friendsInCommon === 1, y)
+  check('🔒 a tier-denied stub: gated, no photo / xp / friends in common, still its own edges', z.gated === true && z.imageUrl === null && z.xp === undefined && z.friendsInCommon === null && z.momentsTogether === 0, z)
+  const selfQ = `Vic ${PS}`
+  const vicName = (await prisma.user.findUnique({ where: { id: Vic.id }, select: { name: true } }))?.name ?? ''
+  const selfHits = await searchQ(selfQ)
+  check('search: you never find yourself (your name matches the query)', vicName.includes(selfQ) && !selfHits.some(h => h.id === Vic.id), selfHits.map(h => h.name))
+  check('search: a literal % in q is not a wildcard', (await searchQ(`${SQ}%`)).length === 0)
+
+  // The shell answer (Friends-only profiles Vic can't see).
+  const G = await mkBare(`Gil ${PS}`, { profileVisibility: 'public-mutual' })
+  await prisma.follow.create({ data: follow(G, Vic.id) })
+  const shellG = await webProfile(G, Vic), shellF2 = await webProfile(F2, Vic)
+  check('the shell carries followsYou: G follows Vic one way → followsYou true, isFollowing false (Follow Back)', shellG.json.gated === true && shellG.json.followsYou === true && shellG.json.isFollowing === false, shellG.json)
+  check('…Vic follows F2 one way → isFollowing true, followsYou false; still no photo / stats', shellF2.json.gated === true && shellF2.json.isFollowing === true && shellF2.json.followsYou === false && !('imageUrl' in shellF2.json) && !('stats' in shellF2.json), shellF2.json)
+
+  // The limiter: per user + a per-IP backstop, both charged after the 401.
+  await resetLimits()
+  await call(followersRoute.GET, 'GET', `/api/users/${Ola}/followers`, {}, undefined, { id: String(Ola) })
+  check('people lists: an anonymous 401 charges no IP budget', (await scanKeys('rl:profile-people:*')).length === 0)
+  await call(followersRoute.GET, 'GET', `/api/users/${Ola}/followers`, Vic, undefined, { id: String(Ola) })
+  const rlKeys = await scanKeys('rl:profile-people:*')
+  check('people lists: charged per user AND per IP', rlKeys.includes(`rl:profile-people:u:${Vic.id}:1m`) && rlKeys.some(k => k.startsWith('rl:profile-people:ip:')), rlKeys)
+
+  // ── § 17 a moment's preview (the app's scan result) ──────────────────────
+  section('§ 17 GET /api/session/:code/preview')
+  const Hp = await mkUser('Hedda Preview'), Gp = await mkUser('Gus Preview')
+  const Cp = await createSession(Hp, 'Hedda Preview')
+  const preview = (u: Actor, code: string) => call(previewRoute.GET, 'GET', `/api/session/${code}/preview`, u, undefined, { code })
+  await resetLimits()
+  let pv = await preview(Gp, Cp)
+  check('a guest: 200 with name, host, host id, joined false', pv.status === 200 && pv.json.name === `${TAG} moment` && pv.json.host === 'Hedda Preview' && pv.json.hostUserId === Hp.id && pv.json.joined === false && pv.json.code === Cp, pv.json)
+  pv = await preview(Hp, `${Cp.slice(0, 4).toLowerCase()}-${Cp.slice(4)}`)
+  check('the host (a lowercase, hyphenated code): joined true, the canonical code', pv.status === 200 && pv.json.joined === true && pv.json.code === Cp, pv.json)
+  check('signed out → 401', (await preview({}, Cp)).status === 401)
+  check('no such moment → 404', (await preview(Gp, 'ZZZZZZZZ')).status === 404)
+  const previewHits = Number(await redis.get(`rl:moment-preview:u:${Gp.id}:1h`))
+  check('🔒 its own budget, charged on every call and never reset by a hit (one valid code buys nothing)', previewHits === 2 && (await scanKeys('rl:moment-preview:ip:*')).length === 1 && (await scanKeys('rl:join:*')).length === 0, { previewHits })
+  await prisma.userBlock.create({ data: { blockerId: Hp.id, blockedId: Gp.id } })
+  pv = await preview(Gp, Cp)
+  check('a block pair: still 200 (a block never stops a join), the host a plain name (no host id)', pv.status === 200 && pv.json.host === 'Hedda Preview' && pv.json.hostUserId === null, pv.json)
+  await prisma.userBlock.deleteMany({ where: { blockerId: Hp.id, blockedId: Gp.id } })
+  await prisma.userBlock.create({ data: { blockerId: Gp.id, blockedId: Hp.id } })
+  check('…the other direction too', (await preview(Gp, Cp)).json.hostUserId === null)
+  await prisma.userBlock.deleteMany({ where: { blockerId: Gp.id, blockedId: Hp.id } })
+  await redis.set(`rl:moment-preview:u:${Gp.id}:1h`, '60', { EX: 3600 })
+  pv = await preview(Gp, Cp)
+  check('past 60 an hour → 429 with a wait', pv.status === 429 && /Try again in/.test(String(pv.json.error)), pv)
 } catch (err) {
   // A fixture throw must fail the run: `finally` exits with the check count.
   failed++

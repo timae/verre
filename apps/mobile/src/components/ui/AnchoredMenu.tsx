@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Pressable, useWindowDimensions, View, type ViewInstance } from 'react-native';
+import { Animated, Easing, Modal, Platform, Pressable, useWindowDimensions, View, type ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Icon, type IconName } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
@@ -26,7 +26,7 @@ import { elevation, motion, radius, useTheme } from '@/theme';
 export type MenuAnchor = { top: number; bottom: number };
 
 export function AnchoredMenu({
-  anchor, onClose, children, right = 16, minWidth = 196, gap = 6,
+  anchor, onClose, onClosed, children, right = 16, minWidth = 196, gap = 6,
 }: {
   // null = closed. {top, bottom} in window coords from the trigger's measure.
   anchor: MenuAnchor | null;
@@ -36,6 +36,13 @@ export function AnchoredMenu({
   minWidth?: number;
   // Vertical gap between the trigger and the panel.
   gap?: number;
+  // OPT-IN: runs once the menu's Modal has actually gone (iOS `onDismiss`),
+  // on EVERY close. For a row that presents a native view controller (the
+  // share sheet): presenting from the top view controller while the Modal is
+  // still up fails. Only when passed does the Modal stay mounted (visible
+  // follows `anchor`; an unmounted RN Modal fires no onDismiss); without it
+  // the menu renders exactly as before.
+  onClosed?: () => void;
 }) {
   const { theme } = useTheme();
   const { height: screenH, width: screenW } = useWindowDimensions();
@@ -62,7 +69,16 @@ export function AnchoredMenu({
       useNativeDriver: true,
     }).start();
   }, [anchor, anim]);
-  if (!anchor) return null;
+  // Android has no Modal onDismiss: the close itself is the moment.
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (anchor) wasOpen.current = true;
+    else if (wasOpen.current) {
+      wasOpen.current = false;
+      if (Platform.OS !== 'ios') onClosed?.();
+    }
+  }, [anchor, onClosed]);
+  if (!anchor && !onClosed) return null;
 
   const bottomLimit = screenH - insets.bottom - 8;
   // Flip up only once measured AND the down-position would overflow; before the
@@ -71,7 +87,14 @@ export function AnchoredMenu({
   const top = flipUp ? last.current.top - gap - menuH : last.current.bottom + gap;
 
   return (
-    <Modal transparent visible animationType="none" onRequestClose={onClose} statusBarTranslucent>
+    <Modal
+      transparent
+      visible={onClosed ? anchor != null : true}
+      onDismiss={onClosed}
+      animationType="none"
+      onRequestClose={onClose}
+      statusBarTranslucent
+    >
       <Pressable style={{ flex: 1 }} accessibilityLabel="Close menu" onPress={onClose}>
         <Animated.View
           onLayout={(e) => setMenuH(e.nativeEvent.layout.height)}

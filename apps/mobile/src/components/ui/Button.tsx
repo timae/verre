@@ -29,6 +29,9 @@ interface Props extends Omit<PressableProps, 'children' | 'style'> {
   titleLines?: number;
   // Leading glyph in the label colour (e.g. the profile's ✓ Friends).
   icon?: IconName;
+  // The glyph's size when it should read larger than the label's default
+  // (16 small, 18 otherwise), e.g. the Scan buttons' QR glyph.
+  iconSize?: number;
   // tertiary only: the label in the critical red instead of the accent (a
   // destructive text action, e.g. Account → This Device's Sign Out).
   critical?: boolean;
@@ -50,7 +53,7 @@ const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
 // .btn label scale: small / body / bodyLg.
 const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 'bodyLg' };
 
-export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, icon, critical, rowAction, disabled, style, ...rest }: Props) {
+export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, icon, iconSize, critical, rowAction, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('button');
@@ -127,7 +130,7 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
         const c = colors(pressed);
         return (
           <>
-          {icon ? <Icon name={icon} size={size === 'sm' ? 16 : 18} color={c.text} /> : null}
+          {icon ? <Icon name={icon} size={iconSize ?? (size === 'sm' ? 16 : 18)} color={c.text} /> : null}
           <VText
             numberOfLines={titleLines}
             variant={LABEL_VARIANT[size]}

@@ -1,3 +1,4 @@
+import { BottomSheetModalProvider, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Haptics from 'expo-haptics';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -6,27 +7,42 @@ import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, Vie
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button as MenuButton, ContextMenu, Host, RNHostView } from '@expo/ui/swift-ui';
 import { normalizeCode, formatCodeInput } from '@verre/core';
+import { ScanResult, useVerreScanner } from '@/components/people/scan';
 import { Icon, type IconName } from '@/components/ui/Icon';
+import { Sheet } from '@/components/ui/Sheet';
 import { Thumb } from '@/components/ui/Thumb';
 import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
 import { Button } from '@/components/ui/Button';
 import { ConnectionBanner, ErrorState, connectionView } from '@/components/ui/ConnectionState';
 import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
-import { freshOwnName } from '@/lib/api/profile';
-import { ApiError, isPinnedSession, joinMoment, mySessionsQueryOptions, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { isPinnedSession, mySessionsQueryOptions, setMomentHidden, type MySessionRow } from '@/lib/api/sessions';
+import { joinByCode, joinErrorText } from '@/lib/joinByCode';
 import { authClient } from '@/lib/authClient';
 import { liveMeta } from '@/lib/momentFormat';
+import { type VerreCode } from '@/lib/scanCode';
+import { usePushGuard } from '@/lib/usePushGuard';
 import { elevation, radius, useTheme } from '@/theme';
 
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
-// the live strip bleeds to the screen edges. Deviations (flagged): no QR
-// button in the code field (camera lands with deep linking), and the live
+// the live strip bleeds to the screen edges. Deviations (flagged): the QR
+// affordance is the join button itself, a filled "Scan" + QR glyph while the
+// field is empty (ruled 2026-11-12; the mock puts a QR glyph in the field), and the live
 // strip is a bounded scroll (end-to-end, no wrap) — the infinite-loop variant
 // was removed.
 
+// The join block's scan result is a sheet: every screen with one wraps itself
+// in the provider (apps/mobile/CLAUDE.md).
 export default function Moments() {
+  return (
+    <BottomSheetModalProvider>
+      <MomentsHome />
+    </BottomSheetModalProvider>
+  );
+}
+
+function MomentsHome() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { theme } = useTheme();
@@ -530,23 +546,42 @@ function JoinBlock() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const code = normalizeCode(input);
+  const insets = useSafeAreaInsets();
+  const guard = usePushGuard();
+  const meId = auth?.user.id != null ? Number(auth.user.id) : null;
+
+  // Scan (ruled 2026-11-12): the button while the field is empty; the
+  // result is the same as Add Friends' (components/people/scan.tsx) in a
+  // sheet. `scanned` is kept through the close animation; `scanSeq` gives
+  // every scan a fresh result view.
+  const [scanned, setScanned] = useState<VerreCode | null>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [scanSeq, setScanSeq] = useState(0);
+  const { scan, launching } = useVerreScanner(true, (c) => {
+    setScanned(c);
+    setScanSeq((n) => n + 1);
+    setSheetOpen(true);
+  });
+  const leaveTo = (push: () => void) =>
+    guard(() => {
+      setSheetOpen(false);
+      push();
+    });
+  // Join keeps Scan's width, so the field doesn't jump on the first key.
+  const [scanW, setScanW] = useState(0);
 
   const join = async () => {
     if (!code || busy) return;
     setBusy(true);
     setError(null);
     try {
-      // Your name fresh from the users row, not Better Auth's (stale after a
-      // rename) session copy (lib/api/profile.ts freshOwnName).
-      const joined = await joinMoment(code, (await freshOwnName(queryClient, auth?.user.name)) ?? '');
-      queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+      // lib/joinByCode.ts (shared with Add Friends' scan): your name fresh
+      // from the users row, then ['my-sessions'] invalidated.
+      const joined = await joinByCode(queryClient, code, auth?.user.name);
       setInput('');
       router.push({ pathname: '/moments/session/[code]', params: { code: joined.code } }, { dangerouslySingular: true });
     } catch (e) {
-      if (e instanceof ApiError && e.kind === 'not-found') setError('No moment found for that code.');
-      else if (e instanceof ApiError && e.kind === 'banned') setError("You can't join this moment.");
-      else if (e instanceof ApiError && e.kind === 'rate-limited') setError(e.message || 'Too many attempts. Try again soon.');
-      else setError('Something went wrong. Try again.');
+      setError(joinErrorText(e));
     } finally {
       setBusy(false);
     }
@@ -586,9 +621,22 @@ function JoinBlock() {
             style={{ fontFamily: 'InstrumentSans_600SemiBold', fontSize: 15, lineHeight: 18, letterSpacing: 2.1 }}
           />
         </View>
-        <Button title="Join" loadingTitle="Joining…" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20 }} />
+        {input === '' ? (
+          <View onLayout={(e) => setScanW(e.nativeEvent.layout.width)}>
+            {/* Filled, like Add Friends' (ruled 2026-11-12: the outlined
+                secondary read as the old disabled Join). */}
+            <Button title="Scan" icon="qr" iconSize={20} accessibilityLabel="Scan a QR Code" disabled={launching} onPress={() => void scan()} style={{ paddingHorizontal: 20 }} />
+          </View>
+        ) : (
+          <Button title="Join" loadingTitle="Joining…" variant="secondary" loading={busy} disabled={!code} onPress={join} style={{ paddingHorizontal: 20, minWidth: scanW || undefined }} />
+        )}
       </View>
       {error ? <VText variant="caption" color="critical">{error}</VText> : null}
+      <Sheet open={sheetOpen} onClose={() => setSheetOpen(false)}>
+        <BottomSheetView style={{ width: '100%', paddingHorizontal: 20, paddingTop: 16, paddingBottom: insets.bottom + 16 }}>
+          {scanned && meId != null ? <ScanResult key={scanSeq} result={scanned} meId={meId} leaveTo={leaveTo} /> : null}
+        </BottomSheetView>
+      </Sheet>
     </View>
   );
 }

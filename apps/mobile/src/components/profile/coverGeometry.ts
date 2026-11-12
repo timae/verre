@@ -46,16 +46,18 @@ export function notchPath(W: number, cx: number, photo: number): string {
   );
 }
 
-// `fitName` (vero-you.js), with a better break: the name beside the photo
-// keeps its size while it fits; else it shrinks by up to 4pt; else (two or
-// more words) it goes onto two lines, line 1 hugging the photo's ring
-// (indented left into the space above the circle). At each size, from the
-// base down to 22pt, the break points are tried IN ORDER (after the first
-// word, then after the second, …) and the first where both lines fit wins:
-// a short name keeps the mock's first-word-on-top, a long one moves words up
-// to line 1 before anything shrinks or truncates (Simon, 2026-11-11: the
-// mock only ever broke after the first word, so a long rest truncated with
-// room to spare above). A one-word name shrinks to 22pt and then wraps.
+// `fitName` (vero-you.js), with a better break: a profile name keeps its
+// size while it fits; else it shrinks by up to 4pt; else (two or more words)
+// it goes onto two lines. On the cover, line 1 hugs the photo's ring
+// (indented left into the space above the circle); without a cover the name's
+// column beside the photo is straight, so no indent (ruled 2026-11-12: the
+// mock cut a coverless name on one line). At each size, from the base down to
+// `min`, the break points are tried IN ORDER (after the first word, then
+// after the second, …) and the first where both lines fit wins: a short name
+// keeps the mock's first-word-on-top, a long one moves words up to line 1
+// before anything shrinks or truncates (Simon, 2026-11-11: the mock only ever
+// broke after the first word, so a long rest truncated with room to spare
+// above). A one-word name shrinks to `min` and then wraps.
 //
 // Inputs are MEASURED at the base size (Dynamic Type included): `w` = the whole
 // name on one line, `splits[i]` = the widths of line 1 / line 2 when breaking
@@ -65,12 +67,11 @@ export type NameFit =
   | { lines: 1; fontSize: number; wrap: boolean }
   | { lines: 2; fontSize: number; indent: number; split: number };
 
-export function fitCoverName(m: {
+export function fitProfileName(m: {
   fs: number; w: number; splits: { w1: number; w2: number }[]; lineH: number; scale: number;
-  avail: number; nameLeft: number; photoCx: number; photo: number;
+  avail: number; min: number; ring?: { nameLeft: number; photoCx: number; photo: number };
 }): NameFit {
-  const { fs, w, splits, lineH, scale, avail, nameLeft, photoCx, photo } = m;
-  const MIN = 22;
+  const { fs, w, splits, lineH, scale, avail, min: MIN, ring } = m;
   if (w <= avail + 1) return { lines: 1, fontSize: fs, wrap: false };
   for (let f = fs - 1; f >= fs - 4; f--) if ((w * f) / fs <= avail + 1) return { lines: 1, fontSize: f, wrap: false };
   if (splits.length === 0) {
@@ -80,8 +81,10 @@ export function fitCoverName(m: {
   // Line 1's indent at size f: the ring circle (photo radius + 15) at line 1's
   // baseline height, measured from the photo centre (the sheet edge, NAME_LIFT
   // below the name block).
-  const R = photo / 2 + 15;
   const indentAt = (f: number) => {
+    if (!ring) return 0;
+    const { nameLeft, photoCx, photo } = ring;
+    const R = photo / 2 + 15;
     const k = f / fs;
     const dy = NAME_LIFT + lineH * k + 0.24 * f * scale;
     const x = dy < R ? photoCx + Math.sqrt(R * R - dy * dy) : photoCx - photo / 2;
@@ -93,7 +96,7 @@ export function fitCoverName(m: {
       if (splits[i].w1 * k <= avail - indent + 1 && splits[i].w2 * k <= avail + 1) return { lines: 2, fontSize: f, indent, split: i };
     }
   }
-  // Nothing fits even at 22pt: the break with the smallest overflow (the
+  // Nothing fits even at `min`: the break with the smallest overflow (the
   // longer line truncates).
   const k = MIN / fs, indent = indentAt(MIN);
   let best = 0, bestOver = Infinity;

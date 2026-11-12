@@ -447,6 +447,40 @@ export async function viewerFofAuthorSet(
   return new Set(rows.map(r => r.id))
 }
 
+// Which of `ids` the viewer may see AS A PROFILE (photo, XP, social-graph
+// counts) on a people surface: lists, in common, search, tasted-with (You,
+// People step, D3). A complete contract on its own: self always; a block pair
+// either way is denied BEFORE the tier; then the owner's tier with the
+// extended circle. A constant number of queries per call. `viewers` = the
+// relationship map (isFollowing / followsViewer for free; no entry for self).
+// lib/sessionState.ts runs the same gate inline for session avatars and stays
+// as is (the moment poll path).
+export async function viewableProfiles(
+  viewerId: number,
+  ids: number[],
+): Promise<{ admitted: Set<number>; viewers: Map<number, ProfileViewer> }> {
+  const others = [...new Set(ids)].filter(id => id !== viewerId)
+  const admitted = new Set<number>(ids.includes(viewerId) ? [viewerId] : [])
+  if (!others.length) return { admitted, viewers: new Map() }
+  const [settings, viewers, pairs] = await Promise.all([
+    batchLoadVisibilities(others),
+    resolveProfileViewerBulk(others, viewerId),
+    prisma.userBlock.findMany({
+      where: { OR: [{ blockerId: viewerId, blockedId: { in: others } }, { blockedId: viewerId, blockerId: { in: others } }] },
+      select: { blockerId: true, blockedId: true },
+    }),
+  ])
+  const blocked = new Set(pairs.map(p => (p.blockerId === viewerId ? p.blockedId : p.blockerId)))
+  const open = others.filter(id => !blocked.has(id))
+  const fof = await viewerFofAuthorSet(viewerId, open, settings, viewers)
+  for (const id of open) {
+    const s = settings.get(id), v = viewers.get(id)
+    if (!s || !v) continue
+    if (canViewProfile(s.visibility, { ...v, isFofOfProfile: s.fofEnabled ? fof.has(id) : undefined }, s.fofEnabled)) admitted.add(id)
+  }
+  return { admitted, viewers }
+}
+
 // Update the owner's visibility settings: a COMPARE-AND-SET (You, step 4).
 // `expected` = the six as the client last read them; `changes` = the fields
 // to set (partial, at least one). The target is `applyVisibilityChanges`

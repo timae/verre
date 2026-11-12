@@ -48,7 +48,8 @@ export type FullProfile = {
 export type Profile =
   | FullProfile
   // Tier-gated ("private"): exists, but the viewer can't see content.
-  | { state: 'shell'; id: number; name: string; isFollowing: boolean }
+  // `followsYou` drives Follow Back (the viewer can read that edge anyway).
+  | { state: 'shell'; id: number; name: string; isFollowing: boolean; followsYou: boolean }
   // The viewer blocked them: name only, so they recognise who it is.
   | { state: 'blocked'; id: number; name: string }
   // No such user — OR they blocked the viewer (deliberately indistinguishable).
@@ -62,7 +63,7 @@ export async function getProfile(id: number): Promise<Profile> {
   if (!res.ok) await throwApiError(res);
   const body = await res.json();
   if (body.blocked) return { state: 'blocked', id, name: body.name };
-  if (body.gated) return { state: 'shell', id, name: body.name, isFollowing: !!body.isFollowing };
+  if (body.gated) return { state: 'shell', id, name: body.name, isFollowing: !!body.isFollowing, followsYou: !!body.followsYou };
   return { ...(body as Omit<FullProfile, 'state'>), state: 'ok' };
 }
 

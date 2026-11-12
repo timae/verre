@@ -40,7 +40,8 @@ export function scrub(input: unknown): string | null {
   return cleaned.length === 0 ? null : cleaned
 }
 
-// Profile text ("bio", the native You profile). One paragraph:
+// The bio (the native You profile; "Bio" in the app since 2026-11-12, it
+// was "profile text"). One paragraph:
 // `scrub` semantics, then every whitespace run (newlines included) becomes ONE
 // space. Deliberately NO Unicode normalisation: NFC can LENGTHEN text (U+0958 →
 // U+0915 U+093C), and a free-text bio needs no identity folding.
@@ -56,11 +57,11 @@ export const BIO_MAX = 200
 // over-long value; the message is safe to show.
 export function normalizeBio(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null
-  if (typeof raw !== 'string') throw new Error('Profile text must be a string')
+  if (typeof raw !== 'string') throw new Error('Bio must be a string')
   const cleaned = scrub(raw)
   if (cleaned === null) return null
   const bio = cleaned.replace(/\s+/gu, ' ').trim()
   if (bio.length === 0) return null
-  if (bio.length > BIO_MAX) throw new Error(`Profile text must be at most ${BIO_MAX} characters`)
+  if (bio.length > BIO_MAX) throw new Error(`Bio must be at most ${BIO_MAX} characters`)
   return bio
 }

@@ -7,12 +7,17 @@
 | `/api/me/account` PATCH+DELETE | 20/h/user (shared) |
 | `/api/me/avatar` POST | 10/h/user |
 | `/api/me/cover` POST | 10/h/user (`rl:profile-cover`) |
+| `/api/me/profile/tiles/:tile` POST | 20/h/user (`rl:profile-tile`, the three tiles share it) |
 | `/api/me/profile` PATCH | 60/h/user (`rl:profile-edit`) |
 | `/api/me/profile/photos` GET | 60/min/user (`rl:profile-photos`) |
 | `/api/me/visibility` GET | 60/min/user |
 | `/api/me/visibility` PATCH (outer) | 60/min/user |
 | `/api/me/visibility` PATCH (inner) | 30/h/user (on an actual change of any field) |
 | `/api/me/sessions` GET (`q` or `people` only) | 30/min/user (`rl:moments-search`) |
+| `/api/users/:id` GET (profile) | 60/min/IP (`rl:profile`) |
+| `/api/users/:id/followers` + `/following` GET | 60/min/user (`rl:profile-people:u`) + 300/min/IP backstop (`rl:profile-people:ip`) |
+| `/api/users/search` GET | 30/min/user (`rl:search`) |
+| `/api/me/tasted-with` GET | 60/min/user (`rl:tasted-with`) |
 | `/api/me/mutes` GET | 60/min/user (`rl:mutes-read`) |
 | `/api/me/mutes/:id` POST+DELETE | 60/h/user (shared) |
 | `/api/me/blocks/:id` POST | 30/h/user |
@@ -26,6 +31,7 @@
 | `/api/session/:code/settings` PATCH (cover) | 10/h/user (`rl:cover`, charged only on an actual cover upload) |
 | `/api/session/:code/carousel-hidden` POST+DELETE | 30/10min/user (shared) |
 | `/api/session/join` POST | 30 invalid/min/IP |
+| `/api/session/:code/preview` GET | 60/h/user (`rl:moment-preview:u`) + 300/h/IP backstop (`rl:moment-preview:ip`), never reset |
 | Bans POST+DELETE | 60/10min/caller (shared) |
 | `/api/me/devices` GET | 60/min/user |
 | `/api/me/devices/:id` DELETE | 30/h/user (revoke) + shares `rl:account` 20/h on the cross-device password check |
@@ -44,11 +50,16 @@
 - **Account PATCH+DELETE**: brute-force the password re-auth check from a stolen session cookie. Shared so an attacker doesn't get 20+20.
 - **Avatar POST**: storage abuse via a stolen session cookie. DELETE is currently uncapped (`app/api/me/avatar/route.ts` has no `checkRate` call on DELETE) — flag for review if abuse appears, but DELETE is idempotent and reclaims S3 rather than consuming it.
 - **Profile cover POST**: storage abuse from a stolen cookie, like the avatar POST; its own counter so cover and photo uploads don't starve each other. DELETE is uncapped (it reclaims S3).
+- **Tile photo POST** (your own photo on a profile tile): the same storage abuse, three tiles behind one counter (20/h, about the cover's 10/h per two tiles); its own key so tiles, cover and photo don't starve each other. Taking one off (the profile PATCH: another pin or `null`) reclaims and rides the profile-edit budget.
 - **Profile PATCH** (name, bio, tile covers): content churn from a stolen cookie (a rename fans out to every live session the user is in). Deliberately NOT the account PATCH, which charges the shared password-guess budget `rl:account` 20/h on every call, a plain rename included; editing your bio must not eat the budget that guards your password.
 - **Profile photos GET** (the tile picker): read-side noise; each call runs the per-tile pool query.
 - **Visibility GET / PATCH (outer)**: read-side noise + general burst protection. Distinct counters per HTTP method.
 - **Visibility PATCH (inner)**: stolen-cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-`checkRate`-on-change: an actual change of ANY of the six settings counts once per PATCH; a no-op (or an already-applied retry) and a 409 compare-and-set refusal charge nothing.
 - **Sessions GET (`q`/`people`)**: charged ONLY when the caller sends the two genuinely-expensive params — the `pg_trgm` `word_similarity` search (`q`) or the per-friend correlated `EXISTS` (`people`). The OTHER filter params (`tense`/`roles`/`hosts`/`category`/date/`cursor`/`limit`) are plain indexed WHEREs + keyset paging, no costlier than the unfiltered carousel read — and since the client ALWAYS sends `tense` for Recent/Upcoming, charging on "any filter param" would throttle ordinary browsing (open list → scroll → each page a request) against a search-compute cap. So the gate is `q`/`people`, not "filtered". Capped like `/api/users/search`; blast radius smaller (every query is `sm.user_id = me`-scoped, only the caller's own sessions), so 30/min is generous. The unfiltered carousel read (home hot path, every focus) stays uncapped.
+- **People lists** (`/api/users/:id/followers` + `/following`): enumerating someone's social graph, and each page now runs the per-row lines (moments together, friends in common) and the photo gate. Per USER (60/min), so one shared NAT address isn't one budget, PLUS a per-IP backstop (300/min) because per-user alone multiplies with accounts per address; `checkRates` charges both even when one refuses. Both AFTER the 401, so anonymous traffic can't burn a shared address's budget; the IP from `getClientIp` (single-entry XFF only), never a raw `x-forwarded-for[0]`. Measured on a seeded 10M-follow graph: ≤ 20 ms warm for a viewer following ~30k.
+- **Profile GET** (`/api/users/:id`): public and anonymous-readable, so IP-keyed (`getClientIp`) against enumeration and DB-load amplification. Note for the app: each relationship write fetches its target's header, and the trailing refresh refetches the mounted headers, so a burst of follows from one address draws on this budget (`apps/mobile/src/lib/relationship.ts`).
+- **Search** (`/api/users/search`): unchanged 30/min/user; the block filter now runs in SQL before the limit of ten.
+- **Tasted-with** (`/api/me/tasted-with`, Add Friends' "People you tasted with"): read-side noise from a stolen cookie; one grouped query over the caller's own moment memberships per call.
 - **Mutes GET**: read-side noise from a stolen cookie polling the list; one indexed query per call.
 - **Mutes POST+DELETE**: stolen cookie thrashing the table or generating noise. Shared.
 - **Blocks POST**: stolen-cookie burst-blocking. DELETE intentionally **uncapped** — recovery path from a burst-block attack must always stay open.
@@ -58,7 +69,8 @@
 - **Catalog link on session wines** (`rl:catalog-link`): the wine POST/PATCH routes accept `productId`/`vintageId` and validate them against real catalog rows, which makes them a catalog-existence probe reachable from **outside** the `CATALOG_PUBLIC_ENABLED` fence — any wine-adder qualifies, including the anonymous host of a session they created themselves. Previously these two routes had no limiter at all, so this was the cheapest way to probe the catalog (an indexed PK lookup, versus the deliberately-capped trigram scan on `/api/catalog/search`). 🔒 **Keyed on the USER when logged in, but on the IP when anonymous** — and the anonymous half is the load-bearing one. An `a:<uuid>` identity is minted fresh on every join AND `/api/session/join` calls `resetRate` on its own limiter on every success, so a caller holding one valid code (trivially, one they created) can rejoin in a loop and collect unlimited identities. Measured: 20 rotated identities bought 20× the budget against a per-identity key. `catalogLinkRateKey` in `lib/catalogWrite.ts` is the single spelling of this. **Charged only when a link is actually present**, so ordinary wine adds and edits never touch it. Shared key across POST and PATCH so add + edit can't stack 120+120. The reason this is a limit rather than a gate: linking to an already-existing catalog entry is a read-only reference, not catalog authorship — the fence exists to stop unreviewed *creation*, which still requires `/api/catalog/entries`. Defence in depth: `resolveCatalogLink` returns ONE generic message for every denial, so a probe learns nothing about which ids exist.
 - **Session POST**: code-space exhaustion (8-char Crockford, but mass enumeration would crowd legitimate creates). The create-time cover upload rides this same 10/10min counter (one create = at most one cover), so it needs no separate limit.
 - **Settings PATCH cover** (`rl:cover`): storage abuse from a stolen host cookie thrashing cover replaces. Mirrors the avatar POST limit; charged only when a data URL is present so no-op settings saves don't burn slots. Removal (`coverPhoto: null`) is uncharged — like avatar DELETE, it reclaims S3 rather than consuming it.
-- **Session join POST**: code-guessing. Counter cleared on a valid code so legitimate joiners aren't penalized.
+- **Session join POST**: code-guessing. Counter cleared on a valid code so legitimate joiners aren't penalized (not for a banned caller).
+- **Moment preview GET** (the app's scan result): also a code-validity answer, so code-guessing, but with budgets that are NEVER reset (review 2026-11-12): under the join's resettable key, one valid code (your own moment) bought unlimited guesses, and unlike a join a preview leaves no trace in the moment (the old 4-character codes are a small space, and a hit can force a rebuild). Per user (60/h is far above anyone scanning codes) plus a per-IP backstop, since free accounts multiply per address; both charged after the 401.
 - **Bans POST+DELETE (kick/ban + unban)**: bounded moderation in both directions. DELETE shares the budget (unlike block DELETE, which is uncapped) — moderation actions are not a recovery path.
 - **Devices GET**: read-side noise from a stolen cookie polling the list.
 - **Devices :id DELETE**: per-id revoke is "one user clicking through their list." 30/h is ample for normal use; the cap bounds a stolen cookie thrashing revokes. **The cross-device password re-auth additionally consumes the shared `rl:account` counter** — otherwise this endpoint would be a fresh 30/h brute-force surface against the same password hash, defeating the whole reason `rl:account` is shared. Own-current-session revoke skips both the password and the `rl:account` charge (it's just a logout): the web caller's own uuid row, or the APP caller's own `ba:<int>` row (`nativeSessionId` from `resolveUser`, the same as Better Auth's password-free `/sign-out`). Every other `ba:` target takes the password path.

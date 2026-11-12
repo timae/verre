@@ -42,8 +42,16 @@
         "expo-image-picker",
         {
           "photosPermission": "Verre uses your photo library to add cover photos to your moments.",
-          "cameraPermission": "Verre uses your camera to take photos for your moments and impressions.",
+          "cameraPermission": "Verre uses your camera to take photos for your moments and impressions, and to scan Verre codes.",
           "microphonePermission": false
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Verre uses your camera to take photos for your moments and impressions, and to scan Verre codes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
         }
       ],
       [

@@ -20,6 +20,12 @@
 //   impressions + cravings = LIVE + SAFE_PHOTO (never an unrevealed blind
 //   wine); moments = LIVE (a cover is never blind-redacted,
 //   prisma/schema.prisma sessions.cover_photo_url).
+// - OWN = a photo you took or chose on the phone for this tile (ruled
+//   2026-11-12): uploaded through `POST /api/me/profile/tiles/<tile>`, stored
+//   under `avatars/tile_<tile>_u_<id>_…` and OWNED by the tile, unlike every
+//   other pin. Always live; reclaimed when the tile changes or the account
+//   goes (lib/profileImage.ts, lib/accountDelete.ts). Recognised by its key,
+//   which only that upload writes (every other pin passed the pool check).
 //
 // 🔒 The tile COUNTS are not computed here and never depend on these pools
 // (lib/profileHeader.ts): the pools only decide photos.
@@ -35,6 +41,19 @@ export type TileKey = (typeof TILE_KEYS)[number]
 
 export function isTileKey(v: unknown): v is TileKey {
   return typeof v === 'string' && (TILE_KEYS as readonly string[]).includes(v)
+}
+
+// The key prefix of a tile's own upload (lib/profileImage.ts adds the unique
+// suffix), under the proven public-read `avatars/` prefix.
+export const tileUploadKeyPrefix = (tile: TileKey, userId: number) => `avatars/tile_${tile}_u_${userId}_`
+
+// Matched on the key part only, so it holds whatever S3 endpoint the URL was
+// stored under.
+export function isOwnTileUpload(url: string | null | undefined, tile: TileKey, userId: number): url is string {
+  if (!url) return false
+  const prefix = `/${tileUploadKeyPrefix(tile, userId)}`
+  const at = url.indexOf(prefix)
+  return at >= 0 && !url.slice(at + prefix.length).includes('/')
 }
 
 const COLUMN: Record<TileKey, Prisma.Sql> = {
@@ -123,6 +142,7 @@ export async function readPins(profileId: number): Promise<Record<TileKey, strin
 // PATCH writes the pin unconditionally, so a re-pick that waited on this lock
 // lands after the clear. Returns the pin to show when it turned out live.
 async function clearDeadPin(tile: TileKey, profileId: number, dead: string): Promise<string | null> {
+  if (isOwnTileUpload(dead, tile, profileId)) return dead
   return prisma.$transaction(async tx => {
     const rows = await tx.$queryRaw<{ pin: string | null }[]>`
       SELECT ${COLUMN[tile]} AS pin FROM users WHERE id = ${profileId} FOR UPDATE`
@@ -135,8 +155,8 @@ async function clearDeadPin(tile: TileKey, profileId: number, dead: string): Pro
 
 export type TilePhoto = { imageUrl: string | null; pinned: boolean }
 
-// The pin read (every viewer): the pin while LIVE (no blind predicate, D3),
-// else clear it and fall back to the automatic photo. Residual, accepted: a
+// The pin read (every viewer): your own upload, or the pin while LIVE (no
+// blind predicate, D3), else clear it and fall back to the automatic photo. Residual, accepted: a
 // reversible removal (un-save, leave) undone before ANY profile read revives
 // the pin; it leaks nothing beyond D3's re-hide rule, and a deleted source's
 // URL never comes back (fresh keys per upload).
@@ -150,7 +170,7 @@ export async function resolveTilePhotos(profileId: number, tiles: readonly TileK
   const entries = await Promise.all(tiles.map(async (tile): Promise<[TileKey, TilePhoto]> => {
     const pin = pins[tile]
     if (pin) {
-      const live = (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
+      const live = isOwnTileUpload(pin, tile, profileId) || (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
       if (live) return [tile, { imageUrl: pin, pinned: true }]
     }
     return [tile, { imageUrl: await autoLatest(tile, profileId), pinned: false }]
