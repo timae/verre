@@ -3,7 +3,7 @@
 // "good enough, is-this-me?" label. The RAW User-Agent is NEVER persisted
 // (privacy minimisation, proposal §4) — only the derived label below.
 //
-// Goal output: "MacBook · Chrome", "iPhone · Safari", "Android · Chrome",
+// Goal output: "Mac · Chrome", "iPhone · Safari", "Android · Chrome",
 // "Windows · Firefox". Falls back to "Unknown device" when nothing matches.
 // Capped at VarChar(64) by the column; the labels we emit are far shorter.
 
@@ -15,7 +15,8 @@ function parseOS(ua: string): string | null {
   if (/iPhone/.test(ua)) return 'iPhone'
   if (/iPad/.test(ua)) return 'iPad'
   if (/Android/.test(ua)) return 'Android'
-  if (/Macintosh|Mac OS X/.test(ua)) return 'MacBook'
+  // Every Mac browser sends the same frozen UA: the model is unknowable.
+  if (/Macintosh|Mac OS X/.test(ua)) return 'Mac'
   if (/Windows/.test(ua)) return 'Windows'
   if (/CrOS/.test(ua)) return 'Chromebook'
   if (/Linux/.test(ua)) return 'Linux'

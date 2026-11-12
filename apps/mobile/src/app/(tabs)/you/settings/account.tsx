@@ -63,7 +63,7 @@ function lastActive(iso: string): string {
   return `Last active ${shortDate(iso)}`;
 }
 const deviceIcon = (label: string) =>
-  /MacBook|Windows|Linux|Chromebook/.test(label) ? 'laptop' : /iPad|Tablet/.test(label) ? 'tablet' : 'phone';
+  /Mac|Windows|Linux|Chromebook/.test(label) ? 'laptop' : /iPad|Tablet/.test(label) ? 'tablet' : 'phone';
 
 // One signed-in device: icon, label, then ONE detail line (ruled 2026-11-11,
 // no sign-in date): this device "Active now"; the others "Switzerland · 15 min

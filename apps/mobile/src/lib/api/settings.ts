@@ -76,7 +76,7 @@ export async function getMutes(): Promise<ListedPerson[]> {
 
 // Signed-in devices: web rows (uuid ids) and native rows (`ba:<id>`).
 // `deviceLabel` is a ready-made label ("iPhone 15 Pro · Verre App",
-// "MacBook · Safari", "Unknown device"); `geoLabel` a country name or null.
+// "Mac · Safari", "Unknown device"); `geoLabel` a country name or null.
 export type Device = { id: string; deviceLabel: string | null; geoLabel: string | null; createdAt: string; lastSeenAt: string; isCurrent: boolean };
 export async function getDevices(): Promise<Device[]> {
   const res = await apiFetch('/api/me/devices');
