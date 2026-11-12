@@ -104,9 +104,23 @@ const ICONS: Record<string, Seg[]> = {
     { cx: 12, cy: 12, r: 8, sw: 1.6 },
     { d: 'M6.5 6.5l11 11', sw: 1.6, cap: true },
   ],
-  // Signed-in devices (Settings → Account): phone, laptop (design i-phone,
-  // i-laptop). The app is iPhone-only and the label names the model, so the
-  // design's i-tablet isn't needed yet.
+  // Signed-in devices (Settings → Account): phone, tablet, laptop (design
+  // i-phone, i-tablet, i-laptop).
+  tablet: [
+    { d: 'M7 3h10a2.5 2.5 0 0 1 2.5 2.5v13A2.5 2.5 0 0 1 17 21H7a2.5 2.5 0 0 1-2.5-2.5v-13A2.5 2.5 0 0 1 7 3Z', sw: 1.6 },
+    { d: 'M11 18h2', sw: 1.6, cap: true },
+  ],
+  // Settings → Account: Email (envelope) and Change Password (key), drawn in
+  // the set's line style after the 2026-11-11 design proposition (no sprite
+  // source for them in the handoff).
+  mail: [
+    { d: 'M5 5.5h14A2 2 0 0 1 21 7.5v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z', sw: 1.6, join: true },
+    { d: 'M3.6 7.2 12 13l8.4-5.8', sw: 1.6, cap: true, join: true },
+  ],
+  key: [
+    { cx: 7.5, cy: 16.5, r: 3.5, sw: 1.6 },
+    { d: 'M10 14 19.5 4.5M16 8l2.2 2.2M13.8 10.2l1.6 1.6', sw: 1.6, cap: true },
+  ],
   phone: [
     { d: 'M9.5 3h5A2.5 2.5 0 0 1 17 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 1 7 18.5v-13A2.5 2.5 0 0 1 9.5 3Z', sw: 1.6 },
     { d: 'M11 18h2', sw: 1.6, cap: true },

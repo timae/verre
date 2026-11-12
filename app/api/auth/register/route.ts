@@ -7,6 +7,7 @@ import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { verifyRegisterToken } from '@/lib/registerToken'
 import { isSameOrigin } from '@/lib/csrf'
 import { syncCredential } from '@/lib/identityStore'
+import { AUDIT_SAME_AS_PROFILE } from '@/lib/profileVisibility'
 
 const schema = z.object({
   name:       z.string(),
@@ -72,7 +73,10 @@ export async function POST(req: NextRequest) {
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: { name, email: email.toLowerCase() },
-        select: { id: true, name: true, email: true, role: true, pro: true, profileVisibility: true, visibilityFof: true },
+        select: {
+          id: true, name: true, email: true, role: true, pro: true, profileVisibility: true, visibilityFof: true,
+          checkinVisibility: true, showCravings: true, showMoments: true, showLocations: true,
+        },
       })
       await syncCredential(created.id, hash, tx)
       await tx.profileVisibilityLog.create({
@@ -80,6 +84,10 @@ export async function POST(req: NextRequest) {
           userId: created.id,
           toTier: created.profileVisibility,
           toFof: created.visibilityFof,
+          toCheckinTier: created.checkinVisibility ?? AUDIT_SAME_AS_PROFILE,
+          toShowCravings: created.showCravings,
+          toShowMoments: created.showMoments,
+          toShowLocations: created.showLocations,
         },
       })
       return created

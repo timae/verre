@@ -1,9 +1,8 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, View } from 'react-native';
-import { SetGroup, SetNav, SetPage, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { PersonRow, SetPage, SettingsScreenFallback } from '@/components/moments/settingsParts';
 import { firstName } from '@/components/profile/ProfileHeader';
-import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { VText } from '@/components/ui/VText';
 import { BLOCKS_KEY, MUTES_KEY, getBlocks, getMutes, type ListedPerson } from '@/lib/api/settings';
@@ -78,17 +77,18 @@ export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
       ) : q.data.length === 0 ? (
         <VText variant="body" color="inkSoft">{k.empty}</VText>
       ) : (
-        <SetGroup flush>
-          {q.data.map((p) => (
-            <SetNav
+        <View>
+          {q.data.map((p, i) => (
+            <PersonRow
               key={p.id}
-              label={p.name}
-              leading={<Avatar name={p.name} size={36} initialsSize={12} />}
+              flush={i === 0}
+              name={p.name}
               trailing={
                 <Button
                   title={k.action}
                   variant="tertiary"
-                  size="sm"
+                  rowAction
+                  size="md"
                   loading={busyId === p.id}
                   disabled={busyId != null && busyId !== p.id}
                   accessibilityLabel={`${k.action} ${p.name}`}
@@ -97,7 +97,7 @@ export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
               }
             />
           ))}
-        </SetGroup>
+        </View>
       )}
     </SetPage>
   );

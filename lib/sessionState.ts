@@ -128,9 +128,8 @@ export async function buildMetaView(
         select: { id: true, imageUrl: true },
       }),
     ])
-    const fofCandidates = participantUserIds.filter(id => visMap.get(id)?.fofEnabled === true)
-    const fofSet = fofCandidates.length > 0 && viewerUserId !== null
-      ? await viewerFofAuthorSet(viewerUserId, fofCandidates)
+    const fofSet = viewerUserId !== null
+      ? await viewerFofAuthorSet(viewerUserId, participantUserIds, visMap, viewerMap)
       : new Set<number>()
     const urlById = new Map<number, string>()
     for (const u of users) {

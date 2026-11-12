@@ -6,12 +6,11 @@ Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invis
 
 ## Schema
 
-`user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair. Unblock restores visibility everywhere.
+`user_blocks(blocker_id, blocked_id, created_at)`, composite PK, CHECK forbidding self-block, FK ON DELETE CASCADE both sides, index on `blocked_id` for reverse cascade. **Non-destructive**: blocking does NOT delete follows, mutes, likes, or tags between the pair (so a read that walks `follows` must filter block pairs itself; e.g. the extended circle never links through a block pair, `lib/profileVisibility.ts` `bridgeUnblocked`). Unblock restores visibility everywhere.
 
 ## Authorization chokepoints (`lib/userBlock.ts`)
 
-- `anyBlockBetween(a, b)` — OR'd both directions. Fast-path primitive used by `viewerCanSeeAuthor` to short-circuit visibility resolution.
-- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked).
+- `viewerBlocksAuthor` / `authorBlocksViewer` — directional checks for shaping the gate result (`blocked-by-me` for the blocker, `gone` for the blocked). `resolveProfileViewer` runs them before the tier, so every per-pair gate built on it (`viewerCanSeePosts`: like POST, had a sip) inherits the block.
 - `blockPairIds(userId)` — `{ blockedByMe, blockingMe }` Sets, capped at 1000 per direction. Hot-path filter set for feed, search, in-session participant matrix.
 - `setBlock(blockerId, blockedId, mute)` — single sanctioned write path. POST rate-limited 30/h/user; DELETE intentionally uncapped (recovery from a stolen-cookie burst must always work). FK violation swallowed.
 

@@ -16,15 +16,17 @@ const LONG_PRESS_MS = 480;
 // (`.is-press`, 0.97 / 0.85 opacity; tiles 0.95) over dur-2; at 480 ms it
 // fires with a haptic and springs back. `onPress` (optional) is a plain tap
 // (the "Add a profile text" hint starts editing on tap too). Disabled = an
-// inert plain view.
+// inert plain view. `fill`: the child fills the target's box (a photo tile
+// sized by its row, not by its own content).
 export function LongPressable({
-  onLongPress, onPress, disabled, pressedScale = 0.97, dim = true, accessibilityLabel, accessibilityHint, style, children,
+  onLongPress, onPress, disabled, pressedScale = 0.97, dim = true, fill, accessibilityLabel, accessibilityHint, style, children,
 }: {
   onLongPress: () => void;
   onPress?: () => void;
   disabled?: boolean;
   pressedScale?: number;
   dim?: boolean;
+  fill?: boolean;
   accessibilityLabel?: string;
   accessibilityHint?: string;
   style?: StyleProp<ViewStyle>;
@@ -52,6 +54,7 @@ export function LongPressable({
     >
       <Animated.View
         style={{
+          ...(fill ? { flex: 1 } : null),
           transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, pressedScale] }) }],
           ...(dim ? { opacity: v.interpolate({ inputRange: [0, 1], outputRange: [1, 0.85] }) } : null),
         }}

@@ -69,7 +69,7 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   } else {
     // Same loader the API route uses — single source for the payload
     // shape. SSR calls Prisma directly; the API call goes over the wire.
-    const profile = await loadProfile({ userId, viewerId: myId, isFollowing: gate.viewer.followsProfile })
+    const profile = await loadProfile({ userId, gate })
     if (!profile) notFound()
     const viewerMutes = myId !== null && myId !== userId
       ? await isMuted(myId, userId)

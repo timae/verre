@@ -11,7 +11,7 @@
 | `/api/me/profile/photos` GET | 60/min/user (`rl:profile-photos`) |
 | `/api/me/visibility` GET | 60/min/user |
 | `/api/me/visibility` PATCH (outer) | 60/min/user |
-| `/api/me/visibility` PATCH (inner) | 30/h/user (on actual change) |
+| `/api/me/visibility` PATCH (inner) | 30/h/user (on an actual change of any field) |
 | `/api/me/sessions` GET (`q` or `people` only) | 30/min/user (`rl:moments-search`) |
 | `/api/me/mutes` GET | 60/min/user (`rl:mutes-read`) |
 | `/api/me/mutes/:id` POST+DELETE | 60/h/user (shared) |
@@ -47,7 +47,7 @@
 - **Profile PATCH** (name, bio, tile covers): content churn from a stolen cookie (a rename fans out to every live session the user is in). Deliberately NOT the account PATCH, which charges the shared password-guess budget `rl:account` 20/h on every call, a plain rename included; editing your bio must not eat the budget that guards your password.
 - **Profile photos GET** (the tile picker): read-side noise; each call runs the per-tile pool query.
 - **Visibility GET / PATCH (outer)**: read-side noise + general burst protection. Distinct counters per HTTP method.
-- **Visibility PATCH (inner)**: stolen-cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-`checkRate`-on-change so no-op submits don't burn slots.
+- **Visibility PATCH (inner)**: stolen-cookie thrashing the audit log + flipping visibility. Enforced inside `setProfileVisibility` via peek-then-`checkRate`-on-change: an actual change of ANY of the six settings counts once per PATCH; a no-op (or an already-applied retry) and a 409 compare-and-set refusal charge nothing.
 - **Sessions GET (`q`/`people`)**: charged ONLY when the caller sends the two genuinely-expensive params — the `pg_trgm` `word_similarity` search (`q`) or the per-friend correlated `EXISTS` (`people`). The OTHER filter params (`tense`/`roles`/`hosts`/`category`/date/`cursor`/`limit`) are plain indexed WHEREs + keyset paging, no costlier than the unfiltered carousel read — and since the client ALWAYS sends `tense` for Recent/Upcoming, charging on "any filter param" would throttle ordinary browsing (open list → scroll → each page a request) against a search-compute cap. So the gate is `q`/`people`, not "filtered". Capped like `/api/users/search`; blast radius smaller (every query is `sm.user_id = me`-scoped, only the caller's own sessions), so 30/min is generous. The unfiltered carousel read (home hot path, every focus) stays uncapped.
 - **Mutes GET**: read-side noise from a stolen cookie polling the list; one indexed query per call.
 - **Mutes POST+DELETE**: stolen cookie thrashing the table or generating noise. Shared.

@@ -16,7 +16,7 @@ import { useRegisterInput } from '@/lib/keyboardDismiss';
 import { DATE_LOCALE } from '@/lib/locale';
 import { usePhoneTokens } from '@/lib/layout';
 import { fuzzyIncludes } from '@/lib/search';
-import { motion, radius, useTheme } from '@/theme';
+import { control, motion, radius, useTheme } from '@/theme';
 
 // Shared moment-form widgets, extracted from create.tsx so the 02f settings
 // "Moment details" sheet renders the IDENTICAL pixel-spec controls (DateField,
@@ -275,8 +275,11 @@ export function SelectField({
       onPress={() => { Keyboard.dismiss(); onPress(); }}
       style={({ pressed }) => ({
         opacity: disabled ? 0.55 : 1,
-        minHeight: surface.height(44), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-        paddingHorizontal: 14, paddingVertical: surface.paddingY(10), backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
+        // The SAME fixed height as a single-line TextField (control.h, scaled
+        // by the surface): with a min height + padding around the text it
+        // grew taller than a TextField beside it (Region | Country).
+        height: surface.height(control.h), flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        paddingHorizontal: 14, backgroundColor: pressed ? theme.surfaceSunk : theme.surface,
         borderWidth: 1, borderColor: theme.rule, borderRadius: radius.sm,
       })}
     >
@@ -290,16 +293,20 @@ export function SelectField({
 
 // Short check-list picker in a brand bottom sheet (the add.tsx TypeSheet /
 // create.tsx CategorySheet shape, extracted per the catalog's pending
-// <OptionSheet> entry when the check-in form became the third copy). All
-// options choosable; the selected one carries a check. Dynamic sizing — for a
-// LONG searchable list (countries) this is the wrong primitive: that needs a
-// fixed snap + BottomSheetScrollView (see add.tsx CountrySheet's comment).
+// <OptionSheet> entry when the check-in form became the third copy). Options
+// are choosable unless marked `disabled` (its label faint, announced
+// disabled, no press; `hint` = a short why under it, the settings helper
+// size, kept readable); the
+// selected one carries a check. Dynamic
+// sizing — for a LONG searchable list (countries) this is the wrong
+// primitive: that needs a fixed snap + BottomSheetScrollView (see add.tsx
+// CountrySheet's comment).
 export function OptionSheet<T extends string>({
   open, title, options, selected, onSelect, onClose,
 }: {
   open: boolean;
   title: string;
-  options: ReadonlyArray<{ code: T; label: string }>;
+  options: ReadonlyArray<{ code: T; label: string; disabled?: boolean; hint?: string }>;
   selected: T | null;
   onSelect: (code: T) => void;
   onClose: () => void;
@@ -321,7 +328,8 @@ export function OptionSheet<T extends string>({
             <Pressable
               key={o.code}
               accessibilityRole="button"
-              accessibilityState={{ selected: on }}
+              accessibilityState={{ selected: on, disabled: !!o.disabled }}
+              disabled={o.disabled}
               onPress={() => onSelect(o.code)}
               style={({ pressed }) => ({
                 flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
@@ -329,7 +337,10 @@ export function OptionSheet<T extends string>({
                 backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
               })}
             >
-              <VText variant="body">{o.label}</VText>
+              <View style={{ flex: 1, gap: 2 }}>
+                <VText variant="body" color={o.disabled ? 'inkFaint' : 'ink'}>{o.label}</VText>
+                {o.hint ? <VText variant="small" color="inkSoft">{o.hint}</VText> : null}
+              </View>
               {on ? <Icon name="check" size={18} color={theme.accent} /> : null}
             </Pressable>
           );

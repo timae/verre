@@ -35,10 +35,10 @@ export default function Settings() {
 
   return (
     <SetPage title="Settings">
-      <MeCard name={name} imageUrl={own?.imageUrl ?? null} onPress={() => router.push(profileEditHref(mount))} />
+      <MeCard name={name} imageUrl={own?.imageUrl ?? null} onPress={() => router.push(profileEditHref(mount), { dangerouslySingular: true })} />
       <SetGroup flush>
-        <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'))} />
-        <SetNav icon="eye" label="Privacy" onPress={() => router.push(settingsHref(mount, 'privacy'))} />
+        <SetNav icon="user" label="Account" onPress={() => router.push(settingsHref(mount, 'account'), { dangerouslySingular: true })} />
+        <SetNav icon="eye" label="Privacy" onPress={() => router.push(settingsHref(mount, 'privacy'), { dangerouslySingular: true })} />
         <SetNav icon="glass" label="Tasting" disabled soon />
       </SetGroup>
       <SetGroup flush>
@@ -47,21 +47,21 @@ export default function Settings() {
           icon="palette"
           label="Appearance"
           value={choice === 'system' ? 'Match System' : themes[choice].name}
-          onPress={() => router.push(settingsHref(mount, 'appearance'))}
+          onPress={() => router.push(settingsHref(mount, 'appearance'), { dangerouslySingular: true })}
         />
       </SetGroup>
       <SetGroup flush>
-        <SetNav icon="link" label="Help & About" onPress={() => router.push(legalHref(mount, 'about'))} />
+        <SetNav icon="link" label="Help & About" onPress={() => router.push(legalHref(mount, 'about'), { dangerouslySingular: true })} />
       </SetGroup>
       {/* Testing phase (Simon, 2026-07-16): visible in release builds too —
           re-gate on __DEV__ before a public launch. */}
       {!inPost ? (
         <SetGroup flush>
-          <SetNav icon="grid" label="Dev Gallery" onPress={() => router.push('/you/dev-gallery')} />
+          <SetNav icon="grid" label="Dev Gallery" onPress={() => router.push('/you/dev-gallery', { dangerouslySingular: true })} />
         </SetGroup>
       ) : null}
       <SetGroup flush>
-        <SetNav icon="logout" label="Sign Out" action disabled={busy} onPress={() => confirmSignOut(account.data?.email || name, setBusy)} />
+        <SetNav icon="logout" label="Sign Out" action critical disabled={busy} onPress={() => confirmSignOut(account.data?.email || name, setBusy)} />
       </SetGroup>
       {version ? <VText variant="caption" color="inkFaint" style={{ textAlign: 'center' }}>{version}</VText> : null}
     </SetPage>

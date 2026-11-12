@@ -76,6 +76,16 @@ model User {
   // union type in ProfileVisibility is the authoritative source of truth.
   profileVisibility         String                 @default("public-users") @map("profile_visibility") @db.VarChar(32)
   visibilityFof             Boolean                @default(false) @map("visibility_fof")
+  // Post audience + profile switches (You, step 4). checkinVisibility NULL =
+  // Same as Profile; otherwise a stricter audience for the owner's posts
+  // ('public-users' | 'public-followers' | 'public-mutual' | 'only-me', a
+  // hand-added CHECK; never 'public-internet', which would equal NULL). Never
+  // clamped to the profile tier: the stricter of the two wins on read
+  // (`canViewPosts`, lib/profileVisibility.ts).
+  checkinVisibility         String?                @map("checkin_visibility") @db.VarChar(32)
+  showCravings              Boolean                @default(true) @map("show_cravings")
+  showMoments               Boolean                @default(true) @map("show_moments")
+  showLocations             Boolean                @default(true) @map("show_locations")
   bookmarks                 Bookmark[]
   ratings                   Rating[]
   members                   SessionMember[]
@@ -114,20 +124,32 @@ model User {
   @@map("users")
 }
 
-// Audit trail of every profile_visibility / visibility_fof change. Internal
+// Audit trail of every change to the visibility settings (profile tier, FoF,
+// check-in audience, the three Show switches). Internal
 // only — no API surface, no UI. Forensic safety net for dispute resolution
 // ("my profile was public yesterday") and incident response. Tombstones on
 // user delete (user_id → NULL) so the audit trail survives account
 // deletion; rows themselves are never auto-purged.
 model ProfileVisibilityLog {
-  id        Int      @id @default(autoincrement())
-  userId    Int?     @map("user_id")
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  fromTier  String?  @map("from_tier") @db.VarChar(32)
-  toTier    String   @map("to_tier") @db.VarChar(32)
-  fromFof   Boolean? @map("from_fof")
-  toFof     Boolean? @map("to_fof")
-  changedAt DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
+  id                Int      @id @default(autoincrement())
+  userId            Int?     @map("user_id")
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  fromTier          String?  @map("from_tier") @db.VarChar(32)
+  toTier            String   @map("to_tier") @db.VarChar(32)
+  fromFof           Boolean? @map("from_fof")
+  toFof             Boolean? @map("to_fof")
+  // Step 4: every row is a full before/after snapshot. Same as Profile is
+  // logged as the sentinel 'profile', so NULL means a row from before these
+  // columns (or the signup row's from_*).
+  fromCheckinTier   String?  @map("from_checkin_tier") @db.VarChar(32)
+  toCheckinTier     String?  @map("to_checkin_tier") @db.VarChar(32)
+  fromShowCravings  Boolean? @map("from_show_cravings")
+  toShowCravings    Boolean? @map("to_show_cravings")
+  fromShowMoments   Boolean? @map("from_show_moments")
+  toShowMoments     Boolean? @map("to_show_moments")
+  fromShowLocations Boolean? @map("from_show_locations")
+  toShowLocations   Boolean? @map("to_show_locations")
+  changedAt         DateTime @default(now()) @map("changed_at") @db.Timestamptz(6)
 
   @@index([userId, changedAt])
   @@map("profile_visibility_log")
@@ -582,30 +604,6 @@ model Bookmark {
 
   @@unique([userId, wineId])
   @@map("bookmarks")
-}
-
-// RETIRED 2026-11-11: nothing reads or writes this table (the /hof page, its
-// feed and the 5★ write are gone, and its user FK is dropped so account
-// deletion needs no tombstone UPDATE). The table drop is a later migration:
-// an instance still serving the previous release must never meet it missing.
-model HallOfFame {
-  id          Int      @id @default(autoincrement())
-  wineName    String   @map("wine_name") @db.VarChar(255)
-  producer    String?  @db.VarChar(255)
-  vintage     String?  @db.Char(4)
-  category    String   @default("wine") @db.VarChar(32)
-  style       String?  @db.VarChar(64)
-  // Quarter-stars: 0.00 through 5.00 in 0.25 steps. HoF entries are
-  // currently created only on score === 5.00 (strict five-star), so
-  // existing rows stay at 5.00 after the type widen.
-  score       Decimal  @db.Decimal(3, 2)
-  raterName   String   @map("rater_name") @db.VarChar(64)
-  userId      Int?     @map("user_id")
-  sessionCode String?  @map("session_code") @db.VarChar(16)
-  ratedAt     DateTime @map("rated_at") @db.Timestamptz(6)
-
-  @@unique([wineName, userId])
-  @@map("hall_of_fame")
 }
 
 // Badge catalog. Seeded from lib/badges.ts via ensureBadgesSeedOnce().

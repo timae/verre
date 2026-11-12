@@ -66,10 +66,7 @@ export async function GET(req: NextRequest) {
     blockPairIds(viewerId),
   ])
   const followingSet = new Set(myFollowing.map(f => f.followingId))
-  const fofCandidates = candidateIds.filter(id => visMap.get(id)?.fofEnabled === true)
-  const fofSet = fofCandidates.length > 0
-    ? await viewerFofAuthorSet(viewerId, fofCandidates)
-    : new Set<number>()
+  const fofSet = await viewerFofAuthorSet(viewerId, candidateIds, visMap, viewerMap)
 
   // Block-pair candidates are dropped entirely (no stub). Both directions
   // — anyone the viewer blocked AND anyone who blocked the viewer.

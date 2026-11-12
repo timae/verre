@@ -2,7 +2,8 @@
 import { useState, useEffect } from 'react'
 import { useSession, signOut } from 'next-auth/react'
 import { clearSessionNames } from '@/lib/clientStorage'
-import { TIER_LABELS, TIER_ORDER, type ProfileVisibility } from '@/lib/profileVisibilityShared'
+import { TIER_LABELS, TIER_ORDER, type ProfileVisibility, type VisibilitySettings } from '@/lib/profileVisibilityShared'
+import { extendedCircleApplies } from '@verre/core'
 
 function EyeIcon({ open }: { open: boolean }) {
   return open ? (
@@ -482,53 +483,72 @@ function ConnectedDevicesSection() {
   )
 }
 
+// The PATCH is a compare-and-set against the six settings the GET returns
+// (`expected`). The web edits only the profile tier + FoF, but keeps all six
+// as its snapshot.
 function ProfileVisibilitySection() {
   const [tier, setTier] = useState<ProfileVisibility | null>(null)
   const [fofEnabled, setFofEnabled] = useState(false)
+  const [snap, setSnap] = useState<VisibilitySettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
 
+  // Shown values and the snapshot always move together.
+  function apply(d: VisibilitySettings) {
+    setSnap(d); setTier(d.visibility); setFofEnabled(d.fofEnabled)
+  }
+  const read = (): Promise<VisibilitySettings | null> =>
+    fetch('/api/me/visibility', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).catch(() => null)
+  async function load() {
+    const d = await read()
+    if (d) apply(d)
+    return !!d
+  }
+
   useEffect(() => {
     let cancelled = false
-    fetch('/api/me/visibility')
-      .then(r => r.json())
-      .then((d: { visibility: ProfileVisibility; fofEnabled: boolean }) => {
-        if (cancelled) return
-        setTier(d.visibility)
-        setFofEnabled(d.fofEnabled)
-        setLoading(false)
-      })
-      .catch(() => { if (!cancelled) setLoading(false) })
+    read().then(d => {
+      if (cancelled) return
+      if (d) apply(d)
+      setLoading(false)
+    })
     return () => { cancelled = true }
   }, [])
 
   async function save(newTier: ProfileVisibility, newFof: boolean) {
+    if (!snap) return
     setSaving(true); setError(''); setSuccess('')
     // FoF is meaningless on public tiers — coerce to false on the wire so
     // the stored bit matches what the UI shows. Without this, a user who
     // turns FoF on at `public-mutual` then drops to `public-users` would
     // carry FoF=true silently in the DB.
     const wireFof = (newTier === 'public-internet' || newTier === 'public-users') ? false : newFof
+    // Always BOTH fields as changes: an instance still serving the previous
+    // release during a deploy ignores `expected` and applies both.
     const res = await fetch('/api/me/visibility', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visibility: newTier, fofEnabled: wireFof }),
+      body: JSON.stringify({ expected: snap, visibility: newTier, fofEnabled: wireFof }),
     })
-    setSaving(false)
-    if (res.status === 401) { window.location.href = '/login'; return }
+    if (res.status === 401) { setSaving(false); window.location.href = '/login'; return }
+    const d = await res.json().catch(() => ({})) as { current?: VisibilitySettings; error?: string }
+    // After EVERY 200 and every 409 the server's `current` replaces both the
+    // shown values and the snapshot (else the next save in this tab 409s).
+    if (d.current) apply(d.current)
     if (res.ok) {
-      setTier(newTier); setFofEnabled(wireFof); setSuccess('saved')
-      setTimeout(() => setSuccess(''), 2000)
+      // A 200 without `current` = the previous release answered: re-read.
+      if (!d.current && !(await load())) setError('Saved. Reload the page to see it.')
+      else { setSuccess('saved'); setTimeout(() => setSuccess(''), 2000) }
     } else {
-      const d = await res.json().catch(() => ({}))
       setError(d.error || 'failed to save')
     }
+    setSaving(false)
   }
 
   // FoF only meaningful for follower/mutual tiers — broader tiers already
   // admit anyone who'd qualify via the indirect chain.
-  const fofRelevant = tier === 'public-followers' || tier === 'public-mutual'
+  const fofRelevant = tier !== null && extendedCircleApplies(tier)
 
   return (
     <div style={{marginTop:32,paddingTop:20,borderTop:'1px solid var(--border)'}}>
@@ -565,8 +585,8 @@ function ProfileVisibilitySection() {
             <div style={{marginTop:14,padding:'10px 12px',borderRadius:6,border:'1px solid var(--border)',background:'var(--bg3)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,cursor:saving?'wait':'pointer'}}
               onClick={() => !saving && save(tier, !fofEnabled)}>
               <div>
-                <div style={{fontSize:11,fontWeight:700}}>Friends of friends</div>
-                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>also let people one connection away through someone I trust</div>
+                <div style={{fontSize:11,fontWeight:700}}>{tier === 'public-mutual' ? 'Friends of friends' : 'Followers of followers'}</div>
+                <div style={{fontSize:10,color:'var(--fg-dim)',marginTop:2}}>{tier === 'public-mutual' ? 'also friends of your friends' : 'also people who follow your followers'}</div>
               </div>
               <div style={{ width: 36, height: 20, borderRadius: 10, background: fofEnabled ? 'var(--accent)' : 'var(--bg4)', border: '1px solid var(--border2)', position: 'relative', flexShrink: 0 }}>
                 <div style={{ width: 14, height: 14, borderRadius: '50%', background: '#fff', position: 'absolute', top: 2, left: fofEnabled ? 18 : 2, transition: 'left .2s' }} />

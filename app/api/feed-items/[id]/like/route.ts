@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
 import { parsePathId } from '@/lib/parsePathId'
 import { isSameOrigin } from '@/lib/csrf'
-import { viewerCanSeeAuthor } from '@/lib/profileVisibility'
+import { resolveProfileViewer, viewerCanSeePosts } from '@/lib/profileVisibility'
 
 type Ctx = { params: Promise<{ id: string }> }
 
@@ -37,15 +37,15 @@ export async function POST(req: NextRequest, { params }: Ctx) {
 
   // Visibility gate runs BEFORE rate-limit increment so an attacker
   // hammering hidden ids can't drain the legitimate user's 120/h budget.
-  // Returns 404 for non-permitted access so the like endpoint doesn't
-  // leak existence of a feed_item the viewer's tier excludes them from
-  // seeing.
+  // The POST gate (profile tier + Check-Ins Visible To); 404 for
+  // non-permitted access so the like endpoint doesn't leak existence of a
+  // feed_item the viewer is excluded from seeing.
   const target = await prisma.feedItem.findUnique({
     where: { id: feedItemId },
     select: { userId: true },
   })
   if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!(await viewerCanSeeAuthor(userId, target.userId))) {
+  if (!(await viewerCanSeePosts(userId, target.userId))) {
     return NextResponse.json({ error: 'not found' }, { status: 404 })
   }
 
@@ -69,21 +69,27 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const feedItemId = parsePathId((await params).id)
   if (feedItemId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
 
-  // Same gate as POST. Counts are public to anyone who can see the
-  // feed_item, but a viewer who can't see it shouldn't be able to
-  // confirm it exists / read its like count via DELETE either.
-  // Returns 404 (matching POST) so the endpoint shape doesn't leak the
-  // existence of tier-hidden rows.
+  // Unlike stays OPEN (a recovery path): your own like comes off whenever
+  // the post exists, even if it is now hidden from you (shell,
+  // blocked-by-me, or posts hidden) — answered `{ liked: false }` with NO
+  // count, since a viewer who can't see the post mustn't read its count. A
+  // hidden post you never liked → 404 (no new existence oracle).
+  // 🔒 'gone' (the author blocks you, or a mutual block) stays 404 even when
+  // your like existed: a 200 there would tell "blocked" from "deleted"
+  // (docs/dev/block.md). The like still comes off, silently, so an unblock
+  // later doesn't bring back a like you removed.
   const target = await prisma.feedItem.findUnique({
     where: { id: feedItemId },
     select: { userId: true },
   })
   if (!target) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  if (!(await viewerCanSeeAuthor(userId, target.userId))) {
-    return NextResponse.json({ error: 'not found' }, { status: 404 })
+  const gate = await resolveProfileViewer(target.userId, userId)
+  const { count: removed } = await prisma.feedItemLike.deleteMany({ where: { userId, feedItemId } })
+  if (gate.status === 'gone') return NextResponse.json({ error: 'not found' }, { status: 404 })
+  if (gate.status !== 'ok' || !gate.sees.posts) {
+    if (removed === 0) return NextResponse.json({ error: 'not found' }, { status: 404 })
+    return NextResponse.json({ liked: false })
   }
-
-  await prisma.feedItemLike.deleteMany({ where: { userId, feedItemId } })
   const count = await blockAdjustedLikeCount(feedItemId, target.userId)
   return NextResponse.json({ liked: false, count })
 }

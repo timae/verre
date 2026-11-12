@@ -30,7 +30,7 @@ In `lib/sessionCode.ts` (server-only carve-outs):
 
 ## Storage
 
-`sessions.code`, `session_members.session_code`, `hall_of_fame.session_code` are `VarChar(16)` (widened from `Char(4)`). No data migration was needed since hex codes are valid Crockford.
+`sessions.code` and `session_members.session_code` are `VarChar(16)` (widened from `Char(4)`; so was the retired `hall_of_fame.session_code`, table dropped 2026-11-11). No data migration was needed since hex codes are valid Crockford.
 
 ## Collision check
 

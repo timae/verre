@@ -20,10 +20,10 @@ import { BarTitle, VBar, useBarTitleProgress } from '@/components/VBar';
 import {
   applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, type TileKey,
 } from '@/lib/api/profile';
-import { BLOCKS_KEY, MUTES_KEY } from '@/lib/api/settings';
+import { BLOCKS_KEY, MUTES_KEY, type CheckinVisibility } from '@/lib/api/settings';
 import { profileKey, profileQueryOptions, setBlocked, setFollowing, setMuted, type Profile } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
-import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
+import { refetchNetworkFeed, refetchProfileHeader, refetchUserFeed } from '@/lib/feedCache';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
@@ -133,9 +133,14 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // viewer epoch (lib/query.tsx): a sign-out meanwhile cleared this viewer's
   // cache, and nothing of theirs may be written back into it.
   // `list`: the Settings list this write changes (Privacy → Blocked / Muted),
-  // a plain query, so it is invalidated.
+  // a plain query, so it is invalidated. `posts`: a follow / unfollow can
+  // flip whether this person's Check-Ins Visible To shows you their posts
+  // while the profile stays visible, so their list refetches in place too.
   const act = useCallback(
-    async (op: () => Promise<void>, { optimistic, list }: { optimistic?: (p: Profile) => Profile; list?: 'blocks' | 'mutes' } = {}) => {
+    async (
+      op: () => Promise<void>,
+      { optimistic, list, posts }: { optimistic?: (p: Profile) => Profile; list?: 'blocks' | 'mutes'; posts?: boolean } = {},
+    ) => {
       if (busy) return;
       setBusy(true);
       const epoch = viewerCacheEpoch();
@@ -157,6 +162,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
           await Promise.allSettled([
             refetchProfileHeader(queryClient, userId),
             refetchNetworkFeed(queryClient),
+            posts ? refetchUserFeed(queryClient, userId) : null,
             list ? queryClient.invalidateQueries({ queryKey: list === 'blocks' ? BLOCKS_KEY : MUTES_KEY, exact: true }) : null,
           ]);
         }
@@ -169,6 +175,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const follow = () =>
     act(() => setFollowing(userId, true), {
       optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: true } : p),
+      posts: true,
     });
   // Unfollow asks first (it can end a friendship); following acts immediately.
   const confirmUnfollow = (name: string) =>
@@ -180,6 +187,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         onPress: () =>
           act(() => setFollowing(userId, false), {
             optimistic: (p) => (p.state === 'ok' || p.state === 'shell' ? { ...p, isFollowing: false } : p),
+            posts: true,
           }),
       },
     ]);
@@ -408,6 +416,10 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         label="Settings"
         onPress={() => {
           close();
+          // A PLAIN push, unlike the settings rows: the menu closes on the
+          // first tap (no double push), and from the Feed tab this lands on
+          // the You stack (/you/settings), where singular would pull an
+          // already open Settings forward over a deeper page (Privacy).
           router.push(settingsHref(mount));
         }}
       />
@@ -552,11 +564,17 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         }
         empty={
           own ? (
-            <EmptyPosts title="No check-ins yet" body="Your impressions and moments will show up here." />
+            <EmptyPosts title="No posts yet" body="Your impressions and moments will show up here." />
           ) : (
-            <EmptyPosts title="No check-ins yet" />
+            // The same line as Only Me's hidden posts (postsHiddenLine), so
+            // the empty state doesn't tell the two apart.
+            <EmptyPosts title="No posts found" />
           )
         }
+        // Step 4 (Q3): their Check-Ins Visible To hides the posts from you.
+        // The line REPLACES the list (whatever its cache holds), never only
+        // its empty slot; your own profile never carries it.
+        postsHidden={profile.checkinsAudience ? <EmptyPosts title={postsHiddenLine(profile.name, profile.checkinsAudience)} /> : undefined}
       />
     );
   }
@@ -597,7 +615,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
         {own && ok ? (
           <TileCoverSheet
             tile={tileSheet}
-            shown={tileSheet ? profile.tiles[tileSheet].imageUrl : null}
+            shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
             onClose={() => setTileSheet(null)}
             onUse={pinTilePhoto}
           />
@@ -670,3 +688,15 @@ function ProfileHeroBar({
 }
 
 const LIST_TOP_PAD = 4;
+
+// The Q3 line (ruled 2026-11-11): what to do when something helps, else
+// the SAME line as a profile with no posts ("No posts found"), so Only Me
+// isn't named (the missing Impressions tile still shows posts are hidden).
+// No pronouns (we don't know anyone's). Verre Users can only hide posts from
+// someone signed out (the web), never from the app, so it falls there too.
+function postsHiddenLine(name: string, audience: CheckinVisibility): string {
+  const first = firstName(name);
+  if (audience === 'public-followers') return `Follow ${first} to see posts`;
+  if (audience === 'public-mutual') return `Become friends with ${first} to see posts`;
+  return 'No posts found';
+}

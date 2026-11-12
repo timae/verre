@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Platform, View } from 'react-native';
-import { SetGroup, SetNav, SetPage, SetSection } from '@/components/moments/settingsParts';
+import { SetNav, SetPage, SetTitle } from '@/components/moments/settingsParts';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
@@ -15,6 +15,7 @@ import { viewerCacheEpoch } from '@/lib/query';
 import { confirmSignOut } from '@/lib/signOutConfirm';
 import { settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { useTheme } from '@/theme';
+import { TAB_BAR_CLEARANCE } from '@/lib/layout';
 
 // The password re-auth uses iOS's secure Alert.prompt (plan T2). Android has
 // none, so the three password-gated actions render disabled there ("Soon",
@@ -47,46 +48,50 @@ function shortDate(iso: string): string {
 // The web panel's scale (lastSeenLabel in the repo root's
 // components/me/AccountSettings.tsx): every row, web or app, is stored on
 // 5-minute buckets (the root's lib/lastSeen.ts), so
-// under 10 minutes is "recently", then 5-minute steps, hours, days, the date.
+// under 5 minutes is "< 5 min ago", then 5-minute steps, hours, days, the date.
+// Short, for the one detail line (the 2026-11-11 design: "15 min ago").
 function lastActive(iso: string): string {
   const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (!Number.isFinite(secs)) return 'Last active a while ago';
-  if (secs < 600) return 'Active recently';
-  if (secs < 3600) return `Last active ${Math.floor(secs / 300) * 5} min ago`;
-  const ago = (n: number, unit: string) => `Last active ${n} ${unit}${n === 1 ? '' : 's'} ago`;
+  if (!Number.isFinite(secs)) return 'A while ago';
+  // Stored on 5-minute bucket edges, so under 5 min since the edge means the
+  // activity was less than 5 minutes ago; then 5-minute steps.
+  if (secs < 300) return '< 5 min ago';
+  if (secs < 3600) return `${Math.floor(secs / 300) * 5} min ago`;
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
   if (secs < 86_400) return ago(Math.floor(secs / 3600), 'hour');
   if (secs < 604_800) return ago(Math.floor(secs / 86_400), 'day');
   return `Last active ${shortDate(iso)}`;
 }
-const deviceIcon = (label: string) => (/MacBook|Windows|Linux|Chromebook/.test(label) ? 'laptop' : 'phone');
-// "Signed in 11 Nov": two logins from the same kind of device stay tellable
-// apart (the web panel shows it for the same reason).
-const signedIn = (iso: string) => `Signed in ${shortDate(iso)}`;
+const deviceIcon = (label: string) =>
+  /MacBook|Windows|Linux|Chromebook/.test(label) ? 'laptop' : /iPad|Tablet/.test(label) ? 'tablet' : 'phone';
 
-// One signed-in device: icon, label, "Active now" (this one) or when it was
-// last active, the country when known, then when it signed in (the web
-// panel's facts). Your own row: Sign Out (the plain logout); the others:
-// Disconnect (the web panel's word, ruled 2026-11-11).
-function DeviceRow({ d, busyId, onSignOut }: { d: Device; busyId?: string | null; onSignOut?: () => void }) {
+// One signed-in device: icon, label, then ONE detail line (ruled 2026-11-11,
+// no sign-in date): this device "Active now"; the others "Switzerland · 15 min
+// ago" (the country when known). Your own row: Sign Out in red (the plain logout); the
+// others: Remove (ruled 2026-11-11, replacing "Disconnect").
+function DeviceRow({ d, busyId, onSignOut, flush }: { d: Device; busyId?: string | null; onSignOut?: () => void; flush?: boolean }) {
   const { theme } = useTheme();
   const label = d.deviceLabel ?? 'Unknown device';
-  const where = d.geoLabel ? ` · ${d.geoLabel}` : '';
+
   return (
     <SetNav
+      bare
+      flush={flush}
       leading={<Icon name={deviceIcon(label)} size={19} color={theme.inkSoft} />}
       label={label}
-      subtitle={`${d.isCurrent ? 'Active now' : lastActive(d.lastSeenAt)}${where}\n${signedIn(d.createdAt)}`}
+      subtitle={d.isCurrent ? 'Active now' : [d.geoLabel, lastActive(d.lastSeenAt)].filter(Boolean).join(' · ')}
       trailing={!onSignOut ? 'none' : (
         <Button
-          title={d.isCurrent ? 'Sign Out' : 'Disconnect'}
+          title={d.isCurrent ? 'Sign Out' : 'Remove'}
           variant="tertiary"
           critical={d.isCurrent}
-          size="sm"
+          rowAction
+          size="md"
           loading={busyId === d.id}
           // Your own row needs no password prompt (a logout), so iOS-only
           // Alert.prompt doesn't gate it.
           disabled={(!d.isCurrent && !CAN_PROMPT) || (busyId != null && busyId !== d.id)}
-          accessibilityLabel={`${d.isCurrent ? 'Sign Out' : 'Disconnect'} ${label}`}
+          accessibilityLabel={`${d.isCurrent ? 'Sign Out' : 'Remove'} ${label}`}
           onPress={onSignOut}
         />
       )}
@@ -95,8 +100,8 @@ function DeviceRow({ d, busyId, onSignOut }: { d: Device; busyId?: string | null
 }
 
 // Account (handoff 04·4 `setAccount`, ruling Q-C): email (→ Change Email),
-// Change Password, signed-in devices (This Device, Disconnect per device,
-// Disconnect All Other Devices), Delete Account. Connected sign-ins are left out
+// Change Password, signed-in devices (This Device, Remove per device, Remove
+// All Other Devices), Delete Account. Connected sign-ins are left out
 // (no social sign-in yet).
 export default function Account() {
   const router = useRouter();
@@ -113,13 +118,13 @@ export default function Account() {
   const revokeFailed = (e: unknown, epoch: number) => {
     if (viewerCacheEpoch() !== epoch) return;
     if (e instanceof ApiError && e.kind === 'not-found') return refetchDevices(epoch);
-    Alert.alert('Couldn’t Disconnect', e instanceof ApiError && e.status === 403 ? 'That password isn’t right.' : errorText(e));
+    Alert.alert('Couldn’t Remove', e instanceof ApiError && e.status === 403 ? 'That password isn’t right.' : errorText(e));
   };
 
   const disconnectOne = async (d: Device) => {
     const label = d.deviceLabel ?? 'Unknown device';
     const epoch = viewerCacheEpoch();
-    const pw = await promptPassword(`Disconnect ${label}?`, 'Enter your Verre password to disconnect this device.', 'Disconnect');
+    const pw = await promptPassword(`Remove ${label}?`, 'Enter your Verre password. This device will be signed out.', 'Remove');
     if (pw == null || viewerCacheEpoch() !== epoch) return;
     setBusy(d.id);
     try {
@@ -133,7 +138,7 @@ export default function Account() {
   };
   const disconnectOthers = async () => {
     const epoch = viewerCacheEpoch();
-    const pw = await promptPassword('Disconnect All Other Devices?', 'Enter your Verre password. Every other phone and browser signed in to your account will be disconnected.', 'Disconnect');
+    const pw = await promptPassword('Remove All Other Devices?', 'Enter your Verre password. Every other phone and browser signed in to your account will be signed out.', 'Remove');
     if (pw == null || viewerCacheEpoch() !== epoch) return;
     setBusy('others');
     try {
@@ -198,78 +203,69 @@ export default function Account() {
   };
 
   // Two groups (ruled 2026-11-11, the mock lists one): This Device, then
-  // Other Devices: Disconnect All Other Devices, an accent action row like
-  // the per-device Disconnect buttons, in its own card touching the list's
-  // (only with a current device to keep: the route refuses otherwise), then
-  // the list in the server's order (most recently active first). Your own row's Sign Out is the hub's (the same confirm,
+  // Other Devices: the list in the server's order (most recently active
+  // first), then Remove All Other Devices (an accent action row like the
+  // per-device Remove buttons; the 2026-11-11 design puts it last). Your own row's Sign Out is the hub's (the same confirm,
   // no password: a logout; ruled 2026-11-11, replacing T3's no-button row).
   const list = devices.data;
   const current = list?.find((d) => d.isCurrent);
   const others = list?.filter((d) => !d.isCurrent) ?? [];
   return (
-    <SetPage title="Account">
-      <SetGroup flush>
-        <SetNav icon="user" label="Email" value={account.data?.email ?? ''} onPress={() => router.push(settingsHref(mount, 'change-email'))} />
-        <SetNav icon="eyeoff" label="Change Password" onPress={() => router.push(settingsHref(mount, 'change-password'))} />
-      </SetGroup>
+    // The cardless settings standard (ruled 2026-11-11, as Privacy): a
+    // SetTitle per section, 32 apart, bare rows ~12 apart. Delete Account
+    // stands alone at the end.
+    <SetPage title="Account" gap={32} bottomPad={TAB_BAR_CLEARANCE + 100}>
+      <View>
+        <SetTitle>Email and Password</SetTitle>
+        <SetNav bare flush icon="mail" label="Email" value={account.data?.email ?? ''} onPress={() => router.push(settingsHref(mount, 'change-email'), { dangerouslySingular: true })} />
+        <SetNav bare icon="key" label="Change Password" onPress={() => router.push(settingsHref(mount, 'change-password'), { dangerouslySingular: true })} />
+      </View>
       {!list || current ? (
-        <SetSection label="This Device">
+        <View>
+          <SetTitle>This Device</SetTitle>
           {current ? (
-            <SetGroup flush>
-              <DeviceRow d={current} busyId={busy} onSignOut={() => confirmSignOut(account.data?.email, (b) => setBusy(b ? current.id : null))} />
-            </SetGroup>
+            <DeviceRow flush d={current} busyId={busy} onSignOut={() => confirmSignOut(account.data?.email, (b) => setBusy(b ? current.id : null))} />
           ) : devices.isError ? (
-            <SetGroup flush>
-              <SetNav label="Couldn’t load your devices" subtitle="Tap to try again." onPress={() => void devices.refetch()} />
-            </SetGroup>
+            <SetNav bare flush label="Couldn’t load your devices" subtitle="Tap to try again." onPress={() => void devices.refetch()} />
           ) : (
             <View style={{ paddingVertical: 12, alignItems: 'center' }}><ActivityIndicator /></View>
           )}
-        </SetSection>
+        </View>
       ) : null}
       {others.length > 0 ? (
-        <SetSection label="Other Devices">
-          {/* Two cards, each fully rounded, touching (ruled): the action reads
-              as its own button, joined to the list. One child, so the
-              section's gap doesn't fall between them; the list overlaps by
-              1 pt so the two borders draw as ONE line. */}
-          <View>
-            {current ? (
-              <SetGroup flush>
-                <SetNav
-                  icon="logout"
-                  label="Disconnect All Other Devices"
-                  action
-                  accent
-                  disabled={!CAN_PROMPT || busy != null}
-                  soon={!CAN_PROMPT}
-                  busy={busy === 'others'}
-                  onPress={() => void disconnectOthers()}
-                />
-              </SetGroup>
-            ) : null}
-            <View style={{ marginTop: current ? -1 : 0 }}>
-              <SetGroup flush>
-                {others.map((d) => (
-                  <DeviceRow key={d.id} d={d} busyId={busy} onSignOut={() => void disconnectOne(d)} />
-                ))}
-              </SetGroup>
-            </View>
-          </View>
-        </SetSection>
+        <View>
+          <SetTitle>Other Devices</SetTitle>
+          {others.map((d, i) => (
+            <DeviceRow key={d.id} flush={i === 0} d={d} busyId={busy} onSignOut={() => void disconnectOne(d)} />
+          ))}
+          {/* Only with a current device to keep: the route refuses otherwise. */}
+          {current ? (
+            <SetNav
+              bare
+              icon="logout"
+              label="Remove All Other Devices"
+              action
+              accent
+              disabled={!CAN_PROMPT || busy != null}
+              soon={!CAN_PROMPT}
+              busy={busy === 'others'}
+              onPress={() => void disconnectOthers()}
+            />
+          ) : null}
+        </View>
       ) : null}
-      <SetGroup flush>
-        <SetNav
-          icon="trash"
-          label="Delete Account"
-          action
-          critical
-          disabled={!CAN_PROMPT || busy != null}
-          soon={!CAN_PROMPT}
-          busy={busy === 'delete'}
-          onPress={confirmDelete}
-        />
-      </SetGroup>
+      <SetNav
+        bare
+        flush
+        icon="trash"
+        label="Delete Account"
+        action
+        critical
+        disabled={!CAN_PROMPT || busy != null}
+        soon={!CAN_PROMPT}
+        busy={busy === 'delete'}
+        onPress={confirmDelete}
+      />
     </SetPage>
   );
 }

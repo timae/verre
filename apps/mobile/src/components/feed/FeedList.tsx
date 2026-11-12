@@ -44,10 +44,16 @@ export function FeedList({
   inert,
   bottomInset,
   scrollHandle,
+  postsHidden,
 }: {
   userId?: number;
   header: React.ReactElement;
   empty: React.ReactElement;
+  // Set (a profile whose owner hides their posts from you, step 4): the
+  // header + this node render INSTEAD of the posts, whatever the cache holds
+  // (no spinner, no error state, no paging). The list stays mounted, so the
+  // header and the cover-hero scroll stay with it.
+  postsHidden?: React.ReactElement;
   // Top padding of the scroll content (status bar, or the screen's fixed bar).
   contentTopPad: number;
   // Runs with every pull-to-refresh and stale-focus refetch (the profile
@@ -292,7 +298,7 @@ export function FeedList({
     [runDelete],
   );
 
-  const conn = connectionView(feed.isError, items.length > 0);
+  const conn = postsHidden ? 'none' : connectionView(feed.isError, items.length > 0);
 
   const renderCard = useCallback(
     (item: FeedItem, id: number, isOwner: boolean) => {
@@ -387,7 +393,7 @@ export function FeedList({
       {conn === 'banner' && <ConnectionBanner onRetry={() => feed.refetch()} />}
       <FlatList
         ref={listRef}
-        data={items}
+        data={postsHidden ? [] : items}
         keyExtractor={(item) => `${item.type}:${feedItemId(item)}`}
         renderItem={renderItem}
         ListHeaderComponent={header}
@@ -413,17 +419,17 @@ export function FeedList({
         }
         onEndReachedThreshold={0.6}
         onEndReached={() => {
-          if (feed.hasNextPage && !feed.isFetchingNextPage) feed.fetchNextPage();
+          if (!postsHidden && feed.hasNextPage && !feed.isFetchingNextPage) feed.fetchNextPage();
         }}
         ListFooterComponent={
-          feed.isFetchingNextPage ? (
+          !postsHidden && feed.isFetchingNextPage ? (
             <View style={{ paddingVertical: space.lg, opacity: inert ? 0.35 : 1 }}>
               <ActivityIndicator color={theme.inkSoft} />
             </View>
           ) : undefined
         }
         ListEmptyComponent={
-          feed.hasNextPage || feed.isFetching ? (
+          postsHidden ?? (feed.hasNextPage || feed.isFetching ? (
             // Nothing rendered yet but loading/paging/refetching is still in
             // motion (e.g. draining an empty page) — keep a spinner, not the
             // terminal empty copy.
@@ -432,7 +438,7 @@ export function FeedList({
             </View>
           ) : (
             empty
-          )
+          ))
         }
       />
     </View>

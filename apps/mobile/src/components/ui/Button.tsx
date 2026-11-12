@@ -32,6 +32,10 @@ interface Props extends Omit<PressableProps, 'children' | 'style'> {
   // tertiary only: the label in the critical red instead of the accent (a
   // destructive text action, e.g. Account → This Device's Sign Out).
   critical?: boolean;
+  // A row's trailing action (Settings → Account's Sign Out / Remove, the
+  // Blocked / Muted lists): label MEDIUM (500), calmer than the semibold
+  // default so the right column doesn't pull (design, 2026-11-11).
+  rowAction?: boolean;
   style?: ViewStyle;
 }
 
@@ -46,7 +50,7 @@ const PAD: Record<Size, number> = { sm: 14, md: 20, lg: 26 };
 // .btn label scale: small / body / bodyLg.
 const LABEL_VARIANT: Record<Size, TextVariant> = { sm: 'small', md: 'body', lg: 'bodyLg' };
 
-export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, icon, critical, disabled, style, ...rest }: Props) {
+export function Button({ title, variant = 'primary', size = 'md', block, bar, loading, loadingTitle, titleLines, icon, critical, rowAction, disabled, style, ...rest }: Props) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
   const surface = phone.surface('button');
@@ -130,10 +134,15 @@ export function Button({ title, variant = 'primary', size = 'md', block, bar, lo
             surface="button"
             color={c.text}
             style={{
-              fontFamily: 'InstrumentSans_600SemiBold',
+              fontFamily: rowAction ? 'InstrumentSans_500Medium' : 'InstrumentSans_600SemiBold',
               // A wrapping title (long dynamic labels — "Add Green bell
               // pepper") stays centered; RN text left-aligns on line break.
               textAlign: 'center',
+              // Optical centring (2026-11-11): Instrument Sans centres its
+              // CAPS in the line box but sits lowercase ~1.5 pt low (hhea
+              // 970/-250, x-height 510), so a mostly lowercase label read
+              // bottom-aligned. Lift it 1 pt.
+              transform: [{ translateY: -1 }],
             }}
           >
             {loading && slow && loadingTitle ? loadingTitle : title}

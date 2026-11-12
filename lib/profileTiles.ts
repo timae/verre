@@ -140,9 +140,14 @@ export type TilePhoto = { imageUrl: string | null; pinned: boolean }
 // reversible removal (un-save, leave) undone before ANY profile read revives
 // the pin; it leaks nothing beyond D3's re-hide rule, and a deleted source's
 // URL never comes back (fresh keys per upload).
-export async function resolveTilePhotos(profileId: number): Promise<Record<TileKey, TilePhoto>> {
+//
+// `tiles` is REQUIRED (no "all" default) and the result holds only those
+// keys: a tile hidden from the viewer (lib/profileHeader.ts) is never
+// requested, so its photo query never runs and its stored pin is kept.
+export async function resolveTilePhotos(profileId: number, tiles: readonly TileKey[]): Promise<Partial<Record<TileKey, TilePhoto>>> {
+  if (tiles.length === 0) return {}
   const pins = await readPins(profileId)
-  const entries = await Promise.all(TILE_KEYS.map(async (tile): Promise<[TileKey, TilePhoto]> => {
+  const entries = await Promise.all(tiles.map(async (tile): Promise<[TileKey, TilePhoto]> => {
     const pin = pins[tile]
     if (pin) {
       const live = (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
@@ -150,5 +155,5 @@ export async function resolveTilePhotos(profileId: number): Promise<Record<TileK
     }
     return [tile, { imageUrl: await autoLatest(tile, profileId), pinned: false }]
   }))
-  return Object.fromEntries(entries) as Record<TileKey, TilePhoto>
+  return Object.fromEntries(entries)
 }

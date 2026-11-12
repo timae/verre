@@ -37,16 +37,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const earned = await prisma.userBadge.findMany({
     where: { userId: profileId },
     select: { badgeId: true, earnedAt: true },
-    orderBy: { earnedAt: 'desc' },
   })
   const earnedMap = Object.fromEntries(earned.map(e => [e.badgeId, e]))
+  // 🔒 A badge's earned DATE is owner-only, always: some badges unlock on a
+  // post itself (first_5star, long_note, harsh_critic), so the date would
+  // date a post the owner's Check-Ins Visible To hides. The list stays in
+  // catalog order (ALL_BADGES), never in earned order, for the same reason.
+  const own = viewerId === profileId
 
   return NextResponse.json(
     {
       badges: ALL_BADGES.map(b => ({
         ...b,
         earned: !!earnedMap[b.id],
-        earned_at: earnedMap[b.id]?.earnedAt || null,
+        earned_at: own ? (earnedMap[b.id]?.earnedAt || null) : null,
       })),
     },
     { headers: noStore },

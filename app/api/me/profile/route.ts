@@ -5,7 +5,7 @@ import { validateDisplayName, normalizeBio } from '@verre/core'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { isSameOrigin } from '@/lib/csrf'
 import { propagateRename } from '@/lib/displayName.server'
-import { TILE_KEYS, isTileKey, isPickable, resolveTilePhotos, type TileKey, type TilePhoto } from '@/lib/profileTiles'
+import { isTileKey, isPickable, resolveTilePhotos, type TileKey, type TilePhoto } from '@/lib/profileTiles'
 
 const noStore = { 'Cache-Control': 'private, no-store' }
 
@@ -77,8 +77,7 @@ export async function PATCH(req: NextRequest) {
   if (data.name !== undefined) out.name = data.name
   if (data.bio !== undefined) out.bio = data.bio
   if (changedTiles.length > 0) {
-    const photos = await resolveTilePhotos(userId)
-    out.tiles = Object.fromEntries(TILE_KEYS.filter(t => changedTiles.includes(t)).map(t => [t, photos[t]]))
+    out.tiles = await resolveTilePhotos(userId, changedTiles)
   }
   return NextResponse.json(out, { headers: noStore })
 }

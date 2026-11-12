@@ -87,7 +87,8 @@ export async function applyOwnProfileChange(queryClient: QueryClient, userId: nu
     if (tiles) {
       next.tiles = { ...p.tiles };
       for (const [k, t] of Object.entries(tiles) as [TileKey, TilePhoto][]) {
-        next.tiles[k] = { ...p.tiles[k], imageUrl: t.imageUrl, pinned: t.pinned } satisfies ProfileTile;
+        const cur = p.tiles[k];
+        if (cur) next.tiles[k] = { ...cur, imageUrl: t.imageUrl, pinned: t.pinned } satisfies ProfileTile;
       }
     }
     return next;

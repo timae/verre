@@ -22,7 +22,9 @@ type SessionPostSeed = NonNullable<Parameters<typeof ProfileCheckins>[0]['initia
 
 interface Stats {
   ratings: number
-  checkins: number
+  // Absent when the owner's posts are hidden from this viewer (Check-Ins
+  // Visible To): the Tastes tile stays (it is the default tab) and shows '—'.
+  checkins?: number
   badges: number
   followers: number
 }
@@ -127,8 +129,8 @@ export function ProfileTabs({
     setTab(TABS[next].key)
   }
 
-  const tiles: { label: string; value: number; tab: Tab }[] = [
-    { label: 'tastes',    value: stats.checkins,  tab: 'tastes' },
+  const tiles: { label: string; value: number | string; tab: Tab }[] = [
+    { label: 'tastes',    value: stats.checkins ?? '—', tab: 'tastes' },
     { label: 'ratings',   value: stats.ratings,   tab: 'ratings' },
     { label: 'badges',    value: stats.badges,    tab: 'badges' },
     { label: 'followers', value: stats.followers, tab: 'people' },

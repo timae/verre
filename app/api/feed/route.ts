@@ -7,7 +7,9 @@ import {
   resolveProfileViewer,
   resolveProfileViewerBulk,
   viewerFofAuthorSet,
-  canViewProfile,
+  canViewPosts,
+  postPlace,
+  type VisibilitySettings,
 } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
 import { mutedUserIds } from '@/lib/userMute'
@@ -43,22 +45,28 @@ export async function GET(req: NextRequest) {
   }
 
   // `?user=<id>` = ONE author's posts (the native profile feed), through the
-  // same projection as the network feed below. Gated exactly like the
-  // profile: anything but 'ok' (self is always 'ok') is 404 — 'gone',
-  // 'shell' and 'blocked-by-me' alike; the profile endpoint is what tells the
-  // client which of those it is. The MUTE filter does not apply here: mute is
-  // a network-feed filter only (docs/dev/mute.md), and opening someone's
-  // profile is an explicit choice to look at them.
+  // same projection as the network feed below. Gated like the profile:
+  // anything but 'ok' (self is always 'ok') is 404 — 'gone', 'shell' and
+  // 'blocked-by-me' alike; the profile endpoint is what tells the client which
+  // of those it is. An `ok` profile whose posts are hidden from this viewer
+  // (Check-Ins Visible To) is 200 EMPTY, never 404 (404 means gone to the
+  // app; the profile header's `checkinsAudience` carries the why). The MUTE
+  // filter does not apply here: mute is a network-feed filter only
+  // (docs/dev/mute.md), and opening someone's profile is an explicit choice
+  // to look at them.
   const userParam = req.nextUrl.searchParams.get('user')
   let allowedNetworkIds: number[]
+  // The authors' settings, for the place rule (server-side only).
+  let authorSettings: Map<number, VisibilitySettings>
   if (userParam !== null) {
     const authorId = parsePathId(userParam)
     if (authorId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
     const gate = await resolveProfileViewer(authorId, userId)
     if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
-    allowedNetworkIds = [authorId]
+    allowedNetworkIds = gate.sees.posts ? [authorId] : []
+    authorSettings = new Map([[authorId, gate.settings]])
   } else {
-    allowedNetworkIds = await networkAuthorIds(userId)
+    ({ ids: allowedNetworkIds, settings: authorSettings } = await networkAuthors(userId))
   }
   if (!allowedNetworkIds.length) return NextResponse.json({ items: [], nextCursor: null }, { headers: NO_STORE })
 
@@ -220,6 +228,9 @@ export async function GET(req: NextRequest) {
         if (!f.rating) return []  // defensive — schema invariant says standalone has ratingId set
         const wine = f.rating.wine
         const ratingImage = f.rating.images[0]?.imageUrl ?? null
+        // Show My Locations: the author's flag from their settings (fail
+        // closed when absent), never from `f.user` (shipped as `author`).
+        const place = postPlace(f, authorSettings.get(f.user.id)?.showLocations === true, f.user.id === userId)
         return [{
           type: 'checkin' as const,
           createdAt: f.createdAt,
@@ -237,12 +248,12 @@ export async function GET(req: NextRequest) {
             // tasting photo), falling back to the wine's canonical bottle
             // shot (host-curated; null for standalone wines today).
             imageUrl: ratingImage ?? wine.imageUrl,
-            venueName: f.venueName,
-            city: f.city,
+            venueName: place.venueName,
+            city: place.city,
             // `country` is the VENUE country (where they had it) — the location
             // line (venueName · city · country). Distinct from the WINE's
-            // origin below.
-            country: f.country,
+            // origin below, which Show My Locations never touches.
+            country: place.country,
             // Wine-catalog metadata for the detail page's "About this
             // impression" block (parity with SessionFeedWine). `wine: true`
             // already loads these columns; a standalone check-in is never blind,
@@ -327,8 +338,10 @@ export async function GET(req: NextRequest) {
 }
 
 // The caller's network feed authors: self + follows + tasting buddies (shared
-// sessions), trimmed to the authors they may see (block pair, mute, tier).
-async function networkAuthorIds(userId: number): Promise<number[]> {
+// sessions), trimmed to the authors whose POSTS they may see (block pair,
+// mute, canViewPosts), with every network author's settings for the place
+// rule.
+async function networkAuthors(userId: number): Promise<{ ids: number[]; settings: Map<number, VisibilitySettings> }> {
   // My network: explicit follows + tasting buddies (shared sessions). The
   // ${userId} interpolations below are parameterized by Prisma's tagged
   // template handling, not concatenated into the SQL string.
@@ -345,10 +358,10 @@ async function networkAuthorIds(userId: number): Promise<number[]> {
     ) n
   `
   const networkIds = network.map(r => r.user_id)
-  if (!networkIds.length) return []
+  if (!networkIds.length) return { ids: [], settings: new Map() }
 
-  // Visibility pre-filter: trim networkIds down to authors the viewer can
-  // actually see per their profile-visibility tier. Done up front so the
+  // Visibility pre-filter: trim networkIds down to authors whose posts the
+  // viewer can see (profile tier AND Check-Ins Visible To). Done up front so the
   // cursor reflects visible count, not raw count — otherwise a page of 20
   // could collapse to a handful of rows after post-filtering.
   // Batched: one query for visibilities, one for follows-out, one for
@@ -370,11 +383,8 @@ async function networkAuthorIds(userId: number): Promise<number[]> {
     mutedUserIds(userId),
     blockPairIds(userId),
   ])
-  const fofCandidates = networkIds.filter(id => visMap.get(id)?.fofEnabled === true)
-  const fofSet = fofCandidates.length > 0
-    ? await viewerFofAuthorSet(userId, fofCandidates)
-    : new Set<number>()
-  return networkIds.filter(authorId => {
+  const fofSet = await viewerFofAuthorSet(userId, networkIds, visMap, viewerMap)
+  const ids = networkIds.filter(authorId => {
     // Self-visibility: viewer always sees their own content. (Self-mute
     // and self-block are both rejected at the API + DB level, so the
     // viewer can't appear in their own mute/block sets.)
@@ -392,6 +402,7 @@ async function networkAuthorIds(userId: number): Promise<number[]> {
       profileFollowsViewer: base.profileFollowsViewer,
       isFofOfProfile: settings.fofEnabled ? fofSet.has(authorId) : undefined,
     }
-    return canViewProfile(settings.visibility, viewer, settings.fofEnabled)
+    return canViewPosts(settings, viewer)
   })
+  return { ids, settings: visMap }
 }

@@ -1,8 +1,11 @@
-// Visibility gating is the caller's responsibility — call
-// `resolveProfileViewer` first and reject on `gate.status === 'gone'`
-// before invoking this loader.
+// Takes the `ok` gate from `resolveProfileViewer` (REQUIRED, no default:
+// tsc fails a caller that forgets). The viewer, `isFollowing` and `sees`
+// come from it: the recent posts and `stats.checkins` only when
+// `sees.posts`, `stats.sessions` only when `sees.moments`, and the place
+// line through `postPlace` (the owner's Show My Locations).
 
 import { prisma } from '@/lib/prisma'
+import { postPlace, type ProfileGateOk } from '@/lib/profileVisibility'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
 import { decimalToNumber } from '@verre/core'
@@ -61,9 +64,9 @@ export type LoadedProfile = {
   level: ReturnType<typeof getLevel>
   stats: {
     ratings: number
-    sessions: number
+    sessions?: number  // absent when the owner hides Moments from this viewer
     badges: number
-    checkins: number
+    checkins?: number  // absent when the owner's posts are hidden from this viewer
     followers: number
     following: number
   }
@@ -78,20 +81,19 @@ export type LoadedProfile = {
 
 interface Args {
   userId: number
-  viewerId: number | null
-  isFollowing: boolean
+  gate: ProfileGateOk
   // false = header only: skip the recent check-ins + session posts (the native
   // app reads posts from `/api/feed?user=` instead). Both arrays come back
   // empty. Default true (the web profile).
   recent?: boolean
 }
 
-export async function loadProfile({ userId, viewerId, isFollowing, recent = true }: Args): Promise<LoadedProfile | null> {
-  // After dropping checkins.is_public, every check-in is governed by
-  // the author's profile-visibility tier — there's no per-row public/
-  // private flag anymore. The count below now matches the author's
-  // total check-ins; callers route `gate.status === 'gone'` to 404 and
-  // `'shell'` to ProfileShell, so only `'ok'` reaches this loader.
+export async function loadProfile({ userId, gate, recent = true }: Args): Promise<LoadedProfile | null> {
+  // No per-row public/private flag: every post is governed by the author's
+  // profile tier + Check-Ins Visible To (`gate.sees.posts`). Callers route
+  // `'gone'` to 404 and `'shell'` to ProfileShell, so only `'ok'` reaches here.
+  const viewerId = gate.viewer.id
+  const isFollowing = gate.viewer.followsProfile
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
@@ -109,7 +111,7 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
   // standalone POST doesn't — captured in .local/future-work-rewire.md).
   // Cheap on Tim+Simon scale; revisit if the user grows a six-figure
   // rating history.
-  const tastingCount = await prisma.rating.count({ where: { userId } })
+  const tastingCount = gate.sees.posts ? await prisma.rating.count({ where: { userId } }) : null
 
   // Block-pair counts: subtract any follower/following edge where the
   // other end is in a block-pair with the profile owner. Locked design:
@@ -157,16 +159,17 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
     level: getLevel(user.xp),
     stats: {
       ratings: user.lifetimeRatings,
-      sessions: user.lifetimeSessionsJoined,
+      ...(gate.sees.moments ? { sessions: user.lifetimeSessionsJoined } : {}),
       badges: user._count.earnedBadges,
-      checkins: tastingCount,
+      ...(tastingCount !== null ? { checkins: tastingCount } : {}),
       followers: adjustedFollowers,
       following: adjustedFollowing,
     },
     flavor,
     isFollowing,
   }
-  if (!recent) return { ...head, recentCheckins: [], recentSessionPosts: [] }
+  if (!recent || !gate.sees.posts) return { ...head, recentCheckins: [], recentSessionPosts: [] }
+  const showPlace = gate.settings.showLocations
 
   // Standalone feed_items — the post-rewire shape. Each has a rating + wine
   // + optional rating_image attached. The profile renders these as the
@@ -174,7 +177,7 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
   // surface.
   //
   // Never ship lat/lng on the public wire. No per-row visibility filter
-  // here — the upstream profile gate handled it.
+  // here — the gate's `sees.posts` handled it above.
   const standaloneFeedItems = await prisma.feedItem.findMany({
     where: { userId, kind: 'standalone' },
     orderBy: { createdAt: 'desc' },
@@ -301,6 +304,7 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
       if (!f.rating) return []
       const wine = f.rating.wine
       const ratingImage = f.rating.images[0]?.imageUrl ?? null
+      const place = postPlace(f, showPlace, isOwner)
       return [{
         id: f.id,
         wineName: wine.name,
@@ -318,9 +322,9 @@ export async function loadProfile({ userId, viewerId, isFollowing, recent = true
         // Image priority: rating's own photo first, falling back to the
         // wine's canonical bottle shot (null for standalone wines today).
         imageUrl: ratingImage ?? wine.imageUrl,
-        venueName: f.venueName,
-        city: f.city,
-        country: f.country,
+        venueName: place.venueName,
+        city: place.city,
+        country: place.country,
         createdAt: f.createdAt,
         likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
         liked: likedSet.has(f.id),
