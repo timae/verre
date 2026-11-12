@@ -35,7 +35,11 @@ export default async function JoinPage({
       opened = await openSession(C)
     }
     if (opened.status === 'restoring') throw new Error('This moment is being restored. Try again in a moment.')
-    if (opened.status === 'live') sessionMeta = opened.meta
+    // Only what the page shows: JoinClient is a client component, so the whole
+    // meta would be serialized into the HTML for anyone with the code, signed
+    // out and unlimited (host user id, co-host / provider ids, …; review
+    // 2026-11-12).
+    if (opened.status === 'live') sessionMeta = { host: opened.meta.host, name: opened.meta.name }
   }
 
   // Removed-bounce path. The session-fetch helper redirects here with

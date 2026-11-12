@@ -25,7 +25,7 @@ import { useTheme } from '@/theme';
 
 // Edit Profile (04 `setProfile`, ruling D1): your own profile's ⋯ → Edit
 // Profile. The cover and the photo with their edit buttons, Display Name,
-// Profile Text, Discard | Save. The way to add a FIRST cover (a coverless
+// Bio, Discard | Save. The way to add a FIRST cover (a coverless
 // profile has no hero to long-press); long-press stays the quick path.
 //
 // Everything is a DRAFT until Save: a picked image is held as a fitted data
@@ -154,7 +154,7 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
           ...(r.bio !== undefined ? { bio: r.bio } : {}),
         }, epoch);
       } catch (e) {
-        return failed(body.name !== undefined && body.bio !== undefined ? 'name and profile text' : body.name !== undefined ? 'name' : 'profile text', e);
+        return failed(body.name !== undefined && body.bio !== undefined ? 'name and bio' : body.name !== undefined ? 'name' : 'bio', e);
       }
     }
     if (!sameViewer()) return;
@@ -191,21 +191,13 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
               onPress={() => pick('cover')}
               style={({ pressed }) => ({ flex: 1, backgroundColor: theme.surfaceSunk, opacity: pressed ? 0.7 : 1 })}
             >
-              {/* The photo below overlaps the bottom AVATAR_OVERLAP of this
-                  area, so the prompt is centred in the band ABOVE it, icon and
-                  caption side by side (one line, robust to larger text). */}
-              <View
-                style={{
-                  height: Math.max(0, coverH - AVATAR_OVERLAP),
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 8,
-                  paddingHorizontal: GUTTER,
-                }}
-              >
-                <Icon name="cam" size={22} color={theme.inkSoft} />
-                <VText variant="small" numberOfLines={1} style={{ fontFamily: 'InstrumentSans_600SemiBold', flexShrink: 1 }}>Add a cover photo</VText>
+              {/* The glyph above the caption, centred in the WHOLE cover area
+                  (ruled 2026-11-12: centred in the band above the photo's
+                  overlap it read high); the pair clears the photo, which
+                  covers only the bottom AVATAR_OVERLAP. */}
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: GUTTER }}>
+                <Icon name="cam" size={24} color={theme.inkSoft} />
+                <VText variant="small" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>Add a cover photo</VText>
               </View>
             </Pressable>
           )}
@@ -236,7 +228,7 @@ function EditProfileForm({ userId, profile }: { userId: number; profile: FullPro
           />
         </View>
         <View style={{ marginBottom: 14 }}>
-          <NotesField label="Profile Text" placeholder="Add a profile text" value={bio} onChange={setBio} maxLength={BIO_MAX} />
+          <NotesField label="Bio" placeholder="Add a bio" value={bio} onChange={setBio} maxLength={BIO_MAX} />
         </View>
       </ScrollView>
       <SettingsFooter saving={saving} error={error} onDiscard={() => router.back()} onSave={onSave} bottomInset={insets.bottom} />

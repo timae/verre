@@ -5,17 +5,17 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import * as Clipboard from 'expo-clipboard';
 import { formatCode } from '@verre/core';
-import { Avatar } from '@/components/ui/Avatar';
+import { FriendRow } from '@/components/ui/FriendRow';
 import { Icon } from '@/components/ui/Icon';
 import { QrCode } from '@/components/ui/QrCode';
+import { QuickAddChip } from '@/components/ui/QuickAddChip';
+import { ShareFooterButton } from '@/components/ui/ShareFooterButton';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Sheet } from '@/components/ui/Sheet';
 import { VText } from '@/components/ui/VText';
-import { getMyFriends, type Friend } from '@/lib/api/me';
+import { getMyFriends } from '@/lib/api/me';
 import { fuzzyIncludes } from '@/lib/search';
 import { WEB_BASE } from '@/lib/config';
-import { usePhoneTokens } from '@/lib/layout';
-import { alpha } from '@/theme/color';
 import { radius, useTheme } from '@/theme';
 
 // 02c·I1 — the invite sheet (design 6a hybrid), in the shared @gorhom/bottom-
@@ -42,6 +42,9 @@ export function InviteSheet({
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const [pane, setPane] = useState<'invite' | 'browse'>('invite');
+  // The pseudo-field opens the pane ready to type (keyboard up); the Browse
+  // chip opens it for browsing, keyboard down (ruled 2026-11-12).
+  const [typeNow, setTypeNow] = useState(false);
   const [q, setQ] = useState('');
   const [copied, setCopied] = useState(false);
   const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,9 +155,9 @@ export function InviteSheet({
               </View>
             ) : (
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 4 }}>
-                <BrowseChip onPress={() => setPane('browse')} />
+                <BrowseChip onPress={() => { setTypeNow(false); setPane('browse'); }} />
                 {notIn.slice(0, 4).map((f) => (
-                  <FriendChip key={f.id} friend={f} onPress={() => shareInvite()} />
+                  <QuickAddChip key={f.id} name={f.name} imageUrl={f.imageUrl} accessibilityLabel={`Invite ${f.name}`} onPress={() => shareInvite()} />
                 ))}
               </ScrollView>
             )}
@@ -163,7 +166,7 @@ export function InviteSheet({
                 in sheets reads as one design (Simon's unification call). */}
             <Pressable
               accessibilityRole="button"
-              onPress={() => setPane('browse')}
+              onPress={() => { setTypeNow(true); setPane('browse'); }}
               style={{ flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 36, paddingHorizontal: 12, borderRadius: 999, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.rule }}
             >
               <Icon name="search" size={16} color={theme.inkSoft} />
@@ -172,14 +175,7 @@ export function InviteSheet({
           </View>
 
           {/* .ish-sharebtn */}
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => shareInvite()}
-            style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: theme.accent, borderRadius: radius.pill, paddingVertical: 13, opacity: pressed ? 0.85 : 1 })}
-          >
-            <Icon name="share" size={18} color={theme.accentInk} />
-            <VText variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Share</VText>
-          </Pressable>
+          <ShareFooterButton onPress={() => shareInvite()} />
         </BottomSheetView>
       ) : (
         // Browse pane — FIXED-height sheet (snapPoints above), so the container
@@ -195,7 +191,7 @@ export function InviteSheet({
           {/* The shared sheet search field (one look for every in-sheet
               search — the hand-rolled .fr-search pill drifted visually and
               lacked the clear ✕; Simon's unification call). */}
-          <SheetSearchField value={q} onChangeText={setQ} placeholder="Search friends" />
+          <SheetSearchField value={q} onChangeText={setQ} placeholder="Search friends" autoFocus={typeNow} />
           {friends.isPending ? (
             <View style={{ paddingVertical: 24, alignItems: 'center' }}>
               <ActivityIndicator />
@@ -209,7 +205,7 @@ export function InviteSheet({
               <VText variant="label" color="inkSoft" style={{ marginBottom: 4, letterSpacing: 1.54 }}>ALL FRIENDS · {allFriends.length}</VText>
               <BottomSheetScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
                 {browseMatches.map((f, i) => (
-                  <FriendRow key={f.id} friend={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
+                  <FriendRow key={f.id} person={f} first={i === 0} joined={participantIds.has(`u:${f.id}`)} onInvite={() => shareInvite()} />
                 ))}
               </BottomSheetScrollView>
             </View>
@@ -230,61 +226,5 @@ function BrowseChip({ onPress }: { onPress: () => void }) {
       </View>
       <VText variant="caption" numberOfLines={1}>Browse</VText>
     </Pressable>
-  );
-}
-
-// .ish-chip — avatar (initials) + "+" badge + first name. Tap → OS share.
-function FriendChip({ friend, onPress }: { friend: Friend; onPress: () => void }) {
-  const { theme } = useTheme();
-  const firstName = friend.name.split(/\s+/)[0];
-  return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`Invite ${friend.name}`} onPress={onPress} style={{ alignItems: 'center', gap: 6, width: 60 }}>
-      <Avatar
-        imageUrl={friend.imageUrl}
-        name={friend.name}
-        size={52}
-        initialsSize={16}
-        badge={
-          <View style={{ position: 'absolute', right: -2, bottom: -2, width: 20, height: 20, borderRadius: 10, backgroundColor: theme.accent, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: theme.surface }}>
-            <Icon name="plus" size={11} color={theme.accentInk} />
-          </View>
-        }
-      />
-      <VText variant="caption" numberOfLines={1}>{firstName}</VText>
-    </Pressable>
-  );
-}
-
-// .fr-row — browse-pane row: avatar · name + "Friend" · Joined chip | Invite.
-function FriendRow({ friend, first, joined, onInvite }: { friend: Friend; first: boolean; joined: boolean; onInvite: () => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('compactList');
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: phone.lerp(12, 16), paddingVertical: surface.paddingY(phone.lerp(9, 13)), borderTopWidth: first ? 0 : 1, borderTopColor: theme.ruleSoft }}>
-      <Avatar imageUrl={friend.imageUrl} name={friend.name} size={phone.grow(42)} />
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <VText surface="compactList" variant="body" style={{ fontFamily: 'InstrumentSans_600SemiBold' }} numberOfLines={1}>{friend.name}</VText>
-        <VText surface="compactList" variant="small" color="inkSoft">Friend</VText>
-      </View>
-      {joined ? (
-        // .fr-in — translucent positive tint (design: color-mix positive 14%).
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: alpha(theme.positive, 0.14), borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6 }}>
-          <Icon name="check" size={14} color={theme.positive} />
-          <VText surface="compactList" variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.positive }}>Joined</VText>
-        </View>
-      ) : (
-        // .fr-btn
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`Invite ${friend.name}`}
-          onPress={onInvite}
-          style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: theme.accent, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 8, opacity: pressed ? 0.85 : 1 })}
-        >
-          <Icon name="plus" size={14} color={theme.accentInk} />
-          <VText surface="compactList" variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', color: theme.accentInk }}>Invite</VText>
-        </Pressable>
-      )}
-    </View>
   );
 }

@@ -10,7 +10,9 @@ import { Avatar } from './Avatar'
 type Direction = 'followers' | 'following'
 type MutualFilter = 'mutual' | 'all' | 'non'
 type PersonRow = {
-  id: number; name: string; xp: number
+  // xp + imageUrl are null when the listed person's own visibility hides
+  // their profile from you: no level then.
+  id: number; name: string; xp: number | null
   imageUrl: string | null
   isFollowing: boolean
   viewerMutes: boolean
@@ -131,7 +133,7 @@ export function ProfilePanelPeople({ profileUserId, myId }: Props) {
 }
 
 function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; myId: number | null; direction: Direction; onFollowToggle?: () => void }) {
-  const level = getLevel(row.xp)
+  const level = row.xp === null ? null : getLevel(row.xp)
   const showFollowsYou = direction === 'followers' && myId !== null && row.profileFollowsThem === false && row.id !== myId
   const isMe = myId !== null && myId === row.id
   return (
@@ -147,7 +149,7 @@ function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; m
             {isMe && <span style={{color:'var(--fg-dim)',fontWeight:400,marginLeft:6}}>· you</span>}
           </div>
           <div style={{ fontSize:10, color:'var(--fg-dim)', marginTop:2, display:'flex', gap:8 }}>
-            <span>{level.icon} {level.name}</span>
+            {level && <span>{level.icon} {level.name}</span>}
             {showFollowsYou && (
               <span style={{ color:'var(--accent)', fontFamily:'var(--mono)', letterSpacing:'0.04em' }}>· follows you</span>
             )}

@@ -31,6 +31,8 @@ Locked design ("Instagram-style"):
 
 The single underlying rule: counts and renders depend on the **author** (or check-in owner), not the viewer. A SET-based deduplication in `lib/profileLoad.ts` prevents mutual-block from double-counting.
 
+**People lists, in common, search, tasted-with (You profile, People step, 2026-11-12):** the ROWS are viewer-dependent. A row is dropped when a block pair (either direction) stands between the listed person and the profile owner OR the viewer, so you never see someone you blocked or who blocked you on anyone's list, and search drops them before its limit of ten. The tab COUNTS (followers / following / friends) stay global, so a list can be shorter than its count (accepted). Every viewer-relative count (the Friends `knownCount`, the header's `inCommon.count`, a row's `friendsInCommon`, tasted-with) runs the rows' exact rule (`blockScrub`, `lib/peopleSql.ts`), so none can exceed its rows and name a blocker by arithmetic. Residual (named): a global count one higher than the rows you can see tells you that someone on that list is in a block pair with you, not who.
+
 ## Inside-session rules (render-only)
 
 Locked matrix in the participants list (`SessionPanel`) — no row is ever hidden:

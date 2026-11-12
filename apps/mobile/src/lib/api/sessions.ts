@@ -524,6 +524,27 @@ export async function setMomentHidden(code: string, hidden: boolean): Promise<vo
   if (!res.ok) await throwApiError(res);
 }
 
+// GET /api/session/:code/preview — a scanned moment before you join (Add
+// Friends → Scan). `joined` = you're already in it (Open, no join). 404 = no
+// such moment, 403 'banned' = `ApiError` kind 'banned'.
+export type MomentPreview = {
+  code: string;
+  name: string | null;
+  host: string | null;
+  hostUserId: number | null;
+  dateFrom: string | null;
+  dateTo: string | null;
+  address: string | null;
+  coverPhotoUrl: string | null;
+  joined: boolean;
+};
+export const momentPreviewKey = (code: string) => ['moment-preview', code] as const;
+export async function getMomentPreview(code: string): Promise<MomentPreview> {
+  const res = await apiFetch(`/api/session/${encodeURIComponent(code)}/preview`);
+  if (!res.ok) await throwApiError(res);
+  return res.json();
+}
+
 export async function joinMoment(code: string, displayName: string): Promise<{ code: string }> {
   const res = await apiFetch('/api/session/join', {
     method: 'POST',

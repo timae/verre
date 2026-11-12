@@ -38,6 +38,10 @@ PODS:
     - ExpoModulesCore
   - ExpoBlur (58.0.5):
     - ExpoModulesCore
+  - ExpoCamera (58.0.14):
+    - ExpoModulesCore
+  - ExpoCameraBarcodeScanning (58.0.14):
+    - ExpoCamera
   - ExpoClipboard (58.0.4):
     - ExpoModulesCore
   - ExpoDevice (58.0.5):
@@ -2335,6 +2339,8 @@ DEPENDENCIES:
   - ExpoApplication (from `../../../node_modules/expo-application/ios`)
   - ExpoAsset (from `../../../node_modules/expo-asset/ios`)
   - ExpoBlur (from `../../../node_modules/expo-blur/ios`)
+  - ExpoCamera (from `../../../node_modules/expo-camera/ios/ExpoCamera.podspec`)
+  - ExpoCameraBarcodeScanning (from `../../../node_modules/expo-camera/ios/ExpoCameraBarcodeScanning.podspec`)
   - ExpoClipboard (from `../../../node_modules/expo-clipboard/ios`)
   - ExpoDevice (from `../../../node_modules/expo-device/ios`)
   - "ExpoDomWebView (from `../../../node_modules/@expo/dom-webview/ios`)"
@@ -2473,6 +2479,10 @@ EXTERNAL SOURCES:
     :path: "../../../node_modules/expo-asset/ios"
   ExpoBlur:
     :path: "../../../node_modules/expo-blur/ios"
+  ExpoCamera:
+    :podspec: "../../../node_modules/expo-camera/ios/ExpoCamera.podspec"
+  ExpoCameraBarcodeScanning:
+    :podspec: "../../../node_modules/expo-camera/ios/ExpoCameraBarcodeScanning.podspec"
   ExpoClipboard:
     :path: "../../../node_modules/expo-clipboard/ios"
   ExpoDevice:
@@ -2725,6 +2735,8 @@ SPEC CHECKSUMS:
   ExpoApplication: c83355b2f69f996b5d26b64fef39228e7f1e1208
   ExpoAsset: c080026976ef8f00dca12c4958c658b2ebd4d4e0
   ExpoBlur: 68f7f85ae6584f0bec52a0a42ee5088b093d1473
+  ExpoCamera: 5d9ae8e9c52e102d9a21b2a903478dcd79ce3ddc
+  ExpoCameraBarcodeScanning: 31cb394606255ac478b9c33929e6b0a8f6c0925d
   ExpoClipboard: 244adf0a38b60ec7105e217042dd266a722f5a5e
   ExpoDevice: 77a9816436a09a0bfc00f5ace649c6ccb219b96d
   ExpoDomWebView: b2a6d681b9d34c23b1f584321386ca8da1d36afb

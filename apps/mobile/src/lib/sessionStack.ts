@@ -97,22 +97,23 @@ export function tabHomeHref(tab: SessionTab): Href {
 // absent = the network feed.
 //
 // Destinations per suffix (NOT a blanket prefix):
-//   • 'post' / 'profile' — inside an opened post they push onto ITS stack as
-//     siblings (`[id]/post/[postId]` = the detail in card mode,
-//     `[id]/u/[personId]`), so no route tree nests inside itself;
+//   • 'post' / 'profile' / 'people' — inside an opened post they push onto
+//     ITS stack as siblings (`[id]/post/[postId]` = the detail in card mode,
+//     `[id]/u/[personId]`, `[id]/people/[personId]`), so no route tree nests
+//     inside itself;
 //   • 'edit' / 'edit/details' — from a tab stack, the OUTER edit screens
 //     (fullScreenModal there); from inside a post, the same screens on the
 //     POST's stack (`[id]/edit/[postId]`, sliding up like the modal). Nothing
 //     may be presented on the outer stack while a post is open: a native
 //     modal over the contained post hung the app (device pass 2026-11-10).
 //     So the "post is gone" exits there are plain pops on the post's stack.
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile';
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people';
 type FeedTab = Exclude<SessionTab, 'moments'>;
 
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
-  params: { id?: string; index?: string; wine?: string; user?: string } = {},
+  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string } = {},
 ): Href {
   const t = feedTab(mount.tab);
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
@@ -136,6 +137,18 @@ export function feedHref(
       } else {
         pathname = `/(tabs)/${t}/u/[id]`;
         out = { id: params.id };
+      }
+      break;
+    // Someone's People (Friends / Followers / Following): `tab` + `known`
+    // ('1' = "Only people you know" on) seed the screen. Like 'profile', on an
+    // opened post's stack it is its own route (`id` is the post there).
+    case 'people':
+      if (inPost) {
+        pathname = `/(tabs)/${t}/[id]/people/[personId]`;
+        out = { id: mount.post, personId: params.id, tab: params.tab, known: params.known };
+      } else {
+        pathname = `/(tabs)/${t}/people/[id]`;
+        out = { id: params.id, tab: params.tab, known: params.known };
       }
       break;
     case 'edit':

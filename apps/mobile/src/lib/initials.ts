@@ -9,3 +9,9 @@ export function initials(name: string): string {
   if (words.length === 1) return cp(words[0]).slice(0, 2).join('').toUpperCase();
   return (cp(words[0])[0] + cp(words[1])[0]).toUpperCase();
 }
+
+// The design addresses people by first name ("Block Mara?", "You blocked
+// Mara."). Display names are free text, so this is presentation only.
+export function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] || name;
+}

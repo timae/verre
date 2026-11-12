@@ -2,7 +2,8 @@ import { BottomSheetFooter, BottomSheetScrollView, type BottomSheetFooterProps }
 import { useQuery } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, StyleSheet, View } from 'react-native';
+import { pickPhoto } from '@/components/moments/momentForm';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
@@ -13,6 +14,8 @@ import { radius, useTheme } from '@/theme';
 
 const GAP = 8;
 const LABEL: Record<TileKey, string> = { impressions: 'Impressions', moments: 'Moments', cravings: 'Cravings' };
+// The selection of the photo you just took or chose (not a URL yet).
+const PICKED = '__picked__';
 
 // 04·R5g2 — "Cover for <Tile>": pick a tile's cover from that tile's own
 // photos (the server's pickable pool: yours, never an unrevealed blind wine;
@@ -24,8 +27,12 @@ const LABEL: Record<TileKey, string> = { impressions: 'Impressions', moments: 'M
 // Selected = the 3pt accent ring + check badge (a selection state, not a card
 // border — flagged in the plan). No "back to latest" control (not in the
 // design; the server accepts null for it).
+// Your own photo (ruled 2026-11-12): the first cell, Add Photo, offers Take
+// Photo / Choose from Library; the result joins the grid selected, and Use
+// Photo uploads + pins it (nothing is uploaded before, so Cancel leaves no
+// trace). A tile's own upload comes back from the server as the pin.
 export function TileCoverSheet({
-  tile, shown, onClose, onUse,
+  tile, shown, onClose, onUse, onUpload,
 }: {
   tile: TileKey | null;
   // The image the tile shows now (the pre-selection when it is in the pool).
@@ -33,6 +40,8 @@ export function TileCoverSheet({
   onClose: () => void;
   // Resolves when saved; throws to keep the sheet open (the caller alerts).
   onUse: (tile: TileKey, url: string) => Promise<void>;
+  // The same for your own photo (a fitted data URL).
+  onUpload: (tile: TileKey, dataUrl: string) => Promise<void>;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -50,6 +59,7 @@ export function TileCoverSheet({
     staleTime: 0,
   });
   const [selected, setSelected] = useState<string | null>(null);
+  const [picked, setPicked] = useState<{ dataUrl: string; previewUri: string } | null>(null);
   const [gridW, setGridW] = useState(0);
   const [saving, setSaving] = useState(false);
   // Only THIS opening's fetch counts: a cached pool from an earlier opening
@@ -68,6 +78,7 @@ export function TileCoverSheet({
     if (!tile) {
       seededFor.current = null;
       setSelected(null);
+      setPicked(null);
       return;
     }
     if (seededFor.current === tile || !pool) return;
@@ -76,19 +87,40 @@ export function TileCoverSheet({
   }, [tile, pool, shown]);
 
   const pin = fresh ? photos.data!.pin : null;
-  // Live only for a photo the FRESH pool offers that isn't already the pin.
-  const canUse = pool != null && selected != null && pool.includes(selected) && selected !== pin && !saving;
+  // Live for your picked photo, or for a photo the FRESH pool offers that
+  // isn't already the pin.
+  const canUse = !saving && (selected === PICKED ? picked != null : pool != null && selected != null && pool.includes(selected) && selected !== pin);
   const use = useCallback(async () => {
     if (!tile || !selected) return;
     setSaving(true);
     try {
-      await onUse(tile, selected);
+      if (selected === PICKED) {
+        if (picked) await onUpload(tile, picked.dataUrl);
+      } else await onUse(tile, selected);
     } catch {
       // The caller alerted; the sheet stays open with the selection.
     } finally {
       setSaving(false);
     }
-  }, [tile, selected, onUse]);
+  }, [tile, selected, picked, onUse, onUpload]);
+  // The open tile, read after the picker resolves: a pick that lands after the
+  // sheet closed (or moved to another tile) is dropped, not carried into the
+  // next opening (review 2026-11-12).
+  const openTile = useRef(tile);
+  useEffect(() => {
+    openTile.current = tile;
+  }, [tile]);
+  const addOwn = useCallback(async () => {
+    const forTile = openTile.current;
+    const r = await pickPhoto();
+    if (!r || !forTile || openTile.current !== forTile) return;
+    if ('failed' in r) {
+      Alert.alert('Couldn’t Use This Photo', 'Try another one.');
+      return;
+    }
+    setPicked(r);
+    setSelected(PICKED);
+  }, []);
 
   const renderFooter = useCallback(
     (props: BottomSheetFooterProps) => (
@@ -110,27 +142,51 @@ export function TileCoverSheet({
       <View style={{ flex: 1 }}>
         <View style={{ paddingHorizontal: 20, paddingTop: 8, gap: 6, paddingBottom: 14 }}>
           <VText variant="subhead" style={{ fontFamily: 'InstrumentSans_600SemiBold' }}>{`Cover for ${label}`}</VText>
-          <VText variant="small" color="inkSoft">{`Pick a photo from your ${label.toLowerCase()}.`}</VText>
+          <VText variant="small" color="inkSoft">{`Pick a photo from your ${label.toLowerCase()}, or add your own.`}</VText>
         </View>
         <BottomSheetScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: insets.bottom + 96 }} showsVerticalScrollIndicator={false}>
+          {/* Add Photo + your picked photo first, then the tile's own photos. */}
+          <View onLayout={(e) => setGridW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
+            {gridW > 0 ? (
+              <>
+                <AddCell width={(gridW - 2 * GAP) / 3} disabled={saving} onPress={() => void addOwn()} />
+                {picked ? <Cell url={picked.previewUri} width={(gridW - 2 * GAP) / 3} on={selected === PICKED} onPress={() => setSelected(PICKED)} /> : null}
+                {(photos.data?.photos ?? []).map((url) => (
+                  <Cell key={url} url={url} width={(gridW - 2 * GAP) / 3} on={url === selected} onPress={() => setSelected(url)} />
+                ))}
+              </>
+            ) : null}
+          </View>
           {photos.isError ? (
             <VText variant="small" color="inkSoft" style={{ paddingVertical: 16 }}>Couldn’t load your photos. Check your connection and try again.</VText>
           ) : !photos.data ? (
             <ActivityIndicator color={theme.inkSoft} style={{ paddingVertical: 24 }} />
-          ) : photos.data.photos.length === 0 ? (
-            <VText variant="small" color="inkSoft" style={{ paddingVertical: 16 }}>No photos to choose from yet.</VText>
-          ) : (
-            <View onLayout={(e) => setGridW(e.nativeEvent.layout.width)} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: GAP }}>
-              {gridW > 0
-                ? photos.data.photos.map((url) => (
-                    <Cell key={url} url={url} width={(gridW - 2 * GAP) / 3} on={url === selected} onPress={() => setSelected(url)} />
-                  ))
-                : null}
-            </View>
-          )}
+          ) : null}
         </BottomSheetScrollView>
       </View>
     </Sheet>
+  );
+}
+
+// The first cell: Take Photo / Choose from Library (the house chooser). The
+// photo cell's 4:5 footprint on the sunk fill, no border; the glyph above the
+// label, the pair centred both ways (the label too when it wraps at large
+// text sizes).
+function AddCell({ width, disabled, onPress }: { width: number; disabled: boolean; onPress: () => void }) {
+  const { theme } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Add Your Own Photo"
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => ({ width, aspectRatio: 4 / 5, borderRadius: radius.md, backgroundColor: theme.surfaceSunk, opacity: pressed ? 0.6 : 1 })}
+    >
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 8 }}>
+        <Icon name="cam" size={24} color={theme.inkSoft} />
+        <VText variant="caption" color="inkSoft" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>Add Photo</VText>
+      </View>
+    </Pressable>
   );
 }
 

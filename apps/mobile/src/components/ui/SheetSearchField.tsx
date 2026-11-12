@@ -16,6 +16,7 @@ export function SheetSearchField({
   highlight,
   onFocus,
   onBlur,
+  autoFocus,
 }: {
   value: string;
   onChangeText: (text: string) => void;
@@ -23,6 +24,9 @@ export function SheetSearchField({
   highlight?: boolean;
   onFocus?: () => void;
   onBlur?: () => void;
+  // Focus on mount (the keyboard comes up at once): a pane that only opens
+  // from a tap on a search pseudo-field (Add Friends).
+  autoFocus?: boolean;
 }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();
@@ -48,6 +52,7 @@ export function SheetSearchField({
           autoCapitalize="none"
           onFocus={onFocus}
           onBlur={onBlur}
+          autoFocus={autoFocus}
           style={{ height: fieldH, borderWidth: 0, backgroundColor: 'transparent', paddingHorizontal: 0, borderRadius: 0, fontSize: phone.text('small').fontSize, lineHeight: Math.round(phone.text('small').fontSize * 1.2) }}
         />
       </View>

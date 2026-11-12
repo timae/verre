@@ -132,3 +132,13 @@ export function timeAgo(iso: string): string {
   if (wks <= 8) return `${wks}w`;
   return new Date(then).toLocaleDateString(DATE_LOCALE, { day: 'numeric', month: 'short' });
 }
+
+// "Friday natural wines · Oct" (Add Friends' "People you tasted with"): the
+// moment's name, or "A moment" for a nameless old one, and its month (plus
+// the year when it isn't this year's).
+export function lastMomentLine(name: string | null, atIso: string): string {
+  const d = new Date(atIso);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const when = d.toLocaleDateString(DATE_LOCALE, sameYear ? { month: 'short' } : { month: 'short', year: 'numeric' });
+  return `${name?.trim() || 'A moment'} · ${when}`;
+}

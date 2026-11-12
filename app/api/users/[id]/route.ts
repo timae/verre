@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { parsePathId } from '@/lib/parsePathId'
-import { checkRate } from '@/lib/rateLimit'
+import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { loadProfile } from '@/lib/profileLoad'
 import { loadProfileHeaderExtras } from '@/lib/profileHeader'
 import { isMuted } from '@/lib/userMute'
@@ -21,9 +21,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   }
 
   // Public, anonymous-readable. Rate-limited per-IP to prevent
-  // enumeration + DB-load amplification.
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-  const rl = await checkRate(`rl:profile:${ip}:1m`, 60, 60)
+  // enumeration + DB-load amplification. The IP from getClientIp (a
+  // multi-entry XFF is untrusted and buckets into one shared key).
+  const rl = await checkRate(`rl:profile:${getClientIp(req)}:1m`, 60, 60)
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const viewerId = session?.user ? Number(session.user.id) : null
@@ -46,19 +46,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     )
   }
 
-  // Tier-gated: shell payload only. Display name + id + isFollowing —
-  // never the avatar, XP, badges, check-ins, or social-graph data. The
-  // shell tells the viewer "this user exists, here's the follow button"
-  // without leaking content.
+  // Tier-gated: shell payload only. Display name + id + isFollowing +
+  // followsYou (the Follow Back label; the viewer can read that edge from
+  // their own followers list anyway) — never the avatar, XP, badges,
+  // check-ins, or social-graph data. The shell tells the viewer "this user
+  // exists, here's the follow button" without leaking content.
   if (gate.status === 'shell') {
-    const isFollowing = viewerId
-      ? !!(await prisma.follow.findUnique({
-          where: { followerId_followingId: { followerId: viewerId, followingId: userId } },
-          select: { followerId: true },
-        }))
-      : false
+    const edge = (followerId: number, followingId: number) => prisma.follow
+      .findUnique({ where: { followerId_followingId: { followerId, followingId } }, select: { followerId: true } })
+      .then(r => r !== null)
+    const [isFollowing, followsYou] = viewerId
+      ? await Promise.all([edge(viewerId, userId), edge(userId, viewerId)])
+      : [false, false]
     return NextResponse.json(
-      { id: userId, name: gate.name, gated: true, isFollowing },
+      { id: userId, name: gate.name, gated: true, isFollowing, followsYou },
       { headers: noStore },
     )
   }

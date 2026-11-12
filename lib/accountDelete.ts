@@ -8,6 +8,7 @@ import { deleteAllNativeSessions } from '@/lib/identityStore'
 import { withSessionLocks, scopedInvalidate, type LockedSession } from '@/lib/sessionMutation'
 import { acquireSessionLock, releaseSessionLock, renewSessionLock, sessionLockHeld, sessionLockKey, fencedDel, lockTiming } from '@/lib/sessionLock'
 import type { SessionMeta, WineMeta } from '@/lib/session'
+import { isOwnTileUpload } from '@/lib/profileTiles'
 
 export const TOMBSTONE_NAME = '[deleted]'
 
@@ -311,11 +312,13 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // The users row, AFTER the session locks (module header: lock order). From
       // here no new rating, member row or brought-by reassignment can reference
       // this user (their FK/existence checks take KEY SHARE on it), so the
-      // touched-set re-read below is final. The profile photo + cover are read
-      // under this lock (lib/profileImage.ts): a replace that waited on it finds
-      // no row and reclaims its own upload, so nothing is orphaned.
-      const me = await tx.$queryRaw<{ id: number; image_url: string | null; cover_photo_url: string | null }[]>`
-        SELECT id, image_url, cover_photo_url FROM users WHERE id = ${userId} FOR UPDATE`
+      // touched-set re-read below is final. The profile photo + cover + the
+      // tiles' own photos are read under this lock (lib/profileImage.ts): a
+      // replace that waited on it finds no row and reclaims its own upload, so
+      // nothing is orphaned. A tile pin that is a REFERENCE to a post / moment /
+      // saved photo is not the tile's to reclaim (D8 / D9 decide those).
+      const me = await tx.$queryRaw<{ id: number; image_url: string | null; cover_photo_url: string | null; tile_impressions_url: string | null; tile_moments_url: string | null; tile_cravings_url: string | null }[]>`
+        SELECT id, image_url, cover_photo_url, tile_impressions_url, tile_moments_url, tile_cravings_url FROM users WHERE id = ${userId} FOR UPDATE`
       if (!me[0]) throw new AccountDeleteRetryableError('user row is gone')
       const now = await touchedLiveCodes(tx, userId)
       if (now.some(code => !locked.has(code))) throw new TouchedSetGrewError('a session was touched after discovery')
@@ -432,6 +435,9 @@ async function attemptDelete(userId: number, opts: AccountDeleteOptions, reserve
       // a session rating or hosted session missed above makes this refuse.
       await tx.$executeRaw`DELETE FROM users WHERE id = ${userId}`
       for (const u of [me[0].image_url, me[0].cover_photo_url]) if (u) reclaimUrls.push(u)
+      for (const [t, u] of [['impressions', me[0].tile_impressions_url], ['moments', me[0].tile_moments_url], ['cravings', me[0].tile_cravings_url]] as const) {
+        if (isOwnTileUpload(u, t, userId)) reclaimUrls.push(u)
+      }
       // 🔒 D8 / D9 phase 2, AFTER the rating deletes / tombstones (the wipe
       // deletes the host's own ratings) AND the users cascade (the host's own
       // bookmarks): keep a wiped moment's wine photo while any rating or

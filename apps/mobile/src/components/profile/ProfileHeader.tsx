@@ -8,15 +8,18 @@ import { BadgePill } from '@/components/moments/RoleChip';
 import { PhotoTiles } from '@/components/profile/PhotoTiles';
 import { InlineField, LongPressable } from '@/components/profile/ProfileEditParts';
 import {
-  NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, SHEET_RISE, fitCoverName, notchBox, notchPath,
+  NAME_GAP, NAME_LIFT, NAME_RIGHT, PHOTO_BASE, SHEET_RISE, fitProfileName, notchBox, notchPath,
 } from '@/components/profile/coverGeometry';
 import { StarScore } from '@/components/scoring/StarScore';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
+import { Icon } from '@/components/ui/Icon';
 import { VText } from '@/components/ui/VText';
 import type { TileKey } from '@/lib/api/profile';
+import type { PeopleTab } from '@/lib/api/people';
 import type { FullProfile, ProfileFace } from '@/lib/api/users';
+import { firstName } from '@/lib/initials';
 import { GLASS_FILL, GUTTER, HERO_RATIO, PROFILE_SCRIM, PROFILE_SCRIM_STOPS, phoneTextToken, usePhoneTokens } from '@/lib/layout';
 import { radius, useTheme } from '@/theme';
 import { mix } from '@/theme/color';
@@ -28,7 +31,7 @@ import { mix } from '@/theme/color';
 //     the photo, status ★ + friends · followers on the sheet beside it.
 //   - NO COVER (04·R5c / R5d / R5n / R5x): photo · name / status ★ average /
 //     friends · followers in one row under a plain bar.
-// Then the bio (own + empty = the "Add a profile text" hint), the three photo
+// Then the bio (own + empty = the "Touch and hold to add a bio" hint), the three photo
 // tiles and (someone else) the in-common row + follow button.
 //
 // Own profile, EDITING (R5g3): long-press the name or the bio and BOTH become
@@ -37,9 +40,10 @@ import { mix } from '@/theme/color';
 // or a tile (R5g2 → its cover sheet). The screen owns the edit session
 // (ProfileScreen); this only renders it.
 //
-// Step 1 rulings (Simon, 2026-11-09): the status line, the counts, the tiles
-// and the in-common row are visible but INACTIVE (their pages come later); the
-// status pill names OUR level (lib/badges.ts), the design's were placeholders.
+// Step 1 rulings (Simon, 2026-11-09): the status line and the tiles are
+// visible but INACTIVE (their pages come later); the status pill names OUR
+// level (lib/badges.ts), the design's were placeholders. Since the People
+// step the counts and the in-common row open People (D10).
 
 // The photo breathes with the device by the title type's own comfort ratio, so
 // photo and name stay in proportion (104pt on the smallest phones).
@@ -48,11 +52,8 @@ export function useProfilePhotoSize(): number {
   return Math.round((PHOTO_BASE * phone.text('title').fontSize) / phoneTextToken('title', 0).fontSize);
 }
 
-// The design addresses people by first name ("Block Mara?", "You blocked
-// Mara."). Display names are free text, so this is presentation only.
-export function firstName(name: string): string {
-  return name.trim().split(/\s+/)[0] || name;
-}
+// Re-exported for the profile + settings screens (lib/initials.ts owns it).
+export { firstName };
 
 // 1234 → "1.2k", 12400 → "12.4k", 212000 → "212k" (the design's big-profile
 // frame 04·R5x). Floors, so a count never reads higher than it is.
@@ -136,13 +137,26 @@ export function ProfileIdentity({
 }
 
 // .yo-ncname — 700 26px in the mock; the nearest type token is heading (23),
-// bold. Flagged deviation: no inline font sizes.
+// bold. Flagged deviation: no inline font sizes. Fitted to the column like
+// the cover's name, without the ring (ruled 2026-11-12; the mock cut it on
+// one line), down to the cover's floor in proportion (22 of 30pt).
 const PLAIN_NAME_STYLE = { fontFamily: 'InstrumentSans_700Bold' } as const;
 function PlainName({ name }: { name: string }) {
+  const { theme } = useTheme();
+  const tok = usePhoneTokens().text('heading');
+  const base = useMemo(
+    () => ({ ...PLAIN_NAME_STYLE, color: theme.ink, fontSize: tok.fontSize, lineHeight: tok.lineHeight, letterSpacing: tok.letterSpacing }),
+    [theme.ink, tok.fontSize, tok.lineHeight, tok.letterSpacing],
+  );
+  const [avail, setAvail] = useState<number | null>(null);
   return (
-    <VText variant="heading" numberOfLines={1} style={PLAIN_NAME_STYLE}>
-      {name}
-    </VText>
+    <View style={{ alignSelf: 'stretch' }} onLayout={(e) => setAvail(e.nativeEvent.layout.width)}>
+      {avail == null ? (
+        <Text style={[base, { opacity: 0 }]} numberOfLines={1}>{name}</Text>
+      ) : (
+        <FittedName name={name} base={base} lineRatio={tok.lineHeight / tok.fontSize} avail={avail} min={Math.round((tok.fontSize * 22) / 30)} />
+      )}
+    </View>
   );
 }
 
@@ -188,24 +202,32 @@ function StatLine({ level, avgScore }: { level: string; avgScore: number | null 
   );
 }
 
-// .yo-cnfollows — "48 friends  212 followers", count in ink 600.
-function Counts({ friends, followers }: { friends: number; followers: number }) {
+// .yo-cnfollows — "48 friends  212 followers", count in ink 600. Each opens
+// People on its tab (D10); dimmed and inert while you edit your name or bio
+// (a push would blur the field and drop the draft), like the status line.
+function Counts({ friends, followers, onPeople, editing }: { friends: number; followers: number; onPeople?: (tab: PeopleTab) => void; editing: boolean }) {
   return (
-    <View style={{ flexDirection: 'row', gap: 14 }}>
-      <Count n={friends} word="friends" />
-      <Count n={followers} word="followers" />
+    <View pointerEvents={editing ? 'none' : 'auto'} style={[{ flexDirection: 'row', gap: 14 }, editing ? { opacity: 0.35 } : null]}>
+      <Count n={friends} word="friends" onPress={onPeople && (() => onPeople('friends'))} />
+      <Count n={followers} word="followers" onPress={onPeople && (() => onPeople('followers'))} />
     </View>
   );
 }
 
-function Count({ n, word }: { n: number; word: string }) {
-  return (
+function Count({ n, word, onPress }: { n: number; word: string; onPress?: () => void }) {
+  const text = (
     <VText variant="small" color="inkSoft" style={{ fontFamily: 'InstrumentSans_500Medium' }}>
       <VText variant="small" style={{ fontFamily: 'InstrumentSans_600SemiBold', fontVariant: ['tabular-nums'] }}>
         {compactCount(n)}
       </VText>{' '}
       {word}
     </VText>
+  );
+  if (!onPress) return text;
+  return (
+    <Pressable accessibilityRole="button" accessibilityLabel={`${n} ${word}`} hitSlop={{ top: 8, bottom: 8 }} onPress={onPress} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
+      {text}
+    </Pressable>
   );
 }
 
@@ -263,11 +285,15 @@ export function ProfileHeader({
   onNameBottom,
   edit,
   pulled,
+  onPeople,
 }: {
   profile: FullProfile;
   own: boolean;
   onFollowPress: () => void;
   followBusy: boolean;
+  // The counts + in-common row open People (D10): `known` = "Only people you
+  // know" on (the in-common row).
+  onPeople?: (tab: PeopleTab, known?: boolean) => void;
   // The name's bottom edge in header coordinates (the bar title trigger).
   onNameBottom?: (y: number) => void;
   // Own profile only.
@@ -299,9 +325,9 @@ export function ProfileHeader({
       label,
       count: compactCount(t.count),
       imageUrl: t.imageUrl,
-      // Inert without a photo to choose from (the automatic photo is the
-      // latest pickable one, so none shown = none pickable).
-      onLongPress: edit && t.imageUrl ? () => edit.onTile(key) : undefined,
+      // Every tile of your own, an empty one too: its sheet can add your own
+      // photo (ruled 2026-11-12; it used to be inert with nothing to pick).
+      onLongPress: edit ? () => edit.onTile(key) : undefined,
     }];
   });
   const stat = (
@@ -316,7 +342,7 @@ export function ProfileHeader({
       {own ? null : (
         // .yo-frow — "N in common" faces + names, the follow button right.
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <InCommon inCommon={profile.inCommon} />
+          <InCommon inCommon={profile.inCommon} onPress={onPeople && (() => onPeople('friends', true))} />
           <FollowButton
             isFollowing={profile.isFollowing}
             followsYou={profile.followsYou}
@@ -339,7 +365,7 @@ export function ProfileHeader({
           nameNode={edit ? <EditableName name={profile.name} edit={edit} variant="plain" /> : undefined}
         >
           {stat}
-          <Counts friends={profile.friendsCount} followers={profile.stats.followers} />
+          <Counts friends={profile.friendsCount} followers={profile.stats.followers} onPeople={onPeople} editing={editing} />
         </ProfileIdentity>
         {below}
         {viewers}
@@ -360,7 +386,7 @@ export function ProfileHeader({
                 the counts tucked 20 left under the photo's curve. */}
             <View style={{ top: 2, left: -5 }}>{stat}</View>
             <View style={{ marginLeft: -20 }}>
-              <Counts friends={profile.friendsCount} followers={profile.stats.followers} />
+              <Counts friends={profile.friendsCount} followers={profile.stats.followers} onPeople={onPeople} editing={editing} />
             </View>
           </View>
         </View>
@@ -458,9 +484,8 @@ function CoverHero({
   );
 }
 
-// The white name on the cover, fitted (coverGeometry `fitCoverName`): its
-// size, or ≤ 4pt smaller, or two lines with line 1 hugging the photo's ring.
-// Measured at the base size first (hidden), so Dynamic Type is included.
+// The white name on the cover, fitted: its size, or ≤ 4pt smaller, or two
+// lines with line 1 hugging the photo's ring.
 function useCoverNameStyle() {
   const phone = usePhoneTokens();
   const tok = phone.text('title');
@@ -471,7 +496,24 @@ function useCoverNameStyle() {
 }
 
 function CoverName({ name, avail, nameLeft, photoCx, photo }: { name: string; avail: number; nameLeft: number; photoCx: number; photo: number }) {
-  const { fs, base } = useCoverNameStyle();
+  const { base } = useCoverNameStyle();
+  return <FittedName name={name} base={base} lineRatio={1.05} avail={avail} min={22} ring={{ nameLeft, photoCx, photo }} />;
+}
+
+// A profile name fitted to `avail` (coverGeometry `fitProfileName`).
+// Measured at the base size first (hidden), so Dynamic Type is included.
+type NameStyle = { fontFamily: string; color: string; fontSize: number; lineHeight: number; letterSpacing: number };
+function FittedName({
+  name, base, lineRatio, avail, min, ring,
+}: {
+  name: string;
+  base: NameStyle;
+  lineRatio: number;
+  avail: number;
+  min: number;
+  ring?: { nameLeft: number; photoCx: number; photo: number };
+}) {
+  const fs = base.fontSize;
   // Every candidate break: line 1 = the first i + 1 words, line 2 = the rest.
   const breaks = useMemo(() => {
     const words = name.trim().split(/\s+/);
@@ -490,12 +532,12 @@ function CoverName({ name, avail, nameLeft, photoCx, photo }: { name: string; av
     });
   const ready = cur.h != null && texts.every((t) => cur.widths[t] != null);
   const fit = ready
-    ? fitCoverName({
-        fs, w: cur.widths[name], lineH: cur.h!, scale: cur.h! / base.lineHeight, avail, nameLeft, photoCx, photo,
+    ? fitProfileName({
+        fs, w: cur.widths[name], lineH: cur.h!, scale: cur.h! / base.lineHeight, avail, min, ring,
         splits: breaks.map(([l1, l2]) => ({ w1: cur.widths[l1], w2: cur.widths[l2] })),
       })
     : null;
-  const sized = (f: number) => ({ ...base, fontSize: f, lineHeight: Math.round(f * 1.05), letterSpacing: (base.letterSpacing * f) / fs });
+  const sized = (f: number) => (f === fs ? base : { ...base, fontSize: f, lineHeight: Math.round(f * lineRatio), letterSpacing: (base.letterSpacing * f) / fs });
   return (
     <View accessible accessibilityRole="header" accessibilityLabel={name}>
       {/* Measuring pass: one line each, unconstrained, invisible. */}
@@ -562,7 +604,7 @@ function EditableName({
       disabled={edit.busy != null}
       onLongPress={() => edit.start('name')}
       accessibilityLabel={name}
-      accessibilityHint="Double-tap and hold to edit your name and profile text."
+      accessibilityHint="Double-tap and hold to edit your name and bio."
     >
       {variant === 'cover' && fit ? <CoverName name={name} {...fit} /> : <PlainName name={name} />}
     </LongPressable>
@@ -570,7 +612,9 @@ function EditableName({
 }
 
 // .yo-bio — one paragraph, small, 1.5 line height. Own + empty: the quiet
-// "Add a profile text" hint (R5n); a TAP starts editing too. Editing: the
+// hint (R5n), a pencil + "Touch and hold to add a bio" in the
+// placeholder grey (ruled 2026-11-12: it names the gesture and reads as a
+// prompt; never shown to anyone else); a TAP starts editing too. Editing: the
 // input in place, capped at 200 UTF-16 units (the server's own unit; the
 // normalisation only ever shortens), Return = Done, no counter (the mock has
 // none).
@@ -589,10 +633,10 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
         autoFocus={edit.focus === 'bio'}
         multiline
         maxLength={BIO_MAX}
-        placeholder="Add a profile text"
+        placeholder="Add a bio"
         placeholderTextColor={theme.inkSoft}
         onSubmit={edit.done}
-        accessibilityLabel="Profile Text"
+        accessibilityLabel="Bio"
         style={{ fontFamily: 'InstrumentSans_400Regular', fontSize: small.fontSize, lineHeight, color: theme.ink }}
       />
     );
@@ -604,7 +648,7 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
       <LongPressable
         disabled={edit.busy != null}
         onLongPress={() => edit.start('bio')}
-        accessibilityHint="Double-tap and hold to edit your name and profile text."
+        accessibilityHint="Double-tap and hold to edit your name and bio."
       >
         {text}
       </LongPressable>
@@ -616,14 +660,21 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
       disabled={edit.busy != null}
       onPress={() => edit.start('bio')}
       onLongPress={() => edit.start('bio')}
-      accessibilityLabel="Add a Profile Text"
+      accessibilityLabel="Add a Bio"
     >
-      <VText variant="small" color="inkSoft" style={{ fontStyle: 'italic', lineHeight }}>Add a profile text</VText>
+      {/* Reads as a prompt, not your text (ruled 2026-11-12): a pencil and
+          the app's placeholder grey (the empty search field's). */}
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+        <Icon name="edit" size={Math.round(small.fontSize)} color={theme.inkFaint} />
+        <VText variant="small" color="inkFaint" style={{ flexShrink: 1, lineHeight }}>Touch and hold to add a bio</VText>
+      </View>
     </LongPressable>
   );
 }
 
-function InCommon({ inCommon }: { inCommon?: { count: number; faces: ProfileFace[] } }) {
+// "12 in common" (D4: their friends YOU follow) → their People on Friends,
+// "Only people you know" on.
+function InCommon({ inCommon, onPress }: { inCommon?: { count: number; faces: ProfileFace[] }; onPress?: () => void }) {
   const phone = usePhoneTokens();
   if (!inCommon || inCommon.count === 0) return <View style={{ flex: 1 }} />;
   const { count, faces } = inCommon;
@@ -632,10 +683,13 @@ function InCommon({ inCommon }: { inCommon?: { count: number; faces: ProfileFace
   const rest = count - names.length;
   const line = rest > 0 ? `${names.join(', ')} and ${rest} more` : names.join(' and ');
   return (
-    <View
+    <Pressable
       accessible
+      accessibilityRole={onPress ? 'button' : undefined}
       accessibilityLabel={`${count} in common: ${line}`}
-      style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10 }}
+      disabled={!onPress}
+      onPress={onPress}
+      style={({ pressed }) => ({ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 10, opacity: pressed ? 0.6 : 1 })}
     >
       {/* .yo-stack — overlapping 26px faces, 2px bg ring */}
       <View style={{ flexDirection: 'row' }}>
@@ -653,27 +707,33 @@ function InCommon({ inCommon }: { inCommon?: { count: number; faces: ProfileFace
           {line}
         </VText>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
 // Follow / Follow Back (primary) · Following / Friends (secondary, ✓). The
 // caller confirms an unfollow; following acts immediately.
+// `name`: say whom the button is for (a list row, the People bar), e.g.
+// "Follow Back, Mara".
 export function FollowButton({
   isFollowing,
   followsYou,
   busy,
   onPress,
+  name,
 }: {
   isFollowing: boolean;
   followsYou: boolean;
   busy: boolean;
   onPress: () => void;
+  name?: string;
 }) {
+  const title = isFollowing ? (followsYou ? 'Friends' : 'Following') : followsYou ? 'Follow Back' : 'Follow';
+  const label = name ? `${title}, ${name}` : undefined;
   if (isFollowing) {
-    return <Button size="sm" variant="secondary" icon="check" title={followsYou ? 'Friends' : 'Following'} loading={busy} onPress={onPress} />;
+    return <Button size="sm" variant="secondary" icon="check" title={title} loading={busy} onPress={onPress} accessibilityLabel={label} />;
   }
-  return <Button size="sm" variant="primary" title={followsYou ? 'Follow Back' : 'Follow'} loading={busy} onPress={onPress} />;
+  return <Button size="sm" variant="primary" title={title} loading={busy} onPress={onPress} accessibilityLabel={label} />;
 }
 
 // .yo-blockedbox — the sentence + one action on the fill tone. Used by the
