@@ -1,12 +1,16 @@
+import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Image } from 'expo-image';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Alert, Pressable, ScrollView, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BIO_MAX, normalizeBio, validateDisplayName } from '@verre/core';
 import { NotesField, pickPhotoOrRemove } from '@/components/moments/momentForm';
-import { GlassButton, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { GlassButton, SetTitle, SettingsFooter, SettingsScreenFallback } from '@/components/moments/settingsParts';
+import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
+import { PhotoTiles } from '@/components/profile/PhotoTiles';
+import { compactCount } from '@/components/profile/ProfileHeader';
 import { SHEET_RISE } from '@/components/profile/coverGeometry';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
@@ -14,10 +18,9 @@ import { TextField } from '@/components/ui/TextField';
 import { VText } from '@/components/ui/VText';
 import { VBar } from '@/components/VBar';
 import {
-  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover,
+  applyOwnProfileChange, patchProfile, removeAvatar, removeCover, uploadAvatar, uploadCover, uploadTilePhoto, type TileKey, type TilePhoto,
 } from '@/lib/api/profile';
 import { profileKey, profileQueryOptions, type FullProfile, type Profile } from '@/lib/api/users';
-import { authClient } from '@/lib/authClient';
 import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
@@ -35,6 +38,12 @@ import { useMeId } from '@/lib/meId';
 // finished steps stay saved and leave the draft, and the footer names what
 // didn't save. Pushed stack-relative (lib/sessionStack.ts profileEditHref);
 // the pill hides here (the sticky footer replaces it).
+//
+// Profile Tiles (the lists step): the tiles as on your profile (`PhotoTiles`),
+// a pen on each, one TAP opening the tile's cover sheet (the long-press on the
+// profile's tile; ruled 2026-11-13, replacing settings rows). That sheet
+// saves on its own "Use Photo", like there: a tile change is not part of this
+// page's draft. Not in the mock (its setProfile page has no tiles).
 export default function EditProfile() {
   const userId = useMeId();
   const q = useQuery({ ...profileQueryOptions(userId ?? ''), enabled: userId != null });
@@ -68,6 +77,23 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [badName, setBadName] = useState(false);
+
+  // A tile's cover (the profile's R5g2 sheet): throws to keep the sheet open.
+  const [tileSheet, setTileSheet] = useState<TileKey | null>(null);
+  const saveTile = useCallback(
+    async (tile: TileKey, run: () => Promise<Partial<Record<TileKey, TilePhoto>> | undefined>) => {
+      const epoch = viewerCacheEpoch();
+      try {
+        const tiles = await run();
+        if (tiles) await applyOwnProfileChange(queryClient, userId, { tiles }, epoch);
+        setTileSheet(null);
+      } catch (e) {
+        Alert.alert('Couldn’t Save', errorText(e));
+        throw e;
+      }
+    },
+    [queryClient, userId],
+  );
 
   const shown = (d: ImageDraft, current: string | null) => (d.kind === 'new' ? d.preview : d.kind === 'remove' ? null : current);
   const avatarUrl = shown(avatar, profile.imageUrl);
@@ -162,6 +188,8 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
   };
 
   return (
+    // A SCREEN-LOCAL provider for the tile cover sheet (no root provider).
+    <BottomSheetModalProvider>
     <View style={{ flex: 1, paddingTop: insets.top + 8 }}>
       <View style={{ paddingHorizontal: GUTTER }}>
         <VBar title="Edit Profile" />
@@ -191,11 +219,12 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
               onPress={() => pick('cover')}
               style={({ pressed }) => ({ flex: 1, backgroundColor: theme.surfaceSunk, opacity: pressed ? 0.7 : 1 })}
             >
-              {/* The glyph above the caption, centred in the WHOLE cover area
-                  (ruled 2026-11-12: centred in the band above the photo's
-                  overlap it read high); the pair clears the photo, which
-                  covers only the bottom AVATAR_OVERLAP. */}
-              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: GUTTER }}>
+              {/* The glyph above the caption, centred MIDWAY between the box
+                  top and the photo's top (ruled 2026-11-13 on device: centred
+                  in the whole box it sat low, the photo covering the bottom
+                  AVATAR_OVERLAP of it; the 11-12 "centre it better" had
+                  moved it there). */}
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: GUTTER, paddingBottom: AVATAR_OVERLAP }}>
                 <Icon name="cam" size={24} color={theme.inkSoft} />
                 <VText variant="small" numberOfLines={2} style={{ fontFamily: 'InstrumentSans_600SemiBold', textAlign: 'center' }}>Add a cover photo</VText>
               </View>
@@ -230,8 +259,39 @@ function EditProfileForm({ userId, profile }: { userId: string; profile: FullPro
         <View style={{ marginBottom: 14 }}>
           <NotesField label="Bio" placeholder="Add a bio" value={bio} onChange={setBio} maxLength={BIO_MAX} />
         </View>
+        {TILE_ROWS.some(([k]) => profile.tiles[k]) ? (
+          <View style={{ marginTop: 18 }}>
+            <SetTitle>Profile Tiles</SetTitle>
+            {/* The tiles as on your profile, a pen on each, one TAP opens the
+                tile's cover sheet (ruled 2026-11-13). */}
+            <PhotoTiles
+              tiles={TILE_ROWS.flatMap(([k, label]) => {
+                const t = profile.tiles[k];
+                return t ? [{
+                  label,
+                  count: compactCount(t.count),
+                  imageUrl: t.imageUrl,
+                  editable: true,
+                  onPress: () => setTileSheet(k),
+                  accessibilityLabel: `${compactCount(t.count)} ${label}, ${t.pinned ? 'chosen' : 'automatic'} cover`,
+                  accessibilityHint: 'Double-tap to choose its cover.',
+                }] : [];
+              })}
+            />
+          </View>
+        ) : null}
       </ScrollView>
       <SettingsFooter saving={saving} error={error} onDiscard={() => router.back()} onSave={onSave} bottomInset={insets.bottom} />
+      <TileCoverSheet
+        tile={tileSheet}
+        shown={tileSheet ? profile.tiles[tileSheet]?.imageUrl ?? null : null}
+        onClose={() => setTileSheet(null)}
+        onUse={(tile, url) => saveTile(tile, async () => (await patchProfile({ tiles: { [tile]: url } })).tiles)}
+        onUpload={(tile, dataUrl) => saveTile(tile, () => uploadTilePhoto(tile, dataUrl))}
+      />
     </View>
+    </BottomSheetModalProvider>
   );
 }
+
+const TILE_ROWS: ReadonlyArray<readonly [TileKey, string]> = [['impressions', 'Impressions'], ['moments', 'Moments'], ['cravings', 'Cravings']];

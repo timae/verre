@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { parseWireIdentity, userIdsForPublicIds, wireIdentityMap } from '@/lib/publicIds'
+import { wireIdentityMap } from '@/lib/publicIds'
+import { encodeKeyCursor, parseKeyCursor, clampLimit } from '@/lib/keyCursor'
+import { parseMomentFacets, momentFacetWhere, facetsActive, facetsExpensive } from '@/lib/momentFacets'
 import { Prisma } from '@prisma/client'
 import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
@@ -7,7 +9,6 @@ import { prisma } from '@/lib/prisma'
 import { redis, k, getLastSeen, getHiddenCarousel } from '@/lib/redis'
 import { blockPairIds } from '@/lib/userBlock'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { scrub } from '@/lib/textSafe'
 
 // Carousel-card label: 'now' (live + started), 'soon' (pinned but not yet
 // started), 'visited' (recently opened, started/date-less), or null (not
@@ -46,39 +47,6 @@ const SOON_MS = 24 * 3600 * 1000
 // bare array in both modes. recents.tsx drives the filtered mode.
 const DEFAULT_PAGE = 30
 const MAX_PAGE = 50
-// Max members a multi-select facet accepts per request. `people` is the
-// binding one (each becomes a correlated EXISTS — AND semantics); `hosts` OR
-// into an ANY() (cheaper) but is capped the same way for symmetry. Bounds
-// per-request SQL work the rate limiter can't.
-const FACET_MAX = 20
-// Cap on a single anon-host name (`n:<name>`) — bounds the free-text bind.
-const HOST_NAME_MAX = 64
-// Trigram typo tolerance for search — tuned against the prod dump (real typos
-// score 0.54–0.67; the stock 0.6 default missed them, 0.3 catches them with no
-// false positives). Explicit threshold in the predicate, NOT the %> operator
-// (which reads a pooled-connection-leaking session GUC). See the migration.
-const SIMILARITY = 0.3
-
-// Roles the caller can filter on. 'taster' means "no host/cohost/provider
-// badge" — the sm.role fallback maps host|co_host|provider|taster and anything
-// unknown to taster. Mirrors the client RoleKey union.
-const ROLE_KEYS = new Set(['host', 'cohost', 'provider', 'taster'])
-// Wire role key → the sm.role values it matches (Part A durable mirror stores
-// 'co_host'; the wire vocab is 'cohost'). 'taster' is the complement, handled
-// specially below (NOT ANY-of a value list).
-const ROLE_TO_SM: Record<string, string[]> = {
-  host: ['host'],
-  cohost: ['co_host'],
-  provider: ['provider'],
-}
-
-// Parse a comma-separated multi-select param into a de-duped string[] (empty
-// when absent/blank). Values are validated by the caller per facet.
-function csv(v: string | null): string[] {
-  if (!v) return []
-  return [...new Set(v.split(',').map((s) => s.trim()).filter(Boolean))]
-}
-
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
@@ -87,46 +55,14 @@ export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams
 
   // ── parse + validate the filter contract ──────────────────────────────────
-  // Free-text params are scrubbed (strip NUL/control/bidi — a NUL byte would
-  // 500 the $queryRaw with P22021) and length-capped before touching Postgres,
-  // even though this is a read (root CLAUDE.md's scrub rule is framed for
-  // writes, but the NUL-byte 500 hits reads too). 128 chars is ample for a
-  // moment/host name search.
-  const Q_MAX = 128
-  const q = (scrub(sp.get('q')) ?? '').trim().slice(0, Q_MAX)
+  // The facets (q, roles, hosts, people, category, from, to) are shared with
+  // someone's Moments list: lib/momentFacets.ts.
+  const facets = parseMomentFacets(sp)
   const tense = sp.get('tense') // 'upcoming' | 'past' | null (both)
-  const roles = csv(sp.get('roles')).filter((r) => ROLE_KEYS.has(r))
-  // Same per-facet cap as `people`: hosts OR into the query (each id/name is one
-  // ANY() member, cheaper than an EXISTS, but still bound the input). 20 is far
-  // beyond any real "moments hosted by one of N people" query.
-  const hosts = csv(sp.get('hosts')).slice(0, FACET_MAX) // 'me' | 'u:<publicId>' | 'n:<name>'
-  const people = csv(sp.get('people')).slice(0, FACET_MAX) // 'u:<publicId>' friend identity ids
-  const category = sp.get('category') // 'wine' | null (any); 'any' == null
-  // `from`/`to` are full ISO INSTANTS (…Z), not bare YYYY-MM-DD: the client
-  // sends the picked LOCAL day's start/end converted to UTC (local-midnight →
-  // local-next-midnight-minus-1ms), so the window means "this date in the
-  // user's device timezone" — the SAME timezone the moment cards render in
-  // (momentFormat.ts uses device-local toLocaleDateString). The server just
-  // compares the stored instant against these; no UTC-midnight re-anchoring,
-  // so no off-by-a-day for non-UTC users.
-  const fromRaw = sp.get('from')
-  const toRaw = sp.get('to')
   const cursorRaw = sp.get('cursor')
   const limitRaw = sp.get('limit')
 
-  // Bounds on the EFFECTIVE date (set date, else created) — the same key the
-  // client's Recent list sorts on, so the filter and order agree. Parsed
-  // lenient: a bad value is ignored rather than 400 (a stale client shouldn't
-  // hard-fail the whole list).
-  const fromMs = fromRaw ? Date.parse(fromRaw) : NaN
-  const toMs = toRaw ? Date.parse(toRaw) : NaN
-  const from = Number.isFinite(fromMs) ? new Date(fromMs) : null
-  const to = Number.isFinite(toMs) ? new Date(toMs) : null
-
-  const filtered =
-    q !== '' || tense !== null || roles.length > 0 || hosts.length > 0 ||
-    people.length > 0 || (category !== null && category !== 'any') ||
-    from !== null || to !== null || cursorRaw !== null || limitRaw !== null
+  const filtered = facetsActive(facets) || tense !== null || cursorRaw !== null || limitRaw !== null
 
   // Rate-limit ONLY the genuinely-expensive params — the trigram search (`q`)
   // and the per-friend correlated EXISTS (`people`). The OTHER "filtered" params
@@ -137,8 +73,7 @@ export async function GET(req: NextRequest) {
   // a request) against a "search compute" cap. So the cap keys on `expensive`,
   // not `filtered`. Mirrors app/api/users/search's intent (protect the trigram/
   // EXISTS channel), not ordinary pagination. 30/min/user, caller-keyed.
-  const expensive = q !== '' || people.length > 0
-  if (expensive) {
+  if (facetsExpensive(facets)) {
     const rl = await checkRate(`rl:moments-search:u:${userId}:1m`, 30, 60)
     if (!rl.allowed) {
       return NextResponse.json(
@@ -155,34 +90,6 @@ export async function GET(req: NextRequest) {
   // front because both the WHERE (people facet) and the enrichment need it.
   const { blockedByMe, blockingMe } = await blockPairIds(userId)
   const blockedUserIds = new Set([...blockedByMe, ...blockingMe])
-
-  // Friend ids the caller may filter `people` on. The picker only offers
-  // friends, but a request is untrusted — intersect the requested `people`
-  // ids with the caller's actual mutual-follow set so this can't become an
-  // attendance oracle for an arbitrary user. Blocked pairs are excluded too.
-  let peopleIds: number[] = []
-  if (filtered && people.length > 0) {
-    // Wire identities (`u:<publicId>`); a malformed or unknown one is dropped
-    // (and a request left with none matches nothing, below).
-    const wantedPublic = people.flatMap((p) => {
-      const w = parseWireIdentity(p)
-      return w?.kind === 'user' ? [w.publicId] : []
-    })
-    const wanted = [...(await userIdsForPublicIds(wantedPublic)).values()]
-      .filter((n) => !blockedUserIds.has(n))
-      // Belt after the block-scrub filter (the raw `people` was already capped
-      // at parse). Each accepted friend becomes one correlated EXISTS.
-      .slice(0, FACET_MAX)
-    if (wanted.length > 0) {
-      const mutuals = await prisma.$queryRaw<Array<{ id: number }>>`
-        SELECT f1."following_id" AS id
-        FROM follows f1
-        JOIN follows f2 ON f2."follower_id" = f1."following_id" AND f2."following_id" = ${userId}
-        WHERE f1."follower_id" = ${userId} AND f1."following_id" = ANY(${wanted})
-      `
-      peopleIds = mutuals.map((m) => m.id)
-    }
-  }
 
   // ── build the row query ────────────────────────────────────────────────────
   // Legacy (no params): the ORIGINAL query verbatim — 50 most-recently-joined,
@@ -245,8 +152,8 @@ export async function GET(req: NextRequest) {
     // Upcoming sorts SOONEST-first (agenda order); everything else NEWEST-first
     // (the client's per-list sorts, now server-authoritative for paging).
     const asc = tense === 'upcoming'
-    const limit = clampLimit(limitRaw)
-    const cursor = parseCursor(cursorRaw) // { effKey, id } | null
+    const limit = clampLimit(limitRaw, DEFAULT_PAGE, MAX_PAGE)
+    const cursor = parseKeyCursor(cursorRaw) // { key, id } | null
 
     // ── facet predicates (composed with AND) ────────────────────────────────
     const where: Prisma.Sql[] = [
@@ -266,109 +173,8 @@ export async function GET(req: NextRequest) {
       where.push(Prisma.sql`(s.date_from IS NULL OR s.date_from <= NOW())`)
     }
 
-    // Date window on COALESCE(date_from, created_at), inclusive whole days.
-    if (from) where.push(Prisma.sql`COALESCE(s.date_from, s.created_at) >= ${from}`)
-    if (to) where.push(Prisma.sql`COALESCE(s.date_from, s.created_at) <= ${to}`)
-
-    // Category: NULL rows predate the column → treat as 'wine' (the only thing
-    // they could be), matching the client's fold.
-    if (category && category !== 'any') {
-      where.push(
-        category === 'wine'
-          ? Prisma.sql`COALESCE(s.category, 'wine') = 'wine'`
-          : Prisma.sql`s.category = ${category}`,
-      )
-    }
-
-    // Roles: OR within the facet. Non-taster keys match sm.role directly;
-    // 'taster' is the COMPLEMENT (no host/cohost/provider badge — role IS NULL
-    // is impossible, so it's "not one of the badge values", incl. legacy/
-    // unknown). host_user_id === me is the belt for a host whose mirror row
-    // predates the role snapshot (same last-resort as the enrichment fallback).
-    if (roles.length > 0) {
-      const clauses: Prisma.Sql[] = []
-      const badgeValues = roles.flatMap((r) => ROLE_TO_SM[r] ?? [])
-      if (badgeValues.length > 0) {
-        clauses.push(Prisma.sql`sm.role = ANY(${badgeValues})`)
-        if (roles.includes('host')) clauses.push(Prisma.sql`s.host_user_id = ${userId}`)
-      }
-      if (roles.includes('taster')) {
-        clauses.push(
-          Prisma.sql`(sm.role NOT IN ('host', 'co_host', 'provider') AND s.host_user_id IS DISTINCT FROM ${userId})`,
-        )
-      }
-      where.push(Prisma.sql`(${Prisma.join(clauses, ' OR ')})`)
-    }
-
-    // Hosts: OR within the facet. 'me' = the caller's own hosted moments;
-    // 'u:<publicId>' matches host_user_id; 'n:<name>' matches the anon-host
-    // name snapshot (accepting rename drift, per the proposal).
-    // 🔒 A `u:` entry that is malformed (an old tab's `u:42`) or unknown adds a
-    // FALSE clause, never nothing: dropping it could leave the facet empty and
-    // widen the filter to every moment (public-user-ids § 4).
-    if (hosts.length > 0) {
-      const clauses: Prisma.Sql[] = []
-      if (hosts.includes('me')) clauses.push(Prisma.sql`s.host_user_id = ${userId}`)
-      const hostEntries = hosts.filter((h) => h.startsWith('u:'))
-      const hostPublic = hostEntries.flatMap((h) => {
-        const w = parseWireIdentity(h)
-        return w?.kind === 'user' ? [w.publicId] : []
-      })
-      const hostIds = await userIdsForPublicIds(hostPublic)
-      const uids = [...hostIds.values()]
-      if (uids.length > 0) clauses.push(Prisma.sql`s.host_user_id = ANY(${uids})`)
-      if (hostEntries.length > uids.length) clauses.push(Prisma.sql`FALSE`)
-      // Scrub + length-cap the free-text anon-host names (NUL byte → P22021
-      // 500; host_name is VarChar(64) so anything longer can't match anyway).
-      const names = hosts
-        .filter((h) => h.startsWith('n:'))
-        .map((h) => (scrub(h.slice(2)) ?? '').slice(0, HOST_NAME_MAX))
-        .filter(Boolean)
-      if (names.length > 0) clauses.push(Prisma.sql`s.host_name = ANY(${names})`)
-      if (clauses.length > 0) where.push(Prisma.sql`(${Prisma.join(clauses, ' OR ')})`)
-    }
-
-    // People: AND semantics — one EXISTS per selected friend ("the moments
-    // Anna AND Tim were both at"). peopleIds is already intersected with the
-    // caller's mutual-follow set + block scrub, so this can't probe an
-    // arbitrary user's attendance. An empty peopleIds after that scrub (a
-    // request for non-friends only) matches nothing — intentional.
-    if (people.length > 0) {
-      if (peopleIds.length === 0) {
-        where.push(Prisma.sql`FALSE`)
-      } else {
-        for (const pid of peopleIds) {
-          where.push(
-            // `removed_state` excludes a friend who was KICKED from the session
-            // — they aren't a participant there, so "moments Anna was at"
-            // shouldn't match a moment Anna was kicked from (matches the live
-            // identities hash, which strips kicked users, and the caller's own
-            // kicked-drop). kick-delete/ban already dropped the sm2 row.
-            Prisma.sql`EXISTS (SELECT 1 FROM session_members sm2 WHERE sm2.session_code = s.code AND sm2.user_id = ${pid} AND sm2.removed_state IS DISTINCT FROM 'kicked')`,
-          )
-        }
-      }
-    }
-
-    // Search: accent-insensitive substring OR typo-tolerant trigram, over
-    // name + host_name. See the migration for f_unaccent + the threshold.
-    // `qLike` escapes the LIKE metacharacters (\ % _) so the substring branch
-    // treats `q` as LITERAL text — otherwise a `%` in the query would match
-    // everything and a `_` (real: session names like `tasting_with_…`) would
-    // match any char. The `\` escape char is declared with ESCAPE. The
-    // word_similarity branch is unaffected (it doesn't interpret wildcards), so
-    // a metachar-containing query still fuzzy-matches on the raw `q`.
-    if (q !== '') {
-      const qLike = q.replace(/[\\%_]/g, (c) => `\\${c}`)
-      where.push(
-        Prisma.sql`(
-          f_unaccent(s.name) ILIKE '%' || f_unaccent(${qLike}) || '%' ESCAPE '\'
-          OR word_similarity(f_unaccent(${q}), f_unaccent(s.name)) >= ${SIMILARITY}
-          OR f_unaccent(s.host_name) ILIKE '%' || f_unaccent(${qLike}) || '%' ESCAPE '\'
-          OR word_similarity(f_unaccent(${q}), f_unaccent(s.host_name)) >= ${SIMILARITY}
-        )`,
-      )
-    }
+    // Date, category, role, host, people, search (lib/momentFacets.ts).
+    where.push(...await momentFacetWhere(facets, { subjectId: userId, viewerId: userId, blockedUserIds }))
 
     // Keyset cursor: (effective_date, id) strictly beyond the last row, in the
     // sort direction. A tuple comparison keeps it index-friendly and stable
@@ -381,8 +187,8 @@ export async function GET(req: NextRequest) {
     if (cursor) {
       where.push(
         asc
-          ? Prisma.sql`(COALESCE(s.date_from, s.created_at), s.id) > (${cursor.effKey}::timestamptz, ${cursor.id})`
-          : Prisma.sql`(COALESCE(s.date_from, s.created_at), s.id) < (${cursor.effKey}::timestamptz, ${cursor.id})`,
+          ? Prisma.sql`(COALESCE(s.date_from, s.created_at), s.id) > (${cursor.key}::timestamptz, ${cursor.id})`
+          : Prisma.sql`(COALESCE(s.date_from, s.created_at), s.id) < (${cursor.key}::timestamptz, ${cursor.id})`,
       )
     }
 
@@ -424,7 +230,7 @@ export async function GET(req: NextRequest) {
     `
     if (page.length > limit) {
       const last = page[limit - 1]
-      nextCursor = encodeCursor(last.eff_key, last.id)
+      nextCursor = encodeKeyCursor(last.eff_key, last.id)
       rows = page.slice(0, limit)
     } else {
       rows = page
@@ -737,39 +543,3 @@ type SessionRow = {
   member_role: string
 }
 
-function clampLimit(raw: string | null): number {
-  if (!raw) return DEFAULT_PAGE
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n < 1) return DEFAULT_PAGE
-  return Math.min(Math.floor(n), MAX_PAGE)
-}
-
-// Cursor = "<effKeyIso>.<id>", base64url'd so it's opaque on the wire. Both
-// halves are needed: `effKey` is the µs-precision effective-date sort key (an
-// ISO-8601 string straight from `to_char`, bound back as ::timestamptz), `id`
-// is the stable tiebreak within a shared date. The id is base64'd LAST so a `.`
-// can't appear after it — the effKey has a fixed shape with exactly one `.`
-// (the fractional-seconds separator), so we split on the LAST dot.
-function encodeCursor(effKey: string, id: number): string {
-  return Buffer.from(`${effKey}.${id}`).toString('base64url')
-}
-
-function parseCursor(raw: string | null): { effKey: string; id: number } | null {
-  if (!raw) return null
-  try {
-    const decoded = Buffer.from(raw, 'base64url').toString('utf8')
-    const dot = decoded.lastIndexOf('.')
-    if (dot < 0) return null
-    const effKey = decoded.slice(0, dot)
-    const id = Number(decoded.slice(dot + 1))
-    // effKey must look like the to_char output — an ISO instant. Validate by
-    // shape + parseability so a forged cursor can't inject arbitrary text into
-    // the ::timestamptz bind (it's parameterized, but a garbage value would
-    // still error; reject early to a clean "no cursor" instead).
-    if (!Number.isInteger(id) || id <= 0) return null
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(effKey)) return null
-    return { effKey, id }
-  } catch {
-    return null
-  }
-}

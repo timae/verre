@@ -15,6 +15,7 @@ import { createCheckin } from '@/lib/api/feed';
 import { authClient } from '@/lib/authClient';
 import { dropUnmountedFeedCaches, invalidateProfileHeader, refetchFeedCaches } from '@/lib/feedCache';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { checkinHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
@@ -34,12 +35,14 @@ export default function CheckinRate() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  // The flow's own stack (Feed, or You from your Impressions: lists plan D8).
+  const mount = useSessionTab();
   const queryClient = useQueryClient();
   const meId = useMeId();
 
   // Read once at mount — the draft is stable while this screen lives (stage 1
   // only rewrites it on a fresh "Rate It" push, which re-mounts this screen).
-  const [draft] = useState(getCheckinDraft);
+  const [draft] = useState(() => getCheckinDraft(mount.tab));
 
   const [score, setScore] = useState(draft?.score ?? 0);
   // Prune rated axes to the CURRENT type's set: on a back-and-forth round
@@ -64,8 +67,8 @@ export default function CheckinRate() {
   // Cold deep-link / reload lands here with no draft — bounce to stage 1,
   // which owns the flow's entry.
   useEffect(() => {
-    if (!draft) router.replace('/feed/check-in');
-  }, [draft, router]);
+    if (!draft) router.replace(checkinHref(mount));
+  }, [draft, router, mount]);
 
   // Unmount write-back (refs so the cleanup sees the latest values): a
   // back-swipe to stage 1 keeps the rating in progress. Skips when the draft
@@ -75,8 +78,8 @@ export default function CheckinRate() {
   const aromasRef = useRef(aromas); aromasRef.current = aromas;
   const notesRef = useRef(notes); notesRef.current = notes;
   useEffect(() => () => {
-    const d = getCheckinDraft();
-    if (d) setCheckinDraft({ ...d, score: scoreRef.current, flavors: flavorsRef.current, aromas: aromasRef.current, notes: notesRef.current });
+    const d = getCheckinDraft(mount.tab);
+    if (d) setCheckinDraft(mount.tab, { ...d, score: scoreRef.current, flavors: flavorsRef.current, aromas: aromasRef.current, notes: notesRef.current });
   }, []);
 
   // Aroma search focus → the minimal shift that fits the search block above
@@ -124,7 +127,7 @@ export default function CheckinRate() {
       // (the feed, and your profile on the You tab) update behind the pop.
       // Clear the draft BEFORE dismissing so the unmount write-back no-ops.
       // dismiss(2) pops both stages back to the feed.
-      clearCheckinDraft();
+      clearCheckinDraft(mount.tab);
       refetchFeedCaches(queryClient);
       // A popped profile list can't show the new post; drop it so it reloads.
       dropUnmountedFeedCaches(queryClient);

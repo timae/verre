@@ -196,6 +196,18 @@ export async function buildMetaView(
   }
 }
 
+// The LIVE Hide Line-up rule: hidden until X minutes before the start, for
+// everyone but the moment's hosts (isHostByIdentity: so an anonymous host of a
+// Redis-only moment keeps pre-rating). Shared by the wines read below and the
+// rate + bookmark POSTs, which decide it inside their contract from `ctx`
+// (lists plan D4: a write must not reach a bottle the read hides). Outside a
+// moment the SQL rule applies instead (lib/outsideView.ts).
+export function lineupHiddenFor(meta: SessionMeta, identity: AuthorizedIdentity, now = Date.now()): boolean {
+  if (!meta.hideLineup || !meta.dateFrom || isHostByIdentity(meta, identity)) return false
+  const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
+  return now < revealAt
+}
+
 // `wines` is the lineup the route loaded absent-aware (openSession /
 // loadLiveWines) — never a `[]` standing in for an evicted key.
 export async function buildWinesView(
@@ -208,10 +220,7 @@ export async function buildWinesView(
   const isUserHost = isHostByIdentity(meta, identity)
 
   // Lineup hidden until X minutes before start
-  if (meta.hideLineup && meta.dateFrom && !isUserHost) {
-    const revealAt = new Date(meta.dateFrom).getTime() - (meta.hideLineupMinutesBefore || 0) * 60 * 1000
-    if (Date.now() < revealAt) return []
-  }
+  if (lineupHiddenFor(meta, identity)) return []
 
   // Hybrid resolution for `addedByDisplayName`: live identities map →
   // users.name fallback for kicked logged-in adders → snapshot on the wine

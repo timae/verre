@@ -153,6 +153,8 @@ Any route serving user-scoped content (`/api/users/<id>/*`, `/u/<id>` reads, fee
 
 Bulk variants for feed / search: `batchLoadVisibilities` + `resolveProfileViewerBulk` + `viewerFofAuthorSet`. The block-pair check runs BEFORE the tier check.
 
+🔒 **A moment's bottle OUTSIDE the moment** (the feed, the profile tile lists AND their counts, `/api/me/ratings` + `/bookmarks`, tile photos) follows ONE SQL rule, `lib/outsideView.ts`: an unrevealed blind bottle → a blind row, a hidden line-up → left out (on your own lists too), on the DB clock, NULL-safe toward closed. Never a predicate of its own; detail in `docs/dev/social-feed.md`.
+
 Tier semantics, audit log, compare exception: see `docs/dev/profile-visibility.md` and `docs/dev/block.md`.
 
 ### Freemium split

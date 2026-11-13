@@ -14,7 +14,9 @@ import {
 import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds } from '@/lib/userBlock'
-import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
+import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
+import { parsePathId } from '@/lib/parsePathId'
 import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
@@ -60,6 +62,17 @@ export async function GET(req: NextRequest) {
   // (docs/dev/mute.md), and opening someone's profile is an explicit choice
   // to look at them.
   const userParam = req.nextUrl.searchParams.get('user')
+  // `&item=<postId>` (lists plan D9): ONE post of that author, for opening an
+  // old post from a profile list. One more condition on the SAME query below,
+  // never a separate lookup; every miss (another author's post, posts hidden,
+  // a hidden moment) is the same 200 empty page. Requires `user`.
+  const itemParam = req.nextUrl.searchParams.get('item')
+  let itemId: number | null = null
+  if (itemParam !== null) {
+    if (userParam === null) return NextResponse.json({ error: 'item requires user' }, { status: 400, headers: NO_STORE })
+    itemId = parsePathId(itemParam)
+    if (itemId === null) return NextResponse.json({ error: 'invalid item' }, { status: 400, headers: NO_STORE })
+  }
   let allowedNetworkIds: number[]
   // The authors' settings, for the place rule (server-side only).
   let authorSettings: Map<number, VisibilitySettings>
@@ -85,8 +98,17 @@ export async function GET(req: NextRequest) {
   // the relations. Naive per-row accessors would N+1; the include shape
   // avoids it (one round-trip plus one per included relation, all
   // resolved via Prisma's WHERE … IN under the hood).
+  // 🔒 A moment post whose line-up is hidden from this viewer is left out IN
+  // the query, before paging (lib/outsideView.ts): `nextCursor` below is the
+  // last RAW row's time, so dropping them after the read would hand out a
+  // hidden post's exact time.
+  const hidden = await hiddenSessionIds(userId, allowedNetworkIds)
   const feedItems = await prisma.feedItem.findMany({
-    where: { userId: { in: allowedNetworkIds }, createdAt: { lt: cursor } },
+    where: {
+      userId: { in: allowedNetworkIds }, createdAt: { lt: cursor },
+      ...(itemId !== null ? { id: itemId } : {}),
+      ...notHiddenPosts(hidden),
+    },
     include: {
       user: { select: { id: true, publicId: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
@@ -97,15 +119,12 @@ export async function GET(req: NextRequest) {
           images: { orderBy: { sortOrder: 'asc' }, take: 1 },
         },
       },
-      // Session is included for kind='session' rendering — we read
-      // deletedAt (tombstone label), name, blind (phase 3 redaction),
-      // hostName + hostUserId (header byline + own-host bypass for the
-      // SessionFeedCard wine join). dateFrom/dateTo/createdAt drive the
-      // over-by-its-dates auto-reveal (sessionIsOver, owner ruling Q5).
+      // Session is included for kind='session' rendering: deletedAt
+      // (tombstone label), name, blind, hostName (header byline). The
+      // per-bottle redaction reads the record itself (lib/outsideView.ts).
       session: {
         select: {
-          id: true, code: true, deletedAt: true, name: true, blind: true, blindForEveryone: true, dateFrom: true, dateTo: true, createdAt: true,
-          hostName: true, hostUserId: true,
+          id: true, deletedAt: true, name: true, blind: true, hostName: true,
         },
       },
     },
@@ -188,27 +207,12 @@ export async function GET(req: NextRequest) {
   }
 
   // Per-wine ratings for kind='session' feed_items, in one bulk query
-  // (one query per page, not per session post). Server-side redaction
-  // applied — never ship unrevealed blind-wine identity over the wire.
-  // Tombstoned sessions short-circuit redaction (see SessionFeedPair
-  // comment for the trade-off); the session-level identity (name + host)
-  // is still scrubbed at the payload layer below.
-  // Over-blind auto-reveal — see SessionFeedPair `expired` for the rule (the
-  // record's dates, never cache absence). Tombstoned sessions short-circuit
-  // via `deleted`.
-
-  const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f => {
-    if (f.kind !== 'session' || !f.session) return []
-    return [{
-      authorId: f.user.id,
-      sessionId: f.session.id,
-      blind: !!f.session.blind,
-      blindForEveryone: !!f.session.blindForEveryone,
-      deleted: !!f.session.deletedAt,
-      expired: !f.session.deletedAt && sessionIsOver(f.session),
-      hostUserId: f.session.hostUserId ?? null,
-    }]
-  })
+  // (one query per page, not per session post). Server-side redaction by the
+  // one SQL rule (lib/outsideView.ts): blind rows masked, hidden ones left
+  // out. The session-level identity of a tombstoned moment (name + host) is
+  // still scrubbed at the payload layer below.
+  const sessionPairs: SessionFeedPair[] = feedItems.flatMap(f =>
+    f.kind === 'session' && f.session ? [{ authorId: f.user.id, sessionId: f.session.id }] : [])
   const sessionWines = await loadSessionFeedWines(sessionPairs, userId)
 
   // Badge unlocks used to merge in as standalone 'badge' feed items.

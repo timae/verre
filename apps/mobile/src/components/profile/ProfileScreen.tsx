@@ -9,7 +9,7 @@ import { normalizeBio, validateDisplayName } from '@verre/core';
 import { FeedList, type FeedScrollHandle } from '@/components/feed/FeedList';
 import { pickPhotoOrRemove } from '@/components/moments/momentForm';
 import { AddFriendsSheet } from '@/components/people/AddFriendsSheet';
-import { EditBar } from '@/components/profile/ProfileEditParts';
+import { EditBar, editTouchHandlers, markNoShake } from '@/components/profile/ProfileEditParts';
 import { EmptyPosts, FollowButton, NoticeBox, ProfileHeader, ProfileIdentity, firstName, type ProfileEdit } from '@/components/profile/ProfileHeader';
 import { TileCoverSheet } from '@/components/profile/TileCoverSheet';
 import { AnchorButton, AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
@@ -23,7 +23,7 @@ import {
 } from '@/lib/api/profile';
 import type { PeopleTab } from '@/lib/api/people';
 import { type CheckinVisibility } from '@/lib/api/settings';
-import { profileQueryOptions } from '@/lib/api/users';
+import { profileKey, profileQueryOptions } from '@/lib/api/users';
 import { authClient } from '@/lib/authClient';
 import { useForwardStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { errorText, sentence } from '@/lib/errorCopy';
@@ -68,6 +68,14 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
   const own = meId != null && meId === userId;
 
   const profileQ = useQuery(profileQueryOptions(userId));
+  // A write inside a moment only MARKS your header stale
+  // (`markProfileHeaderStale`): it refetches here, once the profile is in front.
+  useFocusEffect(
+    useCallback(() => {
+      const state = queryClient.getQueryState(profileKey(userId));
+      if (state?.isInvalidated && state.fetchStatus === 'idle') void queryClient.refetchQueries({ queryKey: profileKey(userId), exact: true });
+    }, [queryClient, userId]),
+  );
   const profile = profileQ.data;
   const ok = profile?.state === 'ok';
   const hero = ok && !!profile.coverPhotoUrl;
@@ -163,6 +171,8 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
   const guard = usePushGuard();
   const openPeople = (tab: PeopleTab, known?: boolean) =>
     guard(() => router.push(feedHref(mount, 'people', { id: userId, tab, known: known ? '1' : undefined })));
+  // A tile → its list (the lists step), the same plain push.
+  const openList = (key: TileKey) => guard(() => router.push(feedHref(mount, key, { id: userId })));
   const [addOpen, setAddOpen] = useState(false);
 
   // ── Own profile: the in-place edit session (R5g3) ──────────────────────────
@@ -181,6 +191,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
   const bioRef = useRef<TextInputInstance | null>(null);
   const scrollHandle = useRef<FeedScrollHandle | null>(null);
   const editing = draft != null;
+  const [shake, setShake] = useState(0);
 
   const cancelEdit = useCallback(() => {
     Keyboard.dismiss();
@@ -559,6 +570,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
             edit={edit}
             pulled={pulled}
             onPeople={openPeople}
+            onTile={openList}
           />
         }
         empty={
@@ -582,17 +594,34 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
     // A SCREEN-LOCAL provider for the tile sheet: a root provider's gorhom
     // host gets zero height across the Stack boundary (the line-up's note).
     <BottomSheetModalProvider>
-      <View style={{ flex: 1, paddingTop: hero ? 0 : insets.top }}>
+      <View
+        style={{ flex: 1, paddingTop: hero ? 0 : insets.top }}
+        // While you edit, a tap outside the fields, the edit bar and Back shakes the bar (it is still open).
+        {...editTouchHandlers(() => {
+          if (editingRef.current) setShake((n) => n + 1);
+        })}
+      >
         <Stack.Screen options={{ statusBarStyle }} />
         <StatusBar style={statusBarStyle} />
         {hero ? null : (
           <View style={{ paddingHorizontal: GUTTER }}>
             <VBar
               back={!root}
+              backCapture={markNoShake}
               title={ok ? profile.name : ''}
               titleShown={ok && titled}
               titleLeading={barAvatar}
-              right={showMenuButton ? <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" /> : null}
+              right={showMenuButton ? (
+                // Inert and dimmed while you edit, like the tiles (a tap there shakes the edit bar).
+                <View
+                  style={{ opacity: editing ? 0.35 : 1 }}
+                  pointerEvents={editing ? 'none' : 'auto'}
+                  accessibilityElementsHidden={editing}
+                  importantForAccessibility={editing ? 'no-hide-descendants' : 'auto'}
+                >
+                  <AnchorButton onOpen={setMenu} accessibilityLabel="Profile Options" />
+                </View>
+              ) : null}
             />
           </View>
         )}
@@ -605,9 +634,10 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
             back={!root}
             onBack={() => router.back()}
             onMenu={showMenuButton ? setMenu : undefined}
+            menuInert={editing}
           />
         ) : null}
-        {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} /> : null}
+        {editing ? <EditBar busy={saving} onCancel={cancelEdit} onDone={doneEdit} onHeight={setEditBarH} shake={shake} /> : null}
         <AnchoredMenu anchor={menu} onClose={close} onClosed={onMenuClosed} right={16} minWidth={220}>
           {menuItems}
         </AnchoredMenu>
@@ -631,7 +661,7 @@ export function ProfileScreen({ userId, root }: { userId: string; root?: boolean
 // photo + name), both off ONE useBarTitleProgress value, like the moment's
 // HeroTopBar. Height = heroBarHeight (lib/layout.ts).
 function ProfileHeroBar({
-  title, leading, collapsed, back, onBack, onMenu,
+  title, leading, collapsed, back, onBack, onMenu, menuInert,
 }: {
   title: string;
   leading?: React.ReactNode;
@@ -639,6 +669,8 @@ function ProfileHeroBar({
   back: boolean;
   onBack: () => void;
   onMenu?: (anchor: MenuAnchor) => void;
+  // While you edit: dimmed + inert (a tap there shakes the edit bar).
+  menuInert?: boolean;
 }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
@@ -665,6 +697,7 @@ function ProfileHeroBar({
               accessibilityRole="button"
               accessibilityLabel="Back"
               onPress={onBack}
+              onStartShouldSetResponderCapture={markNoShake}
               hitSlop={8}
               style={({ pressed }) => ({ ...circle, opacity: pressed ? 0.5 : 1 })}
             >
@@ -676,7 +709,12 @@ function ProfileHeroBar({
               GUTTER − the bar's 14 padding. */}
           <BarTitle title={title} leading={leading} progress={anim} inset={back ? 10 : GUTTER - 14} hidden={!collapsed} />
           {onMenu ? (
-            <View style={circle}>
+            <View
+              style={[circle, menuInert ? { opacity: 0.35 } : null]}
+              pointerEvents={menuInert ? 'none' : 'auto'}
+              accessibilityElementsHidden={menuInert}
+              importantForAccessibility={menuInert ? 'no-hide-descendants' : 'auto'}
+            >
               <AnchorButton onOpen={onMenu} accessibilityLabel="Profile Options" size={controlSize}>
                 <Icon name="more" size={iconSize} color={iconColor} />
               </AnchorButton>

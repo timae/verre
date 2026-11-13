@@ -11,6 +11,7 @@ import { prisma } from '@/lib/prisma'
 import { blockScrub } from '@/lib/peopleSql'
 import { viewableProfiles } from '@/lib/profileVisibility'
 import { resolveTilePhotos, TILE_KEYS, type TileKey } from '@/lib/profileTiles'
+import { cravingsCount } from '@/lib/profileLists'
 import type { CheckinVisibility, ProfileGateOk } from '@/lib/profileVisibility'
 
 // `pinned` (own profile only): the photo is the owner's chosen tile cover.
@@ -42,7 +43,8 @@ const FACES = 3
 // VISIBLE photo, from the newest FACE_POOL.
 const FACE_POOL = 12
 
-// `impressionsCount` is only read when the Impressions tile is shown.
+// `impressionsCount` is only read when the Impressions tile is shown (the
+// caller's profileLoad count: the Impressions list's total for this viewer, D7).
 export async function loadProfileHeaderExtras(
   profileId: number,
   gate: ProfileGateOk,
@@ -96,7 +98,9 @@ export async function loadProfileHeaderExtras(
             AND sm.removed_state IS DISTINCT FROM 'kicked'
         `
       : Promise.resolve(null),
-    gate.sees.cravings ? prisma.bookmark.count({ where: { userId: profileId } }) : Promise.resolve(null),
+    // 🔒 D7: exactly the rows the Cravings list shows this viewer (hidden
+    // line-ups out; on someone else's also blind-for-you + no moment found).
+    gate.sees.cravings ? cravingsCount(profileId, viewerId) : Promise.resolve(null),
     // Photos only (pins + the automatic latest): lib/profileTiles.ts. The
     // counts above never depend on photo eligibility.
     resolveTilePhotos(profileId, shown),

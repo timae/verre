@@ -9,6 +9,18 @@ export function mix(base: string, press: string, baseRatio: number): string {
   return `rgb(${ch(0)},${ch(1)},${ch(2)})`;
 }
 
+// A translucent `rgba(r,g,b,a)` token (e.g. `accentTint`) as it LOOKS over an
+// OPAQUE base (6-digit hex; a translucent base would be wrong): the solid
+// colour the contrast helpers can read (they take hex / `rgb()` only, and read
+// an rgba as NaN). Anything else comes back unchanged. The one helper for it
+// (the aroma compare re-exports it as `flattenRgbaOver`).
+export function flatten(color: string, base: string): string {
+  const m = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)$/i.exec(color.trim());
+  if (!m) return color;
+  const hex = `#${[m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('')}`;
+  return mix(hex, base, Number(m[4]));
+}
+
 // The CSS `color-mix(in srgb, var(--ink) N%, transparent)` pattern (e.g. the
 // secondary button border at 28%/42% ink).
 export function alpha(hex: string, a: number): string {
@@ -34,10 +46,11 @@ export function inkOn(fill: string, a: string, b: string): string {
 // at 4.5 only 5/72 theme×family combos stayed solid, ink-pulling even the
 // ones Simon judged fine on apricot/aubergine; 3:1 corrects only the truly
 // unreadable tail.
-export function readableSolid(color: string, ink: string, fill: string): string {
+// `min` raises the bar for small regular text (4.5:1, a helper line).
+export function readableSolid(color: string, ink: string, fill: string, min = 3): string {
   for (let r = 1; r > 0; r -= 0.05) {
     const out = mix(color, ink, r);
-    if (contrastRatio(out, fill) >= 3) return out;
+    if (contrastRatio(out, fill) >= min) return out;
   }
   return ink;
 }

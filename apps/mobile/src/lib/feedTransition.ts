@@ -5,9 +5,14 @@
 //
 // Protocol: the card MEASURES its photo frame and calls setFeedTransitionSource
 // right before pushing the detail route; the detail CONSUMES it once on mount.
-// kind 'photo' drives the hero-clone grow/shrink; kind 'fade' (no photo to
-// share — NonPhotoHero, blind, placeholder slide) asks for the plain fade/rise
-// presentation. A missing/stale entry means "no transition" (cold deep link).
+// kind 'photo' drives the hero-clone grow/shrink; kind 'row' (a profile list
+// row, lists plan D9) grows the detail out of the tapped row as a container
+// transform and folds it back on close (`face` = a static copy of the row,
+// drawn on the container while it fades out); kind 'fade' (no photo to share — NonPhotoHero,
+// blind, placeholder slide) asks for the plain fade/rise presentation. A
+// missing/stale entry means "no transition" (cold deep link).
+
+import type { ReactNode } from 'react';
 
 export type FeedTransitionSource =
   // aspect = the photo's NATURAL ratio in the feed's house convention:
@@ -19,6 +24,8 @@ export type FeedTransitionSource =
   // wrong (zoomed) crop mid-flight. Optional — undefined falls back to the
   // hero-box crop until the clone's own onLoad reports the real ratio.
   | { kind: 'photo'; x: number; y: number; width: number; height: number; uri: string; aspect?: number }
+  // The tapped row's WINDOW frame (measureInWindow, measured right before the push).
+  | { kind: 'row'; x: number; y: number; width: number; height: number; face?: ReactNode }
   | { kind: 'fade' };
 
 let pending: { source: FeedTransitionSource; at: number } | null = null;

@@ -286,6 +286,7 @@ export function ProfileHeader({
   edit,
   pulled,
   onPeople,
+  onTile,
 }: {
   profile: FullProfile;
   own: boolean;
@@ -294,6 +295,8 @@ export function ProfileHeader({
   // The counts + in-common row open People (D10): `known` = "Only people you
   // know" on (the in-common row).
   onPeople?: (tab: PeopleTab, known?: boolean) => void;
+  // A tile's tap opens its list (the lists step).
+  onTile?: (key: TileKey) => void;
   // The name's bottom edge in header coordinates (the bar title trigger).
   onNameBottom?: (y: number) => void;
   // Own profile only.
@@ -325,6 +328,7 @@ export function ProfileHeader({
       label,
       count: compactCount(t.count),
       imageUrl: t.imageUrl,
+      onPress: onTile ? () => onTile(key) : undefined,
       // Every tile of your own, an empty one too: its sheet can add your own
       // photo (ruled 2026-11-12; it used to be inert with nothing to pick).
       onLongPress: edit ? () => edit.onTile(key) : undefined,
@@ -614,7 +618,9 @@ function EditableName({
 // .yo-bio — one paragraph, small, 1.5 line height. Own + empty: the quiet
 // hint (R5n), a pencil + "Touch and hold to add a bio" in the
 // placeholder grey (ruled 2026-11-12: it names the gesture and reads as a
-// prompt; never shown to anyone else); a TAP starts editing too. Editing: the
+// prompt; never shown to anyone else). Touch and hold ONLY, as it says and as
+// a written bio (Simon, 2026-11-13: a tap starting it contradicted the copy;
+// it was tap-or-hold before). Editing: the
 // input in place, capped at 200 UTF-16 units (the server's own unit; the
 // normalisation only ever shortens), Return = Done, no counter (the mock has
 // none).
@@ -658,9 +664,9 @@ function Bio({ profile, own, edit }: { profile: FullProfile; own: boolean; edit?
   return (
     <LongPressable
       disabled={edit.busy != null}
-      onPress={() => edit.start('bio')}
       onLongPress={() => edit.start('bio')}
       accessibilityLabel="Add a Bio"
+      accessibilityHint="Double-tap and hold to edit your name and bio."
     >
       {/* Reads as a prompt, not your text (ruled 2026-11-12): a pencil and
           the app's placeholder grey (the empty search field's). */}

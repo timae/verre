@@ -13,6 +13,7 @@ import { VText } from '@/components/ui/VText';
 import { CountrySheet, Disclosure, FieldGroup, MAX_COVER_BYTES, NotesField, OptionSheet, pickPhoto, SelectField } from '@/components/moments/momentForm';
 import { type WineTypeCode } from '@/lib/api/sessions';
 import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/checkinDraft';
+import { checkinHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
 import { radius, useTheme } from '@/theme';
@@ -42,6 +43,8 @@ export default function CheckinDetails() {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  // The flow's own stack (Feed, or You from your Impressions: lists plan D8).
+  const mount = useSessionTab();
 
   const [photo, setPhoto] = useState<PhotoState>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -79,8 +82,8 @@ export default function CheckinDetails() {
   // at stage 2 leaves the old rating in the store and onRate's preserve-prev
   // read would silently inherit it into the next check-in (codex P1).
   useEffect(() => {
-    clearCheckinDraft();
-  }, []);
+    clearCheckinDraft(mount.tab);
+  }, [mount.tab]);
 
   const onPickPhoto = async () => {
     setPhotoError(null);
@@ -99,8 +102,8 @@ export default function CheckinDetails() {
     // Preserve an in-progress rating from a prior visit to stage 2 (the rate
     // screen wrote it back on unmount) — a back-swipe to tweak a detail must
     // not wipe the score already set.
-    const prev = getCheckinDraft();
-    setCheckinDraft({
+    const prev = getCheckinDraft(mount.tab);
+    setCheckinDraft(mount.tab, {
       photo,
       name, vintage, producer, type, grape,
       wineRegion: region, wineCountry: country,
@@ -111,7 +114,7 @@ export default function CheckinDetails() {
       aromas: prev?.aromas ?? [],
       notes: prev?.notes ?? '',
     });
-    router.push('/feed/check-in/rate');
+    router.push(checkinHref(mount, 'rate'));
   };
 
   const typeLabel = type ? WINE_TYPES.find((t) => t.code === type)?.label ?? '' : '';

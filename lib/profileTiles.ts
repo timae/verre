@@ -41,6 +41,7 @@
 
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
+import { cravingSessionIdSql, lineupHiddenNowSql } from '@/lib/outsideView'
 
 export const TILE_KEYS = ['impressions', 'moments', 'cravings'] as const
 export type TileKey = (typeof TILE_KEYS)[number]
@@ -84,13 +85,16 @@ const COLUMN: Record<TileKey, Prisma.Sql> = {
 }
 
 // 🔒 A newly picked (or automatic) tile photo must never leak an unrevealed
-// blind wine. The SAFE SUBSET of the feed's redaction rule
-// (lib/sessionFeedWines.ts): standalone, not blind, revealed, or a tombstoned
-// moment. It deliberately skips the feed's host / wine-adder bypasses and the
-// over-by-its-dates auto-reveal: over-redacting a tile photo costs nothing, a
-// leaked label costs the tasting. Aliases: `w` = wines, `s` = sessions (LEFT
-// JOINed on the rating's or wine's session).
-const SAFE_PHOTO = Prisma.sql`(s.id IS NULL OR s.deleted_at IS NOT NULL OR s.blind IS NOT TRUE OR w.revealed_at IS NOT NULL)`
+// blind bottle or a hidden line-up. A deliberately STRICTER SUBSET of the
+// outside-a-moment rule (lib/outsideView.ts, lists plan D4), pinned beside
+// it: standalone, or not blind / revealed / a tombstoned moment, AND the
+// line-up not hidden right now for ANYONE (no host bypass). It skips the
+// rule's host / bottle-adder bypasses and the over-by-its-dates auto-reveal:
+// over-redacting a tile photo costs nothing, a leaked label costs the
+// tasting. Aliases: `w` = wines, `s` = sessions (LEFT JOINed on the rating's
+// or craving's moment).
+export const SAFE_PHOTO = Prisma.sql`((s.id IS NULL OR s.deleted_at IS NOT NULL OR s.blind IS NOT TRUE OR w.revealed_at IS NOT NULL)
+  AND NOT ${lineupHiddenNowSql('s')})`
 
 // Every pool yields (url, at): the photo and the recency it sorts by.
 function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
@@ -113,14 +117,17 @@ function pool(tile: TileKey, profileId: number, pick: boolean): Prisma.Sql {
       AND sm.removed_state IS DISTINCT FROM 'kicked'
       AND s.cover_photo_url IS NOT NULL
       AND strpos(s.cover_photo_url, 'sessions/' || s.code || '_') = 0`
+  // A craving's moment: the bottle's own, else a session rating's (a banned
+  // adder's bottles in a running moment lose wines.session_id). One whose
+  // moment can't be found never gives a picked photo.
   return Prisma.sql`
     SELECT w.image_url AS url, b.saved_at AS at
     FROM bookmarks b
     JOIN wines w ON w.id = b.wine_id
-    LEFT JOIN sessions s ON s.id = w.session_id
+    LEFT JOIN sessions s ON s.id = ${cravingSessionIdSql('w')}
     WHERE b.user_id = ${profileId}
       AND w.image_url IS NOT NULL
-      ${pick ? Prisma.sql`AND ${SAFE_PHOTO}` : Prisma.empty}`
+      ${pick ? Prisma.sql`AND s.id IS NOT NULL AND ${SAFE_PHOTO}` : Prisma.empty}`
 }
 
 type Db = Pick<typeof prisma, '$queryRaw'> | Prisma.TransactionClient

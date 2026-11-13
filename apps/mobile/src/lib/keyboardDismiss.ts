@@ -34,6 +34,11 @@ export function useRegisterInput(ref: RefObject<unknown>, enabled = true) {
   }, [ref, enabled]);
 }
 
+/** Is this touch target a registered input (or companion control)? */
+export function isRegisteredInput(target: unknown): boolean {
+  return typeof target === 'number' && inputTags.has(target);
+}
+
 /** Root capture handler — dismisses on outside touches, never claims the
  *  responder. */
 export function dismissKeyboardOnOutsideTouch(e: GestureResponderEvent): boolean {

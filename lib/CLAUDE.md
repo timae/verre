@@ -4,7 +4,7 @@ Local rules for `lib/*`. Root CLAUDE.md still applies; this is overlay context f
 
 ## Redis key namespace
 
-- `s:{CODE}:meta` — JSON session metadata (host, name, blind, blindForEveryone, lifespan, hostIdentityId, hostUserId, coHostIds, providerIds, …). `blindForEveryone` stacks on `blind`: when true, the host/cohost/provider/wine-adder bypasses in `redactWine` (`lib/wineRedaction.ts`) are disabled and only `revealed` un-redacts. Mirrored to Postgres `sessions.blindForEveryone` so the feed/profile read paths (`lib/sessionFeedWines.ts`) apply the same gate without Redis. Disabling `blind` in the settings PATCH cascades to clear `blindForEveryone`.
+- `s:{CODE}:meta` — JSON session metadata (host, name, blind, blindForEveryone, lifespan, hostIdentityId, hostUserId, coHostIds, providerIds, …). `blindForEveryone` stacks on `blind`: when true, the host/cohost/provider/wine-adder bypasses in `redactWine` (`lib/wineRedaction.ts`) are disabled and only `revealed` un-redacts. Mirrored to Postgres `sessions.blindForEveryone` so every read path outside a moment (the one SQL rule, `lib/outsideView.ts`) applies the same gate without Redis. Disabling `blind` in the settings PATCH cascades to clear `blindForEveryone`.
 - `s:{CODE}:wines` — JSON array of wines for this session
 - `s:{CODE}:r:{IDENTITYID}:{WINEID}` — per-rating JSON (score, flavors, notes, `at` = the mirror token, equal to `ratings.mirror_at` for logged-in raters). Identity-id keyed (`u:<userId>`, `a:<uuid>`, or `d:<uuid>` for a deleted account's tombstoned ratings), never display name
 - `s:{CODE}:identities` — hash of identity-id → display name (the participant list)
@@ -80,7 +80,7 @@ The per-viewer session read bodies (meta / wines / ratings) are built only by `b
 
 `participantOrBanned(code, req, session, opened.meta)` returns `'ok' | 'banned' | 'kicked' | 'invalid' | 'unavailable'` with an `AuthorizedIdentity` (`lib/sessionGrant.ts`): for a `u:` caller of a Postgres-backed session the RECORD decides (grant read — member, rating author or strict host; minus kicked/banned), a Redis ban still denies first, a missing roster entry is HEALED (`healRegistration`, fenced, 500 ms) and a missing ban/kick entry RE-SEEDED (`reseedRemoval`). `resolveAuthorized` is the same grant without the participant gate — so it folds a CACHED ban into the grant, and the privilege helpers (`isHostByIdentity` / `isStrictHost` / `isProvider`) grant only while `grantStatus(grant) === 'ok'`: a role held by a kicked or banned user grants nothing (set-role also refuses a non-taster role for a removed target, 409). Both take the opened snapshot: the grant — or, without one, the cache that admits — must be that incarnation, else `'unavailable'`. `authRemoved()` / `authInvalid()` live in `lib/authResponses.ts`.
 
-🔒 **List and enrichment reads never rebuild** (`/api/me/sessions`, `lib/sessionFeedWines.ts`): only opening one moment does. The feed auto-reveals a blind moment's unrevealed wines once it is over by its RECORD dates (`momentIsOver`, `@verre/core`) — never because the cache is gone.
+🔒 **List and enrichment reads never rebuild** (`/api/me/sessions`, `lib/sessionFeedWines.ts`, the profile lists): only opening one moment does. Outside a moment a bottle follows ONE SQL rule (`lib/outsideView.ts`): a blind moment's unrevealed bottles auto-reveal once it is over by its RECORD dates (the SQL twin of core `momentIsOver`, on `MOMENT_DEFAULT_SPAN_MS`) — never because the cache is gone; a hidden line-up is left out until its reveal time.
 
 ## Per-device sessions (logged-in revocation gate)
 

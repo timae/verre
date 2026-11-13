@@ -1,6 +1,6 @@
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useFocusEffect, useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -43,7 +43,8 @@ import { StructureWheel } from '@/components/scoring/StructureWheel';
 import { AromaReadChips } from '@/components/scoring/aroma/AromaReadChips';
 import { buildWheelAxes } from '@/lib/flavourAxes';
 import { Avatar } from '@/components/ui/Avatar';
-import { deleteCheckin, feedQueryOptions, findFeedItem, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { deleteCheckin, detailFromItem, patchSessionRating, type FeedAuthor, type FeedItem, type SessionFeedWine } from '@/lib/api/feed';
+import { useFeedPost } from '@/lib/useFeedPost';
 import { ApiError } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
 import * as Haptics from 'expo-haptics';
@@ -86,6 +87,12 @@ import { useMeId } from '@/lib/meId';
 //     threshold finishes the dismiss and pops the route, else springs back.
 // A no-photo source (NonPhotoHero, blind slide) or a cold deep link has no
 // frame to share → kind 'fade' / null: same progress choreography, no clone.
+// A profile list row (kind 'row') has no photo worth sharing (its thumb is too
+// small to read as the hero): a CONTAINER TRANSFORM inside a REVEAL WINDOW,
+// a full-width band whose top and bottom run from the row's to the screen's:
+// the container shows in the raised tone with a copy of the row on it, which
+// fades out as the post fades in, then eases into the post's background; it
+// folds back into the row on close (ROW_* ramps; RevealWindow at the end).
 // Dismissing after paging targets the ORIGINAL card frame (every carousel
 // slide occupies the same frame), and LANDING SYNC (round 3) mirrors the
 // active page into the card as you swipe — so the close shrinks the active
@@ -135,6 +142,16 @@ const DISMISS_DRAG = 340;
 // duration — this belt matches the physical settle (used by the warm-stage
 // fallback timer, see `warmLevel`).
 const OPEN_SETTLE_MS = springs.enter.duration * 1.5;
+// From a list row (kind 'row'), a CONTAINER TRANSFORM (Material motion, Simon
+// 2026-11-13; it replaced an invisible bg-coloured band): progress ramps, the
+// same both ways. The container's raised tone comes up within the first frames
+// (`ROW_TONE_IN`: at 0 it is see-through, so the row's face lies exactly on
+// the real row and nothing pops at either end), the row's face fades out
+// riding the container's top edge (`ROW_FACE_OUT`), the post's background
+// eases in over the tone (`ROW_BG`) and the post's content on the usual ramps.
+const ROW_TONE_IN = 0.06;
+const ROW_FACE_OUT: [number, number] = [0.04, 0.3];
+const ROW_BG: [number, number] = [0.3, 0.8];
 
 export default function FeedImpression() {
   const { theme } = useTheme();
@@ -142,7 +159,7 @@ export default function FeedImpression() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width: screenW, height: windowH } = useWindowDimensions();
-  const { id, postId, index, user } = useLocalSearchParams<{ id?: string; postId?: string; index?: string; user?: string }>();
+  const { id, postId, index, user, source: sourceParam } = useLocalSearchParams<{ id?: string; postId?: string; index?: string; user?: string; source?: string }>();
   // Where this detail is mounted (lib/sessionStack.ts): the opened post's own
   // stack, on Feed or You. `mount` is what everything opened FROM here pushes
   // onto. Card mode = a post opened inside that stack (`postId`).
@@ -163,9 +180,10 @@ export default function FeedImpression() {
   // open; a cold deep-link (no cached data yet) still runs the INITIAL fetch —
   // refetchOnMount only suppresses refetching existing data — so the guard
   // below can resolve.
-  const feed = useInfiniteQuery({ ...feedQueryOptions(listUserId), refetchOnMount: false });
-  const pages = feed.data?.pages;
-  const found = Number.isFinite(feedItemId) ? findFeedItem(pages, feedItemId) : null;
+  // `source: 'item'` = opened from a profile tile list (lists plan D9): read
+  // ONLY that post's own item query (it can be older than any loaded page).
+  const fromList = sourceParam === 'item' ? 'item' : undefined;
+  const { feed, found } = useFeedPost(feedItemId, listUserId, fromList);
   // Pin the last-found item (the house lastRef pattern — cf. the session
   // screens' per-section poll merge). refetchOnMount:false only covers THIS
   // observer's mount: the list observer underneath (and this one, on
@@ -191,9 +209,11 @@ export default function FeedImpression() {
   const requestCloseRef = useRef<() => void>(() => {});
   const openAuthor = useCallback(() => {
     if (authorId == null) return;
-    if (authorId === listUserId) requestCloseRef.current();
+    // Opened from a tile list, the screen underneath is that list, not the
+    // profile: push the profile.
+    if (authorId === listUserId && fromList !== 'item') requestCloseRef.current();
     else router.push(feedHref(mount, 'profile', { id: authorId }));
-  }, [router, mount, authorId, listUserId]);
+  }, [router, mount, authorId, listUserId, fromList]);
   const onAuthorPress = authorId != null ? openAuthor : undefined;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
   // link can carry garbage) and onPagerScroll can round past the end on an
@@ -270,6 +290,13 @@ export default function FeedImpression() {
     return cardMode ? null : s;
   });
   const sourceFrame = source?.kind === 'photo' ? source : null;
+  const sourceRow = source?.kind === 'row' && source.width > 0 && source.height > 0 ? source : null;
+  // 🔒 The worklets read only these numbers, never `sourceRow`: it carries the
+  // row's face (a React element), and a worklet closure would copy whatever it
+  // captures to the UI runtime.
+  const rowOn = !!sourceRow;
+  const rowY = sourceRow?.y ?? 0;
+  const rowH = sourceRow?.height ?? 0;
   // 0 = at the feed card, 1 = fully open. Seeds 0 only when a card handed us a
   // presentation to run; a cold mount renders open, exactly as before.
   const progress = useSharedValue(source ? 0 : 1);
@@ -617,9 +644,51 @@ export default function FeedImpression() {
   // DISMISS (`dismissing` flips when a pull-down moves or the back button
   // closes) it follows progress linearly, so the feed grows back behind the
   // shrinking photo — the pull-down's whole point.
+  // From a list row the settle bg instead eases in over the container's raised
+  // tone, the same both ways (ROW_BG; the ramps beside ROW_TONE_IN).
   const bgStyle = useAnimatedStyle(() => {
     const p = progress.value;
+    if (rowOn) return { opacity: interpolate(p, ROW_BG, [0, 1], Extrapolation.CLAMP) };
     return { opacity: dismissing.value ? p : interpolate(p, [0, 0.12], [0, 1], Extrapolation.CLAMP) };
+  });
+  // The reveal window (kind 'row'): its band runs linearly from the row's
+  // window frame (p 0) to the whole screen (p 1), clamped (a spring's
+  // overshoot past either end must not invert the scale). OUTER = a
+  // screen-sized clip translated + axis-scaled onto that rect (centre origin,
+  // the clone's math); INNER = the inverse, so the layers inside render
+  // unscaled at their final place and only the clip moves. Both worklets
+  // return ONLY `transform` (the iOS sync-props allowlist, see cloneStyle).
+  // The container transform's two extra layers (kind 'row'): its raised tone
+  // under the settle bg, and the row's face on top, riding the window's top
+  // edge as it fades. Opacity + transform only (the sync-props allowlist).
+  const toneStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, ROW_TONE_IN], [0, 1], Extrapolation.CLAMP),
+  }));
+  const faceStyle = useAnimatedStyle(() => {
+    if (!rowOn) return { opacity: 0, transform: [{ translateY: 0 }] };
+    const p = Math.min(1, Math.max(0, progress.value));
+    return {
+      opacity: interpolate(p, ROW_FACE_OUT, [1, 0], Extrapolation.CLAMP),
+      transform: [{ translateY: rowY * (1 - p) - rowY }],
+    };
+  });
+  // VERTICAL only (Simon, 2026-11-13): the window is the screen's full width
+  // throughout; only its top and bottom edges move, from the row's to the
+  // screen's.
+  const windowOuterStyle = useAnimatedStyle(() => {
+    if (!rowOn) return { transform: [{ scale: 1 }] };
+    const p = Math.min(1, Math.max(0, progress.value));
+    const h = rowH + (windowH - rowH) * p;
+    const y = rowY * (1 - p);
+    return { transform: [{ translateY: y + h / 2 - windowH / 2 }, { scaleY: h / windowH }] };
+  });
+  const windowInnerStyle = useAnimatedStyle(() => {
+    if (!rowOn) return { transform: [{ scale: 1 }] };
+    const p = Math.min(1, Math.max(0, progress.value));
+    const h = rowH + (windowH - rowH) * p;
+    const y = rowY * (1 - p);
+    const sy = h / windowH;
+    return { transform: [{ translateY: (windowH / 2 - (y + h / 2)) / sy }, { scaleY: 1 / sy }] };
   });
   // The clone flies on TRANSFORM + OPACITY ONLY (snappiness plan step 4 — the
   // earlier left/top/width/height interpolation forced a native LAYOUT pass +
@@ -784,6 +853,13 @@ export default function FeedImpression() {
           see apps/mobile/CLAUDE.md "full-bleed scroll content vs RNS". */}
       <View collapsable={false} style={{ width: 0, height: 0 }} />
 
+      {/* Everything from the settle bg to the dots: inside the reveal window
+          when opened from a list row, as they are otherwise. */}
+      <RevealWindow on={!!sourceRow} width={screenW} height={windowH} outer={windowOuterStyle} inner={windowInnerStyle}>
+      {/* the container's raised tone (kind 'row' only), under the settle bg */}
+      {sourceRow ? (
+        <Reanimated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: theme.surface }, toneStyle]} />
+      ) : null}
       {/* settle background — the screen's bg, faded by progress */}
       <Reanimated.View
         pointerEvents="none"
@@ -938,6 +1014,17 @@ export default function FeedImpression() {
 
       </Reanimated.View>
 
+      {/* the row's face (kind 'row'): a static copy of the tapped row at its
+          place, riding the container's top edge while it fades out */}
+      {sourceRow?.face ? (
+        <Reanimated.View
+          pointerEvents="none"
+          style={[{ position: 'absolute', left: sourceRow.x, top: sourceRow.y, width: sourceRow.width }, faceStyle]}
+        >
+          {sourceRow.face}
+        </Reanimated.View>
+      ) : null}
+
       {/* on-photo title overlay — static final-rect layout, opacity only (a
           sibling of the clone, NOT inside it — see cloneTitleStyle). */}
       {hasClone ? (
@@ -1005,7 +1092,7 @@ export default function FeedImpression() {
           <DotRow total={total} index={page} />
         </Reanimated.View>
       ) : null}
-
+      </RevealWindow>
 
       {/* Overflow menu — the shared .ir-menu dropdown (AnchoredMenu). Crave,
           Had it too (standalone), Share, and owner Edit are all DISABLED
@@ -1029,6 +1116,7 @@ export default function FeedImpression() {
                   id: String(feedItemId),
                   wine: detail.isSession && activeWine ? activeWine.id : undefined,
                   user: listUserId ?? undefined,
+                  source: fromList,
                 }),
               );
             }}
@@ -1062,6 +1150,22 @@ export default function FeedImpression() {
 // name/vintage, then producer/style. Attribution belongs to the IG-style
 // caption in the body. Shared with the traveling clone so the title handoff is
 // pixel-identical at rest.
+// The row reveal's clip (kind 'row'; the styles' math is beside windowOuterStyle
+// in FeedImpression). `box-none` on both: at rest the transforms are identity
+// and the layers inside keep their own hit-testing. Off, it renders its
+// children as they are, so the photo and fade presentations are untouched.
+function RevealWindow({ on, width, height, outer, inner, children }: {
+  on: boolean; width: number; height: number;
+  outer: ReturnType<typeof useAnimatedStyle>; inner: ReturnType<typeof useAnimatedStyle>; children: React.ReactNode;
+}) {
+  if (!on) return <>{children}</>;
+  return (
+    <Reanimated.View pointerEvents="box-none" style={[{ position: 'absolute', left: 0, top: 0, width, height, overflow: 'hidden' }, outer]}>
+      <Reanimated.View pointerEvents="box-none" style={[{ width, height }, inner]}>{children}</Reanimated.View>
+    </Reanimated.View>
+  );
+}
+
 function HeroTitle({ wine, index, onNamePress }: { wine: SessionFeedWine; index: number; onNamePress?: () => void }) {
   const blind = !!wine._blind;
   const name = blind ? `Wine ${index + 1}` : wine.name;

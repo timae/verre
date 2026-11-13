@@ -42,6 +42,8 @@ const ALLOWED = {
   'app/api/feed-items/[id]/like/route.ts': [4, 'like POST viewerCanSeePosts / DELETE the D11 rule; the count only after the gate'],
   'app/api/checkins/route.ts': [1, 'had a sip source: viewerCanSeePosts'],
   'app/api/checkins/[id]/route.ts': [3, 'owner-only edit / delete lookups (wrong owner = 404)'],
+  'lib/outsideView.ts': [1, 'hiddenSessionIds: moment ids only (no post content), for the gated feed / profile authors'],
+  'lib/profileLists.ts': [3, 'the post ids of the list rows: impressions only when gate.sees.posts; a craving\'s only with gate.sees.posts (or your own)'],
 }
 
 const PRISMA_READ = /\b(feedItem|feedItemLike|feedItemTag)\s*\.\s*(find\w*|count|aggregate|groupBy)\b/

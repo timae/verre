@@ -105,7 +105,6 @@ const { mutationHooks, scopedInvalidate, ContractCold } = await import('../../li
 const { acquireSessionLock, releaseSessionLock, sessionLockKey, fencedExec, lockTiming, LockLost } = await import('../../lib/sessionLock.ts')
 const { deleteAccountDurable } = await import('../../lib/accountDelete.ts')
 const { mutateWines, ensurePromoted } = await import('../../lib/session.ts')
-const { sessionIsOver } = await import('../../lib/sessionFeedWines.ts')
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 let pass = 0
@@ -277,9 +276,12 @@ async function roundTrip() {
   const H = await mkUser('Host H', { pro: true })
   const C = await mkUser('Cohost C'), P = await mkUser('Provider P'), T = await mkUser('Taster T')
   const R = await mkUser('Rater R'), K = await mkUser('Kicked K'), B = await mkUser('Banned B'), X = await mkUser('Doomed X')
+  // Hide Line-up ON (its fields round-trip below) with its reveal time already
+  // past (starts in 10 min, shown 15 min before): the tasters below rate, and a
+  // taster may not rate a line-up hidden from them (lists plan D4).
   const s = await createSession({ cookie: H.cookie }, {
     blind: true, hideLineup: true, hideLineupMinutesBefore: 15, address: 'Rue 1', description: 'desc', link: 'https://x.test', timezone: 'Europe/Zurich',
-    dateTo: new Date(Date.now() + 7200_000).toISOString(),
+    dateFrom: new Date(Date.now() + 10 * 60_000).toISOString(), dateTo: new Date(Date.now() + 7200_000).toISOString(),
   })
   await settings(s.code, { cookie: H.cookie }, { showProvenance: false, blindForEveryone: true })
   for (const [u, n] of [[C, 'Cohost C'], [P, 'Provider P'], [T, 'Taster T'], [K, 'Kicked K'], [B, 'Banned B'], [X, 'Doomed X']] as const) await enter(s.code, { cookie: u.cookie }, n)
@@ -294,12 +296,15 @@ async function roundTrip() {
   const w4 = await addWine(s.code, { cookie: H.cookie }, 'Inserted first', { position: 1 })
   await call(reorderRoute.POST, 'POST', `/api/session/${s.code}/wines/reorder`, { cookie: H.cookie }, { orderedIds: [w4, w2, w1, w3] }, { code: s.code })
   await call(revealRoute.POST, 'POST', `/api/session/${s.code}/wines/${w1}/reveal`, { cookie: H.cookie }, undefined, { code: s.code, wineId: w1 })
-  await rate(s.code, { cookie: T.cookie }, w1, 4)
-  await rate(s.code, { cookie: T.cookie }, w2, 0, { flavors: { body: 3 }, notes: '' })   // chips-only
-  await rate(s.code, { cookie: R.cookie }, w2, 3.5)
-  await rate(s.code, { cookie: K.cookie }, w1, 2)
-  await rate(s.code, { cookie: X.cookie }, w1, 5)
-  await rate(s.code, { anon: A.anon }, w1, 1)
+  const rated = [
+    await rate(s.code, { cookie: T.cookie }, w1, 4),
+    await rate(s.code, { cookie: T.cookie }, w2, 0, { flavors: { body: 3 }, notes: '' }),   // chips-only
+    await rate(s.code, { cookie: R.cookie }, w2, 3.5),
+    await rate(s.code, { cookie: K.cookie }, w1, 2),
+    await rate(s.code, { cookie: X.cookie }, w1, 5),
+    await rate(s.code, { anon: A.anon }, w1, 1),
+  ]
+  check('setup: every rate lands (else the rating-key round trip compares nothing)', rated.every(r => r.status === 200), rated.map(r => r.status))
   await ban(s.code, { cookie: H.cookie }, `u:${K.id}`, 'kick')
   await ban(s.code, { cookie: H.cookie }, `u:${B.id}`, 'ban')
   await deleteAccountDurable(X.id)
@@ -322,6 +327,9 @@ async function roundTrip() {
   const metaDiff = (Object.keys(SESSION_META_FIELDS) as string[]).filter(f => f !== 'promotedAt' && JSON.stringify(norm(f, mB[f])) !== JSON.stringify(norm(f, mA[f])))
   check('meta: every rebuilt field round-trips (dates by instant; promotedAt is new)', metaDiff.length === 0, metaDiff.map(f => ({ f, before: mB[f], after: mA[f] })))
   check('meta: promotedAt stamped from archived_at', typeof mA.promotedAt === 'number')
+  check('setup: the fixture meta took (else the round trip compares defaults)',
+    mB.blind === true && mB.blindForEveryone === true && mB.hideLineup === true && mB.hideLineupMinutesBefore === 15 && mB.showProvenance === false,
+    { blind: mB.blind, blindForEveryone: mB.blindForEveryone, hideLineup: mB.hideLineup, hideLineupMinutesBefore: mB.hideLineupMinutesBefore, showProvenance: mB.showProvenance })
   const wB = before[k.wines(s.code)] as Record<string, unknown>[], wA = after[k.wines(s.code)] as Record<string, unknown>[]
   const wineFields = (Object.keys(WINE_META_FIELDS) as string[]).filter(f => (WINE_META_FIELDS as Record<string, string>)[f] === 'rebuilt')
   const wn = (v: unknown) => (v === '' || v === undefined ? null : v)
@@ -339,6 +347,8 @@ async function roundTrip() {
   check('…the kicked member is absent from identities and present in kicked', !idsA[`u:${K.id}`] && (after[k.kicked(s.code)] as string[]).includes(`u:${K.id}`))
   check('bans + kicked sets match', JSON.stringify(before[k.bans(s.code)]) === JSON.stringify(after[k.bans(s.code)]) && JSON.stringify(before[k.kicked(s.code)]) === JSON.stringify(after[k.kicked(s.code)]))
   const ratingKeys = keysB.filter(x => x.includes(':r:'))
+  // T ×2 (one chips-only), R, kicked K (kick-keep keeps them), deleted X as d:.
+  check('rating keys: all five non-anonymous ratings are there to compare', ratingKeys.length === 5, ratingKeys)
   const canon = (v: unknown): string => JSON.stringify(v, (_k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x)
   const rdiff = ratingKeys.filter(x => canon({ ...(before[x] as object), aromas: (before[x] as { aromas?: unknown }).aromas ?? [] }) !== canon(after[x]))
   check('rating keys: same values incl. the mirror token `at` and the chips-only score 0', rdiff.length === 0, rdiff.map(x => ({ x, before: before[x], after: after[x] })))
@@ -2097,7 +2107,7 @@ try {
   await resetLimits()
 }
 console.log(`\n${pass} passed, ${failed} failed`)
-void [sessionIsOver, scopedInvalidate, sessionLockKey, LockLost, ratingsRoute, leaveRoute, unbanRoute, checkinRoute, readFileSync, unrate]
+void [scopedInvalidate, sessionLockKey, LockLost, ratingsRoute, leaveRoute, unbanRoute, checkinRoute, readFileSync, unrate]
 await redis.quit().catch(() => {})
 await prisma.$disconnect()
 process.exit(failed === 0 ? 0 : 1)

@@ -6,50 +6,22 @@
 // query against the union, then groups the results.
 //
 // Server-side redaction is applied here — never ship unrevealed wine
-// identity over the wire. The redaction predicate mirrors the live
-// session view (lib/wineRedaction.ts):
-//   redacted = session.blind && wine.revealedAt is NULL
-//              && viewer is not the host && viewer doesn't own the wine
-// Host bypass + own-wine bypass match the live route's contract so the
-// host's profile / feed shows their own session post un-redacted.
+// identity over the wire. 🔒 What a bottle may show outside its moment is
+// decided by ONE SQL rule (lib/outsideView.ts, lists plan D4), read for the
+// page's ratings in one raw query: `redacted` → a blind row, `hidden` (the
+// line-up is hidden from this viewer) → left out. No TypeScript twin of the
+// rule lives here (two rules on two clocks drift).
 
 import { prisma } from '@/lib/prisma'
-import { decimalToNumber, momentIsOver } from '@verre/core'
+import { decimalToNumber } from '@verre/core'
+import { outsideViewSql } from '@/lib/outsideView'
 import type { SessionFeedWine } from '@/lib/feedTypes'
 
-// Input record per session feed_item. `blind`, `hostUserId`, and
-// `deleted` come from the included `session` row on the feed_item;
-// pass them in so the helper doesn't need to re-read them.
-//
-// Tombstoned sessions (`deleted: true`) always render their wines fully
-// — the live blind invariant only matters while the session is active.
-// A host who deletes a blind session pre-reveal accepts that the
-// preserved post records reveal the wine identity to participants.
-// (Trade-off: deletes are rare and host-initiated; the alternative
-// "treat scrubbed-blind as blind" over-redacts non-blind sessions
-// forever because non-blind wines never have `revealedAt` set.)
-//
-// `expired: true` mirrors the `deleted` short-circuit for blind sessions that
-// are OVER BY THEIR RECORD DATES before the host revealed (owner ruling Q5 (b),
-// 2026-11-08): over ⇔ now > date_to, else date_from + 48 h (a legacy row with
-// neither: created_at + 48 h) — see `sessionIsOver`. Never "the cache is
-// gone": after redis-rehydration release B a live durable moment can drop out
-// of Redis mid-tasting (flush, eviction) and is rebuilt on its next open, so
-// cache absence would reveal a lineup before the moment is over. A host who let
-// a blind moment end unrevealed has effectively authorised the reveal, the same
-// as one who deleted it. Not "+ lifespan": app moments are `unlimited`, which
-// would mean a year. The GUI says this rule wherever blind tasting is set up.
+// One session feed_item: its author and its moment. Everything the rule needs
+// is read from the record by the SQL, never passed in.
 export type SessionFeedPair = {
   authorId: number
   sessionId: number
-  blind: boolean
-  // "Blind for all" — disables the host/own-wine bypass for blind
-  // sessions. Composes with reveal: a revealed wine still un-redacts.
-  // See lib/wineRedaction.ts for the live-route mirror.
-  blindForEveryone: boolean
-  deleted: boolean
-  expired: boolean
-  hostUserId: number | null
 }
 
 // Map key shape: `${authorId}:${sessionId}` so the caller can look up
@@ -57,10 +29,6 @@ export type SessionFeedPair = {
 export function pairKey(authorId: number, sessionId: number): string {
   return `${authorId}:${sessionId}`
 }
-
-// The Q5 end rule (see SessionFeedPair `expired`), defined once in @verre/core
-// beside the setup copy that states it. PG-only, rebuild-free.
-export const sessionIsOver = momentIsOver
 
 export async function loadSessionFeedWines(
   pairs: SessionFeedPair[],
@@ -76,6 +44,7 @@ export async function loadSessionFeedWines(
       OR: pairs.map(p => ({ userId: p.authorId, sessionId: p.sessionId })),
     },
     select: {
+      id: true,
       userId: true,
       sessionId: true,
       score: true,
@@ -85,8 +54,7 @@ export async function loadSessionFeedWines(
       wine: {
         select: {
           id: true, name: true, producer: true, vintage: true,
-          grape: true, style: true, imageUrl: true, revealedAt: true,
-          addedByIdentityId: true,
+          grape: true, style: true, imageUrl: true,
           // Catalog metadata for the feed's full impression detail page.
           // Blanked on a redacted wine (below) so blind identity can't leak.
           region: true, country: true, vinification: true,
@@ -108,32 +76,28 @@ export async function loadSessionFeedWines(
     orderBy: { ratedAt: 'asc' },
   })
 
-  // Index pairs by key for O(1) lookup of blind / hostUserId per group.
-  const pairMeta = new Map<string, SessionFeedPair>()
-  for (const p of pairs) pairMeta.set(pairKey(p.authorId, p.sessionId), p)
-
-  // Null viewer = unauthenticated path (no host bypass, no own-wine
-  // bypass). Sentinel string can't match a real identity-id.
-  const viewerIdentity = viewerUserId == null ? null : `u:${viewerUserId}`
+  const flags = new Map<number, { redacted: boolean; hidden: boolean }>()
+  if (ratings.length > 0) {
+    const { redacted, hidden } = outsideViewSql(viewerUserId, { s: 's', w: 'w' })
+    const rows = await prisma.$queryRaw<{ id: number; redacted: boolean; hidden: boolean }[]>`
+      SELECT r.id, ${redacted} AS redacted, ${hidden} AS hidden
+        FROM ratings r
+        JOIN wines w ON w.id = r.wine_id
+        LEFT JOIN sessions s ON s.id = r.session_id
+       WHERE r.id = ANY(${ratings.map(r => r.id)}::int[])`
+    for (const f of rows) flags.set(f.id, { redacted: f.redacted, hidden: f.hidden })
+  }
 
   for (const r of ratings) {
     if (r.userId == null || r.sessionId == null) continue  // standalone tastings can't reach this loop (no matching pair)
     const key = pairKey(r.userId, r.sessionId)
-    const meta = pairMeta.get(key)
-    if (!meta) continue
     const w = r.wine
-    const revealed = w.revealedAt != null
-    const isHost = viewerUserId != null && meta.hostUserId === viewerUserId
-    const ownsWine = viewerIdentity != null
-      && !!w.addedByIdentityId
-      && w.addedByIdentityId === viewerIdentity
-    // Redaction predicate mirrors lib/wineRedaction.ts: revealed wines
-    // always win; non-blind never redacts; tombstoned AND expired-blind
-    // sessions short-circuit to "always show" (see SessionFeedPair
-    // comment for the why); when blindForEveryone is on the host/own-
-    // wine bypasses are disabled.
-    const bypass = !meta.blindForEveryone && (isHost || ownsWine)
-    const redacted = !meta.deleted && !meta.expired && meta.blind && !revealed && !bypass
+    // 🔒 A missing flag row (the rating went between the two reads) is left
+    // out, never shown in full.
+    // A NULL flag (never by construction) reads as the closed side.
+    const f = flags.get(r.id)
+    if (!f || f.hidden !== false) continue
+    const redacted = f.redacted !== false
     const ratingImage = r.images[0]?.imageUrl ?? null
     const wireWine: SessionFeedWine = redacted
       ? {

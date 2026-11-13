@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { decimalToNumber } from '@verre/core'
+import { outsideViewSql } from '@/lib/outsideView'
 
 // History endpoint: every rating the viewer has written. Post-rewire,
 // session context comes off the rating itself (rating.session) rather
@@ -17,27 +19,51 @@ import { decimalToNumber } from '@verre/core'
 //     to display "[deleted session]" instead of a link.
 //   - `session_id`: integer id; surfaced for cross-match against bookmarks
 //     (replaces the legacy session_code/wine_name name-based join).
+//
+// 🔒 Outside a moment (lib/outsideView.ts, lists plan D4): a rating whose
+// moment's line-up is hidden from you is LEFT OUT (a host can edit a bottle
+// while the line-up is hidden), and an unrevealed blind bottle you have no
+// bypass on comes back as a blind row (`_blind`, no name / producer / vintage
+// / photo). Score, date and style stay.
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
 
-  const ratings = await prisma.rating.findMany({
-    where: { userId: Number(session.user.id) },
-    include: {
-      wine: { select: { name: true, producer: true, vintage: true, style: true, category: true, imageUrl: true } },
-      session: { select: { id: true, code: true, deletedAt: true, createdAt: true } },
-      images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
-    },
-    orderBy: { ratedAt: 'desc' },
-    take: 200,
-  })
+  const userId = Number(session.user.id)
+  const { redacted, hidden } = outsideViewSql(userId, { s: 's', w: 'w' })
+  // 🔒 ONE snapshot for the flags and the content (Codex review): two reads
+  // let a host hide the line-up and edit the bottle in between, and the label
+  // read second would go out under the flag read first. REPEATABLE READ (read
+  // committed would give each statement its own snapshot).
+  const { flagRows, ratings } = await prisma.$transaction(async (tx) => {
+    const flagRows = await tx.$queryRaw<{ id: number; redacted: boolean }[]>`
+      SELECT r.id, ${redacted} AS redacted
+        FROM ratings r
+        JOIN wines w ON w.id = r.wine_id
+        LEFT JOIN sessions s ON s.id = r.session_id
+       WHERE r.user_id = ${userId} AND NOT ${hidden}
+       ORDER BY r.rated_at DESC, r.id DESC
+       LIMIT 200`
+    const ratings = await tx.rating.findMany({
+      where: { userId, id: { in: flagRows.map(f => f.id) } },
+      include: {
+        wine: { select: { name: true, producer: true, vintage: true, style: true, category: true, imageUrl: true } },
+        session: { select: { id: true, code: true, deletedAt: true, createdAt: true } },
+        images: { orderBy: { sortOrder: 'asc' }, take: 1, select: { imageUrl: true } },
+      },
+      orderBy: [{ ratedAt: 'desc' }, { id: 'desc' }],
+    })
+    return { flagRows, ratings }
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead })
+  const blind = new Set(flagRows.filter(f => f.redacted !== false).map(f => f.id))
 
   return NextResponse.json(ratings.map(r => {
     const sessionDeleted = !!r.session?.deletedAt
     // Image priority: rating's own photo first (the user's tasting photo
     // captured at write time), falling back to the wine's bottle shot.
     const ratingImage = r.images[0]?.imageUrl ?? null
+    const isBlind = blind.has(r.id)
     return {
       id: r.id,
       // wine_id surfaced for client-side cross-match against bookmarks
@@ -49,12 +75,13 @@ export async function GET(req: NextRequest) {
       flavors: r.flavors,
       notes: r.notes,
       rated_at: r.ratedAt,
-      wine_name: r.wine.name,
-      producer: r.wine.producer,
-      vintage: r.wine.vintage,
+      wine_name: isBlind ? '' : r.wine.name,
+      producer: isBlind ? null : r.wine.producer,
+      vintage: isBlind ? null : r.wine.vintage,
       style: r.wine.style,
       category: r.wine.category,
-      image_url: ratingImage ?? r.wine.imageUrl,
+      image_url: isBlind ? null : (ratingImage ?? r.wine.imageUrl),
+      ...(isBlind ? { _blind: true } : {}),
       session_id: r.session?.id ?? null,
       session_code: sessionDeleted ? null : (r.session?.code ?? null),
       session_deleted: sessionDeleted,

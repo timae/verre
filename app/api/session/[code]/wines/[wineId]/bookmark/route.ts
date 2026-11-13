@@ -7,6 +7,7 @@ import { prisma } from '@/lib/prisma'
 import { isSameOrigin } from '@/lib/csrf'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
 import { withSessionMutation, refuse, ContractCold } from '@/lib/sessionMutation'
+import { lineupHiddenFor } from '@/lib/sessionState'
 import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
@@ -26,7 +27,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()
   if (p.status !== 'ok') return NextResponse.json({ error: 'not a participant' }, { status: 403 })
-  if (!opened.wines.some(w => w.id === wineId)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
+  // A line-up hidden from the caller is the same 404 (an early reject; decided
+  // again under the locks).
+  if (!opened.wines.some(w => w.id === wineId) || lineupHiddenFor(opened.meta, p.identity)) return NextResponse.json({ error: 'wine not found' }, { status: 404 })
 
   // Bookmarking is a logged-in act: promote first (before this route's own
   // contract), then — inside the contract (advisory lock + the publication
@@ -43,7 +46,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
       const raw = await redis.get(k.wines(c))
       if (raw === null) throw new ContractCold(c)
       const wines = JSON.parse(raw) as WineMeta[]
-      if (!wines.some(w => w.id === wineId)) throw refuse(404, 'wine not found')
+      // 🔒 A hidden line-up (the live rule, decided here from the fresh grant +
+      // meta) is the same 404: the read hides the bottle, so must the write.
+      if (!wines.some(w => w.id === wineId) || !ctx.meta || !ctx.caller || lineupHiddenFor(ctx.meta, ctx.caller)) throw refuse(404, 'wine not found')
       await mirrorLineup(tx, ctx.row.id, wines)
       await tx.$executeRaw`INSERT INTO bookmarks (user_id, wine_id) VALUES (${userId}, ${wineId}) ON CONFLICT DO NOTHING`
     })

@@ -208,9 +208,11 @@ export function mySessionsQueryOptions() {
 // search/facets/order (moments-server-filtering.md Part B); the client passes
 // the query + filter params and pages on the opaque cursor. `tense` picks the
 // list: 'upcoming' (future-start, soonest-first) vs 'past' (everything else,
-// newest-first). Roles/hosts/people are comma-joined multi-selects.
+// newest-first); OMITTED = both, newest first (your Moments list, lists plan
+// D10: pass `limit` then, since a request with no param at all is the legacy
+// 50-row carousel read). Roles/hosts/people are comma-joined multi-selects.
 export type MomentQuery = {
-  tense: 'upcoming' | 'past';
+  tense?: 'upcoming' | 'past';
   q?: string;
   roles?: string[];
   hosts?: string[];
@@ -226,7 +228,7 @@ export type MomentPage = { rows: MySessionRow[]; nextCursor: string | null };
 
 export async function getMomentsPage(query: MomentQuery): Promise<MomentPage> {
   const p = new URLSearchParams();
-  p.set('tense', query.tense);
+  if (query.tense) p.set('tense', query.tense);
   if (query.q?.trim()) p.set('q', query.q.trim());
   if (query.roles?.length) p.set('roles', query.roles.join(','));
   if (query.hosts?.length) p.set('hosts', query.hosts.join(','));

@@ -3,26 +3,27 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import * as Haptics from 'expo-haptics';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, FlatList, Pressable, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, FlatList, RefreshControl, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AddFriendsSheet } from '@/components/people/AddFriendsSheet';
+import { Avatar } from '@/components/ui/Avatar';
 import { PeopleRow } from '@/components/people/PeopleRow';
-import { ToggleRow } from '@/components/moments/settingsParts';
+import { ToggleCard } from '@/components/moments/settingsParts';
 import { FollowButton, compactCount } from '@/components/profile/ProfileHeader';
 import { CenteredMessage, ErrorState } from '@/components/ui/ConnectionState';
-import { Icon } from '@/components/ui/Icon';
+import { IconPill } from '@/components/ui/IconPill';
 import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { TabStrip } from '@/components/ui/TabStrip';
+import { ToolButton } from '@/components/ui/ToolButton';
 import { VText } from '@/components/ui/VText';
 import { VBar } from '@/components/VBar';
 import { PeopleGoneError, getPeoplePage, peopleKey, type PeopleTab, type PersonRow } from '@/lib/api/people';
 import { profileQueryOptions } from '@/lib/api/users';
-import { authClient } from '@/lib/authClient';
-import { GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
+import { GUTTER, TAB_BAR_CLEARANCE } from '@/lib/layout';
 import { confirmUnfollow, relate, usePersonBusy } from '@/lib/relationship';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
 import { usePushGuard } from '@/lib/usePushGuard';
-import { radius, useTheme } from '@/theme';
+import { useTheme } from '@/theme';
 import { useMeId } from '@/lib/meId';
 
 // People (handoff 04·11 / 04·11a / 04·11c): someone's Friends / Followers /
@@ -106,7 +107,7 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: str
     else void relate(queryClient, userId, 'follow');
   };
   const barRight = own ? (
-    <AddPill onPress={() => setAddOpen(true)} />
+    <IconPill icon="user-plus" label="Add" accessibilityLabel="Add Friends" onPress={() => setAddOpen(true)} />
   ) : relOwner ? (
     <FollowButton isFollowing={relOwner.isFollowing} followsYou={relOwner.followsYou} busy={ownerBusy} onPress={ownerFollow} name={relOwner.name} />
   ) : null;
@@ -162,20 +163,7 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: str
           <TabStrip tabs={tabs} active={tab} onSelect={setTab} fit />
           {/* .yo-toolrow — 36pt round button + the app's search pill (D12). */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }}>
-            {own ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Your Code and Scan"
-                onPress={() => setAddOpen(true)}
-                hitSlop={{ top: 4, bottom: 4 }}
-                style={({ pressed }) => ({
-                  width: 36, height: 36, borderRadius: 999, borderWidth: 1, borderColor: theme.rule, backgroundColor: theme.surface,
-                  alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.6 : 1,
-                })}
-              >
-                <Icon name="qr" size={17} color={theme.inkSoft} />
-              </Pressable>
-            ) : null}
+            {own ? <ToolButton icon="qr" label="Your Code and Scan" onPress={() => setAddOpen(true)} /> : null}
             <View style={{ flex: 1 }}>
               <SheetSearchField value={query} onChangeText={setQuery} placeholder="Search people" />
             </View>
@@ -195,8 +183,7 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: str
           ListHeaderComponent={
             own ? undefined : (
               <View style={{ paddingBottom: 6 }}>
-                <ToggleRow
-                  flush
+                <ToggleCard
                   title="Only People You Know"
                   subtitle={knownCount == null ? 'Friends and people you follow' : `Friends and people you follow · ${knownCount}`}
                   value={known}
@@ -246,44 +233,12 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: str
     <BottomSheetModalProvider>
       <View style={{ flex: 1, paddingTop: insets.top }}>
         <View style={{ paddingHorizontal: GUTTER }}>
-          <VBar title="People" right={barRight} />
+          {/* The owner's 26pt photo before the title (the mock's pushBar `.yo-tav`), like the profile's bar: only with a photo. */}
+          <VBar title="People" titleLeading={full?.imageUrl ? <Avatar imageUrl={full.imageUrl} name={full.name} size={26} /> : undefined} right={barRight} />
         </View>
         {body}
         {own ? <AddFriendsSheet open={addOpen} onClose={() => setAddOpen(false)} meId={userId} /> : null}
       </View>
     </BottomSheetModalProvider>
-  );
-}
-
-// .hv-add — the bar's accent pill (34h, glyph 17, label small 600, pad 0 14 0
-// 11): Moments home's NewPill metrics, copied (the pending <IconPill>
-// extraction in apps/mobile/CLAUDE.md), with the design's user-plus glyph.
-function AddPill({ onPress }: { onPress: () => void }) {
-  const { theme } = useTheme();
-  const phone = usePhoneTokens();
-  const surface = phone.surface('button');
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="Add Friends"
-      onPress={onPress}
-      hitSlop={6}
-      style={({ pressed }) => ({
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: 6,
-        minHeight: surface.height(phone.size('actionPillHeight')),
-        paddingLeft: phone.lerp(11, 14),
-        paddingRight: phone.lerp(14, 17),
-        borderRadius: radius.pill,
-        backgroundColor: theme.accent,
-        opacity: pressed ? 0.8 : 1,
-      })}
-    >
-      <Icon name="user-plus" size={phone.size('actionIcon')} color={theme.accentInk} />
-      <VText surface="button" style={{ fontFamily: 'InstrumentSans_600SemiBold', ...phone.text('small'), color: theme.accentInk }}>
-        Add
-      </VText>
-    </Pressable>
   );
 }

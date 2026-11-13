@@ -20,6 +20,7 @@ import { MY_ACCOUNT_KEY, getMyAccount } from '@/lib/api/me';
 import { freshOwnName } from '@/lib/api/profile';
 import { ApiError, createMoment } from '@/lib/api/sessions';
 import { authClient } from '@/lib/authClient';
+import { sessionHref, useSessionTab } from '@/lib/sessionStack';
 import { FOOT_CLEARANCE, GLASS_FILL, GUTTER, usePhoneTokens } from '@/lib/layout';
 import { motion, radius, useTheme } from '@/theme';
 
@@ -44,6 +45,7 @@ export default function CreateMoment() {
   const phone = usePhoneTokens();
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const mount = useSessionTab();
   const queryClient = useQueryClient();
   const { data: auth } = authClient.useSession();
   // `pro` gates the blind toggle (disabled + PRO badge); server 403 backstop.
@@ -132,7 +134,9 @@ export default function CreateMoment() {
         ...(link.trim() ? { link: link.trim() } : {}),
       });
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
-      router.replace({ pathname: '/(tabs)/moments/session/[code]', params: { code } });
+      // Into the new moment ON THIS STACK (Moments home, or your Moments' "+ New"
+      // on Feed / You: lists plan D8).
+      router.replace(sessionHref(mount, '', { code }));
     } catch (e) {
       // Surface the server's own message for any 4xx (validation, pro-gate,
       // rate limit) — only network/5xx get the generic copy.

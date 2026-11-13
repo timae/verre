@@ -33,16 +33,20 @@ export type CheckinDraft = {
   notes: string;
 };
 
-let draft: CheckinDraft | null = null;
+// Keyed by the TAB the flow runs on (lists plan D8): the Feed's pill and your
+// Impressions' "+ Check In" (the You stack) are separate flows, so a Feed draft
+// and a You draft never overwrite each other. (The pills never show on an
+// opened post's stack.)
+const drafts = new Map<string, CheckinDraft>();
 
-export function setCheckinDraft(d: CheckinDraft) {
-  draft = d;
+export function setCheckinDraft(tab: string, d: CheckinDraft) {
+  drafts.set(tab, d);
 }
 
-export function getCheckinDraft(): CheckinDraft | null {
-  return draft;
+export function getCheckinDraft(tab: string): CheckinDraft | null {
+  return drafts.get(tab) ?? null;
 }
 
-export function clearCheckinDraft() {
-  draft = null;
+export function clearCheckinDraft(tab: string) {
+  drafts.delete(tab);
 }

@@ -38,8 +38,8 @@ export default function Feed() {
   );
 }
 
-// .hv-add base — accent pill (the moments-home NewPill shape; still a copy —
-// the <IconPill> extraction in apps/mobile/CLAUDE.md stays pending).
+// .hv-add base — accent pill (the moments-home NewPill shape; still a copy of
+// what is now ui/IconPill.tsx: migrate when this screen is next touched).
 function CheckInPill({ onPress }: { onPress: () => void }) {
   const { theme } = useTheme();
   const phone = usePhoneTokens();

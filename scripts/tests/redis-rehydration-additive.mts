@@ -264,7 +264,10 @@ async function mirrors() {
   section('§ 1 mirror completeness — wines, positions, members, bans, columns')
   const H = await mkUser('Host H')
   await prisma.user.update({ where: { id: H.id }, data: { pro: true } })
-  const s = await createSession({ cookie: H.cookie }, { hideLineup: true, hideLineupMinutesBefore: 30 })
+  // Hide Line-up ON (the columns are pinned below) with its reveal time already
+  // past (starts in 10 min, shown 30 min before): the tasters below rate, and a
+  // taster may not rate a line-up hidden from them (lists plan D4).
+  const s = await createSession({ cookie: H.cookie }, { hideLineup: true, hideLineupMinutesBefore: 30, dateFrom: new Date(Date.now() + 10 * 60_000).toISOString() })
   let row = await liveRow(s.code)
   check('logged-in create writes lifespan + hide-lineup columns', row?.lifespan === 'unlimited' && row.hide_lineup === true && row.hide_lineup_minutes_before === 30, row)
 

@@ -22,6 +22,7 @@ export function VBar({
   titleLeading,
   back = true,
   onBack,
+  backCapture,
 }: {
   title: string;
   right?: React.ReactNode;
@@ -30,6 +31,8 @@ export function VBar({
   back?: boolean;
   /** Replaces the default router.back() (e.g. a stack-root fallback). */
   onBack?: () => void;
+  /** A never-claiming capture on the back button (the profile's edit-bar shake skips it). */
+  backCapture?: () => boolean;
 }) {
   const { theme } = useTheme();
   const router = useRouter();
@@ -46,6 +49,7 @@ export function VBar({
           accessibilityRole="button"
           accessibilityLabel="Back"
           onPress={onBack ?? (() => router.back())}
+          onStartShouldSetResponderCapture={backCapture}
           hitSlop={8}
           style={({ pressed }) => ({ width: controlSize, height: controlSize, alignItems: 'center', justifyContent: 'center', opacity: pressed ? 0.5 : 1 })}
         >

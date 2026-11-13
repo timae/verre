@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
 import { authedFetch } from '@/lib/authedFetch'
+import { labelBlind } from '@/lib/blindLabel'
 import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
 import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE, profilePath } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
@@ -13,7 +14,7 @@ import { ICO } from '@/lib/wineTypeColors'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean }
 type Session = { id: number; code: string; host_name: string; name: string | null; created_at: string; joined_at: string; wines_rated: number; avg_score: number | null; date_from: string | null; ttl_seconds: number; lifespan: string | null }
-type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string | null }
+type Bookmark = { wine_id: string; name: string; producer: string | null; vintage: string | null; style: string | null; image_url: string | null; session_code: string | null; _blind?: boolean }
 
 export function MeDashboard({ user }: { user: User }) {
   const router = useRouter()
@@ -39,7 +40,7 @@ export function MeDashboard({ user }: { user: User }) {
   })
   const { data: bookmarks = [] } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
+    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks').then(rows => labelBlind(rows, 'name')),
   })
 
   // Clear one field's error flag as it's fixed, and drop the summary banner once

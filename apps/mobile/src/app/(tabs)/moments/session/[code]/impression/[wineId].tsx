@@ -51,6 +51,8 @@ import { FOOT_CLEARANCE_IR as FOOT_CLEARANCE, GLASS_FILL, HERO_RATIO, HERO_SCRIM
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useIsOnline } from '@/lib/query';
 import { radius, useTheme } from '@/theme';
+import { markProfileHeaderStale } from '@/lib/feedCache';
+import { useMeId } from '@/lib/meId';
 
 const POLL_MS = 5000;
 const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'not-found';
@@ -221,6 +223,7 @@ export default function ImpressionDetail() {
   // Crave = wine bookmark (web WineModal parity, optimistic). The local
   // override is keyed on the wine id, so a sibling-wine swap ignores it at
   // render time — no reset effect, no stale-heart frame.
+  const meIdForLists = useMeId();
   const bookmarks = useQuery({ queryKey: ['bookmarks'], queryFn: getBookmarkedWineIds });
   const [craveLocal, setCraveLocal] = useState<{ wineId: string; on: boolean } | null>(null);
   const craved = craveLocal?.wineId === wineId ? craveLocal.on : bookmarks.data?.has(wineId) ?? false;
@@ -228,7 +231,11 @@ export default function ImpressionDetail() {
     mutationFn: (vars: { wineId: string; on: boolean }) => setBookmark(code, vars.wineId, vars.on),
     onMutate: (vars) => setCraveLocal(vars),
     onError: (_e, vars) => setCraveLocal({ wineId: vars.wineId, on: !vars.on }),
-    onSettled: () => queryClient.invalidateQueries({ queryKey: ['bookmarks'] }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['bookmarks'] });
+      // Your Cravings tile follows (lists plan D12) when you next look at it.
+      void markProfileHeaderStale(queryClient, meIdForLists);
+    },
   });
 
   const rateMut = useMutation({
@@ -237,6 +244,8 @@ export default function ImpressionDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['session-state', code, myIdentityId] });
       queryClient.invalidateQueries({ queryKey: ['my-sessions'] });
+      // Your Impressions tile follows (lists plan D12) when you next look at it.
+      void markProfileHeaderStale(queryClient, meIdForLists);
     },
   });
 

@@ -2,6 +2,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { authedFetch } from '@/lib/authedFetch'
+import { labelBlind } from '@/lib/blindLabel'
 import { formatCode, formatScore } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
 
@@ -36,9 +37,9 @@ export function HistoryClient() {
     queryKey: ['me-sessions'],
     queryFn: () => authedFetch<Session[]>('/api/me/sessions'),
   })
-  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string | null }[]>({
+  const { data: ratings = [] } = useQuery<{ wine_name: string; score: number; session_code: string | null; _blind?: boolean }[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string | null }[]>('/api/me/ratings'),
+    queryFn: () => authedFetch<{ wine_name: string; score: number; session_code: string | null; _blind?: boolean }[]>('/api/me/ratings').then(rows => labelBlind(rows, 'wine_name')),
   })
 
   const ratingsByCode = ratings.reduce((acc, r) => {

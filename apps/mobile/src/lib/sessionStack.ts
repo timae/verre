@@ -107,13 +107,19 @@ export function tabHomeHref(tab: SessionTab): Href {
 //     may be presented on the outer stack while a post is open: a native
 //     modal over the contained post hung the app (device pass 2026-11-10).
 //     So the "post is gone" exits there are plain pops on the post's stack.
-type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people';
+//   • 'impressions' / 'moments' / 'cravings' — someone's (or your) tile lists
+//     (lists plan): like 'people', their own route on a post's stack.
+//   `source: 'item'` (post / edit) = opened from a tile list: those screens
+//   read ONLY that post's item query (lib/useFeedPost.ts), and the edit's
+//   "post is gone" exit is a plain pop back to the list (closePost).
+type FeedSub = 'post' | 'edit' | 'edit/details' | 'profile' | 'people' | ListSub;
+type ListSub = 'impressions' | 'moments' | 'cravings';
 type FeedTab = Exclude<SessionTab, 'moments'>;
 
 export function feedHref(
   mount: SessionMount,
   sub: FeedSub,
-  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string } = {},
+  params: { id?: string; index?: string; wine?: string; user?: string; tab?: string; known?: string; source?: 'item' } = {},
 ): Href {
   const t = feedTab(mount.tab);
   const clean = (p: Record<string, string | undefined>) => Object.fromEntries(Object.entries(p).filter(([, v]) => v != null));
@@ -124,10 +130,10 @@ export function feedHref(
     case 'post':
       if (inPost) {
         pathname = `/(tabs)/${t}/[id]/post/[postId]`;
-        out = { id: mount.post, postId: params.id, index: params.index, user: params.user };
+        out = { id: mount.post, postId: params.id, index: params.index, user: params.user, source: params.source };
       } else {
         pathname = `/(tabs)/${t}/[id]`;
-        out = { id: params.id, index: params.index, user: params.user };
+        out = { id: params.id, index: params.index, user: params.user, source: params.source };
       }
       break;
     case 'profile':
@@ -154,18 +160,42 @@ export function feedHref(
     case 'edit':
       if (inPost) {
         pathname = `/(tabs)/${t}/[id]/edit/[postId]`;
-        out = { id: mount.post, postId: params.id, wine: params.wine, user: params.user };
+        out = { id: mount.post, postId: params.id, wine: params.wine, user: params.user, source: params.source };
       } else {
         pathname = `/(tabs)/${t}/edit/[id]`;
-        out = { id: params.id, wine: params.wine, user: params.user };
+        out = { id: params.id, wine: params.wine, user: params.user, source: params.source };
       }
       break;
     case 'edit/details':
       pathname = inPost ? `/(tabs)/${t}/[id]/edit/details` : `/(tabs)/${t}/edit/details`;
       out = { id: mount.post, user: params.user };
       break;
+    case 'impressions':
+    case 'moments':
+    case 'cravings':
+      if (inPost) {
+        pathname = `/(tabs)/${t}/[id]/${sub}/[personId]`;
+        out = { id: mount.post, personId: params.id };
+      } else {
+        pathname = `/(tabs)/${t}/${sub}/[id]`;
+        out = { id: params.id };
+      }
+      break;
   }
   return { pathname, params: clean(out) } as Href;
+}
+
+// The create flows (lists plan D8), mount-relative: the Feed's "Check In"
+// pill and your Impressions' "+ Check In" run the SAME two stages on their own
+// stack (`<tab>/check-in`, `<tab>/check-in/rate`), and moment create runs from
+// Moments home or your Moments' "+ New" (`<tab>/moments/create`), landing in
+// the new moment on that stack. Never inside an opened post (the pills don't
+// show there: a reading context).
+export function checkinHref(mount: SessionMount, stage?: 'rate'): Href {
+  return `/(tabs)/${feedTab(mount.tab)}/check-in${stage ? '/rate' : ''}` as Href;
+}
+export function momentCreateHref(mount: SessionMount): Href {
+  return (mount.tab === 'moments' ? '/(tabs)/moments/create' : `/(tabs)/${mount.tab}/moments/create`) as Href;
 }
 
 // Settings: the hub (no page) and its pages. Inside an opened post every one
@@ -224,6 +254,26 @@ type NavLike = {
   getParent(): NavLike | undefined;
   dispatch(action: { type: 'POP'; payload: { count: number }; target: string; source: undefined }): void;
 };
+// The "post is gone" exit of a post opened from a tile list (`source: 'item'`):
+// a plain pop back to the LIST (feedListHref would land one screen too far,
+// on the profile). Pops the post's route (the modal `[id]` or a card
+// `post/[postId]`) and everything above it, nearest first. False when none.
+export function closePost(navigation: NavLike, postId: string): boolean {
+  for (let nav: NavLike | undefined = navigation; nav; nav = nav.getParent()) {
+    const st = nav.getState();
+    if (!st) continue;
+    for (let i = st.routes.length - 1; i >= 0; i--) {
+      const r = st.routes[i];
+      const p = r.params as { id?: string; postId?: string } | undefined;
+      if ((r.name === 'post/[postId]' && p?.postId === postId) || (r.name === '[id]' && p?.id === postId)) {
+        nav.dispatch({ type: 'POP', payload: { count: st.routes.length - i }, target: st.key, source: undefined });
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function closeOpenedPost(navigation: NavLike, postId: string): boolean {
   for (let nav: NavLike | undefined = navigation; nav; nav = nav.getParent()) {
     const st = nav.getState();

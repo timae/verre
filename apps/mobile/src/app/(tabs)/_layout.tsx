@@ -84,7 +84,9 @@ export default function TabsLayout() {
     OPENED_POST_PATH.test(pathname) ||
     pathname.includes('/edit-impression/') ||
     pathname.endsWith('/moments/create') ||
-    pathname.includes('/feed/check-in') || // both check-in create stages (sticky Rate It / Check In bars)
+    // both check-in create stages (sticky Rate It / Check In bars), on Feed
+    // and on You (your Impressions' "+ Check In", lists plan D8): suffix-based.
+    /\/check-in(\/rate)?\/?$/.test(pathname) ||
     pathname.includes('/feed/edit') || // feed-post edit screens (sticky Save/Done bars)
     pathname.includes('/you/edit') || // the same edit screens mounted on the You stack
     // Edit Profile (sticky Discard / Save) incl. its mirrors on an opened

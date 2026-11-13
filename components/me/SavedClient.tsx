@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SavedWineModal } from './SavedWineModal'
 import { authedFetch } from '@/lib/authedFetch'
+import { labelBlind } from '@/lib/blindLabel'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { formatCode } from '@verre/core'
 import { StarRating } from '@/components/ui/StarRating'
@@ -18,6 +19,7 @@ type Bookmark = {
   // "[deleted session]" instead of the join code.
   session_deleted?: boolean
   session_id?: number | null
+  _blind?: boolean
 }
 type Rating = {
   wine_id: string
@@ -25,6 +27,7 @@ type Rating = {
   session_code: string | null
   session_deleted?: boolean
   session_id?: number | null
+  _blind?: boolean
 }
 
 export function SavedClient() {
@@ -33,7 +36,7 @@ export function SavedClient() {
 
   const { data: bookmarks = [], isLoading } = useQuery<Bookmark[]>({
     queryKey: ['me-bookmarks'],
-    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks'),
+    queryFn: () => authedFetch<Bookmark[]>('/api/me/bookmarks').then(rows => labelBlind(rows, 'name')),
     // Always refetch on mount so a bookmark made elsewhere in the app
     // (modal save in a session) shows up immediately when the user
     // arrives at /me/saved, even if RSC navigation served a cached
@@ -42,7 +45,7 @@ export function SavedClient() {
   })
   const { data: ratings = [] } = useQuery<Rating[]>({
     queryKey: ['me-ratings'],
-    queryFn: () => authedFetch<Rating[]>('/api/me/ratings'),
+    queryFn: () => authedFetch<Rating[]>('/api/me/ratings').then(rows => labelBlind(rows, 'wine_name')),
     refetchOnMount: 'always',
   })
 

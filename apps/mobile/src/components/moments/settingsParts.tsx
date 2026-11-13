@@ -9,7 +9,7 @@ import { BadgePill } from '@/components/moments/RoleChip';
 import { VBar } from '@/components/VBar';
 import { VText } from '@/components/ui/VText';
 import { GLASS_FILL, GUTTER, TAB_BAR_CLEARANCE, usePhoneTokens } from '@/lib/layout';
-import { alpha } from '@/theme/color';
+import { alpha, flatten, readableSolid } from '@/theme/color';
 import { elevation, radius, useTheme } from '@/theme';
 
 // Shared presentational pieces for the 02f settings screens (hub + Moment
@@ -290,7 +290,7 @@ export function SettingsFooter({ saving, error, onDiscard, onSave, bottomInset }
 // top padding (the first row under a SetTitle or a label). `busy`: only the switch is inert (a save in flight); `disabled`
 // also fades the text (the option is unavailable).
 export function ToggleRow({
-  title, subtitle, value, onChange, disabled, busy, flush, proBadge, reason, note,
+  title, subtitle, value, onChange, disabled, busy, flush, proBadge, reason, note, strong, titleColor, subtitleColor,
 }: {
   title: string;
   subtitle?: string;
@@ -303,14 +303,19 @@ export function ToggleRow({
   reason?: string;
   // A second, quieter line under the subtitle (e.g. the blind feed-reveal rule).
   note?: string;
+  // The title in semibold, and in a colour of its own (ToggleCard's warm list
+  // filter; ruled 2026-11-13). A disabled row keeps the faint ink.
+  strong?: boolean;
+  titleColor?: string;
+  subtitleColor?: string;
 }) {
   const { theme } = useTheme();
   const offTrack = alpha(theme.ink, 0.18);
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 14, paddingTop: flush ? 0 : ROW_GAP, paddingBottom: 2 }}>
       <View style={{ flexShrink: 1 }}>
-        <ToggleTitle title={title} disabled={disabled} proBadge={proBadge} />
-        {subtitle ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={{ marginTop: HELPER_PULL }}>{subtitle}</VText> : null}
+        <ToggleTitle title={title} disabled={disabled} proBadge={proBadge} strong={strong} color={titleColor} />
+        {subtitle ? <VText variant="small" color={disabled ? 'inkFaint' : 'inkSoft'} style={[{ marginTop: HELPER_PULL }, subtitleColor && !disabled ? { color: subtitleColor } : null]}>{subtitle}</VText> : null}
         {note ? <VText variant="small" color="inkFaint" style={{ marginTop: 4 }}>{note}</VText> : null}
         {reason ? <SetNote style={{ marginTop: 3 }}>{reason}</SetNote> : null}
       </View>
@@ -327,13 +332,43 @@ export function ToggleRow({
   );
 }
 
+// .yo-commonrow — a list FILTER switch about what you share with someone
+// (their People "Only People You Know", their Impressions "Show 23 tastes you
+// share"): the house ToggleRow in a card at the mock's `.setnav` padding
+// (13 × 14). Settings' own switch rows stay cardless (ruled 2026-11-11); this
+// one keeps a card (ruled 2026-11-13: cardless didn't look good there), WARM
+// (the accent tint, the active filter button's fill; elevated by tone, no
+// edge), its title the INACTIVE TAB's (TabStrip: semibold, `inkSoft`; the
+// accent read wrong) (all ruled the same day). On the tint the inks lose
+// contrast, so each is pulled toward ink only where it falls under its bar
+// (`readableSolid`; the tint is translucent, flattened over the page bg
+// first): the title at 3:1 (the ruled bar of the app's semibold labels, the
+// aroma badges' too; Clay, Mauve), the helper line at 4.5:1 (small regular
+// text). No `disabled`: the faint ink would vanish on the tint.
+export function ToggleCard(props: Omit<Parameters<typeof ToggleRow>[0], 'flush' | 'strong' | 'titleColor' | 'subtitleColor' | 'disabled'>) {
+  const { theme } = useTheme();
+  const fill = flatten(theme.accentTint, theme.bg);
+  return (
+    // 13 above, 11 below: ToggleRow adds 2 under itself (its gap to a next row), so the row sits centred.
+    <View style={{ backgroundColor: theme.accentTint, borderRadius: radius.md, paddingHorizontal: 14, paddingTop: 13, paddingBottom: 11 }}>
+      <ToggleRow
+        {...props}
+        flush
+        strong
+        titleColor={readableSolid(theme.inkSoft, theme.ink, fill)}
+        subtitleColor={readableSolid(theme.inkSoft, theme.ink, fill, 4.5)}
+      />
+    </View>
+  );
+}
+
 // A switch row's title, with the PRO badge INLINE after its last word (a long
 // title wraps and the badge follows it; as a flex sibling it hung at the end
 // of the first line). An inline view's vertical spot depends on the font's
 // baseline, so it is MEASURED: the title's last line (onTextLayout) and the
 // badge's frame (onLayout, which a transform doesn't change, so no loop) give
 // the shift that centres the badge on its line, at any Dynamic Type size.
-function ToggleTitle({ title, disabled, proBadge }: { title: string; disabled?: boolean; proBadge?: boolean }) {
+function ToggleTitle({ title, disabled, proBadge, strong, color }: { title: string; disabled?: boolean; proBadge?: boolean; strong?: boolean; color?: string }) {
   const { theme } = useTheme();
   const [shift, setShift] = useState(0);
   const line = useRef<{ y: number; height: number } | null>(null);
@@ -346,6 +381,7 @@ function ToggleTitle({ title, disabled, proBadge }: { title: string; disabled?: 
     <VText
       variant="body"
       color={disabled ? 'inkFaint' : 'ink'}
+      style={[strong ? { fontFamily: 'InstrumentSans_600SemiBold' } : null, color && !disabled ? { color } : null]}
       onTextLayout={proBadge ? (e) => { line.current = e.nativeEvent.lines.at(-1) ?? null; align(); } : undefined}
     >
       {title}
