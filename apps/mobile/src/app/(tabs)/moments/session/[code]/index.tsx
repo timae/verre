@@ -668,6 +668,8 @@ export default function SessionLineup() {
           people={cmpPeople}
           hidden={cmpHidden}
           myIdentityId={myIdentityId}
+          blocksOut={meta.viewerBlocksOut}
+          blocksIn={meta.viewerBlocksIn}
           onToggle={toggleCmpPerson}
           onAll={showAllCmp}
           onJustMe={() => setCmpHidden(new Set(cmpPeople.filter((p) => p.id !== myIdentityId).map((p) => p.id)))}

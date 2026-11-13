@@ -40,7 +40,7 @@
 // reclaim reading a line an apply has just written (copied, rows not yet
 // pointed at it) would delete the new object.
 // Runbook: docs/dev/deployment.md § Re-key user images.
-import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync, writeSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { basename, dirname, join, resolve } from 'node:path'
 import { randomInt } from 'node:crypto'
@@ -72,13 +72,43 @@ export function parseOldKey(key: string): Parsed | null {
 
 export const DEFAULT_MANIFEST = '.local/rekey/rekey-user-images.manifest.jsonl'
 
-function lockManifest(manifest: string): () => void {
+// One --apply / --reclaim per manifest at a time (the lock file beside it).
+// Shared with scripts/rekey-session-images.mts.
+export function lockManifest(manifest: string): () => void {
   const lock = `${manifest}.lock`
   let fd: number
   try { fd = openSync(lock, 'wx', 0o600) } catch { throw new Error(`${lock} exists: another --apply / --reclaim is running on this manifest (delete the lock only if none is)`) }
   writeSync(fd, String(process.pid))
   closeSync(fd)
   return () => { try { unlinkSync(lock) } catch {} }
+}
+
+// A manifest line, owner-only (0600). Shared with scripts/rekey-session-images.mts.
+// `mode` applies only when the file is created, so an existing manifest is
+// made owner-only too (it may have been created or copied 0644).
+export function appendManifest(manifest: string, entry: Record<string, unknown>): void {
+  appendFileSync(manifest, JSON.stringify(entry) + '\n', { mode: 0o600 })
+  ownerOnlyManifest(manifest)
+}
+
+export function ownerOnlyManifest(manifest: string): void {
+  if (existsSync(manifest) && (statSync(manifest).mode & 0o077) !== 0) chmodSync(manifest, 0o600)
+}
+
+// 🔒 Never a manifest git would track (the repo is public): the canonical path,
+// refused when it sits inside a git work tree that does not ignore it. Git is
+// asked about the manifest's OWN directory (by its real path), whatever the cwd.
+export function operatorManifestPath(manifest: string, defaultManifest: string): string {
+  const manifestPath = canonicalManifest(manifest)
+  const dir = dirname(manifestPath)
+  let inWorkTree = false
+  try { inWorkTree = execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true' } catch {}
+  if (inWorkTree) {
+    try { execFileSync('git', ['-C', dir, 'check-ignore', '-q', '--', basename(manifestPath)], { stdio: 'ignore' }) } catch {
+      throw new Error(`refusing --manifest ${manifest}: it is inside a git work tree and git does not ignore it (use ${defaultManifest} or a path outside any repo)`)
+    }
+  }
+  return manifestPath
 }
 
 // The ONE path the manifest is checked, locked, read and written at: its
@@ -98,7 +128,7 @@ export async function run(opts: RunOpts) {
   if (opts.mode === 'dry') return runModes(opts)
   const manifest = canonicalManifest(opts.manifest)
   const release = lockManifest(manifest)
-  try { return await runModes({ ...opts, manifest }) } finally { release() }
+  try { ownerOnlyManifest(manifest); return await runModes({ ...opts, manifest }) } finally { release() }
 }
 
 async function runModes(opts: RunOpts) {
@@ -184,9 +214,9 @@ async function runModes(opts: RunOpts) {
   for (const oldKey of order) {
     const p = parseOldKey(oldKey)!
     const urls = refs.get(oldKey)
-    if (!urls) { appendFileSync(opts.manifest, JSON.stringify({ old: oldKey, new: null }) + '\n', { mode: 0o600 }); continue }
+    if (!urls) { appendManifest(opts.manifest, { old: oldKey, new: null }); continue }
     const newKey = `${imageKey(p.kind)}${p.ext ? `.${p.ext}` : ''}`
-    appendFileSync(opts.manifest, JSON.stringify({ old: oldKey, new: newKey }) + '\n', { mode: 0o600 })
+    appendManifest(opts.manifest, { old: oldKey, new: newKey })
     try {
       const head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: oldKey }))
       await s3.send(new CopyObjectCommand({ Bucket: bucket, Key: newKey, CopySource: `${bucket}/${oldKey}`, ContentType: head.ContentType, MetadataDirective: 'REPLACE' }))
@@ -227,17 +257,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const mi = args.indexOf('--manifest')
   const manifest = mi >= 0 ? args[mi + 1] : DEFAULT_MANIFEST
   if (args.includes('--apply') && args.includes('--reclaim')) { console.error('--apply and --reclaim are separate runs'); process.exit(2) }
-  // 🔒 Never a manifest git would track (the repo is public). Git is asked
-  // about the manifest's OWN directory (by its real path), whatever the cwd.
   let manifestPath: string
-  try { manifestPath = canonicalManifest(manifest) } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(2) }
-  const dir = dirname(manifestPath)
-  let inWorkTree = false
-  try { inWorkTree = execFileSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() === 'true' } catch {}
-  if (inWorkTree) {
-    try { execFileSync('git', ['-C', dir, 'check-ignore', '-q', '--', basename(manifestPath)], { stdio: 'ignore' }) } catch {
-      console.error(`refusing --manifest ${manifest}: it is inside a git work tree and git does not ignore it (use ${DEFAULT_MANIFEST} or a path outside any repo)`); process.exit(2)
-    }
-  }
+  try { manifestPath = operatorManifestPath(manifest, DEFAULT_MANIFEST) } catch (e) { console.error(e instanceof Error ? e.message : e); process.exit(2) }
   run({ mode, manifest: manifestPath }).then(() => process.exit(0), (e) => { console.error('[rekey] failed:', e instanceof Error ? e.message : e); process.exit(1) })
 }

@@ -18,7 +18,10 @@ import {
 import { authClient } from './authClient';
 
 export const SESSION_POLL_MS = 5000;
-const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid']);
+// 'rate-limited': a non-member on a spent wrong-code budget (the server's
+// entrance gate), e.g. a member whose moment was deleted meanwhile: the
+// server's copy + Try Again, never a reconnecting bar over the old moment.
+const FATAL_KINDS = new Set(['not-found', 'removed', 'invalid', 'rate-limited']);
 
 // One my-sessions invalidation per (code, viewer) per app run: the
 // invalidation exists for the FIRST membership registration (Moments-home

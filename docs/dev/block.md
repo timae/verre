@@ -54,6 +54,10 @@ Click rules unchanged: clickable + blocked-by-me modes open `ProfilePreviewInlin
 
 `/api/session/[code]` GET adds `viewerBlocksOut` + `viewerBlocksIn` arrays (identity-ids, scoped to in-session participants only — never the viewer's full block list). Anon viewers get empty arrays. Response has `Cache-Control: private, no-store` since it varies by viewer.
 
+**The app follows the same matrix** (leak-fixes F5, 2026-11-13): `apps/mobile/src/lib/blockLook.ts` `blockLook(id, myId, viewerBlocksOut, viewerBlocksIn)` draws someone who blocked you (one way or mutual) as a GUEST (the app's anonymous-user look: user glyph, regular weight, ink-soft name, the "Unregistered" tag, no Friend word, not tappable) and keeps "· Blocked" for people YOU blocked one way. Every in-moment person render in the app goes through it (People sheet, an impression's Brought By, the Compare picker, the add / edit bringer field + picker), so a person can't be a guest in one place and a registered person in another. (Before, the People sheet ORed both lists and printed a red "· Blocked" next to someone who blocked you.) The "Unregistered" tag is the app's anonymous look, so it is a false label on a registered person by design. Host tools keep working (the id is still `u:`). Older app builds keep the old marker until updated. Units: `scripts/tests/block-look-units.ts`.
+
+Named residuals: **R4** `viewerBlocksIn` stays on the wire (the web and the app read it): anyone reading the app's traffic sees who in the moment blocked them, and a guest look on someone known to have an account gives it away. The only wire-clean guest look is a per-viewer fake guest id, which breaks host tools (considered, not chosen). **R6** mutual block keeps the web rule: your own "Blocked" marker turns into a guest look when they block you back, so a blocker learns it ("edge case", ruled).
+
 ## Follow endpoint scenarios
 
 12a (blocker→blocked) returns explicit 400; 12b (blocked→blocker) returns uniform 200 silent no-op so the blocked side can't infer the block via response code. Both checks run in `Promise.all`.

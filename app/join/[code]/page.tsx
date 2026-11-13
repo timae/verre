@@ -1,8 +1,10 @@
 import { redirect } from 'next/navigation'
+import { headers } from 'next/headers'
 import { auth } from '@/auth'
 import { JoinClient } from '@/components/session/JoinClient'
 import { RemovedView } from '@/components/session/RemovedView'
-import { openSession } from '@/lib/sessionRehydrate'
+import { openSessionCharged } from '@/lib/sessionRoute'
+import { getClientIp, formatWait } from '@/lib/rateLimit'
 import { prisma } from '@/lib/prisma'
 import { normalizeCode, formatCode } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
@@ -24,15 +26,23 @@ export default async function JoinPage({
 
   // Fetch session meta for the welcome screen — only if the code is valid.
   let sessionMeta: { host: string; name: string } | null = null
+  let rateLimited: { wait: string } | null = null
   if (C) {
-    // Opened like every session route (redis-rehydration § 5.3): a cold
-    // Postgres-backed moment is rebuilt here. 'restoring' gets one short retry,
-    // then the error page — never "not found" for a live moment (JoinClient
-    // renders a missing meta as an ended session).
-    let opened = await openSession(C)
+    // Opened like every session route, through the entrance gate (leak-fixes
+    // F2): a wrong code pays the wrong-code budget; once it is spent a caller
+    // who isn't a member gets the "too many codes" panel for EVERY code. A
+    // guest is unknown here (their token lives in the browser): JoinClient
+    // sends one holding this moment's token + name to the moment, where the
+    // API decides with the token. A cold Postgres-backed moment is rebuilt;
+    // 'restoring' gets one short retry, then the error page — never "not
+    // found" for a live moment (JoinClient renders a missing meta as an ended
+    // session).
+    const userId = session?.user?.id ? Number(session.user.id) : null
+    const who = { userId, ip: getClientIp({ headers: await headers() }), identity: async () => userId !== null ? `u:${userId}` : null }
+    let opened = await openSessionCharged(C, who)
     if (opened.status === 'restoring') {
       await new Promise(r => setTimeout(r, 300))
-      opened = await openSession(C)
+      opened = await openSessionCharged(C, who)
     }
     if (opened.status === 'restoring') throw new Error('This moment is being restored. Try again in a moment.')
     // Only what the page shows: JoinClient is a client component, so the whole
@@ -40,6 +50,7 @@ export default async function JoinPage({
     // out and unlimited (host user id, co-host / provider ids, …; review
     // 2026-11-12).
     if (opened.status === 'live') sessionMeta = { host: opened.meta.host, name: opened.meta.name }
+    if (opened.status === 'limited') rateLimited = { wait: formatWait(opened.retryAfter) }
   }
 
   // Removed-bounce path. The session-fetch helper redirects here with
@@ -48,8 +59,11 @@ export default async function JoinPage({
   // to figure out which. The `isLoggedIn` prop drives the final
   // destination: logged-in → /me (their dashboard); anon → / (the
   // lobby). The Keep/Delete prompts live in RemovedView, not here.
-  if (removed === '1' && C && sessionMeta) {
-    const label = sessionMeta.name || `Session ${formatCode(C)}`
+  // On a spent budget the page can't read the moment (a guest's token is in
+  // the browser): the code-only label, the same for any code, and RemovedView's
+  // own removed-state call (which carries the token) decides.
+  if (removed === '1' && C && (sessionMeta || rateLimited)) {
+    const label = sessionMeta?.name || `Session ${formatCode(C)}`
     return <RemovedView code={C} sessionLabel={label} isLoggedIn={!!session?.user} />
   }
 
@@ -82,6 +96,7 @@ export default async function JoinPage({
     <JoinClient
       code={C ?? code.toUpperCase()}
       sessionMeta={sessionMeta}
+      rateLimited={rateLimited}
       defaultName={session?.user?.name || ''}
       isLoggedIn={!!session?.user}
     />

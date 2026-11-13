@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetScrollView, BottomSheetView } from '@gorhom/bottom-sheet';
 import { AnchoredMenu, MenuItem } from '@/components/ui/AnchoredMenu';
+import { blockLook, type BlockLook } from '@/lib/blockLook';
 import { Avatar } from '@/components/ui/Avatar';
 import { Icon } from '@/components/ui/Icon';
 import { BadgePill } from '@/components/moments/RoleChip';
@@ -305,10 +306,8 @@ export function PeopleSheet({
                 p={p}
                 first={i === 0}
                 role={roleOf(p)}
-                isAnon={p.id.startsWith('a:')}
+                look={blockLook(p.id, myIdentityId, meta?.viewerBlocksOut, meta?.viewerBlocksIn)}
                 isFriend={p.id.startsWith('u:') && friendIds.has(p.id.slice(2))}
-                isBlocked={(meta?.viewerBlocksOut ?? []).includes(p.id) || (meta?.viewerBlocksIn ?? []).includes(p.id)}
-                isSelf={p.id === myIdentityId}
                 busy={busyId === p.id}
                 // ⋯ shows only when the viewer has ≥1 available action. Host/
                 // cohost, not self, not the strict host — and a non-strict-host
@@ -430,15 +429,15 @@ function buildMenuItems({
 
 // .pl-row — avatar · name + role/relationship tags · ⋯.
 function PersonRow({
-  p, first, role, isAnon, isFriend, isBlocked, isSelf, busy, canManage, onMenu,
+  p, first, role, look, isFriend, busy, canManage, onMenu,
 }: {
   p: Participant;
   first: boolean;
   role: 'host' | 'cohost' | 'provider' | 'taster';
-  isAnon: boolean;
+  // lib/blockLook.ts: someone who blocked you is drawn as a guest, someone you
+  // blocked carries "· Blocked" (the web's matrix).
+  look: BlockLook;
   isFriend: boolean;
-  isBlocked: boolean;
-  isSelf: boolean;
   busy: boolean;
   canManage: boolean;
   onMenu: (anchorTopY: number, anchorBottomY: number) => void;
@@ -448,10 +447,11 @@ function PersonRow({
   const surface = phone.surface('compactList');
   const rowRef = useRef<ViewInstance>(null);
   // Relationship suffix after the name: "· You / · Friend / · Blocked".
+  const isAnon = look === 'guest';
   const rel: { label: string; color: 'inkSoft' | 'critical' | 'positive' } | null =
-    isSelf ? { label: 'You', color: 'inkSoft' }
-    : isBlocked ? { label: 'Blocked', color: 'critical' }
-    : isFriend ? { label: 'Friend', color: 'positive' }
+    look === 'self' ? { label: 'You', color: 'inkSoft' }
+    : look === 'blocked-by-me' ? { label: 'Blocked', color: 'critical' }
+    : look === 'normal' && isFriend ? { label: 'Friend', color: 'positive' }
     : null;
 
   return (

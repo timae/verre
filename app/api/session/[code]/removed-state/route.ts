@@ -3,7 +3,7 @@ import { resolveUser } from '@/lib/resolveUser'
 import { hasKey } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { resolveIdentity, participantOrBanned } from '@/lib/identity'
-import { openSession } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 import { wireIdentity } from '@/lib/publicIds'
 
@@ -32,12 +32,11 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ state: 'none' }, { headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status === 'absent') return NextResponse.json({ state: 'none' }, { headers: noStore })
-  if (opened.status !== 'live') {
-    return NextResponse.json({ error: 'session is being restored' }, { status: 503, headers: { ...noStore, 'Retry-After': '1' } })
-  }
   const session = await resolveUser(req)
+  // A gone moment answers 'none' (the bounce screen sends the caller to the
+  // join form); a spent wrong-code budget a 429 the screen shows as is.
+  const opened = await openSessionFor(c, req, session, { absent: () => NextResponse.json({ state: 'none' }, { headers: noStore }) })
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveIdentity(c, req, session)
   if (!identity) return NextResponse.json({ state: 'none' }, { headers: noStore })
 

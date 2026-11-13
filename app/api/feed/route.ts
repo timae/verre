@@ -13,7 +13,7 @@ import {
 } from '@/lib/profileVisibility'
 import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
-import { blockPairIds } from '@/lib/userBlock'
+import { blockPairIds, viewerBlockedAmong } from '@/lib/userBlock'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
 import { parsePathId } from '@/lib/parsePathId'
@@ -205,6 +205,11 @@ export async function GET(req: NextRequest) {
       hiddenAuthorTag.add(`${r.blockedId}:${r.blockerId}`)
     }
   }
+  // …and a tag of someone in a block pair with the VIEWER, either way
+  // (leak-fixes F6, the People step's rule: you never see someone you
+  // blocked or who blocked you on anyone's list). Absence is no tell: you
+  // don't know who was tagged.
+  const viewerTagBlocked = await viewerBlockedAmong(userId, [...new Set(tagAuthorPairs.map(p => p.tagUserId))])
 
   // Per-wine ratings for kind='session' feed_items, in one bulk query
   // (one query per page, not per session post). Server-side redaction by the
@@ -285,7 +290,7 @@ export async function GET(req: NextRequest) {
             // Tag filter: drop GLOBALLY block-pair tags. Same rule as
             // the like-count subtraction. Render-time only — the tag row
             // stays in DB.
-            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`)).map(t => ({ id: t.user.publicId, name: t.user.name })),
+            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
           },

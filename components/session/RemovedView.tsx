@@ -29,6 +29,9 @@ type RemovedState =
   // not removed" case redirects to the regular join flow before
   // surfacing here, so 'unknown' is only the error path.
   | { kind: 'unknown' }
+  // The wrong-code budget is spent and the server didn't admit this caller:
+  // the server's copy, and never a navigation (a kicked guest would loop).
+  | { kind: 'limited'; message: string }
 
 // Bounce screen rendered after the server emits X-Vr-Auth: removed. The
 // client preserved its anon token / cookie, so the server can identify
@@ -65,6 +68,11 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
         if (token) headers['x-vr-anon-token'] = token
         const res = await webApiFetch(`/api/session/${code}/removed-state`, { headers })
         if (cancelled) return
+        if (res.status === 429) {
+          const body = await res.json().catch(() => ({})) as { error?: string }
+          if (!cancelled) setState({ kind: 'limited', message: body.error || 'Too many codes tried. Try again later.' })
+          return
+        }
         if (!res.ok) { setState({ kind: 'unknown' }); return }
         const data = await res.json() as { state: string; hasRatings?: boolean }
         if (data.state === 'banned') setState({ kind: 'banned' })
@@ -181,6 +189,13 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
                 </div>
               )}
             </>
+          )}
+
+          {state.kind === 'limited' && (
+            <div className="lobby-card lobby-form" style={{ textAlign: 'center' }}>
+              <p style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 16 }}>{state.message}</p>
+              <Link href={homePath(isLoggedIn)} className="btn-p" style={{ textDecoration: 'none', display: 'block', textAlign: 'center' }}>← back to {isLoggedIn ? 'dashboard' : 'home'}</Link>
+            </div>
           )}
 
           {state.kind === 'unknown' && (

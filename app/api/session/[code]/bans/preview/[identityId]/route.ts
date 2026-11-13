@@ -7,7 +7,7 @@ import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isHostByIdentity } from '@/lib/session'
 import { prisma } from '@/lib/prisma'
 import { readGrant } from '@/lib/sessionGrant'
-import { openSession, unavailable } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 type Ctx = { params: Promise<{ code: string; identityId: string }> }
 
@@ -36,9 +36,9 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code, identityId } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })

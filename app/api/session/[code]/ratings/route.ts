@@ -4,7 +4,7 @@ import { redis, k } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
 import { buildRatingsView } from '@/lib/sessionState'
-import { openSession, unavailable } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 // Returns ratings for this session, id-keyed. Shape (and the cosmetic-block
 // design note): see lib/sessionState.ts buildRatingsView — shared with
@@ -22,9 +22,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
   // Session opened before the participant check (rebuild on a cold cache; 404
   // only when absent, 503 while restoring).
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
 
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()

@@ -66,16 +66,6 @@ export async function checkRates(checks: RateCheck[]): Promise<RateResult> {
   return worst
 }
 
-// Clear a counter. Used by the session-code limiter when the lookup hits
-// a valid code — the user wasn't actually probing, just had typos before.
-export async function resetRate(key: string): Promise<void> {
-  try {
-    await redis.del(key)
-  } catch (err) {
-    console.error('rateLimit resetRate error:', err)
-  }
-}
-
 // Peek at a counter without incrementing. Used by login: we want to
 // check if already-over-limit BEFORE running bcrypt, then only increment
 // if bcrypt itself fails (so successful logins don't count).
@@ -108,6 +98,128 @@ export async function peekRates(checks: RateCheck[]): Promise<RateResult> {
   return worst
 }
 
+// The wrong-code budget (leak-fixes F2, lib/sessionRoute.ts openSessionCharged),
+// as a RESERVATION taken before the moment is opened, so a parallel burst can
+// get no more requests past the entrance than the budget has room for (a read
+// first and a charge after the open let every request of a burst read "not
+// spent" before any charge landed). KEYS = [seen marker, the counters…]; the
+// counters' maxima, then the window, in ARGV.
+//   'seen'     the marker is set: this caller already paid to learn this code
+//              is absent (a deleted moment's poll, the web's 404 → /join
+//              bounce): nothing reserved, the open decides.
+//   'spent'    a counter is AT its max (+ its 1-based index): nothing
+//              incremented (a spent account never pushes the address counter).
+//   'reserved' every counter incremented (EXPIRE on the first).
+// The boundary matches checkRate (count > max after the INCR) and peekRate
+// (count >= max before it): the max-th miss still answers 404, the next 429.
+const RESERVE_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 1 then return { 'seen', 0 } end
+for i = 2, #KEYS do
+  local n = tonumber(redis.call('GET', KEYS[i]) or '0')
+  if n >= tonumber(ARGV[i - 1]) then return { 'spent', i - 1 } end
+end
+for i = 2, #KEYS do
+  if redis.call('INCR', KEYS[i]) == 1 then redis.call('EXPIRE', KEYS[i], ARGV[#KEYS]) end
+end
+return { 'reserved', 0 }`
+
+// Settling a reservation: ARGV[1] 'keep' (the code was absent) sets the seen
+// marker, unless a concurrent duplicate already did (then this one is
+// refunded: one charge per caller and code); 'refund' (the code was live) gives
+// it back. A refund never takes a counter below 0. Accepted edge: a request in
+// flight across its counter's expiry refunds into the NEXT window (at most one
+// charge per such request erased); a process killed between the reservation
+// and the settle leaves the charge in place (fails closed, for the window).
+const SETTLE_SCRIPT = `
+local function refund()
+  for i = 2, #KEYS do
+    if tonumber(redis.call('GET', KEYS[i]) or '0') > 0 then redis.call('DECR', KEYS[i]) end
+  end
+end
+if ARGV[1] == 'keep' then
+  if redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[2]) then return 'charged' end
+  refund()
+  return 'seen'
+end
+refund()
+return 'refunded'`
+
+// The charge for a caller ADMITTED on a spent budget whose moment turned out
+// absent (a member of a moment deleted meanwhile): the marker → free;
+// a counter at its max → refused, nothing incremented; else INCR + marker.
+const MISS_SCRIPT = `
+if redis.call('EXISTS', KEYS[1]) == 1 then return { 'seen', 0 } end
+for i = 2, #KEYS do
+  local n = tonumber(redis.call('GET', KEYS[i]) or '0')
+  if n >= tonumber(ARGV[i - 1]) then return { 'limited', redis.call('TTL', KEYS[i]) } end
+end
+for i = 2, #KEYS do
+  if redis.call('INCR', KEYS[i]) == 1 then redis.call('EXPIRE', KEYS[i], ARGV[#KEYS]) end
+end
+redis.call('SET', KEYS[1], '1', 'EX', ARGV[#KEYS + 1])
+return { 'charged', 0 }`
+
+export type MissCounter = { key: string; max: number }
+type MissWindow = { windowSeconds: number; seenSeconds: number }
+export type MissReservation = { outcome: 'seen' | 'reserved' } | { outcome: 'spent'; key: string }
+export type MissCharge = { outcome: 'seen' | 'charged' } | { outcome: 'limited'; retryAfter: number }
+
+// Give back one charge of a checkRate-style counter (never below 0): a
+// reservation that did not go through, or was refused (the guest-join cap).
+// Never on a success. The cross-expiry edge of SETTLE_SCRIPT applies here too.
+const REFUND_SCRIPT = `
+if tonumber(redis.call('GET', KEYS[1]) or '0') > 0 then return redis.call('DECR', KEYS[1]) end
+return 0`
+
+export async function refundRate(key: string): Promise<void> {
+  try {
+    await redis.eval(REFUND_SCRIPT, { keys: [key], arguments: [] })
+  } catch (err) {
+    console.error('rateLimit refundRate error:', err)
+  }
+}
+
+// Fail open like checkRate: a Redis error reserves nothing and refuses nothing.
+export async function reserveMiss(seenKey: string, counters: MissCounter[], { windowSeconds }: MissWindow): Promise<MissReservation | null> {
+  try {
+    const [outcome, i] = (await redis.eval(RESERVE_SCRIPT, {
+      keys: [seenKey, ...counters.map(c => c.key)],
+      arguments: [...counters.map(c => String(c.max)), String(windowSeconds)],
+    })) as [string, number]
+    if (outcome === 'spent') return { outcome, key: counters[Number(i) - 1].key }
+    return { outcome: outcome === 'seen' ? 'seen' : 'reserved' }
+  } catch (err) {
+    console.error('rateLimit reserveMiss error:', err)
+    return null
+  }
+}
+
+export async function settleMiss(seenKey: string, counters: MissCounter[], keep: boolean, { seenSeconds }: MissWindow): Promise<'charged' | 'seen' | 'refunded'> {
+  try {
+    return String(await redis.eval(SETTLE_SCRIPT, {
+      keys: [seenKey, ...counters.map(c => c.key)],
+      arguments: [keep ? 'keep' : 'refund', String(seenSeconds)],
+    })) as 'charged' | 'seen' | 'refunded'
+  } catch (err) {
+    console.error('rateLimit settleMiss error:', err)
+    return keep ? 'charged' : 'refunded'
+  }
+}
+
+export async function chargeMissOnce(seenKey: string, counters: MissCounter[], { windowSeconds, seenSeconds }: MissWindow): Promise<MissCharge> {
+  try {
+    const [outcome, ttl] = (await redis.eval(MISS_SCRIPT, {
+      keys: [seenKey, ...counters.map(c => c.key)],
+      arguments: [...counters.map(c => String(c.max)), String(windowSeconds), String(seenSeconds)],
+    })) as [string, number]
+    if (outcome === 'limited') return { outcome, retryAfter: Math.max(Number(ttl), 1) }
+    return { outcome: outcome === 'seen' ? 'seen' : 'charged' }
+  } catch (err) {
+    console.error('rateLimit chargeMissOnce error:', err)
+    return { outcome: 'charged' }
+  }
+}
+
 // Pull the client IP from forwarding headers, for rate-limit keying.
 //
 // 🔒 Trusted-proxy posture (verified 2026-06-10, see docs/dev/deployment.md):
@@ -130,7 +242,7 @@ export async function peekRates(checks: RateCheck[]): Promise<RateResult> {
 // 'unknown' buckets every unresolved caller into one shared rate-limit key —
 // more permissive (one bucket for all) but safe: it fails CLOSED into a limit,
 // never bypasses it.
-export function getClientIp(req: Request): string {
+export function getClientIp(req: { headers: Pick<Headers, 'get'> }): string {
   const xff = req.headers.get('x-forwarded-for')
   if (xff) {
     // Single entry = the trusted-proxy-set real IP (the expected prod shape).

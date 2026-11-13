@@ -62,6 +62,11 @@
 //        shared filter), ?item=, the feed's hidden posts left out before
 //        paging (nextCursor, a mixed page on the feed and profileLoad),
 //        /api/me/ratings + /api/me/bookmarks
+//   The leak fixes (.local/leak-fixes/plan.md § 5), scripts/tests/leak-fixes-section.mts:
+//   § 20 b the entrance gate: the route sweep (a spent budget answers every
+//        code alike on every moment route, nothing rebuilt, members pass),
+//        the budgets per surface and code length, the atomic charge, the
+//        joins, the kicked bounce, the primitive, the admission query
 //   + the CANARY over every response of the run (no user integer leaves)
 //
 // S3 is an in-process FAKE endpoint that records every PUT / DELETE the AWS
@@ -95,6 +100,8 @@ if (!process.env.AUTH_SECRET) throw new Error('AUTH_SECRET is required (Better A
 
 // ── Fake S3 (path-style: /<bucket>/<key>) ─────────────────────────────────────
 const store = new Set<string>()
+// Each object's LastModified (the listing reports it; § 20 c backdates some).
+const mtimes = new Map<string, number>()
 const puts: string[] = []
 const deletes: string[] = []
 const fake = createServer((req, res) => {
@@ -104,18 +111,18 @@ const fake = createServer((req, res) => {
     const key = decodeURIComponent(new URL(req.url ?? '/', 'http://s3').pathname).replace(/^\/verre\//, '')
     // CopyObject ("had a sip") is a PUT with x-amz-copy-source; the SDK needs the XML result.
     if (req.method === 'PUT' && req.headers['x-amz-copy-source']) {
-      store.add(key); puts.push(key); res.writeHead(200, { 'Content-Type': 'application/xml' })
+      store.add(key); mtimes.set(key, Date.now()); puts.push(key); res.writeHead(200, { 'Content-Type': 'application/xml' })
       return res.end('<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult><ETag>"fake"</ETag><LastModified>2026-01-01T00:00:00.000Z</LastModified></CopyObjectResult>')
     }
-    if (req.method === 'PUT') { store.add(key); puts.push(key); res.writeHead(200, { ETag: '"fake"' }); return res.end() }
-    if (req.method === 'DELETE') { store.delete(key); deletes.push(key); res.writeHead(204); return res.end() }
+    if (req.method === 'PUT') { store.add(key); mtimes.set(key, Date.now()); puts.push(key); res.writeHead(200, { ETag: '"fake"' }); return res.end() }
+    if (req.method === 'DELETE') { store.delete(key); mtimes.delete(key); deletes.push(key); res.writeHead(204); return res.end() }
     // ListObjectsV2 (the re-key script's discovery, § 18).
     const q = new URL(req.url ?? '/', 'http://s3').searchParams
     if (req.method === 'GET' && q.get('list-type') === '2') {
       const prefix = q.get('prefix') ?? ''
       const keys = [...store].filter(x => x.startsWith(prefix)).sort()
       res.writeHead(200, { 'Content-Type': 'application/xml' })
-      return res.end(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>verre</Name><Prefix>${prefix}</Prefix><KeyCount>${keys.length}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${keys.map(x => `<Contents><Key>${x}</Key><Size>1</Size></Contents>`).join('')}</ListBucketResult>`)
+      return res.end(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult><Name>verre</Name><Prefix>${prefix}</Prefix><KeyCount>${keys.length}</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>${keys.map(x => `<Contents><Key>${x}</Key><LastModified>${new Date(mtimes.get(x) ?? Date.now()).toISOString()}</LastModified><Size>1</Size></Contents>`).join('')}</ListBucketResult>`)
     }
     res.writeHead(store.has(key) ? 200 : 404, store.has(key) ? { 'Content-Type': 'image/png' } : {}); res.end()
   })
@@ -167,6 +174,8 @@ const meRatingsRoute = await import('../../app/api/me/ratings/route.ts')
 const meBookmarksRoute = await import('../../app/api/me/bookmarks/route.ts')
 const bookmarkRoute = await import('../../app/api/session/[code]/wines/[wineId]/bookmark/route.ts')
 const { outsideViewMatrix } = await import('./outside-view-matrix.mts')
+// § 20 the leak fixes (.local/leak-fixes/plan.md)
+const { leakFixes } = await import('./leak-fixes-section.mts')
 // § 18 public user ids
 const stateRoute = await import('../../app/api/session/[code]/state/route.ts')
 const visitRoute = await import('../../app/api/session/[code]/visit/route.ts')
@@ -2144,6 +2153,9 @@ try {
   const readAll = JSON.stringify([(await list('impressions', Oo, Vv)).wire, (await list('cravings', Oo, Vv)).wire, (await list('impressions', Oo, Oo)).wire, (await list('cravings', Oo, Oo)).wire, (await item(Vv, `user=${Oo.pid}&item=${m1Post}`)).wire])
   check('🔒 § 12: no impressions / cravings / ?item= payload carries a moment code', !momentCodes.some(c => readAll.includes(c)))
   }
+
+  // ── § 20 the leak fixes (leak-fixes plan § 5) ────────────────────────────
+  await leakFixes({ call, check, section, mkUser, createSession, addWine, resetLimits, prisma, redis, k, scanKeys, TAG, s3: { store, mtimes, puts, deletes, urlOf, keyOf, endpoint: S3 }, PNG })
 
   // ── The canary over the whole run (every call() above and below) ─────────
   section('canary: no response carried a user integer')

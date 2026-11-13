@@ -9,7 +9,8 @@ import { userIdentityId, authRemoved } from '@/lib/identity'
 import { disambiguateAgainst } from '@/lib/displayName.server'
 import { isSameOrigin } from '@/lib/csrf'
 import { withSessionMutation, ContractRefused, type MutationCtx } from '@/lib/sessionMutation'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 // POST /api/session/<code>/visit — a logged-in participant opened the moment.
 // Promotes the session (a logged-in act), writes the durable member row, and
@@ -29,10 +30,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await resolveUser(req)
+  // Signed out: the same answer for every code, nothing opened or written.
   if (!session?.user) return NextResponse.json({ ok: true })
 
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
+  // The entrance gate BEFORE the promotion and the registration (leak-fixes
+  // F2): a stranger on a spent budget is refused before this route can
+  // register them or rebuild a cold right code.
+  const opened = await openSessionFor(c, req, session, { notFound: 'session not found' })
+  if (opened instanceof NextResponse) return opened
   const userId = Number(session.user.id)
   const id = userIdentityId(userId)
 

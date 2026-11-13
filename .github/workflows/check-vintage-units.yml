@@ -58,5 +58,12 @@ jobs:
       - name: Impression payload + scanner coercion pins
         run: npx tsx scripts/tests/impression-payload-units.ts
 
+      # The app's in-moment block look (apps/mobile/src/lib/blockLook.ts) is
+      # the web's locked matrix: someone who blocked you reads as a guest,
+      # someone you blocked carries "Blocked" (docs/dev/block.md). Every matrix
+      # cell, self and guest / deleted ids included. Pure, no DB.
+      - name: Block look pins (app)
+        run: npx tsx scripts/tests/block-look-units.ts
+
       - name: Vintage surface wiring
         run: node scripts/check-vintage-wiring.mjs

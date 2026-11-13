@@ -6,7 +6,8 @@ import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
 import { withSessionMutation, admitted, refuse, bestEffortMirror } from '@/lib/sessionMutation'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { resolveCatalogLink, catalogLinkRateKey, CatalogValidationError } from '@/lib/catalogWrite'
@@ -17,13 +18,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
-  // Session opened first: 404 only when it is really gone (the client goes
-  // home), 503 while a cold moment is restored — distinct from 401 ("session
+  // The entrance gate first: 404 only when it is really gone (the client goes
+  // home), 503 while a cold moment is restored, distinct from 401 ("session
   // exists but you're not a participant" → /join/<code>).
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
-  const { meta } = opened
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
+  const { meta } = opened
 
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()
@@ -51,11 +52,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404 })
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session, { notFound: 'session not found' })
+  if (opened instanceof NextResponse) return opened
   const body = await req.json().catch(() => null)
   if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
   const { meta } = opened
   // Banned cohosts must not be able to write wines until they next poll
   // and bounce. participantOrBanned does the same check that GET uses.

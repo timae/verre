@@ -44,6 +44,17 @@ export async function authorBlocksViewer(viewerId: number, authorId: number): Pr
   return row !== null
 }
 
+// The ids among `ids` in a block pair with `viewerId`, either direction (one
+// indexed query; a null viewer or no ids → empty).
+export async function viewerBlockedAmong(viewerId: number | null, ids: number[]): Promise<Set<number>> {
+  if (viewerId === null || ids.length === 0) return new Set()
+  const rows = await prisma.userBlock.findMany({
+    where: { OR: [{ blockerId: viewerId, blockedId: { in: ids } }, { blockedId: viewerId, blockerId: { in: ids } }] },
+    select: { blockerId: true, blockedId: true },
+  })
+  return new Set(rows.map(r => r.blockerId === viewerId ? r.blockedId : r.blockerId))
+}
+
 // Block-pair sets for the viewer, both directions. Used by feed,
 // search, profile list filters to drop pair-edges in one pass.
 // `blockedByMe`: users the viewer has blocked (viewer is blocker).

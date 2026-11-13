@@ -34,6 +34,7 @@ import { SheetSearchField } from '@/components/ui/SheetSearchField';
 import { Thumb } from '@/components/ui/Thumb';
 import { VText } from '@/components/ui/VText';
 import { getMyFriends } from '@/lib/api/me';
+import { blockLook } from '@/lib/blockLook';
 import { type RatingMeta, type RatingsView, type SessionMetaView, type WireWine } from '@/lib/api/sessions';
 import { GUTTER, usePhoneTokens } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
@@ -341,13 +342,16 @@ export function CompareToolbar({
 // sheet opens; rows carry the mock's small "Friend" tag. ────────────────────
 
 export function ComparePickerSheet({
-  open, onClose, people, hidden, myIdentityId, onToggle, onAll, onJustMe, onMeAndFriends,
+  open, onClose, people, hidden, myIdentityId, blocksOut, blocksIn, onToggle, onAll, onJustMe, onMeAndFriends,
 }: {
   open: boolean;
   onClose: () => void;
   people: ComparePerson[];
   hidden: Set<string>;
   myIdentityId: string;
+  /** The session's block-pair lists (meta.viewerBlocksOut / In): lib/blockLook.ts. */
+  blocksOut: readonly string[] | null | undefined;
+  blocksIn: readonly string[] | null | undefined;
   onToggle: (id: string) => void;
   onAll: () => void;
   onJustMe: () => void;
@@ -455,6 +459,9 @@ export function ComparePickerSheet({
         >
           {rows.map((p, i) => {
             const on = !hidden.has(p.id);
+            // Someone who blocked you reads as a guest here too (the People
+            // sheet's look, lib/blockLook.ts), never as a registered person.
+            const guest = blockLook(p.id, myIdentityId, blocksOut, blocksIn) === 'guest';
             return (
               <Pressable
                 key={p.id}
@@ -467,20 +474,20 @@ export function ComparePickerSheet({
                   backgroundColor: pressed ? theme.surfaceSunk : 'transparent',
                 })}
               >
-                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(30)} anon={p.id.startsWith('a:')} />
+                <Avatar imageUrl={p.imageUrl} name={p.displayName} size={phone.grow(30)} anon={guest} />
                 <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
                   {/* Unregistered read QUIETLY, with the SAME tokens as the
                       People sheet's anon rows (regular weight + inkSoft; no
                       badge — the anon avatar glyph is the other cue). */}
                   <VText
                     numberOfLines={1}
-                    color={p.id.startsWith('a:') ? 'inkSoft' : 'ink'}
-                    style={{ flexShrink: 1, fontFamily: p.id.startsWith('a:') ? 'InstrumentSans_400Regular' : 'InstrumentSans_500Medium', ...phone.text('body') }}
+                    color={guest ? 'inkSoft' : 'ink'}
+                    style={{ flexShrink: 1, fontFamily: guest ? 'InstrumentSans_400Regular' : 'InstrumentSans_500Medium', ...phone.text('body') }}
                   >
                     {p.displayName}
                   </VText>
                   {/* .selrow-fr — the mock's quiet Friend tag */}
-                  {friendIds.has(p.id) ? (
+                  {!guest && friendIds.has(p.id) ? (
                     <VText variant="caption" color="inkFaint">Friend</VText>
                   ) : null}
                 </View>

@@ -226,6 +226,14 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   // timeout, whichever comes first.
   const isLoggedIn = !!authSession?.user
   const [visitResolved, setVisitResolved] = useState(false)
+  // The server's "too many codes" copy (leak-fixes F2): a non-member whose
+  // wrong-code budget is spent gets a 429 from /visit and /state. Shown in
+  // place of the shell, never an empty one.
+  const [limitedMsg, setLimitedMsg] = useState<string | null>(null)
+  const noteLimited = useCallback(async (r: Response) => {
+    const body = await r.clone().json().catch(() => ({})) as { error?: string }
+    setLimitedMsg(body.error || 'Too many codes tried. Try again later.')
+  }, [])
   const readyToFetch = (!isLoggedIn || visitResolved) && !staleSessionId
 
   // Single aggregate poll every 5s: GET /api/session/:code/state returns
@@ -261,7 +269,9 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         router.replace(joinPath(C))
         return prev ?? empty
       }
+      if (r.status === 429) { await noteLimited(r); return prev ?? empty }
       if (!r.ok) return prev ?? empty
+      setLimitedMsg(null)
       const next: SessionStateData = await r.json()
       if (isIntegerIdState(next)) return prev ?? empty
       // Accepted trade-off: keeping prev on a failed section can hold data
@@ -297,7 +307,10 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
     // React Query handle the 401 retry. Better than blocking the UI.
     const timeout = setTimeout(() => setVisitResolved(true), 1500)
     sessionFetch(C, `/api/session/${C}/visit`, { method: 'POST' })
-      .then(r => r.ok ? r.json() : null)
+      .then(async r => {
+        if (r.status === 429) { await noteLimited(r); return null }
+        return r.ok ? r.json() : null
+      })
       .then(data => {
         // Logged-in users may have been disambiguated server-side; pick up
         // the resolved per-session displayName so the UI and rating-key
@@ -324,7 +337,7 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
         clearTimeout(timeout)
         setVisitResolved(true)
       })
-  }, [C])
+  }, [C, noteLimited])
 
   // Host check — mirrors server's isHostByIdentity. Pure id-based.
   const hostIdentityId = metaData?.hostIdentityId ?? null
@@ -377,6 +390,16 @@ export function SessionShell({ children, params }: { children: React.ReactNode; 
   const sessionLabel = metaData?.name || formatCode(C)
 
   if (needsName) return null
+  if (limitedMsg) {
+    return (
+      <div className="app-bg" style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+        <div className="lobby-card lobby-form" style={{width:'100%',maxWidth:400,textAlign:'center'}}>
+          <p style={{fontSize:13,color:'var(--fg-dim)',marginBottom:16}}>{limitedMsg}</p>
+          <Link href={authSession?.user ? '/me' : '/'} className="btn-p" style={{textDecoration:'none',display:'block',textAlign:'center'}}>← back to {authSession?.user ? 'dashboard' : 'home'}</Link>
+        </div>
+      </div>
+    )
+  }
 
   // The DirtyGuardProvider wraps the entire shell so any descendant
   // (WineModal today, future forms tomorrow) can register a guard that

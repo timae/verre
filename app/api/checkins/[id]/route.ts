@@ -22,7 +22,7 @@ import { resolveCatalogLink, applyIdentityEditRule, CatalogValidationError } fro
 
 // Inlined S3 reclaim — the equivalent helper exported from lib/s3.ts gets
 // silently dropped by Next 15.5 / webpack 5.98 when more than two named
-// exports live alongside the existing uploadImage/deleteImage. Until that
+// exports live alongside uploadImage (and the since-removed id-keyed delete). Until that
 // bundling bug is understood, keep this local copy so the route survives.
 const ENDPOINT = process.env.S3_ENDPOINT
 const BUCKET = process.env.S3_BUCKET

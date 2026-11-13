@@ -1584,10 +1584,11 @@ async function main() {
 
   // ══════════════════════════════════════════════════════════════════════
   console.log('\n§ 13c — the catalog-link rate key is not rotatable by anon callers')
-  // 🔒 An `a:<uuid>` anon identity is minted FRESH ON EVERY JOIN, and
-  // /api/session/join calls resetRate on its own limiter on every SUCCESS — so
-  // a caller holding one valid session code (trivially, one they created) can
-  // rejoin in a loop and collect unlimited identities. A per-identity key
+  // 🔒 An `a:<uuid>` anon identity is minted FRESH ON EVERY JOIN, and a
+  // successful /api/session/join charges nothing (only the per-address guest
+  // cap, 60 per moment per 10 min) — so a caller holding one valid session code
+  // (trivially, one they created) can rejoin in a loop and collect many
+  // identities. A per-identity key
   // therefore bounded nothing for exactly the caller class it targeted:
   // measured, 20 rotated identities bought 20x the budget. Anonymous callers
   // are keyed on IP instead.

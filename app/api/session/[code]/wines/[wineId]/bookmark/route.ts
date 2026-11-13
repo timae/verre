@@ -8,7 +8,8 @@ import { isSameOrigin } from '@/lib/csrf'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
 import { withSessionMutation, refuse, ContractCold } from '@/lib/sessionMutation'
 import { lineupHiddenFor } from '@/lib/sessionState'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 
 type Ctx = { params: Promise<{ code: string; wineId: string }> }
 
@@ -22,8 +23,8 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // Bookmarking requires session participation. Without this, any
   // logged-in user could enumerate session codes and bookmark wines
   // from sessions they were never part of.
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
+  const opened = await openSessionFor(c, req, session, { notFound: 'session not found' })
+  if (opened instanceof NextResponse) return opened
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'unavailable') return authUnavailable()
   if (p.status !== 'ok') return NextResponse.json({ error: 'not a participant' }, { status: 403 })

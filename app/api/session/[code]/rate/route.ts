@@ -21,7 +21,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
-  // Reject malformed bodies up front so a stray empty/garbage POST
+  // The entrance gate first (leak-fixes F2). Identity comes from the auth
+  // cookie or x-vr-anon-token, never the body; the ban/kick gate runs against
+  // the record for a `u:` caller of a Postgres-backed session (and is re-made
+  // under the locks below).
+  const op = await openAsParticipant(c, req, session, 'identity required')
+  if (op instanceof NextResponse) return op
+  const { identity } = op
+  // Reject malformed bodies so a stray empty/garbage POST
   // doesn't produce a 500. The validators below also reject negatives,
   // floats, strings, arrays and objects masquerading as numbers — the
   // previous `score || 0` fallback let any truthy value land in Redis.
@@ -54,12 +61,6 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
     return NextResponse.json({ error: 'notes too long' }, { status: 400 })
   }
 
-  // Identity comes from the auth cookie or x-vr-anon-token, never the body; the
-  // ban/kick gate runs against the record for a `u:` caller of a
-  // Postgres-backed session (and is re-made under the locks below).
-  const op = await openAsParticipant(c, req, session, 'identity required')
-  if (op instanceof NextResponse) return op
-  const { identity } = op
   // Early 404 for a wine that isn't in the session (re-checked under the locks):
   // a rate landing after a wine DELETE must not write an orphan rating.
   // …and the same 404 for a line-up hidden from the caller (an early reject:

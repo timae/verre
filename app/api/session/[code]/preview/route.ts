@@ -4,7 +4,7 @@ import { redis, k } from '@/lib/redis'
 import { checkRates, getClientIp, formatWait } from '@/lib/rateLimit'
 import { authorBlocksViewer, viewerBlocksAuthor } from '@/lib/userBlock'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
-import { openSession, unavailable } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 import { normalizeCode } from '@verre/core'
 import { publicIdFor } from '@/lib/publicIds'
 
@@ -17,17 +17,20 @@ import { publicIdFor } from '@/lib/publicIds'
 // docs/dev/block.md); a ban does stop it, and the caller learns only what the
 // join would tell them (403 'banned').
 //
-// Code guessing: the preview has its OWN budgets that are never reset (review
-// 2026-11-12). The join's key is cleared on every valid code, so with it one
-// valid code (your own moment) bought unlimited guesses, and unlike a join a
-// preview leaves no trace in the moment. Per user, plus a per-IP backstop
-// (free accounts multiply per address), like the People lists.
+// Code guessing: the preview keeps its OWN budgets, charged on every lookup and
+// never reset (review 2026-11-12: unlike a join a preview leaves no trace in
+// the moment), per user plus a per-IP backstop (free accounts multiply per
+// address), like the People lists. They run BEFORE the entrance gate
+// (lib/sessionRoute.ts openSessionFor), which they can do because they are the
+// same for every code; the gate then charges a wrong code the shared budget.
 export async function GET(req: NextRequest, { params }: { params: Promise<{ code: string }> }) {
   const noStore = { 'Cache-Control': 'private, no-store' }
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401, headers: noStore })
 
   const viewerId = Number(session.user.id)
+  // Its own budgets first: charged on EVERY lookup, right or wrong code, so
+  // the refusal is the same for every code (no oracle) and a hit buys nothing.
   const rl = await checkRates([
     { key: `rl:moment-preview:u:${viewerId}:1h`, max: 60, windowSeconds: 3600 },
     { key: `rl:moment-preview:ip:${getClientIp(req)}:1h`, max: 300, windowSeconds: 3600 },
@@ -42,8 +45,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'session not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status, 'session not found')
+  // Then the entrance gate (leak-fixes F2): a wrong code also pays the
+  // wrong-code budget shared with every moment surface, so the preview and
+  // the join can't stack N+N; a spent caller who isn't a member gets the same
+  // 429 for every code.
+  const opened = await openSessionFor(c, req, session, { notFound: 'session not found' })
+  if (opened instanceof NextResponse) return opened
   const { meta } = opened
 
   // 'ok' = already in it (Open, no join); 'kicked' may rejoin by code

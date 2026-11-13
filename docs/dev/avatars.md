@@ -2,7 +2,17 @@
 
 Optional user-uploaded profile pictures, free for all users. The data column is `users.image_url` (nullable VARCHAR(512)). The S3 key shape is `avatars/avatar_<rand>.<ext>` (`lib/imageKeys.ts`: a kind marker and 32 random hex characters). 🔒 Since public user ids (D2, `docs/dev/proposals/public-user-ids.md` § 8) no image key carries anything that points to a person, neither the integer nor the public id, and no timestamp; keys stored before it (`avatars/u_<userId>_…`, `cover_u_<userId>_…`, `tile_<tile>_u_<userId>_…`, `wines/ci_<userId>_…`) are moved by `scripts/rekey-user-images.mts` (runbook: `docs/dev/deployment.md` § Re-key user images). The URL stored in DB is the full `${ENDPOINT}/${BUCKET}/<key>`.
 
-> Session **cover photos** (milestone 4) reuse this exact pipeline: same `uploadImage` hardening, same data-URL JSON shape, same replace-then-reclaim ordering. Key shape `sessions/<code>_<timestamp>.<ext>`; see `POST /api/session` + the settings PATCH.
+> Session **cover photos** (milestone 4) reuse this exact pipeline: same `uploadImage` hardening, same data-URL JSON shape, same replace-then-reclaim ordering. See `POST /api/session` + the settings PATCH.
+
+### Moment image keys
+
+| What | Key now | Old keys (re-keyed by `scripts/rekey-session-images.mts`) |
+|---|---|---|
+| Moment cover | `sessions/<nanoid16>.<ext>` | `sessions/<CODE>_<ms>.<ext>` (carries the join code; create until 2026-11-08, settings until 2026-11-11); `sessions/new_<ms>_<rand>.<ext>` (create, 2026-11-08 → public ids) carries no code: kept |
+| Wine photo | `wines/<wineId>_<nanoid8>.<ext>` | `wines/<wineId>.<ext>` (before 2026-11-08: guessable from the id a blind payload keeps; some keyed 50–500 ms off the id, matched by reference) |
+| Check-in photo | `wines/ci_<rand>.<ext>` | `wines/ci_<userId>_…` (`scripts/rekey-user-images.mts`) |
+
+Runbook: `docs/dev/deployment.md` § Re-key session images.
 
 ## Edit endpoint
 

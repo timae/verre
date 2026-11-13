@@ -23,6 +23,7 @@ import { useAromaSearchScroll } from '@/components/scoring/aroma/useAromaSearchS
 import { RatingSection } from '@/components/scoring/RatingSection';
 import { AnchoredMenu, MenuItem, MenuSeparator, type MenuAnchor } from '@/components/ui/AnchoredMenu';
 import { Avatar } from '@/components/ui/Avatar';
+import { blockLook } from '@/lib/blockLook';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -56,6 +57,9 @@ import { useMeId } from '@/lib/meId';
 
 const POLL_MS = 5000;
 const isGone = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'not-found';
+// A spent wrong-code budget (the server's entrance gate, a non-member only):
+// the shared fatal view with a working Try Again (a refetch), never latched.
+const isLimited = (e: unknown): e is ApiError => e instanceof ApiError && e.kind === 'rate-limited';
 const GUTTER = 20; // 02e vbody runs 20px gutters (vs the line-up's 22) — deliberate override
 // Direction of the last sibling-wine replace — read by the incoming screen
 // to pick the replace animation (push for next, pop for previous).
@@ -108,7 +112,7 @@ export default function ImpressionDetail() {
     subscribed: screenFocused,
     refetchInterval: POLL_MS,
     // The app default (retry 1, lib/query.tsx) minus the 404, like useSessionPoll.
-    retry: (failureCount, error) => !isGone(error) && failureCount < 1,
+    retry: (failureCount, error) => !isGone(error) && !isLimited(error) && failureCount < 1,
   });
   useEffect(() => {
     if (isGone(state.error)) setGoneLatch({ code, error: state.error });
@@ -162,6 +166,7 @@ export default function ImpressionDetail() {
   // fall through to the stale view: their banned-vs-kicked copy lives in
   // useSessionPoll, which this screen's pre-hook poll has yet to adopt.
   const goneError = latched ?? (isGone(state.error) ? state.error : null);
+  const limitedError = goneError === null && isLimited(state.error) ? state.error : null;
   const gone = goneError !== null;
   const showReconnecting = !gone && (!online || (state.isError && wine !== null));
 
@@ -446,15 +451,17 @@ export default function ImpressionDetail() {
   // MEASURED rendered height (onLayout), not a constant — see the prop doc.
   const scrollAromaSearchTo = useAromaSearchScroll(scrollRef, scrollYRef, FOOT_CLEARANCE);
 
-  if (goneError) {
+  const fatalError = goneError ?? limitedError;
+  if (fatalError) {
     const glyphs = theme.scheme === 'dark' ? 'light' : 'dark';
     return (
       <View style={{ flex: 1, paddingTop: insets.top + 8, paddingHorizontal: GUTTER }}>
         <Stack.Screen options={{ statusBarStyle: glyphs }} />
         <StatusBar style={glyphs} />
         <VBar title="" />
-        {/* No Try Again on a 404 (the view shows it for 'http' only). */}
-        <SessionFatalView fatal={goneError} removedKind={null} sessionLabel={null} onRetry={() => {}} onBack={() => router.back()} />
+        {/* No Try Again on a 404; a 429 retries the poll. */}
+        <SessionFatalView fatal={fatalError} removedKind={null} sessionLabel={null}
+          onRetry={() => { void state.refetch(); }} onBack={() => router.back()} />
       </View>
     );
   }
@@ -511,8 +518,11 @@ export default function ImpressionDetail() {
   // mirrors PeopleSheet's `a:`-prefix anon test. Anon adders get the
   // user-glyph avatar + regular-weight name + "Unregistered" tag, same as
   // the People list; they never carry a profile avatar.
-  const broughtByAnon = wine.addedByDisplayName != null && wine.addedByUserId == null;
   const adderId = wine.addedByUserId != null ? `u:${wine.addedByUserId}` : null;
+  // 🔒 An adder who blocked you reads as a guest too (lib/blockLook.ts, the
+  // People sheet's look), never as a registered person.
+  const broughtByAnon = wine.addedByDisplayName != null &&
+    (adderId === null || blockLook(adderId, myIdentityId, meta?.viewerBlocksOut, meta?.viewerBlocksIn) === 'guest');
   // Avatar only for a logged-in adder whose profile the server exposed
   // (meta.participants is block/tier gated in buildMetaView).
   const adderImageUrl = adderId ? meta?.participants.find((p) => p.id === adderId)?.imageUrl ?? null : null;

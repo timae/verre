@@ -246,13 +246,13 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | /api/session | Create session (body: `{hostDisplayName, sessionName, dateFrom, blind?, lifespan?, category?, coverPhoto?, dateTo?, timezone?, address?, description?, link?, hideLineup?, hideLineupMinutesBefore?}`; `sessionName` + `dateFrom` **required** for every caller; `coverPhoto` is a base64 data URL, logged-in only; lifespan: logged-in callers always get `unlimited` (a body `lifespan` is ignored), anonymous callers get `48h` and any other value is a 403) → `{code, id, displayName, lifespan, category, coverPhotoUrl?, anonToken?}` |
-| POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}` |
-| GET | /api/session/:code/preview | A moment before you join (the app's scan result; auth required, its own code-guessing limits) → `{code, name, host, hostUserId, dateFrom, dateTo, address, coverPhotoUrl, joined}` (`hostUserId` is the host's public id, null across a block pair); 404 no such moment, 403 `banned` |
+| POST | /api/session/join | Join session (body: `{code, displayName}`) → `{id, displayName, anonToken?}`; a wrong code pays the wrong-code budget (429 "Too many codes tried" once spent), failed attempts 30/min/IP, guest joins 60 per moment per address per 10 min |
+| GET | /api/session/:code/preview | A moment before you join (the app's scan result; auth required, its own budget on every lookup, then the wrong-code budget) → `{code, name, host, hostUserId, dateFrom, dateTo, address, coverPhotoUrl, joined}` (`hostUserId` is the host's public id, null across a block pair); 404 no such moment, 403 `banned` |
 | GET | /api/session/:code | Session meta + participants (participant-gated) |
 | GET | /api/session/:code/state | Aggregate poll: `{meta, wines, ratings}` in one response (participant-gated; a section is `null` when it failed server-side) |
 | PATCH | /api/session/:code | Role assignment via `action: 'set-role'` (host or cohost, with strict-host required for transitions touching `co_host`) |
 | DELETE | /api/session/:code | Delete session permanently (host-only) |
-| POST | /api/session/:code/visit | Mark logged-in user as a participant of this session |
+| POST | /api/session/:code/visit | Mark logged-in user as a participant of this session (429 "Too many codes tried" to a non-member whose wrong-code budget is spent, like every moment route) |
 | POST | /api/session/:code/leave | Kicked-user self-service. `?cleanup=keep` (default no-op) or `?cleanup=full` (deletes ratings/bookmarks) |
 | PATCH | /api/session/:code/settings | Edit session metadata (host-only; pro-gated for blind/showProvenance; `lifespan` is vestigial, no client sends it; `coverPhoto` data URL = replace / `null` = remove, logged-in only) |
 | PATCH | /api/session/:code/name | Rename session (host-only) |
@@ -310,7 +310,7 @@ Session endpoints (`/api/session/:code/**`) answer **503 + `Retry-After: 1`** wh
 |--------|------|-------------|
 | GET | /api/users/search | Display-name substring lookup, first 10 by name (auth required, rate-limited; block pairs left out before the limit; `xp` / `badgeCount` / `imageUrl` / `friendsInCommon` only when that person's visibility admits you, else a `gated` stub; every row adds `followsViewer` + `momentsTogether`; you never find yourself) |
 | GET | /api/me/tasted-with | People you shared a started moment with and don't follow (never muted people or block pairs), up to 8, newest shared moment first → `{people: [{id, name, imageUrl, followsViewer, lastMoment: {name, at}}]}` |
-| POST | /api/places | Venue search adapter — Google Places (with key) or OSM (without) |
+| POST | /api/places | Venue search adapter — Google Places (with key) or OSM (without). Signed in only (401), same-origin; `query` ≤ 100 chars, valid coordinates (400); per-account + per-address limits (429), app-wide caps answer `{ results: [] }` |
 
 **Wine catalog** — the shared producer/product/vintage reference data. Both endpoints are **staff-only until the catalog is publicly released** (`CATALOG_PUBLIC_ENABLED`, see `docs/dev/deployment.md`); everyone else gets 404. A wine is linked to the catalog by passing `productId`/`vintageId` to the wine and check-in endpoints above.
 

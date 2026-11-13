@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
-import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, wineToWire, buildAdderLookup } from '@/lib/session'
+import { touchWithMeta } from '@/lib/redis'
+import { isHostByIdentity } from '@/lib/session'
+import { buildWinesEcho } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { openAsParticipant, hostLineupWrite } from '@/lib/sessionRoute'
 import { isSameOrigin } from '@/lib/csrf'
@@ -12,11 +13,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404 })
   const session = await resolveUser(req)
-  const body = await req.json().catch(() => null)
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
-
   const op = await openAsParticipant(c, req, session)
   if (op instanceof NextResponse) return op
+  const body = await req.json().catch(() => null)
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return NextResponse.json({ error: 'invalid body' }, { status: 400 })
   const { meta, identity } = op
   if (!isHostByIdentity(meta, identity)) {
     return NextResponse.json({ error: 'only the host can reorder wines' }, { status: 403 })
@@ -38,15 +38,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   })
   if (out instanceof NextResponse) return out
   await touchWithMeta(c)
-  // Same wire shape as the wines GET — strip `addedByIdentityId` and
-  // synthesize `isMine`. Without this, the reorder response would leak
-  // provenance the GET pipeline carefully keeps server-internal.
-  // Identities + kicked-user fallback ensure `addedByDisplayName` resolves
-  // to the same value the polling GET would produce.
-  const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildAdderLookup(out, identities)
+  // The same per-viewer view as the line-up read (lib/sessionState.ts
+  // buildWinesEcho): provenance kept server-internal, isMine synthesized, and
+  // Blind for All masking the host's own echo too.
   return NextResponse.json(
-    out.map(w => wineToWire(w, identity.id, identities, userNameLookup, meta.showProvenance !== false)),
+    await buildWinesEcho(c, meta, identity, out),
     { headers: { 'Cache-Control': 'private, no-store' } },
   )
 }

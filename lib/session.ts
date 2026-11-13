@@ -514,7 +514,8 @@ export async function addWineToSession(
   // calls were separated by `await uploadImage(...)` — an S3 PUT that
   // takes 50–500ms — so the image got keyed by one timestamp and the
   // wine row stored a different one, leaking the S3 object whenever the
-  // wine was later deleted via deleteImage(wineId).)
+  // wine was later deleted by id; scripts/rekey-session-images.mts matches
+  // such photos by reference, never by id.)
   const id = existing?.id || nanoid()
 
   let imageUrl = existing?.imageUrl || ''

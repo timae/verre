@@ -8,7 +8,8 @@ import { isHostByIdentity, isStrictHost } from '@/lib/session'
 import { listBans } from '@/lib/sessionBan'
 import { sessionWipe } from '@/lib/sessionWipe'
 import { refuse } from '@/lib/sessionMutation'
-import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
+import { contractFailure } from '@/lib/sessionRehydrate'
+import { openSessionFor } from '@/lib/sessionRoute'
 import { checkRate, formatWait } from '@/lib/rateLimit'
 
 type Ctx = { params: Promise<{ code: string }> }
@@ -24,9 +25,9 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
@@ -49,9 +50,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const { code } = await params
   const c = normalizeCode(code)
   if (!c) return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
-  const opened = await openSession(c)
-  if (opened.status !== 'live') return unavailable(opened.status)
   const session = await resolveUser(req)
+  const opened = await openSessionFor(c, req, session)
+  if (opened instanceof NextResponse) return opened
   const identity = await resolveAuthorized(c, req, session, opened.meta)
   if (identity === 'unavailable') return authUnavailable()
   if (!identity) return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })

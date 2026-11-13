@@ -8,6 +8,7 @@ import { prisma } from '@/lib/prisma'
 import { postPlace, type ProfileGateOk } from '@/lib/profileVisibility'
 import { getLevel } from '@/lib/badges'
 import { getProfileFlavor, type FlavorBlock } from '@/lib/profileFlavor'
+import { viewerBlockedAmong } from '@/lib/userBlock'
 import { decimalToNumber } from '@verre/core'
 import { loadSessionFeedWines, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
 import { hiddenSessionIds, notHiddenPosts } from '@/lib/outsideView'
@@ -274,20 +275,12 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   // session-rate), so only standalone matters here. The "other side" of
   // each block-pair row (not the profile owner) is the user id to filter
   // out of the tag list.
-  const tagUserIds = standaloneFeedItems.flatMap(f => f.tags.map(t => t.user.id))
-  const blockedTagUserIds = tagUserIds.length > 0
-    ? new Set(
-        (await prisma.userBlock.findMany({
-          where: {
-            OR: [
-              { blockerId: userId, blockedId: { in: tagUserIds } },
-              { blockedId: userId, blockerId: { in: tagUserIds } },
-            ],
-          },
-          select: { blockerId: true, blockedId: true },
-        })).map(b => b.blockerId === userId ? b.blockedId : b.blockerId)
-      )
-    : new Set<number>()
+  const tagUserIds = [...new Set(standaloneFeedItems.flatMap(f => f.tags.map(t => t.user.id)))]
+  const blockedTagUserIds = await viewerBlockedAmong(userId, tagUserIds)
+  // …and a tag of someone in a block pair with the VIEWER, either way
+  // (leak-fixes F6): you never see someone you blocked or who blocked you on
+  // anyone's list. Absence is no tell (you don't know who was tagged).
+  const viewerTagBlocked = viewerId === userId ? blockedTagUserIds : await viewerBlockedAmong(viewerId, tagUserIds)
 
   return {
     ...head,
@@ -321,7 +314,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         createdAt: f.createdAt,
         likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
         liked: likedSet.has(f.id),
-        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name })),
+        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id) && !viewerTagBlocked.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name })),
       }]
     }),
     recentSessionPosts: sessionFeedItems.flatMap<LoadedSessionPost>(f => {

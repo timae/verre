@@ -5,6 +5,7 @@
 import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/prisma'
 import { ALL_BADGES, BADGE_MAP, evaluateBadges, XP_REWARDS, type UserStats } from '@/lib/badges'
+import { redactedSql, hiddenSql } from '@/lib/outsideView'
 
 // Errors we expect during best-effort badge inserts: a duplicate from a
 // concurrent award (P2002) or a missing badge id when the in-code badge
@@ -80,6 +81,14 @@ export async function getUserStats(userId: number): Promise<UserStats> {
       AVG((flavors->>'acid')::numeric)   FILTER (WHERE (flavors->>'acid')   IS NOT NULL)::float AS avg_acid
     FROM ratings WHERE user_id=${userId}`
 
+  // 🔒 Grape Explorer counts a bottle's grape only once the bottle is visible
+  // OUTSIDE its moment (the one SQL rule, lib/outsideView.ts; leak-fixes F6):
+  // rating an unrevealed blind bottle must not complete the badge and so tell
+  // you its grape is new to you. The moment is found through the RATING
+  // (`wines.session_id` is NULL for a banned adder's bottles while the moment
+  // runs). The badge may then arrive with the next rating after the reveal;
+  // earned badges never go away. Style counts are unaffected (style is not
+  // masked).
   const [types] = await prisma.$queryRaw<[{
     red_count:bigint; white_count:bigint; spark_count:bigint; rose_count:bigint
     nonalc_count:bigint; unique_styles:bigint; unique_grapes:bigint
@@ -91,8 +100,9 @@ export async function getUserStats(userId: number): Promise<UserStats> {
       COUNT(*) FILTER (WHERE w.style='rose')   AS rose_count,
       COUNT(*) FILTER (WHERE w.style='nonalc') AS nonalc_count,
       COUNT(DISTINCT LOWER(w.style))  FILTER (WHERE w.style IS NOT NULL) AS unique_styles,
-      COUNT(DISTINCT LOWER(w.grape))  FILTER (WHERE w.grape IS NOT NULL AND w.grape<>'') AS unique_grapes
-    FROM ratings r JOIN wines w ON w.id=r.wine_id WHERE r.user_id=${userId}`
+      COUNT(DISTINCT LOWER(w.grape))  FILTER (WHERE w.grape IS NOT NULL AND w.grape<>'' AND NOT ${redactedSql(userId, 's', 'w')} AND NOT ${hiddenSql(userId, 's')}) AS unique_grapes
+    FROM ratings r JOIN wines w ON w.id=r.wine_id LEFT JOIN sessions s ON s.id = r.session_id
+    WHERE r.user_id=${userId}`
 
   // Max participants from any session this user is in. Live; would be a
   // candidate for snapshot if it shows up in profiling.

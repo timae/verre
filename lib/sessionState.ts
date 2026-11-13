@@ -216,11 +216,13 @@ export async function buildWinesView(
   identity: AuthorizedIdentity,
   identities: Record<string, string>,
   wines: WineMeta[],
+  { echo = false }: { echo?: boolean } = {},
 ): Promise<WireWine[]> {
   const isUserHost = isHostByIdentity(meta, identity)
 
-  // Lineup hidden until X minutes before start
-  if (lineupHiddenFor(meta, identity)) return []
+  // Lineup hidden until X minutes before start (not for a write's own echo:
+  // the writer just wrote that bottle; blind redaction still applies below)
+  if (!echo && lineupHiddenFor(meta, identity)) return []
 
   // Hybrid resolution for `addedByDisplayName`: live identities map →
   // users.name fallback for kicked logged-in adders → snapshot on the wine
@@ -269,6 +271,24 @@ export async function buildWinesView(
   }
 
   return wines.map(w => wineToWire(w, identity.id, identities, adderLookup, showProvenance))
+}
+
+// The reply of a line-up write (reorder, reveal / hide, a wine edit, the
+// brought-by reassign; leak-fixes F6): the SAME per-viewer view the line-up
+// read builds, so Blind for All masks the host's own echo too (a no-op edit
+// must not unmask a bottle on demand). Same shape as before: a masked bottle is
+// the "Wine N" stub. (The wine POST's echo stays a plain wineToWire: the adder
+// just typed the bottle.)
+export async function buildWinesEcho(c: string, meta: SessionMeta, identity: AuthorizedIdentity, wines: WineMeta[]): Promise<WireWine[]> {
+  return buildWinesView(c, meta, identity, await redis.hGetAll(k.identities(c)), wines)
+}
+
+// A single bottle's echo, picked out of the view. The hide-line-up gate is
+// skipped for it alone (`echo`): its writer (a host, or a provider editing
+// their own bottle) just wrote it; blind redaction still applies.
+export async function buildWineEcho(c: string, meta: SessionMeta, identity: AuthorizedIdentity, wines: WineMeta[], wineId: string): Promise<WireWine | null> {
+  const view = await buildWinesView(c, meta, identity, await redis.hGetAll(k.identities(c)), wines, { echo: true })
+  return view.find(w => w.id === wineId) ?? null
 }
 
 // Ratings for this session, keyed by WIRE identity:

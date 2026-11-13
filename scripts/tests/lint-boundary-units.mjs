@@ -6,7 +6,7 @@
 // Run: node scripts/tests/lint-boundary-units.mjs   (exits 1 on any mismatch)
 import { ESLint } from 'eslint'
 
-const BOUNDARY_RULES = new Set(['no-restricted-syntax', 'no-restricted-globals'])
+const BOUNDARY_RULES = new Set(['no-restricted-syntax', 'no-restricted-globals', 'no-restricted-imports'])
 const reg = (body) => `export async function register() {\n${body}\n}\n`
 const guarded = (body) => reg(`  if (process.env.NEXT_RUNTIME === 'nodejs') { ${body} }`)
 const BOUNDARY_FILES = ['proxy.ts', 'auth.config.ts', 'instrumentation.ts', 'lib/clientVersion.ts']
@@ -56,6 +56,18 @@ const CASES = [
   ['components/x.tsx', false, "import { webApiFetch } from '@/lib/sessionFetch'\nexport const f = (c: string) => webApiFetch(`/api/session/${c}`)\n"],
   ['components/x.tsx', false, "export const f = () => fetch('/api/me/sessions')\n"],
   ['app/api/x/route.ts', false, "export const f = () => fetch('/api/session/ABCD')\n"],
+  // The entrance gate (leak-fixes F2): no lib/sessionRehydrate opener in app/** (both blocks), by name, alias or relative path
+  ['app/api/session/[code]/x/route.ts', true, "import { openSession } from '@/lib/sessionRehydrate'\nexport const f = openSession\n"],
+  ['app/api/session/[code]/x/route.ts', true, "import { openSession as o } from '@/lib/sessionRehydrate'\nexport const f = o\n"],
+  ['app/api/session/[code]/x/route.ts', true, "import { ensureSessionLive } from '../../../../lib/sessionRehydrate'\nexport const f = ensureSessionLive\n"],
+  ['app/api/session/[code]/x/route.ts', true, "import * as R from '@/lib/sessionRehydrate'\nexport const f = R\n"],
+  ['app/api/session/[code]/x/route.ts', true, "import { loadLiveWines, rehydrateSession } from '@/lib/sessionRehydrate'\nexport const f = [loadLiveWines, rehydrateSession]\n"],
+  ['app/join/[code]/page.tsx', true, "import { openSession } from '@/lib/sessionRehydrate'\nexport const f = openSession\n"],
+  ['app/join/[code]/page.tsx', true, "import { openSession as o } from '../../../lib/sessionRehydrate'\nexport const f = o\n"],
+  ['app/api/session/[code]/x/route.ts', false, "import { contractFailure, unavailable } from '@/lib/sessionRehydrate'\nexport const f = [contractFailure, unavailable]\n"],
+  ['app/api/session/[code]/x/route.ts', false, "import { contractFailure } from '../../../../lib/sessionRehydrate'\nexport const f = contractFailure\n"],
+  ['app/join/[code]/page.tsx', false, "import { openSessionCharged } from '@/lib/sessionRoute'\nexport const f = openSessionCharged\n"],
+  ['lib/x.ts', false, "import { openSession } from '@/lib/sessionRehydrate'\nexport const f = openSession\n"],
   // auth.config.ts: import type only
   ['auth.config.ts', true, "import { prisma } from '@/lib/prisma'\nexport const a = prisma\n"],
   ['auth.config.ts', true, "import Credentials from 'next-auth/providers/credentials'\nexport const a = Credentials\n"],
