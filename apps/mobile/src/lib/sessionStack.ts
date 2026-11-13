@@ -202,14 +202,14 @@ export function legalHref(mount: SessionMount, screen: 'about' | 'attributions')
 // someone's profile pushed on this stack. Inside an opened post the list is
 // always a profile pushed on THAT post's stack (`dismissTo` it pops whatever
 // sits above it there).
-export function feedListHref(mount: SessionMount, userId: number | null, meId: number | null): Href {
+export function feedListHref(mount: SessionMount, userId: string | null, meId: string | null): Href {
   const t = feedTab(mount.tab);
   if (mount.post != null && userId != null) {
-    return { pathname: `/(tabs)/${t}/[id]/u/[personId]`, params: { id: mount.post, personId: String(userId) } } as Href;
+    return { pathname: `/(tabs)/${t}/[id]/u/[personId]`, params: { id: mount.post, personId: userId } } as Href;
   }
   if (userId == null) return tabHomeHref(t);
   if (t === 'you' && userId === meId) return tabHomeHref('you');
-  return { pathname: `/(tabs)/${t}/u/[id]`, params: { id: String(userId) } } as Href;
+  return { pathname: `/(tabs)/${t}/u/[id]`, params: { id: userId } } as Href;
 }
 
 // The post is GONE and it is the one an opened post's stack hangs off (your

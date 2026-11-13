@@ -35,7 +35,7 @@ Visibility / mute / block filtering composes multiplicatively per author: block-
 
 ### Author filter (`?user=<id>`, the app's profile feed)
 
-`/api/feed?user=<id>` returns one person's posts through the SAME projection (likes, tags, session wines with blind redaction, cursor). Only the author set changes: the route gates `resolveProfileViewer(user, viewer)` and must get `ok` (self always is), then uses `[user]` in place of the network. Every other gate result (`gone`, `shell`, `blocked-by-me`) is a 404 — `GET /api/users/:id` is what tells the client which state it is. An `ok` profile whose posts are hidden from this viewer (`gate.sees.posts` false: Check-Ins Visible To) is **200 `{ items: [], nextCursor: null }`**, never 404 (404 means gone to the app); the profile header's `checkinsAudience` carries the why. The network query and the mute filter are skipped: mute is a network-feed filter (`docs/dev/mute.md`), and opening someone's profile is an explicit choice to look at them.
+`/api/feed?user=<publicId>` returns one person's posts (the PUBLIC id; an integer is a 400, an unknown public id the same 404 as `gone`) through the SAME projection (likes, tags, session wines with blind redaction, cursor). Only the author set changes: the route gates `resolveProfileViewer(user, viewer)` and must get `ok` (self always is), then uses `[user]` in place of the network. Every other gate result (`gone`, `shell`, `blocked-by-me`) is a 404 — `GET /api/users/:id` is what tells the client which state it is. An `ok` profile whose posts are hidden from this viewer (`gate.sees.posts` false: Check-Ins Visible To) is **200 `{ items: [], nextCursor: null }`**, never 404 (404 means gone to the app); the profile header's `checkinsAudience` carries the why. The network query and the mute filter are skipped: mute is a network-feed filter (`docs/dev/mute.md`), and opening someone's profile is an explicit choice to look at them.
 
 The native app keys it `['feed', 'user', id]` beside the network feed's `['feed']`, so the same post can sit in both caches; every post mutation writes all `['feed', …]` caches (`apps/mobile/src/lib/feedCache.ts`).
 
@@ -56,7 +56,7 @@ See [session-deletion.md](session-deletion.md) for the full soft-delete contract
 
 ## Tags require mutual follow
 
-`/api/checkins` POST and `/api/checkins/[id]` PATCH both run a SQL self-join against `follows` to filter the requested `taggedUserIds` down to mutual-follows-of-the-author. Non-mutuals are silently dropped server-side. Edit-time re-validation means an unfollow after creation drops the tag on the next save.
+`/api/checkins` POST and `/api/checkins/[id]` PATCH both run a SQL self-join against `follows` to filter the requested `taggedUserIds` down to mutual-follows-of-the-author. Non-mutuals are silently dropped server-side. Edit-time re-validation means an unfollow after creation drops the tag on the next save. 🔒 `taggedUserIds` are PUBLIC ids (`lib/publicIds.ts` `parseTagList`): any element that isn't a well-formed public id (an old tab's integer) is a 400 for the WHOLE request, before any upload or write, so it can never become `[]` and wipe a post's tags (the PATCH deletes and re-inserts); a well-formed unknown id drops like a non-mutual. Resolved before the check-in transaction (tags are written after COMMIT, so a late 400 would leave the post created and a retry would duplicate it). Feed and profile rows emit `author.id` and `tags[].id` as public ids.
 
 Block-pair members are also excluded from the tag write (`user_blocks` lookup combined with the mutual-follow check in one SQL query) — tagging a user the author block-pairs with shouldn't persist a row that the render-time filter would then hide globally anyway.
 
@@ -68,7 +68,7 @@ Block-pair-adjusted like counts: a like by user X on a feed_item by user Y is in
 
 ## S3 reclaim on edit/delete
 
-Rating images live at `wines/ci_<userId>_<ts>_<nanoid(12)>.<ext>` (`Date.now()` + a random suffix since 2026-11-11: the bucket is public, so a key must not be guessable; older photos keep the guessable shape, and any URL already seen stays fetchable) at POST and at PATCH (so a PATCH that replaces an image always uses a different key). "Had a sip" copies to the same shape. PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
+Rating images live at `wines/ci_<rand>.<ext>` (`lib/imageKeys.ts`: 32 random hex characters, nothing that points to the person and no timestamp, public-user-ids D2; the bucket is public, so a key must not be guessable; keys from before carry the user's integer and are moved by `scripts/rekey-user-images.mts`) at POST and at PATCH (so a PATCH that replaces an image always uses a different key). "Had a sip" copies to the same shape. PATCH and DELETE both call a local `reclaimImage` helper that issues `DeleteObjectCommand` for the previous URL — fire-and-forget, logs failures, never blocks the user response.
 
 **The capture-before-delete / commit / reclaim-after pattern is the cross-cutting rule** (per root CLAUDE.md). Every rating-delete path — ban-tx wipe, account deletion, and the engagement-deletion cascade (`lib/engagementCascade.ts`) — captures `rating_images.imageUrl` into memory BEFORE the DELETE, commits the cascade, then fires `reclaimImage()` AFTER commit. A transaction rollback never leaves orphan S3 deletes. ("Had a sip" COPIES bytes via S3 `CopyObjectCommand`; it doesn't reclaim, and the new check-in owns its own copy outright.)
 
@@ -76,7 +76,7 @@ Rating images live at `wines/ci_<userId>_<ts>_<nanoid(12)>.<ext>` (`Date.now()` 
 
 ## "Had a sip" copy flow
 
-A logged-in viewer who follows the source author can clone a standalone feed_item (`+ had a sip` button on feed cards and `/u/<id>`). Wire field is `copyFromCheckinId` (name preserved for client/URL compatibility; semantics shifted to a `feed_items.id` of `kind='standalone'`).
+A logged-in viewer who follows the source author can clone a standalone feed_item (`+ had a sip` button on feed cards and `/u/<publicId>`). Wire field is `copyFromCheckinId` (name preserved for client/URL compatibility; semantics shifted to a `feed_items.id` of `kind='standalone'`).
 
 Server resolves the source feed_item, rejects unless: `kind === 'standalone'` AND source has a rating AND `viewerCanSeePosts(viewerId, source.userId)` returns true (the post gate: profile tier + Check-Ins Visible To) AND the viewer follows the author AND `source.userId !== viewerId`. All failure branches collapse to a single generic `400` to avoid enumeration of per-id existence / ownership / follow state.
 

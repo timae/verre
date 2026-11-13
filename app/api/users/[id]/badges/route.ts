@@ -4,7 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { ALL_BADGES } from '@/lib/badges'
 import { checkRate } from '@/lib/rateLimit'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 
 // Public list of a user's earned badges, with the full ALL_BADGES catalog so
 // the UI can render earned + locked side-by-side. Logged-in only — same rule
@@ -24,15 +24,16 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const { id } = await params
-  const profileId = parsePathId(id)
-  if (profileId === null) {
+  const publicId = parsePublicIdParam(id)
+  if (publicId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
-  const gate = await resolveProfileViewer(profileId, viewerId)
-  // Badges are gated content — only 'ok' qualifies; 'shell' and 'gone'
-  // both surface as 404.
-  if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
+  const profileId = await userIdForPublicId(publicId)
+  const gate = profileId === null ? null : await resolveProfileViewer(profileId, viewerId)
+  // Badges are gated content — only 'ok' qualifies; 'shell', 'gone' and an
+  // unknown id all surface as 404.
+  if (profileId === null || !gate || gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: noStore })
 
   const earned = await prisma.userBadge.findMany({
     where: { userId: profileId },

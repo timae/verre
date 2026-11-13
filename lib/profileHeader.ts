@@ -16,7 +16,8 @@ import type { CheckinVisibility, ProfileGateOk } from '@/lib/profileVisibility'
 // `pinned` (own profile only): the photo is the owner's chosen tile cover.
 export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean }
 
-export type ProfileFace = { id: number; name: string; imageUrl: string | null }
+// `id` is the PUBLIC id (lib/publicIds.ts).
+export type ProfileFace = { id: string; name: string; imageUrl: string | null }
 
 export type ProfileHeaderExtras = {
   // Mutual follows, block-pair scrubbed like the follower/following counts
@@ -68,18 +69,19 @@ export async function loadProfileHeaderExtras(
     `,
     // In common (D4): the profile's friends the VIEWER follows, block-scrubbed
     // like the People lists (lib/peopleSql.ts), so `count` == the Friends
-    // tab's `knownCount`. Pick by id only: a photo-first ORDER BY on the raw
-    // column would choose by photos the gate may hide.
+    // tab's `knownCount`. Pick by public id only (random, so it says nothing
+    // about signup order): a photo-first ORDER BY on the raw column would
+    // choose by photos the gate may hide.
     inCommonViewer !== null
-      ? prisma.$queryRaw<{ id: number; name: string; image_url: string | null; total: number }[]>`
-          SELECT u.id, u.name, u.image_url, COUNT(*) OVER ()::int AS total
+      ? prisma.$queryRaw<{ id: number; public_id: string; name: string; image_url: string | null; total: number }[]>`
+          SELECT u.id, u.public_id, u.name, u.image_url, COUNT(*) OVER ()::int AS total
           FROM follows f1
           JOIN follows f2 ON f2.follower_id = f1.following_id AND f2.following_id = f1.follower_id
           JOIN follows fv ON fv.follower_id = ${inCommonViewer} AND fv.following_id = f1.following_id
           JOIN users u ON u.id = f1.following_id
           WHERE f1.follower_id = ${profileId}
             AND ${blockScrub(profileId, inCommonViewer, Prisma.raw('u.id'))}
-          ORDER BY u.id DESC
+          ORDER BY u.public_id DESC
           LIMIT ${FACE_POOL}
         `
       : Promise.resolve(null),
@@ -108,7 +110,7 @@ export async function loadProfileHeaderExtras(
   let inCommon: ProfileHeaderExtras['inCommon']
   if (inCommonRows && inCommonViewer !== null) {
     const { admitted } = await viewableProfiles(inCommonViewer, inCommonRows.map(r => r.id))
-    const faces = inCommonRows.map(r => ({ id: r.id, name: r.name, imageUrl: admitted.has(r.id) ? r.image_url : null }))
+    const faces = inCommonRows.map(r => ({ id: r.public_id, name: r.name, imageUrl: admitted.has(r.id) ? r.image_url : null }))
     faces.sort((a, b) => Number(a.imageUrl === null) - Number(b.imageUrl === null))
     inCommon = { count: inCommonRows[0]?.total ?? 0, faces: faces.slice(0, FACES) }
   }

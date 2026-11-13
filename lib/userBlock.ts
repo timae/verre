@@ -122,27 +122,23 @@ export async function setBlock(
 // List of users the calling user has blocked, newest first. Used by
 // the settings UI to render the BlockedUsersList.
 //
-// Returns `imageUrl` unconditionally — even if the blocked user
-// tightened their profile_visibility tier after being blocked, the
-// blocker still sees the avatar in their own settings list. Intent:
-// the blocker is being reminded who they blocked; the imageUrl was
-// visible at block-time. If product later wants to tighten this
-// (e.g. always show dummy avatar in settings), it's a one-line
-// change here.
-export async function listBlockedUsers(blockerId: number): Promise<Array<{ id: number; name: string; imageUrl: string | null; createdAt: Date }>> {
+// No imageUrl (D5, public-user-ids § 8a d): the rows render initials, like
+// Muted. Blocking accepts anyone and unblocking is uncapped, so a photo here
+// made block, read the photo, unblock a repeatable bypass of that person's
+// photo visibility. `id` is the PUBLIC id.
+export async function listBlockedUsers(blockerId: number): Promise<Array<{ id: string; name: string; createdAt: Date }>> {
   const rows = await prisma.userBlock.findMany({
     where: { blockerId },
     select: {
       createdAt: true,
-      blocked: { select: { id: true, name: true, imageUrl: true } },
+      blocked: { select: { publicId: true, name: true } },
     },
     orderBy: { createdAt: 'desc' },
     take: BLOCK_PAIR_CAP,
   })
   return rows.map(r => ({
-    id: r.blocked.id,
+    id: r.blocked.publicId,
     name: r.blocked.name,
-    imageUrl: r.blocked.imageUrl,
     createdAt: r.createdAt,
   }))
 }

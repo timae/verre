@@ -11,7 +11,7 @@ import {
   postPlace,
   type VisibilitySettings,
 } from '@/lib/profileVisibility'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { mutedUserIds } from '@/lib/userMute'
 import { blockPairIds } from '@/lib/userBlock'
 import { loadSessionFeedWines, sessionIsOver, pairKey, type SessionFeedPair } from '@/lib/sessionFeedWines'
@@ -19,6 +19,11 @@ import type { SessionFeedPayload } from '@/lib/feedTypes'
 
 const PAGE = 20
 const NO_STORE = { 'Cache-Control': 'private, no-store' }
+
+// 🔒 The author leaves with the PUBLIC id only (public-user-ids § 4).
+type WireAuthor = { id: string; name: string; xp: number; imageUrl: string | null }
+const wireAuthor = (u: { publicId: string; name: string; xp: number; imageUrl: string | null }): WireAuthor =>
+  ({ id: u.publicId, name: u.name, xp: u.xp, imageUrl: u.imageUrl })
 
 export async function GET(req: NextRequest) {
   const session = await resolveUser(req)
@@ -59,10 +64,12 @@ export async function GET(req: NextRequest) {
   // The authors' settings, for the place rule (server-side only).
   let authorSettings: Map<number, VisibilitySettings>
   if (userParam !== null) {
-    const authorId = parsePathId(userParam)
-    if (authorId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
-    const gate = await resolveProfileViewer(authorId, userId)
-    if (gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
+    // Format only; an unknown public id takes the 'gone' path (404).
+    const authorPublicId = parsePublicIdParam(userParam)
+    if (authorPublicId === null) return NextResponse.json({ error: 'invalid user' }, { status: 400, headers: NO_STORE })
+    const authorId = await userIdForPublicId(authorPublicId)
+    const gate = authorId === null ? null : await resolveProfileViewer(authorId, userId)
+    if (authorId === null || !gate || gate.status !== 'ok') return NextResponse.json({ error: 'not found' }, { status: 404, headers: NO_STORE })
     allowedNetworkIds = gate.sees.posts ? [authorId] : []
     authorSettings = new Map([[authorId, gate.settings]])
   } else {
@@ -81,9 +88,9 @@ export async function GET(req: NextRequest) {
   const feedItems = await prisma.feedItem.findMany({
     where: { userId: { in: allowedNetworkIds }, createdAt: { lt: cursor } },
     include: {
-      user: { select: { id: true, name: true, xp: true, imageUrl: true } },
+      user: { select: { id: true, publicId: true, name: true, xp: true, imageUrl: true } },
       _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, name: true } } } },
+      tags: { include: { user: { select: { id: true, publicId: true, name: true } } } },
       rating: {
         include: {
           wine: true,
@@ -220,8 +227,8 @@ export async function GET(req: NextRequest) {
   //     for blind sessions). Tombstoned sessions collapse to deleted=true
   //     with wines=[] and the renderer shows "[deleted session]".
   type OutgoingItem =
-    | { type: 'checkin'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; checkin: Record<string, unknown> }
-    | { type: 'session'; createdAt: Date; author: { id: number; name: string; xp: number; imageUrl: string | null }; session: SessionFeedPayload }
+    | { type: 'checkin'; createdAt: Date; author: WireAuthor; checkin: Record<string, unknown> }
+    | { type: 'session'; createdAt: Date; author: WireAuthor; session: SessionFeedPayload }
   const items: OutgoingItem[] = [
     ...feedItems.flatMap((f): OutgoingItem[] => {
       if (f.kind === 'standalone') {
@@ -234,7 +241,7 @@ export async function GET(req: NextRequest) {
         return [{
           type: 'checkin' as const,
           createdAt: f.createdAt,
-          author: f.user,
+          author: wireAuthor(f.user),
           checkin: {
             id: f.id,
             wineName: wine.name,
@@ -274,7 +281,7 @@ export async function GET(req: NextRequest) {
             // Tag filter: drop GLOBALLY block-pair tags. Same rule as
             // the like-count subtraction. Render-time only — the tag row
             // stays in DB.
-            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`)).map(t => t.user),
+            tags: f.tags.filter(t => !hiddenAuthorTag.has(`${f.user.id}:${t.user.id}`)).map(t => ({ id: t.user.publicId, name: t.user.name })),
             liked: myLikes.has(f.id),
             viewerFollowsAuthor: myFollowing.has(f.user.id),
           },
@@ -298,7 +305,7 @@ export async function GET(req: NextRequest) {
         return [{
           type: 'session' as const,
           createdAt: f.createdAt,
-          author: f.user,
+          author: wireAuthor(f.user),
           session: {
             id: f.id,
             sessionId: s?.id ?? null,

@@ -20,6 +20,15 @@ datasource db {
 
 model User {
   id                        Int                    @id @default(autoincrement())
+  // The ONLY user id the wire carries (docs/dev/proposals/public-user-ids.md):
+  // 12 Crockford characters, letter first. 🔒 Minted by the BEFORE INSERT
+  // trigger `users_public_id_mint` whatever an insert supplies (the DEFAULT is
+  // for the backfill and this declaration; never write it), immutable by
+  // `users_public_id_immutable`, format CHECK `users_public_id_format_chk`
+  // (all three invisible to migrate diff, pinned by the you-profile suite
+  // § 18). The integer stays the internal id everywhere; lib/publicIds.ts
+  // translates at the edge.
+  publicId                  String                 @unique @default(dbgenerated("gen_public_user_id()")) @map("public_id") @db.VarChar(12)
   name                      String                 @db.VarChar(64)
   email                     String                 @unique @db.VarChar(255)
   // Nullable since native auth (Better Auth): a social-only user (Google/Apple)
@@ -70,6 +79,14 @@ model User {
   tileImpressionsUrl        String?                @map("tile_impressions_url") @db.VarChar(512)
   tileMomentsUrl            String?                @map("tile_moments_url") @db.VarChar(512)
   tileCravingsUrl           String?                @map("tile_cravings_url") @db.VarChar(512)
+  // Tile ownership (D2): the tile shows the user's OWN upload iff
+  // tile_*_url = tile_*_own_url. Written in the same update as the URL; a URL
+  // match rather than a boolean so a writer that ignores the column (the
+  // previous release during a rolling deploy) can only make it unequal (an
+  // orphan, never someone else's bytes). lib/profileTiles.ts isOwnTile.
+  tileImpressionsOwnUrl     String?                @map("tile_impressions_own_url") @db.VarChar(512)
+  tileMomentsOwnUrl         String?                @map("tile_moments_own_url") @db.VarChar(512)
+  tileCravingsOwnUrl        String?                @map("tile_cravings_own_url") @db.VarChar(512)
   // Profile visibility — see lib/profileVisibility.ts. Stored as VARCHAR(32)
   // (not a Postgres enum) so a future tier ('private', etc.) is a code-only
   // change. A CHECK constraint is hand-added in the migration; the lib-side
@@ -650,6 +667,9 @@ model Follow {
 
   @@id([followerId, followingId])
   @@index([followingId])
+  // People lists, newest follow first (lib/profilePeople.ts).
+  @@index([followingId, createdAt])
+  @@index([followerId, createdAt])
   @@map("follows")
 }
 

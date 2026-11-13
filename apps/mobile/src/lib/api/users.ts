@@ -11,12 +11,13 @@ import type { CheckinVisibility } from './settings';
 // `pinned` (your own profile only): the photo is your chosen tile cover
 // (lib/profileTiles.ts on the server); absent / false = the automatic latest.
 export type ProfileTile = { count: number; imageUrl: string | null; pinned?: boolean };
-export type ProfileFace = { id: number; name: string; imageUrl: string | null };
+// Every user `id` here is the PUBLIC id (an opaque string; public-user-ids).
+export type ProfileFace = { id: string; name: string; imageUrl: string | null };
 
 // The full (`ok`) payload: the viewer may see this person's content.
 export type FullProfile = {
   state: 'ok';
-  id: number;
+  id: string;
   name: string;
   imageUrl: string | null;
   // Step 2: one-paragraph profile text (≤ 200, normalised server-side) and
@@ -49,15 +50,15 @@ export type Profile =
   | FullProfile
   // Tier-gated ("private"): exists, but the viewer can't see content.
   // `followsYou` drives Follow Back (the viewer can read that edge anyway).
-  | { state: 'shell'; id: number; name: string; isFollowing: boolean; followsYou: boolean }
+  | { state: 'shell'; id: string; name: string; isFollowing: boolean; followsYou: boolean }
   // The viewer blocked them: name only, so they recognise who it is.
-  | { state: 'blocked'; id: number; name: string }
+  | { state: 'blocked'; id: string; name: string }
   // No such user — OR they blocked the viewer (deliberately indistinguishable).
-  | { state: 'gone'; id: number };
+  | { state: 'gone'; id: string };
 
 // GET /api/users/:id?view=header — the header only (the posts come from
 // /api/feed?user=). A 404 is a state, not an error: it renders the gone view.
-export async function getProfile(id: number): Promise<Profile> {
+export async function getProfile(id: string): Promise<Profile> {
   const res = await apiFetch(`/api/users/${id}?view=header`);
   if (res.status === 404) return { state: 'gone', id };
   if (!res.ok) await throwApiError(res);
@@ -67,11 +68,11 @@ export async function getProfile(id: number): Promise<Profile> {
   return { ...(body as Omit<FullProfile, 'state'>), state: 'ok' };
 }
 
-export function profileKey(id: number) {
+export function profileKey(id: string) {
   return ['user-profile', id] as const;
 }
 
-export function profileQueryOptions(id: number) {
+export function profileQueryOptions(id: string) {
   return queryOptions({
     queryKey: profileKey(id),
     queryFn: () => getProfile(id),
@@ -88,8 +89,8 @@ async function send(path: string, method: 'POST' | 'DELETE'): Promise<void> {
 
 // POST/DELETE /api/users/:id/follow — a target who blocked you answers a
 // silent 200 (no oracle), so the refetched profile is the truth afterwards.
-export const setFollowing = (id: number, on: boolean) => send(`/api/users/${id}/follow`, on ? 'POST' : 'DELETE');
+export const setFollowing = (id: string, on: boolean) => send(`/api/users/${id}/follow`, on ? 'POST' : 'DELETE');
 // POST/DELETE /api/me/mutes/:id — mute hides them from YOUR network feed only.
-export const setMuted = (id: number, on: boolean) => send(`/api/me/mutes/${id}`, on ? 'POST' : 'DELETE');
+export const setMuted = (id: string, on: boolean) => send(`/api/me/mutes/${id}`, on ? 'POST' : 'DELETE');
 // POST/DELETE /api/me/blocks/:id — bilateral invisibility (docs/dev/block.md).
-export const setBlocked = (id: number, on: boolean) => send(`/api/me/blocks/${id}`, on ? 'POST' : 'DELETE');
+export const setBlocked = (id: string, on: boolean) => send(`/api/me/blocks/${id}`, on ? 'POST' : 'DELETE');

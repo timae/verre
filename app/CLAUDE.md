@@ -15,12 +15,14 @@ Next.js 16 App Router (Turbopack builds). UI lives under `app/` (route segments)
 - `/session/<code>/wines` — the sole wine-list surface. Tapping a row opens the wine modal on the Wine Info pane; the inline "Rate" button on unrated rows (or the score chip on rated rows) opens the modal on the Rate pane. Host-tier affordances render inline. Modal navigation between wines uses pull-to-swap / prev-next buttons / arrow keys.
 - `/session/<code>/compare` — overlay/per-rater comparison view
 - `/join/<code>` — invite landing page (anon name entry, or one-tap join for logged-in users; renders "session not found" for invalid codes)
-- `/u/<id>` — public user profile + recent check-ins
+- `/u/<publicId>` — public user profile + recent posts. 🔒 The id is the PUBLIC id (`users.public_id`); `/u/<int>` (an old link) or anything malformed is a 404, never a redirect (public-user-ids § 7). Every prop the page hands to client components carries the public id (`clientSession`). Every link to it is built with `profilePath(id)` (`@verre/core`: lowercase; the page accepts any case), never a hand-written `/u/${id}`.
 
 ## State management
 
 - **Server state**: TanStack Query (`useQuery` + `refetchInterval`) for wines/ratings/meta polling.
-- **Client identity**: `localStorage` keys `vr_anon_<CODE>` (token), `vr_name_<CODE>` (display name), `vr_id_<CODE>` (identity id).
+- **Client identity**: `localStorage` keys `vr_anon_<CODE>` (token), `vr_name_<CODE>` (display name), `vr_id_<CODE>` (identity id, `a:` identities ONLY). 🔒 A signed-in user's identity is `u:${session.user.id}` from the auth session (the public id, `lib/clientSession.ts`), never a stored `vr_id_`: a stale stored `u:<int>` would otherwise win (`SessionShell.tsx`, public-user-ids § 7).
+- **Server → client sessions**: every hand-off goes through `clientSession(session)` (`lib/clientSession.ts`: `user.id` = the public id, no `userSessionId`): the root layout's `<SessionProvider>`, `/me` layout + pages, `/u/[id]`, the `/me/profile` redirect; the `/api/auth/session` route wrapper applies the same rewrite to the JSON.
+- **Web wire generation**: every web call to `/api/session*` carries `X-Verre-Web` (`sessionFetch`, or `webApiFetch` for the calls that can't use it; a lint rule refuses a bare `fetch`). `proxy.ts` bounces a signed-in moment call without it (an old tab) with `X-Vr-Auth: invalid`, which the old `sessionFetch` turns into a reload through `/join/<code>`.
 - **Session-scoped context**: `components/session/SessionShell.tsx` exposes `useSession()` returning `{code, displayName, myId, isHost, sessionMeta, wines, allRatings, myRatings, refresh, …}` to descendant screens.
 
 ## Fetch helpers

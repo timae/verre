@@ -1,4 +1,5 @@
 import { useLocalSearchParams } from 'expo-router';
+import { normalizePublicUserId } from '@verre/core';
 import { CenteredMessage } from '@/components/ui/ConnectionState';
 import { ProfileScreen } from '@/components/profile/ProfileScreen';
 
@@ -7,7 +8,9 @@ import { ProfileScreen } from '@/components/profile/ProfileScreen';
 // variant with a back button.
 export default function UserProfile() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const userId = Number(id);
-  if (!Number.isInteger(userId) || userId < 1) return <CenteredMessage title="This profile isn’t available" />;
+  // A PUBLIC id (case-insensitive, canonical uppercase); an old integer link
+  // or anything else is not a person.
+  const userId = normalizePublicUserId(id);
+  if (!userId) return <CenteredMessage title="This profile isn’t available" />;
   return <ProfileScreen userId={userId} />;
 }

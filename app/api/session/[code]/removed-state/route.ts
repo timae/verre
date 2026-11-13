@@ -5,6 +5,7 @@ import { normalizeCode } from '@verre/core'
 import { resolveIdentity, participantOrBanned } from '@/lib/identity'
 import { openSession } from '@/lib/sessionRehydrate'
 import { checkRate, formatWait } from '@/lib/rateLimit'
+import { wireIdentity } from '@/lib/publicIds'
 
 type Ctx = { params: Promise<{ code: string }> }
 
@@ -53,13 +54,13 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   // Redis sets for everyone else.
   const p = await participantOrBanned(c, req, session, opened.meta)
   if (p.status === 'banned') {
-    return NextResponse.json({ state: 'banned', identityId: identity.id }, { headers: noStore })
+    return NextResponse.json({ state: 'banned', identityId: await wireIdentity(identity.id) }, { headers: noStore })
   }
   if (p.status === 'kicked') {
     // Did they have any ratings to keep/delete? Surface as a hint so the
     // bounce can skip the prompt when there's nothing actionable.
     const hasRatings = !!p.identity.grant?.author || await hasKey(`s:${c}:r:${identity.id}:*`)
-    return NextResponse.json({ state: 'kicked', identityId: identity.id, hasRatings }, { headers: noStore })
+    return NextResponse.json({ state: 'kicked', identityId: await wireIdentity(identity.id), hasRatings }, { headers: noStore })
   }
   return NextResponse.json({ state: 'none' }, { headers: noStore })
 }

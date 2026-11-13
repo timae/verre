@@ -4,7 +4,7 @@ import { Image, Pressable, ScrollView, View, type ScrollViewInstance } from 'rea
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { fillFlavourZeros, gateAromaSelections, type AromaSelection } from '@verre/core';
+import { fillFlavourZeros, gateAromaSelections, normalizePublicUserId, type AromaSelection } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { Icon } from '@/components/ui/Icon';
 import { VBar } from '@/components/VBar';
@@ -25,6 +25,7 @@ import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { type WineTypeCode } from '@/lib/api/sessions';
 import { radius, useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Edit a feed post (Simon, 2026-07-17). Reached from the card / detail ⋯
 // menus, owner-only. Two variants over ONE screen:
@@ -53,9 +54,9 @@ export default function EditFeedPost() {
   // (`[id]/edit/[postId]`, where `id` is the opened post): the edited post is
   // `postId` there.
   const feedItemId = Number(postId ?? id);
-  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const listUserId = normalizePublicUserId(user);
   const tab = useSessionTab();
-  const meId = authClient.useSession().data?.user.id;
+  const meId = useMeId();
 
   // Same cache-read + pin discipline as the detail screen: the poll can drop
   // a page-boundary item mid-edit; once seen, keep editing the pinned copy.
@@ -172,7 +173,7 @@ export default function EditFeedPost() {
             return { ...it, session: { ...it.session, wines } };
           });
           refetchFeedCaches(queryClient);
-          invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
+          invalidateProfileHeader(queryClient, meId);
           if (res.feedItemDeleted) {
             markFeedPostDeleted(feedItemId);
             // The POST is gone. When the edit was opened from the impression
@@ -183,7 +184,7 @@ export default function EditFeedPost() {
             // it whole (one modal; lib/sessionStack.ts closeOpenedPost);
             // another post (a card) → back to the list on that stack.
             if (tab.post === String(feedItemId) && closeOpenedPost(navigation, tab.post)) return;
-            router.dismissTo(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
+            router.dismissTo(feedListHref(tab, listUserId, meId));
             return;
           }
         } else {
@@ -253,7 +254,7 @@ export default function EditFeedPost() {
         });
       }
       // Your header (average, tile photo) can change with any save.
-      invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
+      invalidateProfileHeader(queryClient, meId);
       router.back();
     } catch (e) {
       // Friendly-copy gate (the delete flows' rule): surface the server's
@@ -314,7 +315,7 @@ export default function EditFeedPost() {
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Edit Impression Details"
-            onPress={() => router.push(feedHref(tab, 'edit/details', { user: listUserId != null ? String(listUserId) : undefined }))}
+            onPress={() => router.push(feedHref(tab, 'edit/details', { user: listUserId ?? undefined }))}
             style={({ pressed }) => ({
               flexDirection: 'row', alignItems: 'center', gap: 12,
               padding: 10, marginBottom: 16, borderRadius: radius.md,

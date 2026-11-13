@@ -12,7 +12,7 @@ export async function getMyAccount(): Promise<MyAccount> {
   return res.json();
 }
 
-export type Friend = { id: number; name: string; imageUrl: string | null };
+export type Friend = { id: string; name: string; imageUrl: string | null };
 
 // Mutual follows (you follow each other), block-pair members already dropped
 // server-side. Used by the invite sheet's friend chips / browse list. The

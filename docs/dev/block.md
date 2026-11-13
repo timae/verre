@@ -20,7 +20,7 @@ Per-pair invisibility: stronger than mute. Outside sessions, bidirectional invis
 
 ## Mutual-block resolver behaviour
 
-When A and B have blocked each other, both directions of the check fire and `authorBlocksViewer` is evaluated first in the route, so **both sides resolve to `'gone'` (404)** — neither party gets the `'blocked-by-me'` stripped view on `/u/<id>`. Locked intent: mutual block treats the other as "anon-equivalent" everywhere, including profile reads, mirroring the in-session participants matrix where mutual rows render anon-style with no `[blocked]` marker on either side. The blocker reaches unblock via **Settings → Blocked users**, which is always available regardless of resolver state.
+When A and B have blocked each other, both directions of the check fire and `authorBlocksViewer` is evaluated first in the route, so **both sides resolve to `'gone'` (404)** — neither party gets the `'blocked-by-me'` stripped view on `/u/<publicId>`. Locked intent: mutual block treats the other as "anon-equivalent" everywhere, including profile reads, mirroring the in-session participants matrix where mutual rows render anon-style with no `[blocked]` marker on either side. The blocker reaches unblock via **Settings → Blocked users**, which is always available regardless of resolver state. That list (`GET /api/me/blocks`) carries public ids and NO photo (D5, public-user-ids § 8a d): blocking accepts anyone and unblocking is uncapped, so a photo there made block, read the photo, unblock a repeatable bypass of that person's photo visibility; the rows show initials, like Muted. A block / unblock / mute of an UNKNOWN public id takes the nonexistent-target path (limiter charged, the same answer), so it can't tell "deleted" from "blocked me".
 
 ## Counts are globally subtracted, not per-viewer
 
@@ -39,7 +39,7 @@ Locked matrix in the participants list (`SessionPanel`) — no row is ever hidde
 - Third party → both shown normally.
 - Blocker viewing blocked (any tier: host, cohost, non-host) → `[blocked] {name}` + role badge, clickable to open `ProfilePreviewInline` with inline unblock.
 - Blocked viewing blocker (any tier) → anon-style: plain name + role badge if any, no bold, no avatar, no link.
-- Mutual block (A blocks B and B blocks A) → anon-style with **no `[blocked]` prefix** on either side. Both sides treat the other as an anon participant; unblock is reachable from the other user's `/u/<id>` page or settings → Blocked users. The prefix is suppressed because surfacing it on mutual would signal "this identifiable person blocked you back."
+- Mutual block (A blocks B and B blocks A) → anon-style with **no `[blocked]` prefix** on either side. Both sides treat the other as an anon participant; unblock is reachable from the other user's `/u/<publicId>` page or settings → Blocked users. The prefix is suppressed because surfacing it on mutual would signal "this identifiable person blocked you back."
 - Cohost role-toggle (`make co-host` / `remove role`) stays available to the host on block-pair rows. Block is a UI primitive, not a moderation one — kick/ban is the separate moderation primitive (see `docs/dev/kick-ban.md`).
 
 Compare screen does **not** filter block-pair raters. Filtering by absence would itself be a leak — the blocked side would see the blocker's column missing and infer the block. Every rater appears under their plain display name; Compare has no profile-link or avatar surfaces, so there's nothing to strip beyond the participants-list treatment that already governs identity tells outside this view.
@@ -47,7 +47,7 @@ Compare screen does **not** filter block-pair raters. Filtering by absence would
 ## Wine modal "Brought by" callout
 
 (`WineInfoPane` inside `WineModal`) follows the participants-list matrix with two divergences:
-- **No `[blocked]` prefix.** That marker stays exclusive to the participants list. Here, block state surfaces only through the lack of clickability + the plain (not bold/accent) name styling. Unblock is still reachable via the user's `/u/<id>` page or Settings → Blocked users.
+- **No `[blocked]` prefix.** That marker stays exclusive to the participants list. Here, block state surfaces only through the lack of clickability + the plain (not bold/accent) name styling. Unblock is still reachable via the user's `/u/<publicId>` page or Settings → Blocked users.
 - **Avatar always renders** (initial letter), including for anon-style modes (mutual block, being-blocked-by-adder). Since anon participants in this surface render WITH an avatar, dropping the avatar for a blocked user would itself leak the block — the absence is the tell. So the blocked side renders visually identical to a regular anon participant: avatar + plain name + no link. Same rule will eventually need to land in SessionPanel once anon participants there gain avatars; until then `docs/block.md`'s "no avatar" line is participants-list-specific.
 
 Click rules unchanged: clickable + blocked-by-me modes open `ProfilePreviewInline` inline below the callout. Anon-style + plain modes have no click. Anon viewers can't click any mode.

@@ -9,7 +9,7 @@ import { ESLint } from 'eslint'
 const BOUNDARY_RULES = new Set(['no-restricted-syntax', 'no-restricted-globals'])
 const reg = (body) => `export async function register() {\n${body}\n}\n`
 const guarded = (body) => reg(`  if (process.env.NEXT_RUNTIME === 'nodejs') { ${body} }`)
-const BOUNDARY_FILES = ['proxy.ts', 'auth.config.ts', 'instrumentation.ts']
+const BOUNDARY_FILES = ['proxy.ts', 'auth.config.ts', 'instrumentation.ts', 'lib/clientVersion.ts']
 const LOADERS = [
   "const b = require('bcrypt'); export { b }",
   "import b = require('bcrypt'); export { b }",
@@ -26,6 +26,8 @@ const CASES = [
   // accepted: the real files' shapes
   ['proxy.ts', false, "import NextAuth from 'next-auth'\nimport { authConfig } from '@/auth.config'\nexport const proxy = NextAuth(authConfig).auth\nexport const config = { matcher: ['/me/:path*'] }\n"],
   ['proxy.ts', false, "import type { NextRequest } from 'next/server'\nexport const x = 1 as unknown as NextRequest\n"],
+  ['proxy.ts', false, "import NextAuth from 'next-auth'\nimport { getToken } from 'next-auth/jwt'\nimport { authConfig } from '@/auth.config'\nimport { clientVersionGate } from '@/lib/clientVersion'\nexport const p = [NextAuth, getToken, authConfig, clientVersionGate]\n"],
+  ['lib/clientVersion.ts', false, "export const CODE_FLOOR_IOS = '0.1.5'\nexport function clientVersionGate(req: Request) { return req.headers.get('x') ? null : null }\n"],
   ['auth.config.ts', false, "import type { NextAuthConfig } from 'next-auth'\nexport const authConfig: NextAuthConfig = { providers: [] }\n"],
   ['instrumentation.ts', false, guarded("await import('./instrumentation-node').then((m) => m.register())")],
   ['instrumentation.ts', false, guarded("if (Date.now() > 0) { await import('./x') }")],
@@ -40,6 +42,20 @@ const CASES = [
   ['proxy.ts', true, "export async function proxy() { return import('@/auth') }\n"],
   ['proxy.ts', true, "export { auth as proxy } from '@/auth'\n"],
   ['proxy.ts', true, "export * from '@/auth'\n"],
+  ['proxy.ts', true, "import { decode } from 'next-auth/jwtX'\nexport const p = decode\n"],
+  ['proxy.ts', true, "import { clientVersionGate } from '@/lib/clientVersionX'\nexport const p = clientVersionGate\n"],
+  ['proxy.ts', true, "import { publicIdsFor } from '@/lib/publicIds'\nexport const p = publicIdsFor\n"],
+  // lib/clientVersion.ts: in the proxy's graph, import type only
+  ['lib/clientVersion.ts', true, "import { prisma } from '@/lib/prisma'\nexport const p = prisma\n"],
+  ['lib/clientVersion.ts', true, "export async function f() { return import('@/lib/prisma') }\n"],
+  ['lib/clientVersion.ts', true, "const x = require('bcrypt'); export { x }\n"],
+  // Web calls to /api/session* go through sessionFetch / webApiFetch (components/** + app/**, not app/api/**)
+  ['components/x.tsx', true, "export const f = () => fetch('/api/session', { method: 'POST' })\n"],
+  ['components/x.tsx', true, "export const f = (c: string) => fetch(`/api/session/${c}/visit`)\n"],
+  ['app/join/[code]/x.tsx', true, "export const f = (c: string) => window.fetch(`/api/session/${c}`)\n"],
+  ['components/x.tsx', false, "import { webApiFetch } from '@/lib/sessionFetch'\nexport const f = (c: string) => webApiFetch(`/api/session/${c}`)\n"],
+  ['components/x.tsx', false, "export const f = () => fetch('/api/me/sessions')\n"],
+  ['app/api/x/route.ts', false, "export const f = () => fetch('/api/session/ABCD')\n"],
   // auth.config.ts: import type only
   ['auth.config.ts', true, "import { prisma } from '@/lib/prisma'\nexport const a = prisma\n"],
   ['auth.config.ts', true, "import Credentials from 'next-auth/providers/credentials'\nexport const a = Credentials\n"],

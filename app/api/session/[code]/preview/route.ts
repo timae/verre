@@ -6,6 +6,7 @@ import { authorBlocksViewer, viewerBlocksAuthor } from '@/lib/userBlock'
 import { participantOrBanned, authUnavailable } from '@/lib/identity'
 import { openSession, unavailable } from '@/lib/sessionRehydrate'
 import { normalizeCode } from '@verre/core'
+import { publicIdFor } from '@/lib/publicIds'
 
 // What a scanned moment code shows in the app before you join (Add Friends →
 // Scan): cover, name, when, the host, the place, and where you stand. A code
@@ -63,7 +64,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ code
     code: c,
     name: meta.name || null,
     host,
-    hostUserId: blockPair ? null : hostUserId,
+    hostUserId: blockPair || hostUserId == null ? null : await publicIdFor(hostUserId),
     dateFrom: meta.dateFrom ?? null,
     dateTo: meta.dateTo ?? null,
     address: meta.address || null,

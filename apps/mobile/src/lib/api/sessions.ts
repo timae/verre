@@ -23,7 +23,6 @@ export type MySessionRow = {
   date_from: string | null;
   date_to: string | null;
   address: string | null;
-  host_user_id: number | null;
   wine_count: number;
   ttl_seconds: number;
   lifespan: string | null;
@@ -68,7 +67,8 @@ export type WireWine = {
   revealedAt?: string | null;
   isMine: boolean;
   addedByDisplayName: string | null;
-  addedByUserId: number | null;
+  // The adder's PUBLIC id (opaque string), null for an anonymous adder.
+  addedByUserId: string | null;
   _blind?: boolean;
 };
 
@@ -79,7 +79,9 @@ export type SessionMetaView = {
   host: string;
   name: string;
   createdAt: number;
-  hostUserId: number | null;
+  // Every user id in meta is PUBLIC: hostUserId a public id, the identity
+  // lists (hostIdentityId, coHostIds, providerIds) `u:<publicId>` / `a:<uuid>`.
+  hostUserId: string | null;
   hostIdentityId?: string;
   blind?: boolean;
   blindForEveryone?: boolean;
@@ -97,8 +99,8 @@ export type SessionMetaView = {
   link?: string;
   hideLineup?: boolean;
   hideLineupMinutesBefore?: number;
-  // Spread from the server SessionMeta (lib/session.ts) via buildMetaView's
-  // `{ ...meta }` — present whenever the host set a cover. Used by the 02f
+  // From the server SessionMeta (lib/session.ts) through metaToWire's
+  // allow-list (lib/sessionState.ts): present whenever the host set a cover. Used by the 02f
   // Moment-details settings sheet to preview/replace/remove the cover.
   coverPhotoUrl?: string;
   participants: SessionParticipant[];
@@ -531,7 +533,7 @@ export type MomentPreview = {
   code: string;
   name: string | null;
   host: string | null;
-  hostUserId: number | null;
+  hostUserId: string | null;
   dateFrom: string | null;
   dateTo: string | null;
   address: string | null;

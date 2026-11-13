@@ -101,6 +101,7 @@ const REQUIRED_DISABLED = [
   '/update-session',
   '/list-sessions',
   '/revoke-session',
+  '/list-accounts',
 ]
 // NOTE: /get-session was deliberately REMOVED from this list with the first
 // native client (iOS milestone 1): @better-auth/expo's useSession + sliding-

@@ -18,6 +18,7 @@ import { clearCheckinDraft, getCheckinDraft, setCheckinDraft } from '@/lib/check
 import { FOOT_CLEARANCE, GUTTER } from '@/lib/layout';
 import { wineTypeLabel } from '@/lib/momentFormat';
 import { useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Standalone check-in create, STAGE 2 of 2: the rating moment (Simon's
 // two-stage ruling — details first, then "you rate it and check it in").
@@ -34,7 +35,7 @@ export default function CheckinRate() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const meId = authClient.useSession().data?.user.id;
+  const meId = useMeId();
 
   // Read once at mount — the draft is stable while this screen lives (stage 1
   // only rewrites it on a fresh "Rate It" push, which re-mounts this screen).
@@ -128,7 +129,7 @@ export default function CheckinRate() {
       // A popped profile list can't show the new post; drop it so it reloads.
       dropUnmountedFeedCaches(queryClient);
       // Your header's counts (impressions, tile photo, average) changed too.
-      invalidateProfileHeader(queryClient, meId != null ? Number(meId) : null);
+      invalidateProfileHeader(queryClient, meId);
       router.dismiss(2);
     } catch (e) {
       setSaving(false);

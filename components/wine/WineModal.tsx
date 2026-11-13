@@ -960,7 +960,7 @@ export function WineModal({ wineId, initialPane = 'info', onClose }: Props) {
                   userId={w.addedByUserId}
                   isSelf={adderMe}
                   viewerLoggedIn={isLoggedIn}
-                  myId={myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+                  myId={myId.startsWith('u:') ? myId.slice(2) : null}
                 />
               )}
             />

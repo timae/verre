@@ -80,7 +80,7 @@ export function refetchNetworkFeed(queryClient: QueryClient) {
 // One person's post list (['feed', 'user', id]) — after a follow / unfollow,
 // which can flip whether their Check-Ins Visible To shows you their posts
 // while the profile itself stays visible.
-export function refetchUserFeed(queryClient: QueryClient, userId: number) {
+export function refetchUserFeed(queryClient: QueryClient, userId: string) {
   return cancelThenRefetch(queryClient, { queryKey: feedKey(userId), exact: true });
 }
 
@@ -97,7 +97,7 @@ export function dropUnmountedFeedCaches(queryClient: QueryClient) {
 // header: impression count, average, tile photo. The header is a plain query,
 // not an infinite list, so invalidating it is safe (the never-invalidate rule
 // above is about the feed lists): mounted headers refetch, others on next open.
-export async function invalidateProfileHeader(queryClient: QueryClient, authorId: number | null) {
+export async function invalidateProfileHeader(queryClient: QueryClient, authorId: string | null) {
   if (authorId == null) return;
   const filters = { queryKey: profileKey(authorId), exact: true };
   await queryClient.cancelQueries(filters); // see cancelThenRefetch
@@ -105,7 +105,7 @@ export async function invalidateProfileHeader(queryClient: QueryClient, authorId
 }
 
 // A profile header after a relationship write (cancel first, as above).
-export function refetchProfileHeader(queryClient: QueryClient, userId: number) {
+export function refetchProfileHeader(queryClient: QueryClient, userId: string) {
   return cancelThenRefetch(queryClient, { queryKey: profileKey(userId), exact: true });
 }
 

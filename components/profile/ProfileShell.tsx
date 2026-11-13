@@ -4,9 +4,9 @@ import { Avatar } from './Avatar'
 import { FollowButton } from '@/components/social/FollowButton'
 
 interface Props {
-  userId: number
+  userId: string
   userName: string
-  myId: number | null
+  myId: string | null
   isFollowing: boolean
   // Optional — passed by the in-modal renderer (UserProfileModal) so a
   // follow toggle invalidates the cached profile payload and the gate

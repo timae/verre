@@ -9,11 +9,11 @@ import { EditableAvatar } from './EditableAvatar'
 import { ZoomableAvatar } from './ZoomableAvatar'
 
 interface Props {
-  userId: number
+  userId: string
   userName: string
   userXp: number
   userImageUrl?: string | null
-  myId: number | null
+  myId: string | null
   isFollowing: boolean
   // Whether the viewer has muted this profile. Only meaningful on the
   // full (non-shell) view since the actions menu is hidden on the shell.

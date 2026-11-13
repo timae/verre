@@ -18,6 +18,7 @@
 
 import { useRef, useState } from 'react'
 import Link from 'next/link'
+import { profilePath } from '@verre/core'
 import { Avatar } from '@/components/profile/Avatar'
 import { WineIdentity } from '@/components/wine/WineIdentity'
 import { StarRating } from '@/components/ui/StarRating'
@@ -35,7 +36,7 @@ import type { SessionFeedPayload, SessionFeedWine } from '@/lib/feedTypes'
 
 interface Props {
   session: SessionFeedPayload
-  author: { id: number; name: string; xp?: number; imageUrl?: string|null }
+  author: { id: string; name: string; xp?: number; imageUrl?: string|null }
   createdAt?: string|Date|null
   showAuthor?: boolean
 }
@@ -49,7 +50,7 @@ export function SessionFeedCard({ session, author, createdAt, showAuthor = true 
       {/* Author row — same shape as CheckinCard's byline */}
       {showAuthor && (
         <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:14 }}>
-          <Link href={`/u/${author.id}`} style={{ textDecoration:'none', display:'flex', alignItems:'center', gap:10 }}>
+          <Link href={profilePath(author.id)} style={{ textDecoration:'none', display:'flex', alignItems:'center', gap:10 }}>
             <Avatar name={author.name} imageUrl={author.imageUrl} size={40} />
             <div>
               <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2 }}>{author.name}</div>

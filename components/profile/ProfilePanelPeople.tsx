@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import Link from 'next/link'
+import { profilePath } from '@verre/core'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getLevel } from '@/lib/badges'
 import { FollowButton } from '@/components/social/FollowButton'
@@ -12,7 +13,7 @@ type MutualFilter = 'mutual' | 'all' | 'non'
 type PersonRow = {
   // xp + imageUrl are null when the listed person's own visibility hides
   // their profile from you: no level then.
-  id: number; name: string; xp: number | null
+  id: string; name: string; xp: number | null
   imageUrl: string | null
   isFollowing: boolean
   viewerMutes: boolean
@@ -25,8 +26,8 @@ const EMPTY_COPY: Record<Direction, Record<MutualFilter, string>> = {
 }
 
 interface Props {
-  profileUserId: number
-  myId: number | null
+  profileUserId: string
+  myId: string | null
 }
 
 export function ProfilePanelPeople({ profileUserId, myId }: Props) {
@@ -132,7 +133,7 @@ export function ProfilePanelPeople({ profileUserId, myId }: Props) {
   )
 }
 
-function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; myId: number | null; direction: Direction; onFollowToggle?: () => void }) {
+function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; myId: string | null; direction: Direction; onFollowToggle?: () => void }) {
   const level = row.xp === null ? null : getLevel(row.xp)
   const showFollowsYou = direction === 'followers' && myId !== null && row.profileFollowsThem === false && row.id !== myId
   const isMe = myId !== null && myId === row.id
@@ -141,7 +142,7 @@ function PersonRow({ row, myId, direction, onFollowToggle }: { row: PersonRow; m
       display:'flex', alignItems:'center', gap:10, padding:'10px 12px', marginBottom:6,
       borderRadius:10, background:'var(--bg3)', border:'1px solid var(--border)',
     }}>
-      <Link href={`/u/${row.id}`} style={{ display:'flex', alignItems:'center', gap:10, flex:1, minWidth:0, textDecoration:'none' }}>
+      <Link href={profilePath(row.id)} style={{ display:'flex', alignItems:'center', gap:10, flex:1, minWidth:0, textDecoration:'none' }}>
         <Avatar name={row.name} imageUrl={row.imageUrl} size={36} />
         <div style={{ minWidth:0, flex:1 }}>
           <div style={{ fontSize:13, fontWeight:700, color:'var(--fg)', lineHeight:1.2, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>

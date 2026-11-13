@@ -21,11 +21,17 @@
 //   wine); moments = LIVE (a cover is never blind-redacted,
 //   prisma/schema.prisma sessions.cover_photo_url).
 // - OWN = a photo you took or chose on the phone for this tile (ruled
-//   2026-11-12): uploaded through `POST /api/me/profile/tiles/<tile>`, stored
-//   under `avatars/tile_<tile>_u_<id>_…` and OWNED by the tile, unlike every
-//   other pin. Always live; reclaimed when the tile changes or the account
-//   goes (lib/profileImage.ts, lib/accountDelete.ts). Recognised by its key,
-//   which only that upload writes (every other pin passed the pool check).
+//   2026-11-12): uploaded through `POST /api/me/profile/tiles/<tile>` and
+//   OWNED by the tile, unlike every other pin. Always live; reclaimed when the
+//   tile changes or the account goes (lib/profileImage.ts,
+//   lib/accountDelete.ts). 🔒 Recognised by the ROW, never the key (D2,
+//   public-user-ids § 8): own ⇔ `tile_*_url = tile_*_own_url`, both written in
+//   the same update and read under the same `FOR UPDATE`. A pin is a REFERENCE
+//   that can point at a photo you don't own; without the owner binding a pin of
+//   someone else's public tile URL followed by a replace would reclaim their
+//   bytes. A URL match, not a boolean, because the previous release (still
+//   serving during the rolling deploy) ignores the column: it can only make
+//   the two unequal (at worst an orphan, never someone else's bytes).
 //
 // 🔒 The tile COUNTS are not computed here and never depend on these pools
 // (lib/profileHeader.ts): the pools only decide photos.
@@ -43,17 +49,32 @@ export function isTileKey(v: unknown): v is TileKey {
   return typeof v === 'string' && (TILE_KEYS as readonly string[]).includes(v)
 }
 
-// The key prefix of a tile's own upload (lib/profileImage.ts adds the unique
-// suffix), under the proven public-read `avatars/` prefix.
-export const tileUploadKeyPrefix = (tile: TileKey, userId: number) => `avatars/tile_${tile}_u_${userId}_`
-
+// ⚠️ LEGACY (drop once `scripts/rekey-user-images.mts` has run in prod, § 8):
+// the key prefix today's own uploads were stored under, `avatars/tile_<tile>_
+// u_<id>_…`. Until the re-key, such a URL still counts as own (the rule before
+// tile_*_own_url, which the migration backfilled with exactly this test).
 // Matched on the key part only, so it holds whatever S3 endpoint the URL was
 // stored under.
-export function isOwnTileUpload(url: string | null | undefined, tile: TileKey, userId: number): url is string {
+export const LEGACY_OWN_TILE_PREFIX = true
+export function isLegacyOwnTileUpload(url: string | null | undefined, tile: TileKey, userId: number): url is string {
   if (!url) return false
-  const prefix = `/${tileUploadKeyPrefix(tile, userId)}`
+  const prefix = `/avatars/tile_${tile}_u_${userId}_`
   const at = url.indexOf(prefix)
   return at >= 0 && !url.slice(at + prefix.length).includes('/')
+}
+
+// own ⇔ the pin IS the tile's own upload (url = own_url), or (until the
+// re-key) a legacy own key of this user and tile.
+export function isOwnTile(url: string | null | undefined, ownUrl: string | null | undefined, tile: TileKey, userId: number): url is string {
+  if (!url) return false
+  if (url === ownUrl) return true
+  return LEGACY_OWN_TILE_PREFIX && isLegacyOwnTileUpload(url, tile, userId)
+}
+
+export const OWN_COLUMN: Record<TileKey, Prisma.Sql> = {
+  impressions: Prisma.raw('tile_impressions_own_url'),
+  moments: Prisma.raw('tile_moments_own_url'),
+  cravings: Prisma.raw('tile_cravings_own_url'),
 }
 
 const COLUMN: Record<TileKey, Prisma.Sql> = {
@@ -127,11 +148,17 @@ export async function listPickable(tile: TileKey, profileId: number, limit: numb
   return rows.map(r => r.url)
 }
 
-export async function readPins(profileId: number): Promise<Record<TileKey, string | null>> {
-  const rows = await prisma.$queryRaw<{ i: string | null; m: string | null; c: string | null }[]>`
-    SELECT tile_impressions_url AS i, tile_moments_url AS m, tile_cravings_url AS c FROM users WHERE id = ${profileId}`
+export type Pin = { url: string | null; own: boolean }
+
+export async function readPins(profileId: number): Promise<Record<TileKey, Pin>> {
+  const rows = await prisma.$queryRaw<{ i: string | null; m: string | null; c: string | null; io: string | null; mo: string | null; co: string | null }[]>`
+    SELECT tile_impressions_url AS i, tile_moments_url AS m, tile_cravings_url AS c,
+           tile_impressions_own_url AS io, tile_moments_own_url AS mo, tile_cravings_own_url AS co
+    FROM users WHERE id = ${profileId}`
   const r = rows[0]
-  return { impressions: r?.i ?? null, moments: r?.m ?? null, cravings: r?.c ?? null }
+  const pin = (tile: TileKey, url: string | null | undefined, own: string | null | undefined): Pin =>
+    ({ url: url ?? null, own: isOwnTile(url, own, tile, profileId) })
+  return { impressions: pin('impressions', r?.i, r?.io), moments: pin('moments', r?.m, r?.mo), cravings: pin('cravings', r?.c, r?.co) }
 }
 
 // A pin that read as dead: clear it under the users-row lock. The liveness
@@ -142,11 +169,12 @@ export async function readPins(profileId: number): Promise<Record<TileKey, strin
 // PATCH writes the pin unconditionally, so a re-pick that waited on this lock
 // lands after the clear. Returns the pin to show when it turned out live.
 async function clearDeadPin(tile: TileKey, profileId: number, dead: string): Promise<string | null> {
-  if (isOwnTileUpload(dead, tile, profileId)) return dead
   return prisma.$transaction(async tx => {
-    const rows = await tx.$queryRaw<{ pin: string | null }[]>`
-      SELECT ${COLUMN[tile]} AS pin FROM users WHERE id = ${profileId} FOR UPDATE`
+    const rows = await tx.$queryRaw<{ pin: string | null; own: string | null }[]>`
+      SELECT ${COLUMN[tile]} AS pin, ${OWN_COLUMN[tile]} AS own FROM users WHERE id = ${profileId} FOR UPDATE`
     if (rows[0]?.pin !== dead) return null
+    // Own under the lock (an own upload landed since the read): live, keep it.
+    if (isOwnTile(dead, rows[0].own, tile, profileId)) return dead
     if (await inPool(tx, tile, profileId, dead, false)) return dead
     await tx.$executeRaw`UPDATE users SET ${COLUMN[tile]} = NULL WHERE id = ${profileId}`
     return null
@@ -168,9 +196,9 @@ export async function resolveTilePhotos(profileId: number, tiles: readonly TileK
   if (tiles.length === 0) return {}
   const pins = await readPins(profileId)
   const entries = await Promise.all(tiles.map(async (tile): Promise<[TileKey, TilePhoto]> => {
-    const pin = pins[tile]
+    const { url: pin, own } = pins[tile]
     if (pin) {
-      const live = isOwnTileUpload(pin, tile, profileId) || (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
+      const live = own || (await inPool(prisma, tile, profileId, pin, false)) || (await clearDeadPin(tile, profileId, pin)) !== null
       if (live) return [tile, { imageUrl: pin, pinned: true }]
     }
     return [tile, { imageUrl: await autoLatest(tile, profileId), pinned: false }]

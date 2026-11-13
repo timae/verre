@@ -69,7 +69,7 @@ export function PeopleSheet({
     staleTime: 30_000,
   });
   const friendIds = useMemo(() => new Set((friends.data ?? []).map((f) => f.id)), [friends.data]);
-  const isFriendRow = (p: Participant) => p.id.startsWith('u:') && friendIds.has(Number(p.id.slice(2)));
+  const isFriendRow = (p: Participant) => p.id.startsWith('u:') && friendIds.has(p.id.slice(2));
 
   // Search + friends filter (Simon's ask, space-efficient): the row appears
   // only when the roster is big enough to need it; the Friends chip only when
@@ -306,7 +306,7 @@ export function PeopleSheet({
                 first={i === 0}
                 role={roleOf(p)}
                 isAnon={p.id.startsWith('a:')}
-                isFriend={p.id.startsWith('u:') && friendIds.has(Number(p.id.slice(2)))}
+                isFriend={p.id.startsWith('u:') && friendIds.has(p.id.slice(2))}
                 isBlocked={(meta?.viewerBlocksOut ?? []).includes(p.id) || (meta?.viewerBlocksIn ?? []).includes(p.id)}
                 isSelf={p.id === myIdentityId}
                 busy={busyId === p.id}

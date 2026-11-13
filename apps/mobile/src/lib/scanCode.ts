@@ -1,4 +1,4 @@
-import { normalizeCode } from '@verre/core';
+import { normalizeCode, normalizePublicUserId } from '@verre/core';
 
 // What an in-app scan (Add Friends → Scan) may open: a profile QR
 // (`${WEB_BASE}/u/<id>`, your Add Friends card) or a moment's invite QR
@@ -12,10 +12,18 @@ import { normalizeCode } from '@verre/core';
 // scheme + host[:port] (no user info: an `@` makes the origin differ), then
 // the path; the query and fragment are ignored. The origin compares exactly
 // (case-insensitive: hosts are).
-export type VerreCode = { kind: 'profile'; id: number } | { kind: 'moment'; code: string };
+//
+// A profile QR carries the PUBLIC id (12 characters, letter first; case-
+// insensitive, canonical uppercase out). An OLD profile QR (`/u/<digits>`,
+// from before public ids) stays a RECOGNISED Verre code, `profile-legacy`:
+// the result says "This code isn’t available." and nothing is requested (old
+// links break on purpose, public-user-ids § 2).
+export type VerreCode =
+  | { kind: 'profile'; id: string }
+  | { kind: 'profile-legacy' }
+  | { kind: 'moment'; code: string };
 
 const URL_RE = /^(https?:\/\/[^/?#\s]+)(\/[^?#\s]*)?(?:[?#]\S*)?$/i;
-const PG_INT4_MAX = 2147483647;
 
 function originOf(url: string): string | null {
   const m = URL_RE.exec(url.trim());
@@ -27,11 +35,11 @@ export function parseVerreCode(data: string, webBase: string): VerreCode | null 
   const base = originOf(webBase);
   if (!m || !base || m[1].toLowerCase() !== base) return null;
   const path = m[2] ?? '/';
-  // `/u/<id>`: the server's parsePathId rule (no leading zeros, int4).
-  const u = /^\/u\/([1-9][0-9]*)\/?$/.exec(path);
+  const u = /^\/u\/([A-Za-z0-9]+)\/?$/.exec(path);
   if (u) {
-    const id = Number(u[1]);
-    return Number.isSafeInteger(id) && id <= PG_INT4_MAX ? { kind: 'profile', id } : null;
+    const id = normalizePublicUserId(u[1]);
+    if (id) return { kind: 'profile', id };
+    return /^[1-9]\d{0,9}$/.test(u[1]) ? { kind: 'profile-legacy' } : null;
   }
   const j = /^\/join\/([A-Za-z0-9-]+)\/?$/.exec(path);
   if (j) {

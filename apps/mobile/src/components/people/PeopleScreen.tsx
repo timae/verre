@@ -23,6 +23,7 @@ import { confirmUnfollow, relate, usePersonBusy } from '@/lib/relationship';
 import { feedHref, useSessionTab } from '@/lib/sessionStack';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { radius, useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // People (handoff 04·11 / 04·11a / 04·11c): someone's Friends / Followers /
 // Following, yours or anyone's whose profile you may see. Pushed from the
@@ -42,15 +43,14 @@ import { radius, useTheme } from '@/theme';
 // Following, their "Only People You Know"); the confirm is the slip guard
 // (ruled 2026-11-12).
 
-export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: number; initialTab: PeopleTab; initialKnown: boolean }) {
+export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: string; initialTab: PeopleTab; initialKnown: boolean }) {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
   const mount = useSessionTab();
   const queryClient = useQueryClient();
   const guard = usePushGuard();
-  const sessionId = authClient.useSession().data?.user.id;
-  const meId = sessionId != null ? Number(sessionId) : null;
+  const meId = useMeId();
   const own = meId === userId;
 
   const headerQ = useQuery(profileQueryOptions(userId));
@@ -89,7 +89,7 @@ export function PeopleScreen({ userId, initialTab, initialKnown }: { userId: num
   const knownCount = knownCounts[tab] ?? (tab === 'friends' ? full?.inCommon?.count : undefined);
 
   const rows = useMemo(() => {
-    const seen = new Set<number>();
+    const seen = new Set<string>();
     return (listQ.data?.pages ?? []).flatMap((p) => p.users).filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
   }, [listQ.data]);
   const onFollowRow = (row: PersonRow) => {

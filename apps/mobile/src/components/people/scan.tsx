@@ -125,17 +125,18 @@ export function useVerreScanner(active: boolean, onCode: (code: VerreCode) => vo
 
 // 04·12d — what a scanned Verre code is, before anything happens: a person
 // (View Profile + Follow / Follow Back), private, blocked, your own code, an
-// unavailable one, or a moment's preview (ruled 2026-11-12: cover, name, the
+// unavailable one (an old integer QR included: `profile-legacy`, no
+// request), or a moment's preview (ruled 2026-11-12: cover, name, the
 // host (tappable), when, where; Join, or Open Moment when you're in it).
 // `leaveTo` closes the host sheet, then pushes (a profile, the moment).
-export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId: number; leaveTo: (push: () => void) => void }) {
+export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId: string | null; leaveTo: (push: () => void) => void }) {
   const router = useRouter();
   const mount = useSessionTab();
   const rootState = useRootNavigationState();
   const queryClient = useQueryClient();
   const sessionName = authClient.useSession().data?.user.name;
   const personId = result.kind === 'profile' && result.id !== meId ? result.id : null;
-  const profileQ = useQuery({ ...profileQueryOptions(personId ?? 0), enabled: personId != null });
+  const profileQ = useQuery({ ...profileQueryOptions(personId ?? ''), enabled: personId != null });
   const momentCode = result.kind === 'moment' ? result.code : null;
   const previewQ = useQuery({
     queryKey: momentPreviewKey(momentCode ?? ''),
@@ -168,7 +169,7 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
     const post = openFeedPost(rootState);
     return post ? { tab: 'feed', post } : mount;
   };
-  const openProfile = (id: number) => go(() => router.push(feedHref(profileMount(), 'profile', { id: String(id) })));
+  const openProfile = (id: string) => go(() => router.push(feedHref(profileMount(), 'profile', { id })));
   const openMoment = (code: string) => go(() => router.push(sessionHref(mount, '', { code })));
   const join = async (code: string) => {
     if (joining) return;
@@ -207,6 +208,8 @@ export function ScanResult({ result, meId, leaveTo }: { result: VerreCode; meId:
       </View>
     );
   }
+  // An old QR (`/u/<digits>`, from before public ids): recognised, never looked up.
+  if (result.kind === 'profile-legacy') return <Message text="This code isn’t available." />;
   if (result.id === meId) return <Message text="This is your code." />;
   if (profileQ.isPending) return <Spinner />;
   const profile = profileQ.data;

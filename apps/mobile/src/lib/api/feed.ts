@@ -11,7 +11,8 @@ import { ApiError, throwApiError } from './sessions';
 
 // The author byline on every feed item.
 export type FeedAuthor = {
-  id: number;
+  // The PUBLIC id (opaque string; public-user-ids).
+  id: string;
   name: string;
   xp: number;
   imageUrl: string | null;
@@ -73,7 +74,7 @@ export type CheckinPayload = {
   aromas: AromaSelection[];
   likeCount: number;
   createdAt: string;
-  tags: { id: number; name: string }[];
+  tags: { id: string; name: string }[];
   liked: boolean;
   viewerFollowsAuthor: boolean;
 };
@@ -107,8 +108,8 @@ export type FeedPage = {
 // cursor-paginated (PAGE=20 server-side). No cursor = from now. `userId` =
 // ONE author's posts (the profile feed, `?user=`): same projection, gated like
 // the profile (404 unless the viewer may see it).
-export async function getFeed(cursor?: string | null, userId?: number | null): Promise<FeedPage> {
-  const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${userId}` : '']
+export async function getFeed(cursor?: string | null, userId?: string | null): Promise<FeedPage> {
+  const qs = [cursor ? `cursor=${encodeURIComponent(cursor)}` : '', userId != null ? `user=${encodeURIComponent(userId)}` : '']
     .filter(Boolean)
     .join('&');
   const res = await apiFetch(`/api/feed${qs ? `?${qs}` : ''}`);
@@ -291,10 +292,10 @@ export function feedItemId(item: FeedItem): number {
 // exact-key read/write must use feedKey(), never FEED_KEY plus a hope.
 export const FEED_KEY = ['feed'] as const;
 export const FEED_STALE_MS = 15_000;
-export function feedKey(userId?: number | null): readonly ['feed'] | readonly ['feed', 'user', number] {
+export function feedKey(userId?: string | null): readonly ['feed'] | readonly ['feed', 'user', string] {
   return userId != null ? (['feed', 'user', userId] as const) : FEED_KEY;
 }
-export function feedQueryOptions(userId?: number | null) {
+export function feedQueryOptions(userId?: string | null) {
   return infiniteQueryOptions({
     queryKey: feedKey(userId) as readonly unknown[],
     queryFn: ({ pageParam }) => getFeed(pageParam, userId),

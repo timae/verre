@@ -8,7 +8,8 @@ import { ProfileBlockedView } from '@/components/profile/ProfileBlockedView'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
 import { loadProfile } from '@/lib/profileLoad'
 import { isMuted } from '@/lib/userMute'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
+import { clientSession } from '@/lib/clientSession'
 import { prisma } from '@/lib/prisma'
 import { checkRate } from '@/lib/rateLimit'
 import { ThemeToggle } from '@/components/ThemeToggle'
@@ -19,10 +20,13 @@ import Link from 'next/link'
 export default async function ProfilePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const session = await auth()
-  const myId = session?.user ? Number(session.user.id) : null
-  const parsedId = parsePathId(id)
-  if (parsedId === null) notFound()
-  const userId = parsedId
+  // Internal integers for the server reads; every PROP carries the PUBLIC id
+  // (client components build API URLs and links from them, public-user-ids § 7).
+  const viewerId = session?.user ? Number(session.user.id) : null
+  const myId = clientSession(session)?.user?.id ?? null
+  // Format only; `/u/<int>` (an old link) or anything else is a 404, no redirect.
+  const publicId = parsePublicIdParam(id)
+  if (publicId === null) notFound()
 
   // Mirror the per-IP cap on /api/users/[id] — without it, the SSR path
   // is the cheap enumeration channel an attacker would take to walk the
@@ -32,7 +36,9 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   const rl = await checkRate(`rl:profile:${ip}:1m`, 60, 60)
   if (!rl.allowed) notFound()
 
-  const gate = await resolveProfileViewer(userId, myId)
+  const userId = await userIdForPublicId(publicId)
+  if (userId === null) notFound()
+  const gate = await resolveProfileViewer(userId, viewerId)
   if (gate.status === 'gone') notFound()
 
   // Tier-gated viewers see a shell: display name + dummy avatar + follow
@@ -46,21 +52,21 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
   let profileBody: React.ReactNode
   if (gate.status === 'blocked-by-me') {
     profileBody = (
-      <ProfileBlockedView userId={userId} userName={gate.name} myId={myId} />
+      <ProfileBlockedView userId={publicId} userName={gate.name} myId={myId} />
     )
   } else if (gate.status === 'shell') {
     // Hydrate `isFollowing` so the follow button reflects current state
     // for logged-in viewers. The follow lookup is the only DB call here
     // — name comes from the gate result.
-    const isFollowing = myId
+    const isFollowing = viewerId
       ? !!(await prisma.follow.findUnique({
-          where: { followerId_followingId: { followerId: myId, followingId: userId } },
+          where: { followerId_followingId: { followerId: viewerId, followingId: userId } },
           select: { followerId: true },
         }))
       : false
     profileBody = (
       <ProfileShell
-        userId={userId}
+        userId={publicId}
         userName={gate.name}
         myId={myId}
         isFollowing={isFollowing}
@@ -71,8 +77,8 @@ export default async function ProfilePage({ params }: { params: Promise<{ id: st
     // shape. SSR calls Prisma directly; the API call goes over the wire.
     const profile = await loadProfile({ userId, gate })
     if (!profile) notFound()
-    const viewerMutes = myId !== null && myId !== userId
-      ? await isMuted(myId, userId)
+    const viewerMutes = viewerId !== null && viewerId !== userId
+      ? await isMuted(viewerId, userId)
       : false
     profileBody = (
       <>

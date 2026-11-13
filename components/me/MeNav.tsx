@@ -1,22 +1,23 @@
 'use client'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { profilePath } from '@verre/core'
 import { useDashboardSections } from './DashboardSettings'
 
 interface NavProps {
   // Logged-in user's id, used to build the public-profile link target
   // (`/u/<id>`). The /me/profile route was removed; "Profile" now goes
   // straight to the public surface.
-  myId: number
+  myId: string
 }
 
-function buildNav(myId: number) {
+function buildNav(myId: string) {
   return [
     { href: '/me',           icon: '⊞', label: 'Home',    id: null },
     { href: '/me/feed',      icon: '🌐', label: 'Feed',    id: null },
     { href: '/me/history',   icon: '◷', label: 'History', id: null },
     { href: '/me/saved',     icon: '★',  label: 'Saved',   id: null },
-    { href: `/u/${myId}`,    icon: '◉', label: 'Profile', id: null },
+    { href: profilePath(myId), icon: '◉', label: 'Profile', id: null },
     { href: '/me/badges',    icon: '🏅', label: 'Badges',  id: 'show_badges' },
   ]
 }

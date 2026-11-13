@@ -62,7 +62,7 @@ export async function patchVisibility(
 
 // Your own lists, newest first. A muted user who blocked you is left out
 // server-side; the rows render initials only.
-export type ListedPerson = { id: number; name: string };
+export type ListedPerson = { id: string; name: string };
 export async function getBlocks(): Promise<ListedPerson[]> {
   const res = await apiFetch('/api/me/blocks');
   if (!res.ok) await throwApiError(res);

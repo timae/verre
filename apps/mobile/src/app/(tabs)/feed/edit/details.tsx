@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Image, Pressable, ScrollView, View, type TextInputInstance, type ScrollViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
-import { countryName, filterVintageInput, normalizeVintageText } from '@verre/core';
+import { countryName, filterVintageInput, normalizePublicUserId, normalizeVintageText } from '@verre/core';
 import { Button } from '@/components/ui/Button';
 import { FullscreenImage } from '@/components/ui/FullscreenImage';
 import { Icon } from '@/components/ui/Icon';
@@ -18,6 +18,7 @@ import { FOOT_CLEARANCE, GLASS_FILL, GUTTER } from '@/lib/layout';
 import { WINE_TYPES } from '@/lib/momentFormat';
 import { feedListHref, useSessionTab } from '@/lib/sessionStack';
 import { radius, useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Standalone check-in EDIT, the impression-details sub-screen (Simon,
 // 2026-07-17: the square on the edit screen taps through here). The create
@@ -35,9 +36,9 @@ export default function EditCheckinDetails() {
   const router = useRouter();
   const meta = getCheckinEditMeta();
   const { user } = useLocalSearchParams<{ user?: string }>();
-  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const listUserId = normalizePublicUserId(user);
   const tab = useSessionTab();
-  const meId = authClient.useSession().data?.user.id;
+  const meId = useMeId();
 
   const [photo, setPhoto] = useState<PhotoEdit>(meta?.photo);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -75,7 +76,7 @@ export default function EditCheckinDetails() {
     if (!meta) {
       // On an opened post's stack a replace would land on the outer stack.
       if (tab.post != null && router.canGoBack()) router.back();
-      else router.replace(feedListHref(tab, listUserId, meId != null ? Number(meId) : null));
+      else router.replace(feedListHref(tab, listUserId, meId));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

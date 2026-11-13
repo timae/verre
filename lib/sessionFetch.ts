@@ -11,6 +11,18 @@
 
 import { normalizeCode } from '@verre/core'
 import { joinPath } from '@/lib/sessionCode'
+import { WEB_WIRE_GENERATION } from '@/lib/clientVersion'
+
+// 🔒 Every web call to /api/session* carries the web wire generation
+// (public-user-ids § 6): proxy.ts bounces a SIGNED-IN moment call without it as
+// an old tab (401 + X-Vr-Auth: invalid). Marker only, nothing else; for the
+// calls that can't use sessionFetch (create has no code yet, RemovedView is
+// where a bounce lands). A lint rule refuses a bare fetch to /api/session.
+export function webApiFetch(url: string, init?: RequestInit): Promise<Response> {
+  const headers = new Headers(init?.headers)
+  headers.set('X-Verre-Web', WEB_WIRE_GENERATION)
+  return fetch(url, { ...init, headers })
+}
 
 // Defensive: callers should pass canonical codes (post-normalizeCode), but
 // fall back to upper-case if normalize rejects so a malformed code at least
@@ -59,7 +71,7 @@ export async function sessionFetch(code: string, url: string, init?: RequestInit
   const headers = new Headers(init?.headers)
   const token = getAnonToken(code)
   if (token) headers.set('x-vr-anon-token', token)
-  const res = await fetch(url, { ...init, headers })
+  const res = await webApiFetch(url, { ...init, headers })
   const authHeader = res.headers.get('X-Vr-Auth')
   if (authHeader === 'invalid') {
     clearAnonToken(code)

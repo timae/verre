@@ -21,7 +21,7 @@ type EditCheckin = {
   grape?: string|null; type?: string|null; score?: number|null; flavors?: Record<string,number>|null
   notes?: string|null; imageUrl?: string|null; venueName?: string|null; city?: string|null
   country?: string|null; lat?: number|null; lng?: number|null
-  tags?: { id: number; name: string }[]
+  tags?: { id: string; name: string }[]
 }
 
 export type CopySource = {
@@ -30,7 +30,7 @@ export type CopySource = {
   grape?: string|null; type?: string|null
   imageUrl?: string|null
   venueName?: string|null; city?: string|null; country?: string|null
-  author: { id: number; name: string }
+  author: { id: string; name: string }
   // True when the viewer was tagged on the source — implies they were there,
   // so the modal auto-fills the venue group on mount.
   taggedViewer?: boolean
@@ -73,13 +73,13 @@ export function CheckinModal({ onClose, onPosted, editCheckin, copyFromCheckin, 
   // a fresh instance to keep the input field in sync.
   const [locationVersion, setLocationVersion] = useState(0)
   const [showTagPicker, setShowTagPicker] = useState(false)
-  const [taggedIds, setTaggedIds] = useState<number[]>(editCheckin?.tags?.map(t => t.id) ?? [])
+  const [taggedIds, setTaggedIds] = useState<string[]>(editCheckin?.tags?.map(t => t.id) ?? [])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
   // Input chips = the STRUCTURE axis set for this style (§6d input surface).
   const fl = resolveAxesColoured('wine', type || 'white')
-  const { data: friends = [] } = useQuery<{ id: number; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
+  const { data: friends = [] } = useQuery<{ id: string; name: string }[]>({ queryKey: ['friends'], queryFn: () => fetch('/api/me/friends').then(r => r.json()) })
 
   const sourceAuthorId = copyFromCheckin?.author.id
   const autoTagPrimed = useRef(false)

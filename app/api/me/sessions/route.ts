@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { parseWireIdentity, userIdsForPublicIds, wireIdentityMap } from '@/lib/publicIds'
 import { Prisma } from '@prisma/client'
 import { decimalToNumber } from '@verre/core'
 import { resolveUser } from '@/lib/resolveUser'
@@ -98,8 +99,8 @@ export async function GET(req: NextRequest) {
   // Same per-facet cap as `people`: hosts OR into the query (each id/name is one
   // ANY() member, cheaper than an EXISTS, but still bound the input). 20 is far
   // beyond any real "moments hosted by one of N people" query.
-  const hosts = csv(sp.get('hosts')).slice(0, FACET_MAX) // 'me' | 'u:<id>' | 'n:<name>'
-  const people = csv(sp.get('people')).slice(0, FACET_MAX) // 'u:<id>' friend identity ids
+  const hosts = csv(sp.get('hosts')).slice(0, FACET_MAX) // 'me' | 'u:<publicId>' | 'n:<name>'
+  const people = csv(sp.get('people')).slice(0, FACET_MAX) // 'u:<publicId>' friend identity ids
   const category = sp.get('category') // 'wine' | null (any); 'any' == null
   // `from`/`to` are full ISO INSTANTS (…Z), not bare YYYY-MM-DD: the client
   // sends the picked LOCAL day's start/end converted to UTC (local-midnight →
@@ -161,10 +162,14 @@ export async function GET(req: NextRequest) {
   // attendance oracle for an arbitrary user. Blocked pairs are excluded too.
   let peopleIds: number[] = []
   if (filtered && people.length > 0) {
-    const wanted = people
-      .filter((p) => p.startsWith('u:'))
-      .map((p) => Number(p.slice(2)))
-      .filter((n) => Number.isInteger(n) && n > 0 && !blockedUserIds.has(n))
+    // Wire identities (`u:<publicId>`); a malformed or unknown one is dropped
+    // (and a request left with none matches nothing, below).
+    const wantedPublic = people.flatMap((p) => {
+      const w = parseWireIdentity(p)
+      return w?.kind === 'user' ? [w.publicId] : []
+    })
+    const wanted = [...(await userIdsForPublicIds(wantedPublic)).values()]
+      .filter((n) => !blockedUserIds.has(n))
       // Belt after the block-scrub filter (the raw `people` was already capped
       // at parse). Each accepted friend becomes one correlated EXISTS.
       .slice(0, FACET_MAX)
@@ -296,13 +301,23 @@ export async function GET(req: NextRequest) {
     }
 
     // Hosts: OR within the facet. 'me' = the caller's own hosted moments;
-    // 'u:<id>' matches host_user_id; 'n:<name>' matches the anon-host name
-    // snapshot (accepting rename drift, per the proposal).
+    // 'u:<publicId>' matches host_user_id; 'n:<name>' matches the anon-host
+    // name snapshot (accepting rename drift, per the proposal).
+    // 🔒 A `u:` entry that is malformed (an old tab's `u:42`) or unknown adds a
+    // FALSE clause, never nothing: dropping it could leave the facet empty and
+    // widen the filter to every moment (public-user-ids § 4).
     if (hosts.length > 0) {
       const clauses: Prisma.Sql[] = []
       if (hosts.includes('me')) clauses.push(Prisma.sql`s.host_user_id = ${userId}`)
-      const uids = hosts.filter((h) => h.startsWith('u:')).map((h) => Number(h.slice(2))).filter((n) => Number.isInteger(n) && n > 0)
+      const hostEntries = hosts.filter((h) => h.startsWith('u:'))
+      const hostPublic = hostEntries.flatMap((h) => {
+        const w = parseWireIdentity(h)
+        return w?.kind === 'user' ? [w.publicId] : []
+      })
+      const hostIds = await userIdsForPublicIds(hostPublic)
+      const uids = [...hostIds.values()]
       if (uids.length > 0) clauses.push(Prisma.sql`s.host_user_id = ANY(${uids})`)
+      if (hostEntries.length > uids.length) clauses.push(Prisma.sql`FALSE`)
       // Scrub + length-cap the free-text anon-host names (NUL byte → P22021
       // 500; host_name is VarChar(64) so anything longer can't match anyway).
       const names = hosts
@@ -682,8 +697,15 @@ export async function GET(req: NextRequest) {
   // and break the cursor's monotonicity across page boundaries.
   if (!filtered) visible.sort((a, b) => b._lastActiveMs - a._lastActiveMs)
   // Strip the internal keys before sending.
+  // 🔒 Wire ids only (public-user-ids § 4): `host_user_id` is never sent (the
+  // caller's relation is `role`), and `people[].id` leaves as `u:<publicId>`
+  // (an identity whose users row is gone is dropped).
+  const wire = await wireIdentityMap(visible.flatMap((e) => e.people.map((p) => p.id)))
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const body = visible.map(({ _lastActiveMs, _kicked, ...rest }) => rest)
+  const body = visible.map(({ _lastActiveMs, _kicked, host_user_id, people, ...rest }) => ({
+    ...rest,
+    people: people.flatMap((p) => { const id = wire.get(p.id); return id ? [{ id, name: p.name }] : [] }),
+  }))
 
   // Viewer-dependent body (role, own counts) — never shared-cacheable. The
   // opaque nextCursor + true bucket totals ride headers so the body stays a

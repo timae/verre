@@ -57,7 +57,8 @@ import { timeAgo, wineTypeLabel } from '@/lib/momentFormat';
 import { scoreWord } from '@/lib/scoreWords';
 import { useFlavourColors } from '@/theme/flavourColors';
 import { radius, space, springs, useTheme } from '@/theme';
-import { countryName } from '@verre/core';
+import { countryName, normalizePublicUserId } from '@verre/core';
+import { useMeId } from '@/lib/meId';
 
 // Full impression detail — a NEW read-only screen (proposal 08 §3; NOT 02e,
 // which is a write interface). Reached from a feed card's glass panel. Pure
@@ -151,10 +152,9 @@ export default function FeedImpression() {
   // The list this post was opened from: the network feed (no `user`) or one
   // person's profile feed. A card's list is a profile on the post's stack; the
   // modal's is on the outer tab stack (its edit + "gone" exits go there).
-  const listUserId = user != null && Number.isFinite(Number(user)) ? Number(user) : null;
+  const listUserId = normalizePublicUserId(user);
   const listMount = cardMode ? mount : TAB_MOUNTS[mount.tab];
-  const meId = authClient.useSession().data?.user.id;
-  const myUserId = meId != null ? Number(meId) : null;
+  const myUserId = useMeId();
   const startIndex = Math.max(0, Number(index ?? 0) || 0);
 
   // Read the originating list's cache (it already delivered this). We attach
@@ -192,7 +192,7 @@ export default function FeedImpression() {
   const openAuthor = useCallback(() => {
     if (authorId == null) return;
     if (authorId === listUserId) requestCloseRef.current();
-    else router.push(feedHref(mount, 'profile', { id: String(authorId) }));
+    else router.push(feedHref(mount, 'profile', { id: authorId }));
   }, [router, mount, authorId, listUserId]);
   const onAuthorPress = authorId != null ? openAuthor : undefined;
   // Clamp seam for the pager index: `index` arrives via route params (a deep
@@ -1028,7 +1028,7 @@ export default function FeedImpression() {
                 feedHref(mount, 'edit', {
                   id: String(feedItemId),
                   wine: detail.isSession && activeWine ? activeWine.id : undefined,
-                  user: listUserId != null ? String(listUserId) : undefined,
+                  user: listUserId ?? undefined,
                 }),
               );
             }}

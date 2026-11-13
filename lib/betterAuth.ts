@@ -12,19 +12,30 @@ import { parseNativeUserAgent, parseUserAgent } from '@/lib/userAgent'
 import { backfillNativeCredential, revokeAllWebSessions, revokeNativeSessionsExcept, syncCredential } from '@/lib/identityStore'
 import { checkRate, getClientIp, formatWait } from '@/lib/rateLimit'
 import { bucketStart } from '@/lib/lastSeen'
+import { derivedKey } from '@/lib/serverSecret'
 
-// Deterministic synthetic user-id for the sign-up enumeration mitigation (see
-// customSyntheticUser below). HMAC(lowercased email) → a positive integer string
-// in a plausible serial-PK range, so the same email always yields the same id
-// (no repeat-probe tell) and it's indistinguishable from a real id by FORMAT.
-// Keyed on AUTH_SECRET so an attacker can't precompute the mapping. Range
-// 1..1e6 — wide enough not to be an obvious constant low band; the absolute-
-// range residual (vs the real serial sequence) is documented + accepted.
-function syntheticUserId(email: string): string {
-  const secret = process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET || process.env.JWT_SECRET || ''
-  const digest = createHmac('sha256', secret).update(email.trim().toLowerCase()).digest()
-  const n = digest.readUInt32BE(0) % 1_000_000
-  return String(n + 1)
+// Deterministic synthetic PUBLIC id for the sign-up enumeration mitigation
+// (see customSyntheticUser below; public-user-ids § 5 + § 8a a). The wire
+// carries public ids only, so a taken email's synthetic user must look like a
+// real new account's public id: HMAC(lowercased email) through EXACTLY the
+// mapping gen_public_user_id() uses (prisma/migrations/20261112230000_public_
+// user_ids): bytes 6 and 8 skipped, 11 tail characters `byte % 32`, the first
+// a letter by rejection sampling (a byte below 242, then `% 22`) from the next
+// three, a fresh HMAC round on the rare miss. Same email → same id (no
+// repeat-probe tell). 🔒 Keyed by derivedKey, which THROWS without a secret
+// (an empty key would make the mapping precomputable).
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+const CROCKFORD_LETTERS = 'ABCDEFGHJKMNPQRSTVWXYZ'
+const TAIL_BYTES = [0, 1, 2, 3, 4, 5, 7, 9, 10, 11, 12]
+const LEAD_BYTES = [13, 14, 15]
+export function syntheticPublicId(email: string): string {
+  const key = derivedKey('synthetic-signup:v1')
+  for (let round = 0; ; round++) {
+    const b = createHmac('sha256', key).update(`${round}:${email.trim().toLowerCase()}`).digest()
+    const tail = TAIL_BYTES.map(i => CROCKFORD[b[i] % 32]).join('')
+    const lead = LEAD_BYTES.map(i => b[i]).find(v => v < 242)
+    if (lead !== undefined) return CROCKFORD_LETTERS[lead % 22] + tail
+  }
 }
 
 // ── Better Auth — native-app credential layer ─────────────────────────────────
@@ -162,6 +173,16 @@ export const betterAuthServer = betterAuth({
   user: {
     modelName: 'user',
     fields: { image: 'imageUrl' },
+    // The public id (public-user-ids § 3 + § 5). 🔒 `input: false`: a sign-up
+    // body carrying it answers 400 ("…is not allowed to be set") for a free and
+    // a taken email alike, BEFORE the duplicate check; the DB trigger mints it
+    // on every insert anyway. `required: false` (true would 400 every
+    // sign-up: the adapter omits it on create). `returned: true`: it comes back
+    // on sign-up / sign-in / get-session and in new Redis session copies, so
+    // the route wrapper (app/api/auth/native/[...all]) rarely needs a lookup.
+    additionalFields: {
+      publicId: { type: 'string', required: false, input: false, returned: true },
+    },
   },
   account: {
     modelName: 'authAccount',
@@ -295,6 +316,12 @@ export const betterAuthServer = betterAuth({
         // silently split the budget. The guard skips a non-positive/NaN id — see
         // the two skip cases (both safe) in the block comment above.
         const uid = Number(sess?.user?.id)
+        // 🔒 A present session with a non-integer id THROWS, never skips the
+        // charge: the public-id rewrite lives only in the route wrapper, so a
+        // non-integer here means someone moved it into BA (public-user-ids § 5).
+        if (sess?.user && !(Number.isInteger(uid) && uid > 0)) {
+          throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
+        }
         if (Number.isInteger(uid) && uid > 0) {
           const rl = await checkRate(`rl:account:user:${uid}:1h`, 20, 3600)
           if (!rl.allowed) {
@@ -331,6 +358,10 @@ export const betterAuthServer = betterAuth({
         const sess = await getSessionFromCtx(ctx).catch(() => null)
         const uid = Number(sess?.user?.id)
         const current = sess?.session?.token
+        // Same as above: a session whose id isn't the integer throws.
+        if (sess?.user && !(Number.isInteger(uid) && uid > 0)) {
+          throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
+        }
         if (!Number.isInteger(uid) || uid <= 0 || !current) return
         try {
           await revokeNativeSessionsExcept(uid, ctx.path === '/revoke-other-sessions' ? current : null)
@@ -339,6 +370,20 @@ export const betterAuthServer = betterAuth({
           throw APIError.from('INTERNAL_SERVER_ERROR', { message: 'Internal Server Error', code: 'INTERNAL_SERVER_ERROR' })
         }
         return ctx.json({ status: true })
+      }
+
+      // 🔒 Sign-up answers the same for a free and a taken email (public-user-
+      // ids § 8a a). The name is validated HERE, before BA's duplicate check,
+      // with the create hook's validator: otherwise an invalid name answered
+      // 400 for a free email (the create hook refused it) and 200 for a taken
+      // one (the synthetic user, built from the raw body). The create hook
+      // stays as the belt; customSyntheticUser returns the normalised name.
+      if (ctx.path === '/sign-up/email') {
+        try { validateDisplayName(ctx.body?.name) }
+        catch (e) {
+          throw APIError.from('BAD_REQUEST', { message: e instanceof Error ? e.message : 'Invalid name', code: 'INVALID_NAME' })
+        }
+        return
       }
 
       // Lazy credential backfill (§5): an existing WEB user's first native
@@ -602,40 +647,37 @@ export const betterAuthServer = betterAuth({
     // synthetic user built from the REQUEST body, not the real row — no name leak;
     // BA hashes the password to blunt timing) — verified sign-up.mjs:161-205.
     //
-    // ⚠️ NOT fully closed — DON'T claim it is. BA's enumeration protection was
-    // designed for RANDOM-STRING ids: under our generateId:'serial' (integer PKs),
-    // BA's id generator returns false → the synthetic path falls back to a 32-char
-    // RANDOM string (sign-up.mjs:176), while a REAL new user gets an integer id
-    // ("311"). Same 200/shape, but `^[0-9]+$` on user.id distinguishes them — the
-    // oracle just moves from status code to id FORMAT. customSyntheticUser (below)
-    // overrides the synthetic id to a small integer string, killing that format
-    // tell. A RESIDUAL remains: ids are sequential, so an attacker interleaving
-    // real signups can statistically spot a synthetic id that's out-of-sequence
-    // (we can't read MAX(id)+1 — customSyntheticUser is called SYNCHRONOUSLY, no
-    // await). Closing that fully needs the deferred email-verification gate (flips
-    // requireEmailVerification, which also gates the real-row creation). The format
-    // tell is the genuinely-exploitable, embarrassing-in-a-pentest part; the
-    // sequence residual needs a deliberate interleaved-probe attack AND a free-
-    // email probe self-poisons (it creates a real account, rate-limited 10/min).
+    // ⚠️ NOT fully closed — DON'T claim it is. Since public user ids
+    // (public-user-ids § 5 + § 8a a) the RESPONSE no longer tells a taken email
+    // from a free one: the route wrapper writes `user.id` from the public id
+    // and drops `image` on both, customSyntheticUser returns a public-id-shaped
+    // HMAC (no format or sequence tell: public ids are random), the normalised
+    // name and `image: null`, and an invalid name answers 400 for both (the
+    // before-hook validates it ahead of BA's duplicate check). Residuals, all
+    // closed only by the deferred email-verification gate (requireEmailVerification):
+    // a follow-up sign-in; a profile GET on the returned id (a synthetic id
+    // resolves to nothing, 404; a fresh account to a shell); a SECOND sign-up
+    // of the same address (a taken email returns the same HMAC id twice, a
+    // free one the real id first and the HMAC id after); and the free path's
+    // extra work (two inserts + account.create.after) in the response time.
+    // Each but the timing needs the prober to create a real account (10/min/IP).
     //
     // Trade-off: a signup no longer auto-creates a session, so the native client
-    // calls /sign-in/email as a second step (standard two-step flow; the app
-    // doesn't exist yet, so the contract is free to set). Social sign-up is
-    // unaffected. (Web register has its own 409 oracle — out of scope here.)
+    // calls /sign-in/email as a second step (standard two-step flow). Social
+    // sign-up is unaffected. (Web register has its own 409 oracle, named in
+    // app/api/rate-limits.md.)
     autoSignIn: false,
-    // See the block above: return an integer-STRING id (matching a real serial PK)
-    // so the synthetic-user response can't be told from a real new signup by id
-    // FORMAT. The id is DETERMINISTIC per email — an HMAC of the lowercased email
-    // (keyed on AUTH_SECRET) mapped into an integer range — so probing the SAME
-    // email twice returns the SAME id (a real account's id is stable; a per-
-    // request RANDOM id would itself be a tell). We can't read MAX(id)+1 here
-    // (customSyntheticUser is sync), so the absolute-range residual survives until
-    // the email-verification gate — but the cheap, exploitable tells (format +
-    // repeat-probe) are both closed. coreFields is the request-supplied name/email.
-    customSyntheticUser: ({ coreFields }: { coreFields: Record<string, unknown> }) => ({
-      ...coreFields,
-      id: syntheticUserId(String(coreFields.email ?? '')),
-    }),
+    // See the block above. Deterministic per email (syntheticPublicId), so
+    // probing the SAME taken email twice returns the SAME id.
+    customSyntheticUser: ({ coreFields }: { coreFields: Record<string, unknown> }) => {
+      const pid = syntheticPublicId(String(coreFields.email ?? ''))
+      let name = coreFields.name
+      try { name = validateDisplayName(coreFields.name) } catch { /* the before-hook already 400'd an invalid name */ }
+      // The real path's create hook normalises the name and drops the image;
+      // the synthetic user does the same, and its id IS a public id (the route
+      // wrapper writes `id` from `publicId`).
+      return { ...coreFields, name, image: null, id: pid, publicId: pid }
+    },
     // Override BOTH hash and verify with bcrypt (Better Auth defaults to scrypt).
     // Overriding only verify would ship a mixed scrypt/bcrypt table. verify uses
     // plain bcrypt.compare with NO hardcoded cost so it accepts every cost factor
@@ -858,6 +900,9 @@ export const betterAuthServer = betterAuth({
     '/update-session',
     '/list-sessions',
     '/revoke-session',
+    // Returns the user's integer twice (`userId`, and `accountId` = the user
+    // id for the credential row): public-user-ids § 5. The app never calls it.
+    '/list-accounts',
   ],
 
   // TODO(step-6): socialProviders { google, apple } with the native id_token

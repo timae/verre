@@ -30,11 +30,11 @@ interface Stats {
 }
 
 interface Props {
-  profileUserId: number
+  profileUserId: string
   profileUserName: string
   profileUserXp: number
   profileUserImageUrl?: string | null
-  myId: number | null
+  myId: string | null
   viewerFollowsProfile: boolean
   initialCheckins: CheckinSeed
   initialSessionPosts?: SessionPostSeed

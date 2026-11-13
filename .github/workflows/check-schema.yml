@@ -226,13 +226,32 @@ jobs:
       # Delete Account failure premise (a refused deletion has already signed
       # the phones out). S3 is an in-process fake endpoint that records the
       # SDK's PUT / DELETE requests.
-      - name: You profile (tiles, retention, profile images, settings)
+      #
+      # § 18 public user ids (docs/dev/proposals/public-user-ids.md § 9): the
+      # wire walk, every input route refusing the integer, the null paths,
+      # auth through the native route module, the schema triggers + CHECKs, the
+      # sealed people cursor, tile ownership by row, the re-key script, and the
+      # CANARY: every fixture user is minted at ≥ 900000000 and every response
+      # of the run is scanned raw for a user integer / u:<digit>.
+      - name: You profile (tiles, retention, profile images, settings, public ids)
         run: npx tsx scripts/tests/you-profile-integration.mts
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
           REDIS_URL: redis://localhost:6379
           AUTH_SECRET: ci-only-you-profile-suite-secret-0123456789
+
+      # Public user ids, the web half: the proxy (version floor on every /api
+      # call, the old-tab bounce by DECODED token under both cookie names and
+      # chunked forms, the NEXTAUTH_SECRET-only deploy) and the NextAuth
+      # /api/auth/session wrapper (the public id, no userSessionId).
+      - name: Public ids (proxy + NextAuth session)
+        run: npx tsx scripts/tests/public-ids-web.mts
+        timeout-minutes: 3
+        env:
+          DATABASE_URL: postgres://prisma:prisma@localhost:5432/catalog_test
+          REDIS_URL: redis://localhost:6379
+          AUTH_SECRET: ci-only-public-ids-web-secret-0123456789
 
     services:
       # The add-flow suite drives lib/session.ts's real Redis→Postgres wine

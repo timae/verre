@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { formatCode } from '@verre/core'
 import { joinPath } from '@/lib/sessionCode'
+import { webApiFetch } from '@/lib/sessionFetch'
 
 interface Props {
   code: string
@@ -37,6 +38,7 @@ type RemovedState =
 export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
   const [state, setState] = useState<RemovedState>({ kind: 'loading' })
   const [acting, setActing] = useState(false)
+  const [leaveError, setLeaveError] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -61,7 +63,7 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
           : null
         const headers: Record<string, string> = {}
         if (token) headers['x-vr-anon-token'] = token
-        const res = await fetch(`/api/session/${code}/removed-state`, { headers })
+        const res = await webApiFetch(`/api/session/${code}/removed-state`, { headers })
         if (cancelled) return
         if (!res.ok) { setState({ kind: 'unknown' }); return }
         const data = await res.json() as { state: string; hasRatings?: boolean }
@@ -88,12 +90,23 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
       : null
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
     if (token) headers['x-vr-anon-token'] = token
+    // A refused or failed leave stays on this screen with a retry (it used to
+    // report success whatever the answer, and a ratings delete the user asked
+    // for could silently not happen).
+    setLeaveError(null)
+    let ok = false
     try {
-      await fetch(`/api/session/${code}/leave?cleanup=${cleanup}`, {
+      const res = await webApiFetch(`/api/session/${code}/leave?cleanup=${cleanup}`, {
         method: 'POST',
         headers,
       })
+      ok = res.ok
     } catch {}
+    if (!ok) {
+      setActing(false)
+      setLeaveError('That didn’t go through. Try again.')
+      return
+    }
     // Clear local state regardless of cleanup choice — the user is done
     // with this session.
     try {
@@ -175,6 +188,10 @@ export function RemovedView({ code, sessionLabel, isLoggedIn }: Props) {
               <p style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 16 }}>You&apos;re no longer part of this session.</p>
               <Link href={homePath(isLoggedIn)} className="btn-p" style={{ textDecoration: 'none', display: 'block', textAlign: 'center' }}>← back to {isLoggedIn ? 'dashboard' : 'home'}</Link>
             </div>
+          )}
+
+          {leaveError && (
+            <p role="alert" style={{ textAlign: 'center', marginTop: 12, fontSize: 12, color: 'rgba(184,64,64,0.95)' }}>{leaveError}</p>
           )}
 
           <p style={{ textAlign: 'center', marginTop: 16, fontSize: 10, color: 'var(--fg-faint)', fontFamily: 'var(--mono)', letterSpacing: '0.08em' }}>

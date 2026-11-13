@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, wineToWire, buildKickedUserNameLookup } from '@/lib/session'
+import { isHostByIdentity, wineToWire, buildAdderLookup } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { openAsParticipant, hostLineupWrite } from '@/lib/sessionRoute'
 import { isSameOrigin } from '@/lib/csrf'
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // Identities + kicked-user fallback ensure `addedByDisplayName` resolves
   // to the same value the polling GET would produce.
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup(out, identities)
+  const userNameLookup = await buildAdderLookup(out, identities)
   return NextResponse.json(
     out.map(w => wineToWire(w, identity.id, identities, userNameLookup, meta.showProvenance !== false)),
     { headers: { 'Cache-Control': 'private, no-store' } },

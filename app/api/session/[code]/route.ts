@@ -6,7 +6,8 @@ import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '
 import { type SessionMeta, isHostByIdentity, isStrictHost, isHostless } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { buildMetaView, viewerUserIdFrom } from '@/lib/sessionState'
+import { buildMetaView, viewerUserIdFrom, metaToWire } from '@/lib/sessionState'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { readLiveRow, readRecordRoles, metaFromRecord } from '@/lib/sessionRecord'
 import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
@@ -111,8 +112,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       // The target must be part of this session — an identities-map entry, or
       // for a `u:` of a Postgres-backed session the record (member or rater).
       // Object.hasOwn guards prototype names (`__proto__`, `constructor`).
-      if (typeof targetIdFromBody !== 'string' || !targetIdFromBody) throw refuse(400, 'targetId required')
-      const targetId = targetIdFromBody
+      // 🔒 The body carries the WIRE identity (`u:<publicId>`); a malformed one
+      // (an old client's `u:<int>`) and an unknown one both take the
+      // nonexistent-target answer, after the gates (public-user-ids § 4).
+      const wireTarget = parseWireIdentity(targetIdFromBody)
+      const targetId = wireTarget ? await internalIdentity(wireTarget, tx) : null
+      if (!targetId) throw refuse(400, 'targetId required')
       const identities = await redis.hGetAll(k.identities(c))
       const targetUserId = /^u:\d{1,18}$/.test(targetId) ? Number(targetId.slice(2)) : null
       const member = ctx.row && targetUserId !== null
@@ -174,7 +179,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ co
       if (r.project) await ctx.fence!.exec(m => { m.set(k.meta(c), JSON.stringify(r.meta), { XX: true, KEEPTTL: true }) })
     })
     // Carries coHostIds/providerIds — private, no-store like the GET.
-    return NextResponse.json({ ok: true, meta }, { headers: { 'Cache-Control': 'private, no-store' } })
+    return NextResponse.json({ ok: true, meta: await metaToWire(meta) }, { headers: { 'Cache-Control': 'private, no-store' } })
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'set-role' })
   }

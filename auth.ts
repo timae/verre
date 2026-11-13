@@ -165,11 +165,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // upgrade) take effect immediately without requiring re-login.
       const dbUser = await prisma.user.findUnique({
         where: { id: Number(token.id) },
-        select: { id: true, name: true, role: true, pro: true },
+        select: { id: true, publicId: true, name: true, role: true, pro: true },
       })
       if (!dbUser) return { ...session, user: undefined as never }
       if (session.user) {
         session.user.id   = String(dbUser.id)
+        // The public id rides along for clientSession (lib/clientSession.ts)
+        // and the /api/auth/session route wrapper, which put it in `id` before
+        // anything reaches a client (public-user-ids § 5).
+        session.user.publicId = dbUser.publicId
         session.user.name = dbUser.name
         session.user.role = dbUser.role
         session.user.pro  = dbUser.pro

@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma'
 import { NextRequest, NextResponse } from 'next/server'
+import { metaToWire } from '@/lib/sessionState'
+import { wireIdentity } from '@/lib/publicIds'
 import { resolveUser } from '@/lib/resolveUser'
 import { ensureMemberRow } from '@/lib/sessionMember'
 import { redis, k, touchWithMeta } from '@/lib/redis'
@@ -135,10 +137,12 @@ export async function POST(req: NextRequest) {
   // continue to count so banned-id probing is rate-limited.
   await resetRate(rlKey)
 
+  // 🔒 Wire shapes only (public-user-ids § 4): meta through the allow-list,
+  // the caller's own identity as `u:<publicId>`.
   return NextResponse.json({
-    ...opened.meta,
+    ...await metaToWire(opened.meta),
     code: c,
-    id: identityId,
+    id: await wireIdentity(identityId),
     displayName,
     ...(anonToken ? { anonToken } : {}),
   })

@@ -23,6 +23,7 @@ import { liveMeta } from '@/lib/momentFormat';
 import { type VerreCode } from '@/lib/scanCode';
 import { usePushGuard } from '@/lib/usePushGuard';
 import { elevation, radius, useTheme } from '@/theme';
+import { meIdOf } from '@/lib/meId';
 
 // 02s Moments home, to the vero-screens pixel spec (.vbar-root, .sh-live2,
 // .sh-joinblock, .setnav). Page gutter is 22 (the prototype's .vscreen);
@@ -548,7 +549,7 @@ function JoinBlock() {
   const code = normalizeCode(input);
   const insets = useSafeAreaInsets();
   const guard = usePushGuard();
-  const meId = auth?.user.id != null ? Number(auth.user.id) : null;
+  const meId = meIdOf(auth);
 
   // Scan (ruled 2026-11-12): the button while the field is empty; the
   // result is the same as Add Friends' (components/people/scan.tsx) in a

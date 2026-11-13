@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { imageKey } from '@/lib/imageKeys'
+import { parseTagList, resolveTagList, publicIdFor } from '@/lib/publicIds'
 import { S3Client, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { nanoid } from 'nanoid'
 import { resolveUser } from '@/lib/resolveUser'
@@ -55,7 +57,7 @@ async function reclaimImage(url: string | null | undefined) {
 // imageUrl and clone the bytes into a fresh user-owned key. The image URL
 // itself is never trusted from the client. Returns the new URL on success,
 // null on any failure (missing source, gone object, S3 error).
-async function copyImageFromCheckin(sourceUrl: string, userId: number): Promise<string | null> {
+async function copyImageFromCheckin(sourceUrl: string): Promise<string | null> {
   if (!_s3 || !_S3_BUCKET || !_S3_ENDPOINT) return null
   const prefix = `${_S3_ENDPOINT}/${_S3_BUCKET}/`
   if (!sourceUrl.startsWith(prefix)) return null
@@ -64,8 +66,9 @@ async function copyImageFromCheckin(sourceUrl: string, userId: number): Promise<
   // anything unusual is rejected before we hand it to S3.
   if (!/^wines\/[A-Za-z0-9_.\-]+$/.test(sourceKey)) return null
   const ext = sourceKey.split('.').pop() || 'jpg'
-  // Random suffix: the bucket is public, so a key must not be guessable.
-  const newKey = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}.${ext}`
+  // 🔒 A random key with nothing that points to the person (D2,
+  // lib/imageKeys.ts): the bucket is public, so a key must not be guessable.
+  const newKey = `${imageKey('checkin')}.${ext}`
   try {
     await _s3.send(new CopyObjectCommand({
       Bucket: _S3_BUCKET,
@@ -95,7 +98,11 @@ export async function POST(req: NextRequest) {
   // makes). vinification/description/purchaseUrl land on the minted wine row,
   // giving a standalone check-in the same About-block metadata as a session
   // wine (the feed read path already surfaces them from the wine columns).
-  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds = [], wineRegion, wineCountry, vinification, description, purchaseUrl, productId, vintageId } = body
+  const { wineName: rawWineName, producer, vintage, grape, type, score, flavors, aromas, notes, imageData, copyFromCheckinId, venueName, city, country, lat, lng, taggedUserIds: rawTags, wineRegion, wineCountry, vinification, description, purchaseUrl, productId, vintageId } = body
+  // 🔒 Public ids, resolved BEFORE the transaction (lib/publicIds.ts parseTagList).
+  const tagPublicIds = parseTagList(rawTags)
+  if (tagPublicIds === null) return NextResponse.json({ error: 'invalid taggedUserIds' }, { status: 400 })
+  const taggedUserIds = await resolveTagList(tagPublicIds)
   // Scrub control chars first so a payload of pure NULL bytes doesn't
   // pass the non-empty check below.
   const wineName = scrub(rawWineName)
@@ -139,9 +146,8 @@ export async function POST(req: NextRequest) {
     if (typeof imageData !== 'string' || imageData.length > MAX_IMAGE_DATA_URL_BYTES) {
       return NextResponse.json({ error: 'image too large' }, { status: 400 })
     }
-    // Random suffix: the bucket is public, so a key must not be guessable.
-    const keyBase = `wines/ci_${userId}_${Date.now()}_${nanoid(12)}`
-    imageUrl = await uploadImage(keyBase, imageData).catch(() => null)
+    // 🔒 lib/imageKeys.ts: random, nothing that points to the person (D2).
+    imageUrl = await uploadImage(imageKey('checkin'), imageData).catch(() => null)
   } else if (Number.isInteger(copyFromCheckinId) && copyFromCheckinId > 0 && copyFromCheckinId <= 2_147_483_647) {
     // "had a sip" flow: resolve the source server-side, verify the caller
     // is allowed to copy it, then clone the bytes. The client never gets
@@ -198,7 +204,7 @@ export async function POST(req: NextRequest) {
     // (the user's tasting photo), else the wine's canonical bottle shot.
     const sourceImageUrl = source.rating.images[0]?.imageUrl || source.rating.wine.imageUrl
     if (sourceImageUrl) {
-      imageUrl = await copyImageFromCheckin(sourceImageUrl, userId)
+      imageUrl = await copyImageFromCheckin(sourceImageUrl)
       if (!imageUrl) return NextResponse.json({ error: COPY_ERROR }, { status: 400 })
     }
   }
@@ -388,7 +394,7 @@ export async function POST(req: NextRequest) {
   // Block-pair members are excluded from the write: tagging a user the
   // author block-pairs with shouldn't persist a row that the render-time
   // filter would then hide globally anyway.
-  if (Array.isArray(taggedUserIds) && taggedUserIds.length > 0) {
+  if (taggedUserIds.length > 0) {
     const mutuals = await prisma.$queryRaw<{ id: number }[]>`
       SELECT f1.following_id AS id
       FROM follows f1
@@ -416,7 +422,7 @@ export async function POST(req: NextRequest) {
   // adapter keeps writes ahead of reads safely.
   return NextResponse.json({
     id: feedItem.id,
-    userId,
+    userId: (await publicIdFor(userId)) ?? null,
     wineName,
     producer: scrubProducer,
     vintage: scrubVintage,

@@ -3,7 +3,8 @@ import { resolveUser } from '@/lib/resolveUser'
 import { k } from '@/lib/redis'
 import { normalizeCode } from '@verre/core'
 import { isSameOrigin } from '@/lib/csrf'
-import { resolveAuthorized, authUnavailable, isValidIdentityId } from '@/lib/identity'
+import { resolveAuthorized, authUnavailable } from '@/lib/identity'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { isHostByIdentity } from '@/lib/session'
 import { withSessionMutation, refuse } from '@/lib/sessionMutation'
 import { openSession, unavailable, contractFailure } from '@/lib/sessionRehydrate'
@@ -37,8 +38,10 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
     return NextResponse.json({ error: 'forbidden' }, { status: 403, headers: noStore })
   }
   // URL-decode the identity-id (path segment, may contain "%3A" for ":")
-  const targetId = decodeURIComponent(identityId)
-  if (!isValidIdentityId(targetId)) {
+  // The WIRE identity (`u:<publicId>`, `a:` / `d:`); an old client's `u:<int>`
+  // is malformed.
+  const wireTarget = parseWireIdentity(decodeURIComponent(identityId))
+  if (!wireTarget) {
     return NextResponse.json({ error: 'invalid identityId' }, { status: 400, headers: noStore })
   }
 
@@ -49,6 +52,11 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
       { status: 429, headers: { ...noStore, 'Retry-After': String(rl.retryAfter) } },
     )
   }
+
+  // 🔒 An unknown public id: the limiter is charged (above), the same 200,
+  // nothing written (public-user-ids § 4).
+  const targetId = await internalIdentity(wireTarget)
+  if (!targetId) return NextResponse.json({ ok: true }, { headers: noStore })
 
   // Record first, then the cache (redis-rehydration § 4.2 / plan § 1.4), inside
   // the mutation contract: the durable ban row goes and COMMITs, then the SREM

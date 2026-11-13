@@ -11,6 +11,7 @@ import { authClient } from '@/lib/authClient';
 import { errorText } from '@/lib/errorCopy';
 import { refetchNetworkFeed, refetchProfileHeader } from '@/lib/feedCache';
 import { viewerCacheEpoch } from '@/lib/query';
+import { useMeId } from '@/lib/meId';
 
 // Settings → Privacy → Blocked / Muted (ruling Q-B): your own list, newest
 // first. Rows: the initials disc, the name, a tertiary Unblock / Unmute. The
@@ -23,20 +24,20 @@ import { viewerCacheEpoch } from '@/lib/query';
 const KINDS = {
   blocked: {
     title: 'Blocked', key: BLOCKS_KEY, fetch: getBlocks, action: 'Unblock', empty: 'No one blocked.',
-    write: (id: number) => setBlocked(id, false), refreshOwnHeader: true,
+    write: (id: string) => setBlocked(id, false), refreshOwnHeader: true,
   },
   muted: {
     title: 'Muted', key: MUTES_KEY, fetch: getMutes, action: 'Unmute', empty: 'No one muted.',
-    write: (id: number) => setMuted(id, false), refreshOwnHeader: false,
+    write: (id: string) => setMuted(id, false), refreshOwnHeader: false,
   },
 } as const;
 
 export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
   const k = KINDS[kind];
   const queryClient = useQueryClient();
-  const meId = authClient.useSession().data?.user.id;
+  const meId = useMeId();
   const q = useQuery({ queryKey: k.key, queryFn: k.fetch });
-  const [busyId, setBusyId] = useState<number | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const run = async (p: ListedPerson) => {
     if (busyId != null) return;
@@ -55,7 +56,7 @@ export function PeopleListPage({ kind }: { kind: keyof typeof KINDS }) {
     setBusyId(null);
     if (viewerCacheEpoch() !== epoch) return;
     const jobs: Promise<unknown>[] = [refetchProfileHeader(queryClient, p.id), refetchNetworkFeed(queryClient)];
-    if (k.refreshOwnHeader && meId != null) jobs.push(refetchProfileHeader(queryClient, Number(meId)));
+    if (k.refreshOwnHeader && meId != null) jobs.push(refetchProfileHeader(queryClient, meId));
     await Promise.allSettled(jobs);
   };
   const onAction = (p: ListedPerson) => {

@@ -10,6 +10,7 @@ import { APP_BUILD, APP_VERSION } from '@/lib/clientVersion';
 import { confirmSignOut } from '@/lib/signOutConfirm';
 import { legalHref, profileEditHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { themes, useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Settings (handoff 04·4 `settings`): your profile card → Edit Profile, then
 // Account, Privacy, Appearance and Help & About; Tasting and Notifications
@@ -21,12 +22,11 @@ export default function Settings() {
   const mount = useSessionTab();
   const inPost = mount.post != null;
   const { choice } = useTheme();
-  const meId = authClient.useSession().data?.user.id;
-  const userId = meId != null ? Number(meId) : null;
+  const userId = useMeId();
   // Your name from the users row, never Better Auth's session copy (stale
   // after a rename); the photo from your own profile header.
   const account = useQuery({ queryKey: MY_ACCOUNT_KEY, queryFn: getMyAccount });
-  const profile = useQuery({ ...profileQueryOptions(userId ?? 0), enabled: userId != null });
+  const profile = useQuery({ ...profileQueryOptions(userId ?? ''), enabled: userId != null });
   const own = profile.data?.state === 'ok' ? profile.data : null;
   const name = account.data?.name ?? own?.name ?? '';
   const [busy, setBusy] = useState(false);

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta } from '@/lib/redis'
-import { isHostByIdentity, isProvider, mutateWines, addWineToSession, ensurePromoted, mirrorLineup, isMutateReject, wineToWire, reclaimIfUnreferenced } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, addWineToSession, ensurePromoted, mirrorLineup, isMutateReject, wineToWire, buildAdderLookup, reclaimIfUnreferenced } from '@/lib/session'
 import { buildWinesView } from '@/lib/sessionState'
 import { normalizeCode } from '@verre/core'
 import { participantOrBanned, authInvalid, authRemoved, authUnavailable } from '@/lib/identity'
@@ -165,9 +165,10 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   // into their wines list shouldn't see a different shape than the
   // polling GET. The caller is the wine's adder, so isMine is always
   // true here (wineToWire computes it from the just-written provenance).
-  // Pass identities so `addedByDisplayName` resolves to the live name;
-  // userNameLookup is empty (the just-added wine's adder is in the map).
+  // Pass identities so `addedByDisplayName` resolves to the live name; the
+  // adder lookup carries the caller's public id (`addedByUserId`).
   // showProvenance honours the "Show who brought each impression" setting so
   // this echo can't leak attribution the polling GET (buildWinesView) strips.
-  return NextResponse.json(wineToWire(result, identity.id, identities, new Map(), meta.showProvenance !== false))
+  const lookup = await buildAdderLookup([result], identities)
+  return NextResponse.json(wineToWire(result, identity.id, identities, lookup, meta.showProvenance !== false))
 }

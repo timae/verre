@@ -35,6 +35,7 @@ import { GLASS_FILL, GUTTER, heroBarHeight, usePhoneTokens } from '@/lib/layout'
 import { feedHref, settingsHref, useSessionTab } from '@/lib/sessionStack';
 import { popSheet, pushSheet } from '@/lib/sheetVisibility';
 import { useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // A person's profile (handoff 04 "You"): the You tab's root for yourself
 // (`root`), and a screen pushed on the Feed / You stacks for anyone (including
@@ -52,7 +53,7 @@ import { useTheme } from '@/theme';
 // moment cover bar's look). Your own profile is editable in place (R5g2–R5g4):
 // this screen owns the edit session; ProfileHeader renders it.
 
-export function ProfileScreen({ userId, root }: { userId: number; root?: boolean }) {
+export function ProfileScreen({ userId, root }: { userId: string; root?: boolean }) {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
   const router = useRouter();
@@ -63,8 +64,8 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   const mount = useSessionTab();
   const queryClient = useQueryClient();
   const authSession = authClient.useSession().data;
-  const meId = authSession?.user.id;
-  const own = meId != null && Number(meId) === userId;
+  const meId = useMeId();
+  const own = meId != null && meId === userId;
 
   const profileQ = useQuery(profileQueryOptions(userId));
   const profile = profileQ.data;
@@ -135,7 +136,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // a time across the app (`usePersonBusy`), so a mute can't race a follow.
   // The Settings lists (Blocked / Muted) are invalidated there too.
   const busy = usePersonBusy(userId);
-  const act = (op: RelOp) => void relate(queryClient, userId, op, meId != null ? Number(meId) : null);
+  const act = (op: RelOp) => void relate(queryClient, userId, op, meId);
   // D7: unfollow asks first ("Remove Mara as Friend?" when you are friends);
   // following acts immediately.
   const askUnfollow = (p: { name: string; followsYou: boolean }) => confirmUnfollow(p, () => act('unfollow'));
@@ -161,7 +162,7 @@ export function ProfileScreen({ userId, root }: { userId: number; root?: boolean
   // must keep its history), double taps swallowed.
   const guard = usePushGuard();
   const openPeople = (tab: PeopleTab, known?: boolean) =>
-    guard(() => router.push(feedHref(mount, 'people', { id: String(userId), tab, known: known ? '1' : undefined })));
+    guard(() => router.push(feedHref(mount, 'people', { id: userId, tab, known: known ? '1' : undefined })));
   const [addOpen, setAddOpen] = useState(false);
 
   // ── Own profile: the in-place edit session (R5g3) ──────────────────────────

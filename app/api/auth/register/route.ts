@@ -92,7 +92,9 @@ export async function POST(req: NextRequest) {
       })
       return created
     })
-    return NextResponse.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, pro: user.pro } })
+    // No user id (public-user-ids § 5): the client signs in next and learns its
+    // own (public) id from the session.
+    return NextResponse.json({ user: { name: user.name, email: user.email, role: user.role, pro: user.pro } })
   } catch (err: unknown) {
     if ((err as { code?: string }).code === 'P2002') {
       return NextResponse.json({ error: 'email already registered' }, { status: 409 })

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { nanoid } from 'nanoid'
+import { wireIdentity } from '@/lib/publicIds'
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3'
 import { resolveUser } from '@/lib/resolveUser'
 import { k, lifespanTTL, scanKeys } from '@/lib/redis'
@@ -159,12 +161,13 @@ export async function POST(req: NextRequest) {
   if (!meta.dateFrom) return NextResponse.json({ error: 'Please set a start date.' }, { status: 400 })
 
   // Upload the cover last among the validations (every rejection above is
-  // side-effect-free). Timestamped so recycled codes can't collide; keyed by a
-  // random prefix here because the code is only claimed below. uploadImage
-  // carries the full hardening — '' means rejected.
+  // side-effect-free). The settings path's key (public-user-ids § 8a c): a
+  // cryptographic random id, no timestamp, never the code (it isn't claimed
+  // yet, and a code joins). uploadImage carries the full hardening — '' means
+  // rejected.
   let coverPhotoUrl = ''
   if (typeof coverPhoto === 'string' && coverPhoto) {
-    coverPhotoUrl = await uploadImage(`sessions/new_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`, coverPhoto).catch(() => '')
+    coverPhotoUrl = await uploadImage(`sessions/${nanoid(16)}`, coverPhoto).catch(() => '')
     if (!coverPhotoUrl) return NextResponse.json({ error: 'invalid image' }, { status: 400 })
     meta.coverPhotoUrl = coverPhotoUrl
   }
@@ -225,7 +228,7 @@ export async function POST(req: NextRequest) {
     code,
     name: meta.name,
     host: hostName,
-    id: identityId,
+    id: await wireIdentity(identityId),
     displayName: hostName,
     blind: !!blind,
     lifespan: resolvedLifespan,

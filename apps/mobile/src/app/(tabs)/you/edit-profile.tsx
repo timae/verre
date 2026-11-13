@@ -22,6 +22,7 @@ import { errorText, sentence } from '@/lib/errorCopy';
 import { viewerCacheEpoch } from '@/lib/query';
 import { FOOT_CLEARANCE, GUTTER, HERO_RATIO } from '@/lib/layout';
 import { useTheme } from '@/theme';
+import { useMeId } from '@/lib/meId';
 
 // Edit Profile (04 `setProfile`, ruling D1): your own profile's ⋯ → Edit
 // Profile. The cover and the photo with their edit buttons, Display Name,
@@ -35,9 +36,8 @@ import { useTheme } from '@/theme';
 // didn't save. Pushed stack-relative (lib/sessionStack.ts profileEditHref);
 // the pill hides here (the sticky footer replaces it).
 export default function EditProfile() {
-  const meId = authClient.useSession().data?.user.id;
-  const userId = meId != null ? Number(meId) : null;
-  const q = useQuery({ ...profileQueryOptions(userId ?? 0), enabled: userId != null });
+  const userId = useMeId();
+  const q = useQuery({ ...profileQueryOptions(userId ?? ''), enabled: userId != null });
   const profile = q.data;
   if (userId != null && profile?.state === 'ok') return <EditProfileForm userId={userId} profile={profile} />;
   return <SettingsScreenFallback title="Edit Profile" isError={q.isError || profile?.state === 'gone'} retrying={q.isFetching} onRetry={() => q.refetch()} />;
@@ -51,7 +51,7 @@ type ImageDraft = { kind: 'keep' } | { kind: 'new'; dataUrl: string; preview: st
 
 // Seeded ONCE (the form mounts after the profile resolves); a background
 // refetch never re-seeds mid-edit.
-function EditProfileForm({ userId, profile }: { userId: number; profile: FullProfile }) {
+function EditProfileForm({ userId, profile }: { userId: string; profile: FullProfile }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();

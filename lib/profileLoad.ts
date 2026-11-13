@@ -33,7 +33,8 @@ export type LoadedCheckin = {
   createdAt: Date
   likeCount: number
   liked: boolean
-  tags: { id: number; name: string }[]
+  // `id` is the tagged user's PUBLIC id (lib/publicIds.ts).
+  tags: { id: string; name: string }[]
 }
 
 // Per-wine fan-out shape for a session feed_item on the profile.
@@ -53,7 +54,8 @@ export type LoadedSessionPost = {
 }
 
 export type LoadedProfile = {
-  id: number
+  // The PUBLIC id (public-user-ids § 4): the integer never leaves the server.
+  id: string
   name: string
   xp: number
   imageUrl: string | null
@@ -97,7 +99,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
-      id: true, name: true, xp: true, imageUrl: true, bio: true, coverPhotoUrl: true,
+      id: true, publicId: true, name: true, xp: true, imageUrl: true, bio: true, coverPhotoUrl: true,
       lifetimeRatings: true, lifetimeSessionsJoined: true,
       _count: { select: { earnedBadges: true, followers: true, following: true } },
     },
@@ -150,7 +152,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
     : { hasActiveRatings: flavorFull.hasActiveRatings, avgScore: flavorFull.avgScore, fiveStar: flavorFull.fiveStar, keys: flavorFull.keys }
 
   const head = {
-    id: user.id,
+    id: user.publicId,
     name: user.name,
     xp: user.xp,
     imageUrl: user.imageUrl,
@@ -186,7 +188,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
       id: true,
       venueName: true, city: true, country: true, createdAt: true,
       _count: { select: { likes: true } },
-      tags: { include: { user: { select: { id: true, name: true } } } },
+      tags: { include: { user: { select: { id: true, publicId: true, name: true } } } },
       rating: {
         select: {
           score: true, flavors: true, aromas: true, notes: true,
@@ -328,7 +330,7 @@ export async function loadProfile({ userId, gate, recent = true }: Args): Promis
         createdAt: f.createdAt,
         likeCount: Math.max(0, f._count.likes - (profileBlockHiddenLikes.get(f.id) ?? 0)),
         liked: likedSet.has(f.id),
-        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => t.user),
+        tags: (f.tags ?? []).filter(t => !blockedTagUserIds.has(t.user.id)).map(t => ({ id: t.user.publicId, name: t.user.name })),
       }]
     }),
     recentSessionPosts: sessionFeedItems.map<LoadedSessionPost>(f => {

@@ -13,7 +13,7 @@ import {
 } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { authClient } from '@/lib/authClient';
@@ -22,7 +22,9 @@ import { useForwardedStatusBarStyle } from '@/lib/forwardedStatusBar';
 import { useFullscreenViewerOpen } from '@/lib/fullscreenViewer';
 import { dismissKeyboardOnOutsideTouch } from '@/lib/keyboardDismiss';
 import { QueryProvider, clearViewerCache } from '@/lib/query';
-import { markUpdateNavigationReady } from '@/lib/updateGate';
+import { bootScreen, bootState, marksResolved, shouldRetryStale, staleRetryDelayMs } from '@/lib/bootGate';
+import { getPendingUpdate, markUpdateNavigationReady, subscribePendingUpdate } from '@/lib/updateGate';
+import { UpdateRequiredView } from './update-required';
 import { ThemeProvider, useTheme } from '@/theme';
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
@@ -60,8 +62,16 @@ function RootNavigator() {
   // A photo-hero screen on an opened post's stack (a modal: its own trait is
   // never asked) forwards its style here (lib/forwardedStatusBar).
   const forwardedBarStyle = useForwardedStatusBarStyle();
-  const { data: session, isPending } = authClient.useSession();
+  const { data: session, isPending, isRefetching, refetch } = authClient.useSession();
   const [waitedTooLong, setWaitedTooLong] = useState(false);
+  const [resolvedOnce, setResolvedOnce] = useState(false);
+  // 🔒 The boot rules live in lib/bootGate.ts (pure, unit-tested). A cached
+  // session whose `user.id` isn't a public id is STALE (from before the
+  // server's switch to public ids) and counts as not yet known: no route
+  // group mounts on it, and its viewer id is null (see bootGate's header).
+  const { stale, sessionResolved, splashCanHide, viewerId } = bootState({ session, isPending, resolvedOnce, waitedTooLong });
+  // A 426 buffered before any navigator exists (lib/updateGate.ts).
+  const pendingUpdate = useSyncExternalStore(subscribePendingUpdate, getPendingUpdate);
   // 🔒 The query cache is a process singleton and nearly everything in it is
   // VIEWER-dependent (feeds, profiles, moments). When the signed-in user
   // changes (sign-out, a revoked session, another account) drop all of it, so
@@ -71,7 +81,9 @@ function RootNavigator() {
   // Redirect, so the signed-in screens (lists, pinned detail copies) have
   // already unmounted; sign-in is only reachable from the signed-out group,
   // so a user never changes X→Y without passing through null.
-  const userId = session?.user.id ?? null;
+  // Null while the session is stale: the X → Y rule below only ever sees the
+  // public id (stale → public is a first resolution, nothing was mounted).
+  const userId = viewerId;
   const lastUserId = useRef(userId);
   useEffect(() => {
     if (lastUserId.current !== null && lastUserId.current !== userId) clearViewerCache();
@@ -85,8 +97,7 @@ function RootNavigator() {
   // So the "unknown" treatment is reserved for the FIRST resolution; after it,
   // a pending refetch keeps the current route group (welcome after sign-out,
   // the sign-in screen until the post-sign-in heartbeat lands).
-  const [resolvedOnce, setResolvedOnce] = useState(false);
-  useEffect(() => { if (!isPending) setResolvedOnce(true); }, [isPending]);
+  useEffect(() => { if (marksResolved(isPending, stale)) setResolvedOnce(true); }, [isPending, stale]);
   // A session restored from this install's own cache also counts as known:
   // the Expo client (1.7) restores it while `isPending` is still true and keeps
   // it pending until the heartbeat answers. Without this term a signed-in cold
@@ -94,11 +105,26 @@ function RootNavigator() {
   // the 12s fetch deadline) where 1.6 painted from the cache at once. It only
   // ever resolves as signed IN, and only to this install's own cache: a
   // previous install's lives under another install id (lib/secureStorage.ts).
-  const cachedSession = session != null;
-  // Hide the splash once EITHER the session resolved or we waited long enough.
-  const splashCanHide = !isPending || resolvedOnce || cachedSession || waitedTooLong;
-  // ...but only mount a route GROUP once the session is actually known.
-  const sessionResolved = !isPending || resolvedOnce || cachedSession;
+  // (`cachedSession`, `splashCanHide`, `sessionResolved`: bootState above;
+  // a stale session is never cached-known, and keeps sessionResolved false
+  // even once Better Auth stops pending on a failed get-session.)
+
+  // While stale, retry get-session ourselves (Better Auth refetches only on
+  // foreground or a network change): after a SETTLED answer (a failure, or a
+  // 200 that still carries an integer), never while a request is in flight —
+  // `refetch` cancels the one in flight, and the deps clear this timer the
+  // moment one starts. Through useSession's refetch: a plain getSession()
+  // doesn't update the session atom.
+  const [staleAttempt, setStaleAttempt] = useState(0);
+  const updatePending = pendingUpdate != null;
+  useEffect(() => {
+    if (!shouldRetryStale({ stale, isPending, isRefetching, updatePending })) return;
+    const t = setTimeout(() => {
+      setStaleAttempt((n) => n + 1);
+      void refetch();
+    }, staleRetryDelayMs(staleAttempt));
+    return () => clearTimeout(t);
+  }, [stale, isPending, isRefetching, updatePending, staleAttempt, refetch]);
 
   useEffect(() => {
     if (!isPending || resolvedOnce) return;
@@ -131,17 +157,33 @@ function RootNavigator() {
     return { ...base, colors: { ...base.colors, background: theme.bg, card: theme.surface, text: theme.ink, border: theme.rule } };
   }, [theme]);
 
+  const screen = bootScreen({ splashCanHide, sessionResolved, updatePending });
   // Still waiting and still inside the deadline: the native splash is up, so
   // render nothing behind it.
-  if (!splashCanHide) return null;
+  if (screen === 'splash') return null;
+
+  // 🔒 A 426 while the session is unknown or stale: no navigator is mounted
+  // (the neutral screen below returns before <Stack>), so routing to
+  // /update-required would have nothing to replace into. Render the update
+  // screen HERE instead; markUpdateNavigationReady keeps its sessionResolved
+  // gate and routes the same buffered body once a Stack exists.
+  if (screen === 'update') {
+    return (
+      <View style={{ flex: 1, backgroundColor: theme.bg }}>
+        <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />
+        <UpdateRequiredView storeUrl={pendingUpdate?.storeUrl} />
+      </View>
+    );
+  }
 
   // Past the deadline with the session STILL pending. Neither route group can
   // be mounted (see the guards below), so there is nothing for the Stack to
   // render — show a neutral themed screen instead of an empty navigator. This
   // is the state a slow or unreachable server lands on, and it deliberately
   // makes NO auth claim: as soon as the session resolves this unmounts and the
-  // real route group takes over, deep link intact.
-  if (!sessionResolved) {
+  // real route group takes over, deep link intact. A STALE cached session lands
+  // here too (bootGate), retried above until the public id arrives.
+  if (screen === 'neutral') {
     return (
       <View style={{ flex: 1, backgroundColor: theme.bg, alignItems: 'center', justifyContent: 'center' }}>
         <StatusBar style={theme.scheme === 'dark' ? 'light' : 'dark'} />

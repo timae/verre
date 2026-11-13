@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { wireIdentity } from '@/lib/publicIds'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, bumpLastSeen, unhideCarousel, lifespanTTL } from '@/lib/redis'
 import { ensurePromoted } from '@/lib/session'
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cod
   // (re-engagement brings the card back to the highlights).
   await bumpLastSeen(c, userId)
   await unhideCarousel(userId, c)
-  return NextResponse.json({ ok: true, id, displayName })
+  return NextResponse.json({ ok: true, id: await wireIdentity(id), displayName })
 }
 
 // The bounce under the locks, with the deny-direction re-seed (fenced) when

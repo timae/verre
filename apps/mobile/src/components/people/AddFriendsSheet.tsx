@@ -49,7 +49,7 @@ import { useTheme } from '@/theme';
 
 type Pane = 'main' | 'search' | 'result';
 
-export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClose: () => void; meId: number }) {
+export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClose: () => void; meId: string }) {
   const { theme } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
@@ -63,7 +63,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
   const [search, setSearch] = useState('');
   const [result, setResult] = useState<VerreCode | null>(null);
   const [chips, setChips] = useState<TastedWith[] | null>(null);
-  const [done, setDone] = useState<Set<number>>(() => new Set());
+  const [done, setDone] = useState<Set<string>>(() => new Set());
 
   // Your card works even when your profile failed to load: the id is the
   // session's, the name the users row's (GET /api/me/account; Better Auth's
@@ -106,7 +106,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
   });
 
   // ── Writes + pushes ───────────────────────────────────────────────────────
-  const follow = (id: number) => {
+  const follow = (id: string) => {
     setDone((d) => new Set(d).add(id));
     void relate(queryClient, id, 'follow').then(({ ok }) => {
       if (!ok) setDone((d) => {
@@ -121,7 +121,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
       onClose();
       push();
     });
-  const openProfile = (id: number) => leaveTo(() => router.push(feedHref(mount, 'profile', { id: String(id) })));
+  const openProfile = (id: string) => leaveTo(() => router.push(feedHref(mount, 'profile', { id })));
 
   const tastedRows = useMemo(() => {
     const all = chips ?? [];
@@ -164,7 +164,7 @@ export function AddFriendsSheet({ open, onClose, meId }: { open: boolean; onClos
     </View>
   );
 
-  const relControl = (p: { id: number; name: string; isFollowing: boolean; followsViewer: boolean }) => <RelControl {...p} onFollow={() => follow(p.id)} />;
+  const relControl = (p: { id: string; name: string; isFollowing: boolean; followsViewer: boolean }) => <RelControl {...p} onFollow={() => follow(p.id)} />;
 
   return (
     <Sheet
@@ -300,7 +300,7 @@ function TastedChip({ person, done, onFollow }: { person: TastedWith; done: bool
 // The relationship control on a sheet row (.fr-in / .fr-btn): Friends /
 // Following as a status chip (inert: unfollow lives on People rows and the
 // profile), Follow Back / + Follow as the button.
-function RelControl({ id, name, isFollowing, followsViewer, onFollow }: { id: number; name: string; isFollowing: boolean; followsViewer: boolean; onFollow: () => void }) {
+function RelControl({ id, name, isFollowing, followsViewer, onFollow }: { id: string; name: string; isFollowing: boolean; followsViewer: boolean; onFollow: () => void }) {
   const busy = usePersonBusy(id);
   if (isFollowing) return <FriendRowBadge label={followsViewer ? 'Friends' : 'Following'} />;
   return (

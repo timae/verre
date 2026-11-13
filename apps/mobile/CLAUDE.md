@@ -341,6 +341,7 @@ if missing); proposals: `docs/dev/proposals/mobile-app/`.
   `AppState → focusManager` (only `'active'` counts, debounced 300ms —
   `'inactive'` fires for control-center/app-switcher and is NOT background),
   `NetInfo → onlineManager`, and `useIsOnline()` for reconnecting affordances.
+- 🔒 **User ids are PUBLIC ids, opaque strings** (`docs/dev/proposals/public-user-ids.md` § 6): `session.user.id`, every profile / people / feed / session id (`u:<publicId>`). Validate route params with `normalizePublicUserId` (`@verre/core`), never `Number(...)`; post, wine and bookmark ids stay numbers. 🔒 **The boot rule** (`lib/bootGate.ts`, pure, units `scripts/tests/boot-gate-units.ts`): a cached Better Auth session whose `user.id` isn't a public id is STALE (written before the server's switch) and counts as not yet known: no route group mounts on it, the cache-clear effect sees null, the layout retries get-session through `useSession().refetch()` only while nothing is in flight (refetch cancels the request in flight), and a 426 that arrives meanwhile renders `UpdateRequiredView` in place of the neutral screen (no navigator exists to route into; `lib/updateGate.ts` exposes the pending body).
 - 🔒 **The cache is cleared when the signed-in user changes** (sign-out, a
   revoked session): `RootNavigator` (`app/_layout.tsx`) calls
   `clearViewerCache()` (`lib/query.tsx`), because the client is a process
@@ -473,7 +474,7 @@ are relative to `apps/mobile/src/components/` (e.g. `ui/VText.tsx` =
 - **Drag-to-reorder rows**: `DraggableRows` (`moments/DraggableRows.tsx`) — long-press lift + sibling springs + edge auto-scroll + haptics over NON-virtualized mapped rows in a `Reanimated.ScrollView` (hand-rolled: reorder libs need to own a FlatList or can't be device-verified on reanimated 4). Used by both line-up layouts; needs the host scroll's `AnimatedRef` + offset + a maxScroll SharedValue. `enabled` gates drag, `denied` answers a hold with a warning haptic (sort/search active). ⚠️ Worklet closure-capture ordering is load-bearing (consts before gesture builders — the PillTabBar crash class).
 - **Shared screen constants + Dynamic Type surfaces (`lib/layout.ts`)**: `GUTTER`(22), `FOOT_CLEARANCE`/`FOOT_CLEARANCE_IR`, `TAB_BAR_BOTTOM`/`TAB_BAR_CLEARANCE` (pill offset + the content padding derived from it; the clearance is used alone), `HERO_RATIO` (shared by BOTH heroes — same height), `GLASS_FILL` (the over-photo glass fill), `HERO_SCRIM` (the hero-photo gradient), `PROFILE_SCRIM` (+ stops, the profile cover), `heroBarHeight` (a photo hero's collapsed bar: the moment's and the profile's), and `FONT_SURFACES` / `phone.surface(...)`. Import constants; don't re-declare. Use `phone.surface(name)` for scalable container math and `VText surface="..."` / `{...surface.textProps}` for matching text caps. `formControl` intentionally stays uncapped because field height math tracks editable text scale. **Comfort scaling (list rows breathe on big phones)**: `phone.grow(base)` grows a structural dimension by `ROW_COMFORT_RATIO` (56/46 ≈ 1.22 — the `recentThumb` ratio) with device comfort; `phone.lerp(a,b)` for the paired gap/padding. EVERY list row (wine, moment, person) uses this so they scale the SAME way — thumbs/avatars via `grow`, gap/padding via `lerp` — don't hardcode a flat size on a new list row. Chart canvases, sheet-snap math, borders, and icon-in-control sizes stay FLAT (load-bearing). ⛔ **CI-ENFORCED**: `scripts/check-mobile-design-tokens.mjs` (workflow `check-mobile-design-tokens`) FAILS if converged design constants are re-inlined OR an inline `fontSize:` literal appears outside its named-exception allowlist (the Text rule above); `scripts/check-mobile-dynamic-type.mjs` (workflow `check-mobile-dynamic-type`) is a partial static backstop for inline caps, common fixed-height text controls, and TextInput surface props. Device checks still own clipping/overlap truth.
 - **Relationship writes**: `lib/relationship.ts` `relate(queryClient, id, op)` — THE follow / unfollow / mute / block / unblock for every surface (profile, People bar + rows, Add Friends chips / rows / scan result): per-person BLOCKING in-flight store (`usePersonBusy(id)`, `useSyncExternalStore`), optimistic patch of the person's header + every people / search / tasted-with entry, field-level revert, the refetched header reconciles their rows, one coalesced trailing refresh. `confirmUnfollow(person, onConfirm)` = the D7 alert. Never hand-roll a follow write.
-- **Small helpers**: `usePushGuard()` (`lib/usePushGuard.ts`, a 700 ms double-tap guard for pushes that must keep their history, People / profile chains), `shareProfile` / `profileLink` (`lib/shareProfile.ts`), `parseVerreCode` (`lib/scanCode.ts`, pure), `joinByCode` / `joinErrorText` (`lib/joinByCode.ts`, the join shared by Moments home and Scan), `useVerreScanner` + `ScanResult` (`people/scan.tsx`: THE scanner and the scanned-code view, Add Friends + Moments home; never a second scanner subscription).
+- **Small helpers**: `usePushGuard()` (`lib/usePushGuard.ts`, a 700 ms double-tap guard for pushes that must keep their history, People / profile chains), `shareProfile` / `profileLink` (`lib/shareProfile.ts`, takes the PUBLIC id; the link is lowercase through `profilePath`, `@verre/core`), `parseVerreCode` (`lib/scanCode.ts`, pure; `/u/<publicId>` → `profile`, an OLD `/u/<digits>` QR → `profile-legacy` (shows "This code isn’t available.", no request); units `scripts/tests/scan-code-units.ts`), `useMeId()` / `meIdOf()` (`lib/meId.ts`: your own PUBLIC id or null; never `Number(...)` a user id), `joinByCode` / `joinErrorText` (`lib/joinByCode.ts`, the join shared by Moments home and Scan), `useVerreScanner` + `ScanResult` (`people/scan.tsx`: THE scanner and the scanned-code view, Add Friends + Moments home; never a second scanner subscription).
 - **Label helpers (`lib/`)**: `initials.ts` (code-point-aware avatar initials — used by `Avatar`; `firstName` too), `momentFormat.ts`, `scoreWords.ts`, `locale.ts`, `contrast.ts`. `theme/color.ts` `mix()`/`alpha()` for press-state/tint math (use instead of raw rgba) + `inkOn()` (contrast-picked label ink for a coloured fill — hex cells + solid-fill badges) + `readableSolid()` (family-tinted words: the 100% palette colour where it clears 3:1 on the fill, ink-pulled in 5% steps only past that) + `readableBorder()` (same, floored at 45% colour share so a hairline keeps its hue — clay borders went white without the floor). (An earlier `readableTint` — always ink-tinged — was REMOVED; `readableSolid` supersedes it, byte-identical to the raw palette colour wherever that already reads.)
 
 **⚠️ Pending extractions — KNOWN drift the audit found (2026-06-16, refined by a
@@ -919,9 +920,16 @@ transparent presentation, so the feed still shows through while `index` opens.
 
 - Bundle id + URL scheme: `io.verre.app` (placeholder, in `app.json`).
 - `version` in `app.json` feeds the `X-Verre-Client` header
-  (`src/lib/clientVersion.ts`). When EAS Update/OTA ever lands: report the OTA
-  update id in the header's third slot AND pin `runtimeVersion` to the
-  fingerprint policy first (proposal 04 §3a / 06 §6).
+  (`src/lib/clientVersion.ts`). 🔒 The version lives in THREE tracked files
+  and moves together: `app.json` `version`, `MARKETING_VERSION` (both
+  configurations) in `ios/Verre.xcodeproj/project.pbxproj`, and
+  `CFBundleShortVersionString` in `ios/Verre/Info.plist` (precedent 941c7bf),
+  so TestFlight and the device show the same number. The SERVER also carries
+  an iOS floor in code (`lib/clientVersion.ts` `CODE_FLOOR_IOS`, 0.1.5 since
+  public user ids), gated on every `/api` call: a dev build below it gets the
+  update screen against a server at or past that commit. When EAS Update/OTA
+  ever lands: report the OTA update id in the header's third slot AND pin
+  `runtimeVersion` to the fingerprint policy first (proposal 04 §3a / 06 §6).
 - ⛔ **Never commit the EAS `projectId`.** `eas build` writes `extra.eas.projectId`
   into `app.json` LOCALLY on first run — it's an infra identifier linking this
   PUBLIC repo to an EAS account, and an AI-executed commit will sweep the modified
@@ -1422,7 +1430,7 @@ README; suite § 16.
   (Follow Back there too); its line is "Hugo’s profile is private." (ruled
   2026-11-12; the shell never says the tier).
 - **Add Friends** (`AddFriendsSheet`, no route; your ⋯, People's + Add and
-  code button): the QR of `${WEB_BASE}/u/<id>`, your name + photo UNDER it
+  code button): the QR of `${WEB_BASE}/u/<publicId>`, your name + photo UNDER it
   (ruled 2026-11-12; the mock has them above), "Scan to follow me on Verre", the tasted-with chips (`GET /api/me/tasted-with`,
   a SNAPSHOT while the sheet is open: a followed chip keeps its ✓, inert),
   the search pseudo-field → the 85% search pane, keyboard up at once (as the
@@ -1449,7 +1457,7 @@ README; suite § 16.
   app-wide `onModernBarcodeScanned`: each sheet subscribes only while open,
   and only the sheet whose Scan tap is the latest (module `scanOwner`) and
   that is armed takes a code; `parseVerreCode` decides (exact origin,
-  `/u/<id>` or `/join/<code>`). A Verre code: the iOS SUCCESS haptic, disarm,
+  `/u/<publicId>` (or a legacy `/u/<digits>`) or `/join/<code>`). A Verre code: the iOS SUCCESS haptic, disarm,
   `dismissScanner()`, the result pane. Anything else (ruled 2026-11-12): the
   ERROR haptic and the alert "Not a Verre Code" OVER THE LIVE SCANNER, which
   stays open (RN alerts present in their own window); expo-camera reports a

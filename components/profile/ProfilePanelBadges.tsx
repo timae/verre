@@ -20,7 +20,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   loyalty:     '📅 Loyalty',
 }
 
-export function ProfilePanelBadges({ profileUserId }: { profileUserId: number }) {
+export function ProfilePanelBadges({ profileUserId }: { profileUserId: string }) {
   const { data, isLoading } = useQuery<{ badges: Badge[] }>({
     queryKey: ['profile-badges', profileUserId],
     queryFn: () => fetch(`/api/users/${profileUserId}/badges`).then(r => r.json()),

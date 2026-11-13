@@ -86,7 +86,7 @@ export type OwnProfileChange = Partial<Pick<FullProfile, 'name' | 'bio' | 'image
 // was sent (lib/query.tsx): if the viewer changed while it was in flight (a
 // sign-out + another account), nothing of the previous viewer's lands in the
 // new viewer's caches. Checked again after every await here.
-export async function applyOwnProfileChange(queryClient: QueryClient, userId: number, change: OwnProfileChange, epoch: number): Promise<void> {
+export async function applyOwnProfileChange(queryClient: QueryClient, userId: string, change: OwnProfileChange, epoch: number): Promise<void> {
   if (viewerCacheEpoch() !== epoch) return;
   const key = profileKey(userId);
   await queryClient.cancelQueries({ queryKey: key, exact: true });

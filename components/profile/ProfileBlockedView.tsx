@@ -2,9 +2,9 @@ import { Avatar } from './Avatar'
 import { UnblockButton } from '@/components/social/UnblockButton'
 
 interface Props {
-  userId: number
+  userId: string
   userName: string
-  myId: number | null
+  myId: string | null
 }
 
 // Blocker-side stripped view. The viewer blocked this profile, so we

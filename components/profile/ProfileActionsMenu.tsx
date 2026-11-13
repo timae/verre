@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 
 interface Props {
-  userId: number
+  userId: string
   viewerMutes: boolean
   // Optional callbacks — wired by callers in a TanStack Query context
   // so a state change invalidates the relevant caches (feed, user

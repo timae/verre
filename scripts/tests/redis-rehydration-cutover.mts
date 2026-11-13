@@ -15,6 +15,7 @@
 // it holds its locks, start B, ASSERT B IS BLOCKED, release A, then await B.
 // Kill schedules run the request in a child process (this file with --worker)
 // and SIGKILL it at a hook; assertions run here, in a separate process.
+import { toWire, fromWire, wireParams } from './lib/wireIds.mts'
 import { spawn } from 'node:child_process'
 import { registerHooks } from 'node:module'
 import { readFileSync } from 'node:fs'
@@ -44,10 +45,11 @@ function request(method: string, path: string, actor: Actor = {}, body?: unknown
   return new NextRequest(`${BASE}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) })
 }
 type Handler = (req: NextRequest, ctx: { params: Promise<Record<string, string>> }) => Promise<Response>
+// Wire ids in, internal ids out (scripts/tests/lib/wireIds.mts).
 async function call(handler: unknown, method: string, path: string, actor: Actor, body?: unknown, params: Record<string, string> = {}) {
-  const res = await (handler as Handler)(request(method, path, actor, body), { params: Promise.resolve(params) })
+  const res = await (handler as Handler)(request(method, path, actor, await toWire(body)), { params: Promise.resolve(await wireParams(params)) })
   let json: unknown = null
-  try { json = await res.json() } catch {}
+  try { json = await fromWire(await res.json()) } catch {}
   return { status: res.status, json: json as Record<string, unknown>, headers: res.headers }
 }
 

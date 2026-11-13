@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { setAnonToken } from '@/lib/sessionFetch'
+import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
 import { formatCode } from '@verre/core'
 import { sessionPath, joinPath } from '@/lib/sessionCode'
 
@@ -47,7 +47,7 @@ export function JoinClient({ code, sessionMeta, defaultName, isLoggedIn }: Props
     const n = (joinName ?? name).trim()
     if (!n) { setError('Enter your name'); return }
     setLoading(true); setError('')
-    const res = await fetch('/api/session/join', {
+    const res = await webApiFetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, displayName: n }),

@@ -2,7 +2,7 @@
 import { useState } from 'react'
 
 interface Props {
-  userId: number
+  userId: string
   onUnblock?: () => void
 }
 

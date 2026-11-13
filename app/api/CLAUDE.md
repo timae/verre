@@ -29,6 +29,10 @@ export async function POST(req: NextRequest) {
 
 **`X-Vr-Auth: removed`** is the separate header for kicked/banned users — preserves local state, bounces to `/join/<C>?removed=1`. See `docs/dev/kick-ban.md` for the full bounce protocol.
 
+## Public user ids (every route that takes or returns a user id)
+
+🔒 The integer user id never leaves the server (root CLAUDE.md § Trust model; `docs/dev/proposals/public-user-ids.md`). Inbound: parse the public id FORMAT only (`lib/publicIds.ts`; an integer is malformed → 400), and resolve it where today's code meets a nonexistent target, after the limiter and the role gates, so an unknown id takes exactly that path (profile / people / badges / `feed?user=` → 404; follow / block / mute → the limiter charged and the same 200; set-role → 400 `targetId required`; bans POST / unban → 200, nothing written; ban preview → 404; brought-by → "not in this moment"; `hosts=` → a FALSE clause, never a dropped filter). Outbound: every user id through `publicIdsFor` / `wireIdentityMap` / `metaToWire` / the adder lookup (`buildAdderLookup`), a miss DROPPED. Session meta is echoed only through `metaToWire` (an allow-list), never `...meta`. **A new user-facing route joins § 18 of `scripts/tests/you-profile-integration.mts`**: its canary scans every response the suite sees, so a route outside it is the residual (there is no static gate).
+
 ## Status code rules (leak prevention)
 
 - **`{status: 'gone'}` from `resolveProfileViewer` → 404**, never 403 or 401. The caller can't distinguish "no such user" from "exists but tier denies you."

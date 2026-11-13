@@ -2,23 +2,38 @@
 //
 // Header shape: `<platform>/<nativeVersion>/<otaUpdateId|embedded>`, e.g.
 // `ios/0.1.0/embedded`. Web clients never send the header, so the gate is a
-// no-op for every web request. Floor envs (unset ⇒ no enforcement — the launch
-// state): NATIVE_MIN_VERSION_IOS / NATIVE_MIN_VERSION_ANDROID; store link for
-// the update screen: NATIVE_STORE_URL_IOS / NATIVE_STORE_URL_ANDROID.
+// no-op for every web request. Floor envs: NATIVE_MIN_VERSION_IOS /
+// NATIVE_MIN_VERSION_ANDROID; store link for the update screen:
+// NATIVE_STORE_URL_IOS / NATIVE_STORE_URL_ANDROID.
 //
-// Enforced at the native-auth route wrapper (app/api/auth/native/[...all]) —
-// the one chokepoint EVERY native session resolution passes through:
-// @better-auth/expo's useSession + sliding-refresh hit /get-session over HTTP
-// on every app launch/foreground, so a below-floor client lands on the
-// blocking update screen at its next session refresh; it cannot sign in past
-// the floor either. Verre API routes are deliberately not wired (51 call
-// sites): a below-floor client that somehow keeps a live session only retains
-// it until the next get-session refresh.
+// 🔒 A FLOOR IN CODE: iOS is gated at max(env, CODE_FLOOR_IOS). Public user
+// ids (public-user-ids § 6, D1) are one cutover with no dual-accept window, so
+// the floor ships in the same release as the wire change; an env var loads at
+// boot, and setting it after the deploy would be a second rolling release.
+// Raise CODE_FLOOR_IOS only with a breaking wire change, in that change.
+//
+// Enforced on EVERY API call: proxy.ts runs this gate for /api/* (an old app
+// left in the foreground polls the moment screen without re-running
+// get-session), and the native-auth route wrapper (app/api/auth/native/[...all])
+// keeps it as the belt for sign-in / sign-up / get-session.
+//
+// 🔒 IMPORT-FREE: this module sits in the proxy's graph (eslint.config.mjs).
+
+export const CODE_FLOOR_IOS = '0.1.5'
+
+// The web's wire generation, sent as `X-Verre-Web` on every /api/session call
+// (lib/sessionFetch.ts webApiFetch). proxy.ts bounces a signed-in moment call
+// without it (an old tab); a future breaking wire change bumps it. Lives here
+// because this module is the one both the proxy and the client may import.
+export const WEB_WIRE_GENERATION = '2'
 
 const HEADER = /^(ios|android)\/(\d+(?:\.\d+){0,2})\/\S+$/
 
 function floorFor(platform: string): string | undefined {
-  if (platform === 'ios') return process.env.NATIVE_MIN_VERSION_IOS
+  if (platform === 'ios') {
+    const env = process.env.NATIVE_MIN_VERSION_IOS
+    return env && cmpVersions(env, CODE_FLOOR_IOS) > 0 ? env : CODE_FLOOR_IOS
+  }
   if (platform === 'android') return process.env.NATIVE_MIN_VERSION_ANDROID
   return undefined
 }
@@ -56,8 +71,8 @@ export function clientVersionGate(req: Request): Response | null {
     // Malformed header from something claiming to be a native client: gate it
     // if ANY floor is configured (fail closed — a client that can't speak the
     // protocol correctly should update, and web never sends the header).
-    const anyFloor = process.env.NATIVE_MIN_VERSION_IOS || process.env.NATIVE_MIN_VERSION_ANDROID
-    return anyFloor ? updateRequired(null, null) : null
+    // (iOS always has a floor now, so this always gates.)
+    return updateRequired(null, null)
   }
   const [, platform, version] = m
   const floor = floorFor(platform)

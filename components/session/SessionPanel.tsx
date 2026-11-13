@@ -292,7 +292,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                     {(() => {
                       // Hoist the meta cast + derived block sets once so the
                       // per-row render below reads from stable refs.
-                      const meta = sessionMeta as { hostUserId?: number | null; hostIdentityId?: string; viewerBlocksOut?: string[]; viewerBlocksIn?: string[] } | null
+                      const meta = sessionMeta as { hostUserId?: string | null; hostIdentityId?: string; viewerBlocksOut?: string[]; viewerBlocksIn?: string[] } | null
                       const blocksOut = new Set(meta?.viewerBlocksOut ?? [])
                       const blocksIn = new Set(meta?.viewerBlocksIn ?? [])
                       const isHostId = (id: string) =>
@@ -346,7 +346,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                         // out of clickability, collapse any open preview on
                         // that row so it doesn't lock open.
                         const isExpanded = isClickable && expandedId === p.id
-                        const profileUserId = isLoggedIn ? Number(p.id.slice(2)) : null
+                        const profileUserId = isLoggedIn ? p.id.slice(2) : null
                         const onRowClick = () => {
                           if (!isClickable) return
                           setExpandedId(isExpanded ? null : p.id)
@@ -412,7 +412,7 @@ export function SessionPanel({ onClose, onLeave }: Props) {
                                 userId={profileUserId}
                                 isSelf={isMe}
                                 viewerLoggedIn={!!myId && myId.startsWith('u:')}
-                                myId={myId && myId.startsWith('u:') ? Number(myId.slice(2)) : null}
+                                myId={myId && myId.startsWith('u:') ? myId.slice(2) : null}
                                 indent={16}
                               />
                             )}

@@ -8,8 +8,8 @@ import { ProfileBlockedView } from './ProfileBlockedView'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
-  userId: number
-  myId: number | null
+  userId: string
+  myId: string | null
   onClose: () => void
 }
 
@@ -23,14 +23,14 @@ interface Props {
 // needed for that direction.)
 type ProfileResponse =
   | (LoadedProfile & { viewerMutes?: boolean })
-  | { id: number; name: string; gated: true; isFollowing: boolean }
-  | { id: number; name: string; blocked: true }
+  | { id: string; name: string; gated: true; isFollowing: boolean }
+  | { id: string; name: string; blocked: true }
 
-function isBlocked(p: ProfileResponse): p is { id: number; name: string; blocked: true } {
+function isBlocked(p: ProfileResponse): p is { id: string; name: string; blocked: true } {
   return (p as { blocked?: boolean }).blocked === true
 }
 
-function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
+function isGated(p: ProfileResponse): p is { id: string; name: string; gated: true; isFollowing: boolean } {
   return (p as { gated?: boolean }).gated === true
 }
 

@@ -212,10 +212,10 @@ export function AccountSettings({ onSaved, onReady }: Props = {}) {
 // powers the runtime filter (1000) — beyond that, the count itself is
 // abuse-scenario territory.
 function BlockedUsersSection() {
-  type Row = { id: number; name: string; imageUrl: string | null; createdAt: string }
+  type Row = { id: string; name: string; createdAt: string }
   const [rows, setRows] = useState<Row[] | null>(null)
   const [error, setError] = useState('')
-  const [working, setWorking] = useState<number | null>(null)
+  const [working, setWorking] = useState<string | null>(null)
 
   async function refresh() {
     setError('')
@@ -234,7 +234,7 @@ function BlockedUsersSection() {
   // boilerplate that buys nothing for this single-mount fetch.
   useEffect(() => { refresh() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function unblock(id: number) {
+  async function unblock(id: string) {
     if (working !== null) return
     setWorking(id)
     const res = await fetch(`/api/me/blocks/${id}`, { method: 'DELETE' })

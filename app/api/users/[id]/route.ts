@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { resolveProfileViewer } from '@/lib/profileVisibility'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
 import { loadProfile } from '@/lib/profileLoad'
 import { loadProfileHeaderExtras } from '@/lib/profileHeader'
@@ -15,8 +15,10 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const noStore = { 'Cache-Control': 'private, no-store' }
   const session = await resolveUser(req)
   const { id } = await params
-  const userId = parsePathId(id)
-  if (userId === null) {
+  // FORMAT only before the limiter (an integer is malformed); resolution after
+  // it, where an unknown id takes the 'gone' path (public-user-ids § 4).
+  const publicId = parsePublicIdParam(id)
+  if (publicId === null) {
     return NextResponse.json({ error: 'invalid id' }, { status: 400, headers: noStore })
   }
 
@@ -27,8 +29,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   if (!rl.allowed) return NextResponse.json({ error: 'Too many requests' }, { status: 429, headers: noStore })
 
   const viewerId = session?.user ? Number(session.user.id) : null
-  const gate = await resolveProfileViewer(userId, viewerId)
-  if (gate.status === 'gone') return NextResponse.json(
+  const userId = await userIdForPublicId(publicId)
+  const gate = userId === null ? { status: 'gone' as const } : await resolveProfileViewer(userId, viewerId)
+  if (userId === null || gate.status === 'gone') return NextResponse.json(
     { error: 'not found' },
     { status: 404, headers: noStore },
   )
@@ -41,7 +44,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   // viewer the same response.
   if (gate.status === 'blocked-by-me') {
     return NextResponse.json(
-      { id: userId, name: gate.name, blocked: true },
+      { id: publicId, name: gate.name, blocked: true },
       { headers: noStore },
     )
   }
@@ -59,7 +62,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
       ? await Promise.all([edge(viewerId, userId), edge(userId, viewerId)])
       : [false, false]
     return NextResponse.json(
-      { id: userId, name: gate.name, gated: true, isFollowing, followsYou },
+      { id: publicId, name: gate.name, gated: true, isFollowing, followsYou },
       { headers: noStore },
     )
   }

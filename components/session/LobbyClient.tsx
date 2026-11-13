@@ -4,8 +4,8 @@ import { useRouter } from 'next/navigation'
 import { signOut } from 'next-auth/react'
 import Link from 'next/link'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCodeInput } from '@verre/core'
+import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
+import { validateCodeInput, formatCodeInput, profilePath } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
 
 type User = { id: string; name: string; email: string; role: string; pro: boolean } | null
@@ -51,7 +51,7 @@ export function LobbyClient({ user }: { user: User }) {
     }
     const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
-    const res = await fetch('/api/session', {
+    const res = await webApiFetch('/api/session', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -88,7 +88,7 @@ export function LobbyClient({ user }: { user: User }) {
     }
     const code = v.code
     setLoading(true); setJoinError('')
-    const res = await fetch('/api/session/join', {
+    const res = await webApiFetch('/api/session/join', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, displayName: displayName.trim() }),
@@ -309,7 +309,7 @@ function AccountDashboard({ user }: { user: NonNullable<User> }) {
           <div style={{fontSize:11,color:'var(--fg-dim)',marginTop:1}}>{user.email}</div>
         </div>
       </div>
-      {[{href:'/me',label:'⊞  my dashboard'},{href:'/me/history',label:'◷  tasting history'},{href:'/me/saved',label:'★  saved wines'},{href:`/u/${user.id}`,label:'◉  profile'}].map(({href,label}) => (
+      {[{href:'/me',label:'⊞  my dashboard'},{href:'/me/history',label:'◷  tasting history'},{href:'/me/saved',label:'★  saved wines'},{href:profilePath(user.id),label:'◉  profile'}].map(({href,label}) => (
         <Link key={href} href={href} className="btn-g" style={{display:'block',textAlign:'left',textDecoration:'none',marginTop:0,marginBottom:6}}>
           {label}
         </Link>

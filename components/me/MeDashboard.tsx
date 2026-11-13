@@ -6,8 +6,8 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useDashboardSections } from './DashboardSettings'
 import { authedFetch } from '@/lib/authedFetch'
-import { setAnonToken } from '@/lib/sessionFetch'
-import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE } from '@verre/core'
+import { setAnonToken, webApiFetch } from '@/lib/sessionFetch'
+import { validateCodeInput, formatCode, formatCodeInput, BLIND_FEED_REVEAL_NOTE, profilePath } from '@verre/core'
 import { sessionPath } from '@/lib/sessionCode'
 import { ICO } from '@/lib/wineTypeColors'
 
@@ -69,7 +69,7 @@ export function MeDashboard({ user }: { user: User }) {
     }
     const dateFromISO = new Date(`${dateFromDate}T${dateFromTime}`).toISOString()
     setLoading(true); setCreateError('')
-    const res = await fetch('/api/session', {
+    const res = await webApiFetch('/api/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         hostDisplayName: name.trim(), sessionName: sessionName.trim(),
@@ -106,7 +106,7 @@ export function MeDashboard({ user }: { user: User }) {
     }
     const code = v.code
     setLoading(true); setJoinError('')
-    const res = await fetch('/api/session/join', {
+    const res = await webApiFetch('/api/session/join', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code, displayName: name.trim() }),
     })
@@ -247,7 +247,7 @@ export function MeDashboard({ user }: { user: User }) {
           {/* Quick links */}
           {show('quick_links') && (
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {[{href:'/me/history',l:'◷ history'},{href:`/u/${user.id}`,l:'◉ profile'},{href:'/me/badges',l:'🏅 badges'}].map(({href,l}) => (
+              {[{href:'/me/history',l:'◷ history'},{href:profilePath(user.id),l:'◉ profile'},{href:'/me/badges',l:'🏅 badges'}].map(({href,l}) => (
                 <Link key={href} href={href} className="btn-s" style={{textDecoration:'none',display:'inline-block'}}>{l}</Link>
               ))}
             </div>

@@ -14,6 +14,7 @@ export {
   type CodeValidationResult,
 } from './sessionCode'
 
+export { PUBLIC_USER_ID_LENGTH, isPublicUserId, normalizePublicUserId, profilePath } from './publicUserId'
 export { validateScore } from './checkinValidation'
 export { BLIND_FEED_REVEAL_NOTE, MOMENT_DEFAULT_SPAN_MS, momentIsOver } from './blindReveal'
 export {

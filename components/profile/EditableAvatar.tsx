@@ -6,7 +6,7 @@ import { Avatar } from './Avatar'
 import { AvatarEditor } from './AvatarEditor'
 
 interface Props {
-  userId: number
+  userId: string
   name: string
   imageUrl: string | null
   size: number

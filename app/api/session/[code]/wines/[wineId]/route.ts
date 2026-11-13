@@ -3,9 +3,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { Prisma } from '@prisma/client'
 import { resolveUser } from '@/lib/resolveUser'
 import { redis, k, touchWithMeta, scanKeys } from '@/lib/redis'
-import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, wineToWire, buildKickedUserNameLookup, reclaimIfUnreferenced } from '@/lib/session'
+import { isHostByIdentity, isProvider, mutateWines, isMutateReject, addWineToSession, mirrorLineup, reassignProvenance, wineToWire, buildAdderLookup, reclaimIfUnreferenced } from '@/lib/session'
 import { normalizeCode } from '@verre/core'
-import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isValidIdentityId, isTombstoneIdentityId } from '@/lib/identity'
+import { participantOrBanned, authInvalid, authRemoved, authUnavailable, isTombstoneIdentityId } from '@/lib/identity'
+import { parseWireIdentity, internalIdentity } from '@/lib/publicIds'
 import { deleteImage } from '@/lib/s3'
 import { isSameOrigin } from '@/lib/csrf'
 import { checkRate, getClientIp } from '@/lib/rateLimit'
@@ -199,7 +200,7 @@ export async function PATCH(req: NextRequest, { params }: Ctx) {
   // name, so an edit response and the next poll resolve to the same
   // `addedByDisplayName` value.
   const identities = await redis.hGetAll(k.identities(c))
-  const userNameLookup = await buildKickedUserNameLookup([written], identities)
+  const userNameLookup = await buildAdderLookup([written], identities)
   return NextResponse.json(wineToWire(written, identity.id, identities, userNameLookup, meta.showProvenance !== false))
 }
 
@@ -230,17 +231,21 @@ async function reassignBroughtBy({
   if (!showProvenance) {
     return NextResponse.json({ error: 'turn on “show who brought each impression” to change it' }, { status: 400 })
   }
-  // A tombstone (d:) is never a valid new owner.
-  if (!isValidIdentityId(body.broughtByIdentityId) || isTombstoneIdentityId(body.broughtByIdentityId)) {
+  // The WIRE identity (an old client's `u:<int>` is malformed). A tombstone
+  // (d:) is never a valid new owner.
+  const wireTarget = parseWireIdentity(body.broughtByIdentityId)
+  if (!wireTarget || (wireTarget.kind === 'other' && isTombstoneIdentityId(wireTarget.id))) {
     return NextResponse.json({ error: 'invalid identity' }, { status: 400 })
   }
-  const target = body.broughtByIdentityId as string
   try {
     const reassigned = await withSessionMutation(c, { label: 'reassign', redisLock: { waitMs: 3000 }, caller: identity }, async (tx, ctx) => {
       const caller = admitted(ctx)
       if (!isHostByIdentity(ctx.meta!, caller)) throw refuse(403, 'only a host or co-host can change who brought an impression')
       const provenanceShown = ctx.row ? ctx.row.showProvenance !== false : ctx.meta!.showProvenance !== false
       if (!provenanceShown) throw refuse(400, 'turn on “show who brought each impression” to change it')
+      // 🔒 An unknown public id takes the not-a-participant answer (§ 4).
+      const target = await internalIdentity(wireTarget, tx)
+      if (!target) throw refuse(400, 'that person is not in this moment')
       // The new owner must be a current participant: live roster entry (its name
       // is the snapshot), not banned or kicked — and admitted by the record for
       // a `u:` target.
@@ -274,9 +279,9 @@ async function reassignBroughtBy({
     })
     await touchWithMeta(c)
     const identities = await redis.hGetAll(k.identities(c))
-    const userNameLookup = await buildKickedUserNameLookup([reassigned], identities)
+    const adderLookup = await buildAdderLookup([reassigned], identities)
     // Reaching here means showProvenance is on (gated above).
-    return NextResponse.json(wineToWire(reassigned, identity.id, identities, userNameLookup, true))
+    return NextResponse.json(wineToWire(reassigned, identity.id, identities, adderLookup, true))
   } catch (err) {
     return contractFailure(err, c, { busy: 429, label: 'reassign' })
   }

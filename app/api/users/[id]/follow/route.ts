@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { resolveUser } from '@/lib/resolveUser'
 import { prisma } from '@/lib/prisma'
 import { checkRate, formatWait } from '@/lib/rateLimit'
-import { parsePathId } from '@/lib/parsePathId'
+import { parsePublicIdParam, userIdForPublicId } from '@/lib/publicIds'
 import { isSameOrigin } from '@/lib/csrf'
 import { viewerBlocksAuthor, authorBlocksViewer } from '@/lib/userBlock'
 
@@ -11,9 +11,9 @@ type Ctx = { params: Promise<{ id: string }> }
 // Follow is intentionally NOT gated by profile visibility — sending a
 // follow is the path to seeing a stricter-tier user later, so blocking
 // it here would be circular. The endpoint returns a uniform success
-// shape whether or not the target exists / accepts; if the target id
-// references a missing user, the FK constraint trips and we surface
-// a 400, but the timing channel still leaks existence (a real user's
+// shape whether or not the target exists / accepts (an unknown public id
+// answers the same 200 after the limiter; a target deleted mid-request trips
+// the FK and gets the same 200), but the timing channel still leaks existence (a real user's
 // upsert takes a different shape than a non-existent target's failed
 // insert). At 10k users this defense is theatre — narrowing the leak
 // further would require always running the same SQL shape regardless
@@ -24,12 +24,16 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)
   const { id } = await params
-  const followingId = parsePathId(id)
-  if (followingId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const publicId = parsePublicIdParam(id)
+  if (publicId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const followingId = await userIdForPublicId(publicId)
   if (followerId === followingId) return NextResponse.json({ error: 'cannot follow yourself' }, { status: 400 })
 
   const rl = await checkRate(`rl:follow:${followerId}:1h`, 60, 3600)
   if (!rl.allowed) return NextResponse.json({ error: `Too many follows. Try again in ${formatWait(rl.retryAfter)}.` }, { status: 429 })
+  // 🔒 An unknown public id: the limiter is charged and the answer is the
+  // same 200 a blocked-me target gets (public-user-ids § 4).
+  if (followingId === null) return NextResponse.json({ following: true })
 
   // Block check — scenario 12a vs 12b:
   //   12a: viewer blocked target → reject with explicit message (the
@@ -74,8 +78,9 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   const session = await resolveUser(req)
   if (!session?.user) return NextResponse.json({ error: 'auth required' }, { status: 401 })
   const followerId = Number(session.user.id)
-  const followingId = parsePathId((await params).id)
-  if (followingId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
-  await prisma.follow.deleteMany({ where: { followerId, followingId } })
+  const publicId = parsePublicIdParam((await params).id)
+  if (publicId === null) return NextResponse.json({ error: 'invalid id' }, { status: 400 })
+  const followingId = await userIdForPublicId(publicId)
+  if (followingId !== null) await prisma.follow.deleteMany({ where: { followerId, followingId } })
   return NextResponse.json({ following: false })
 }

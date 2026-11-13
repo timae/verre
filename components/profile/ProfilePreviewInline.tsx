@@ -9,10 +9,10 @@ import { formatNumber } from '@/lib/formatNumber'
 import type { LoadedProfile } from '@/lib/profileLoad'
 
 interface Props {
-  userId: number
+  userId: string
   isSelf: boolean
   viewerLoggedIn: boolean
-  myId: number | null
+  myId: string | null
   // Horizontal indent of the preview panel from its left edge. Used
   // by SessionPanel to align the panel under the participant row's
   // content (avatar/handle column). Other mount sites pass 0 so the
@@ -30,14 +30,14 @@ interface Props {
 // preview doesn't render a mute button).
 type ProfileResponse =
   | (LoadedProfile & { viewerMutes?: boolean })
-  | { id: number; name: string; gated: true; isFollowing: boolean }
-  | { id: number; name: string; blocked: true }
+  | { id: string; name: string; gated: true; isFollowing: boolean }
+  | { id: string; name: string; blocked: true }
 
-function isBlocked(p: ProfileResponse): p is { id: number; name: string; blocked: true } {
+function isBlocked(p: ProfileResponse): p is { id: string; name: string; blocked: true } {
   return (p as { blocked?: boolean }).blocked === true
 }
 
-function isGated(p: ProfileResponse): p is { id: number; name: string; gated: true; isFollowing: boolean } {
+function isGated(p: ProfileResponse): p is { id: string; name: string; gated: true; isFollowing: boolean } {
   return (p as { gated?: boolean }).gated === true
 }
 

@@ -50,14 +50,14 @@ export async function GET(req: NextRequest) {
   // (Add Friends has nothing to offer on your own row), also before the limit.
   // ILIKE wildcards in `q` are escaped (lib/profilePeople.ts).
   const like = '%' + q.slice(0, 64).replace(/[\\%_]/g, '\\$&') + '%'
-  const candidates = await prisma.$queryRaw<{ id: number; name: string; xp: number; image_url: string | null; badge_count: number }[]>`
-    SELECT u.id, u.name, u.xp, u.image_url,
+  const candidates = await prisma.$queryRaw<{ id: number; public_id: string; name: string; xp: number; image_url: string | null; badge_count: number }[]>`
+    SELECT u.id, u.public_id, u.name, u.xp, u.image_url,
       (SELECT COUNT(*) FROM user_badges ub WHERE ub.user_id = u.id)::int AS badge_count
     FROM users u
     WHERE u.name ILIKE ${like}
       AND u.id <> ${viewerId}
       AND ${blockScrub(viewerId, viewerId, Prisma.raw('u.id'))}
-    ORDER BY u.name ASC, u.id ASC
+    ORDER BY u.name ASC, u.public_id ASC
     LIMIT 10
   `
   if (candidates.length === 0) return NextResponse.json([], { headers: noStore })
@@ -80,10 +80,10 @@ export async function GET(req: NextRequest) {
       momentsTogether: together.get(c.id) ?? 0,
     }
     if (admitted.has(c.id)) {
-      return { id: c.id, name: c.name, xp: c.xp, badgeCount: c.badge_count, imageUrl: c.image_url, ...rel, friendsInCommon: inCommon.get(c.id) ?? 0 }
+      return { id: c.public_id, name: c.name, xp: c.xp, badgeCount: c.badge_count, imageUrl: c.image_url, ...rel, friendsInCommon: inCommon.get(c.id) ?? 0 }
     }
     // Tier-denied: stub shape — name only, no activity-level data.
-    return { id: c.id, name: c.name, gated: true, imageUrl: null, ...rel, friendsInCommon: null }
+    return { id: c.public_id, name: c.name, gated: true, imageUrl: null, ...rel, friendsInCommon: null }
   })
 
   return NextResponse.json(result, { headers: noStore })
